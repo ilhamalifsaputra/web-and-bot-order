@@ -42,6 +42,7 @@ import {
   resolveBinanceInternalConfig,
   enqueueNotification,
   getUser,
+  clearOrderPaymentMessage,
   type BinanceInternalConfig,
   type DeliverResult,
 } from "@app/db";
@@ -312,7 +313,10 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     }
   }
 
-  // Turn the payment-instructions bubble into a success message in place.
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — but only once the edit genuinely
+  // succeeds. A rejected/uneditable bubble leaves the anchor in place so a
+  // later sweep can retry it instead of losing track of the pointer.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     try {
       await api.editMessageText(
@@ -321,6 +325,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
         { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
       );
+      await clearOrderPaymentMessage(prisma, order.id);
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */
     }
@@ -339,6 +344,9 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
+  // Clear the anchor pointer only once the edit genuinely succeeds — same
+  // trade-off onDelivered's own bubble edit makes above: a rejected/
+  // uneditable bubble leaves the anchor in place so a later sweep can retry.
   try {
     await api.editMessageText(
       Number(order.paymentMsgChatId),
@@ -346,6 +354,7 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
       coreT("checkout.internal_paid", lang, { code: order.orderCode }),
       { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
     );
+    await clearOrderPaymentMessage(prisma, order.id);
   } catch {
     /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
   }

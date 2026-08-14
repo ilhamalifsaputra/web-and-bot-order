@@ -45,6 +45,7 @@ import {
   resolveBybitConfig,
   enqueueNotification,
   getUser,
+  clearOrderPaymentMessage,
   type BybitConfig,
   type BybitDeliverResult,
 } from "@app/db";
@@ -244,8 +245,12 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     }
   }
 
-  // Turn the payment-instructions bubble into a success message in place.
-  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — but only once the edit genuinely
+  // completes (not timed out, not rejected). A timed-out or rejected/
+  // uneditable bubble leaves the anchor in place so a later sweep can retry
+  // it instead of losing track of the pointer. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     try {
       const outcome = await withTimeout(
@@ -258,8 +263,9 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         TELEGRAM_MESSAGE_TIMEOUT_MS,
       );
       if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
+      await clearOrderPaymentMessage(prisma, order.id);
     } catch {
-      /* bubble may be gone/uneditable — the credential DM already informed the buyer */
+      /* bubble may be gone/uneditable, or the edit timed out — the credential DM already informed the buyer */
     }
   }
 }
@@ -276,7 +282,9 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
-  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
+  // Clear the anchor pointer only once the edit genuinely completes — same
+  // trade-off onDelivered's own bubble edit makes above. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
   // onDelivered above for why.
   try {
     const outcome = await withTimeout(
@@ -289,8 +297,9 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
       TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
     if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
+    await clearOrderPaymentMessage(prisma, order.id);
   } catch {
-    /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
+    /* bubble may be gone/uneditable, or the edit timed out — the ORDER_PROCESSING_DM already informed the buyer */
   }
 }
 

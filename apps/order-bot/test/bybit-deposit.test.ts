@@ -281,7 +281,8 @@ describe("processDeposits (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     await processDeposits(api, [dep({ txId: "0xFLIP", amount: order.totalAmount })], await pending());
-    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
@@ -291,6 +292,29 @@ describe("processDeposits (poll-loop wiring)", () => {
     const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
     expect(flat).toContain("v1:browse:prods");
     expect(flat).toContain("v1:order:list");
+
+    // T1: a successful terminal flip must clear the anchor pointer, so the
+    // generic sweeper (added in a later task) knows this bubble is done and
+    // doesn't re-edit it every cycle.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  it("leaves the anchor in place when the bubble edit is rejected by Telegram, so a later sweep can retry it (T1)", async () => {
+    const order = (await makeBybitOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw new Error("Bad Request: message to edit not found");
+    };
+    await processDeposits(api, [dep({ txId: "0xEDITFAIL", amount: order.totalAmount })], await pending());
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    // Delivery itself must not be blocked by a bubble-edit failure.
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    // The anchor must survive so it isn't lost — a rejected edit is exactly
+    // the case a future retry needs to see the pointer still populated.
+    expect(updated!.paymentMsgChatId).not.toBeNull();
+    expect(updated!.paymentMsgId).not.toBeNull();
   });
 
   it("delivers on a unique-amount match", async () => {

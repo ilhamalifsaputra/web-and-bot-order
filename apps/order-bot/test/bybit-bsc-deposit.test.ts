@@ -345,7 +345,8 @@ describe("processDeposits (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
-    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
@@ -355,6 +356,29 @@ describe("processDeposits (poll-loop wiring)", () => {
     const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
     expect(flat).toContain("v1:browse:prods");
     expect(flat).toContain("v1:order:list");
+
+    // T1: a successful terminal flip must clear the anchor pointer, so the
+    // generic sweeper (added in a later task) knows this bubble is done and
+    // doesn't re-edit it every cycle.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  it("leaves the anchor in place when the bubble edit is rejected by Telegram, so a later sweep can retry it (T1)", async () => {
+    const order = (await makeBybitBscOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw new Error("Bad Request: message to edit not found");
+    };
+    await processDeposits(api, [dep({ txId: "0x" + "8".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    // Delivery itself must not be blocked by a bubble-edit failure.
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    // The anchor must survive so it isn't lost — a rejected edit is exactly
+    // the case a future retry needs to see the pointer still populated.
+    expect(updated!.paymentMsgChatId).not.toBeNull();
+    expect(updated!.paymentMsgId).not.toBeNull();
   });
 
   it("delivers on a unique-amount match", async () => {
@@ -558,6 +582,15 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(edits[0]!.chatId).toBe(555);
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).toContain("Waiting for the first on-chain confirmation");
+
+    // T1: onPaymentDetected is an INTERIM edit, not a terminal one — the
+    // confirmation tracker depends on the anchor staying live so it can keep
+    // rewriting the same bubble as confirmations accrue. It must never clear
+    // paymentMsgChatId/paymentMsgId (that's reserved for the terminal
+    // delivered/processing flips).
+    const afterDetected = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(afterDetected!.paymentMsgChatId).not.toBeNull();
+    expect(afterDetected!.paymentMsgId).not.toBeNull();
 
     // Cycle 2: same deposit, still not final — must NOT push again (already
     // detected; re-pushing here would stomp on whatever the confirmation

@@ -320,9 +320,11 @@ export function TicketDetailPage() {
             <CardContent className="flex flex-col gap-1">
               <div className="mb-1 text-xs font-medium text-ink-soft">Items</div>
               {ticket.order.items.map((item) => (
-                <div key={item.id} className="flex items-center justify-between text-sm">
-                  <span className="text-ink">{item.product.name} × {item.quantity}</span>
-                  <span className="font-mono text-xs text-ink-soft">{item.unitPrice}</span>
+                <div key={item.id} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="truncate text-ink" title={`${item.product.name} × ${item.quantity}`}>
+                    {item.product.name} × {item.quantity}
+                  </span>
+                  <span className="shrink-0 font-mono text-xs text-ink-soft">{item.unitPrice}</span>
                 </div>
               ))}
             </CardContent>
@@ -336,7 +338,7 @@ export function TicketDetailPage() {
                     <div className="mb-0.5 text-xs text-ink-soft">
                       {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
                     </div>
-                    <div className="text-sm text-ink">{row.details ?? row.action}</div>
+                    <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
                   </div>
                 ))
               )}
@@ -376,7 +378,7 @@ export function TicketDetailPage() {
               <div className="mb-1 text-xs text-ink-soft">
                 {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
               </div>
-              <div className="text-sm text-ink">{row.details ?? row.action}</div>
+              <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
             </div>
           ))}
         </CardContent>
@@ -415,7 +417,9 @@ export function TicketDetailPage() {
               <div className="mb-1 text-xs text-ink-soft">
                 {m.senderType === "ADMIN" ? "Admin" : "Customer"} — {m.createdAtDisplay ?? "—"}
               </div>
-              <div className="text-sm text-ink whitespace-pre-wrap">{m.content}</div>
+              {/* pre-wrap preserves long unbroken runs, so a pasted URL or
+                  token overflows the bubble without break-words. */}
+              <div className="text-sm text-ink whitespace-pre-wrap break-words">{m.content}</div>
               {messagePhotoIds.length > 0 && (
                 <div className="mt-2 flex gap-2">
                   {messagePhotoIds.map((fileId) => (

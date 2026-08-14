@@ -68,7 +68,7 @@ function TelegramPreview({ message, imageUrl }: { message: string; imageUrl: str
           <div className="rounded-xl bg-sand p-4">
             <div className="max-w-[320px] rounded-lg bg-card p-3 shadow-soft">
               {imageUrl && <img src={imageUrl} alt="" className="mb-2 max-h-48 w-full rounded object-cover" />}
-              <p className="whitespace-pre-wrap text-sm text-ink">{message}</p>
+              <p className="whitespace-pre-wrap break-words text-sm text-ink">{message}</p>
             </div>
           </div>
         ) : (

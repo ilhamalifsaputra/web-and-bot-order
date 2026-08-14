@@ -1,0 +1,236 @@
+/**
+ * The buyer-facing "your order is ready" email
+ * (NotificationEvent.BUYER_EMAIL_ORDER_READY) — sent to a guest shopper's own
+ * inbox when their order actually completes.
+ *
+ * THIS IS NOT AN OWNER EMAIL. Every other template in this folder that
+ * renders an order (orderPaid.ts, walletTopup.ts) is addressed to the shop
+ * owner, resolves its recipient from Settings, and can afford to assume a
+ * trusted reader. This one is addressed to a customer whose recipient address
+ * came straight from the checkout form. Do not "tidy" it onto the owner-email
+ * path (resolveOwnerEmailRecipient / an owner_email_on_* toggle) — it has no
+ * owner toggle by design, because a buyer being told their order is done is
+ * not a notification the shop opts into.
+ *
+ * NO CREDENTIALS, NO ATTACHMENTS. The input type deliberately has no field
+ * for delivered content, and must never gain one: email is unencrypted and
+ * sits in an inbox forever, so what the buyer bought is read on the order
+ * page, never mailed. Same rule stated at `sendGuestOrderCodeEmail` in
+ * apps/storefront/src/routes/api.ts.
+ *
+ * THREE WAYS BACK IN, NOT ONE. The primary button points at the order page,
+ * which for a guest is reachable only while their 30-day session cookie
+ * lives. A reader on a new device, or past that window, would hit a login
+ * wall they can never pass (guests have no password). So the body ALSO
+ * prints the order code and links to `/track`, which trades that code back
+ * for a session — the same belt-and-braces structure
+ * `sendGuestOrderCodeEmail` uses. Dropping either fallback strands exactly
+ * the readers who need this email most.
+ *
+ * FIXED SUBJECT, AND A CODE-FREE PREHEADER. Like walletTopup.ts this
+ * template takes no `EmailCopy` and never calls `buildSubject`: the subject
+ * is a hardcoded literal with zero interpolation. The stakes are higher here
+ * than for any OWNER_EMAIL_* event — for a guest order the order code IS the
+ * full credential (POST /api/v1/track swaps it for a session), `sendMail`
+ * logs every subject it sends, and subject + preheader are what render in a
+ * lock-screen notification preview. So neither the subject NOR the
+ * `renderShell` preheader may carry the order code; it appears only in the
+ * body, where the buyer actually reads it.
+ */
+import { renderShell } from "../layout";
+import {
+  eventBanner,
+  infoTable,
+  primaryButton,
+  fallbackLinkLine,
+  footer,
+  divider,
+  TEXT,
+  MUTED,
+} from "../components";
+import { ptSection, ptKeyValue, ptDivider } from "../plaintext";
+import { escapeHtml } from "../escape";
+import type { BrandConfig, RenderedEmail } from "../types";
+
+/** Fixed, non-interpolated subject — see this file's header. Bilingual in one
+ * line, matching the bilingual body: an email has no session to read a
+ * language preference from. */
+const SUBJECT = "Your order is ready — Pesanan kamu sudah siap";
+/** Preheader deliberately repeats the subject rather than adding the order
+ * code (which walletTopup.ts's preheader does, safely, because its reader is
+ * the shop owner) — see this file's header. */
+const PREHEADER = "Your order is ready — Pesanan kamu sudah siap";
+
+const EN_HEADING = "Your order is ready";
+const EN_SUBHEADING = "Everything you bought has been delivered to your order page.";
+const EN_BODY =
+  "Thank you for your order. It is complete — open your order page to read what you bought. " +
+  "For your security, what you bought is never sent by email; you read it on the order page.";
+const ID_HEADING = "Pesanan kamu sudah siap";
+const ID_BODY =
+  "Terima kasih atas pesanan kamu. Pesanan ini sudah selesai — buka halaman pesanan untuk melihat barang yang kamu beli. " +
+  "Demi keamanan, barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.";
+
+const EN_CODE_NOTE =
+  "Keep this email safe. Your order code below is the only way back into this order, so treat it like a password.";
+const ID_CODE_NOTE =
+  "Simpan email ini baik-baik. Kode pesanan di bawah adalah satu-satunya cara masuk kembali ke pesanan ini, jadi perlakukan seperti kata sandi.";
+
+const EN_TRACK_NOTE = "Lost this browser, or on another device? Reopen your order with the code above:";
+const ID_TRACK_NOTE = "Browser ini hilang, atau kamu pindah perangkat? Buka lagi pesanan kamu pakai kode di atas:";
+
+export interface OrderReadyItem {
+  name: string;
+  variant: string | null;
+  quantity: number;
+  /** Already display-formatted by the caller (e.g. via `formatMoney`) — this
+   * template renders it verbatim, same convention as `orderPaid.ts`. */
+  unitPrice: string;
+}
+
+export interface OrderReadyInput {
+  orderCode: string;
+  items: OrderReadyItem[];
+  /** Already display-formatted by the caller — rendered verbatim. */
+  subtotal: string;
+  /** Already display-formatted by the caller, or `""` for a zero discount —
+   * an empty string hides the Discount row/line entirely, same convention as
+   * `orderPaid.ts`. */
+  discount: string;
+  /** Already display-formatted by the caller — rendered verbatim. */
+  total: string;
+  /** Already display-formatted by the caller (e.g. "30 days"), or null when
+   * the order carries no warranty — null hides the row/line entirely. */
+  warranty: string | null;
+  /** The order page. Null when neither SHOP_PUBLIC_URL nor PUBLIC_URL is
+   * configured — this template then renders no button at all rather than an
+   * empty `href`, and the printed order code plus `/track` carry the reader. */
+  orderUrl: string | null;
+  /** The `/track` code-recovery page, null under the same condition as
+   * `orderUrl`. */
+  trackUrl: string | null;
+}
+
+/** Render each item as its own compact line: "2x Netflix Premium (1 Month) — Rp50.000". */
+function formatItemLine(item: OrderReadyItem): string {
+  const variantPart = item.variant ? ` (${item.variant})` : "";
+  return `${item.quantity}x ${item.name}${variantPart} — ${item.unitPrice}`;
+}
+
+function buildItemsHtml(items: OrderReadyItem[]): string {
+  const rows = items
+    .map(
+      (item) =>
+        `<tr><td class="email-text" style="padding:6px 0;font-size:14px;color:${TEXT};">${escapeHtml(formatItemLine(item))}</td></tr>`,
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-bottom:8px;">${rows}</table>`;
+}
+
+function paragraph(text: string): string {
+  return `<div class="email-text" style="font-size:15px;color:${TEXT};line-height:1.6;margin-bottom:16px;">${escapeHtml(text)}</div>`;
+}
+
+function mutedParagraph(text: string): string {
+  return `<div class="email-muted" style="font-size:14px;color:${MUTED};line-height:1.6;margin-bottom:8px;">${escapeHtml(text)}</div>`;
+}
+
+/** The order code as its own prominent, copy-friendly block — not just an
+ * `infoTable` row. It is the reader's credential, so it has to survive being
+ * skim-read and be easy to select on a phone. */
+function codeBlock(orderCode: string): string {
+  return (
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin:8px 0 24px 0;">` +
+    `<tr><td align="center" style="background-color:#F4F4F5;border-radius:10px;padding:20px 16px;">` +
+    `<div class="email-muted" style="font-size:12px;color:${MUTED};letter-spacing:0.08em;text-transform:uppercase;margin-bottom:8px;">Order Code / Kode Pesanan</div>` +
+    `<div class="email-text" style="font-size:22px;font-weight:700;color:${TEXT};font-family:Menlo,Consolas,monospace;word-break:break-all;">${escapeHtml(orderCode)}</div>` +
+    `</td></tr></table>`
+  );
+}
+
+/** The `/track` fallback line: visible URL text, not just an href, so a
+ * styling-stripped or text-only render still leaves it readable and
+ * copy-pasteable — same reasoning as `fallbackLinkLine`. */
+function trackLine(note: string, trackUrl: string): string {
+  const escapedUrl = escapeHtml(trackUrl);
+  return `<div class="email-muted" style="font-size:14px;color:${MUTED};line-height:1.6;margin-bottom:16px;word-break:break-all;">${escapeHtml(note)}<br /><a href="${escapedUrl}" style="color:#4F46E5;">${escapedUrl}</a></div>`;
+}
+
+export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig): RenderedEmail {
+  const summaryRows = [
+    { label: "Subtotal", value: input.subtotal },
+    { label: "Discount", value: input.discount },
+    { label: "Total", value: input.total },
+    // infoTable drops any row whose value is empty, so a null warranty needs
+    // no branch here — but it does below in the plain-text build.
+    { label: "Warranty", value: input.warranty ?? "" },
+  ];
+
+  // No `orderUrl` (neither SHOP_PUBLIC_URL nor PUBLIC_URL configured) renders
+  // no button rather than one with an empty href — a dead button reads as a
+  // broken email, while the code block and /track line below still work.
+  const buttonHtml = input.orderUrl
+    ? `<div style="margin-bottom:8px;">${primaryButton("View Your Order", input.orderUrl, brand.accentColor)}${fallbackLinkLine(input.orderUrl)}</div>`
+    : "";
+
+  const trackHtml = input.trackUrl
+    ? `${trackLine(EN_TRACK_NOTE, input.trackUrl)}${trackLine(ID_TRACK_NOTE, input.trackUrl)}`
+    : "";
+
+  const bodyHtml = `
+    ${eventBanner("✅", EN_HEADING, EN_SUBHEADING, "success")}
+    ${paragraph(EN_BODY)}
+    ${paragraph(ID_HEADING + " — " + ID_BODY)}
+    ${buildItemsHtml(input.items)}
+    ${infoTable(summaryRows)}
+    <div style="margin-top:24px;">${buttonHtml}</div>
+    ${mutedParagraph(EN_CODE_NOTE)}
+    ${mutedParagraph(ID_CODE_NOTE)}
+    ${codeBlock(input.orderCode)}
+    ${trackHtml}
+    ${divider()}
+    ${footer(brand, { generatedByLine: "This is an automated notification — no reply needed." })}
+  `;
+
+  const html = renderShell({ brand, bodyHtml, preheader: PREHEADER });
+
+  const itemLines = input.items.map((item) => ptKeyValue("Item", formatItemLine(item))).join("\n");
+  const text = [
+    ptSection(EN_HEADING),
+    EN_SUBHEADING,
+    "",
+    EN_BODY,
+    "",
+    ptDivider(),
+    ptSection("Order Summary"),
+    itemLines,
+    ptKeyValue("Subtotal", input.subtotal),
+    ...(input.discount !== "" ? [ptKeyValue("Discount", input.discount)] : []),
+    ptKeyValue("Total", input.total),
+    ...(input.warranty ? [ptKeyValue("Warranty", input.warranty)] : []),
+    "",
+    ptDivider(),
+    ...(input.orderUrl ? ["", "Open your order:", input.orderUrl] : []),
+    "",
+    EN_CODE_NOTE,
+    "",
+    `Order code: ${input.orderCode}`,
+    ...(input.trackUrl ? ["", EN_TRACK_NOTE, input.trackUrl] : []),
+    "",
+    ptDivider(),
+    "",
+    ptSection(ID_HEADING),
+    ID_BODY,
+    ...(input.orderUrl ? ["", "Buka pesanan kamu:", input.orderUrl] : []),
+    "",
+    ID_CODE_NOTE,
+    "",
+    `Kode pesanan: ${input.orderCode}`,
+    ...(input.trackUrl ? ["", ID_TRACK_NOTE, input.trackUrl] : []),
+    "",
+    ptDivider(),
+    "This is an automated notification — no reply needed.",
+  ].join("\n");
+
+  return { subject: SUBJECT, html, text };
+}

@@ -36,6 +36,11 @@ describe("emailTemplates.renderEmail", () => {
   beforeEach(() => {
     vi.mocked(getSetting).mockResolvedValue(null);
     config.ADMIN_PUBLIC_URL = undefined;
+    // Reset alongside ADMIN_PUBLIC_URL: the BUYER_EMAIL_ORDER_READY branch
+    // resolves its brand against the storefront origin, and one of its cases
+    // sets these — without a reset that would leak into later tests.
+    config.SHOP_PUBLIC_URL = undefined;
+    config.PUBLIC_URL = undefined;
   });
   describe("OWNER_EMAIL_ORDER_PAID", () => {
     const payload = {
@@ -380,6 +385,132 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.html).toContain("25.75 USDT");
       expect(result!.text).toContain("10.50 USDT");
       expect(result!.text).toContain("25.75 USDT");
+    });
+  });
+
+  // The only BUYER-facing branch in this file. Everything above it is
+  // addressed to the shop owner; this one lands in a customer's inbox, so its
+  // two hard rules — no order code in the subject, no credentials in the body
+  // — are asserted as explicit guards rather than assumed.
+  describe("BUYER_EMAIL_ORDER_READY", () => {
+    const payload = {
+      to: "guest@example.com",
+      order_code: DISTINCTIVE_ORDER_CODE,
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50000" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30000" },
+      ],
+      subtotal: "130000",
+      discount: "13000",
+      total: "117000",
+      currency: "IDR",
+      warranty_days: 30,
+      order_url: "https://shop.test/checkout/ZZZTESTCODE99/pay",
+      track_url: "https://shop.test/track",
+    };
+
+    it("renders a subject, text, and html with the order summary", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result).not.toBeNull();
+      expect(result!.subject).toBeTypeOf("string");
+      expect(result!.html).toBeTypeOf("string");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("Netflix Premium");
+      expect(result!.html).toContain("Rp50.000");
+      expect(result!.html).toContain("Rp130.000");
+      expect(result!.html).toContain("Rp13.000");
+      expect(result!.html).toContain("Rp117.000");
+      expect(result!.html).toContain("30 days");
+      expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.text).toContain("Rp117.000");
+    });
+
+    it("subject is a fixed literal that NEVER carries the order code — it is the guest's full credential and sendMail logs every subject", async () => {
+      const first = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      const second = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        order_code: "SOMETHING-ELSE",
+        total: "999999",
+      });
+      expect(first!.subject).toBe(second!.subject);
+      expect(first!.subject).not.toContain(DISTINCTIVE_ORDER_CODE);
+      expect(second!.subject).not.toContain("SOMETHING-ELSE");
+    });
+
+    it("keeps the order code out of the inbox-preview preheader too, not just the subject", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      // renderShell hides the preheader in a display:none div at the very top
+      // of the body; the order code must not be in it, since subject +
+      // preheader are exactly what a lock-screen notification shows.
+      const preheaderMatch = /<div style="display:none;[^"]*">([\s\S]*?)<\/div>/.exec(result!.html!);
+      expect(preheaderMatch).not.toBeNull();
+      expect(preheaderMatch![1]).not.toContain(DISTINCTIVE_ORDER_CODE);
+    });
+
+    it("carries all three ways back into the order: button, printed code, and the /track link", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("https://shop.test/checkout/ZZZTESTCODE99/pay");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("https://shop.test/track");
+      expect(result!.text).toContain("https://shop.test/track");
+    });
+
+    it("renders fine with a null order_url — no broken button, code and /track still there", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", { ...payload, order_url: null });
+      expect(result).not.toBeNull();
+      expect(result!.html).not.toContain('href=""');
+      expect(result!.html!.toLowerCase()).not.toContain("undefined");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("https://shop.test/track");
+    });
+
+    it("omits the discount and warranty lines when zero/null, without leaking null", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        discount: "0",
+        warranty_days: null,
+      });
+      expect(result!.html).not.toContain("Discount");
+      expect(result!.html).not.toContain("Warranty");
+      expect(result!.html!.toLowerCase()).not.toContain("null");
+    });
+
+    it("formats a USDT order via formatMoney (2dp + suffix), not formatIdr", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        subtotal: "10.5",
+        discount: "0.5",
+        total: "10",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: "10.5" }],
+      });
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.text).toContain("10.00 USDT");
+    });
+
+    it("resolves the buyer's brand logo against the STOREFRONT origin, never the admin panel's", async () => {
+      // The reader is a customer. A logo joined against ADMIN_PUBLIC_URL
+      // would both break (the admin origin is often private) and advertise
+      // the admin panel's hostname to the public.
+      config.ADMIN_PUBLIC_URL = "https://admin.internal.test";
+      config.SHOP_PUBLIC_URL = "https://shop.test";
+      vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+        if (key === "web_logo_url") return "/uploads/logo.png";
+        return null;
+      });
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("https://shop.test/uploads/logo.png");
+      expect(result!.html).not.toContain("admin.internal.test");
+    });
+
+    it("never puts anything credential-shaped in the body — the payload has no such field and the render invents none", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).not.toContain("deliveredContent");
+      expect(result!.html).not.toContain("credentials");
+      expect(result!.text).not.toContain("deliveredContent");
+      expect(result!.text).not.toContain("credentials");
+      // And it says so to the reader, so nobody expects the goods by mail.
+      expect(result!.text).toContain("never sent by email");
     });
   });
 

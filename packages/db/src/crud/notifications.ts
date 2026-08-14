@@ -411,6 +411,86 @@ export async function enqueueOwnerWalletTopupEmail(
 }
 
 /**
+ * Enqueue the BUYER's "your order is ready" email — the completion receipt a
+ * guest shopper gets when their order actually finishes. Enqueued from
+ * `settlePaidOrder`'s AUTO branch and from `fulfillManualOrder`
+ * (packages/db/src/crud/orders.ts), each guarded on
+ * `order.user.isGuest && order.user.guestEmail`.
+ *
+ * STRUCTURALLY UNLIKE EVERY `enqueueOwner*Email` ABOVE — do not refactor them
+ * together. Those resolve their recipient from Settings via
+ * `enqueueOwnerEmail`/`resolveOwnerEmailRecipient` and no-op unless the shop
+ * owner has turned the feature on. This one writes its row unconditionally,
+ * addressed to the `to` the CALLER passed in (the guest's own checkout
+ * address), and has no owner toggle at all: a buyer's completion receipt must
+ * not disappear because the owner muted their own alerts, and must never be
+ * delivered to the owner's address. It therefore calls
+ * `db.notificationOutbox.create` directly rather than going through
+ * `enqueueOwnerEmail`. The caller owns the decision to send; this function
+ * owns only the row.
+ *
+ * NO CREDENTIALS IN THE PAYLOAD, EVER. There is no field here for delivered
+ * content and none may be added: this payload is rendered in the admin
+ * `/outbox` panel and the email built from it lands unencrypted in an inbox
+ * that keeps it forever. The whole point of this email is to be a summary
+ * plus a way back in — the buyer reads what they bought on the order page.
+ *
+ * Payload conventions match the owner-email helpers: every money `Decimal`
+ * (including each item's `unitPrice`) goes through `.toString()` — never a
+ * raw `number` — per money rules, and every optional field
+ * (`variant`, `warrantyDays`, `orderUrl`, `trackUrl`) is written as an
+ * explicit JSON `null` when absent, never omitted and never the string
+ * `"null"`; the renderer, not this layer, decides to drop the corresponding
+ * line.
+ */
+export async function enqueueBuyerOrderReadyEmail(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    /** The guest's own email address, straight from the call site — NOT the
+     * `owner_email` Setting. See this function's header. */
+    to: string;
+    items: { name: string; variant: string | null; quantity: number; unitPrice: Decimal }[];
+    subtotal: Decimal;
+    discount: Decimal;
+    total: Decimal;
+    currency: string;
+    warrantyDays: number | null;
+    /** The buyer-facing order page, or null when neither SHOP_PUBLIC_URL nor
+     * PUBLIC_URL is configured — the template then renders no button. */
+    orderUrl: string | null;
+    /** The `/track` order-code recovery page, null under the same condition. */
+    trackUrl: string | null;
+  },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.BUYER_EMAIL_ORDER_READY,
+      orderId: args.orderId,
+      channel: NotificationChannel.EMAIL,
+      payloadJson: JSON.stringify({
+        to: args.to,
+        order_code: args.orderCode,
+        items: args.items.map((item) => ({
+          name: item.name,
+          variant: item.variant,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice.toString(),
+        })),
+        subtotal: args.subtotal.toString(),
+        discount: args.discount.toString(),
+        total: args.total.toString(),
+        currency: args.currency,
+        warranty_days: args.warrantyDays,
+        order_url: args.orderUrl,
+        track_url: args.trackUrl,
+      }),
+    },
+  });
+}
+
+/**
  * A SENDING row whose claim is older than this is treated as abandoned (the
  * dispatcher that claimed it died mid-send, before reaching
  * markNotificationSent/Failed) and becomes claimable again. Infra-2 fix,

@@ -349,7 +349,13 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
 }
 
 /**
- * Deliver one EMAIL-channel row (an OWNER_EMAIL_* event) to the shop owner.
+ * Deliver one EMAIL-channel row. Despite the name (kept for continuity) this
+ * is NOT owner-only: it handles every EMAIL-channel event, and one of them —
+ * BUYER_EMAIL_ORDER_READY — is addressed to the customer, not the shop owner.
+ * No routing change was needed for that: this lane is selected purely by
+ * `row.channel`, and the recipient comes from `payload.to` below, whoever
+ * wrote it. Do not add per-event recipient logic here.
+ *
  * Mirrors the Telegram render()/chatId-resolution steps above, but for mail:
  * unknown event or missing `to` fail the row at once (maxAttempts=1), same as
  * the Telegram "no template"/"missing chat_id" drops; SMTP being unconfigured
@@ -359,8 +365,9 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
  * — there's no email analogue of Telegram flood control.
  */
 async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
-  // renderEmail is async (the OWNER_EMAIL_ORDER_PAID branch resolves brand/
-  // copy from Settings via Prisma) — see emailTemplates.ts's header comment.
+  // renderEmail is async (the OWNER_EMAIL_ORDER_PAID, OWNER_EMAIL_WALLET_TOPUP
+  // and BUYER_EMAIL_ORDER_READY branches resolve brand — and for ORDER_PAID,
+  // copy — from Settings via Prisma) — see emailTemplates.ts's header comment.
   const rendered = await renderEmail(row.event, payload);
   if (!rendered) {
     await markNotificationFailed(prisma, row.id, `no email template for event ${row.event}`, 1);

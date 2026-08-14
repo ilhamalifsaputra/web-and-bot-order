@@ -23,6 +23,7 @@ import {
   enqueueOwnerNewTicketEmail,
   enqueueOwnerTicketReplyEmail,
   enqueueOwnerWalletTopupEmail,
+  enqueueBuyerOrderReadyEmail,
   FLASH_SALE_BROADCAST_CHUNK_SIZE,
   fetchPendingNotifications,
   claimNotification,
@@ -1336,5 +1337,159 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       orderUrl: null,
     });
     expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } })).toBe(beforePaid);
+  });
+});
+
+/**
+ * The one BUYER-facing EMAIL event, structurally unlike every
+ * `enqueueOwner*Email` above it: no owner toggle, no Settings read at all —
+ * the recipient is the caller's own argument. These tests pin that
+ * difference down (no `configureOwnerEmail` call anywhere in this block, and
+ * one case that proves the owner settings being fully OFF changes nothing),
+ * because "tidying" this onto the owner path would silently make a buyer's
+ * order-complete email depend on a shop-owner preference.
+ */
+describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => {
+  afterEach(async () => {
+    await disableOwnerEmail();
+  });
+
+  function fullArgs(orderId: number, orderCode: string) {
+    return {
+      orderId,
+      orderCode,
+      to: "guest@example.com",
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: new Decimal("50.00") },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: new Decimal("30.00") },
+      ],
+      subtotal: new Decimal("130.00"),
+      discount: new Decimal("13.00"),
+      total: new Decimal("117.00"),
+      currency: "IDR",
+      warrantyDays: 30,
+      orderUrl: "https://shop.example.com/checkout/ORD-1/pay",
+      trackUrl: "https://shop.example.com/track",
+    };
+  }
+
+  it("writes one EMAIL-channel row addressed to the caller's `to`, with money as strings", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, fullArgs(orderId, "ORD-READY-FULL"));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "guest@example.com",
+      order_code: "ORD-READY-FULL",
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30" },
+      ],
+      subtotal: "130",
+      discount: "13",
+      total: "117",
+      currency: "IDR",
+      warranty_days: 30,
+      order_url: "https://shop.example.com/checkout/ORD-1/pay",
+      track_url: "https://shop.example.com/track",
+    });
+    expect(typeof payload.total).toBe("string");
+    expect(typeof payload.subtotal).toBe("string");
+    expect(typeof payload.discount).toBe("string");
+    expect(typeof (payload.items as Array<{ unitPrice: unknown }>)[0]!.unitPrice).toBe("string");
+  });
+
+  it("enqueues regardless of the owner-email settings — it is the buyer's email, not the owner's", async () => {
+    await disableOwnerEmail();
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, fullArgs(orderId, "ORD-READY-NOOWNER"));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect((JSON.parse(rows[0]!.payloadJson) as { to: string }).to).toBe("guest@example.com");
+  });
+
+  it("never addresses the row to the configured owner_email, even when one is set", async () => {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, fullArgs(orderId, "ORD-READY-NOTOWNER"));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as { to: string };
+    expect(payload.to).toBe("guest@example.com");
+    expect(payload.to).not.toBe("owner@example.com");
+    expect(rows[0]!.payloadJson).not.toContain("owner@example.com");
+  });
+
+  it("writes explicit JSON null for every optional field left unset — never omitted, never the string \"null\"", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, {
+      orderId,
+      orderCode: "ORD-READY-NULLS",
+      to: "guest@example.com",
+      items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: new Decimal("50") }],
+      subtotal: new Decimal("50"),
+      discount: new Decimal("0"),
+      total: new Decimal("50"),
+      currency: "IDR",
+      warrantyDays: null,
+      orderUrl: null,
+      trackUrl: null,
+    });
+
+    const row = (await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    }))[0]!;
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect("warranty_days" in payload).toBe(true);
+    expect("order_url" in payload).toBe(true);
+    expect("track_url" in payload).toBe(true);
+    expect(payload.warranty_days).toBeNull();
+    expect(payload.order_url).toBeNull();
+    expect(payload.track_url).toBeNull();
+    expect(row.payloadJson).not.toContain('"null"');
+    expect((payload.items as Array<{ variant: unknown }>)[0]!.variant).toBeNull();
+  });
+
+  // The single most important guard in this block: the outbox payload is
+  // rendered in the admin /outbox panel, and this email exists precisely
+  // BECAUSE credentials are never mailed. A field carrying delivered content
+  // would leak the goods into both the admin panel and an inbox forever.
+  it("carries no credential-bearing field — no delivered content anywhere in the row", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, fullArgs(orderId, "ORD-READY-NOCREDS"));
+
+    const row = (await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    }))[0]!;
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    for (const forbidden of [
+      "credentials",
+      "deliveredContent",
+      "delivered_content",
+      "content",
+      "stock_item",
+      "stockItem",
+      "password",
+    ]) {
+      expect(Object.keys(payload)).not.toContain(forbidden);
+      expect(row.payloadJson).not.toContain(forbidden);
+    }
   });
 });

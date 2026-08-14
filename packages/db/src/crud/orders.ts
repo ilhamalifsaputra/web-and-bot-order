@@ -51,6 +51,7 @@ import {
   enqueueManualOrderAdminAlert,
   enqueueOwnerOrderPaidEmail,
   enqueueOwnerManualQueueEmail,
+  enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
 import { transitionOrderStatus } from "./orderStatus";
@@ -1443,6 +1444,114 @@ export function customerLabel(
 }
 
 /**
+ * Convert a central-IDR amount into the order's own settlement currency.
+ *
+ * `subtotalAmount`/`discountAmount`/`item.unitPrice` are always stored in
+ * central-IDR (see createOrderFromCart/createOrderDirect) regardless of the
+ * order's settlement currency — only `totalAmount` is converted by
+ * `finalizeOrderPayment`. Without this, a notification would render a raw IDR
+ * figure with a USDT suffix (e.g. "8000 USDT" for a Rp8000 order instead of
+ * "0.40 USDT").
+ *
+ * Each value is converted independently via `usdtFromIdr`, the same technique
+ * apps/web-admin/src/routes/orderMoneyView.ts's `toOrderCurrency` uses for the
+ * admin order-detail view, and it carries that helper's known, pre-existing
+ * rounding caveat: `usdtFromIdr`'s own doc says to convert once per displayed
+ * TOTAL, never per component, because independently rounding each of
+ * subtotal/discount to the nearest 0.1 USDT means Subtotal minus Discount can
+ * differ from Total by up to ~0.1 USDT (docs/audit-backend-2026-07-31.md's L-1
+ * finding flags exactly this for orderMoneyView.ts). That's an acceptable,
+ * pre-existing tradeoff for informational notification emails — getting the
+ * right ORDER OF MAGNITUDE matters far more here than being reconciled to the
+ * cent, which the admin ledger view separately owns. Do not attempt to solve
+ * the L-1 rounding class of issue here; it is a larger, separate question.
+ */
+function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
+  return (value: Decimal.Value): Decimal =>
+    order.currency === "IDR" || !order.fxRate ? new Decimal(value) : usdtFromIdr(value, order.fxRate);
+}
+
+/**
+ * The storefront origin buyer-facing links are built from, with any trailing
+ * slashes stripped, or null when neither URL is configured. `SHOP_PUBLIC_URL
+ * ?? PUBLIC_URL` is the same base every other buyer-facing link in this
+ * codebase uses — deliberately NOT `ADMIN_PUBLIC_URL`, which the owner-email
+ * "View Order" link uses, because that origin is frequently private and means
+ * nothing to a customer.
+ */
+function storefrontBase(): string | null {
+  const base = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL;
+  return base ? base.replace(/\/+$/, "") : null;
+}
+
+/**
+ * Enqueue the guest buyer's "your order is ready" email — or nothing, for
+ * anyone who isn't a guest with a contact address.
+ *
+ * ONE function called from BOTH points an order actually becomes ready
+ * (`settlePaidOrder`'s AUTO branch and `fulfillManualOrder`) so the guard and
+ * the payload can never drift between them. Two call sites are required, not
+ * one: a MANUAL SKU never passes through the AUTO branch — it goes to
+ * PROCESSING at settle time and only finishes later in `fulfillManualOrder` —
+ * so an AUTO-only call site would silently send a guest who bought a manual
+ * SKU nothing at all.
+ *
+ * THE GUARD IS `isGuest && guestEmail`, and it is narrow on purpose.
+ * Registered buyers get their notifications by Telegram DM; a registered buyer
+ * with no Telegram gets nothing today, which is a known gap deliberately left
+ * open (widening it is a matter of relaxing this one condition, but that is
+ * out of scope here). A guest with no `guestEmail` has nowhere to receive it.
+ *
+ * NO CREDENTIALS CROSS THIS BOUNDARY. Note what is NOT read off `order` here:
+ * `deliveredContent`, the admin-typed manual content, and the stock items'
+ * credentials. Email is unencrypted and permanent, and the outbox payload is
+ * additionally visible in the admin `/outbox` panel — the buyer reads what
+ * they bought on the order page, which is exactly what this email links to.
+ */
+async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithIncludes): Promise<void> {
+  if (!order.user.isGuest || !order.user.guestEmail) return;
+
+  const toOrderCurrency = orderCurrencyConverter(order);
+  const base = storefrontBase();
+  // The longest warranty covering anything in the order. Orders are
+  // homogeneous in practice (one SKU per order), so this is the order's
+  // warranty; `max` just keeps it honest if that ever stops being true.
+  const warrantyDays = order.items.length
+    ? Math.max(...order.items.map((item) => item.warrantyDaysSnapshot))
+    : null;
+
+  await enqueueBuyerOrderReadyEmail(db, {
+    orderId: order.id,
+    orderCode: order.orderCode,
+    to: order.user.guestEmail,
+    items: order.items.map((item) => ({
+      name: item.product.name,
+      variant: item.product.durationLabel,
+      quantity: item.quantity,
+      unitPrice: toOrderCurrency(item.unitPrice),
+    })),
+    subtotal: toOrderCurrency(order.subtotalAmount),
+    discount: toOrderCurrency(order.discountAmount),
+    // Already in the order's settlement currency — finalizeOrderPayment
+    // converts this one, so it must NOT go through toOrderCurrency again.
+    total: order.totalAmount,
+    currency: order.currency,
+    warrantyDays,
+    // Null when the shop has no public URL configured; the email template
+    // then renders no button and leans on the printed order code and the
+    // /track link instead. Same treatment ADMIN_PUBLIC_URL gets for the
+    // owner email's "View Order" link.
+    orderUrl: base ? `${base}/checkout/${order.orderCode}/pay` : null,
+    // The order-code recovery page. A guest whose 30-day session cookie has
+    // expired, or who opens this mail on another device, cannot use the
+    // button above — /account/orders and the pay page are session-gated and
+    // bounce them to a login they have no password for. /track trades the
+    // order code back for a session and is their only way in.
+    trackUrl: base ? `${base}/track` : null,
+  });
+}
+
+/**
  * Post-delivery side effects shared by the AUTO path (approveOrder) and the
  * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
  * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
@@ -1603,30 +1712,10 @@ export async function settlePaidOrder(
     // bybitTxid is set, in that order — these are gateway-specific and never
     // more than one is populated for a given order today, but the preference
     // order keeps this deterministic if that ever changes.
-    // subtotalAmount/discountAmount/item.unitPrice are always stored in
-    // central-IDR (see createOrderFromCart/createOrderDirect) regardless of
-    // the order's settlement currency — finalizeOrderPayment only ever
-    // converts totalAmount. Convert each to the order's settlement currency
-    // here so the owner email doesn't render a raw IDR figure with a USDT
-    // suffix (e.g. "8000 USDT" for a Rp8000 order instead of "0.40 USDT").
-    //
-    // Each value is converted independently via usdtFromIdr, the same
-    // technique apps/web-admin/src/routes/orderMoneyView.ts's
-    // toOrderCurrency uses for the admin order-detail view. This carries
-    // that same helper's known, pre-existing rounding caveat — usdtFromIdr's
-    // own doc says to convert once per displayed TOTAL, never per component,
-    // because independently rounding each of subtotal/discount to the
-    // nearest 0.1 USDT means Subtotal minus Discount can differ from Total
-    // by up to ~0.1 USDT (see docs/audit-backend-2026-07-31.md's L-1
-    // finding, which flags exactly this for orderMoneyView.ts). That's an
-    // acceptable, pre-existing tradeoff for an informational notification
-    // email — getting the right ORDER OF MAGNITUDE (this fix) matters far
-    // more here than being reconciled to the cent, which the admin ledger
-    // view separately owns. Do not attempt to fully solve the L-1 rounding
-    // class of issue as part of this fix — that's a larger, separate
-    // architectural question.
-    const toOrderCurrency = (value: Decimal.Value): Decimal =>
-      order.currency === "IDR" || !order.fxRate ? new Decimal(value) : usdtFromIdr(value, order.fxRate);
+    // Converts subtotal/discount/unitPrice out of central-IDR into the
+    // order's settlement currency — see `orderCurrencyConverter`'s own doc
+    // comment for why that's needed and for its known rounding caveat.
+    const toOrderCurrency = orderCurrencyConverter(order);
 
     await enqueueOwnerOrderPaidEmail(db, {
       orderId,
@@ -1649,6 +1738,12 @@ export async function settlePaidOrder(
       paidAt: result.order.paidAt ?? new Date(),
       orderUrl: config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null,
     });
+    // The BUYER's own receipt, for a guest shopper — a different recipient,
+    // a different template, and no owner toggle, unlike the owner email just
+    // above. An AUTO order is genuinely finished at this point, so "your
+    // order is ready" is true here; the MANUAL branch below is NOT ready yet
+    // and must not send it (fulfillManualOrder does, when it really is).
+    await enqueueBuyerOrderReadyEmailIfGuest(db, order);
     return { kind: "delivered", order: result.order, credentials: result.credentials };
   }
 
@@ -1732,6 +1827,15 @@ export async function fulfillManualOrder(
     telegramId: order.user.telegramId,
     language: order.user.language,
   });
+
+  // The second of this event's two call sites, and the reason there are two:
+  // a guest who bought a manual SKU never went through settlePaidOrder's AUTO
+  // branch, so this is the only point their order becomes ready. Placed after
+  // the atomic PROCESSING -> DELIVERED claim above, so a lost double-tap race
+  // (claim.count !== 1 throws) can never produce a second email. Note it takes
+  // the pre-claim `order`, which carries no delivered content — `args.content`
+  // is the credential the admin just typed and must never reach the payload.
+  await enqueueBuyerOrderReadyEmailIfGuest(db, order);
 
   await logAdminAction(db, {
     adminId: args.adminId,

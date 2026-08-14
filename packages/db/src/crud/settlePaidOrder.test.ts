@@ -30,6 +30,7 @@ import {
 import { setSetting } from "./settings";
 import { addAdminIdToDb } from "./admins";
 import { usdtFromIdr } from "@app/core/formatters";
+import { config } from "@app/core/config";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -424,6 +425,201 @@ describe("settlePaidOrder — owner-email triggers", () => {
       },
     });
     expect(ownerEmailCount).toBe(0);
+  });
+});
+
+/**
+ * BUYER_EMAIL_ORDER_READY — the guest shopper's own "your order is ready"
+ * email. Structurally unlike the owner-email suite above: no Settings are
+ * configured anywhere in this block, because this event has no owner toggle.
+ * The only gate is `order.user.isGuest && order.user.guestEmail`.
+ *
+ * Two call sites are covered deliberately. A guest who buys a MANUAL SKU
+ * never passes through settlePaidOrder's AUTO branch — their order goes to
+ * PROCESSING and only finishes later in fulfillManualOrder — so a single
+ * AUTO-branch call site would silently give that buyer nothing at all.
+ */
+describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
+  const GUEST_EMAIL = "guest-buyer@example.com";
+
+  /** Turn the shared sample user into a guest shopper with a contact
+   * address — the shape `establishGuestCustomer` produces at storefront
+   * checkout. */
+  async function makeSampleUserAGuest(guestEmail: string | null = GUEST_EMAIL) {
+    await prisma.user.update({
+      where: { id: sample.user.id },
+      data: { isGuest: true, guestEmail },
+    });
+  }
+
+  async function readyRows(orderId: number) {
+    return prisma.notificationOutbox.findMany({
+      where: { orderId, event: NotificationEvent.BUYER_EMAIL_ORDER_READY },
+    });
+  }
+
+  it("AUTO settlement for a guest: enqueues exactly one EMAIL row addressed to the guest's own email", async () => {
+    await makeSampleUserAGuest();
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+
+    const rows = await readyRows(order.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.to).toBe(GUEST_EMAIL);
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(payload.currency).toBe(order.currency);
+    expect(payload.total).toBe(order.totalAmount.toString());
+    expect(payload.subtotal).toBe(order.subtotalAmount.toString());
+    expect(payload.discount).toBe("0");
+    expect(payload.items).toEqual([
+      {
+        name: "Netflix Premium 1M",
+        variant: "1 Month",
+        quantity: 1,
+        unitPrice: order.subtotalAmount.toString(),
+      },
+    ]);
+    // buildSampleData's denomination is created with warrantyDays: 30, frozen
+    // onto the OrderItem as warrantyDaysSnapshot at order-creation time.
+    expect(payload.warranty_days).toBe(30);
+    // Neither SHOP_PUBLIC_URL nor PUBLIC_URL is set in the test environment,
+    // so both links come through as explicit nulls — the renderer, not this
+    // layer, decides to hide the button. Same treatment ADMIN_PUBLIC_URL gets
+    // in the owner-email suite above.
+    expect(payload.order_url).toBeNull();
+    expect(payload.track_url).toBeNull();
+  });
+
+  it("MANUAL SKU for a guest: nothing at settle time, exactly one row when fulfillManualOrder actually finishes it", async () => {
+    await makeSampleUserAGuest();
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const order = await makePendingVerificationOrder(manualDenom.id, 1);
+
+    // Settling a MANUAL order only queues it for hand-fulfilment — it is not
+    // ready yet, so no "your order is ready" email may go out here.
+    await settlePaidOrder(prisma, order.id, { adminId });
+    expect(await readyRows(order.id)).toHaveLength(0);
+
+    await fulfillManualOrder(prisma, order.id, { adminId, content: "user:pass" });
+
+    const rows = await readyRows(order.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.to).toBe(GUEST_EMAIL);
+    expect(payload.order_code).toBe(order.orderCode);
+  });
+
+  it("registered (non-guest) buyer: no row, in either branch", async () => {
+    // sample.user is a normal Telegram-account user — isGuest defaults false.
+    const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
+    await settlePaidOrder(prisma, autoOrder.id, { adminId });
+
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const manualOrder = await makePendingVerificationOrder(manualDenom.id, 1);
+    await settlePaidOrder(prisma, manualOrder.id, { adminId });
+    await fulfillManualOrder(prisma, manualOrder.id, { adminId, content: "user:pass" });
+
+    expect(
+      await prisma.notificationOutbox.count({
+        where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY },
+      }),
+    ).toBe(0);
+  });
+
+  it("guest with no guestEmail: no row, in either branch — there is nowhere to send it", async () => {
+    await makeSampleUserAGuest(null);
+
+    const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
+    await settlePaidOrder(prisma, autoOrder.id, { adminId });
+
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const manualOrder = await makePendingVerificationOrder(manualDenom.id, 1);
+    await settlePaidOrder(prisma, manualOrder.id, { adminId });
+    await fulfillManualOrder(prisma, manualOrder.id, { adminId, content: "user:pass" });
+
+    expect(
+      await prisma.notificationOutbox.count({
+        where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY },
+      }),
+    ).toBe(0);
+  });
+
+  // The guard that matters most. This email exists BECAUSE credentials are
+  // never mailed — and the outbox payload is additionally visible in the
+  // admin /outbox panel. fulfillManualOrder is the sharpest test of it: the
+  // admin literally types the credential in as `content` on the same call
+  // that enqueues this row, so a careless payload would carry it straight
+  // through.
+  it("payload carries no credentials — not the admin-typed manual content, not the auto-delivered stock credentials", async () => {
+    const SECRET = "supersecret-credential-value";
+
+    await makeSampleUserAGuest();
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const manualOrder = await makePendingVerificationOrder(manualDenom.id, 1);
+    await settlePaidOrder(prisma, manualOrder.id, { adminId });
+    await fulfillManualOrder(prisma, manualOrder.id, { adminId, content: SECRET });
+
+    const manualRow = (await readyRows(manualOrder.id))[0]!;
+    expect(manualRow.payloadJson).not.toContain(SECRET);
+    expect(manualRow.payloadJson).not.toContain("deliveredContent");
+    expect(manualRow.payloadJson).not.toContain("delivered_content");
+    expect(manualRow.payloadJson).not.toContain("credentials");
+
+    // And the AUTO branch, whose credentials come from the stock pool
+    // (bulkAddStock seeds "userN@example.com:pwdN" rows).
+    const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
+    const settled = await settlePaidOrder(prisma, autoOrder.id, { adminId });
+    expect(settled.kind).toBe("delivered");
+    expect(settled.credentials).toHaveLength(1);
+
+    const autoRow = (await readyRows(autoOrder.id))[0]!;
+    expect(autoRow.payloadJson).not.toContain(settled.credentials[0]!);
+    expect(autoRow.payloadJson).not.toContain("credentials");
+  });
+
+  it("builds the order-page and /track links off the STOREFRONT origin when one is configured", async () => {
+    // config is the parsed env object, mutated here and restored below —
+    // the same technique the owner-email suite relies on implicitly by
+    // leaving ADMIN_PUBLIC_URL unset.
+    const previousShop = config.SHOP_PUBLIC_URL;
+    const previousPublic = config.PUBLIC_URL;
+    config.SHOP_PUBLIC_URL = "https://shop.example.com/";
+    config.PUBLIC_URL = "https://ignored.example.com";
+    try {
+      await makeSampleUserAGuest();
+      const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+      await settlePaidOrder(prisma, order.id, { adminId });
+
+      const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
+      // Trailing slash on the configured base must not double up.
+      expect(payload.order_url).toBe(`https://shop.example.com/checkout/${order.orderCode}/pay`);
+      expect(payload.track_url).toBe("https://shop.example.com/track");
+    } finally {
+      config.SHOP_PUBLIC_URL = previousShop;
+      config.PUBLIC_URL = previousPublic;
+    }
+  });
+
+  it("falls back to PUBLIC_URL when SHOP_PUBLIC_URL is unset", async () => {
+    const previousPublic = config.PUBLIC_URL;
+    config.PUBLIC_URL = "https://fallback.example.com";
+    try {
+      await makeSampleUserAGuest();
+      const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+      await settlePaidOrder(prisma, order.id, { adminId });
+
+      const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
+      expect(payload.order_url).toBe(`https://fallback.example.com/checkout/${order.orderCode}/pay`);
+      expect(payload.track_url).toBe("https://fallback.example.com/track");
+    } finally {
+      config.PUBLIC_URL = previousPublic;
+    }
   });
 });
 

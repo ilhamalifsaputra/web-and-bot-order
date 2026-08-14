@@ -59,4 +59,21 @@ describe("StatCard", () => {
     render(<StatCard label="Total Orders" value={1} icon={Package} />);
     expect(document.querySelector("svg")).toBeInTheDocument();
   });
+
+  it("truncates a long label with a title attribute holding the full text", () => {
+    const longLabel = "A very long stat card label that would otherwise squeeze the icon out of view";
+    render(<StatCard label={longLabel} value={1} />);
+    const labelNode = screen.getByText(longLabel);
+    expect(labelNode).toHaveClass("truncate");
+    expect(labelNode).toHaveAttribute("title", longLabel);
+  });
+
+  it("wraps a long value instead of truncating it, so money values stay fully readable", () => {
+    const longValue = "Rp1.234.567.890,00 across 12 items";
+    render(<StatCard label="Total" value={longValue} />);
+    const valueNode = screen.getByText(longValue);
+    expect(valueNode).toHaveClass("break-words");
+    expect(valueNode).toHaveClass("min-w-0");
+    expect(valueNode).not.toHaveClass("truncate");
+  });
 });

@@ -9,9 +9,9 @@ interface CardRowProps {
 
 export function CardRow({ label, value, className }: CardRowProps): JSX.Element {
   return (
-    <div className={cn("flex items-center justify-between py-2", className)}>
-      <span className="text-sm text-ink-soft">{label}</span>
-      <div className="text-sm text-ink">{value}</div>
+    <div className={cn("flex items-center justify-between gap-3 py-2", className)}>
+      <span className="text-sm text-ink-soft shrink-0">{label}</span>
+      <div className="text-sm text-ink min-w-0 break-words text-right">{value}</div>
     </div>
   );
 }

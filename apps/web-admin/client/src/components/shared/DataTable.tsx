@@ -138,7 +138,7 @@ export function DataTable<T>({
                   variants={staggerItem}
                   whileTap={onRowClick ? { scale: 0.98 } : undefined}
                   className={cn(
-                    "rounded-lg border border-line bg-card p-4",
+                    "rounded-lg border border-line bg-card p-4 overflow-hidden",
                     onRowClick && "cursor-pointer active:bg-sand"
                   )}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
@@ -156,7 +156,7 @@ export function DataTable<T>({
                       <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
                         {col.header}
                       </span>
-                      <div className="text-sm text-ink text-right min-w-0">
+                      <div className="text-sm text-ink text-right min-w-0 break-words">
                         {col.render(row)}
                       </div>
                     </div>

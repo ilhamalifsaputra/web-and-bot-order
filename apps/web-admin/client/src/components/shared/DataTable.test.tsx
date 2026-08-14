@@ -176,6 +176,21 @@ describe("DataTable mobile card stack", () => {
     expect(screen.queryByText("Select all")).not.toBeInTheDocument();
   });
 
+  it("clips card overflow and wraps a long unbroken value instead of letting it spill out", () => {
+    const longEmail = "a-very-long-unbroken-customer-email-address-for-testing@example-subdomain.com";
+    const columns = [
+      { key: "email", header: "Email", render: () => longEmail },
+    ];
+    const { container } = render(
+      <DataTable columns={columns} data={[ROWS[0]]} keyExtractor={(r) => r.id} />
+    );
+    const [card] = getCards(container);
+    expect(card).toHaveClass("overflow-hidden");
+    const valueNode = screen.getByText(longEmail);
+    expect(valueNode).toHaveClass("break-words");
+    expect(valueNode).toHaveClass("min-w-0");
+  });
+
   it("desktop regression: with matchMedia absent, the selection header stays in thead and cell order is unchanged", () => {
     delete (window as any).matchMedia;
     const columns = [makeSelectionColumn(), COLUMNS[0]];

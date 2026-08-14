@@ -63,6 +63,19 @@ describe("PageHeader", () => {
     expect(screen.getByText("Manage products, variants and categories.")).toBeInTheDocument();
   });
 
+  it("title wrapper has min-w-0 so a long title shrinks instead of crushing the actions", () => {
+    const longTitle = "A very long product name that should not push the action buttons off-screen";
+    render(
+      <MemoryRouter>
+        <PageHeader title={longTitle} actions={<button>Edit</button>} />
+      </MemoryRouter>,
+    );
+    const h1 = screen.getByText(longTitle);
+    const titleWrapper = h1.parentElement;
+    expect(titleWrapper).not.toBeNull();
+    expect(titleWrapper?.className).toContain("min-w-0");
+  });
+
   it("actions wrapper has flex-wrap class to allow wrapping on narrow viewports", () => {
     render(
       <MemoryRouter>

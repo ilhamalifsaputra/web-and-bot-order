@@ -77,7 +77,13 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): J
               <Stars rating={review.rating} />
               <span className="text-xs text-ink-soft">{review.rating}/5</span>
             </div>
-            {review.comment && <p className="text-sm text-ink-soft">{review.comment}</p>}
+            {/* A review can be arbitrarily long; clamp it so it never pushes
+                the reply box out of the dialog. Full text stays on hover. */}
+            {review.comment && (
+              <p className="line-clamp-2 text-sm break-words text-ink-soft" title={review.comment}>
+                {review.comment}
+              </p>
+            )}
             <Textarea
               value={text}
               onChange={(e) => setText(e.target.value)}

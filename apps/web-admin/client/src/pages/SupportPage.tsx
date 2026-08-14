@@ -713,10 +713,17 @@ export function SupportPage() {
             key: "customer",
             header: "Customer",
             render: (row) => (
-              <div>
-                <div className="text-sm text-ink">{row.user?.fullName ?? row.user?.username ?? "—"}</div>
+              <div className="max-w-[240px]">
+                <div
+                  className="truncate text-sm text-ink"
+                  title={row.user?.fullName ?? row.user?.username ?? undefined}
+                >
+                  {row.user?.fullName ?? row.user?.username ?? "—"}
+                </div>
                 {row.user?.username && row.user.fullName && (
-                  <div className="text-xs text-ink-soft">@{row.user.username}</div>
+                  <div className="truncate text-xs text-ink-soft" title={`@${row.user.username}`}>
+                    @{row.user.username}
+                  </div>
                 )}
               </div>
             ),

@@ -331,6 +331,28 @@ describe("UsersPage", () => {
     expect(fetchSpy).toHaveBeenCalledWith("/api/users?q=andi", { credentials: "include" });
   });
 
+  it("bounds a long customer identity so it can't widen the table", async () => {
+    const longName = "Budi Setiawan Pratama Wijaya Kusuma Nugroho Hardiansyah Prabowo Sudirman";
+    mockFetchRouter({
+      users: {
+        users: [{ ...USER_ANDI, fullName: longName }],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+        hasNext: false,
+        roles: ["CUSTOMER", "RESELLER"],
+      },
+    });
+    render(<UsersPage />, { wrapper: Wrapper });
+
+    // A <td> is shrink-to-fit, so the bound has to live on the identity block
+    // itself — truncate alone would be inert here.
+    const nameEl = await screen.findByTitle(longName);
+    expect(nameEl).toHaveClass("truncate");
+    expect(nameEl).toHaveTextContent(longName);
+    expect(nameEl.closest("div.flex")?.className).toMatch(/max-w-\[240px\]/);
+  });
+
   it("shows a meaningful fallback for missing customer identity, never a bare dash", async () => {
     const noNameNoUsername = { ...USER_BUDI };
     const usernameOnly = { ...USER_ANDI, id: 5, fullName: null, username: "onlyhandle" };

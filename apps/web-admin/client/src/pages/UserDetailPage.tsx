@@ -105,7 +105,7 @@ export function UserDetailPage() {
           <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
           <CardContent className="divide-y divide-line">
             {user.banned && (
-              <div className="mb-2 rounded bg-rust-tint px-3 py-2 text-xs font-medium text-rust-dark">
+              <div className="mb-2 rounded bg-rust-tint px-3 py-2 text-xs font-medium break-words text-rust-dark">
                 BANNED{user.banReason ? ` — ${user.banReason}` : ""}
               </div>
             )}

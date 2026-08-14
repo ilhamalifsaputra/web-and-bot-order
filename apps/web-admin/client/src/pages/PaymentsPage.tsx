@@ -407,17 +407,17 @@ export function PaymentsPage() {
                   {!suggestLoading && suggestion && (
                     <button
                       type="button"
-                      className="block w-full px-3 py-2 text-left text-sm hover:bg-sand"
+                      className="flex w-full items-baseline px-3 py-2 text-left text-sm hover:bg-sand"
                       onMouseDown={e => e.preventDefault()}
                       onClick={() => {
                         setMatchForm(f => ({ ...f, order_code: suggestion.code }));
                         setOrderCodeFocused(false);
                       }}
                     >
-                      <span className="font-mono block truncate" title={suggestion.code}>
+                      <span className="font-mono truncate" title={suggestion.code}>
                         {suggestion.code}
                       </span>
-                      <span className="ml-2 text-xs text-ink-soft">order found</span>
+                      <span className="ml-2 shrink-0 text-xs text-ink-soft">order found</span>
                     </button>
                   )}
                   {!suggestLoading && !suggestion && (

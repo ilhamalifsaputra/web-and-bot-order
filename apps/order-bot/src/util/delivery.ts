@@ -7,6 +7,11 @@
  * caption come from the shared `@app/core/delivery` builders. Throws on send
  * failure so callers can log + offer a resend, exactly like the prior
  * `sendMessage` path did.
+ *
+ * Also owns `settledPaymentBubble`, the canonical text/keyboard mapping for
+ * an already-settled order's payment bubble — shared by the Refresh button's
+ * on-the-spot flip (handlers/checkout.ts) and the background sweeper
+ * (jobs/index.ts) so both show the buyer the identical ending.
  */
 import { InputFile, type Api, type InlineKeyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
@@ -79,9 +84,15 @@ export interface SettledBubbleOrder {
  *
  *  - WALLET_TOPUP (any status) → the same `walletTopupSuccessText` sentence the
  *    three crypto rails already send, so all six payment methods word a
- *    completed top-up identically. Its keyboard is the wallet screen's, not
- *    `paymentSuccessKb`'s "My Orders" — a top-up never produces an order the
- *    buyer would look for in their order history.
+ *    completed top-up identically. That unification is TEXT-only, though: this
+ *    path's keyboard is the wallet screen's (`walletKb`), while the crypto
+ *    rails' own fast path (binanceInternal.ts, bybitDeposit.ts,
+ *    bybitBscDeposit.ts) still passes `paymentSuccessKb`'s "My Orders" for a
+ *    WALLET_TOPUP order — a pre-existing mismatch left alone here, not
+ *    something this function introduces. A top-up buyer therefore sees
+ *    whichever keyboard belongs to whichever path got there first; neither
+ *    keyboard is "more correct" and a top-up never produces an order the
+ *    buyer would look for in their order history either way.
  *  - PRODUCT + DELIVERED → items are on their way (the account file is
  *    already sent or enqueued).
  *  - PRODUCT + PROCESSING → manual fulfilment; the buyer waits for an admin.

@@ -1861,6 +1861,33 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
+  // Same shape as jobs.test.ts's "safety bounds against a black-holed bubble
+  // edit" tests: a real hanging Telegram call, real timers, millisecond-scale
+  // bound passed in instead of the real TELEGRAM_MESSAGE_TIMEOUT_MS (5s). This
+  // Refresh-triggered flip sits directly on the buyer's sequentialize queue
+  // (main.ts), so an unbounded await here would freeze that buyer's entire
+  // chat until grammY's 500s per-call default finally gives up — the fix is to
+  // bound it and leave the anchor in place on timeout so the background sweep
+  // (sweepPaidOrderBubbles, jobs/index.ts) retries within a minute.
+  it("leaves the anchor in place when the settled bubble edit hangs past its timeout, so a later sweep retries it", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    // refreshPaymentStatus edits through ctx.api (unlike sweepPaidOrderBubbles,
+    // which takes a bare Api), so the hang is installed directly on it —
+    // editMessageCaption first (photo/QR bubbles), editMessageText as the
+    // fallback editPaymentBubble would otherwise try.
+    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = vi.fn(() => new Promise(() => {}));
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi.fn(() => new Promise(() => {}));
+
+    await checkout.refreshPaymentStatus(ctx, order.id, { editTimeoutMs: 50 });
+
+    // The toast still answers instantly — it doesn't wait on the edit.
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgChatId).not.toBeNull();
+    expect(after!.paymentMsgId).not.toBeNull();
+  });
+
   it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
     "does NOT flip an anchored order still at %s — those keep their bubble for on-chain progress and stay on the polling path",
     async (status) => {

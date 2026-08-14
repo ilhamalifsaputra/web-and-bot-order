@@ -65,6 +65,7 @@ import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
 import { editPaymentBubble } from "../jobs";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatIdr, formatUsdtAmount, priceIdr, usdtFromIdr } from "../util/format";
@@ -1562,10 +1563,23 @@ const FLIPPABLE_SETTLED_STATUSES: readonly string[] = [OrderStatus.DELIVERED, Or
  * edit failed permanently (`editPaymentBubble` swallows and reports that), so
  * a bubble the buyer deleted self-heals instead of being retried by the
  * sweeper forever.
+ *
+ * The edit itself is bounded at `editTimeoutMs` (`TELEGRAM_MESSAGE_TIMEOUT_MS`
+ * in production): this whole flip sits directly on the buyer's `sequentialize`
+ * queue for their chat (main.ts), so an unbounded await here would stall every
+ * other update from the same buyer for up to grammY's 500s per-call default.
+ * A hung edit is left with its anchor in place on purpose — the work is
+ * optional and self-healing, since `sweepPaidOrderBubbles` (jobs/index.ts)
+ * retries it within a minute. `opts` defaults to that constant; production
+ * never passes it — it exists so a test can drive a hung edit with a
+ * millisecond-scale timeout and a real hanging api mock instead of actually
+ * waiting out the 5s default, the same trick `sweepPaidOrderBubbles`'s own
+ * black-holed-bubble tests use.
  */
 async function flipSettledBubble(
   ctx: MyContext,
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  opts?: { editTimeoutMs?: number },
 ): Promise<void> {
   if (!FLIPPABLE_SETTLED_STATUSES.includes(order.status)) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
@@ -1587,17 +1601,29 @@ async function flipSettledBubble(
       walletBalanceUsdt: buyer?.walletBalanceUsdt ?? order.totalAmount,
     },
   });
-  await editPaymentBubble(ctx.api, {
-    chatId: Number(order.paymentMsgChatId),
-    messageId: order.paymentMsgId,
-    text,
-    markup,
-    fallbackDm: null,
-  });
+  const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
+  const outcome = await withTimeout(
+    editPaymentBubble(ctx.api, {
+      chatId: Number(order.paymentMsgChatId),
+      messageId: order.paymentMsgId,
+      text,
+      markup,
+      fallbackDm: null,
+    }),
+    editTimeoutMs,
+  );
+  if (outcome === "timeout") {
+    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
+    return;
+  }
   await clearOrderPaymentMessage(prisma, order.id);
 }
 
-export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Promise<void> {
+export async function refreshPaymentStatus(
+  ctx: MyContext,
+  orderId: number,
+  opts?: { editTimeoutMs?: number },
+): Promise<void> {
   const info = requireUser(ctx);
   const order = await getOrder(prisma, orderId);
   if (!order || order.userId !== info.id) {
@@ -1607,7 +1633,7 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
   if (!REFRESHABLE_STATUSES.includes(order.status)) {
     // Toast first — the button must feel instant even if the edit below is slow.
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.refresh_delivered_toast") });
-    await flipSettledBubble(ctx, order);
+    await flipSettledBubble(ctx, order, opts);
     return;
   }
   // Answer the callback query immediately so the button feels instant — no

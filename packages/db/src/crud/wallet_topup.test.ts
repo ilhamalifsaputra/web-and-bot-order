@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, setSetting, deleteSetting } from "./settings";
+import { NotificationEvent } from "@app/core/enums";
 import {
   resolveWalletTopupLimits,
   createWalletTopupOrder,
@@ -463,5 +464,150 @@ describe("settleWalletTopup", () => {
     const user = await freshUser();
     expect(new Decimal(user.walletBalance).equals(0)).toBe(true); // no credit applied
     expect(new Decimal(user.walletBalanceUsdt).equals(0)).toBe(true);
+  });
+});
+
+describe("settleWalletTopup — owner wallet-topup email (Task T3)", () => {
+  async function makeIdrTopupOrder(amount: string = "20000") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+  }
+  async function makeUsdtTopupOrder(amount: string = "10") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount,
+        currency: "USDT",
+        method: PaymentMethod.NOWPAYMENTS,
+        rate: "16000",
+      }),
+    );
+  }
+
+  const OWNER_EMAIL_SETTING_KEYS = [
+    "owner_email_enabled",
+    "owner_email",
+    "owner_email_on_wallet_topup",
+  ];
+
+  async function configureOwnerEmail() {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, "owner_email_on_wallet_topup", "true");
+  }
+
+  async function disableOwnerEmail() {
+    for (const key of OWNER_EMAIL_SETTING_KEYS) await deleteSetting(prisma, key);
+  }
+
+  afterEach(async () => {
+    await disableOwnerEmail();
+  });
+
+  it("enqueues OWNER_EMAIL_WALLET_TOPUP exactly once on a successful settlement, when configured", async () => {
+    await configureOwnerEmail();
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+  });
+
+  it("does not enqueue anything on the no-op double-settlement path (claim.count !== 1) — anti-duplicate-email guard", async () => {
+    await configureOwnerEmail();
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    const afterFirst = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(afterFirst).toBe(1);
+
+    // Second call settles nothing (claim.count !== 1) — must not enqueue a
+    // second email for an already-notified top-up.
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    const afterSecond = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(afterSecond).toBe(1);
+  });
+
+  it("stays completely inert (writes no outbox row at all) when the owner-email feature is unconfigured", async () => {
+    await disableOwnerEmail();
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("stays inert when the master toggle is off even though the per-event toggle and address are set", async () => {
+    await configureOwnerEmail();
+    await setSetting(prisma, "owner_email_enabled", "false");
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("stays inert when owner_email is blank even though both toggles are on", async () => {
+    await configureOwnerEmail();
+    await setSetting(prisma, "owner_email", "");
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("payload carries amount, currency, new balance, and payment method — money as strings, not numbers (IDR)", async () => {
+    await configureOwnerEmail();
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const row = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect(payload.to).toBe("owner@example.com");
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(payload.currency).toBe("IDR");
+    expect(payload.payment_method).toBe(PaymentMethod.TOKOPAY);
+    expect(typeof payload.amount).toBe("string");
+    expect(new Decimal(payload.amount as string).equals(order.totalAmount)).toBe(true);
+    expect(typeof payload.new_balance).toBe("string");
+    expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
+  });
+
+  it("payload carries amount/currency/new balance correctly for a USDT top-up too", async () => {
+    await configureOwnerEmail();
+    const order = await makeUsdtTopupOrder("10");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const row = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect(payload.currency).toBe("USDT");
+    expect(payload.payment_method).toBe(PaymentMethod.NOWPAYMENTS);
+    expect(new Decimal(payload.amount as string).equals(order.totalAmount)).toBe(true);
+    expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
   });
 });

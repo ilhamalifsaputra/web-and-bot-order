@@ -1,6 +1,6 @@
 /**
  * Render notification_outbox EMAIL-channel payloads into mail for the shop
- * owner. Sibling to templates.ts's `render()`. It only ever handles the four
+ * owner. Sibling to templates.ts's `render()`. It only ever handles the five
  * OWNER_EMAIL_* events (the enqueueOwner*Email helpers in
  * packages/db/src/crud/notifications.ts) — everything else returns `null`,
  * which the dispatcher treats as "no template", same as templates.ts's `""`
@@ -11,17 +11,21 @@
  * HTML, no `escape()`) — out of scope for the email-design-system plan, not
  * because they can't be upgraded, but because that plan's blast radius is
  * deliberately limited to the two templates it actually redesigned.
- * OWNER_EMAIL_ORDER_PAID is the one exception: the shared HTML design system
- * (packages/core/src/email) now exists, and this event is one of the two it
- * targets, so its branch resolves brand/copy from Settings and calls
- * `renderOrderPaidEmail`, returning a real `html` alongside `text`. This
+ * OWNER_EMAIL_ORDER_PAID is the one exception among those original four: the
+ * shared HTML design system (packages/core/src/email) now exists, and this
+ * event is one of the two it targets, so its branch resolves brand/copy from
+ * Settings and calls `renderOrderPaidEmail`, returning a real `html`
+ * alongside `text`. OWNER_EMAIL_WALLET_TOPUP (added later) also renders full
+ * HTML via `renderWalletTopupEmail`, but — unlike ORDER_PAID — with a fixed
+ * title/subtitle/message and NO Settings-driven copy override; see that
+ * branch's own note and templates/walletTopup.ts's header for why. This
  * function is therefore `async` (Settings reads go through Prisma) even
- * though the other three branches remain pure string-building.
+ * though the plain-text branches remain pure string-building.
  *
  * SUBJECT-LINE CONSTRAINT — read before touching this file: sendMail
- * (packages/core/src/mailer.ts) logs the subject on every send. For three of
- * the four OWNER_EMAIL_* events (MANUAL_ORDER_QUEUED, NEW_TICKET,
- * TICKET_REPLY) the subject is a fixed string literal with zero
+ * (packages/core/src/mailer.ts) logs the subject on every send. For four of
+ * the five OWNER_EMAIL_* events (MANUAL_ORDER_QUEUED, NEW_TICKET,
+ * TICKET_REPLY, WALLET_TOPUP) the subject is a fixed string literal with zero
  * interpolation — no payload value may ever be substituted into those.
  * OWNER_EMAIL_ORDER_PAID is the deliberate exception: its subject (via
  * renderOrderPaidEmail/buildSubject) substitutes {shop_name} and,
@@ -29,15 +33,15 @@
  * email's only recipient is the trusted shop admin (see
  * packages/core/src/email/subject.ts's header for the full rationale). Do not
  * extend {order_code} substitution to any other event's subject, and do not
- * add new tokens to the three plain-text events' fixed subjects.
+ * add new tokens to the four fixed-subject events (including WALLET_TOPUP).
  */
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { formatMoney } from "@app/core/formatters";
 import { prisma, getSetting } from "@app/db";
-import { renderOrderPaidEmail, toAbsoluteAssetUrl } from "@app/core/email";
-import type { BrandConfig, EmailCopy, OrderPaidInput, OrderPaidItem } from "@app/core/email";
+import { renderOrderPaidEmail, renderWalletTopupEmail, toAbsoluteAssetUrl } from "@app/core/email";
+import type { BrandConfig, EmailCopy, OrderPaidInput, OrderPaidItem, WalletTopupInput } from "@app/core/email";
 
 interface Item {
   name?: unknown;
@@ -96,6 +100,17 @@ interface NewTicketPayload {
 interface TicketReplyPayload {
   ticket_id?: unknown;
   message?: unknown;
+}
+
+interface WalletTopupPayload {
+  order_code?: unknown;
+  customer_label?: unknown;
+  amount?: unknown;
+  currency?: unknown;
+  new_balance?: unknown;
+  payment_method?: unknown;
+  transaction_id?: unknown;
+  topped_up_at?: unknown;
 }
 
 /**
@@ -170,12 +185,13 @@ function toOrderPaidItem(it: OrderPaidPayloadItem, currency: string): OrderPaidI
 }
 
 /** Render an EMAIL-channel outbox row into a subject + body, or `null` for
- * anything that isn't one of the four OWNER_EMAIL_* events. `async` because
- * the OWNER_EMAIL_ORDER_PAID branch resolves brand/copy from Settings via
- * Prisma — see the file header for why only that one branch needs it. */
+ * anything that isn't one of the five OWNER_EMAIL_* events. `async` because
+ * the OWNER_EMAIL_ORDER_PAID and OWNER_EMAIL_WALLET_TOPUP branches resolve
+ * brand (and, for ORDER_PAID only, copy) from Settings via Prisma — see the
+ * file header for why the plain-text branches don't need it. */
 export async function renderEmail(
   event: string,
-  payload: OrderPaidPayload & ManualQueuedPayload & NewTicketPayload & TicketReplyPayload,
+  payload: OrderPaidPayload & ManualQueuedPayload & NewTicketPayload & TicketReplyPayload & WalletTopupPayload,
 ): Promise<{ subject: string; text: string; html?: string } | null> {
   if (event === NotificationEvent.OWNER_EMAIL_ORDER_PAID) {
     const currency = String(payload.currency ?? "");
@@ -204,6 +220,23 @@ export async function renderEmail(
     };
     const [brand, copy] = await Promise.all([resolveOwnerBrandConfig(), resolveOrderPaidCopy()]);
     return renderOrderPaidEmail(input, brand, copy);
+  }
+  if (event === NotificationEvent.OWNER_EMAIL_WALLET_TOPUP) {
+    const currency = String(payload.currency ?? "");
+    const amountDecimal = new Decimal(String(payload.amount ?? "0"));
+    const newBalanceDecimal = new Decimal(String(payload.new_balance ?? "0"));
+    const input: WalletTopupInput = {
+      orderCode: String(payload.order_code ?? "unknown"),
+      customerLabel: String(payload.customer_label ?? ""),
+      amount: formatMoney(amountDecimal, currency),
+      currency,
+      newBalance: formatMoney(newBalanceDecimal, currency),
+      paymentMethod: String(payload.payment_method ?? ""),
+      transactionId: payload.transaction_id == null ? null : String(payload.transaction_id),
+      toppedUpAt: String(payload.topped_up_at ?? ""),
+    };
+    const brand = await resolveOwnerBrandConfig();
+    return renderWalletTopupEmail(input, brand);
   }
   if (event === NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED) {
     const code = String(payload.order_code ?? "unknown");

@@ -22,6 +22,7 @@ import {
   enqueueOwnerManualQueueEmail,
   enqueueOwnerNewTicketEmail,
   enqueueOwnerTicketReplyEmail,
+  enqueueOwnerWalletTopupEmail,
   FLASH_SALE_BROADCAST_CHUNK_SIZE,
   fetchPendingNotifications,
   claimNotification,
@@ -958,10 +959,11 @@ const OWNER_EMAIL_SETTING_KEYS = [
   "owner_email_on_manual_queue",
   "owner_email_on_new_ticket",
   "owner_email_on_ticket_reply",
+  "owner_email_on_wallet_topup",
 ];
 
 /** Master toggle + address on, plus the one event's own toggle on. */
-async function configureOwnerEmail(event: "paid_order" | "manual_queue" | "new_ticket" | "ticket_reply") {
+async function configureOwnerEmail(event: "paid_order" | "manual_queue" | "new_ticket" | "ticket_reply" | "wallet_topup") {
   await setSetting(prisma, "owner_email_enabled", "true");
   await setSetting(prisma, "owner_email", "owner@example.com");
   await setSetting(prisma, `owner_email_on_${event}`, "true");
@@ -1244,5 +1246,95 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } }),
     ).toBe(beforeManual);
+  });
+
+  function fullWalletTopupArgs(orderId: number, orderCode: string) {
+    return {
+      orderId,
+      orderCode,
+      customerLabel: "jane@example.com",
+      amount: new Decimal("50000"),
+      currency: "IDR",
+      newBalance: new Decimal("125000"),
+      paymentMethod: "TOKOPAY",
+      transactionId: "TXN-TOPUP-1",
+      toppedUpAt: new Date("2026-08-14T09:30:00.000Z"),
+    };
+  }
+
+  it("enqueueOwnerWalletTopupEmail writes nothing when owner email is unconfigured", async () => {
+    await disableOwnerEmail();
+    const orderId = await seedOrder();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP } });
+
+    await enqueueOwnerWalletTopupEmail(prisma, fullWalletTopupArgs(orderId, "ORD-TOPUP-OFF"));
+
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP } })).toBe(before);
+  });
+
+  it("enqueueOwnerWalletTopupEmail writes one EMAIL row with the full payload (money as strings) when configured", async () => {
+    await configureOwnerEmail("wallet_topup");
+    const orderId = await seedOrder();
+
+    await enqueueOwnerWalletTopupEmail(prisma, fullWalletTopupArgs(orderId, "ORD-TOPUP-ON"));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      order_code: "ORD-TOPUP-ON",
+      customer_label: "jane@example.com",
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+      payment_method: "TOKOPAY",
+      transaction_id: "TXN-TOPUP-1",
+      topped_up_at: "2026-08-14T09:30:00.000Z",
+    });
+    expect(typeof payload.amount).toBe("string");
+    expect(typeof payload.new_balance).toBe("string");
+  });
+
+  it("enqueueOwnerWalletTopupEmail writes explicit JSON null for a missing transactionId — never omitted, never the string \"null\"", async () => {
+    await configureOwnerEmail("wallet_topup");
+    const orderId = await seedOrder();
+
+    await enqueueOwnerWalletTopupEmail(prisma, { ...fullWalletTopupArgs(orderId, "ORD-TOPUP-NULLS"), transactionId: null });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.transaction_id).toBeNull();
+    expect("transaction_id" in payload).toBe(true);
+  });
+
+  it("enabling the wallet_topup owner-email toggle does not enable the others", async () => {
+    await configureOwnerEmail("wallet_topup");
+    const orderId = await seedOrder();
+
+    const beforePaid = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
+    await enqueueOwnerOrderPaidEmail(prisma, {
+      orderId,
+      orderCode: "ORD-TOPUP-CROSSCHECK",
+      total: new Decimal("1"),
+      currency: "IDR",
+      itemCount: 1,
+      customerLabel: "x",
+      items: [],
+      subtotal: new Decimal("1"),
+      discount: new Decimal("0"),
+      paymentMethod: "TOKOPAY",
+      transactionId: null,
+      voucherCode: null,
+      paidAt: new Date(),
+      orderUrl: null,
+    });
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } })).toBe(beforePaid);
   });
 });

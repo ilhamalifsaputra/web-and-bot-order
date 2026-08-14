@@ -12,4 +12,6 @@ export { renderOrderPaidEmail } from "./templates/orderPaid";
 export type { OrderPaidInput, OrderPaidItem } from "./templates/orderPaid";
 export { renderResetPasswordEmail } from "./templates/resetPassword";
 export type { ResetPasswordInput } from "./templates/resetPassword";
+export { renderWalletTopupEmail } from "./templates/walletTopup";
+export type { WalletTopupInput } from "./templates/walletTopup";
 export type { BrandConfig, EmailCopy, RenderedEmail } from "./types";

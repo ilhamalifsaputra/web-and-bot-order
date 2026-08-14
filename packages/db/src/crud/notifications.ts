@@ -211,7 +211,7 @@ export async function enqueueAdminStalePayment(
  * all be set, or this returns without writing a row (no PENDING row that then
  * never gets a `to`; the feature stays completely inert until configured,
  * same as `getSmtpCreds` returning null leaves the forgot-password mail off
- * today). Internal — the four `enqueueOwner*Email` wrappers below are the
+ * today). Internal — the five `enqueueOwner*Email` wrappers below are the
  * public surface, each pinned to its own `NotificationEvent`/`OwnerEmailEvent`
  * pair so the dispatcher's email renderer and the Telegram `render()`
  * if-chain never have to handle each other's payload shape.
@@ -358,6 +358,55 @@ export async function enqueueOwnerTicketReplyEmail(
     ticket_id: args.ticketId,
     user_id: args.userId,
     message: args.message.slice(0, 500),
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a buyer topped up their wallet" email —
+ * `settleWalletTopup`'s single call site (wallet_topup.ts), placed inside the
+ * successful atomic PENDING_PAYMENT -> DELIVERED claim branch, after
+ * `adjustWallet`. That one call site is shared by all six top-up-capable
+ * rails (TokoPay, PayDisini, NOWPayments, Binance Internal, Bybit, Bybit
+ * BSC), so this enqueues exactly once per settled top-up no matter which
+ * rail settled it — the caller must never call this a second time per-rail,
+ * or it produces a duplicate email. No-op (see `enqueueOwnerEmail`) unless
+ * the owner has the master toggle, `owner_email_on_wallet_topup`, and a
+ * valid `owner_email` all configured.
+ *
+ * Distinct from `enqueueWalletTopupCreditedDm` above: that one is a Telegram
+ * DM to the BUYER; this is an EMAIL to the shop OWNER. Different recipient,
+ * different channel, different payload shape — the two must never be
+ * conflated.
+ *
+ * `amount`/`newBalance` go through `.toString()` — never a raw `number` —
+ * per money rules. `transactionId` is written as an explicit JSON `null`
+ * when the caller has none, never omitted and never the string `"null"`,
+ * same convention as `enqueueOwnerOrderPaidEmail`'s optional fields.
+ * `toppedUpAt` is written as an ISO string.
+ */
+export async function enqueueOwnerWalletTopupEmail(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    customerLabel: string;
+    amount: Decimal;
+    currency: string;
+    newBalance: Decimal;
+    paymentMethod: string;
+    transactionId: string | null;
+    toppedUpAt: Date;
+  },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, "wallet_topup", args.orderId, {
+    order_code: args.orderCode,
+    customer_label: args.customerLabel,
+    amount: args.amount.toString(),
+    currency: args.currency,
+    new_balance: args.newBalance.toString(),
+    payment_method: args.paymentMethod,
+    transaction_id: args.transactionId,
+    topped_up_at: args.toppedUpAt.toISOString(),
   });
 }
 

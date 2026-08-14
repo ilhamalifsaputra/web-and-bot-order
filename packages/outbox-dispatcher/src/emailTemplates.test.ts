@@ -324,6 +324,65 @@ describe("emailTemplates.renderEmail", () => {
     });
   });
 
+  describe("OWNER_EMAIL_WALLET_TOPUP", () => {
+    const payload = {
+      to: "owner@example.com",
+      order_code: DISTINCTIVE_ORDER_CODE,
+      customer_label: "jane@example.com",
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+      payment_method: "TOKOPAY",
+      transaction_id: "TXN-77777",
+      topped_up_at: "2026-08-14T09:30:00.000Z",
+    };
+
+    it("renders a subject, text, and html with the key facts", async () => {
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", payload);
+      expect(result).not.toBeNull();
+      expect(result!.subject).toBeTypeOf("string");
+      expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.text).toContain("Rp50.000");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("Rp50.000");
+      expect(result!.html).toContain("Rp125.000");
+      expect(result!.html).toContain("jane@example.com");
+      expect(result!.html).toContain("TOKOPAY");
+      expect(result!.html).toContain("TXN-77777");
+    });
+
+    it("subject is a fixed literal — never changes when the payload (order code, amount, customer) changes", async () => {
+      const first = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", payload);
+      const second = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", {
+        ...payload,
+        order_code: "SOMETHING-ELSE",
+        amount: "999999",
+        customer_label: "someone-else@example.com",
+      });
+      expect(first!.subject).toBe(second!.subject);
+      expect(first!.subject).not.toContain(DISTINCTIVE_ORDER_CODE);
+      expect(second!.subject).not.toContain("SOMETHING-ELSE");
+    });
+
+    it("omits the transaction id line when null, without leaking null/undefined", async () => {
+      const minimal = { ...payload, transaction_id: null };
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", minimal);
+      expect(result!.html).not.toContain("TXN-77777");
+      expect(result!.html!.toLowerCase()).not.toContain("null");
+      expect(result!.html!.toLowerCase()).not.toContain("undefined");
+    });
+
+    it("formats a USDT top-up via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+      const usdtPayload = { ...payload, currency: "USDT", amount: "10.5", new_balance: "25.75" };
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", usdtPayload);
+      expect(result).not.toBeNull();
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.html).toContain("25.75 USDT");
+      expect(result!.text).toContain("10.50 USDT");
+      expect(result!.text).toContain("25.75 USDT");
+    });
+  });
+
   it("returns null for an unknown event", async () => {
     expect(await renderEmail("NOT_A_REAL_EVENT", {})).toBeNull();
   });

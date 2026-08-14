@@ -45,6 +45,7 @@ const EVENT_LABELS: Record<string, string> = {
   OWNER_EMAIL_MANUAL_ORDER_QUEUED: "Owner email: manual order queued",
   OWNER_EMAIL_NEW_TICKET: "Owner email: new ticket",
   OWNER_EMAIL_TICKET_REPLY: "Owner email: ticket reply",
+  OWNER_EMAIL_WALLET_TOPUP: "Owner email: wallet top-up",
 };
 
 function humanizeEventCode(event: string): string {

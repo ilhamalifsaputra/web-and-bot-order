@@ -97,6 +97,7 @@ const EDITABLE: Record<string, string> = {
   owner_email_on_manual_queue: "Email owner on manual-fulfilment orders",
   owner_email_on_new_ticket: "Email owner on new support tickets",
   owner_email_on_ticket_reply: "Email owner on ticket replies",
+  owner_email_on_wallet_topup: "Email owner on wallet top-ups",
   [CUSTOM_EMOJI_MAP_SETTING]: "Custom emoji map (JSON)",
   bulk_purchase_broadcast_enabled: "Bulk purchase broadcast enabled",
   bulk_purchase_broadcast_threshold: "Bulk purchase broadcast threshold (qty)",

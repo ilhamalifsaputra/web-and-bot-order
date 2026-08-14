@@ -386,6 +386,19 @@ export const NotificationEvent = {
   // never trigger this. payload carries `to` plus ticket subject and the
   // reply body, NOT `chat_id`. Gated by resolveOwnerEmailRecipient.
   OWNER_EMAIL_TICKET_REPLY: "OWNER_EMAIL_TICKET_REPLY",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner
+  // receives this when a buyer's wallet top-up settles (settleWalletTopup,
+  // inside the successful atomic PENDING_PAYMENT -> DELIVERED claim branch,
+  // after adjustWallet) — the one call site all six top-up-capable rails
+  // (TokoPay, PayDisini, NOWPayments, Binance Internal, Bybit, Bybit BSC)
+  // funnel through, so this enqueues exactly once per settled top-up
+  // regardless of which rail settled it. Distinct from
+  // enqueueWalletTopupCreditedDm (a Telegram DM to the buyer, not the owner)
+  // — the two never share a payload shape. payload carries `to` plus
+  // order_code/customer_label/amount/currency/new_balance/payment_method/
+  // transaction_id/topped_up_at, NOT `chat_id`. Gated by
+  // resolveOwnerEmailRecipient, same as the other OWNER_EMAIL_* events.
+  OWNER_EMAIL_WALLET_TOPUP: "OWNER_EMAIL_WALLET_TOPUP",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

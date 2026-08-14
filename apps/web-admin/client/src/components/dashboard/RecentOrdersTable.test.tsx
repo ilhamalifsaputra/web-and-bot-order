@@ -32,4 +32,22 @@ describe("RecentOrdersTable", () => {
     renderWith([]);
     await waitFor(() => expect(screen.getByText(/no orders yet/i)).toBeInTheDocument());
   });
+
+  it("truncates a long product/customer name in the table cell and keeps the full value on hover", async () => {
+    const longProduct =
+      "Netflix Premium 1 Bulan Sharing Private Garansi Full Original Akun Termurah Terpercaya Aman";
+    const longCustomer = "customer.with.a.very.long.display.name.that.would.otherwise.overflow.the.table@example.com";
+    renderWith([
+      { orderId: 3, orderCode: "ORD-LONG", productLabel: longProduct, customerLabel: longCustomer, amount: "10000", currency: "IDR", status: "DELIVERED", createdAt: "2026-06-25T03:00:00.000Z", createdAtDisplay: "2026-06-25 10:00" },
+    ]);
+    const productEl = await screen.findByTitle(longProduct);
+    expect(productEl).toHaveClass("truncate");
+    expect(productEl).toHaveClass("max-w-[240px]");
+    expect(productEl).toHaveTextContent(longProduct);
+
+    const customerEl = screen.getByTitle(longCustomer);
+    expect(customerEl).toHaveClass("truncate");
+    expect(customerEl).toHaveClass("max-w-[200px]");
+    expect(customerEl).toHaveTextContent(longCustomer);
+  });
 });

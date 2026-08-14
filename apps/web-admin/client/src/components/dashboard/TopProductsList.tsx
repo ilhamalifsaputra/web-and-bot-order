@@ -18,9 +18,11 @@ export function TopProductsList() {
         {data && data.length > 0 && (
           <ol className="flex flex-col divide-y divide-line">
             {data.map((p) => (
-              <li key={p.productId} className="flex items-center justify-between py-2">
-                <span className="text-sm text-ink">{p.productLabel}</span>
-                <span className="text-right text-xs text-ink-soft">
+              <li key={p.productId} className="flex items-center justify-between gap-2 py-2">
+                <span className="truncate text-sm text-ink" title={p.productLabel}>
+                  {p.productLabel}
+                </span>
+                <span className="shrink-0 text-right text-xs text-ink-soft">
                   {p.unitsSold} sold · {formatCurrencyDisplay(p.revenueIdrEquiv, "IDR")} revenue ·{" "}
                   {p.profitIdrEquiv === null
                     ? "N/A profit"

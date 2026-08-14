@@ -28,8 +28,24 @@ export function RecentOrdersTable() {
                   </a>
                 ),
               },
-              { key: "product", header: "Product", render: (o) => <span className="text-ink">{o.productLabel}</span> },
-              { key: "customer", header: "Customer", render: (o) => <span className="text-ink-soft">{o.customerLabel}</span> },
+              {
+                key: "product",
+                header: "Product",
+                render: (o) => (
+                  <span className="block max-w-[240px] truncate text-ink" title={o.productLabel}>
+                    {o.productLabel}
+                  </span>
+                ),
+              },
+              {
+                key: "customer",
+                header: "Customer",
+                render: (o) => (
+                  <span className="block max-w-[200px] truncate text-ink-soft" title={o.customerLabel}>
+                    {o.customerLabel}
+                  </span>
+                ),
+              },
               { key: "amount", header: "Amount", render: (o) => <span className="font-mono text-ink">{formatCurrencyDisplay(o.amount, o.currency)}</span> },
               { key: "status", header: "Status", render: (o) => <StatusBadge status={o.status} /> },
               { key: "created", header: "Created", render: (o) => <span className="text-xs text-ink-soft">{o.createdAtDisplay ?? "—"}</span> },

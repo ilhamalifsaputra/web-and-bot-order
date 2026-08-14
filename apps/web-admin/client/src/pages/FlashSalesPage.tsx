@@ -468,14 +468,19 @@ export function FlashSalesPage() {
           {
             key: "product",
             header: "Product",
-            render: (row) => (
-              <div>
-                <div className="font-medium text-sm text-ink">{row.name}</div>
-                <div className="text-xs text-ink-soft">
-                  {row.productName}{row.categoryName ? ` · ${row.categoryName}` : ""}
+            render: (row) => {
+              const context = `${row.productName}${row.categoryName ? ` · ${row.categoryName}` : ""}`;
+              return (
+                <div className="max-w-[240px]">
+                  <div className="truncate font-medium text-sm text-ink" title={row.name}>
+                    {row.name}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft" title={context}>
+                    {context}
+                  </div>
                 </div>
-              </div>
-            ),
+              );
+            },
           },
           {
             key: "price",

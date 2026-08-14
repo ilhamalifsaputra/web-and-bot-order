@@ -301,11 +301,15 @@ export function ProductDetailPage() {
               // actually being charged rather than the column's base price.
               const flash = statsByDenom[String(d.id)]?.flash;
               return (
-                <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>
-                  {d.name}
+                <span
+                  className={`flex max-w-[240px] items-center text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}
+                >
+                  <span className="truncate" title={d.name}>
+                    {d.name}
+                  </span>
                   {flash?.active && (
                     <span
-                      className="ml-1.5 inline-flex items-center align-middle"
+                      className="ml-1.5 inline-flex shrink-0 items-center align-middle"
                       title={`Flash sale live: ${flash.discountPercent}% off`}
                     >
                       <Zap className="h-4 w-4 text-amberx" />

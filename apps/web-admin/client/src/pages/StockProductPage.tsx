@@ -342,7 +342,12 @@ export function StockProductPage() {
                     <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
                   </div>
                 ) : (
-                  <span className="text-xs text-ink-soft">{item.note ?? "—"}</span>
+                  <span
+                    className="block max-w-[240px] truncate text-xs text-ink-soft"
+                    title={item.note ?? undefined}
+                  >
+                    {item.note ?? "—"}
+                  </span>
                 ),
             },
             { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },

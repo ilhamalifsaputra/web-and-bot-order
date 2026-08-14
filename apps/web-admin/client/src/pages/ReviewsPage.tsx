@@ -466,7 +466,14 @@ export function ReviewsPage() {
           {
             key: "product",
             header: "Product",
-            render: (row) => <span className="text-sm text-ink-soft">{row.product?.name ?? "—"}</span>,
+            render: (row) => (
+              <span
+                className="block max-w-[240px] truncate text-sm text-ink-soft"
+                title={row.product?.name ?? undefined}
+              >
+                {row.product?.name ?? "—"}
+              </span>
+            ),
           },
           {
             key: "status",

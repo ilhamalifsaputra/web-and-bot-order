@@ -122,7 +122,7 @@ export function ReportsPage() {
                 <CardContent>
                   <DataTable
                     columns={[
-                      { key: "product", header: "Product", render: (p) => <span className="text-ink">{p.name}</span> },
+                      { key: "product", header: "Product", render: (p) => <span className="block max-w-[240px] truncate text-ink" title={p.name}>{p.name}</span> },
                       { key: "sold", header: "Sold", render: (p) => <span className="text-ink-soft">{p.qty}</span> },
                       { key: "revenue", header: "Revenue (IDR)", render: (p) => <span className="text-ink">{formatCurrencyDisplay(p.revenue, "IDR")}</span> },
                     ]}

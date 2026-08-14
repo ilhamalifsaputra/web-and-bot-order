@@ -65,7 +65,7 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
   const chatId = Number(order.paymentMsgChatId);
-  const text = coreT("checkout.qris_paid", lang, { code: order.orderCode });
+  const text = coreT("checkout.payment_received", lang, { code: order.orderCode });
   const markup = paymentSuccessKb(lang);
   try {
     await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });

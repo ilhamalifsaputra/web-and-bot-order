@@ -186,6 +186,46 @@ export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod, l
   });
 }
 
+/** Settled (DELIVERED or manual-fulfilment PROCESSING) orders of ANY payment
+ * method that still carry an un-edited payment-message anchor, oldest first —
+ * the cross-method query the generic bubble-flip sweeper polls (unlike
+ * `listDeliveredOrdersAwaitingEdit` above, this is not locked to one
+ * `paymentMethod`, and it also picks up PROCESSING: manual-fulfilment orders
+ * stop there instead of reaching DELIVERED, but their bubble still needs to
+ * flip). `paymentMsgChatId`/`paymentMsgId` being non-null doubles as the
+ * idempotency gate: the three crypto rails already null both out via
+ * `clearOrderPaymentMessage` once they've flipped their own bubble, so this
+ * query naturally skips anything already handled. It also does NOT catch
+ * Bybit BSC's PAYMENT_DETECTED/CONFIRMING/CONFIRMED — those intermediate
+ * statuses deliberately keep the anchor alive for on-chain tracking
+ * (bybitBscDeposit.ts, bybitBscConfirmationTracker.ts) and must not be swept.
+ *
+ * `select` (not `include: { user: true }`) projects only what a bubble edit
+ * needs — same H-4 leak class as `listPendingInternalOrders`' own comment
+ * above: an `include` here would pull `passwordHash`/`email` into memory for
+ * no reason. */
+export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
+  return db.order.findMany({
+    where: {
+      status: { in: [OrderStatus.DELIVERED, OrderStatus.PROCESSING] },
+      paymentMsgChatId: { not: null },
+      paymentMsgId: { not: null },
+    },
+    select: {
+      id: true,
+      orderCode: true,
+      kind: true,
+      currency: true,
+      status: true,
+      paymentMsgChatId: true,
+      paymentMsgId: true,
+      user: { select: { language: true, walletBalance: true, walletBalanceUsdt: true } },
+    },
+    orderBy: { createdAt: "asc" },
+    ...(limit != null ? { take: limit } : {}),
+  });
+}
+
 /** PENDING, not-yet-expired internal-transfer orders the poller should match
  * against. Also the direct data source for web-admin's Payments page
  * "pending internal transfers" list (apps/web-admin/src/routes/api/

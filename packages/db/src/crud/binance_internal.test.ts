@@ -29,6 +29,7 @@ import {
   createWalletTopupOrder,
   upsertUser,
   listDeliveredOrdersAwaitingEdit,
+  listSettledOrdersAwaitingBubbleEdit,
   bulkAddStock,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
@@ -703,5 +704,104 @@ describe("listDeliveredOrdersAwaitingEdit — the query-level cap returns the ol
     const result = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.PAYDISINI);
 
     expect(result.map((o) => o.id)).toEqual([order.id]);
+  });
+});
+
+// T2-A: the generic cross-method query the next task's bubble-flip sweeper
+// will poll. Unlike listDeliveredOrdersAwaitingEdit above, this is NOT
+// locked to one payment method or to DELIVERED — see each proof below.
+describe("listSettledOrdersAwaitingBubbleEdit", () => {
+  /** Create + stamp an order with the given status/method/anchor in one go. */
+  async function makeAnchoredOrder(opts: {
+    status: string;
+    paymentMethod: string;
+    paymentMsgChatId?: bigint | null;
+    paymentMsgId?: number | null;
+    createdAt?: Date;
+  }) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: opts.status,
+        paymentMethod: opts.paymentMethod,
+        paymentMsgChatId: opts.paymentMsgChatId === undefined ? BigInt(555) : opts.paymentMsgChatId,
+        paymentMsgId: opts.paymentMsgId === undefined ? 777 : opts.paymentMsgId,
+        ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      },
+    });
+    return order.id;
+  }
+
+  it("returns settled orders across different payment methods in one call", async () => {
+    const tokopayId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+    const binanceId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.BINANCE_INTERNAL });
+    const nowpaymentsId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.NOWPAYMENTS });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result.map((o) => o.id).sort((a, b) => a - b)).toEqual([tokopayId, binanceId, nowpaymentsId].sort((a, b) => a - b));
+  });
+
+  it("returns both PROCESSING (manual-fulfilment) and DELIVERED orders", async () => {
+    const processingId = await makeAnchoredOrder({ status: OrderStatus.PROCESSING, paymentMethod: PaymentMethod.TOKOPAY });
+    const deliveredId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result.map((o) => o.id).sort((a, b) => a - b)).toEqual([processingId, deliveredId].sort((a, b) => a - b));
+  });
+
+  it("does not return an order whose paymentMsgId is null (already flipped or never anchored)", async () => {
+    await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+      paymentMsgChatId: null,
+      paymentMsgId: null,
+    });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("does not return Bybit BSC intermediate tracking statuses (PAYMENT_DETECTED, CONFIRMING, CONFIRMED)", async () => {
+    await makeAnchoredOrder({ status: OrderStatus.PAYMENT_DETECTED, paymentMethod: PaymentMethod.BYBIT_BSC });
+    await makeAnchoredOrder({ status: OrderStatus.CONFIRMING, paymentMethod: PaymentMethod.BYBIT_BSC });
+    await makeAnchoredOrder({ status: OrderStatus.CONFIRMED, paymentMethod: PaymentMethod.BYBIT_BSC });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("respects `limit`, returning the oldest rows first", async () => {
+    const now = Date.now();
+    const older = await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.TOKOPAY,
+      createdAt: new Date(now - 5000),
+    });
+    await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.TOKOPAY,
+      createdAt: new Date(now - 1000),
+    });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma, 1);
+
+    expect(result.map((o) => o.id)).toEqual([older]);
+  });
+
+  it("never includes passwordHash on the returned user (explicit select, not include)", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { passwordHash: "should-never-leak" } });
+    await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result).toHaveLength(1);
+    const [row] = result;
+    expect(row!.user).not.toHaveProperty("passwordHash");
+    expect(row!.user).not.toHaveProperty("email");
   });
 });

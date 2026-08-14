@@ -10,6 +10,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatTile } from "../components/shared/StatTile";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -636,7 +637,14 @@ export function CatalogPage() {
                     {
                       key: "error",
                       header: "Error",
-                      render: (row) => <span className={row.ok ? "" : "text-rust"}>{row.error ?? ""}</span>,
+                      render: (row) => (
+                        <span
+                          className={cn("block max-w-[320px] truncate", row.ok ? "" : "text-rust")}
+                          title={row.error ?? undefined}
+                        >
+                          {row.error ?? ""}
+                        </span>
+                      ),
                     },
                   ]}
                   data={preview.rows}
@@ -721,9 +729,14 @@ export function CatalogPage() {
                     {row.category?.emoji || <Package className="h-4 w-4 text-ink-faint" />}
                   </div>
                 )}
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-ink">{row.name}</div>
-                  <div className="truncate text-xs text-ink-soft">
+                <div className="min-w-0 max-w-[240px]">
+                  <div className="truncate text-sm font-medium text-ink" title={row.name}>
+                    {row.name}
+                  </div>
+                  <div
+                    className="truncate text-xs text-ink-soft"
+                    title={row.category?.name ?? undefined}
+                  >
                     {row.category?.name ?? "—"}
                   </div>
                 </div>

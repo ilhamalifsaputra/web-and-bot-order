@@ -66,6 +66,36 @@ describe("AuditPage", () => {
     expect(screen.getByText("2026-06-26 17:00")).toBeInTheDocument();
   });
 
+  it("truncates a long Details value and a long Target value with a bounded width, keeping the full text in title (Task 4)", async () => {
+    const longDetails =
+      "Added 150 items to the Free Fire diamonds catalog; skipped 2 invalid lines and 1 duplicate entry that already existed in the denomination table.";
+    mockAuditAndAdmins({
+      rows: [
+        {
+          ...ROWS[0],
+          id: 4,
+          targetType: "denomination",
+          targetId: "a-very-long-denomination-identifier-that-would-otherwise-widen-the-table",
+          details: longDetails,
+        },
+      ],
+      total: 1,
+      page: 1,
+      hasNext: false,
+    });
+    render(<AuditPage />, { wrapper: Wrapper });
+
+    const detailsEl = await screen.findByTitle(longDetails);
+    expect(detailsEl).toHaveClass("truncate");
+    expect(detailsEl.className).toMatch(/max-w-\[320px\]/);
+    expect(detailsEl).toHaveTextContent(longDetails);
+
+    const targetText = "denomination #a-very-long-denomination-identifier-that-would-otherwise-widen-the-table";
+    const targetEl = screen.getByTitle(targetText);
+    expect(targetEl).toHaveClass("truncate");
+    expect(targetEl.className).toMatch(/max-w-\[200px\]/);
+  });
+
   it("maps a known action code to its readable label (F-005)", async () => {
     mockAuditAndAdmins({
       rows: [{ ...ROWS[0], id: 2, action: "denomination_create" }],

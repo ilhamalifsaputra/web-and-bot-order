@@ -208,8 +208,27 @@ export function UserDetailPage() {
               { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
               { key: "currency", header: "Currency", render: l => <Badge variant="outline">{l.currency}</Badge> },
               { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
-              { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
-              { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
+              {
+                key: "reason",
+                header: "Reason",
+                render: l => (
+                  <span className="text-sm block max-w-[240px] truncate" title={l.reason}>
+                    {l.reason}
+                  </span>
+                ),
+              },
+              {
+                key: "note",
+                header: "Note",
+                render: l => (
+                  <span
+                    className="text-xs text-ink-soft block max-w-[240px] truncate"
+                    title={l.note ?? undefined}
+                  >
+                    {l.note ?? "—"}
+                  </span>
+                ),
+              },
               { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{l.createdAtDisplay ?? "—"}</span> },
             ]}
             data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
@@ -225,7 +244,18 @@ export function UserDetailPage() {
         <CardContent>
           <DataTable
             columns={[
-              { key: "subject", header: "Subject", render: t => <span className="text-sm text-ink">{t.message}</span> },
+              {
+                key: "subject",
+                header: "Subject",
+                render: t => (
+                  <span
+                    className="text-sm text-ink block max-w-[320px] truncate"
+                    title={t.message}
+                  >
+                    {t.message}
+                  </span>
+                ),
+              },
               { key: "status", header: "Status", render: t => <StatusBadge status={t.status} /> },
               { key: "date", header: "Date", render: t => <span className="text-xs text-ink-soft">{t.createdAtDisplay ?? "—"}</span> },
             ]}

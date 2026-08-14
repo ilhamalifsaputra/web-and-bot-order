@@ -67,6 +67,33 @@ describe("CatalogPage", () => {
     expect(screen.getByText("Apps")).toBeInTheDocument();
   });
 
+  it("truncates a long product name and category name with a bounded width, keeping the full text in title (Task 4)", async () => {
+    const longName =
+      "Netflix Premium 4K UHD 12-Month Family Plan Shared Warranty Subscription";
+    const longCategory = "Streaming & Entertainment Subscriptions Bundle";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        categories: [],
+        products: [
+          {
+            ...PRODUCT,
+            name: longName,
+            category: { id: 3, name: longCategory, emoji: "🎬" },
+          },
+        ],
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+
+    const nameEl = await screen.findByTitle(longName);
+    expect(nameEl).toHaveClass("truncate");
+    expect(nameEl.closest(".min-w-0")).not.toBeNull();
+    expect(nameEl.closest(".min-w-0")?.className).toMatch(/max-w-\[240px\]/);
+
+    const categoryEl = screen.getByTitle(longCategory);
+    expect(categoryEl).toHaveClass("truncate");
+  });
+
   it("shows empty state when no products, with two distinct CTAs", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({ categories: [], products: [] }),
@@ -137,6 +164,43 @@ describe("CatalogPage", () => {
     await waitFor(() =>
       expect(screen.getByText("1 valid")).toBeInTheDocument(),
     );
+  });
+
+  it("truncates a long CSV preview error with a bounded width, keeping the full text in title (Task 4)", async () => {
+    const longError =
+      "Row rejected: denomination price must be a positive integer expressed in the smallest currency unit, but received a non-numeric value instead";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ categories: [], products: [] }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => headerImportCsvButton());
+    fireEvent.click(headerImportCsvButton());
+    fireEvent.change(screen.getByPlaceholderText(/seed category/i), {
+      target: { value: "Test|P1|1GB|PRIVATE|30|notanumber" },
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        rows: [
+          {
+            line: 1,
+            ok: false,
+            category: "Test",
+            product: "P1",
+            denomination: "1GB",
+            price: "notanumber",
+            error: longError,
+          },
+        ],
+        validCount: 0,
+        invalidCount: 1,
+        csv: "test",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /preview/i }));
+
+    const errorEl = await screen.findByTitle(longError);
+    expect(errorEl).toHaveClass("truncate", "text-rust");
+    expect(errorEl.className).toMatch(/max-w-\[320px\]/);
   });
 
   it("shows categories (with product counts) and toggles one active when 'Manage categories' is clicked", async () => {

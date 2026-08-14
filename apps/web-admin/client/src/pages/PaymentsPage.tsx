@@ -414,7 +414,9 @@ export function PaymentsPage() {
                         setOrderCodeFocused(false);
                       }}
                     >
-                      <span className="font-mono">{suggestion.code}</span>
+                      <span className="font-mono block truncate" title={suggestion.code}>
+                        {suggestion.code}
+                      </span>
                       <span className="ml-2 text-xs text-ink-soft">order found</span>
                     </button>
                   )}
@@ -450,12 +452,17 @@ export function PaymentsPage() {
               {
                 key: "order",
                 header: "Order",
-                render: o => (
-                  <div className="flex flex-col">
-                    <span className="font-mono text-xs">{o.orderCode}</span>
-                    <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span>
-                  </div>
-                ),
+                render: o => {
+                  const buyerName = o.user?.fullName ?? o.user?.username ?? "Unknown";
+                  return (
+                    <div className="flex flex-col max-w-[200px]">
+                      <span className="font-mono text-xs">{o.orderCode}</span>
+                      <span className="text-xs text-ink-soft truncate" title={buyerName}>
+                        {buyerName}
+                      </span>
+                    </div>
+                  );
+                },
               },
               {
                 key: "amount",
@@ -520,7 +527,18 @@ export function PaymentsPage() {
               { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
               { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },
               { key: "amount", header: "Amount", render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span> },
-              { key: "ref", header: "Transfer Ref", render: o => <span className="font-mono text-xs">{o.paymentRef ?? "—"}</span> },
+              {
+                key: "ref",
+                header: "Transfer Ref",
+                render: o => (
+                  <span
+                    className="font-mono text-xs block max-w-[200px] truncate"
+                    title={o.paymentRef ?? undefined}
+                  >
+                    {o.paymentRef ?? "—"}
+                  </span>
+                ),
+              },
               { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAtDisplay ?? "—"}</span> },
             ]}
             data={pendingInternal}
@@ -612,7 +630,11 @@ export function PaymentsPage() {
           {
             key: "txid",
             header: "Transfer ID",
-            render: tx => <span className="font-mono text-xs">{tx.reference}</span>,
+            render: tx => (
+              <span className="font-mono text-xs block max-w-[200px] truncate" title={tx.reference}>
+                {tx.reference}
+              </span>
+            ),
           },
           {
             key: "gateway",

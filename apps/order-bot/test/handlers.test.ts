@@ -33,7 +33,7 @@ import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFie
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
@@ -1882,6 +1882,50 @@ describe("Refresh Status button (§7)", () => {
     await checkout.refreshPaymentStatus(ctx, order.id, { editTimeoutMs: 50 });
 
     // The toast still answers instantly — it doesn't wait on the edit.
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgChatId).not.toBeNull();
+    expect(after!.paymentMsgId).not.toBeNull();
+  });
+
+  // F1: "the edit attempt completed" is not the same question as "may this
+  // anchor be dropped". A bubble Telegram will never accept an edit for has to
+  // self-heal (drop the anchor, stop consuming the sweeper's per-cycle budget);
+  // a bubble Telegram merely refused THIS second must keep its anchor, because
+  // the anchor is the only thing that puts the order back in the sweeper's
+  // queue for another try.
+  it.each([
+    ["message to edit not found", "Bad Request: message to edit not found"],
+    ["message can't be edited", "Bad Request: message can't be edited"],
+    ["message is not modified (the bubble already shows this text)", "Bad Request: message is not modified"],
+  ])("clears the anchor when Telegram answers %s", async (_label, description) => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const reject = vi.fn().mockRejectedValue(telegramError(400, description));
+    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgChatId).toBeNull();
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
+  it.each([
+    ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
+    ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
+    ["a network fault that never reached Telegram", () => new Error("socket hang up")],
+  ])("keeps the anchor when the settled bubble edit fails with %s, so the background sweep retries it", async (_label, makeError) => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const reject = vi.fn().mockImplementation(() => Promise.reject(makeError()));
+    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    // The buyer still gets their toast — the retry is entirely a background concern.
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
     const after = await getOrder(prisma, order.id);
     expect(after!.paymentMsgChatId).not.toBeNull();

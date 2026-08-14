@@ -1562,7 +1562,10 @@ const FLIPPABLE_SETTLED_STATUSES: readonly string[] = [OrderStatus.DELIVERED, Or
  * normal path — a DM would only repeat it. The anchor is cleared even when the
  * edit failed permanently (`editPaymentBubble` swallows and reports that), so
  * a bubble the buyer deleted self-heals instead of being retried by the
- * sweeper forever.
+ * sweeper forever — but NOT when it failed for a reason that might not hold a
+ * minute later (flood control, a 5xx, a network fault), since the anchor is
+ * the only thing that puts this order back in the sweeper's queue at all. See
+ * util/bubbleEditFailure.ts for where that line is drawn.
  *
  * The edit itself is bounded at `editTimeoutMs` (`TELEGRAM_MESSAGE_TIMEOUT_MS`
  * in production): this whole flip sits directly on the buyer's `sequentialize`
@@ -1614,6 +1617,10 @@ async function flipSettledBubble(
   );
   if (outcome === "timeout") {
     logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
+    return;
+  }
+  if (outcome.status === "not_edited" && !outcome.permanent) {
+    logger.warn(`Refresh Status could not edit the settled payment bubble for order ${order.orderCode}, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
     return;
   }
   await clearOrderPaymentMessage(prisma, order.id);
@@ -1670,5 +1677,22 @@ export async function refreshPaymentStatus(
     }
     // Bubble edit (if delivered) already happens inside each poller's onDelivered().
     // Nothing more to do here.
-  })();
+  })().catch((err) => {
+    // MANDATORY, not defensive tidiness: this promise is deliberately detached
+    // from the handler (the toast above must not wait on a gateway round trip),
+    // so nothing downstream can ever await it. Every poller in the switch above
+    // talks to a payment gateway over the network and can reject — an HTTP
+    // error, a timeout, an unparseable response, Telegram flood control on the
+    // bubble edit inside its own onDelivered, or a database read that fails.
+    // Without this handler that rejection is unhandled, and Node's default
+    // since v15 is to crash the process: one buyer tapping Refresh at the wrong
+    // second would take down the whole bot for everyone.
+    //
+    // Warn, not error, and never rethrown: this buyer has already been told
+    // "still waiting", and the order itself is fine — the rail's scheduled
+    // poller retries within seconds and `sweepPaidOrderBubbles` (jobs/index.ts)
+    // catches any bubble left stale, so nothing is lost except this one
+    // out-of-band nudge.
+    logger.warn({ err }, `The background payment check kicked off by a Refresh Status tap on order ${order.orderCode} failed — the buyer already saw the "still waiting" toast and their order is unaffected, since the rail's scheduled poller and the paid-order bubble sweep both still pick it up on their own timers`);
+  });
 }

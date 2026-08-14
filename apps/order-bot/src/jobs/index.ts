@@ -62,6 +62,7 @@ import {
   SWEEP_TOTAL_BUDGET_MS,
 } from "@app/core/payments/reconcileCycleBudget";
 import { withTimeout } from "../payments/telegramTimeout";
+import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { settledPaymentBubble } from "../util/delivery";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
@@ -82,11 +83,15 @@ import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastP
  *                    so a caller that needs the original propagated (like
  *                    `notifyAutoCancelled` below, preserving its pre-refactor
  *                    behavior) doesn't have to re-attempt the send just to
- *                    get it. */
+ *                    get it. `permanent` describes the BUBBLE EDIT failure
+ *                    (never the fallback DM's): true only when Telegram said
+ *                    this bubble can never accept this edit, which is what
+ *                    tells an anchor-owning caller it is safe to stop
+ *                    retrying — see util/bubbleEditFailure.ts. */
 export type BubbleEditResult =
   | { status: "edited"; via: "caption" | "text" }
   | { status: "dm_sent" }
-  | { status: "not_edited"; error?: unknown };
+  | { status: "not_edited"; permanent: boolean; error?: unknown };
 
 /**
  * Edit an anchored payment/notification bubble in place: try `editMessageCaption`
@@ -124,14 +129,20 @@ export async function editPaymentBubble(
     try {
       await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
       return { status: "edited", via: "text" };
-    } catch {
-      // Bubble gone/uneditable.
-      if (args.fallbackDm == null) return { status: "not_edited" };
+    } catch (editError) {
+      // Bubble gone/uneditable — or merely unreachable this minute. Only the
+      // TEXT attempt's error is classified: it is the last and most general of
+      // the two, so a caption failure that the text edit then recovers from
+      // never reaches here at all, and a caption failure caused by the bubble
+      // being a text message ("there is no caption…") must not be mistaken for
+      // the bubble being dead.
+      const permanent = isPermanentBubbleEditFailure(editError);
+      if (args.fallbackDm == null) return { status: "not_edited", permanent };
       try {
         await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
         return { status: "dm_sent" };
       } catch (error) {
-        return { status: "not_edited", error };
+        return { status: "not_edited", permanent, error };
       }
     }
   }
@@ -216,11 +227,13 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
  * this follows): the batch is capped at MAX_ORDERS_PER_CYCLE, each edit gets
  * at most `editTimeoutMs`, and the whole sweep stops starting new rows once
  * `totalBudgetMs` of wall clock is gone. A timed-out or budget-cut-off edit
- * deliberately leaves its anchor in place so the next tick retries it —
- * clearing happens only once an edit genuinely completed, which includes an
- * edit that permanently failed (`editPaymentBubble` swallows those and reports
- * them, so a bubble the buyer deleted self-heals instead of being retried
- * forever).
+ * deliberately leaves its anchor in place so the next tick retries it, and so
+ * does an edit Telegram refused for a reason that might not hold next minute
+ * (flood control, a 5xx, a network fault). The anchor clears only when the
+ * edit succeeded or failed for good — a bubble the buyer deleted self-heals
+ * out of this queue instead of being retried forever, while a flood-controlled
+ * one stays in it instead of leaving the buyer on a permanently stale QR. See
+ * util/bubbleEditFailure.ts for which Telegram answers count as "for good".
  *
  * No fallback DM (`fallbackDm: null`): every order in this list already
  * reached its buyer through the normal path — the account file, the
@@ -259,6 +272,10 @@ export async function sweepPaidOrderBubbles(
     );
     if (outcome === "timeout") {
       logger.warn(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
+      continue;
+    }
+    if (outcome.status === "not_edited" && !outcome.permanent) {
+      logger.warn(`The paid-order bubble sweep could not edit order ${order.orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the next cycle retries the edit`);
       continue;
     }
     await clearOrderPaymentMessage(prisma, order.id);

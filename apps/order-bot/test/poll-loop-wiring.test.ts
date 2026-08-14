@@ -573,3 +573,57 @@ describe("Bybit deposit rails' cycle timeouts stay well clear of their own payme
     expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
   });
 });
+
+/**
+ * Every rail except the BSC confirmation tracker reads its own configuration
+ * once at boot, purely so it can write an accurate "poller active" / "poller
+ * idle" line. That read is fire-and-forget — nothing waits on it and nothing
+ * needs to — which is exactly what makes a rejection from it dangerous: Node
+ * ≥15 defaults to `--unhandled-rejections=throw`, so a SQLITE_BUSY on that one
+ * settings query would take the whole bot process down at startup, killing six
+ * healthy pollers over a cosmetic log line.
+ *
+ * Deliberately last in this file: it calls startPolling, and the
+ * "triggerImmediatePoll before startPolling" suite at the top depends on no
+ * rail's loop having ever been started.
+ */
+describe("a failed boot-time configuration read never takes the bot process down", () => {
+  const BOOT_CONFIG_RAILS = RAILS.filter((rail) => rail.name !== "Bybit BSC confirmation tracker");
+
+  // Real timers, unlike the suites above: Node only reports an unhandled
+  // rejection once the event loop actually turns, which fake timers never let
+  // it do.
+  beforeEach(() => {
+    vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+  });
+
+  afterEach(() => {
+    for (const { mod } of RAILS) mod.stopPolling();
+    vi.restoreAllMocks();
+  });
+
+  it.each(BOOT_CONFIG_RAILS)(
+    "$name: reports the failed settings read as a warning instead of leaving an unhandled rejection",
+    async ({ mod, hangFn }) => {
+      const bootRead = vi.mocked(dbMock[hangFn] as unknown as (...a: unknown[]) => Promise<unknown>);
+      bootRead.mockReset();
+      bootRead.mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        mod.startPolling(fakeApi);
+        mod.stopPolling();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
+
+      expect(unhandled).toEqual([]);
+      expect(warn).toHaveBeenCalled();
+    },
+  );
+});

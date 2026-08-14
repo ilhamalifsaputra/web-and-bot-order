@@ -22,6 +22,7 @@ import {
   type BinanceInternalConfig,
 } from "@app/db";
 import type { Api } from "grammy";
+import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
@@ -573,7 +574,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
     api.editMessageText = async () => {
-      throw new Error("Bad Request: message to edit not found");
+      throw telegramError(400, "Bad Request: message to edit not found");
     };
     await processTransfers(api, [txFor({ txId: "T-EDITFAIL", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
@@ -584,6 +585,29 @@ describe("processTransfers (poll-loop wiring)", () => {
     // anchored forever.
     expect(updated!.paymentMsgChatId).toBeNull();
     expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  // The other half of that contract (F1): a rejection Telegram may well accept
+  // a minute later — flood control, a gateway hiccup, a network fault — is NOT
+  // evidence the bubble is dead. Clearing the anchor on those strands the
+  // buyer on a stale payment screen forever, because the anchor is the only
+  // thing that puts this order back in the generic sweeper's work queue.
+  it.each([
+    ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
+    ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
+    ["a network fault that never reached Telegram", () => new Error("socket hang up")],
+  ])("keeps the anchor when the bubble edit fails with %s, so a later sweep retries it", async (_label, makeError) => {
+    const order = (await makeInternalOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw makeError();
+    };
+    await processTransfers(api, [txFor({ txId: `T-TRANSIENT-${_label}`, note: order.paymentRef!, amount: order.totalAmount })], await pending());
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    expect(updated!.paymentMsgChatId).not.toBeNull();
+    expect(updated!.paymentMsgId).not.toBeNull();
   });
 
   it("delivers on a note match", async () => {

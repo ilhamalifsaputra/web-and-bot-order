@@ -48,6 +48,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
+import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb } from "../keyboards/customer";
@@ -313,27 +314,60 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     }
   }
 
-  // Turn the payment-instructions bubble into a success message in place,
-  // then clear the anchor pointer. The edit itself never throws — a
-  // rejected/uneditable bubble (e.g. the buyer navigated away and the bubble
-  // was deleted) is swallowed right here — so the clear always runs once the
-  // edit attempt completes (T1 critical fix: clearing must not depend on the
-  // edit actually succeeding, only on it having been attempted, or a
-  // permanently-uneditable bubble would make the upcoming sweeper retry it
-  // forever instead of self-healing).
+  // Turn the payment-instructions bubble into a success message in place, then
+  // clear the anchor pointer. The edit never throws out of here — the buyer's
+  // credentials have already been delivered, so a bubble problem must not
+  // interrupt anything — but WHY it failed decides whether the anchor goes:
+  // see editAnchoredBubbleAndDecide below.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
-    try {
-      await api.editMessageText(
-        Number(order.paymentMsgChatId),
-        order.paymentMsgId,
-        topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
-      );
-    } catch {
-      /* bubble may be gone/uneditable — the credential DM already informed the buyer */
-    }
-    await clearOrderPaymentMessage(prisma, order.id);
+    await editAnchoredBubbleAndDecide(api, order, {
+      chatId: Number(order.paymentMsgChatId),
+      messageId: order.paymentMsgId,
+      text: topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+      lang,
+      what: "success",
+    });
   }
+}
+
+/**
+ * Edit one anchored bubble to `text`, then clear the order's anchor — unless
+ * the failure looks like one a later attempt could get past.
+ *
+ * Clearing the anchor takes the order out of `sweepPaidOrderBubbles`'s work
+ * queue (jobs/index.ts) for good, so it may only happen once the edit either
+ * succeeded or failed for a reason that will never change. A flood-controlled
+ * or network-faulted edit keeps its anchor so that sweep retries it within a
+ * minute; a bubble the buyer deleted drops its anchor and stops consuming a
+ * slot in every future sweep. `isPermanentBubbleEditFailure`
+ * (util/bubbleEditFailure.ts) is where that line is drawn, shared with the two
+ * Bybit rails, the generic sweeper and the Refresh button so all five agree.
+ *
+ * Never throws: the buyer already has their credentials (or their
+ * ORDER_PROCESSING_DM), so nothing about the bubble is worth failing delivery
+ * over.
+ */
+async function editAnchoredBubbleAndDecide(
+  api: Api,
+  order: DeliveredOrder,
+  args: { chatId: number; messageId: number; text: string; lang: string; what: "success" | "processing" },
+): Promise<void> {
+  try {
+    await api.editMessageText(args.chatId, args.messageId, args.text, {
+      parse_mode: "HTML",
+      reply_markup: paymentSuccessKb(args.lang),
+    });
+  } catch (err) {
+    if (!isPermanentBubbleEditFailure(err)) {
+      logger.warn(
+        { err },
+        `Binance internal poller could not flip order ${order.orderCode}'s payment bubble to its ${args.what} message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`,
+      );
+      return;
+    }
+    /* bubble gone/uneditable for good — the credential or processing direct message already informed the buyer */
+  }
+  await clearOrderPaymentMessage(prisma, order.id);
 }
 
 /**
@@ -348,21 +382,16 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
-  // Clear the anchor pointer once the edit attempt completes — same
-  // swallow-then-clear contract onDelivered's own bubble edit makes above (T1
-  // critical fix): a rejected/uneditable bubble must not leave the anchor
-  // stuck forever, it self-heals by clearing anyway.
-  try {
-    await api.editMessageText(
-      Number(order.paymentMsgChatId),
-      order.paymentMsgId,
-      coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-      { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
-    );
-  } catch {
-    /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
-  }
-  await clearOrderPaymentMessage(prisma, order.id);
+  // Same edit-then-decide contract onDelivered's own bubble edit makes above:
+  // a bubble that can never be edited again drops its anchor and self-heals,
+  // one Telegram merely refused this minute keeps it so the sweep retries.
+  await editAnchoredBubbleAndDecide(api, order, {
+    chatId: Number(order.paymentMsgChatId),
+    messageId: order.paymentMsgId,
+    text: coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+    lang,
+    what: "processing",
+  });
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
@@ -587,7 +616,12 @@ export function startPolling(api: Api): void {
       );
     }
     logger.info(`Binance Internal Transfer poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
-  });
+  }).catch((err) =>
+    // Mandatory, not defensive tidiness — see the identical guard in
+    // tokopayReconcile.ts's startPolling for why an unhandled rejection here
+    // would take the whole bot process down at boot.
+    logger.warn({ err }, "Could not read the Binance Internal Transfer configuration for the startup log, so this boot has no line saying whether that poller is on or idle, and no unique-cents warning if it applies — the poller itself is unaffected, since it re-reads its configuration at the top of every cycle"),
+  );
   loop.start();
 }
 

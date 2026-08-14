@@ -365,7 +365,12 @@ export function startPolling(api: Api): void {
       return;
     }
     logger.info(`PayDisini reconcile poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
-  });
+  }).catch((err) =>
+    // Mandatory, not defensive tidiness — see the identical guard in
+    // tokopayReconcile.ts's startPolling for why an unhandled rejection here
+    // would take the whole bot process down at boot.
+    logger.warn({ err }, "Could not read the PayDisini credentials for the startup log, so this boot has no line saying whether the PayDisini reconcile poller is on or idle — the poller itself is unaffected, since it re-reads the credentials at the top of every cycle"),
+  );
   loop.start();
 }
 

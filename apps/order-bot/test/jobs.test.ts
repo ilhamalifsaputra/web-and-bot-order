@@ -50,6 +50,7 @@ import { GrammyError, InlineKeyboard, type Api } from "grammy";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { telegramError } from "./helpers/ctx";
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
@@ -196,8 +197,34 @@ describe("editPaymentBubble", () => {
       fallbackDm: null,
     });
 
-    expect(result).toEqual({ status: "not_edited" });
+    // A bare Error is not evidence Telegram will refuse this edit forever, so
+    // it is reported as a NON-permanent failure and the caller keeps its anchor.
+    expect(result).toEqual({ status: "not_edited", permanent: false });
     expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("reports a Telegram rejection that can never succeed as a permanent failure", async () => {
+    const gone = telegramError(400, "Bad Request: message to edit not found");
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(gone),
+      editMessageText: vi.fn().mockRejectedValue(gone),
+    });
+
+    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
+
+    expect(result).toEqual({ status: "not_edited", permanent: true });
+  });
+
+  it("reports Telegram flood control as a NON-permanent failure, because the very same edit can succeed a minute later", async () => {
+    const flood = telegramError(429, "Too Many Requests: retry after 30");
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(flood),
+      editMessageText: vi.fn().mockRejectedValue(flood),
+    });
+
+    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
+
+    expect(result).toEqual({ status: "not_edited", permanent: false });
   });
 
   it("with fallback DM on, sends a DM and reports it when the bubble can't be edited", async () => {
@@ -380,9 +407,10 @@ describe("sweepPaidOrderBubbles", () => {
       kind: OrderKind.PRODUCT,
       status: OrderStatus.DELIVERED,
     });
+    const gone = telegramError(400, "Bad Request: message to edit not found");
     const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
-      editMessageText: vi.fn().mockRejectedValue(new Error("bubble gone")),
+      editMessageCaption: vi.fn().mockRejectedValue(gone),
+      editMessageText: vi.fn().mockRejectedValue(gone),
     });
 
     await sweepPaidOrderBubbles(api);
@@ -392,6 +420,96 @@ describe("sweepPaidOrderBubbles", () => {
     // cleared anyway instead of being retried forever.
     const after = await prisma.order.findUnique({ where: { id: order.id } });
     expect(after?.paymentMsgChatId).toBeNull();
+  });
+
+  // The bubble-flip contract used to read every completed edit attempt as
+  // "done", which cannot tell a bubble that will never accept an edit again
+  // from one Telegram merely refused THIS minute. Clearing the anchor on the
+  // second kind strands the buyer on a stale QR forever, because the anchor is
+  // the only thing that puts the order back in this sweep's work queue.
+  describe("permanent vs. transient edit failures decide whether the anchor survives", () => {
+    const failEveryEditWith = (err: unknown) =>
+      fakeApi({
+        editMessageCaption: vi.fn().mockRejectedValue(err),
+        editMessageText: vi.fn().mockRejectedValue(err),
+      });
+
+    const anchoredOrder = () =>
+      makeSettledAnchoredOrder({
+        method: PaymentMethod.TOKOPAY,
+        kind: OrderKind.PRODUCT,
+        status: OrderStatus.DELIVERED,
+      });
+
+    it.each([
+      ["Bad Request: message to edit not found"],
+      ["Bad Request: message can't be edited"],
+      ["Bad Request: MESSAGE_ID_INVALID"],
+    ])("clears the anchor when Telegram answers %s — that bubble can never accept this edit", async (description) => {
+      const order = await anchoredOrder();
+      const api = failEveryEditWith(telegramError(400, description));
+
+      await sweepPaidOrderBubbles(api);
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
+    it("clears the anchor on 'message is not modified' — the bubble already shows the text this sweep wanted to put there", async () => {
+      const order = await anchoredOrder();
+      const api = failEveryEditWith(telegramError(400, "Bad Request: message is not modified"));
+
+      await sweepPaidOrderBubbles(api);
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+    });
+
+    it("keeps the anchor when Telegram flood-controls the edit, so the next cycle retries instead of abandoning a live bubble", async () => {
+      const order = await anchoredOrder();
+      const api = failEveryEditWith(telegramError(429, "Too Many Requests: retry after 30"));
+
+      await sweepPaidOrderBubbles(api);
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).not.toBeNull();
+      expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    it("keeps the anchor when Telegram answers a server error", async () => {
+      const order = await anchoredOrder();
+      const api = failEveryEditWith(telegramError(502, "Bad Gateway"));
+
+      await sweepPaidOrderBubbles(api);
+
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))?.paymentMsgChatId).not.toBeNull();
+    });
+
+    it("keeps the anchor when the edit fails with something that is not a Telegram API error at all, such as a network fault", async () => {
+      const order = await anchoredOrder();
+      const api = failEveryEditWith(new Error("socket hang up"));
+
+      await sweepPaidOrderBubbles(api);
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).not.toBeNull();
+      expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    it("retries the same order on the next cycle after a transient failure, and clears it once the edit lands", async () => {
+      const order = await anchoredOrder();
+      const flooded = failEveryEditWith(telegramError(429, "Too Many Requests: retry after 30"));
+
+      await sweepPaidOrderBubbles(flooded);
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))?.paymentMsgId).not.toBeNull();
+
+      const recovered = fakeApi();
+      await sweepPaidOrderBubbles(recovered);
+
+      expect(onlyEdit(recovered).msgId).toBe(order.msgId);
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))?.paymentMsgId).toBeNull();
+    });
   });
 
   it("ignores an order whose own rail already cleared the anchor on its fast path", async () => {

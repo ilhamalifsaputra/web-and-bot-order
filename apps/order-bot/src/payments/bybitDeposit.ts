@@ -51,6 +51,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
+import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveAmount } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
@@ -188,21 +189,45 @@ export async function fetchRecentDeposits(cfg: BybitConfig): Promise<BybitDeposi
 
 type DeliveredOrder = Extract<BybitDeliverResult, { status: "delivered" }>["order"];
 
-/** Edit the anchored bubble to `text`/`markup`, never throwing — a
- * rejected/uneditable bubble (e.g. the buyer navigated away and it was
- * deleted) is swallowed right here instead of propagating to the
- * `withTimeout` race each call site wraps this in. That's what lets the
- * race cleanly distinguish a genuine wall-clock timeout (skip the clear,
- * retry next sweep) from a completed edit — whether it succeeded or its
- * rejection was swallowed, either way the anchor clears (T1 critical fix:
- * a permanently-uneditable bubble must self-heal instead of making the
- * upcoming sweeper retry a doomed edit forever). */
-async function editAnchoredBubble(api: Api, chatId: number, messageId: number, text: string, markup: InlineKeyboard): Promise<void> {
+/**
+ * Edit the anchored bubble to `text`/`markup` and report whether the order's
+ * anchor may now be dropped. Never throws — a rejected bubble edit is caught
+ * right here instead of propagating to the `withTimeout` race each call site
+ * wraps this in, which is what lets that race keep meaning exactly one thing
+ * ("the call hung past the deadline") rather than two.
+ *
+ * Returns "keep_anchor" for a failure that a later attempt could get past
+ * (flood control, a 5xx, a network fault, anything unrecognised) so
+ * `sweepPaidOrderBubbles` (jobs/index.ts) retries the edit within a minute —
+ * the anchor is the ONLY thing that lists this order for that sweep, so
+ * dropping it here would strand the buyer on a stale payment screen for good.
+ * Returns "clear_anchor" when the edit succeeded, or when Telegram said this
+ * bubble can never accept it (T1: a bubble the buyer deleted must self-heal
+ * instead of costing the sweeper a slot every minute forever) —
+ * `isPermanentBubbleEditFailure` (util/bubbleEditFailure.ts) draws that line
+ * once for all five call sites that hold this contract.
+ */
+async function editAnchoredBubble(
+  api: Api,
+  orderCode: string,
+  chatId: number,
+  messageId: number,
+  text: string,
+  markup: InlineKeyboard,
+): Promise<"clear_anchor" | "keep_anchor"> {
   try {
     await api.editMessageText(chatId, messageId, text, { parse_mode: "HTML", reply_markup: markup });
-  } catch {
-    /* bubble may be gone/uneditable — the credential/processing DM already informed the buyer */
+  } catch (err) {
+    if (!isPermanentBubbleEditFailure(err)) {
+      logger.warn(
+        { err },
+        `Bybit deposit poller could not flip order ${orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`,
+      );
+      return "keep_anchor";
+    }
+    /* bubble gone/uneditable for good — the credential or processing direct message already informed the buyer */
   }
+  return "clear_anchor";
 }
 
 async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
@@ -263,19 +288,17 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     }
   }
 
-  // Turn the payment-instructions bubble into a success message in place,
-  // then clear the anchor pointer — but only skip the clear on a genuine
-  // wall-clock timeout (T1 critical fix). editAnchoredBubble never throws
-  // (a rejected/uneditable bubble is swallowed inside it), so `outcome` here
-  // is either a completed edit or "timeout" — never a rejection — meaning a
-  // timed-out edit is the ONLY case that leaves the anchor in place for a
-  // later sweep to retry; a rejected edit clears it right away and
-  // self-heals. Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as
-  // the DM above.
+  // Turn the payment-instructions bubble into a success message in place, then
+  // clear the anchor pointer — but keep it for anything that could still work
+  // on a later attempt. editAnchoredBubble never throws (it catches and
+  // classifies the rejection itself), so `outcome` here is its own
+  // clear/keep verdict or "timeout", the one case it cannot see. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     const outcome = await withTimeout(
       editAnchoredBubble(
         api,
+        order.orderCode,
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
         topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
@@ -285,7 +308,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     );
     if (outcome === "timeout") {
       logger.warn(`Bybit deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
-    } else {
+    } else if (outcome === "clear_anchor") {
       await clearOrderPaymentMessage(prisma, order.id);
     }
   }
@@ -303,13 +326,15 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
-  // Clear the anchor pointer unless the edit genuinely timed out — same
-  // swallow-then-race contract onDelivered's own bubble edit makes above (T1
-  // critical fix). Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the
-  // identical bubble edit in onDelivered above for why.
+  // Clear the anchor pointer unless the edit timed out, or failed in a way a
+  // later attempt could get past — same edit-then-decide contract
+  // onDelivered's own bubble edit makes above. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
+  // onDelivered above for why.
   const outcome = await withTimeout(
     editAnchoredBubble(
       api,
+      order.orderCode,
       Number(order.paymentMsgChatId),
       order.paymentMsgId,
       coreT("checkout.internal_paid", lang, { code: order.orderCode }),
@@ -319,7 +344,7 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   );
   if (outcome === "timeout") {
     logger.warn(`Bybit deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
-  } else {
+  } else if (outcome === "clear_anchor") {
     await clearOrderPaymentMessage(prisma, order.id);
   }
 }
@@ -583,7 +608,12 @@ export function startPolling(api: Api): void {
       );
     }
     logger.info(`Bybit deposit poller active (every ${config.BYBIT_POLL_INTERVAL_SECONDS}s)`);
-  });
+  }).catch((err) =>
+    // Mandatory, not defensive tidiness — see the identical guard in
+    // tokopayReconcile.ts's startPolling for why an unhandled rejection here
+    // would take the whole bot process down at boot.
+    logger.warn({ err }, "Could not read the Bybit deposit configuration for the startup log, so this boot has no line saying whether that poller is on or idle, and no unique-cents warning if it applies — the poller itself is unaffected, since it re-reads its configuration at the top of every cycle"),
+  );
   loop.start();
 }
 

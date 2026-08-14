@@ -23,6 +23,7 @@ import {
   BYBIT_POLL_HEALTH_KEY,
 } from "@app/db";
 import type { Api } from "grammy";
+import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
@@ -310,7 +311,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
     api.editMessageText = async () => {
-      throw new Error("Bad Request: message to edit not found");
+      throw telegramError(400, "Bad Request: message to edit not found");
     };
     await processDeposits(api, [dep({ txId: "0xEDITFAIL", amount: order.totalAmount })], await pending());
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
@@ -321,6 +322,28 @@ describe("processDeposits (poll-loop wiring)", () => {
     // anchored forever.
     expect(updated!.paymentMsgChatId).toBeNull();
     expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  // The other half of that contract (F1): a rejection Telegram may well accept
+  // a minute later — flood control, a gateway hiccup, a network fault — is NOT
+  // evidence the bubble is dead, so the anchor has to survive it or the buyer
+  // is stranded on a stale payment screen with nothing left to retry the edit.
+  it.each([
+    ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
+    ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
+    ["a network fault that never reached Telegram", () => new Error("socket hang up")],
+  ])("keeps the anchor when the bubble edit fails with %s, so a later sweep retries it", async (label, makeError) => {
+    const order = (await makeBybitOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw makeError();
+    };
+    await processDeposits(api, [dep({ txId: `0xTRANSIENT-${label}`, amount: order.totalAmount })], await pending());
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    expect(updated!.paymentMsgChatId).not.toBeNull();
+    expect(updated!.paymentMsgId).not.toBeNull();
   });
 
   // T1 critical fix, other half of the same contract: a genuine wall-clock

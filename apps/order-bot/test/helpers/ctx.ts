@@ -11,16 +11,30 @@
 import { GrammyError, InputFile } from "grammy";
 import type { MyContext, MyConversation, SessionData } from "../../src/context";
 
+/**
+ * A real Telegram API rejection, shaped exactly the way grammY surfaces one.
+ *
+ * Worth using instead of a bare `new Error("...")` wherever a test drives code
+ * that reasons about WHY an API call failed: the anchored-payment-bubble code
+ * only trusts a `GrammyError` description to decide whether a failed edit can
+ * ever succeed again (`isPermanentBubbleEditFailure`,
+ * apps/order-bot/src/util/bubbleEditFailure.ts), so a bare Error deliberately
+ * means "unknown, assume it can be retried" there.
+ */
+export function telegramError(errorCode: number, description: string, method = "editMessageText"): GrammyError {
+  return new GrammyError(
+    `Call to '${method}' failed!`,
+    { ok: false, error_code: errorCode, description },
+    method,
+    {},
+  );
+}
+
 /** Mirrors the real Telegram "Bad Request: message is not modified" error
  * grammY throws when an edit's text/caption + reply_markup are identical to
  * what the message already shows. */
 function notModifiedError(method: string): GrammyError {
-  return new GrammyError(
-    `Call to '${method}' failed!`,
-    { ok: false, error_code: 400, description: "Bad Request: message is not modified" },
-    method,
-    {},
-  );
+  return telegramError(400, "Bad Request: message is not modified", method);
 }
 
 export interface SentCall {

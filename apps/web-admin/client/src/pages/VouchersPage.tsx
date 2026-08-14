@@ -293,7 +293,7 @@ function ProductScopePicker({
                   {(byCategory.get(c.id) ?? []).map((p) => (
                     <label
                       key={p.id}
-                      className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-sm hover:bg-sand"
+                      className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-sand"
                     >
                       <Checkbox
                         className="shrink-0"
@@ -739,7 +739,7 @@ export function VouchersPage() {
             render: v => (
               <div className="flex flex-col gap-0.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="min-w-0 max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
+                  <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
                   <button
                     type="button"
                     onClick={() => handleCopy(v)}

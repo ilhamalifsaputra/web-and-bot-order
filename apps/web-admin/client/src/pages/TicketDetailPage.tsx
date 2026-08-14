@@ -313,7 +313,10 @@ export function TicketDetailPage() {
               {ticket.order.voucher && (
                 <CardRow
                   label="Voucher"
-                  value={<span className="font-mono text-xs">{ticket.order.voucher.code} ({ticket.order.voucher.type})</span>}
+                  // break-all, not CardRow's generic break-words: a voucher
+                  // code is one unbroken token, so break-words would leave it
+                  // to be silently clipped by the card's overflow-hidden.
+                  value={<span className="font-mono text-xs break-all">{ticket.order.voucher.code} ({ticket.order.voucher.type})</span>}
                 />
               )}
             </CardContent>

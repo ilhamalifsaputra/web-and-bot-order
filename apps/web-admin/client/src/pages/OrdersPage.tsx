@@ -525,9 +525,13 @@ export function OrdersPage() {
               if (row.user?.isGuest) {
                 return (
                   <div className="max-w-[240px]">
-                    <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex min-w-0 items-start gap-2">
                       <Badge variant="secondary" className="shrink-0">Guest</Badge>
-                      <span className="truncate text-sm text-ink" title={row.user.guestEmail ?? undefined}>
+                      {/* The only way to reach a guest buyer, so it wraps and
+                          stays fully readable — never truncated. whitespace-normal
+                          defeats TableCell's default nowrap, matching the
+                          treatment on OrderDetailPage. */}
+                      <span className="text-sm break-all whitespace-normal text-ink">
                         {row.user.guestEmail ?? "No contact email"}
                       </span>
                     </div>

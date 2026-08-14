@@ -109,8 +109,14 @@ export function UserDetailPage() {
                 BANNED{user.banReason ? ` — ${user.banReason}` : ""}
               </div>
             )}
-            <CardRow label="Telegram ID" value={<span className="font-mono text-xs">{user.telegramId ?? "—"}</span>} />
-            <CardRow label="Username" value={user.username ? `@${user.username}` : "—"} />
+            {/* Both are single unbroken tokens (a Telegram username runs to 32
+                chars), so they need break-all — CardRow's generic break-words
+                cannot break a token, leaving it to be clipped by the card. */}
+            <CardRow label="Telegram ID" value={<span className="font-mono text-xs break-all">{user.telegramId ?? "—"}</span>} />
+            <CardRow
+              label="Username"
+              value={<span className="break-all">{user.username ? `@${user.username}` : "—"}</span>}
+            />
             <CardRow
               label="Role"
               value={

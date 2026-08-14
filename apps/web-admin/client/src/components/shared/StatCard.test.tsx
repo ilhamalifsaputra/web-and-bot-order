@@ -68,12 +68,16 @@ describe("StatCard", () => {
     expect(labelNode).toHaveAttribute("title", longLabel);
   });
 
-  it("wraps a long value instead of truncating it, so money values stay fully readable", () => {
+  // Scope note: this asserts the value is never truncated and wraps at
+  // spaces. It does NOT prove a single unbroken token wraps — `break-words`
+  // cannot break one. Money reaches StatCard as a `CurrencyStack`, whose
+  // amount span carries `break-all`; that unbroken-token case is covered by
+  // CurrencyAmount.test.tsx, not here.
+  it("wraps a long multi-word value at spaces instead of truncating it", () => {
     const longValue = "Rp1.234.567.890,00 across 12 items";
     render(<StatCard label="Total" value={longValue} />);
     const valueNode = screen.getByText(longValue);
     expect(valueNode).toHaveClass("break-words");
-    expect(valueNode).toHaveClass("min-w-0");
     expect(valueNode).not.toHaveClass("truncate");
   });
 });

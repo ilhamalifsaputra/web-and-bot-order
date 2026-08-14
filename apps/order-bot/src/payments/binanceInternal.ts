@@ -314,9 +314,13 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   }
 
   // Turn the payment-instructions bubble into a success message in place,
-  // then clear the anchor pointer — but only once the edit genuinely
-  // succeeds. A rejected/uneditable bubble leaves the anchor in place so a
-  // later sweep can retry it instead of losing track of the pointer.
+  // then clear the anchor pointer. The edit itself never throws — a
+  // rejected/uneditable bubble (e.g. the buyer navigated away and the bubble
+  // was deleted) is swallowed right here — so the clear always runs once the
+  // edit attempt completes (T1 critical fix: clearing must not depend on the
+  // edit actually succeeding, only on it having been attempted, or a
+  // permanently-uneditable bubble would make the upcoming sweeper retry it
+  // forever instead of self-healing).
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     try {
       await api.editMessageText(
@@ -325,10 +329,10 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
         { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
       );
-      await clearOrderPaymentMessage(prisma, order.id);
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */
     }
+    await clearOrderPaymentMessage(prisma, order.id);
   }
 }
 
@@ -344,9 +348,10 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
-  // Clear the anchor pointer only once the edit genuinely succeeds — same
-  // trade-off onDelivered's own bubble edit makes above: a rejected/
-  // uneditable bubble leaves the anchor in place so a later sweep can retry.
+  // Clear the anchor pointer once the edit attempt completes — same
+  // swallow-then-clear contract onDelivered's own bubble edit makes above (T1
+  // critical fix): a rejected/uneditable bubble must not leave the anchor
+  // stuck forever, it self-heals by clearing anyway.
   try {
     await api.editMessageText(
       Number(order.paymentMsgChatId),
@@ -354,10 +359,10 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
       coreT("checkout.internal_paid", lang, { code: order.orderCode }),
       { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
     );
-    await clearOrderPaymentMessage(prisma, order.id);
   } catch {
     /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
   }
+  await clearOrderPaymentMessage(prisma, order.id);
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {

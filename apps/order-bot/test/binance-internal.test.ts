@@ -563,7 +563,12 @@ describe("processTransfers (poll-loop wiring)", () => {
     expect(updated!.paymentMsgId).toBeNull();
   });
 
-  it("leaves the anchor in place when the bubble edit is rejected by Telegram, so a later sweep can retry it (T1)", async () => {
+  // T1 critical fix: a rejected edit (e.g. the buyer navigated away and the
+  // bubble was deleted — "message to edit not found") must still clear the
+  // anchor. Only a genuine wall-clock timeout is allowed to leave it in
+  // place; a message that can never be edited must self-heal instead of
+  // making the upcoming generic sweeper retry a doomed edit forever.
+  it("clears the anchor even when the bubble edit is rejected by Telegram, so it self-heals instead of retrying forever (T1)", async () => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api } = fakeApi();
@@ -574,10 +579,11 @@ describe("processTransfers (poll-loop wiring)", () => {
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     // Delivery itself must not be blocked by a bubble-edit failure.
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
-    // The anchor must survive so it isn't lost — a rejected edit is exactly
-    // the case a future retry needs to see the pointer still populated.
-    expect(updated!.paymentMsgChatId).not.toBeNull();
-    expect(updated!.paymentMsgId).not.toBeNull();
+    // The anchor clears because the edit attempt genuinely completed (it was
+    // just rejected) — a permanently-uneditable bubble must not stay
+    // anchored forever.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
   });
 
   it("delivers on a note match", async () => {

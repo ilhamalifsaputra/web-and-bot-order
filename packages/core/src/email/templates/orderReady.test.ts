@@ -31,13 +31,13 @@ const ORDER_CODE = "ORD-20260814-READY01";
 const fullInput: OrderReadyInput = {
   orderCode: ORDER_CODE,
   items: [
-    { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "Rp50.000" },
-    { name: "Spotify Family", variant: null, quantity: 1, unitPrice: "Rp30.000" },
+    { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "Rp50.000", lineTotal: "Rp100.000" },
+    { name: "Spotify Family", variant: null, quantity: 1, unitPrice: "Rp30.000", lineTotal: "Rp30.000" },
   ],
   subtotal: "Rp130.000",
   discount: "Rp13.000",
   total: "Rp117.000",
-  warranty: "30 days",
+  warranty: "30 days / 30 hari",
   orderUrl: "https://shop.test/checkout/ORD-20260814-READY01/pay",
   trackUrl: "https://shop.test/track",
 };
@@ -60,7 +60,7 @@ describe("renderOrderReadyEmail — full fixture", () => {
     expect(result.html).toContain("Rp130.000");
     expect(result.html).toContain("Rp13.000");
     expect(result.html).toContain("Rp117.000");
-    expect(result.html).toContain("30 days");
+    expect(result.html).toContain("30 days / 30 hari");
   });
 
   it("represents the order summary in the text", () => {
@@ -70,7 +70,26 @@ describe("renderOrderReadyEmail — full fixture", () => {
     expect(result.text).toContain("Rp130.000");
     expect(result.text).toContain("Rp13.000");
     expect(result.text).toContain("Rp117.000");
-    expect(result.text).toContain("30 days");
+    expect(result.text).toContain("30 days / 30 hari");
+  });
+
+  it("shows an explicit line total for a multi-quantity item, not just the unit price", () => {
+    // A bare "2x Netflix Premium — Rp50.000" reads as if Rp50.000 were the
+    // line total; it is the per-unit price. The line must spell out both the
+    // unit price and the computed total so a buyer cannot misread it.
+    expect(result.html).toContain("2 × Rp50.000 = Rp100.000");
+    expect(result.text).toContain("2 × Rp50.000 = Rp100.000");
+  });
+
+  it("is bilingual in the scannable parts too — summary labels, banner heading, and button", () => {
+    expect(result.html).toContain("Discount / Diskon");
+    expect(result.html).toContain("Total / Total");
+    expect(result.html).toContain("Warranty / Garansi");
+    expect(result.html).toContain("View Your Order / Lihat Pesanan");
+    expect(result.html).toContain("Your order is ready / Pesanan kamu sudah siap");
+    expect(result.text).toContain("Discount / Diskon");
+    expect(result.text).toContain("Total / Total");
+    expect(result.text).toContain("Warranty / Garansi");
   });
 
   it("hides the discount line entirely when it is the empty string", () => {
@@ -107,7 +126,7 @@ describe("renderOrderReadyEmail — subject never carries the order code", () =>
         ...fullInput,
         orderCode: "ORD-SOMETHING-ELSE",
         total: "Rp999.999",
-        items: [{ name: "Other", variant: null, quantity: 9, unitPrice: "Rp1" }],
+        items: [{ name: "Other", variant: null, quantity: 9, unitPrice: "Rp1", lineTotal: "Rp9" }],
         orderUrl: "https://other.test/x",
         trackUrl: "https://other.test/track",
       },

@@ -420,9 +420,22 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.html).toContain("Rp130.000");
       expect(result!.html).toContain("Rp13.000");
       expect(result!.html).toContain("Rp117.000");
-      expect(result!.html).toContain("30 days");
+      expect(result!.html).toContain("30 days / 30 hari");
+      // The unit price alone would misread as the line total for the
+      // quantity-2 item — the line spells out both, computed via Decimal.
+      expect(result!.html).toContain("2 × Rp50.000 = Rp100.000");
+      expect(result!.text).toContain("2 × Rp50.000 = Rp100.000");
       expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
       expect(result!.text).toContain("Rp117.000");
+    });
+
+    it("renders the summary labels, banner heading, and button bilingually", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("Discount / Diskon");
+      expect(result!.html).toContain("Total / Total");
+      expect(result!.html).toContain("Warranty / Garansi");
+      expect(result!.html).toContain("View Your Order / Lihat Pesanan");
+      expect(result!.html).toContain("Your order is ready / Pesanan kamu sudah siap");
     });
 
     it("subject is a fixed literal that NEVER carries the order code — it is the guest's full credential and sendMail logs every subject", async () => {
@@ -486,6 +499,17 @@ describe("emailTemplates.renderEmail", () => {
       });
       expect(result!.html).toContain("10.50 USDT");
       expect(result!.text).toContain("10.00 USDT");
+    });
+
+    it("computes the line total via Decimal, not float, for a fractional multi-quantity price", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 3, unitPrice: "0.1" }],
+      });
+      // 0.1 * 3 as a naive float is 0.30000000000000004 — Decimal must give
+      // exactly 0.30.
+      expect(result!.html).toContain("3 × 0.10 USDT = 0.30 USDT");
     });
 
     it("resolves the buyer's brand logo against the STOREFRONT origin, never the admin panel's", async () => {

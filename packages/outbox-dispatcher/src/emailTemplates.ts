@@ -226,26 +226,32 @@ async function resolveBuyerBrandConfig(): Promise<BrandConfig> {
 }
 
 /** Payload item -> `OrderReadyItem`, defensively parsed the same way
- * `toOrderPaidItem` handles a malformed entry. `unitPrice` is formatted here
- * (via `formatMoney`) since `orderReady.ts` only renders pre-formatted
- * strings verbatim. */
+ * `toOrderPaidItem` handles a malformed entry. `unitPrice` and `lineTotal`
+ * are formatted here (via `Decimal` + `formatMoney`) since `orderReady.ts`
+ * only renders pre-formatted strings verbatim — `lineTotal` is computed via
+ * `Decimal.times`, never float multiplication. */
 function toOrderReadyItem(it: OrderReadyPayloadItem, currency: string): OrderReadyItem {
+  const unitPriceDecimal = new Decimal(String(it?.unitPrice ?? "0"));
+  const quantity = Number.parseInt(String(it?.quantity ?? 1), 10) || 1;
   return {
     name: String(it?.name ?? "?"),
     variant: it?.variant == null ? null : String(it.variant),
-    quantity: Number.parseInt(String(it?.quantity ?? 1), 10) || 1,
-    unitPrice: formatMoney(new Decimal(String(it?.unitPrice ?? "0")), currency),
+    quantity,
+    unitPrice: formatMoney(unitPriceDecimal, currency),
+    lineTotal: formatMoney(unitPriceDecimal.times(quantity), currency),
   };
 }
 
 /** Warranty days -> the display string the template renders verbatim, or
  * null (which hides the line) for an absent, unparseable, or zero-day
- * warranty — "0 days" reads as a bug to a buyer, not as "no warranty". */
+ * warranty — "0 days" reads as a bug to a buyer, not as "no warranty".
+ * Bilingual ("30 days / 30 hari"), matching the rest of this buyer-facing
+ * email's data-dense parts (labels, banner, button — see orderReady.ts). */
 function formatWarranty(warrantyDays: unknown): string | null {
   if (warrantyDays == null) return null;
   const days = Number.parseInt(String(warrantyDays), 10);
   if (!Number.isFinite(days) || days <= 0) return null;
-  return `${days} days`;
+  return `${days} days / ${days} hari`;
 }
 
 /** Resolve the "New Paid Order" `EmailCopy` from its four `email_order_paid_*`

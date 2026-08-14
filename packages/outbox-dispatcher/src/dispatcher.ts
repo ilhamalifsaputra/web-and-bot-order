@@ -146,10 +146,13 @@ export async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
-    // Owner email lane — decided by channel, not event name (checking channel
-    // first is clearer/cheaper than relying on the OWNER_EMAIL_* events never
-    // colliding with the Telegram-only special cases below). No rate-limit
-    // concept for email, so just move on to the next row either way.
+    // EMAIL lane — decided by channel, not event name (checking channel first
+    // is clearer/cheaper than relying on event names never colliding with the
+    // Telegram-only special cases below). Despite the helper's name (kept for
+    // continuity) this is not owner-only: it also carries the one buyer
+    // event, BUYER_EMAIL_ORDER_READY — see deliverOwnerEmail's own doc
+    // comment below. No rate-limit concept for email, so just move on to the
+    // next row either way.
     if (row.channel === NotificationChannel.EMAIL) {
       await deliverOwnerEmail(row, payload);
       continue;
@@ -389,10 +392,13 @@ async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknow
     return;
   }
 
-  // rendered.html is undefined for the three plain-text-only events and a
-  // real string for OWNER_EMAIL_ORDER_PAID — sendMail's `html` param is
-  // optional (Task 2), so passing `undefined` here is a no-op for those
-  // three, unchanged from before this field existed.
+  // rendered.html is undefined for the three plain-text-only events
+  // (OWNER_EMAIL_MANUAL_ORDER_QUEUED, OWNER_EMAIL_NEW_TICKET,
+  // OWNER_EMAIL_TICKET_REPLY) and a real string for the events that render
+  // through the shared HTML design system — OWNER_EMAIL_ORDER_PAID,
+  // OWNER_EMAIL_WALLET_TOPUP, and BUYER_EMAIL_ORDER_READY — sendMail's `html`
+  // param is optional (Task 2), so passing `undefined` here is a no-op for
+  // the plain-text three, unchanged from before this field existed.
   await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text, html: rendered.html }));
 }
 

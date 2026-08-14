@@ -79,6 +79,18 @@ const ID_CODE_NOTE =
 const EN_TRACK_NOTE = "Lost this browser, or on another device? Reopen your order with the code above:";
 const ID_TRACK_NOTE = "Browser ini hilang, atau kamu pindah perangkat? Buka lagi pesanan kamu pakai kode di atas:";
 
+// The banner heading, summary labels, and button text are the parts of the
+// email a buyer actually scans first — unlike the prose paragraphs above
+// (already bilingual, EN block then ID block), these are single elements
+// with no room for two separate blocks, so each carries both languages
+// merged into one compact "EN / ID" string.
+const BANNER_HEADING = `${EN_HEADING} / ${ID_HEADING}`;
+const LABEL_SUBTOTAL = "Subtotal / Subtotal";
+const LABEL_DISCOUNT = "Discount / Diskon";
+const LABEL_TOTAL = "Total / Total";
+const LABEL_WARRANTY = "Warranty / Garansi";
+const BUTTON_LABEL = "View Your Order / Lihat Pesanan";
+
 export interface OrderReadyItem {
   name: string;
   variant: string | null;
@@ -86,6 +98,12 @@ export interface OrderReadyItem {
   /** Already display-formatted by the caller (e.g. via `formatMoney`) — this
    * template renders it verbatim, same convention as `orderPaid.ts`. */
   unitPrice: string;
+  /** `unitPrice * quantity`, already display-formatted by the caller (via
+   * `Decimal`, never float arithmetic) and rendered verbatim. Required so the
+   * item line can show a line total next to the unit price — without it, a
+   * multi-quantity line reads as if the printed figure were the line total
+   * when it is actually the per-unit price. */
+  lineTotal: string;
 }
 
 export interface OrderReadyInput {
@@ -99,8 +117,9 @@ export interface OrderReadyInput {
   discount: string;
   /** Already display-formatted by the caller — rendered verbatim. */
   total: string;
-  /** Already display-formatted by the caller (e.g. "30 days"), or null when
-   * the order carries no warranty — null hides the row/line entirely. */
+  /** Already display-formatted by the caller (e.g. "30 days / 30 hari"), or
+   * null when the order carries no warranty — null hides the row/line
+   * entirely. */
   warranty: string | null;
   /** The order page. Null when neither SHOP_PUBLIC_URL nor PUBLIC_URL is
    * configured — this template then renders no button at all rather than an
@@ -111,10 +130,14 @@ export interface OrderReadyInput {
   trackUrl: string | null;
 }
 
-/** Render each item as its own compact line: "2x Netflix Premium (1 Month) — Rp50.000". */
+/** Render each item as its own compact line, with an explicit line total so
+ * the printed figure can never be misread as the line total when it is
+ * actually the per-unit price (a customer reader, unlike `orderPaid.ts`'s
+ * shop-owner reader, has no reason to know that convention):
+ * "Netflix Premium (1 Month) — 2 × Rp50.000 = Rp100.000". */
 function formatItemLine(item: OrderReadyItem): string {
   const variantPart = item.variant ? ` (${item.variant})` : "";
-  return `${item.quantity}x ${item.name}${variantPart} — ${item.unitPrice}`;
+  return `${item.name}${variantPart} — ${item.quantity} × ${item.unitPrice} = ${item.lineTotal}`;
 }
 
 function buildItemsHtml(items: OrderReadyItem[]): string {
@@ -158,19 +181,19 @@ function trackLine(note: string, trackUrl: string): string {
 
 export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig): RenderedEmail {
   const summaryRows = [
-    { label: "Subtotal", value: input.subtotal },
-    { label: "Discount", value: input.discount },
-    { label: "Total", value: input.total },
+    { label: LABEL_SUBTOTAL, value: input.subtotal },
+    { label: LABEL_DISCOUNT, value: input.discount },
+    { label: LABEL_TOTAL, value: input.total },
     // infoTable drops any row whose value is empty, so a null warranty needs
     // no branch here — but it does below in the plain-text build.
-    { label: "Warranty", value: input.warranty ?? "" },
+    { label: LABEL_WARRANTY, value: input.warranty ?? "" },
   ];
 
   // No `orderUrl` (neither SHOP_PUBLIC_URL nor PUBLIC_URL configured) renders
   // no button rather than one with an empty href — a dead button reads as a
   // broken email, while the code block and /track line below still work.
   const buttonHtml = input.orderUrl
-    ? `<div style="margin-bottom:8px;">${primaryButton("View Your Order", input.orderUrl, brand.accentColor)}${fallbackLinkLine(input.orderUrl)}</div>`
+    ? `<div style="margin-top:24px;margin-bottom:8px;">${primaryButton(BUTTON_LABEL, input.orderUrl, brand.accentColor)}${fallbackLinkLine(input.orderUrl)}</div>`
     : "";
 
   const trackHtml = input.trackUrl
@@ -178,12 +201,12 @@ export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig
     : "";
 
   const bodyHtml = `
-    ${eventBanner("✅", EN_HEADING, EN_SUBHEADING, "success")}
+    ${eventBanner("✅", BANNER_HEADING, EN_SUBHEADING, "success")}
     ${paragraph(EN_BODY)}
     ${paragraph(ID_HEADING + " — " + ID_BODY)}
     ${buildItemsHtml(input.items)}
     ${infoTable(summaryRows)}
-    <div style="margin-top:24px;">${buttonHtml}</div>
+    ${buttonHtml}
     ${mutedParagraph(EN_CODE_NOTE)}
     ${mutedParagraph(ID_CODE_NOTE)}
     ${codeBlock(input.orderCode)}
@@ -204,10 +227,10 @@ export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig
     ptDivider(),
     ptSection("Order Summary"),
     itemLines,
-    ptKeyValue("Subtotal", input.subtotal),
-    ...(input.discount !== "" ? [ptKeyValue("Discount", input.discount)] : []),
-    ptKeyValue("Total", input.total),
-    ...(input.warranty ? [ptKeyValue("Warranty", input.warranty)] : []),
+    ptKeyValue(LABEL_SUBTOTAL, input.subtotal),
+    ...(input.discount !== "" ? [ptKeyValue(LABEL_DISCOUNT, input.discount)] : []),
+    ptKeyValue(LABEL_TOTAL, input.total),
+    ...(input.warranty ? [ptKeyValue(LABEL_WARRANTY, input.warranty)] : []),
     "",
     ptDivider(),
     ...(input.orderUrl ? ["", "Open your order:", input.orderUrl] : []),

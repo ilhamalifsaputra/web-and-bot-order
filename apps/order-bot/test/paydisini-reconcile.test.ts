@@ -15,6 +15,7 @@ import {
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { telegramError } from "./helpers/ctx";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/paydisiniReconcile";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 
@@ -117,6 +118,61 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     const after = await prisma.order.findUnique({ where: { id: created!.id } });
     expect(after?.paymentMsgChatId).toBeNull();
     expect(after?.paymentMsgId).toBeNull();
+  });
+
+  // Twin of the identical suite in tokopay-reconcile.test.ts — see there for
+  // why dropping the anchor after a merely-retryable failure strands the buyer
+  // on a stale QRIS QR with nothing left in the system that would retry it.
+  describe("a failed success-bubble flip only drops the anchor when the failure is final", () => {
+    const flipWith = (captionError: unknown, textError = captionError) =>
+      ({
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        editMessageCaption: vi.fn().mockRejectedValue(captionError),
+        editMessageText: vi.fn().mockRejectedValue(textError),
+      }) as unknown as Api;
+
+    /** A delivered order with an anchored bubble whose flip failed as given. */
+    async function deliverWithFailedFlip(api: Api) {
+      const created = await makePaydisiniOrder();
+      const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+      await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+      stubStatus({ status: "success", unique_code: "TRX-EDITFAIL", amount: pending!.totalAmount.toString() });
+
+      await reconcileOrder(api, CREDS, pending!);
+
+      return prisma.order.findUnique({ where: { id: created!.id } });
+    }
+
+    it.each([
+      ["Telegram flood control", telegramError(429, "Too Many Requests: retry after 30")],
+      ["a Telegram server error", telegramError(502, "Bad Gateway")],
+      ["something that is not a Telegram API error at all, such as a network fault", new Error("socket hang up")],
+    ])("keeps the anchor when the flip fails with %s, so the paid-order bubble sweep retries it", async (_label, error) => {
+      const after = await deliverWithFailedFlip(flipWith(error));
+
+      expect(after?.status).toBe(OrderStatus.DELIVERED);
+      expect(after?.paymentMsgChatId).not.toBeNull();
+      expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    it("clears the anchor when Telegram says the bubble is gone for good, so it self-heals out of the sweep's queue", async () => {
+      const after = await deliverWithFailedFlip(flipWith(telegramError(400, "Bad Request: message to edit not found")));
+
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
+    it("clears the anchor when only the caption attempt says the bubble already shows this exact text", async () => {
+      const after = await deliverWithFailedFlip(
+        flipWith(
+          telegramError(400, "Bad Request: message is not modified"),
+          telegramError(400, "Bad Request: there is no text in the message to edit"),
+        ),
+      );
+
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
   });
 });
 

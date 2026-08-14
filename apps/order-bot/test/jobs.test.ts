@@ -227,6 +227,40 @@ describe("editPaymentBubble", () => {
     expect(result).toEqual({ status: "not_edited", permanent: false });
   });
 
+  // The two attempts fail with DIFFERENT errors here, unlike every case
+  // above — which is the whole point. A photo/QR bubble whose caption already
+  // shows the target text answers the caption attempt with "message is not
+  // modified" (permanent: the goal is already met) and the text attempt with
+  // "there is no text in the message to edit" (deliberately NOT permanent: it
+  // names the wrong edit method, not a dead bubble). Classifying only the text
+  // attempt read that pair as transient, so the sweeper kept the anchor and
+  // re-ran the identical doomed edit every minute forever, burning one of its
+  // MAX_ORDERS_PER_CYCLE slots for good.
+  it("reports a permanent failure when only the caption attempt's error says so, e.g. a photo bubble that already shows this exact text", async () => {
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message is not modified")),
+      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit")),
+    });
+
+    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
+
+    expect(result).toEqual({ status: "not_edited", permanent: true });
+  });
+
+  it("still reports a NON-permanent failure when neither attempt's error rules out a later retry", async () => {
+    const api = fakeApi({
+      // The natural pairing for a text-only bubble Telegram is currently
+      // flood-controlling: the caption attempt names the wrong method, the
+      // text attempt is throttled. Neither is evidence the bubble is dead.
+      editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no caption in the message to edit")),
+      editMessageText: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+    });
+
+    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
+
+    expect(result).toEqual({ status: "not_edited", permanent: false });
+  });
+
   it("with fallback DM on, sends a DM and reports it when the bubble can't be edited", async () => {
     const api = fakeApi({
       editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
@@ -466,6 +500,27 @@ describe("sweepPaidOrderBubbles", () => {
       expect(after?.paymentMsgChatId).toBeNull();
     });
 
+    // The photo/QR bubble version of the case above, and the one the sweep
+    // actually meets in production: a caption edit that landed server-side but
+    // lost the SWEEP_EDIT_TIMEOUT_MS race, an anchor-clearing write that
+    // failed after a successful edit, or a buyer's Refresh tap racing the
+    // sweep all leave a bubble already showing this exact text with its anchor
+    // still set. The two attempts then fail with DIFFERENT errors — hence two
+    // distinct rejections here rather than the shared one the cases above use.
+    it("clears the anchor when only the caption attempt says the bubble already shows this text, instead of re-running a doomed edit every minute forever", async () => {
+      const order = await anchoredOrder();
+      const api = fakeApi({
+        editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message is not modified")),
+        editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit")),
+      });
+
+      await sweepPaidOrderBubbles(api);
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
     it("keeps the anchor when Telegram flood-controls the edit, so the next cycle retries instead of abandoning a live bubble", async () => {
       const order = await anchoredOrder();
       const api = failEveryEditWith(telegramError(429, "Too Many Requests: retry after 30"));
@@ -495,6 +550,22 @@ describe("sweepPaidOrderBubbles", () => {
       const after = await prisma.order.findUnique({ where: { id: order.id } });
       expect(after?.paymentMsgChatId).not.toBeNull();
       expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    // A broad flood-control episode fails EVERY edit in the batch at once, so
+    // a warning per order was up to MAX_ORDERS_PER_CYCLE near-identical lines
+    // a minute for as long as Telegram kept throttling. CLAUDE.md's logging
+    // convention says to summarize by count instead.
+    it("logs one aggregate warning for the whole sweep rather than one per order when Telegram throttles every edit", async () => {
+      for (let i = 0; i < 3; i++) await anchoredOrder();
+      const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+      const api = failEveryEditWith(telegramError(429, "Too Many Requests: retry after 30"));
+
+      await sweepPaidOrderBubbles(api);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]![0])).toContain("3");
+      warn.mockRestore();
     });
 
     it("retries the same order on the next cycle after a transient failure, and clears it once the edit lands", async () => {

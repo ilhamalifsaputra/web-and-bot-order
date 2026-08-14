@@ -39,6 +39,7 @@ import {
   recordPollHealth,
 } from "@app/db";
 import { esc } from "../util/format";
+import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
@@ -54,24 +55,58 @@ type AnchoredOrder = {
 };
 
 /**
- * Flip the anchored QR bubble to a success message. Best-effort: a photo
- * bubble edits its caption; a text-fallback bubble edits its text. Never throws.
+ * Flip the anchored QR bubble to a success message, and report whether the
+ * order's anchor may now be dropped. Best-effort: a photo bubble edits its
+ * caption; a text-fallback bubble edits its text. Never throws — a rejected
+ * edit is caught right here rather than propagating into the `withTimeout`
+ * race `editBubbleAndClear` wraps this in, which is what lets that race keep
+ * meaning exactly one thing ("the call hung past the deadline").
+ *
+ * Returns "keep_anchor" for a failure a later attempt could still get past
+ * (flood control, a 5xx, a network fault, anything unrecognised), because the
+ * anchor is the ONLY thing that lists this order for `sweepPaidOrderBubbles`
+ * (jobs/index.ts) — dropping it here would leave the buyer staring at a stale
+ * QRIS QR, for an order that is already paid and delivered, with nothing left
+ * in the system that would ever retry the edit. Returns "clear_anchor" when
+ * the edit landed, or when Telegram said this bubble can never accept it, so
+ * a bubble the buyer deleted self-heals out of that sweep's queue instead of
+ * costing it a slot every minute forever. `isPermanentBubbleEditFailure`
+ * (util/bubbleEditFailure.ts) draws that line once for all five call sites
+ * that hold this contract, including the twin of this function in
+ * paydisiniReconcile.ts.
+ *
+ * Both attempts' errors are classified, and either one proving the edit can
+ * never land is enough — a photo/QR bubble that already shows this exact text
+ * says so only through the CAPTION attempt ("message is not modified"), while
+ * its text attempt answers the deliberately-not-permanent "there is no text
+ * in the message to edit". Same rule `editPaymentBubble` (jobs/index.ts)
+ * applies to its own two attempts.
  */
-async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void> {
-  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<"clear_anchor" | "keep_anchor"> {
+  // No anchor to begin with: nothing to edit and nothing to strand, so the
+  // caller's clear is a harmless no-op.
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return "clear_anchor";
   const lang = langCode(order.user.language);
   const chatId = Number(order.paymentMsgChatId);
   const text = coreT("checkout.payment_received", lang, { code: order.orderCode });
   const markup = paymentSuccessKb(lang);
   try {
     await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
-  } catch {
+  } catch (captionError) {
     try {
       await api.editMessageText(chatId, order.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
-    } catch {
-      /* bubble gone/uneditable — the credential DM already informed the buyer */
+    } catch (textError) {
+      if (!isPermanentBubbleEditFailure(textError) && !isPermanentBubbleEditFailure(captionError)) {
+        logger.warn(
+          { err: textError },
+          `TokoPay reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`,
+        );
+        return "keep_anchor";
+      }
+      /* bubble gone/uneditable for good — the credential DM already informed the buyer */
     }
   }
+  return "clear_anchor";
 }
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
@@ -133,13 +168,18 @@ export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
  * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E)
  * makes for its own edits — that generic sweeper is also the backstop that
  * eventually catches this order's bubble if this fast path's own edit times
- * out here. */
+ * out here. So does an edit Telegram refused for a reason that might not hold
+ * next minute: `editBubbleToSuccess` never throws (it catches and classifies
+ * the rejection itself), so `outcome` is either its own clear/keep verdict or
+ * "timeout", the one case it cannot see. */
 async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
   const outcome = await withTimeout(editBubbleToSuccess(api, order), RECONCILE_TELEGRAM_TIMEOUT_MS);
   if (outcome === "timeout") {
     logger.warn(`TokoPay reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — anchor left in place so the next sweep retries`);
     return;
   }
+  // "keep_anchor" already logged its own reason inside editBubbleToSuccess.
+  if (outcome === "keep_anchor") return;
   await clearOrderPaymentMessage(prisma, order.id);
 }
 

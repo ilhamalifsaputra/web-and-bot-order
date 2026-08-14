@@ -15,6 +15,7 @@ import {
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { telegramError } from "./helpers/ctx";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/tokopayReconcile";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
@@ -131,6 +132,64 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const after = await prisma.order.findUnique({ where: { id: created!.id } });
     expect(after?.paymentMsgChatId).toBeNull();
     expect(after?.paymentMsgId).toBeNull();
+  });
+
+  // The anchor IS the work queue: `sweepPaidOrderBubbles` (jobs/index.ts)
+  // lists exactly the settled orders that still carry one, so clearing it
+  // after an edit Telegram merely refused THIS minute leaves nothing in the
+  // system that would ever retry — the buyer stares at a stale QRIS QR for an
+  // order that is already paid and delivered. QRIS is this shop's dominant
+  // payment method, so this rail is where that bug hurts most.
+  describe("a failed success-bubble flip only drops the anchor when the failure is final", () => {
+    const flipWith = (captionError: unknown, textError = captionError) =>
+      ({
+        sendMessage: vi.fn().mockResolvedValue(undefined),
+        editMessageCaption: vi.fn().mockRejectedValue(captionError),
+        editMessageText: vi.fn().mockRejectedValue(textError),
+      }) as unknown as Api;
+
+    /** A delivered order with an anchored bubble whose flip failed as given. */
+    async function deliverWithFailedFlip(api: Api) {
+      const created = await makeTokopayOrder();
+      const [pending] = await listPendingTokopayOrders(prisma, new Date());
+      await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+      stubStatus({ status: "Paid", trx_id: "TRX-EDITFAIL", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
+
+      await reconcileOrder(api, CREDS, pending!);
+
+      return prisma.order.findUnique({ where: { id: created!.id } });
+    }
+
+    it.each([
+      ["Telegram flood control", telegramError(429, "Too Many Requests: retry after 30")],
+      ["a Telegram server error", telegramError(502, "Bad Gateway")],
+      ["something that is not a Telegram API error at all, such as a network fault", new Error("socket hang up")],
+    ])("keeps the anchor when the flip fails with %s, so the paid-order bubble sweep retries it", async (_label, error) => {
+      const after = await deliverWithFailedFlip(flipWith(error));
+
+      expect(after?.status).toBe(OrderStatus.DELIVERED);
+      expect(after?.paymentMsgChatId).not.toBeNull();
+      expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    it("clears the anchor when Telegram says the bubble is gone for good, so it self-heals out of the sweep's queue", async () => {
+      const after = await deliverWithFailedFlip(flipWith(telegramError(400, "Bad Request: message to edit not found")));
+
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
+    it("clears the anchor when only the caption attempt says the bubble already shows this exact text", async () => {
+      const after = await deliverWithFailedFlip(
+        flipWith(
+          telegramError(400, "Bad Request: message is not modified"),
+          telegramError(400, "Bad Request: there is no text in the message to edit"),
+        ),
+      );
+
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
   });
 });
 

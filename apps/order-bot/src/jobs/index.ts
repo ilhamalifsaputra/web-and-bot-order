@@ -125,18 +125,28 @@ export async function editPaymentBubble(
   try {
     await api.editMessageCaption(args.chatId, args.messageId, { caption: args.text, parse_mode: "HTML", reply_markup: args.markup });
     return { status: "edited", via: "caption" };
-  } catch {
+  } catch (captionError) {
     try {
       await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
       return { status: "edited", via: "text" };
-    } catch (editError) {
-      // Bubble gone/uneditable — or merely unreachable this minute. Only the
-      // TEXT attempt's error is classified: it is the last and most general of
-      // the two, so a caption failure that the text edit then recovers from
-      // never reaches here at all, and a caption failure caused by the bubble
-      // being a text message ("there is no caption…") must not be mistaken for
-      // the bubble being dead.
-      const permanent = isPermanentBubbleEditFailure(editError);
+    } catch (textError) {
+      // Bubble gone/uneditable — or merely unreachable this minute. BOTH
+      // attempts' errors get classified, and either one proving the edit can
+      // never land is enough: for a photo/QR bubble that already shows this
+      // exact text, the caption attempt is the ONLY one that says so ("message
+      // is not modified" — the goal is already met), while the text attempt
+      // answers "there is no text in the message to edit", which deliberately
+      // is not permanent because it names the wrong edit method rather than a
+      // dead bubble. Reading the text attempt alone called that pair transient
+      // and re-ran the identical doomed edit every minute forever, holding one
+      // of the sweep's MAX_ORDERS_PER_CYCLE slots for good.
+      //
+      // The reverse mistake can't happen here: a caption failure the text edit
+      // then recovers from never reaches this branch at all, and neither
+      // "there is no caption…" nor "there is no text…" is on the permanent
+      // list, so a wrong-method answer from either attempt never on its own
+      // condemns a bubble the other method could still fix.
+      const permanent = isPermanentBubbleEditFailure(textError) || isPermanentBubbleEditFailure(captionError);
       if (args.fallbackDm == null) return { status: "not_edited", permanent };
       try {
         await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
@@ -253,6 +263,14 @@ export async function sweepPaidOrderBubbles(
   const totalBudgetMs = opts?.totalBudgetMs ?? SWEEP_TOTAL_BUDGET_MS;
   const orders = await listSettledOrdersAwaitingBubbleEdit(prisma, MAX_ORDERS_PER_CYCLE);
   const sweepStartedAt = Date.now();
+  // Counted, not logged per order (CLAUDE.md: summarize by count). The failure
+  // this tracks is overwhelmingly a shop-wide event — Telegram flood control
+  // or an API outage hits every edit in the batch at once — so a line per
+  // order meant up to MAX_ORDERS_PER_CYCLE near-identical warnings every
+  // single minute for as long as the outage lasted. One aggregate line after
+  // the loop says the same thing; which order hit which case stays available
+  // at debug for whoever is actually chasing one order.
+  let keptForRetry = 0;
   for (const [index, order] of orders.entries()) {
     if (Date.now() - sweepStartedAt > totalBudgetMs) {
       logger.warn(`The paid-order bubble sweep ran out of its ${totalBudgetMs}ms whole-sweep budget with ${orders.length - index} order(s) still showing a stale payment bubble — their anchors are left in place on purpose so the next cycle picks them up again`);
@@ -271,14 +289,19 @@ export async function sweepPaidOrderBubbles(
       editTimeoutMs,
     );
     if (outcome === "timeout") {
-      logger.warn(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
+      keptForRetry++;
+      logger.debug(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
       continue;
     }
     if (outcome.status === "not_edited" && !outcome.permanent) {
-      logger.warn(`The paid-order bubble sweep could not edit order ${order.orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the next cycle retries the edit`);
+      keptForRetry++;
+      logger.debug(`The paid-order bubble sweep could not edit order ${order.orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later`);
       continue;
     }
     await clearOrderPaymentMessage(prisma, order.id);
+  }
+  if (keptForRetry > 0) {
+    logger.warn(`The paid-order bubble sweep left ${keptForRetry} of ${orders.length} order(s) still showing a stale payment bubble because the edit either hung past its ${editTimeoutMs}ms budget or was refused for a reason that does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — their anchors are kept on purpose so the next cycle retries them, and which order hit which case is logged at debug level`);
   }
 }
 

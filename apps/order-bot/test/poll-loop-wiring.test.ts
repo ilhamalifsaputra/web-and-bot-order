@@ -138,14 +138,21 @@ const RAILS: Array<{
    * every other rail, which still uses the default.
    */
   cycleTimeoutMs?: number;
+  /** Fragment of THIS rail's boot-time "could not read the configuration"
+   * warning. Asserting on it rather than on "some warn happened" is what
+   * makes the last suite in this file prove the rejection was actually
+   * handled by the rail under test: `logger.warn` is shared process-wide, so
+   * a bare `toHaveBeenCalled()` there passed on a warning from any source at
+   * all — including one this test never caused. */
+  bootWarnFragment?: string;
 }> = [
-  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS },
-  { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth", cycleTimeoutMs: BYBIT_CYCLE_TIMEOUT_MS },
-  { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth", cycleTimeoutMs: BYBIT_BSC_CYCLE_TIMEOUT_MS },
+  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the Binance Internal Transfer configuration" },
+  { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth", cycleTimeoutMs: BYBIT_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the Bybit deposit configuration" },
+  { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth", cycleTimeoutMs: BYBIT_BSC_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the Bybit BSC deposit configuration" },
   { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: TRACKER_CYCLE_TIMEOUT_MS },
-  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "tokopay", cycleTimeoutMs: TOKOPAY_CYCLE_TIMEOUT_MS },
-  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "paydisini", cycleTimeoutMs: PAYDISINI_CYCLE_TIMEOUT_MS },
-  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "nowpayments", cycleTimeoutMs: NOWPAYMENTS_CYCLE_TIMEOUT_MS },
+  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "tokopay", cycleTimeoutMs: TOKOPAY_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the TokoPay credentials" },
+  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "paydisini", cycleTimeoutMs: PAYDISINI_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the PayDisini credentials" },
+  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "nowpayments", cycleTimeoutMs: NOWPAYMENTS_CYCLE_TIMEOUT_MS, bootWarnFragment: "Could not read the NOWPayments credentials" },
 ];
 
 // Only the four rails with triggerImmediatePoll — the three QRIS
@@ -605,7 +612,7 @@ describe("a failed boot-time configuration read never takes the bot process down
 
   it.each(BOOT_CONFIG_RAILS)(
     "$name: reports the failed settings read as a warning instead of leaving an unhandled rejection",
-    async ({ mod, hangFn }) => {
+    async ({ mod, hangFn, bootWarnFragment }) => {
       const bootRead = vi.mocked(dbMock[hangFn] as unknown as (...a: unknown[]) => Promise<unknown>);
       bootRead.mockReset();
       bootRead.mockRejectedValue(new Error("SQLITE_BUSY: database is locked"));
@@ -623,7 +630,15 @@ describe("a failed boot-time configuration read never takes the bot process down
       }
 
       expect(unhandled).toEqual([]);
-      expect(warn).toHaveBeenCalled();
+      // Named, not just counted: `logger.warn` is process-wide, so asserting
+      // only that SOMETHING warned would pass on a warning this test never
+      // caused — including one from a rail it isn't even exercising. The
+      // message string is the second argument here, because the handler logs
+      // the rejection as structured metadata first (`logger.warn({ err }, …)`).
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) }),
+        expect.stringContaining(bootWarnFragment!),
+      );
     },
   );
 });

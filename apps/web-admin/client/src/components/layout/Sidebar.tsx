@@ -20,6 +20,7 @@ import {
   Palette,
   Zap,
   HardDrive,
+  Wallet,
   X,
 } from "lucide-react";
 import { useOperations } from "../../hooks/useOperations";
@@ -55,6 +56,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/orders", label: "Orders", icon: ShoppingCart, badge: "orders" },
       { to: "/payments", label: "Payments", icon: CreditCard },
+      { to: "/wallet-transactions", label: "Wallet Ledger", icon: Wallet },
     ],
   },
   {

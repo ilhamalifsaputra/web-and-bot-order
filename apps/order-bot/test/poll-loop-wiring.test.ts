@@ -60,8 +60,6 @@ vi.mock("@app/db", () => ({
   getPaydisiniCreds: vi.fn(),
   listPendingPaydisiniOrders: vi.fn(),
   deliverPaidPaydisiniOrder: vi.fn(),
-  listDeliveredOrdersAwaitingEdit: vi.fn(),
-  clearOrderPaymentMessage: vi.fn(),
   // nowpaymentsReconcile.ts
   getNowpaymentsCreds: vi.fn(),
   listPendingNowpaymentsOrders: vi.fn(),

@@ -91,6 +91,7 @@ const SMTP_KEYS = new Set([
   "owner_email_on_manual_queue",
   "owner_email_on_new_ticket",
   "owner_email_on_ticket_reply",
+  "owner_email_on_wallet_topup",
 ]);
 
 // Per-method credential field groupings. The _enabled field for each method
@@ -222,6 +223,7 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   owner_email_on_manual_queue: 'Type "true" or "false" — email the owner when a paid order needs hand fulfilment.',
   owner_email_on_new_ticket: 'Type "true" or "false" — email the owner when a customer opens a support ticket.',
   owner_email_on_ticket_reply: 'Type "true" or "false" — email the owner when a customer replies to a support ticket.',
+  owner_email_on_wallet_topup: 'Type "true" or "false" — email the owner when a buyer tops up their wallet balance.',
   custom_emoji_map: "Maps emoji in bot messages to Telegram Premium custom emoji ids.",
   bulk_purchase_broadcast_enabled: "Post a message to the public channel when a large purchase happens.",
   bulk_purchase_broadcast_threshold: "Minimum quantity in one order that triggers the broadcast.",
@@ -270,7 +272,14 @@ function validateField(key: string, value: string): string | null {
     return "Expected a plain email address, e.g. owner@example.com.";
   }
   if (
-    ["owner_email_enabled", "owner_email_on_paid_order", "owner_email_on_manual_queue", "owner_email_on_new_ticket", "owner_email_on_ticket_reply"].includes(key) &&
+    [
+      "owner_email_enabled",
+      "owner_email_on_paid_order",
+      "owner_email_on_manual_queue",
+      "owner_email_on_new_ticket",
+      "owner_email_on_ticket_reply",
+      "owner_email_on_wallet_topup",
+    ].includes(key) &&
     !["true", "false"].includes(value.toLowerCase())
   ) {
     return 'Must be "true" or "false".';

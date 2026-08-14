@@ -35,9 +35,10 @@ import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
-import { getOrder, uniqueOrderCode } from "./orders";
+import { getOrder, uniqueOrderCode, customerLabel } from "./orders";
 import { adjustWallet } from "./users";
 import { finalizeOrderPayment } from "./pricing";
+import { enqueueOwnerWalletTopupEmail } from "./notifications";
 
 const ZERO = new Decimal(0);
 
@@ -323,6 +324,17 @@ export async function createWalletTopupOrder(
  * balance (re-read fresh) rather than a stale/zero figure, even though
  * `credited` is 0 — callers should gate any notification on
  * `credited.greaterThan(0)`, not on `newBalance` alone.
+ *
+ * Also enqueues the shop OWNER's OWNER_EMAIL_WALLET_TOPUP notification
+ * (`enqueueOwnerWalletTopupEmail`) right after the `adjustWallet` credit
+ * lands — this is the ONE call site for that email, shared by all six
+ * top-up-capable rails, so callers must never enqueue it themselves per-rail
+ * (that would produce a duplicate email). Placed after the atomic claim, so
+ * the no-op double-settlement early-return above never reaches it — the
+ * claim is what guarantees the email is sent at most once per top-up. This
+ * is distinct from `enqueueWalletTopupCreditedDm`, which the three webhook
+ * rail callers enqueue separately for the BUYER over Telegram DM — different
+ * recipient, different channel, never to be conflated.
  */
 export async function settleWalletTopup(
   db: Db,
@@ -363,6 +375,26 @@ export async function settleWalletTopup(
     currency: order.currency as "IDR" | "USDT",
     orderId: order.id,
     adminId: null,
+  });
+
+  // Owner-notification email — the single call site for all six top-up rails
+  // (see this function's own doc-comment). Placed after the atomic claim
+  // succeeded and the credit landed, so it can never fire on the no-op
+  // double-settlement branch above (that branch returns early, before this
+  // line). enqueueOwnerWalletTopupEmail is itself a no-op unless the owner
+  // has configured the master toggle, owner_email_on_wallet_topup, and a
+  // valid owner_email — same inert-until-configured contract every other
+  // OWNER_EMAIL_* event follows.
+  await enqueueOwnerWalletTopupEmail(db, {
+    orderId: order.id,
+    orderCode: order.orderCode,
+    customerLabel: customerLabel(order.user),
+    amount: new Decimal(order.totalAmount),
+    currency: order.currency,
+    newBalance,
+    paymentMethod: order.paymentMethod,
+    transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
+    toppedUpAt: now,
   });
 
   const refreshed = await getOrder(db, orderId);

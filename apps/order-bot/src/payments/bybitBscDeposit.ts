@@ -48,6 +48,7 @@ import {
   resolveBybitBscConfig,
   enqueueNotification,
   getUser,
+  clearOrderPaymentMessage,
   type BybitBscConfig,
   type BybitBscDeliverResult,
 } from "@app/db";
@@ -58,6 +59,7 @@ import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
+import type { InlineKeyboard } from "grammy";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
 // AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
@@ -219,6 +221,27 @@ export async function fetchRecentDeposits(cfg: BybitBscConfig): Promise<BybitBsc
 
 type DeliveredOrder = Extract<BybitBscDeliverResult, { status: "delivered" }>["order"];
 
+/** Edit the anchored bubble to `text`/`markup`, never throwing — a
+ * rejected/uneditable bubble (e.g. the buyer navigated away and it was
+ * deleted) is swallowed right here instead of propagating to the
+ * `withTimeout` race each call site wraps this in. That's what lets the
+ * race cleanly distinguish a genuine wall-clock timeout (skip the clear,
+ * retry next sweep) from a completed edit — whether it succeeded or its
+ * rejection was swallowed, either way the anchor clears (T1 critical fix:
+ * a permanently-uneditable bubble must self-heal instead of making the
+ * upcoming sweeper retry a doomed edit forever). Used only by onDelivered
+ * and editBubbleToProcessing below — onPaymentDetected's intermediate
+ * PAYMENT_DETECTED edit is out of scope for this fix and deliberately left
+ * untouched, since the confirmation tracker depends on that anchor
+ * surviving regardless of edit outcome. */
+async function editAnchoredBubble(api: Api, chatId: number, messageId: number, text: string, markup: InlineKeyboard): Promise<void> {
+  try {
+    await api.editMessageText(chatId, messageId, text, { parse_mode: "HTML", reply_markup: markup });
+  } catch {
+    /* bubble may be gone/uneditable — the credential/processing DM already informed the buyer */
+  }
+}
+
 async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   // Web-only buyers have no Telegram chat — skip all DMs for them.
   if (order.user.telegramId == null) return;
@@ -276,22 +299,30 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     }
   }
 
-  // Turn the payment-instructions bubble into a success message in place.
-  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — but only skip the clear on a genuine
+  // wall-clock timeout (T1 critical fix). editAnchoredBubble never throws
+  // (a rejected/uneditable bubble is swallowed inside it), so `outcome` here
+  // is either a completed edit or "timeout" — never a rejection — meaning a
+  // timed-out edit is the ONLY case that leaves the anchor in place for a
+  // later sweep to retry; a rejected edit clears it right away and
+  // self-heals. Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as
+  // the DM above.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
-    try {
-      const outcome = await withTimeout(
-        api.editMessageText(
-          Number(order.paymentMsgChatId),
-          order.paymentMsgId,
-          topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-          { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
-        ),
-        TELEGRAM_MESSAGE_TIMEOUT_MS,
-      );
-      if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
-    } catch {
-      /* bubble may be gone/uneditable — the credential DM already informed the buyer */
+    const outcome = await withTimeout(
+      editAnchoredBubble(
+        api,
+        Number(order.paymentMsgChatId),
+        order.paymentMsgId,
+        topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+        paymentSuccessKb(lang),
+      ),
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
+    );
+    if (outcome === "timeout") {
+      logger.warn(`Bybit BSC deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+    } else {
+      await clearOrderPaymentMessage(prisma, order.id);
     }
   }
 }
@@ -308,21 +339,24 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
-  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
-  // onDelivered above for why.
-  try {
-    const outcome = await withTimeout(
-      api.editMessageText(
-        Number(order.paymentMsgChatId),
-        order.paymentMsgId,
-        coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
-      ),
-      TELEGRAM_MESSAGE_TIMEOUT_MS,
-    );
-    if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
-  } catch {
-    /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
+  // Clear the anchor pointer unless the edit genuinely timed out — same
+  // swallow-then-race contract onDelivered's own bubble edit makes above (T1
+  // critical fix). Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the
+  // identical bubble edit in onDelivered above for why.
+  const outcome = await withTimeout(
+    editAnchoredBubble(
+      api,
+      Number(order.paymentMsgChatId),
+      order.paymentMsgId,
+      coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+      paymentSuccessKb(lang),
+    ),
+    TELEGRAM_MESSAGE_TIMEOUT_MS,
+  );
+  if (outcome === "timeout") {
+    logger.warn(`Bybit BSC deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+  } else {
+    await clearOrderPaymentMessage(prisma, order.id);
   }
 }
 

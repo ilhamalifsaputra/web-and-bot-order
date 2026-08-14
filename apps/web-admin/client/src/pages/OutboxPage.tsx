@@ -25,9 +25,10 @@ import { describeError } from "../lib/errorMessages";
  * Mirrors AuditPage.tsx's ACTION_LABELS pattern: unknown/future values
  * (including any pre-existing event not yet added here) fall back to
  * humanizeEventCode() instead of showing the raw enum — still readable,
- * just not an explicit label. The "Owner email: ..." prefix keeps the four
- * EMAIL-channel events visually distinguishable from the Telegram-oriented
- * labels at a glance. */
+ * just not an explicit label. The "Owner email: ..." / "Buyer email: ..."
+ * prefixes keep the EMAIL-channel events visually distinguishable from the
+ * Telegram-oriented labels at a glance — and, between themselves, make the
+ * recipient obvious, since those two go to very different people. */
 const EVENT_LABELS: Record<string, string> = {
   ORDER_DELIVERED: "Order delivered",
   ADMIN_OVERPAID: "Admin overpaid alert",
@@ -45,6 +46,11 @@ const EVENT_LABELS: Record<string, string> = {
   OWNER_EMAIL_MANUAL_ORDER_QUEUED: "Owner email: manual order queued",
   OWNER_EMAIL_NEW_TICKET: "Owner email: new ticket",
   OWNER_EMAIL_TICKET_REPLY: "Owner email: ticket reply",
+  OWNER_EMAIL_WALLET_TOPUP: "Owner email: wallet top-up",
+  // "Buyer email", not "Owner email" — this is the only EMAIL-channel event
+  // that goes to the customer rather than to the shop owner, and the label
+  // has to make that obvious at a glance in this table.
+  BUYER_EMAIL_ORDER_READY: "Buyer email: order ready",
 };
 
 function humanizeEventCode(event: string): string {

@@ -211,7 +211,7 @@ export async function enqueueAdminStalePayment(
  * all be set, or this returns without writing a row (no PENDING row that then
  * never gets a `to`; the feature stays completely inert until configured,
  * same as `getSmtpCreds` returning null leaves the forgot-password mail off
- * today). Internal — the four `enqueueOwner*Email` wrappers below are the
+ * today). Internal — the five `enqueueOwner*Email` wrappers below are the
  * public surface, each pinned to its own `NotificationEvent`/`OwnerEmailEvent`
  * pair so the dispatcher's email renderer and the Telegram `render()`
  * if-chain never have to handle each other's payload shape.
@@ -358,6 +358,149 @@ export async function enqueueOwnerTicketReplyEmail(
     ticket_id: args.ticketId,
     user_id: args.userId,
     message: args.message.slice(0, 500),
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a buyer topped up their wallet" email —
+ * `settleWalletTopup`'s single call site (wallet_topup.ts), placed inside the
+ * successful atomic PENDING_PAYMENT -> DELIVERED claim branch, after
+ * `adjustWallet`. That one call site is shared by all six top-up-capable
+ * rails (TokoPay, PayDisini, NOWPayments, Binance Internal, Bybit, Bybit
+ * BSC), so this enqueues exactly once per settled top-up no matter which
+ * rail settled it — the caller must never call this a second time per-rail,
+ * or it produces a duplicate email. No-op (see `enqueueOwnerEmail`) unless
+ * the owner has the master toggle, `owner_email_on_wallet_topup`, and a
+ * valid `owner_email` all configured.
+ *
+ * Distinct from `enqueueWalletTopupCreditedDm` above: that one is a Telegram
+ * DM to the BUYER; this is an EMAIL to the shop OWNER. Different recipient,
+ * different channel, different payload shape — the two must never be
+ * conflated.
+ *
+ * `amount`/`newBalance` go through `.toString()` — never a raw `number` —
+ * per money rules. `transactionId` is written as an explicit JSON `null`
+ * when the caller has none, never omitted and never the string `"null"`,
+ * same convention as `enqueueOwnerOrderPaidEmail`'s optional fields.
+ * `toppedUpAt` is written as an ISO string.
+ */
+export async function enqueueOwnerWalletTopupEmail(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    customerLabel: string;
+    amount: Decimal;
+    currency: string;
+    newBalance: Decimal;
+    paymentMethod: string;
+    transactionId: string | null;
+    toppedUpAt: Date;
+  },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, "wallet_topup", args.orderId, {
+    order_code: args.orderCode,
+    customer_label: args.customerLabel,
+    amount: args.amount.toString(),
+    currency: args.currency,
+    new_balance: args.newBalance.toString(),
+    payment_method: args.paymentMethod,
+    transaction_id: args.transactionId,
+    topped_up_at: args.toppedUpAt.toISOString(),
+  });
+}
+
+/**
+ * Enqueue the BUYER's "your order is ready" email — the completion receipt a
+ * guest shopper gets when their order actually finishes. Enqueued from
+ * `settlePaidOrder`'s AUTO branch and from `fulfillManualOrder`
+ * (packages/db/src/crud/orders.ts), each guarded on
+ * `order.user.isGuest && order.user.guestEmail`.
+ *
+ * STRUCTURALLY UNLIKE EVERY `enqueueOwner*Email` ABOVE — do not refactor them
+ * together. Those resolve their recipient from Settings via
+ * `enqueueOwnerEmail`/`resolveOwnerEmailRecipient` and no-op unless the shop
+ * owner has turned the feature on. This one writes its row unconditionally,
+ * addressed to the `to` the CALLER passed in (the guest's own checkout
+ * address), and has no owner toggle at all: a buyer's completion receipt must
+ * not disappear because the owner muted their own alerts, and must never be
+ * delivered to the owner's address. It therefore calls
+ * `db.notificationOutbox.create` directly rather than going through
+ * `enqueueOwnerEmail`. The caller owns the decision to send; this function
+ * owns only the row.
+ *
+ * NO CREDENTIALS IN THE PAYLOAD, EVER. There is no field here for delivered
+ * content and none may be added: this payload is rendered in the admin
+ * `/outbox` panel and the email built from it lands unencrypted in an inbox
+ * that keeps it forever. The whole point of this email is to be a summary
+ * plus a way back in — the buyer reads what they bought on the order page.
+ *
+ * Payload conventions match the owner-email helpers: every money `Decimal`
+ * (including each item's `unitPrice` and `lineTotal`) goes through
+ * `.toString()` — never a raw `number` — per money rules, and every optional
+ * field
+ * (`variant`, `warrantyDays`, `orderUrl`, `trackUrl`) is written as an
+ * explicit JSON `null` when absent, never omitted and never the string
+ * `"null"`; the renderer, not this layer, decides to drop the corresponding
+ * line.
+ */
+export async function enqueueBuyerOrderReadyEmail(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    /** The guest's own email address, straight from the call site — NOT the
+     * `owner_email` Setting. See this function's header. */
+    to: string;
+    items: {
+      name: string;
+      variant: string | null;
+      quantity: number;
+      unitPrice: Decimal;
+      /** The whole line's money, computed by the CALLER — not something this
+       * layer or the renderer may re-derive as `unitPrice * quantity`. On a
+       * currency-converted order `unitPrice` has already been rounded to the
+       * nearest 0.1 USDT, so scaling it by the quantity would scale that
+       * rounding error too and print a line total contradicting the subtotal
+       * right below it. See the call site in crud/orders.ts. */
+      lineTotal: Decimal;
+    }[];
+    subtotal: Decimal;
+    discount: Decimal;
+    total: Decimal;
+    currency: string;
+    warrantyDays: number | null;
+    /** The buyer-facing order page, or null when neither SHOP_PUBLIC_URL nor
+     * PUBLIC_URL is configured — the template then renders no button. */
+    orderUrl: string | null;
+    /** The `/track` order-code recovery page, null under the same condition. */
+    trackUrl: string | null;
+  },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.BUYER_EMAIL_ORDER_READY,
+      orderId: args.orderId,
+      channel: NotificationChannel.EMAIL,
+      payloadJson: JSON.stringify({
+        to: args.to,
+        order_code: args.orderCode,
+        items: args.items.map((item) => ({
+          name: item.name,
+          variant: item.variant,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice.toString(),
+          lineTotal: item.lineTotal.toString(),
+        })),
+        subtotal: args.subtotal.toString(),
+        discount: args.discount.toString(),
+        total: args.total.toString(),
+        currency: args.currency,
+        warranty_days: args.warrantyDays,
+        order_url: args.orderUrl,
+        track_url: args.trackUrl,
+      }),
+    },
   });
 }
 

@@ -8,7 +8,6 @@ import {
   finalizeOrderPayment,
   listPendingPaydisiniOrders,
   setOrderPaymentMessage,
-  deliverPaidPaydisiniOrder,
   setSetting,
   bulkAddStock,
   getPollHealth,
@@ -16,12 +15,7 @@ import {
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import {
-  reconcileOrder,
-  sweepDeliveredAwaitingEdit,
-  pollOnce,
-  MAX_ORDERS_PER_CYCLE,
-} from "../src/payments/paydisiniReconcile";
+import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/paydisiniReconcile";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 
 let sample: SampleData;
@@ -126,116 +120,18 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
   });
 });
 
-describe("sweepDeliveredAwaitingEdit (PayDisini webhook-delivered bubbles)", () => {
-  it("flips a webhook-delivered order's bubble exactly once, then is a no-op", async () => {
-    const created = await makePaydisiniOrder();
-    await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    const r = await deliverPaidPaydisiniOrder(prisma, {
-      orderId: created!.id,
-      trxId: "TRX-WEBHOOK",
-      amount: created!.totalAmount,
-      shopUrl: null,
-    });
-    expect(r.status).toBe("delivered");
-
-    const api = fakeApi();
-    await sweepDeliveredAwaitingEdit(api);
-
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    const after = await prisma.order.findUnique({ where: { id: created!.id } });
-    expect(after?.paymentMsgChatId).toBeNull();
-    expect(after?.paymentMsgId).toBeNull();
-
-    // Second sweep: the anchor is cleared, so this must be a no-op.
-    await sweepDeliveredAwaitingEdit(api);
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-  });
-});
-
-// Task 11 review follow-up, Minor #6 / Important #2: the whole point of
-// SWEEP_EDIT_TIMEOUT_MS/SWEEP_TOTAL_BUDGET_MS (see their own doc-comments in
-// paydisiniReconcile.ts, and the RECONCILE_CYCLE_TIMEOUT_MS derivation that
-// budgets off them) is a bound nothing here actually proved holds until now.
-describe("sweepDeliveredAwaitingEdit is bounded against a black-holed bubble edit (Task 11 review follow-up, Minor #6)", () => {
-  // Real timers, not fake: `vi.useFakeTimers()` faking `setTimeout` breaks
-  // Prisma's own real I/O in this test harness (verified — it hangs the DB
-  // calls sweepDeliveredAwaitingEdit itself makes), so these race real
-  // timers against genuinely never-resolving grammY calls, at real
-  // wall-clock cost. Task 11 review follow-up, Important #2: rather than
-  // sleep for the real SWEEP_EDIT_TIMEOUT_MS/SWEEP_TOTAL_BUDGET_MS (10s/30s —
-  // ~40s of real sleeping per file), these pass sweepDeliveredAwaitingEdit's
-  // own opts to shrink both proportionally (same 1:3 ratio as production) so
-  // the identical give-up/budget-break logic is proven in well under a
-  // second, with real timers and real Prisma throughout. Production behavior
-  // is unchanged — the defaults are still the exported constants.
-  //
-  // Why not shrink these further: the budget test below needs each hung row
-  // to burn between editTimeoutMs and totalBudgetMs/2 of wall clock, so the
-  // 4th row is the first one cut off. At 50/150 that window was only 25ms
-  // wide, and under a full-suite parallel run a 50ms timer routinely
-  // overshoots it — the sweep then broke a row early and the test flaked on
-  // "expected 3 calls, got 2". These values keep the same 1:3 ratio while
-  // widening the tolerance to 100ms of scheduler jitter per row.
-  const editTimeoutMs = 200;
-  const totalBudgetMs = 600;
-
-  it("gives up waiting on a single hung bubble edit after its edit timeout, leaving the anchor in place", async () => {
-    const created = await makePaydisiniOrder();
-    await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    const r = await deliverPaidPaydisiniOrder(prisma, {
-      orderId: created!.id,
-      trxId: "TRX-HANG",
-      amount: created!.totalAmount,
-      shopUrl: null,
-    });
-    expect(r.status).toBe("delivered");
-
-    const hangingApi = {
-      editMessageCaption: vi.fn(() => new Promise(() => {})), // never resolves
-      editMessageText: vi.fn(() => new Promise(() => {})),
-    } as unknown as Api;
-
-    await sweepDeliveredAwaitingEdit(hangingApi, { editTimeoutMs, totalBudgetMs });
-
-    // The anchor was never cleared — clearOrderPaymentMessage only runs once
-    // an edit genuinely completes, and this one timed out instead.
-    const after = await prisma.order.findUnique({ where: { id: created!.id } });
-    expect(after?.paymentMsgChatId).not.toBeNull();
-    expect(after?.paymentMsgId).not.toBeNull();
-  });
-
-  it("gives up on the remaining orders once the whole-sweep budget is exceeded, leaving their anchors in place", async () => {
-    // Four DELIVERED, anchored orders whose bubble edit hangs forever.
-    // editTimeoutMs < totalBudgetMs, so no single row's own per-row timeout
-    // can exceed the whole-sweep budget by itself — but three rows each
-    // individually timing out (~editTimeoutMs each) cumulatively cross
-    // totalBudgetMs, so the budget check before the fourth row must cut the
-    // sweep off before it's ever attempted.
-    const orderIds: number[] = [];
-    for (let i = 0; i < 4; i++) {
-      const o = await makePaydisiniOrder();
-      await setOrderPaymentMessage(prisma, o!.id, 555, 100 + i);
-      await deliverPaidPaydisiniOrder(prisma, { orderId: o!.id, trxId: `TRX-BUDGET-${i}`, amount: o!.totalAmount, shopUrl: null });
-      orderIds.push(o!.id);
-    }
-
-    const hangingApi = {
-      editMessageCaption: vi.fn(() => new Promise(() => {})), // every edit hangs
-      editMessageText: vi.fn(() => new Promise(() => {})),
-    } as unknown as Api;
-
-    await sweepDeliveredAwaitingEdit(hangingApi, { editTimeoutMs, totalBudgetMs });
-
-    // Exactly 3 rows were attempted (each individually timed out) — the
-    // 4th's anchor is untouched because the whole-sweep budget check broke
-    // the loop before it was ever reached.
-    expect(hangingApi.editMessageCaption).toHaveBeenCalledTimes(3);
-
-    const fourthAfter = await prisma.order.findUnique({ where: { id: orderIds[3] } });
-    expect(fourthAfter?.paymentMsgChatId).not.toBeNull();
-    expect(fourthAfter?.paymentMsgId).not.toBeNull();
-  });
-});
+// PayDisini's own per-rail bubble sweep (`sweepDeliveredAwaitingEdit`,
+// including its "flips once then no-op" and black-holed-bubble-edit bound
+// tests) was removed in Task T2-F: the generic paid-order bubble sweeper
+// (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E)
+// replaced it, and its own test suite (apps/order-bot/test/jobs.test.ts,
+// `describe("sweepPaidOrderBubbles")`) already covers the identical
+// flip-once/no-op behavior and the identical black-holed-bubble-edit/
+// whole-sweep-budget bounds for every rail including PayDisini — see
+// jobs.test.ts's `it.each(matrix)` and its
+// "safety bounds against a black-holed bubble edit" describe block. Moving
+// these tests there instead of deleting them would have duplicated that
+// coverage.
 
 async function seedPaydisiniCreds() {
   await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");

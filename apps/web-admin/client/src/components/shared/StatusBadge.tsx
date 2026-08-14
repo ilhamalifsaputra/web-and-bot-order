@@ -60,6 +60,12 @@ const TONE: Record<string, Tone> = {
   // ReviewStatus / ReviewSentiment (Reviews dashboard, Phase A) — REPLIED and
   // CLOSED already fall back to neutral; NEUTRAL sentiment falls back to
   // neutral too, so only the tone-bearing values need an explicit entry.
+  // OrderKind (PaymentsPage's Type column) — a wallet top-up moves money into
+  // a buyer's balance rather than selling stock, so it reads differently from
+  // a product sale. PRODUCT would fall back to neutral anyway; it is listed so
+  // the pair is visibly a pair.
+  WALLET_TOPUP: "success",
+  PRODUCT: "neutral",
   PENDING_REPLY: "warning",
   HIDDEN: "danger",
   POSITIVE: "success",
@@ -72,6 +78,13 @@ const TONE_CLASS: Record<Tone, string> = {
   danger: "bg-rust-tint text-rust-dark",
   neutral: "bg-sand text-ink-soft",
 };
+
+/** The exact wording `StatusBadge` renders for a raw code. Exported so a
+ *  filter dropdown can label its options identically to the badges in the
+ *  rows it filters, instead of title-casing the same codes a second time. */
+export function statusLabel(status: string): string {
+  return titleCase(status);
+}
 
 function titleCase(status: string): string {
   return status

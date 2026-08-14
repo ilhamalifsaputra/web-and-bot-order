@@ -28,7 +28,7 @@ import {
   createDenomination,
   createWalletTopupOrder,
   upsertUser,
-  listDeliveredOrdersAwaitingEdit,
+  listSettledOrdersAwaitingBubbleEdit,
   bulkAddStock,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
@@ -643,65 +643,105 @@ describe("markUnderpaid — transactional (Task 18)", () => {
   });
 });
 
-// Task 11 review follow-up, Minor #4: `listDeliveredOrdersAwaitingEdit`
-// gained the same `limit`/`take`/`orderBy` shape as the three
-// `listPending*Orders` functions (see e.g. crud/tokopay.test.ts's
-// "listPendingTokopayOrders — the query-level cap returns the oldest rows
-// first"), but only those three ever got a test pinning it. This mirrors
-// that exact test for the one list function that was missed.
-describe("listDeliveredOrdersAwaitingEdit — the query-level cap returns the oldest rows first", () => {
-  it("returns exactly `limit` rows, and they are the `limit` oldest by createdAt", async () => {
-    const extraCreds = Array.from({ length: 53 }, (_, i) => `awaiting-edit-cap-${i}`);
-    await bulkAddStock(prisma, sample.product.id, extraCreds);
-
-    const created: { id: number; createdAt: Date }[] = [];
-    for (let i = 0; i < 53; i++) {
-      const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
-      // Stagger createdAt explicitly — a tight creation loop can tie at
-      // whatever resolution SQLite/JS Date store, which would make "the 50
-      // oldest" ambiguous and the assertion below vacuous.
-      const createdAt = new Date(Date.now() - (53 - i) * 1000);
-      await prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: OrderStatus.DELIVERED,
-          paymentMethod: PaymentMethod.TOKOPAY,
-          paymentMsgChatId: BigInt(555),
-          paymentMsgId: 777,
-          createdAt,
-        },
-      });
-      created.push({ id: order.id, createdAt });
-    }
-    const oldest50Ids = [...created].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, 50).map((o) => o.id);
-
-    const result = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY, 50);
-
-    expect(result).toHaveLength(50);
-    expect(result.map((o) => o.id)).toEqual(oldest50Ids);
-  });
-
-  it("without a limit, returns every anchored DELIVERED order of that payment method", async () => {
+// T2-A: the generic cross-method query the paid-order bubble-flip sweeper
+// polls. Not locked to one payment method or to DELIVERED — see each proof
+// below. (It replaced an earlier, TokoPay/PayDisini-only query,
+// `listDeliveredOrdersAwaitingEdit`, removed in Task T2-F once the generic
+// sweeper covered every rail — that function's own query-level-cap test used
+// to live here too; see "respects `limit`, returning the oldest rows first"
+// further down for the equivalent pin on this query.)
+describe("listSettledOrdersAwaitingBubbleEdit", () => {
+  /** Create + stamp an order with the given status/method/anchor in one go. */
+  async function makeAnchoredOrder(opts: {
+    status: string;
+    paymentMethod: string;
+    paymentMsgChatId?: bigint | null;
+    paymentMsgId?: number | null;
+    createdAt?: Date;
+  }) {
     const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     await prisma.order.update({
       where: { id: order.id },
-      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.PAYDISINI, paymentMsgChatId: BigInt(1), paymentMsgId: 2 },
+      data: {
+        status: opts.status,
+        paymentMethod: opts.paymentMethod,
+        paymentMsgChatId: opts.paymentMsgChatId === undefined ? BigInt(555) : opts.paymentMsgChatId,
+        paymentMsgId: opts.paymentMsgId === undefined ? 777 : opts.paymentMsgId,
+        ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
+      },
     });
-    // A DELIVERED order of a DIFFERENT payment method must never show up.
-    const otherMethodOrder = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
-    await prisma.order.update({
-      where: { id: otherMethodOrder.id },
-      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY, paymentMsgChatId: BigInt(1), paymentMsgId: 2 },
-    });
-    // A DELIVERED PAYDISINI order whose anchor was already cleared must never show up.
-    const clearedOrder = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
-    await prisma.order.update({
-      where: { id: clearedOrder.id },
-      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.PAYDISINI, paymentMsgChatId: null, paymentMsgId: null },
+    return order.id;
+  }
+
+  it("returns settled orders across different payment methods in one call", async () => {
+    const tokopayId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+    const binanceId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.BINANCE_INTERNAL });
+    const nowpaymentsId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.NOWPAYMENTS });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result.map((o) => o.id).sort((a, b) => a - b)).toEqual([tokopayId, binanceId, nowpaymentsId].sort((a, b) => a - b));
+  });
+
+  it("returns both PROCESSING (manual-fulfilment) and DELIVERED orders", async () => {
+    const processingId = await makeAnchoredOrder({ status: OrderStatus.PROCESSING, paymentMethod: PaymentMethod.TOKOPAY });
+    const deliveredId = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result.map((o) => o.id).sort((a, b) => a - b)).toEqual([processingId, deliveredId].sort((a, b) => a - b));
+  });
+
+  it("does not return an order whose paymentMsgId is null (already flipped or never anchored)", async () => {
+    await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+      paymentMsgChatId: null,
+      paymentMsgId: null,
     });
 
-    const result = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.PAYDISINI);
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
 
-    expect(result.map((o) => o.id)).toEqual([order.id]);
+    expect(result).toHaveLength(0);
+  });
+
+  it("does not return Bybit BSC intermediate tracking statuses (PAYMENT_DETECTED, CONFIRMING, CONFIRMED)", async () => {
+    await makeAnchoredOrder({ status: OrderStatus.PAYMENT_DETECTED, paymentMethod: PaymentMethod.BYBIT_BSC });
+    await makeAnchoredOrder({ status: OrderStatus.CONFIRMING, paymentMethod: PaymentMethod.BYBIT_BSC });
+    await makeAnchoredOrder({ status: OrderStatus.CONFIRMED, paymentMethod: PaymentMethod.BYBIT_BSC });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("respects `limit`, returning the oldest rows first", async () => {
+    const now = Date.now();
+    const older = await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.TOKOPAY,
+      createdAt: new Date(now - 5000),
+    });
+    await makeAnchoredOrder({
+      status: OrderStatus.DELIVERED,
+      paymentMethod: PaymentMethod.TOKOPAY,
+      createdAt: new Date(now - 1000),
+    });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma, 1);
+
+    expect(result.map((o) => o.id)).toEqual([older]);
+  });
+
+  it("never includes passwordHash on the returned user (explicit select, not include)", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { passwordHash: "should-never-leak" } });
+    await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    expect(result).toHaveLength(1);
+    const [row] = result;
+    expect(row!.user).not.toHaveProperty("passwordHash");
+    expect(row!.user).not.toHaveProperty("email");
   });
 });

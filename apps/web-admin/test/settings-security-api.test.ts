@@ -149,6 +149,7 @@ describe("POST /api/settings/edit", () => {
       "owner_email_on_manual_queue",
       "owner_email_on_new_ticket",
       "owner_email_on_ticket_reply",
+      "owner_email_on_wallet_topup",
     ]) {
       const res = await postJson("/api/settings/edit", cookie, csrf, { key, value: "true" });
       expect(res.statusCode).toBe(200);

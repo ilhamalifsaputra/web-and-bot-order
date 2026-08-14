@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -18,6 +18,8 @@ import {
   customersKpis,
   orderStatsByUserIds,
   touchLastSeen,
+  listAllWalletTransactions,
+  countAllWalletTransactions,
 } from "./users";
 import { primeWarmUser, peekWarmUser } from "./warmUserCache";
 import { UserRole } from "@app/core/enums";
@@ -658,6 +660,7 @@ describe("touchLastSeen", () => {
     vi.setSystemTime(4_000_000);
 
     // Mock db.user.update to throw an error, simulating a transient DB failure.
+    const originalUpdate = prisma.user.update.bind(prisma.user);
     const updateSpy = vi.spyOn(prisma.user, "update").mockRejectedValueOnce(
       new Error("Simulated DB write-lock timeout")
     );
@@ -666,5 +669,134 @@ describe("touchLastSeen", () => {
     await expect(touchLastSeen(prisma, user.id)).resolves.toBeUndefined();
 
     updateSpy.mockRestore();
+    // mockRestore alone leaves `prisma.user.update` undefined: a Prisma
+    // delegate serves its methods through a proxy rather than as own
+    // properties, so vitest's "delete the own property it added" restore has
+    // nothing underneath to fall back to. Every later test in this file that
+    // writes a User row (upsertUser, adjustWallet, …) would die with
+    // "db.user.update is not a function" — put the real method back by hand.
+    (prisma.user as unknown as Record<string, unknown>).update = originalUpdate;
+  });
+});
+
+describe("listAllWalletTransactions / countAllWalletTransactions", () => {
+  let alice: number;
+  let bob: number;
+
+  beforeEach(async () => {
+    await prisma.walletTransaction.deleteMany();
+    const a = await upsertUser(prisma, { telegramId: 9900, username: "wallet_alice", fullName: "Alice" });
+    const b = await upsertUser(prisma, { telegramId: 9901, username: "wallet_bob", fullName: "Bob" });
+    alice = a.id;
+    bob = b.id;
+  });
+
+  /** Writes a ledger row directly so a test can pin createdAt/currency/reason
+   *  without going through adjustWallet's balance arithmetic. */
+  function ledgerRow(args: { userId: number; delta: string; balanceAfter: string; reason: string; currency?: string; createdAt?: Date }) {
+    return prisma.walletTransaction.create({
+      data: {
+        userId: args.userId,
+        delta: args.delta,
+        balanceAfter: args.balanceAfter,
+        currency: args.currency ?? "IDR",
+        reason: args.reason,
+        ...(args.createdAt ? { createdAt: args.createdAt } : {}),
+      },
+    });
+  }
+
+  it("returns every user's rows newest first, with a customer label joined in", async () => {
+    await ledgerRow({ userId: alice, delta: "1000", balanceAfter: "1000", reason: "admin_adjust" });
+    await ledgerRow({ userId: bob, delta: "-500", balanceAfter: "500", reason: "order_payment" });
+
+    const rows = await listAllWalletTransactions(prisma, {});
+    expect(rows).toHaveLength(2);
+    // id desc — the second insert comes first.
+    expect(rows[0]!.userId).toBe(bob);
+    expect(rows[0]!.customerLabel).toBe("wallet_bob");
+    expect(rows[1]!.customerLabel).toBe("wallet_alice");
+    expect(rows[1]).toMatchObject({ delta: "1000", balanceAfter: "1000", currency: "IDR", reason: "admin_adjust" });
+  });
+
+  it("never exposes the user's passwordHash or email", async () => {
+    await prisma.user.update({ where: { id: alice }, data: { passwordHash: "secret-hash", email: "alice@example.com" } });
+    await ledgerRow({ userId: alice, delta: "1", balanceAfter: "1", reason: "adjust" });
+
+    const rows = await listAllWalletTransactions(prisma, {});
+    // BigInt replacer: the global BigInt#toJSON patch lives in
+    // packages/db/src/client.ts, which the test DB helper does not load.
+    const serialized = JSON.stringify(rows, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+    expect(serialized).not.toContain("secret-hash");
+    expect(serialized).not.toContain("alice@example.com");
+    expect(rows[0]!.user).not.toHaveProperty("passwordHash");
+    expect(rows[0]!.user).not.toHaveProperty("email");
+  });
+
+  it("surfaces a wallet_topup row with its signed delta and resulting balance", async () => {
+    const balance = await adjustWallet(prisma, alice, new Decimal("150000"), { reason: "wallet_topup", note: "TokoPay top-up" });
+    expect(balance.toString()).toBe("150000");
+
+    const rows = await listAllWalletTransactions(prisma, { reason: "wallet_topup" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ delta: "150000", balanceAfter: "150000", reason: "wallet_topup", currency: "IDR" });
+    expect(await countAllWalletTransactions(prisma, { reason: "wallet_topup" })).toBe(1);
+  });
+
+  it("narrows by reason, currency, userId, and date range independently", async () => {
+    const old = new Date("2026-01-01T00:00:00.000Z");
+    const recent = new Date("2026-06-01T00:00:00.000Z");
+    await ledgerRow({ userId: alice, delta: "100", balanceAfter: "100", reason: "wallet_topup", currency: "IDR", createdAt: old });
+    await ledgerRow({ userId: alice, delta: "5", balanceAfter: "5", reason: "wallet_topup", currency: "USDT", createdAt: recent });
+    await ledgerRow({ userId: bob, delta: "-20", balanceAfter: "80", reason: "order_payment", currency: "IDR", createdAt: recent });
+    await ledgerRow({ userId: bob, delta: "7", balanceAfter: "87", reason: "referral", currency: "IDR", createdAt: recent });
+
+    const topups = await listAllWalletTransactions(prisma, { reason: "wallet_topup" });
+    expect(topups).toHaveLength(2);
+    expect(await countAllWalletTransactions(prisma, { reason: "wallet_topup" })).toBe(2);
+
+    const usdt = await listAllWalletTransactions(prisma, { currency: "USDT" });
+    expect(usdt.map((r) => r.reason)).toEqual(["wallet_topup"]);
+    expect(await countAllWalletTransactions(prisma, { currency: "USDT" })).toBe(1);
+
+    const bobsRows = await listAllWalletTransactions(prisma, { userId: bob });
+    expect(bobsRows).toHaveLength(2);
+    expect(bobsRows.every((r) => r.userId === bob)).toBe(true);
+    expect(await countAllWalletTransactions(prisma, { userId: bob })).toBe(2);
+
+    const since = await listAllWalletTransactions(prisma, { from: new Date("2026-03-01T00:00:00.000Z") });
+    expect(since).toHaveLength(3);
+    expect(await countAllWalletTransactions(prisma, { from: new Date("2026-03-01T00:00:00.000Z") })).toBe(3);
+
+    const until = await listAllWalletTransactions(prisma, { to: new Date("2026-03-01T00:00:00.000Z") });
+    expect(until).toHaveLength(1);
+    expect(until[0]!.currency).toBe("IDR");
+
+    // Filters compose rather than override each other.
+    const combined = await listAllWalletTransactions(prisma, { userId: alice, reason: "wallet_topup", currency: "USDT" });
+    expect(combined).toHaveLength(1);
+    expect(combined[0]!.currency).toBe("USDT");
+  });
+
+  it("paginates with limit/offset while the total stays the count of all matching rows", async () => {
+    for (let i = 0; i < 7; i++) {
+      await ledgerRow({ userId: alice, delta: "1", balanceAfter: String(i + 1), reason: i % 2 === 0 ? "wallet_topup" : "referral" });
+    }
+
+    const total = await countAllWalletTransactions(prisma, {});
+    expect(total).toBe(7);
+
+    const page1 = await listAllWalletTransactions(prisma, { limit: 3, offset: 0 });
+    const page2 = await listAllWalletTransactions(prisma, { limit: 3, offset: 3 });
+    const page3 = await listAllWalletTransactions(prisma, { limit: 3, offset: 6 });
+    expect(page1).toHaveLength(3);
+    expect(page2).toHaveLength(3);
+    expect(page3).toHaveLength(1);
+    expect(new Set([...page1, ...page2, ...page3].map((r) => r.id)).size).toBe(total);
+
+    // The filtered total tracks the filter, not the table.
+    expect(await countAllWalletTransactions(prisma, { reason: "wallet_topup" })).toBe(4);
+    const filtered = await listAllWalletTransactions(prisma, { reason: "wallet_topup", limit: 3, offset: 3 });
+    expect(filtered).toHaveLength(1);
   });
 });

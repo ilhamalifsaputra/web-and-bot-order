@@ -20,7 +20,7 @@
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { PaymentMethod, langCode } from "@app/core/enums";
+import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { t as coreT } from "@app/core/i18n";
@@ -28,8 +28,6 @@ import { checkTransaction, qrisChargeAmount } from "@app/core/payments/tokopay";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
-  SWEEP_EDIT_TIMEOUT_MS,
-  SWEEP_TOTAL_BUDGET_MS,
   TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS,
 } from "@app/core/payments/reconcileCycleBudget";
 import {
@@ -37,7 +35,6 @@ import {
   getTokopayCreds,
   listPendingTokopayOrders,
   deliverPaidTokopayOrder,
-  listDeliveredOrdersAwaitingEdit,
   clearOrderPaymentMessage,
   recordPollHealth,
 } from "@app/db";
@@ -64,7 +61,7 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
   const chatId = Number(order.paymentMsgChatId);
-  const text = coreT("checkout.qris_paid", lang, { code: order.orderCode });
+  const text = coreT("checkout.payment_received", lang, { code: order.orderCode });
   const markup = paymentSuccessKb(lang);
   try {
     await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
@@ -77,21 +74,11 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
   }
 }
 
-// SWEEP_EDIT_TIMEOUT_MS (per-edit budget) and SWEEP_TOTAL_BUDGET_MS
-// (whole-sweep wall-clock budget) — Task 11 review follow-up, Important #2
-// and #3 — now live in packages/core/src/payments/reconcileCycleBudget.ts
-// (Task 13 review follow-up), shared with PayDisini's identical sweep and
-// with the cycle-timeout/staleness-threshold derivations both the watchdog
-// and the web-admin dashboard read; see that module for the full reasoning
-// behind both values. Re-imported above so this file's own logic
-// (sweepDeliveredAwaitingEdit below) and RECONCILE_CYCLE_TIMEOUT_MS's
-// derivation still read from a single canonical source.
-
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying grammY call isn't cancelled when this loses the race —
  * it may still complete in the background, the same accepted trade-off
  * pollLoop.ts's own cycle-abandon deadline makes for a hung `run()` — so this
- * only bounds how long the SWEEP waits on it, not the call itself. */
+ * only bounds how long the caller waits on it, not the call itself. */
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "timeout"> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -109,52 +96,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
   });
 }
 
-/**
- * Sweep DELIVERED TokoPay orders whose bubble hasn't been flipped yet (catches
- * webhook deliveries). Idempotent: clears the anchor after editing so a re-run
- * is a no-op. Bounded three ways (Task 11 review follow-up, Important #2 and
- * #3): the list itself is capped at MAX_ORDERS_PER_CYCLE, each order's edit
- * gets at most SWEEP_EDIT_TIMEOUT_MS before the sweep gives up on it and moves
- * on, and the WHOLE sweep gives up on any remaining rows once
- * SWEEP_TOTAL_BUDGET_MS has elapsed (checked between rows, not just per row —
- * the sweep's own progress is optional and safely retried next cycle, so it
- * gets a flat wall-clock budget instead of `cap × per-row worst case`). A
- * timed-out or budget-cut-off edit leaves the anchor in place so the next
- * cycle retries it — clearing only happens once an edit genuinely completes
- * (not necessarily succeeds; editBubbleToSuccess never throws).
- *
- * `opts` defaults to the exported SWEEP_EDIT_TIMEOUT_MS/SWEEP_TOTAL_BUDGET_MS
- * constants — production callers never pass it. It exists so the black-holed
- * -bubble tests can exercise the identical give-up/budget-break logic against
- * millisecond-scale values instead of the real ~10s/30s ones, with real
- * timers and real Prisma throughout (Task 11 review follow-up, Important #2:
- * the previous version of these tests genuinely slept 10s + 30s each,
- * because faking timers breaks Prisma's own I/O in this harness — the bounds
- * being tested are relative to each other, not absolute, so shrinking both
- * proportionally proves the same behavior in well under a second).
- */
-export async function sweepDeliveredAwaitingEdit(
-  api: Api,
-  opts?: { editTimeoutMs?: number; totalBudgetMs?: number },
-): Promise<void> {
-  const editTimeoutMs = opts?.editTimeoutMs ?? SWEEP_EDIT_TIMEOUT_MS;
-  const totalBudgetMs = opts?.totalBudgetMs ?? SWEEP_TOTAL_BUDGET_MS;
-  const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY, MAX_ORDERS_PER_CYCLE);
-  const sweepStartedAt = Date.now();
-  for (const [i, order] of orders.entries()) {
-    if (Date.now() - sweepStartedAt > totalBudgetMs) {
-      logger.warn(`TokoPay sweep hit its ${totalBudgetMs}ms whole-sweep budget with ${orders.length - i} order(s) left unedited this cycle — their anchors are left in place so the next cycle retries them`);
-      break;
-    }
-    const outcome = await withTimeout(editBubbleToSuccess(api, order), editTimeoutMs);
-    if (outcome === "timeout") {
-      logger.warn(`TokoPay sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — anchor left in place so the next cycle retries`);
-      continue;
-    }
-    await clearOrderPaymentMessage(prisma, order.id);
-  }
-}
-
 /** Bound for the two Telegram calls reconcileOrder makes directly on the
  * payment path — editBubbleToSuccess and alertAdmins — once a gateway call
  * has already reported an order paid (Task 11 review follow-up, Critical
@@ -162,13 +103,19 @@ export async function sweepDeliveredAwaitingEdit(
  * was itself the regression it introduced — see buildBot() there), so
  * without an explicit bound here these calls fall back to grammY's 500s
  * per-call default and a single hung one could singlehandedly consume most
- * of a cycle's budget. Deliberately tighter than SWEEP_EDIT_TIMEOUT_MS: both
- * wrap the same kind of call, but this one sits inside the PRIMARY per-order
- * loop, whose worst case is multiplied by MAX_ORDERS_PER_CYCLE below — the
- * sweep's own bound only ever contributes its flat SWEEP_TOTAL_BUDGET_MS
- * regardless of how many orders it touches. A pure-text edit/message (no
- * media, unlike a fresh checkout's QR photo) reliably finishes in well under
- * a second in the normal case, so 5s stays generous while keeping the
+ * of a cycle's budget. Deliberately tighter than SWEEP_EDIT_TIMEOUT_MS (the
+ * generic paid-order bubble sweeper's own per-edit budget,
+ * packages/core/src/payments/reconcileCycleBudget.ts, used by
+ * `sweepPaidOrderBubbles` in apps/order-bot/src/jobs/index.ts, Task T2-E):
+ * both wrap the same kind of call, but this one sits inside the PRIMARY
+ * per-order loop, whose worst case is multiplied by MAX_ORDERS_PER_CYCLE
+ * below, while the generic sweeper runs on its own separate cron tick and no
+ * longer factors into this rail's cycle-timeout math at all — this rail used
+ * to run its own per-rail sweep here too, contributing a flat term to
+ * RECONCILE_CYCLE_TIMEOUT_MS below, until Task T2-F replaced it with the
+ * generic sweeper and removed that term. A pure-text edit/message (no media,
+ * unlike a fresh checkout's QR photo) reliably finishes in well under a
+ * second in the normal case, so 5s stays generous while keeping the
  * cycle-timeout arithmetic well clear of PAYMENT_WINDOW_MINUTES (see
  * RECONCILE_CYCLE_TIMEOUT_MS below).
  *
@@ -177,12 +124,16 @@ export async function sweepDeliveredAwaitingEdit(
  * follow-up), shared with PayDisini/NOWPayments and re-imported above, so
  * it, MAX_ORDERS_PER_CYCLE, and RECONCILE_CYCLE_TIMEOUT_MS below are all one
  * canonical value the web-admin dashboard can also read. */
-export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS, SWEEP_EDIT_TIMEOUT_MS, SWEEP_TOTAL_BUDGET_MS };
+export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
 
 /** Wait at most RECONCILE_TELEGRAM_TIMEOUT_MS for the success-bubble edit,
  * then clear the anchor only once the edit genuinely completed — a timed-out
- * edit leaves the anchor in place so the next cycle's sweep retries it, the
- * same trade-off sweepDeliveredAwaitingEdit already makes for its own edits. */
+ * edit leaves the anchor in place so the next cycle's fast path retries it,
+ * the same trade-off the generic paid-order bubble sweeper
+ * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E)
+ * makes for its own edits — that generic sweeper is also the backstop that
+ * eventually catches this order's bubble if this fast path's own edit times
+ * out here. */
 async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
   const outcome = await withTimeout(editBubbleToSuccess(api, order), RECONCILE_TELEGRAM_TIMEOUT_MS);
   if (outcome === "timeout") {
@@ -360,13 +311,6 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
   } else {
     logger.warn("TokoPay reconcile cycle finished after its own deadline had already abandoned it — skipping the heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
   }
-
-  // Catches orders the storefront webhook delivered (the bubble flip never
-  // happens on the web — CLAUDE.md "never send Telegram from the web").
-  // Left unguarded: the sweep's own effects (a Telegram bubble edit) are
-  // already idempotent, same as every other post-abandon side effect
-  // pollLoop.ts's module doc-comment documents as safe.
-  await sweepDeliveredAwaitingEdit(api);
 }
 
 // ---------------------------------------------------------------------------
@@ -381,11 +325,14 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
 let boundApi: Api | undefined;
 
 // cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
-// own worst case for BOTH the reconcile loop and the sweep (see the
-// derivation comment above pollOnce) — 820s. Without this the default
+// own worst case for the reconcile loop (see
+// packages/core/src/payments/reconcileCycleBudget.ts's derivation comment —
+// 780s; it no longer carries a per-rail bubble-sweep term now that the
+// generic sweepPaidOrderBubbles, apps/order-bot/src/jobs/index.ts, Task
+// T2-E, replaced this rail's own per-rail sweep). Without this the default
 // `max(3 * intervalMs, 60_000)` (60s at the default POLL_INTERVAL_SECONDS)
 // would abandon a cycle mid-batch long before a full MAX_ORDERS_PER_CYCLE
-// sweep of a slow-but-not-hung gateway could finish.
+// pass of a slow-but-not-hung gateway could finish.
 //
 // `onCycleTimeout` writes the same shape of failed heartbeat the normal-path
 // error branch above does (Task 11 review follow-up, Important #3): without

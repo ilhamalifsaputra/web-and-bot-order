@@ -23,12 +23,12 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, createWalletTopupOrder, setOrderPaymentMessage, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -1746,7 +1746,166 @@ describe("Refresh Status button (§7)", () => {
 
     const toast = calls(sink, "answerCallbackQuery").at(-1);
     expect((toast!.args[0] as { text?: string }).text).toBe("✅ Payment confirmed!");
+    // No anchor on this order (it was never a QR/instructions bubble), so
+    // there is nothing to flip — the toast is the whole response.
+    expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+    expect(calls(sink, "editMessageText")).toHaveLength(0);
   });
+
+  // --- T2-D: Refresh flips an already-settled order's bubble on the spot -----
+  //
+  // Both settlement paths that can pay an order off without the bot process
+  // noticing — a gateway webhook and an admin's manual approval — run in the
+  // web process, which may not touch Telegram. Until the sweeper's next tick
+  // the buyer is still looking at a QR code, and Refresh (the one button they
+  // WILL press) used to answer with a toast and change nothing at all.
+  /** A settled, still-anchored order of any rail/kind — what the buyer is
+   * staring at when they press Refresh after paying. */
+  async function makeSettledAnchoredOrder(opts: { method: string; kind?: string; status?: string; currency?: "IDR" | "USDT" }) {
+    const currency = opts.currency ?? "IDR";
+    const order =
+      opts.kind === OrderKind.WALLET_TOPUP
+        ? await prisma.$transaction((tx) =>
+            createWalletTopupOrder(tx, {
+              userId: sample.user.id,
+              amount: currency === "IDR" ? "50000" : "5",
+              currency,
+              method: opts.method as Parameters<typeof createWalletTopupOrder>[1]["method"],
+              rate: "16000",
+            }),
+          )
+        : await prisma.$transaction(async (tx) => {
+            const created = await createOrderDirect(tx, {
+              user: { id: sample.user.id, role: sample.user.role },
+              productId: sample.product.id,
+              quantity: 1,
+            });
+            return currency === "IDR"
+              ? finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.IDR, method: opts.method as typeof PaymentMethod.TOKOPAY })
+              : finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.USDT, rate: "16000", method: opts.method as typeof PaymentMethod.BINANCE_INTERNAL });
+          });
+    await prisma.order.update({ where: { id: order!.id }, data: { status: opts.status ?? OrderStatus.DELIVERED } });
+    await setOrderPaymentMessage(prisma, order!.id, 555, 4242);
+    return order!;
+  }
+
+  /** The single bubble edit the Refresh tap produced, whichever call carried it. */
+  function onlyBubbleEdit(sink: SentCall[]) {
+    const caption = calls(sink, "editMessageCaption");
+    const text = calls(sink, "editMessageText");
+    expect(caption.length + text.length).toBe(1);
+    const call = (caption[0] ?? text[0])!;
+    const payload = (caption.length === 1 ? call.args[2] : call.args[3]) as {
+      caption?: string;
+      reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+    };
+    return {
+      chatId: call.args[0] as number,
+      msgId: call.args[1] as number,
+      text: (caption.length === 1 ? payload.caption : call.args[2]) as string,
+      buttons: payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data ?? ""),
+    };
+  }
+
+  it("flips a DELIVERED TokoPay order's anchored bubble on the spot and clears the anchor", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    const edit = onlyBubbleEdit(sink);
+    expect(edit.chatId).toBe(555);
+    expect(edit.msgId).toBe(4242);
+    expect(edit.text).toContain(order.orderCode);
+    expect(edit.text).toContain("being delivered now");
+    expect(edit.buttons).toContain("v1:browse:prods");
+    // Still answers the callback query, so the button feels responsive.
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgChatId).toBeNull();
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
+  it("flips a PROCESSING crypto-rail order's bubble to the manual-fulfilment wording", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.BINANCE_INTERNAL,
+      currency: "USDT",
+      status: OrderStatus.PROCESSING,
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    const edit = onlyBubbleEdit(sink);
+    expect(edit.text).toContain("being prepared for delivery manually");
+    expect(edit.buttons).toContain("v1:browse:prods");
+    expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
+  });
+
+  it("flips a settled wallet top-up's bubble to the top-up wording with the wallet keyboard", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY, kind: OrderKind.WALLET_TOPUP });
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "123456" } });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    const edit = onlyBubbleEdit(sink);
+    expect(edit.text).toContain("Top-up successful");
+    // The buyer's CURRENT balance, read fresh — not a stale session copy.
+    expect(edit.text).toContain("Rp123.456");
+    // A top-up produces nothing to look up under "My Orders", so the wallet
+    // keyboard replaces paymentSuccessKb here.
+    expect(edit.buttons).toContain("v1:topup:open");
+    expect(edit.buttons).not.toContain("v1:order:list");
+    expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
+  });
+
+  // Same shape as jobs.test.ts's "safety bounds against a black-holed bubble
+  // edit" tests: a real hanging Telegram call, real timers, millisecond-scale
+  // bound passed in instead of the real TELEGRAM_MESSAGE_TIMEOUT_MS (5s). This
+  // Refresh-triggered flip sits directly on the buyer's sequentialize queue
+  // (main.ts), so an unbounded await here would freeze that buyer's entire
+  // chat until grammY's 500s per-call default finally gives up — the fix is to
+  // bound it and leave the anchor in place on timeout so the background sweep
+  // (sweepPaidOrderBubbles, jobs/index.ts) retries within a minute.
+  it("leaves the anchor in place when the settled bubble edit hangs past its timeout, so a later sweep retries it", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    // refreshPaymentStatus edits through ctx.api (unlike sweepPaidOrderBubbles,
+    // which takes a bare Api), so the hang is installed directly on it —
+    // editMessageCaption first (photo/QR bubbles), editMessageText as the
+    // fallback editPaymentBubble would otherwise try.
+    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = vi.fn(() => new Promise(() => {}));
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi.fn(() => new Promise(() => {}));
+
+    await checkout.refreshPaymentStatus(ctx, order.id, { editTimeoutMs: 50 });
+
+    // The toast still answers instantly — it doesn't wait on the edit.
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgChatId).not.toBeNull();
+    expect(after!.paymentMsgId).not.toBeNull();
+  });
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "does NOT flip an anchored order still at %s — those keep their bubble for on-chain progress and stay on the polling path",
+    async (status) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ retCode: 1, retMsg: "no creds in test" }) }));
+      const order = await makeSettledAnchoredOrder({ method: PaymentMethod.BYBIT_BSC, currency: "USDT", status });
+
+      const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+      await checkout.refreshPaymentStatus(ctx, order.id);
+
+      expect(calls(sink, "editMessageCaption")).toHaveLength(0);
+      expect(calls(sink, "editMessageText")).toHaveLength(0);
+      const after = await getOrder(prisma, order.id);
+      expect(after!.paymentMsgChatId).not.toBeNull();
+      const toast = calls(sink, "answerCallbackQuery").at(-1);
+      expect((toast!.args[0] as { text?: string }).text).toBe("Payment not received yet. Still waiting…");
+      vi.unstubAllGlobals();
+    },
+  );
 
   async function makeBybitBscOrderAt(status: string) {
     const order = (await prisma.$transaction((tx) =>

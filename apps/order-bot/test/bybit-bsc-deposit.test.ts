@@ -345,7 +345,8 @@ describe("processDeposits (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
-    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
@@ -355,7 +356,58 @@ describe("processDeposits (poll-loop wiring)", () => {
     const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
     expect(flat).toContain("v1:browse:prods");
     expect(flat).toContain("v1:order:list");
+
+    // T1: a successful terminal flip must clear the anchor pointer, so the
+    // generic sweeper (added in a later task) knows this bubble is done and
+    // doesn't re-edit it every cycle.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
   });
+
+  // T1 critical fix: a rejected edit (e.g. the buyer navigated away and the
+  // bubble was deleted — "message to edit not found") must still clear the
+  // anchor. Only a genuine wall-clock timeout is allowed to leave it in
+  // place; a message that can never be edited must self-heal instead of
+  // making the upcoming generic sweeper retry a doomed edit forever.
+  it("clears the anchor even when the bubble edit is rejected by Telegram, so it self-heals instead of retrying forever (T1)", async () => {
+    const order = (await makeBybitBscOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw new Error("Bad Request: message to edit not found");
+    };
+    await processDeposits(api, [dep({ txId: "0x" + "8".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    // Delivery itself must not be blocked by a bubble-edit failure.
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    // The anchor clears because the edit attempt genuinely completed (it was
+    // just rejected) — a permanently-uneditable bubble must not stay
+    // anchored forever.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  // T1 critical fix, other half of the same contract: a genuine wall-clock
+  // timeout (the edit call hangs and never resolves at all — never resolves,
+  // never rejects) is the ONLY case that must leave the anchor in place, so
+  // the next sweep retries it. Real timers (not fake) — faking timers breaks
+  // Prisma's own I/O in this test harness, same constraint the hung-upload
+  // test elsewhere in this file and tokopayReconcile's own sweep tests
+  // document.
+  it("leaves the anchor in place when the bubble edit genuinely times out, so a later sweep retries it (T1)", async () => {
+    const order = (await makeBybitBscOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = () => new Promise(() => {}); // hangs forever — never resolves or rejects
+    await processDeposits(api, [dep({ txId: "0x" + "9".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    // Delivery itself must not be blocked by a hung bubble-edit.
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    // The anchor must survive — unlike a rejection, a genuine timeout means
+    // the edit's real outcome is still unknown, so the next sweep must retry.
+    expect(updated!.paymentMsgChatId).not.toBeNull();
+    expect(updated!.paymentMsgId).not.toBeNull();
+  }, 10_000);
 
   it("delivers on a unique-amount match", async () => {
     const order = (await makeBybitBscOrder())!;
@@ -558,6 +610,15 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(edits[0]!.chatId).toBe(555);
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).toContain("Waiting for the first on-chain confirmation");
+
+    // T1: onPaymentDetected is an INTERIM edit, not a terminal one — the
+    // confirmation tracker depends on the anchor staying live so it can keep
+    // rewriting the same bubble as confirmations accrue. It must never clear
+    // paymentMsgChatId/paymentMsgId (that's reserved for the terminal
+    // delivered/processing flips).
+    const afterDetected = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(afterDetected!.paymentMsgChatId).not.toBeNull();
+    expect(afterDetected!.paymentMsgId).not.toBeNull();
 
     // Cycle 2: same deposit, still not final — must NOT push again (already
     // detected; re-pushing here would stomp on whatever the confirmation

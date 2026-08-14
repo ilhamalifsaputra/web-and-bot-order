@@ -20,6 +20,7 @@ const EVENT_TOGGLE_KEY: Record<OwnerEmailEvent, string> = {
   manual_queue: "owner_email_on_manual_queue",
   new_ticket: "owner_email_on_new_ticket",
   ticket_reply: "owner_email_on_ticket_reply",
+  wallet_topup: "owner_email_on_wallet_topup",
 };
 
 /** Full config with every toggle on and a valid address, for one event. */
@@ -95,7 +96,7 @@ describe("resolveOwnerEmailRecipient", () => {
     expect(await resolveOwnerEmailRecipient(db, "ticket_reply")).toBeNull();
   });
 
-  it("each of the four events can be independently enabled while the others stay off", async () => {
+  it("each of the five events can be independently enabled while the others stay off", async () => {
     const db = stubDb({
       owner_email_enabled: "true",
       owner_email: "owner@example.com",
@@ -103,8 +104,19 @@ describe("resolveOwnerEmailRecipient", () => {
       owner_email_on_manual_queue: "false",
       owner_email_on_new_ticket: "false",
       owner_email_on_ticket_reply: "false",
+      owner_email_on_wallet_topup: "false",
     });
     expect(await resolveOwnerEmailRecipient(db, "paid_order")).toBe("owner@example.com");
+    expect(await resolveOwnerEmailRecipient(db, "manual_queue")).toBeNull();
+    expect(await resolveOwnerEmailRecipient(db, "new_ticket")).toBeNull();
+    expect(await resolveOwnerEmailRecipient(db, "ticket_reply")).toBeNull();
+    expect(await resolveOwnerEmailRecipient(db, "wallet_topup")).toBeNull();
+  });
+
+  it("resolves wallet_topup's own toggle independently of the other four events", async () => {
+    const db = fullyConfigured("wallet_topup");
+    expect(await resolveOwnerEmailRecipient(db, "wallet_topup")).toBe("owner@example.com");
+    expect(await resolveOwnerEmailRecipient(db, "paid_order")).toBeNull();
     expect(await resolveOwnerEmailRecipient(db, "manual_queue")).toBeNull();
     expect(await resolveOwnerEmailRecipient(db, "new_ticket")).toBeNull();
     expect(await resolveOwnerEmailRecipient(db, "ticket_reply")).toBeNull();

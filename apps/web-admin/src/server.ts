@@ -21,6 +21,7 @@ import setupShellRoutes from "./routes/setupShell";
 import spaShellRoutes from "./routes/spaShell";
 import dashboardApiRoutes from "./routes/api/dashboard";
 import auditApiRoutes from "./routes/api/audit";
+import walletTransactionsApiRoutes from "./routes/api/walletTransactions";
 import outboxApiRoutes from "./routes/api/outbox";
 import reportsApiRoutes from "./routes/api/reports";
 import reviewsApiRoutes from "./routes/api/reviews";
@@ -124,6 +125,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(setupShellRoutes);
   await app.register(dashboardApiRoutes);
   await app.register(auditApiRoutes);
+  await app.register(walletTransactionsApiRoutes);
   await app.register(outboxApiRoutes);
   await app.register(reportsApiRoutes);
   await app.register(reviewsApiRoutes);

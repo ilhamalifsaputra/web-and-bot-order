@@ -146,10 +146,13 @@ export async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
-    // Owner email lane — decided by channel, not event name (checking channel
-    // first is clearer/cheaper than relying on the OWNER_EMAIL_* events never
-    // colliding with the Telegram-only special cases below). No rate-limit
-    // concept for email, so just move on to the next row either way.
+    // EMAIL lane — decided by channel, not event name (checking channel first
+    // is clearer/cheaper than relying on event names never colliding with the
+    // Telegram-only special cases below). Despite the helper's name (kept for
+    // continuity) this is not owner-only: it also carries the one buyer
+    // event, BUYER_EMAIL_ORDER_READY — see deliverOwnerEmail's own doc
+    // comment below. No rate-limit concept for email, so just move on to the
+    // next row either way.
     if (row.channel === NotificationChannel.EMAIL) {
       await deliverOwnerEmail(row, payload);
       continue;
@@ -349,7 +352,13 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
 }
 
 /**
- * Deliver one EMAIL-channel row (an OWNER_EMAIL_* event) to the shop owner.
+ * Deliver one EMAIL-channel row. Despite the name (kept for continuity) this
+ * is NOT owner-only: it handles every EMAIL-channel event, and one of them —
+ * BUYER_EMAIL_ORDER_READY — is addressed to the customer, not the shop owner.
+ * No routing change was needed for that: this lane is selected purely by
+ * `row.channel`, and the recipient comes from `payload.to` below, whoever
+ * wrote it. Do not add per-event recipient logic here.
+ *
  * Mirrors the Telegram render()/chatId-resolution steps above, but for mail:
  * unknown event or missing `to` fail the row at once (maxAttempts=1), same as
  * the Telegram "no template"/"missing chat_id" drops; SMTP being unconfigured
@@ -359,8 +368,9 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
  * — there's no email analogue of Telegram flood control.
  */
 async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
-  // renderEmail is async (the OWNER_EMAIL_ORDER_PAID branch resolves brand/
-  // copy from Settings via Prisma) — see emailTemplates.ts's header comment.
+  // renderEmail is async (the OWNER_EMAIL_ORDER_PAID, OWNER_EMAIL_WALLET_TOPUP
+  // and BUYER_EMAIL_ORDER_READY branches resolve brand — and for ORDER_PAID,
+  // copy — from Settings via Prisma) — see emailTemplates.ts's header comment.
   const rendered = await renderEmail(row.event, payload);
   if (!rendered) {
     await markNotificationFailed(prisma, row.id, `no email template for event ${row.event}`, 1);
@@ -382,10 +392,13 @@ async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknow
     return;
   }
 
-  // rendered.html is undefined for the three plain-text-only events and a
-  // real string for OWNER_EMAIL_ORDER_PAID — sendMail's `html` param is
-  // optional (Task 2), so passing `undefined` here is a no-op for those
-  // three, unchanged from before this field existed.
+  // rendered.html is undefined for the three plain-text-only events
+  // (OWNER_EMAIL_MANUAL_ORDER_QUEUED, OWNER_EMAIL_NEW_TICKET,
+  // OWNER_EMAIL_TICKET_REPLY) and a real string for the events that render
+  // through the shared HTML design system — OWNER_EMAIL_ORDER_PAID,
+  // OWNER_EMAIL_WALLET_TOPUP, and BUYER_EMAIL_ORDER_READY — sendMail's `html`
+  // param is optional (Task 2), so passing `undefined` here is a no-op for
+  // the plain-text three, unchanged from before this field existed.
   await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text, html: rendered.html }));
 }
 

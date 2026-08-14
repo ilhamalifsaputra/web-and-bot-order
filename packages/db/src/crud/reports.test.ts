@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, countCombinedLedger, recentOrders } from "./reports";
+import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -67,13 +67,14 @@ describe("manualMatchQueueCounts", () => {
   });
 });
 
-describe("listCombinedLedger / countCombinedLedger", () => {
+describe("listCombinedLedger", () => {
   it("normalizes rows from all five gateway tables into one shape, tagged with their gateway", async () => {
     const binance = await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-1", amount: "1.5", outcome: "unmatched" } });
     const tokopay = await prisma.processedTokopayTx.create({ data: { trxId: "tp-1", amount: "50000", outcome: "delivery_failed" } });
 
-    const rows = await listCombinedLedger(prisma);
+    const { rows, total } = await listCombinedLedger(prisma);
     expect(rows).toHaveLength(2);
+    expect(total).toBe(2);
 
     const binanceRow = rows.find((r) => r.reference === "bn-1");
     expect(binanceRow).toMatchObject({ id: binance.id, gateway: "binance", reference: "bn-1", amount: "1.5", outcome: "unmatched", orderId: null });
@@ -88,7 +89,7 @@ describe("listCombinedLedger / countCombinedLedger", () => {
     await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-old", amount: "1", outcome: "matched", createdAt: older } });
     await prisma.processedTokopayTx.create({ data: { trxId: "tp-new", amount: "1", outcome: "matched", createdAt: newer } });
 
-    const rows = await listCombinedLedger(prisma);
+    const { rows } = await listCombinedLedger(prisma);
     expect(rows.map((r) => r.reference)).toEqual(["tp-new", "bn-old"]);
   });
 
@@ -97,11 +98,9 @@ describe("listCombinedLedger / countCombinedLedger", () => {
     await prisma.processedTokopayTx.create({ data: { trxId: "tp-fail", amount: "1", outcome: "delivery_failed" } });
     await prisma.processedTokopayTx.create({ data: { trxId: "tp-ok", amount: "1", outcome: "matched" } });
 
-    const rows = await listCombinedLedger(prisma, { outcome: "delivery_failed" });
+    const { rows, total } = await listCombinedLedger(prisma, { outcome: "delivery_failed" });
     expect(rows.map((r) => r.reference).sort()).toEqual(["bn-fail", "tp-fail"]);
-
-    const count = await countCombinedLedger(prisma, { outcome: "delivery_failed" });
-    expect(count).toBe(2);
+    expect(total).toBe(2);
   });
 
   it("paginates the merged, sorted set in memory", async () => {
@@ -110,10 +109,126 @@ describe("listCombinedLedger / countCombinedLedger", () => {
     }
     const page1 = await listCombinedLedger(prisma, { limit: 2, offset: 0 });
     const page2 = await listCombinedLedger(prisma, { limit: 2, offset: 2 });
-    expect(page1).toHaveLength(2);
-    expect(page2).toHaveLength(1);
-    expect(page1.map((r) => r.reference)).toEqual(["bn-2", "bn-1"]);
-    expect(page2.map((r) => r.reference)).toEqual(["bn-0"]);
+    expect(page1.rows).toHaveLength(2);
+    expect(page2.rows).toHaveLength(1);
+    expect(page1.total).toBe(3);
+    expect(page2.total).toBe(3);
+    expect(page1.rows.map((r) => r.reference)).toEqual(["bn-2", "bn-1"]);
+    expect(page2.rows.map((r) => r.reference)).toEqual(["bn-0"]);
+  });
+});
+
+/**
+ * Wraps a real PrismaClient so `order.findMany` calls can be counted without
+ * mutating (and having to restore) the shared client — the N+1 guard below
+ * needs a call count, not a stub, so every call still hits the real database.
+ */
+function countingDb(client: PrismaClient, counter: { orderFindMany: number }): PrismaClient {
+  const wrapDelegate = (delegate: Record<string, unknown>) =>
+    new Proxy(delegate, {
+      get(target, prop) {
+        const value = target[prop as string];
+        if (prop === "findMany" && typeof value === "function") {
+          return (...args: unknown[]) => {
+            counter.orderFindMany += 1;
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return new Proxy(client, {
+    get(target, prop) {
+      const value = (target as unknown as Record<string, unknown>)[prop as string];
+      if (prop === "order") return wrapDelegate(value as Record<string, unknown>);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as PrismaClient;
+}
+
+describe("listCombinedLedger order enrichment (top-ups vs product sales)", () => {
+  it("carries the order's code and kind onto every ledger row that has an orderId", async () => {
+    const sale = await prisma.order.create({
+      data: { orderCode: "ORD-SALE-1", userId, subtotalAmount: "1", totalAmount: "50000", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    const topup = await prisma.order.create({
+      data: { orderCode: "ORD-TOPUP-1", userId, subtotalAmount: "1", totalAmount: "100000", status: "DELIVERED", kind: "WALLET_TOPUP" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-sale", amount: "50000", outcome: "matched", orderId: sale.id } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "pd-topup", amount: "100000", outcome: "matched", orderId: topup.id } });
+
+    const { rows } = await listCombinedLedger(prisma);
+    expect(rows.find((r) => r.reference === "tp-sale")).toMatchObject({ orderCode: "ORD-SALE-1", orderKind: "PRODUCT" });
+    expect(rows.find((r) => r.reference === "pd-topup")).toMatchObject({ orderCode: "ORD-TOPUP-1", orderKind: "WALLET_TOPUP" });
+  });
+
+  it("keeps rows whose orderId is null, with null code and kind", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-orphan", amount: "1", outcome: "unmatched" } });
+
+    const { rows, total } = await listCombinedLedger(prisma);
+    expect(total).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ reference: "bn-orphan", orderId: null, orderCode: null, orderKind: null });
+  });
+
+  it("enriches the whole merged set with ONE order query, not one per row", async () => {
+    for (let i = 0; i < 8; i++) {
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-N1-${i}`, userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "PRODUCT" },
+      });
+      await prisma.processedTokopayTx.create({ data: { trxId: `tp-n1-${i}`, amount: "1", outcome: "matched", orderId: order.id } });
+    }
+
+    const counter = { orderFindMany: 0 };
+    const { rows } = await listCombinedLedger(countingDb(prisma, counter), { limit: 50 });
+    expect(rows).toHaveLength(8);
+    expect(counter.orderFindMany).toBe(1);
+  });
+
+  it("filters by order kind consistently across page boundaries — total matches the rows the filter really yields", async () => {
+    // 3 top-ups and 5 product sales, interleaved by createdAt so a page of 2
+    // can never accidentally hold only one kind.
+    const references: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const kind = i % 3 === 0 ? "WALLET_TOPUP" : "PRODUCT";
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-MIX-${i}`, userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind },
+      });
+      const reference = `tp-mix-${i}`;
+      references.push(reference);
+      await prisma.processedTokopayTx.create({
+        data: { trxId: reference, amount: "1", outcome: "matched", orderId: order.id, createdAt: new Date(2026, 0, i + 1) },
+      });
+    }
+    // A ledger row with no order at all must not be counted as either kind.
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-mix-orphan", amount: "1", outcome: "unmatched" } });
+
+    const first = await listCombinedLedger(prisma, { kind: "WALLET_TOPUP", limit: 2, offset: 0 });
+    expect(first.total).toBe(3);
+    expect(first.rows).toHaveLength(2);
+
+    const second = await listCombinedLedger(prisma, { kind: "WALLET_TOPUP", limit: 2, offset: 2 });
+    expect(second.total).toBe(3);
+    expect(second.rows).toHaveLength(1);
+
+    const paged = [...first.rows, ...second.rows];
+    expect(paged).toHaveLength(first.total);
+    expect(paged.every((r) => r.orderKind === "WALLET_TOPUP")).toBe(true);
+    expect(paged.map((r) => r.reference).sort()).toEqual(["tp-mix-0", "tp-mix-3", "tp-mix-6"]);
+
+    // A third page past the end stays consistent rather than wrapping around.
+    const third = await listCombinedLedger(prisma, { kind: "WALLET_TOPUP", limit: 2, offset: 4 });
+    expect(third.total).toBe(3);
+    expect(third.rows).toHaveLength(0);
+
+    // And the complementary filter accounts for the rest — the orphan row
+    // belongs to neither kind.
+    const sales = await listCombinedLedger(prisma, { kind: "PRODUCT", limit: 50 });
+    expect(sales.total).toBe(5);
+    expect(sales.rows).toHaveLength(5);
+
+    const unfiltered = await listCombinedLedger(prisma, { limit: 50 });
+    expect(unfiltered.total).toBe(references.length + 1);
   });
 });
 

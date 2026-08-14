@@ -36,6 +36,11 @@ describe("emailTemplates.renderEmail", () => {
   beforeEach(() => {
     vi.mocked(getSetting).mockResolvedValue(null);
     config.ADMIN_PUBLIC_URL = undefined;
+    // Reset alongside ADMIN_PUBLIC_URL: the BUYER_EMAIL_ORDER_READY branch
+    // resolves its brand against the storefront origin, and one of its cases
+    // sets these — without a reset that would leak into later tests.
+    config.SHOP_PUBLIC_URL = undefined;
+    config.PUBLIC_URL = undefined;
   });
   describe("OWNER_EMAIL_ORDER_PAID", () => {
     const payload = {
@@ -321,6 +326,246 @@ describe("emailTemplates.renderEmail", () => {
       const payload = { to: "owner@example.com", ticket_id: 99, user_id: 7, message: "x" };
       const result = await renderEmail("OWNER_EMAIL_TICKET_REPLY", payload);
       expect(result!.html).toBeUndefined();
+    });
+  });
+
+  describe("OWNER_EMAIL_WALLET_TOPUP", () => {
+    const payload = {
+      to: "owner@example.com",
+      order_code: DISTINCTIVE_ORDER_CODE,
+      customer_label: "jane@example.com",
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+      payment_method: "TOKOPAY",
+      transaction_id: "TXN-77777",
+      topped_up_at: "2026-08-14T09:30:00.000Z",
+    };
+
+    it("renders a subject, text, and html with the key facts", async () => {
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", payload);
+      expect(result).not.toBeNull();
+      expect(result!.subject).toBeTypeOf("string");
+      expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.text).toContain("Rp50.000");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("Rp50.000");
+      expect(result!.html).toContain("Rp125.000");
+      expect(result!.html).toContain("jane@example.com");
+      expect(result!.html).toContain("TOKOPAY");
+      expect(result!.html).toContain("TXN-77777");
+    });
+
+    it("subject is a fixed literal — never changes when the payload (order code, amount, customer) changes", async () => {
+      const first = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", payload);
+      const second = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", {
+        ...payload,
+        order_code: "SOMETHING-ELSE",
+        amount: "999999",
+        customer_label: "someone-else@example.com",
+      });
+      expect(first!.subject).toBe(second!.subject);
+      expect(first!.subject).not.toContain(DISTINCTIVE_ORDER_CODE);
+      expect(second!.subject).not.toContain("SOMETHING-ELSE");
+    });
+
+    it("omits the transaction id line when null, without leaking null/undefined", async () => {
+      const minimal = { ...payload, transaction_id: null };
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", minimal);
+      expect(result!.html).not.toContain("TXN-77777");
+      expect(result!.html!.toLowerCase()).not.toContain("null");
+      expect(result!.html!.toLowerCase()).not.toContain("undefined");
+    });
+
+    it("formats a USDT top-up via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+      const usdtPayload = { ...payload, currency: "USDT", amount: "10.5", new_balance: "25.75" };
+      const result = await renderEmail("OWNER_EMAIL_WALLET_TOPUP", usdtPayload);
+      expect(result).not.toBeNull();
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.html).toContain("25.75 USDT");
+      expect(result!.text).toContain("10.50 USDT");
+      expect(result!.text).toContain("25.75 USDT");
+    });
+  });
+
+  // The only BUYER-facing branch in this file. Everything above it is
+  // addressed to the shop owner; this one lands in a customer's inbox, so its
+  // two hard rules — no order code in the subject, no credentials in the body
+  // — are asserted as explicit guards rather than assumed.
+  describe("BUYER_EMAIL_ORDER_READY", () => {
+    const payload = {
+      to: "guest@example.com",
+      order_code: DISTINCTIVE_ORDER_CODE,
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50000", lineTotal: "100000" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30000", lineTotal: "30000" },
+      ],
+      subtotal: "130000",
+      discount: "13000",
+      total: "117000",
+      currency: "IDR",
+      warranty_days: 30,
+      order_url: "https://shop.test/checkout/ZZZTESTCODE99/pay",
+      track_url: "https://shop.test/track",
+    };
+
+    it("renders a subject, text, and html with the order summary", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result).not.toBeNull();
+      expect(result!.subject).toBeTypeOf("string");
+      expect(result!.html).toBeTypeOf("string");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("Netflix Premium");
+      expect(result!.html).toContain("Rp50.000");
+      expect(result!.html).toContain("Rp130.000");
+      expect(result!.html).toContain("Rp13.000");
+      expect(result!.html).toContain("Rp117.000");
+      expect(result!.html).toContain("30 days / 30 hari");
+      // The unit price alone would misread as the line total for the
+      // quantity-2 item — the line spells out both, computed via Decimal.
+      expect(result!.html).toContain("2 × Rp50.000 = Rp100.000");
+      expect(result!.text).toContain("2 × Rp50.000 = Rp100.000");
+      expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.text).toContain("Rp117.000");
+    });
+
+    it("renders the summary labels, banner heading, and button bilingually", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("Discount / Diskon");
+      expect(result!.html).toContain("Total / Total");
+      expect(result!.html).toContain("Warranty / Garansi");
+      expect(result!.html).toContain("View Your Order / Lihat Pesanan");
+      expect(result!.html).toContain("Your order is ready / Pesanan kamu sudah siap");
+    });
+
+    it("subject is a fixed literal that NEVER carries the order code — it is the guest's full credential and sendMail logs every subject", async () => {
+      const first = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      const second = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        order_code: "SOMETHING-ELSE",
+        total: "999999",
+      });
+      expect(first!.subject).toBe(second!.subject);
+      expect(first!.subject).not.toContain(DISTINCTIVE_ORDER_CODE);
+      expect(second!.subject).not.toContain("SOMETHING-ELSE");
+    });
+
+    it("keeps the order code out of the inbox-preview preheader too, not just the subject", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      // renderShell hides the preheader in a display:none div at the very top
+      // of the body; the order code must not be in it, since subject +
+      // preheader are exactly what a lock-screen notification shows.
+      const preheaderMatch = /<div style="display:none;[^"]*">([\s\S]*?)<\/div>/.exec(result!.html!);
+      expect(preheaderMatch).not.toBeNull();
+      expect(preheaderMatch![1]).not.toContain(DISTINCTIVE_ORDER_CODE);
+    });
+
+    it("carries all three ways back into the order: button, printed code, and the /track link", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("https://shop.test/checkout/ZZZTESTCODE99/pay");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("https://shop.test/track");
+      expect(result!.text).toContain("https://shop.test/track");
+    });
+
+    it("renders fine with a null order_url — no broken button, code and /track still there", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", { ...payload, order_url: null });
+      expect(result).not.toBeNull();
+      expect(result!.html).not.toContain('href=""');
+      expect(result!.html!.toLowerCase()).not.toContain("undefined");
+      expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.html).toContain("https://shop.test/track");
+    });
+
+    it("omits the discount and warranty lines when zero/null, without leaking null", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        discount: "0",
+        warranty_days: null,
+      });
+      expect(result!.html).not.toContain("Discount");
+      expect(result!.html).not.toContain("Warranty");
+      expect(result!.html!.toLowerCase()).not.toContain("null");
+    });
+
+    it("formats a USDT order via formatMoney (2dp + suffix), not formatIdr", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        subtotal: "10.5",
+        discount: "0.5",
+        total: "10",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: "10.5", lineTotal: "10.5" }],
+      });
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.text).toContain("10.00 USDT");
+    });
+
+    // The line total is a CONVERTED figure the enqueue side computed once, in
+    // central IDR, before rounding to the nearest 0.1 USDT — it is NOT
+    // `unitPrice * quantity` in the display currency, and this branch must not
+    // "helpfully" recompute it. 5 x Rp8.900 at an fxRate of 16.000 is the
+    // sharpest small case: the per-unit 0.55625 rounds UP to 0.6, so a naive
+    // 0.6 x 5 would print a 3.00 USDT line total directly above a Subtotal of
+    // 44.500/16.000 = 2.78125 -> 2.80 USDT, contradicting it by 0.2 USDT in a
+    // receipt a paying customer reads.
+    it("renders the caller's lineTotal verbatim instead of re-deriving it from the already-rounded unit price", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        subtotal: "2.8",
+        discount: "0",
+        total: "2.8",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 5, unitPrice: "0.6", lineTotal: "2.8" }],
+      });
+      expect(result!.html).toContain("5 × 0.60 USDT = 2.80 USDT");
+      expect(result!.text).toContain("5 × 0.60 USDT = 2.80 USDT");
+      // ...and it agrees with the Subtotal row printed a few lines below it,
+      // which is the whole point: this order has one line.
+      expect(result!.text).toMatch(/Subtotal \/ Subtotal[^\n]*2\.80 USDT/);
+      // The naive product, which would otherwise sit visibly above it.
+      expect(result!.html).not.toContain("3.00 USDT");
+      expect(result!.text).not.toContain("3.00 USDT");
+    });
+
+    // Backward compatibility for outbox rows enqueued before `lineTotal`
+    // joined the payload: those rows are already PENDING when the new code
+    // deploys and must still render a line total rather than a blank or a
+    // zero. The fallback multiplies via Decimal, never float.
+    it("falls back to quantity x unitPrice (via Decimal, not float) for a pre-existing row whose payload has no lineTotal", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 3, unitPrice: "0.1" }],
+      });
+      // 0.1 * 3 as a naive float is 0.30000000000000004 — Decimal must give
+      // exactly 0.30.
+      expect(result!.html).toContain("3 × 0.10 USDT = 0.30 USDT");
+    });
+
+    it("resolves the buyer's brand logo against the STOREFRONT origin, never the admin panel's", async () => {
+      // The reader is a customer. A logo joined against ADMIN_PUBLIC_URL
+      // would both break (the admin origin is often private) and advertise
+      // the admin panel's hostname to the public.
+      config.ADMIN_PUBLIC_URL = "https://admin.internal.test";
+      config.SHOP_PUBLIC_URL = "https://shop.test";
+      vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+        if (key === "web_logo_url") return "/uploads/logo.png";
+        return null;
+      });
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).toContain("https://shop.test/uploads/logo.png");
+      expect(result!.html).not.toContain("admin.internal.test");
+    });
+
+    it("never puts anything credential-shaped in the body — the payload has no such field and the render invents none", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).not.toContain("deliveredContent");
+      expect(result!.html).not.toContain("credentials");
+      expect(result!.text).not.toContain("deliveredContent");
+      expect(result!.text).not.toContain("credentials");
+      // And it says so to the reader, so nobody expects the goods by mail.
+      expect(result!.text).toContain("never sent by email");
     });
   });
 

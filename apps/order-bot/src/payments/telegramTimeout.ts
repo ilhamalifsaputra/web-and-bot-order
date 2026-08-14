@@ -22,6 +22,12 @@
  * read by web-admin's dashboard for THEIR staleness thresholds — nothing
  * here needs to cross that app boundary, so conflating the two would blur
  * what reconcileCycleBudget.ts is actually shared for.
+ *
+ * Also imported (not copied) by two consumers outside the Bybit deposit path
+ * proper — `sweepPaidOrderBubbles` (jobs/index.ts) and the Refresh button's
+ * settled-bubble flip (`refreshPaymentStatus`, handlers/checkout.ts) — since
+ * both still live inside order-bot, that isn't the cross-app boundary this
+ * module is deliberately kept clear of.
  */
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline

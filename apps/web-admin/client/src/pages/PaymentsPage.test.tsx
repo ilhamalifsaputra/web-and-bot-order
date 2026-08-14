@@ -581,6 +581,52 @@ describe("PaymentsPage", () => {
     expect(screen.getByRole("button", { name: "Actions for transfer BN-1" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Actions for transfer TP-1" })).not.toBeInTheDocument();
   });
+
+  // T5: a wallet top-up's payment was indistinguishable from a product sale
+  // here — the ledger row carried only a numeric orderId.
+  it("shows each row's order code and marks wallet top-ups apart from product sales", async () => {
+    const ledger = [
+      { id: 1, gateway: "tokopay", reference: "TP-SALE", amount: "50000", currency: "IDR", outcome: "matched", memo: null, orderId: 11, orderCode: "ORD-SALE", orderKind: "PRODUCT", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "tokopay", reference: "TP-TOPUP", amount: "100000", currency: "IDR", outcome: "matched", memo: null, orderId: 12, orderCode: "ORD-TOPUP", orderKind: "WALLET_TOPUP", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 3, gateway: "binance", reference: "BN-ORPHAN", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, orderId: null, orderCode: null, orderKind: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 3, todayCount: 0, page: 1, hasNext: false, outcomes: ["matched"], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TP-SALE")).toBeInTheDocument());
+
+    expect(screen.getByText("ORD-SALE")).toBeInTheDocument();
+    expect(screen.getByText("ORD-TOPUP")).toBeInTheDocument();
+    expect(screen.getByText("Wallet Topup")).toBeInTheDocument();
+    expect(screen.getByText("Product")).toBeInTheDocument();
+  });
+
+  it("seeds the order-type filter from ?kind= in the URL on mount", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(
+      <WrapperAt initialEntries={["/payments?kind=WALLET_TOPUP"]}>
+        <PaymentsPage />
+      </WrapperAt>,
+    );
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
+  });
+
+  it("re-queries from page 1 when the order-type filter changes", async () => {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 3, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await user.click(screen.getByRole("combobox", { name: /order type/i }));
+    await user.click(await screen.findByRole("option", { name: "Wallet Topup" }));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
+    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=1"));
+  });
 });
 
 const UNDERPAID = {

@@ -4622,6 +4622,53 @@ describe("payments", () => {
     expect(binanceRow?.gateway).toBe("binance");
   });
 
+  // T5: wallet top-ups already wrote ledger rows here, but the rows carried
+  // only a numeric orderId — nothing told the shop owner that a given payment
+  // was a wallet top-up rather than a product sale.
+  it("GET /api/payments tags each ledger row with its order code and kind", async () => {
+    const sale = await prisma.order.create({
+      data: { orderCode: "ORD-KIND-SALE", userId: seed.customerId, subtotalAmount: "1", totalAmount: "50000", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    const topup = await prisma.order.create({
+      data: { orderCode: "ORD-KIND-TOPUP", userId: seed.customerId, subtotalAmount: "1", totalAmount: "100000", status: "DELIVERED", kind: "WALLET_TOPUP" },
+    });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-KIND-SALE", amount: "50000", outcome: "matched", orderId: sale.id } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-KIND-TOPUP", amount: "100000", outcome: "matched", orderId: topup.id } });
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderCode: string | null; orderKind: string | null }> };
+    expect(data.ledger.find((tx) => tx.reference === "TP-KIND-SALE")).toMatchObject({ orderCode: "ORD-KIND-SALE", orderKind: "PRODUCT" });
+    expect(data.ledger.find((tx) => tx.reference === "TP-KIND-TOPUP")).toMatchObject({ orderCode: "ORD-KIND-TOPUP", orderKind: "WALLET_TOPUP" });
+  });
+
+  it("GET /api/payments?kind=WALLET_TOPUP narrows the ledger to top-ups and reports a matching total", async () => {
+    const topup = await prisma.order.create({
+      data: { orderCode: "ORD-FILT-TOPUP", userId: seed.customerId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "WALLET_TOPUP" },
+    });
+    const sale = await prisma.order.create({
+      data: { orderCode: "ORD-FILT-SALE", userId: seed.customerId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", kind: "PRODUCT" },
+    });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "PD-FILT-TOPUP", amount: "1", outcome: "matched", orderId: topup.id } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "PD-FILT-SALE", amount: "1", outcome: "matched", orderId: sale.id } });
+
+    const res = await get("/api/payments?kind=WALLET_TOPUP", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; orderKind: string | null }>; total: number };
+    expect(data.ledger.map((tx) => tx.reference)).toContain("PD-FILT-TOPUP");
+    expect(data.ledger.map((tx) => tx.reference)).not.toContain("PD-FILT-SALE");
+    expect(data.ledger.every((tx) => tx.orderKind === "WALLET_TOPUP")).toBe(true);
+    expect(data.total).toBe(data.ledger.length);
+  });
+
+  it("GET /api/payments ignores an unknown kind value rather than returning an empty ledger", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "KIND-BOGUS-1", amount: "1.00" });
+    const res = await get("/api/payments?kind=NOT_A_KIND", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string }> };
+    expect(data.ledger.map((tx) => tx.reference)).toContain("KIND-BOGUS-1");
+  });
+
   it("dismiss unmatched tx → outcome dismissed + audit", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX1", amount: "1.00" });
     const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });

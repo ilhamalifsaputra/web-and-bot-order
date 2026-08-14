@@ -9,7 +9,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
-import { GrammyError, type Api } from "grammy";
+import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -46,6 +46,8 @@ import {
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
   runStorageCleanup,
+  listSettledOrdersAwaitingBubbleEdit,
+  clearOrderPaymentMessage,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -55,11 +57,85 @@ import {
   TOKOPAY_POLL_STALE_MS,
   PAYDISINI_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
+  MAX_ORDERS_PER_CYCLE,
+  SWEEP_EDIT_TIMEOUT_MS,
+  SWEEP_TOTAL_BUDGET_MS,
 } from "@app/core/payments/reconcileCycleBudget";
+import { withTimeout } from "../payments/telegramTimeout";
+import { settledPaymentBubble } from "../util/delivery";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
 import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastPhoto";
+
+/** What `editPaymentBubble` actually did, so the caller can tell a successful
+ * edit apart from a failed one instead of guessing from side effects:
+ *  - "edited"     — the bubble itself was updated in place (`via` says which
+ *                    grammY call worked: "caption" for a photo/QR bubble,
+ *                    "text" for a text-fallback bubble).
+ *  - "dm_sent"    — the bubble could not be edited, but the fallback DM
+ *                    (when the caller opted in) was sent instead.
+ *  - "not_edited" — the bubble could not be edited and no fallback DM was
+ *                    sent, either because the caller opted out (`fallbackDm:
+ *                    null`) or because the DM itself failed too — `error`
+ *                    carries that DM failure (unset in the opted-out case)
+ *                    so a caller that needs the original propagated (like
+ *                    `notifyAutoCancelled` below, preserving its pre-refactor
+ *                    behavior) doesn't have to re-attempt the send just to
+ *                    get it. */
+export type BubbleEditResult =
+  | { status: "edited"; via: "caption" | "text" }
+  | { status: "dm_sent" }
+  | { status: "not_edited"; error?: unknown };
+
+/**
+ * Edit an anchored payment/notification bubble in place: try `editMessageCaption`
+ * first (photo/QR bubbles), fall back to `editMessageText` (text bubbles).
+ * Extracted from `notifyAutoCancelled`'s original inline try/caption/text chain
+ * (Task T2-C) so the upcoming generic bubble-flip sweeper can share it.
+ *
+ * `fallbackDm` makes the two calling modes explicit at the call site instead
+ * of being an implicit side effect: `notifyAutoCancelled` below passes a
+ * target so a buyer whose bubble is gone still gets the news as a DM (its
+ * existing, unchanged behavior); the sweeper's own bubble-flip pass will
+ * pass `null` — those buyers already received the account/top-up DM through
+ * the normal delivery path, so a second DM here would only be noise.
+ *
+ * Never throws: every grammY call (including the fallback DM) is caught, so
+ * a stale/uneditable bubble or a blocked/deactivated recipient degrades to a
+ * reported outcome instead of an exception the caller must remember to guard.
+ */
+export async function editPaymentBubble(
+  api: Api,
+  args: {
+    chatId: number;
+    messageId: number;
+    text: string;
+    markup: InlineKeyboard;
+    /** Telegram id to DM as a fallback when the bubble can't be edited. Pass
+     * `null` to skip the DM entirely and just report the edit failed. */
+    fallbackDm: { telegramId: number } | null;
+  },
+): Promise<BubbleEditResult> {
+  try {
+    await api.editMessageCaption(args.chatId, args.messageId, { caption: args.text, parse_mode: "HTML", reply_markup: args.markup });
+    return { status: "edited", via: "caption" };
+  } catch {
+    try {
+      await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+      return { status: "edited", via: "text" };
+    } catch {
+      // Bubble gone/uneditable.
+      if (args.fallbackDm == null) return { status: "not_edited" };
+      try {
+        await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+        return { status: "dm_sent" };
+      } catch (error) {
+        return { status: "not_edited", error };
+      }
+    }
+  }
+}
 
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
@@ -76,18 +152,21 @@ async function notifyAutoCancelled(
   const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
-    const chatId = Number(o.paymentMsgChatId);
-    try {
-      await api.editMessageCaption(chatId, o.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
-      return;
-    } catch {
-      try {
-        await api.editMessageText(chatId, o.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
-        return;
-      } catch {
-        /* bubble gone/uneditable — fall through to a fresh DM */
-      }
-    }
+    const result = await editPaymentBubble(api, {
+      chatId: Number(o.paymentMsgChatId),
+      messageId: o.paymentMsgId,
+      text,
+      markup,
+      fallbackDm: { telegramId: Number(o.tgId) },
+    });
+    // "error" only appears once a fallback DM was actually attempted (never
+    // for the sweeper's fallbackDm: null mode) — re-throwing it here
+    // reproduces the pre-refactor behavior exactly: a failed fallback send
+    // used to propagate out of this function uncaught, so
+    // autoCancelExpiredOrders' own try/catch would log "Failed to notify the
+    // customer...". Not re-attempting the send avoids DMing the buyer twice.
+    if (result.status === "not_edited" && "error" in result) throw result.error;
+    return;
   }
   await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
 }
@@ -116,6 +195,73 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
     }
+  }
+}
+
+/**
+ * Flip every settled order's stale payment bubble to its success message, for
+ * ALL six payment methods at once.
+ *
+ * Why this exists: both remaining settlement paths that can pay an order off
+ * — a gateway webhook and an admin's manual approval — run in the web process,
+ * which is forbidden from touching Telegram at all. Without this sweeper those
+ * buyers keep staring at a QR code (and a live Refresh/Cancel pair) for an
+ * order that is already paid and delivered. The three crypto rails clear their
+ * own anchor the moment they flip a bubble themselves, so orders they handled
+ * never show up in this query — by design, not by omission.
+ *
+ * Idempotent: the anchor IS the work queue, so clearing it makes a re-run a
+ * no-op. Bounded the same way TokoPay/PayDisini's own now-removed per-rail
+ * sweeps were (Task T2-F deleted `sweepDeliveredAwaitingEdit`, whose shape
+ * this follows): the batch is capped at MAX_ORDERS_PER_CYCLE, each edit gets
+ * at most `editTimeoutMs`, and the whole sweep stops starting new rows once
+ * `totalBudgetMs` of wall clock is gone. A timed-out or budget-cut-off edit
+ * deliberately leaves its anchor in place so the next tick retries it —
+ * clearing happens only once an edit genuinely completed, which includes an
+ * edit that permanently failed (`editPaymentBubble` swallows those and reports
+ * them, so a bubble the buyer deleted self-heals instead of being retried
+ * forever).
+ *
+ * No fallback DM (`fallbackDm: null`): every order in this list already
+ * reached its buyer through the normal path — the account file, the
+ * ORDER_PROCESSING_DM, or the wallet top-up notice — so a DM here would only
+ * repeat news they already have.
+ *
+ * `opts` defaults to the shared exported constants; production never passes
+ * it. It exists so the black-holed-bubble tests can drive the identical
+ * give-up/budget-break logic with millisecond-scale values instead of really
+ * sleeping ~40s, the same trick the per-rail sweep tests already use.
+ */
+export async function sweepPaidOrderBubbles(
+  api: Api,
+  opts?: { editTimeoutMs?: number; totalBudgetMs?: number },
+): Promise<void> {
+  const editTimeoutMs = opts?.editTimeoutMs ?? SWEEP_EDIT_TIMEOUT_MS;
+  const totalBudgetMs = opts?.totalBudgetMs ?? SWEEP_TOTAL_BUDGET_MS;
+  const orders = await listSettledOrdersAwaitingBubbleEdit(prisma, MAX_ORDERS_PER_CYCLE);
+  const sweepStartedAt = Date.now();
+  for (const [index, order] of orders.entries()) {
+    if (Date.now() - sweepStartedAt > totalBudgetMs) {
+      logger.warn(`The paid-order bubble sweep ran out of its ${totalBudgetMs}ms whole-sweep budget with ${orders.length - index} order(s) still showing a stale payment bubble — their anchors are left in place on purpose so the next cycle picks them up again`);
+      break;
+    }
+    if (order.paymentMsgChatId == null || order.paymentMsgId == null) continue;
+    const { text, markup } = settledPaymentBubble(order);
+    const outcome = await withTimeout(
+      editPaymentBubble(api, {
+        chatId: Number(order.paymentMsgChatId),
+        messageId: order.paymentMsgId,
+        text,
+        markup,
+        fallbackDm: null,
+      }),
+      editTimeoutMs,
+    );
+    if (outcome === "timeout") {
+      logger.warn(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
+      continue;
+    }
+    await clearOrderPaymentMessage(prisma, order.id);
   }
 }
 
@@ -943,5 +1089,15 @@ export function scheduleJobs(api: Api): Cron[] {
     // minutely/hourly ticks, and unlike those it's a single sweep rather
     // than something that needs to run often.
     new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
+    // Second 25, NOT "*/1 * * * *" (which would fire on second 0): this sweep
+    // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
+    // every tick — precisely the profile behind the P1008/P2028 write-lock
+    // pile-up above, where several jobs landing on second 0 queued behind each
+    // other on SQLite's single writer until one blew past the 5s busy_timeout.
+    // :25 is at least 5 seconds clear of every second already in use here:
+    // 0 (autoCancelExpiredOrders + the hourly/6-hourly jobs), 5/20/35/50
+    // (drainBroadcasts), 40 (announceStartedFlashSales), 15/17/19 (the QRIS
+    // watchdogs) and 30 (storageCleanupJob).
+    new Cron("25 * * * * *", { protect: true }, wrap("sweepPaidOrderBubbles", sweepPaidOrderBubbles)),
   ];
 }

@@ -1,6 +1,7 @@
 /**
  * Owner email recipient/toggle resolution for the owner-notifications feature
- * (paid order, manual queue, new ticket, ticket reply). Resolved from
+ * (paid order, manual queue, new ticket, ticket reply, wallet top-up).
+ * Resolved from
  * web-admin Settings — no env fallback, unlike SMTP: an owner email address
  * has no bootstrap/recovery equivalent, it's DB-only. Same pattern as
  * getSmtpCreds (./smtp.ts): an edit takes effect on the next enqueue,
@@ -15,14 +16,16 @@ export const OWNER_EMAIL_ON_PAID_ORDER_KEY = "owner_email_on_paid_order";
 export const OWNER_EMAIL_ON_MANUAL_QUEUE_KEY = "owner_email_on_manual_queue";
 export const OWNER_EMAIL_ON_NEW_TICKET_KEY = "owner_email_on_new_ticket";
 export const OWNER_EMAIL_ON_TICKET_REPLY_KEY = "owner_email_on_ticket_reply";
+export const OWNER_EMAIL_ON_WALLET_TOPUP_KEY = "owner_email_on_wallet_topup";
 
-export type OwnerEmailEvent = "paid_order" | "manual_queue" | "new_ticket" | "ticket_reply";
+export type OwnerEmailEvent = "paid_order" | "manual_queue" | "new_ticket" | "ticket_reply" | "wallet_topup";
 
 const EVENT_TOGGLE_KEY: Record<OwnerEmailEvent, string> = {
   paid_order: OWNER_EMAIL_ON_PAID_ORDER_KEY,
   manual_queue: OWNER_EMAIL_ON_MANUAL_QUEUE_KEY,
   new_ticket: OWNER_EMAIL_ON_NEW_TICKET_KEY,
   ticket_reply: OWNER_EMAIL_ON_TICKET_REPLY_KEY,
+  wallet_topup: OWNER_EMAIL_ON_WALLET_TOPUP_KEY,
 };
 
 // Plain recipient address only — unlike SMTP_FROM_RE (settings.ts), owner_email

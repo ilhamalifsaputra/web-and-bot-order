@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
@@ -21,12 +21,17 @@ import {
   cancelOrder,
   logAdminAction,
   listCombinedLedger,
-  countCombinedLedger,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
+
+/** The order kinds the ledger's "Type" filter accepts — the Payments page
+ *  needs to separate wallet top-up money from product-sale money. Sent to the
+ *  client so its dropdown is driven by the same list the server validates
+ *  against, exactly like `TX_OUTCOMES` drives the outcome dropdown. */
+const ORDER_KINDS = [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP] as const;
 
 class NotFoundError extends Error {}
 
@@ -35,12 +40,17 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     const q = req.query as Record<string, string | undefined>;
     const outcome = q.outcome && (TX_OUTCOMES as readonly string[]).includes(q.outcome) ? q.outcome : null;
     const search = q.q?.trim() || null;
+    // Unrecognized values fall back to "no kind filter" rather than an empty
+    // ledger, matching how `outcome` above ignores anything not in TX_OUTCOMES.
+    const kind = q.kind && (ORDER_KINDS as readonly string[]).includes(q.kind) ? q.kind : null;
     const page = Math.max(Number(q.page) || 1, 1);
     const offset = (page - 1) * PAGE_SIZE;
 
-    const [ledger, total, todayCount, counts, health, underpaid, pendingInternal] = await Promise.all([
-      listCombinedLedger(prisma, { outcome, q: search, limit: PAGE_SIZE, offset }),
-      countCombinedLedger(prisma, { outcome, q: search }),
+    // `listCombinedLedger` returns rows AND their total together: the `kind`
+    // filter is applied to the cross-gateway merged set, so no per-table
+    // count() could produce a total that agrees with it (see its doc comment).
+    const [ledgerPage, todayCount, counts, health, underpaid, pendingInternal] = await Promise.all([
+      listCombinedLedger(prisma, { outcome, q: search, kind, limit: PAGE_SIZE, offset }),
       countProcessedBinanceTxToday(prisma),
       processedTxOutcomeCounts(prisma),
       getBinancePollHealth(prisma),
@@ -58,6 +68,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // actually existed before, so `new Date(tx.processedAt)` always produced
     // Invalid Date client-side). Add it here alongside the pre-formatted
     // display string, fixing that bug in the same pass.
+    const { rows: ledger, total } = ledgerPage;
     const ledgerWithDisplay = ledger.map((r) => ({
       ...r,
       processedAt: r.createdAt.toISOString(),
@@ -75,6 +86,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       pageSize: PAGE_SIZE,
       hasNext: offset + ledger.length < total,
       outcomes: TX_OUTCOMES,
+      kinds: ORDER_KINDS,
       counts,
       health: {
         ...health,

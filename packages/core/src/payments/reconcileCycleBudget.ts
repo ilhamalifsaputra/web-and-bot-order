@@ -77,40 +77,43 @@ const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead + RECONCILE_TELEGRAM
 export const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
 
 /**
- * TokoPay and PayDisini only (NOWPayments has no anchored QR bubble to flip
- * — see `NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS` below). Per-edit budget for
- * waiting on a sweep bubble edit (Task 11 review follow-up, Important #2):
- * grammY's `Api` client DOES have a built-in per-call timeout
- * (`ApiClientOptions.timeoutSeconds`, verified against grammy@1.43.0's
- * `core/client.js` — an `AbortController`-backed deadline, defaulting to
- * 500s). There is no bot-wide bound today (an earlier attempt to set one
- * bot-wide broke the bot's own long-poll update loop and was reverted, Task
- * 11 review follow-up, Critical #1): this constant is the ONLY thing
- * standing between the sweep's edit calls and grammY's 500s per-call
- * default.
+ * Per-edit budget for waiting on a sweep bubble edit (Task 11 review
+ * follow-up, Important #2). Originally TokoPay/PayDisini-only; since Task
+ * T2-F removed each rail's own per-rail sweep (`sweepDeliveredAwaitingEdit`),
+ * this now belongs to the generic paid-order bubble sweeper
+ * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E),
+ * which covers every payment method that anchors a bubble — including
+ * NOWPayments: it DOES anchor one at checkout
+ * (apps/order-bot/src/handlers/walletTopup.ts:515,
+ * apps/order-bot/src/handlers/checkout.ts:1012), it just never flips it
+ * inline the way TokoPay/PayDisini's `reconcileOrder` does, so the generic
+ * sweeper is the only thing that ever clears it (an earlier version of this
+ * comment wrongly claimed NOWPayments had no anchored bubble at all — that
+ * wrong assumption is exactly why NOWPayments bubbles never got swept before
+ * the generic sweeper existed). grammY's `Api` client DOES have a built-in
+ * per-call timeout (`ApiClientOptions.timeoutSeconds`, verified against
+ * grammy@1.43.0's `core/client.js` — an `AbortController`-backed deadline,
+ * defaulting to 500s). There is no bot-wide bound today (an earlier attempt
+ * to set one bot-wide broke the bot's own long-poll update loop and was
+ * reverted, Task 11 review follow-up, Critical #1): this constant is the
+ * ONLY thing standing between the sweep's edit calls and grammY's 500s
+ * per-call default.
  */
 export const SWEEP_EDIT_TIMEOUT_MS = 10_000;
 
 /**
- * TokoPay and PayDisini only. Whole-sweep wall-clock budget (Task 11 review
- * follow-up, Important #3): the sweep is a cosmetic caption flip on orders
- * already DELIVERED — idempotent, retried next cycle, and normally an empty
- * list — never a money-bearing gateway call, so it does not deserve
+ * Whole-sweep wall-clock budget (Task 11 review follow-up, Important #3):
+ * the sweep is a cosmetic caption flip on orders already
+ * DELIVERED/PROCESSING — idempotent, retried next cycle, and normally an
+ * empty list — never a money-bearing gateway call, so it does not deserve
  * `cap × per-row worst case` in the cycle-timeout derivation the way the
- * reconcile loop's real gateway calls do. Each rail's own
- * `sweepDeliveredAwaitingEdit` checks this between rows and gives up on the
- * rest of the batch once it's exceeded, leaving their anchors in place for
- * the next cycle to retry.
+ * reconcile loop's real gateway calls do. Originally TokoPay/PayDisini-only;
+ * since Task T2-F this is used by the generic paid-order bubble sweeper
+ * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E),
+ * which checks this between rows and gives up on the rest of the batch once
+ * it's exceeded, leaving those anchors in place for the next cycle to retry.
  */
 export const SWEEP_TOTAL_BUDGET_MS = 30_000;
-
-/**
- * TokoPay and PayDisini only. The sweep's own flat worst case:
- * `SWEEP_TOTAL_BUDGET_MS` plus one more in-flight `SWEEP_EDIT_TIMEOUT_MS`
- * (the budget is only checked BETWEEN rows, so the row in flight when the
- * budget is crossed still gets to finish) = 40_000ms.
- */
-const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
 
 /**
  * TokoPay's `cycleTimeoutMs` (Task 3 review follow-up shape — see
@@ -120,13 +123,17 @@ const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
  * individually bounded, so `MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS`
  * is the raw worst case for the reconcile loop (750_000ms at today's
  * cap/timeouts — pessimistically assuming every order in the batch turns
- * out freshly paid). `sweepDeliveredAwaitingEdit` runs alongside it and
- * contributes its own flat `SWEEP_WORST_CASE_MS` (40_000ms) rather than
- * `MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS` — Task 11 review follow-up,
- * Important #3 corrected an earlier version of this derivation that charged
- * the cosmetic bubble-flip sweep a money-bearing gateway call's budget.
- * `CYCLE_TIMEOUT_MARGIN_MS` (30s) covers the remaining DB list/deliver work
- * around both loops. Total: 750_000 + 40_000 + 30_000 = 820_000ms (~13m40s).
+ * out freshly paid). `CYCLE_TIMEOUT_MARGIN_MS` (30s) covers the remaining DB
+ * list/deliver work around the loop. Total: 750_000 + 30_000 = 780_000ms
+ * (~13m).
+ *
+ * This used to also carry a flat sweep-worst-case term for this rail's own
+ * per-rail bubble sweep (`sweepDeliveredAwaitingEdit`, deleted in Task
+ * T2-F): that per-rail sweep was replaced by the generic
+ * `sweepPaidOrderBubbles` (apps/order-bot/src/jobs/index.ts, Task T2-E),
+ * which runs on its own cron tick rather than inside this cycle, so it no
+ * longer contributes to this budget at all — this derivation is now
+ * identical in shape to NOWPayments' own, below.
  *
  * Sanity check against `PAYMENT_WINDOW_MINUTES` (Task 11 review follow-up,
  * Important #3, enforced as a test —
@@ -134,22 +141,23 @@ const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
  * here per Minor #4): a cycle deadline eating more than half an order's
  * payment window means a single hung cycle can, on its own, do ZERO
  * reconciliation for most of that order's life with the safety net switched
- * off. At 820_000ms against the default 30-minute (1_800_000ms) window,
- * this is ~46% — comfortably under that line.
+ * off. At 780_000ms against the default 30-minute (1_800_000ms) window,
+ * this is ~43% — comfortably under that line.
  */
 export const TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS =
-  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + SWEEP_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 /**
  * PayDisini's `cycleTimeoutMs` — identical derivation and value to
- * TokoPay's (both rails run the same shape of reconcile loop plus bubble
- * sweep; see `TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS` above for the full
- * derivation). Kept as its own named export rather than an alias so the two
- * rails can be tuned independently in the future without silently becoming
- * the same constant by accident.
+ * TokoPay's (both rails run the same shape of reconcile loop; see
+ * `TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS` above for the full derivation,
+ * including why it no longer carries a bubble-sweep term as of Task T2-F).
+ * Kept as its own named export rather than an alias so the two rails can be
+ * tuned independently in the future without silently becoming the same
+ * constant by accident.
  */
 export const PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS =
-  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + SWEEP_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 /**
  * NOWPayments' `cycleTimeoutMs`: one cycle makes at most
@@ -159,9 +167,17 @@ export const PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS =
  * `PER_ORDER_WORST_CASE_MS` (15s) and the raw worst case is 750_000ms,
  * pessimistically assuming every order both answers slowly AND fails
  * delivery. `CYCLE_TIMEOUT_MARGIN_MS` (30s) covers the DB list/deliver work
- * around those calls each cycle. Unlike TokoPay/PayDisini there is no
- * bubble-sweep term: this rail has no anchored QR bubble to flip, so its
- * `pollOnce` ends after the order loop. Total: 750_000 + 30_000 = 780_000ms.
+ * around those calls each cycle. Total: 750_000 + 30_000 = 780_000ms — the
+ * same value (and, since Task T2-F, the same shape) as TokoPay/PayDisini's
+ * own derivation above. This rail's `pollOnce` never flips a bubble inline
+ * either way, so no per-rail bubble-sweep term belongs in any of the three
+ * rails' cycle-timeout math. That does NOT mean this rail has no anchored
+ * bubble to flip — it does, anchored at checkout
+ * (apps/order-bot/src/handlers/walletTopup.ts:515,
+ * apps/order-bot/src/handlers/checkout.ts:1012) — only that nothing in this
+ * rail's own reconcile loop flips it inline; the generic
+ * `sweepPaidOrderBubbles` (apps/order-bot/src/jobs/index.ts, Task T2-E) is
+ * what clears it, on its own cron schedule, independent of this budget.
  *
  * Sanity check, enforced by a test (poll-loop-wiring.test.ts) rather than
  * narrated here: this must stay under half of
@@ -183,8 +199,10 @@ export const NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS =
  * (Binance/Bybit/Bybit BSC — `pollHealth.ts`'s `DEFAULT_STALE_MS`, 5
  * minutes): one cycle makes up to `MAX_ORDERS_PER_CYCLE` (50) sequential,
  * individually-timed-out gateway calls, so each rail's own cycle-timeout
- * constant above is already ~820s for TokoPay/PayDisini and ~780s for
- * NOWPayments — both already well past the crypto rails' 5-minute default.
+ * constant above is already ~780s for all three (TokoPay, PayDisini, and
+ * NOWPayments alike, since Task T2-F removed the per-rail sweep term that
+ * used to make TokoPay/PayDisini's ~40s higher) — already well past the
+ * crypto rails' 5-minute default.
  *
  * A rail's heartbeat is written exactly once per cycle — at the end
  * (success or failure) or, for a hung cycle, at its own cycle-timeout

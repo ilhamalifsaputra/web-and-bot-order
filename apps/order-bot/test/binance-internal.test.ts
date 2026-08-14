@@ -544,7 +544,8 @@ describe("processTransfers (poll-loop wiring)", () => {
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
     await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: order.totalAmount })], await pending());
-    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
@@ -554,6 +555,35 @@ describe("processTransfers (poll-loop wiring)", () => {
     const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
     expect(flat).toContain("v1:browse:prods");
     expect(flat).toContain("v1:order:list");
+
+    // T1: a successful terminal flip must clear the anchor pointer, so the
+    // generic sweeper (added in a later task) knows this bubble is done and
+    // doesn't re-edit it every cycle.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
+  });
+
+  // T1 critical fix: a rejected edit (e.g. the buyer navigated away and the
+  // bubble was deleted — "message to edit not found") must still clear the
+  // anchor. Only a genuine wall-clock timeout is allowed to leave it in
+  // place; a message that can never be edited must self-heal instead of
+  // making the upcoming generic sweeper retry a doomed edit forever.
+  it("clears the anchor even when the bubble edit is rejected by Telegram, so it self-heals instead of retrying forever (T1)", async () => {
+    const order = (await makeInternalOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api } = fakeApi();
+    api.editMessageText = async () => {
+      throw new Error("Bad Request: message to edit not found");
+    };
+    await processTransfers(api, [txFor({ txId: "T-EDITFAIL", note: order.paymentRef!, amount: order.totalAmount })], await pending());
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    // Delivery itself must not be blocked by a bubble-edit failure.
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    // The anchor clears because the edit attempt genuinely completed (it was
+    // just rejected) — a permanently-uneditable bubble must not stay
+    // anchored forever.
+    expect(updated!.paymentMsgChatId).toBeNull();
+    expect(updated!.paymentMsgId).toBeNull();
   });
 
   it("delivers on a note match", async () => {

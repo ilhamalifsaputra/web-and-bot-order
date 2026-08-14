@@ -386,6 +386,44 @@ export const NotificationEvent = {
   // never trigger this. payload carries `to` plus ticket subject and the
   // reply body, NOT `chat_id`. Gated by resolveOwnerEmailRecipient.
   OWNER_EMAIL_TICKET_REPLY: "OWNER_EMAIL_TICKET_REPLY",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner
+  // receives this when a buyer's wallet top-up settles (settleWalletTopup,
+  // inside the successful atomic PENDING_PAYMENT -> DELIVERED claim branch,
+  // after adjustWallet) — the one call site all six top-up-capable rails
+  // (TokoPay, PayDisini, NOWPayments, Binance Internal, Bybit, Bybit BSC)
+  // funnel through, so this enqueues exactly once per settled top-up
+  // regardless of which rail settled it. Distinct from
+  // enqueueWalletTopupCreditedDm (a Telegram DM to the buyer, not the owner)
+  // — the two never share a payload shape. payload carries `to` plus
+  // order_code/customer_label/amount/currency/new_balance/payment_method/
+  // transaction_id/topped_up_at, NOT `chat_id`. Gated by
+  // resolveOwnerEmailRecipient, same as the other OWNER_EMAIL_* events.
+  OWNER_EMAIL_WALLET_TOPUP: "OWNER_EMAIL_WALLET_TOPUP",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM) — and the ONLY
+  // one whose recipient is the BUYER rather than the shop owner. Read that
+  // sentence again before touching this entry: every OWNER_EMAIL_* event
+  // above resolves its `to` from Settings via resolveOwnerEmailRecipient and
+  // is gated behind a master toggle plus a per-event toggle. This one does
+  // NEITHER, deliberately. Its `to` is the guest shopper's own `guestEmail`,
+  // passed straight down from the call site as an argument, and there is no
+  // owner toggle because telling a customer their order is finished is not a
+  // courtesy the shop opts into — it is the order's completion receipt. Do
+  // not "unify" this onto the owner-email path; doing so would make a
+  // buyer's receipt vanish whenever the owner turned their own alerts off,
+  // and would mail the ORDER to the shop owner's address.
+  //
+  // Enqueued from packages/db/src/crud/orders.ts at the two points an order
+  // actually becomes ready — settlePaidOrder's AUTO branch and
+  // fulfillManualOrder — both guarded on `user.isGuest && user.guestEmail`.
+  // Two call sites, not one: a manual SKU never passes through the AUTO
+  // branch, so a guest who bought one would otherwise get nothing.
+  //
+  // payload carries `to` plus order_code/items/subtotal/discount/total/
+  // currency/warranty_days/order_url/track_url, NOT `chat_id`. It carries NO
+  // credentials and no delivered content, ever: email is unencrypted, sits in
+  // an inbox forever, and the payload itself is visible in the admin /outbox
+  // panel. The buyer reads what they bought on the order page.
+  BUYER_EMAIL_ORDER_READY: "BUYER_EMAIL_ORDER_READY",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

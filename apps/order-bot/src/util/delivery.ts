@@ -7,9 +7,15 @@
  * caption come from the shared `@app/core/delivery` builders. Throws on send
  * failure so callers can log + offer a resend, exactly like the prior
  * `sendMessage` path did.
+ *
+ * Also owns `settledPaymentBubble`, the canonical text/keyboard mapping for
+ * an already-settled order's payment bubble — shared by the Refresh button's
+ * on-the-spot flip (handlers/checkout.ts) and the background sweeper
+ * (jobs/index.ts) so both show the buyer the identical ending.
  */
-import { InputFile, type Api } from "grammy";
+import { InputFile, type Api, type InlineKeyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
+import { OrderKind, OrderStatus, langCode } from "@app/core/enums";
 import {
   buildAccountFileContent,
   buildDeliveryCaption,
@@ -17,7 +23,7 @@ import {
   accountFileName,
   type DeliveredItem,
 } from "@app/core/delivery";
-import { notificationKb } from "../keyboards/customer";
+import { notificationKb, paymentSuccessKb, walletKb } from "../keyboards/customer";
 import { orderAmount, formatIdr, formatUsdt } from "./format";
 import { coreT } from "./i18n";
 
@@ -52,6 +58,59 @@ export function walletTopupSuccessText(order: WalletTopupOrder, newBalance: Deci
     amount: orderAmount(order),
     balance: isIdr ? formatIdr(newBalance) : formatUsdt(newBalance),
   });
+}
+
+/** A settled order as far as its payment bubble is concerned: what it was for
+ * (`kind`), how far it got (`status`), what it cost (`currency`/`totalAmount`,
+ * for the top-up sentence), and the buyer's language plus both wallet columns.
+ * Structurally satisfied by `listSettledOrdersAwaitingBubbleEdit`'s projection
+ * (packages/db/src/crud/binance_internal.ts) as-is. */
+export interface SettledBubbleOrder {
+  orderCode: string;
+  kind: string;
+  status: string;
+  currency: string | null;
+  totalAmount: Decimal.Value;
+  user: { language: string; walletBalance: Decimal.Value; walletBalanceUsdt: Decimal.Value };
+}
+
+/**
+ * The one place an order maps to the success bubble it should now be showing.
+ * Both post-payment bubble flips call it — the buyer's own "🔄 Refresh Status"
+ * tap (`refreshPaymentStatus`, handlers/checkout.ts) and the background
+ * sweeper that catches every settlement the bot process never saw
+ * (`sweepPaidOrderBubbles`, jobs/index.ts) — so a buyer can never be shown two
+ * different endings for the same order depending on which one got there first.
+ *
+ *  - WALLET_TOPUP (any status) → the same `walletTopupSuccessText` sentence the
+ *    three crypto rails already send, so all six payment methods word a
+ *    completed top-up identically. That unification is TEXT-only, though: this
+ *    path's keyboard is the wallet screen's (`walletKb`), while the crypto
+ *    rails' own fast path (binanceInternal.ts, bybitDeposit.ts,
+ *    bybitBscDeposit.ts) still passes `paymentSuccessKb`'s "My Orders" for a
+ *    WALLET_TOPUP order — a pre-existing mismatch left alone here, not
+ *    something this function introduces. A top-up buyer therefore sees
+ *    whichever keyboard belongs to whichever path got there first; neither
+ *    keyboard is "more correct" and a top-up never produces an order the
+ *    buyer would look for in their order history either way.
+ *  - PRODUCT + DELIVERED → items are on their way (the account file is
+ *    already sent or enqueued).
+ *  - PRODUCT + PROCESSING → manual fulfilment; the buyer waits for an admin.
+ *
+ * The top-up balance is the buyer's CURRENT balance, not their balance at the
+ * instant the credit landed: if they spent some of it between the credit and
+ * this flip, the number shown here is lower than what was credited. That is
+ * accepted as-is (the crypto rails' own fast path shows exactly the same
+ * figure), not a bug to chase.
+ */
+export function settledPaymentBubble(order: SettledBubbleOrder): { text: string; markup: InlineKeyboard } {
+  const lang = langCode(order.user.language);
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    const newBalance = (order.currency ?? "USDT") === "IDR" ? order.user.walletBalance : order.user.walletBalanceUsdt;
+    return { text: walletTopupSuccessText(order, newBalance, lang), markup: walletKb(lang) };
+  }
+  const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
+  return { text: coreT(key, lang, { code: order.orderCode }), markup: paymentSuccessKb(lang) };
 }
 
 /** Send the buyer their account file (caption + `.txt`). Throws on failure. */

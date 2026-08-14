@@ -15,7 +15,7 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { DeliveryType, NotificationEvent, OrderCurrency, OrderKind, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -39,6 +39,7 @@ import {
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
   setOrderPaymentMessage,
+  clearOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
   getTokopayCreds,
@@ -62,7 +63,9 @@ import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payment
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
-import { sendAccountFile } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
+import { editPaymentBubble } from "../jobs";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatIdr, formatUsdtAmount, priceIdr, usdtFromIdr } from "../util/format";
@@ -1510,13 +1513,26 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
 // ---------------------------------------------------------------------------
 
 /**
- * Trigger an on-demand reconcile for a pending auto-confirm order and toast
- * the result. All five pollers are idempotent (they re-list pending orders
- * and guard on status), so calling one out-of-band of its timer is always
- * safe. This does NOT edit the wait-screen bubble itself — for Internal/Bybit
- * the poller's own onDelivered already flips it (paymentSuccessKb); for
- * TokoPay/PayDisini the live-edit-to-success lands in a later task; NOWPayments
- * never flips. The toast is the immediate feedback in every case.
+ * The "🔄 Refresh Status" button, which now has two jobs depending on where
+ * the order actually is:
+ *
+ *  - Still awaiting payment (REFRESHABLE_STATUSES below): trigger an
+ *    on-demand reconcile for that rail and toast the result. All six pollers
+ *    are idempotent (they re-list pending orders and guard on status), so
+ *    calling one out-of-band of its timer is always safe. Any resulting
+ *    bubble edit is the poller's own onDelivered doing it, not this handler.
+ *  - Already settled (DELIVERED/PROCESSING) with its payment bubble still
+ *    anchored: flip that bubble to its success message right here and drop
+ *    the anchor. A settlement that happened in the web process — a gateway
+ *    webhook, or an admin approving manually — cannot touch Telegram at all,
+ *    so until `sweepPaidOrderBubbles` (jobs/index.ts) next ticks, the buyer is
+ *    still looking at a QR code for an order they've already paid. Refresh is
+ *    the button they press in exactly that moment, so it answers properly
+ *    instead of toasting and changing nothing.
+ *
+ * Both this flip and the sweeper's build their bubble from the same
+ * `settledPaymentBubble` (util/delivery.ts), so whichever gets there first
+ * shows the buyer the identical ending.
  */
 // Bybit BSC's in-flight pre-delivery states — a tap here must still trigger a
 // poll for any of these, not just the original PENDING_PAYMENT. Without this,
@@ -1529,7 +1545,85 @@ const REFRESHABLE_STATUSES: readonly string[] = [
   OrderStatus.CONFIRMED,
 ];
 
-export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Promise<void> {
+/** The two settled states a payment bubble can still be flipped from. NOT the
+ * three in-flight ones in REFRESHABLE_STATUSES above (PAYMENT_DETECTED /
+ * CONFIRMING / CONFIRMED): those orders are still waiting on on-chain
+ * confirmations and their bubble is what shows that progress, so they belong
+ * on the polling path and must never be flipped to a success message. */
+const FLIPPABLE_SETTLED_STATUSES: readonly string[] = [OrderStatus.DELIVERED, OrderStatus.PROCESSING];
+
+/**
+ * Flip an already-settled order's still-anchored payment bubble to its success
+ * message, then drop the anchor. No-op for an order that either isn't settled
+ * or has no anchor left (its own rail's fast path already flipped it).
+ *
+ * No fallback DM: the buyer is right here pressing the button and just got a
+ * toast, and their account file / top-up notice already arrived through the
+ * normal path — a DM would only repeat it. The anchor is cleared even when the
+ * edit failed permanently (`editPaymentBubble` swallows and reports that), so
+ * a bubble the buyer deleted self-heals instead of being retried by the
+ * sweeper forever.
+ *
+ * The edit itself is bounded at `editTimeoutMs` (`TELEGRAM_MESSAGE_TIMEOUT_MS`
+ * in production): this whole flip sits directly on the buyer's `sequentialize`
+ * queue for their chat (main.ts), so an unbounded await here would stall every
+ * other update from the same buyer for up to grammY's 500s per-call default.
+ * A hung edit is left with its anchor in place on purpose — the work is
+ * optional and self-healing, since `sweepPaidOrderBubbles` (jobs/index.ts)
+ * retries it within a minute. `opts` defaults to that constant; production
+ * never passes it — it exists so a test can drive a hung edit with a
+ * millisecond-scale timeout and a real hanging api mock instead of actually
+ * waiting out the 5s default, the same trick `sweepPaidOrderBubbles`'s own
+ * black-holed-bubble tests use.
+ */
+async function flipSettledBubble(
+  ctx: MyContext,
+  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  opts?: { editTimeoutMs?: number },
+): Promise<void> {
+  if (!FLIPPABLE_SETTLED_STATUSES.includes(order.status)) return;
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  // A wallet top-up's bubble quotes the buyer's balance, so read it fresh —
+  // the order row doesn't carry one. Skipped entirely for a product order,
+  // whose text needs no balance at all. Falling back to the order's own total
+  // when the user row somehow can't be read mirrors what the crypto rails'
+  // fast path does (payments/binanceInternal.ts onDelivered).
+  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
+  const { text, markup } = settledPaymentBubble({
+    orderCode: order.orderCode,
+    kind: order.kind,
+    status: order.status,
+    currency: order.currency,
+    totalAmount: order.totalAmount,
+    user: {
+      language: order.user.language,
+      walletBalance: buyer?.walletBalance ?? order.totalAmount,
+      walletBalanceUsdt: buyer?.walletBalanceUsdt ?? order.totalAmount,
+    },
+  });
+  const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
+  const outcome = await withTimeout(
+    editPaymentBubble(ctx.api, {
+      chatId: Number(order.paymentMsgChatId),
+      messageId: order.paymentMsgId,
+      text,
+      markup,
+      fallbackDm: null,
+    }),
+    editTimeoutMs,
+  );
+  if (outcome === "timeout") {
+    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
+    return;
+  }
+  await clearOrderPaymentMessage(prisma, order.id);
+}
+
+export async function refreshPaymentStatus(
+  ctx: MyContext,
+  orderId: number,
+  opts?: { editTimeoutMs?: number },
+): Promise<void> {
   const info = requireUser(ctx);
   const order = await getOrder(prisma, orderId);
   if (!order || order.userId !== info.id) {
@@ -1537,7 +1631,9 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
     return;
   }
   if (!REFRESHABLE_STATUSES.includes(order.status)) {
+    // Toast first — the button must feel instant even if the edit below is slow.
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.refresh_delivered_toast") });
+    await flipSettledBubble(ctx, order, opts);
     return;
   }
   // Answer the callback query immediately so the button feels instant — no

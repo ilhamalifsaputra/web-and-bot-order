@@ -320,4 +320,21 @@ describe("ReviewsPage", () => {
     await waitFor(() => expect(screen.getByText("Review deleted.")).toBeInTheDocument());
     expect(fetchSpy).toHaveBeenCalledWith("/api/reviews/1", expect.objectContaining({ method: "DELETE" }));
   });
+
+  it("bounds a long product name so it can't widen the reviews table", async () => {
+    const longProduct = "Netflix Premium UHD 4K Multi-Device Family Plan Private Garansi Full Selamanya";
+    mockFetchRouter({
+      reviews: () => ({
+        ...REVIEWS_DATA,
+        reviews: [{ ...REVIEW, product: { name: longProduct } }],
+      }),
+    });
+    render(<ReviewsPage />, { wrapper: Wrapper });
+
+    // A <td> is shrink-to-fit, so truncate only works with an explicit max-w.
+    const productEl = await screen.findByTitle(longProduct);
+    expect(productEl).toHaveClass("truncate");
+    expect(productEl.className).toMatch(/max-w-\[240px\]/);
+    expect(productEl).toHaveTextContent(longProduct);
+  });
 });

@@ -216,4 +216,31 @@ describe("StockPage", () => {
     render(<StockPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
+
+  it("bounds a long denomination and product name so one row can't widen the table", async () => {
+    const longName = "12 Months Premium Private Sharing Anti-Limit Full Garansi Resmi Selamanya";
+    const longProduct = "Netflix Premium UHD 4K Multi-Device Family Plan With Extended Warranty";
+    mockStock({
+      ...STOCK_DATA,
+      denominations: [
+        {
+          ...DENOM_HEALTHY,
+          name: longName,
+          product: { id: 1, name: longProduct, category: { id: 1, name: "Apps" } },
+        },
+      ],
+    });
+    render(<StockPage />, { wrapper: Wrapper });
+
+    // The denomination cell stacks name over category; both must truncate
+    // inside an explicitly bounded box, or the <td> just grows.
+    const nameEl = await screen.findByTitle(longName);
+    expect(nameEl).toHaveClass("truncate");
+    expect(nameEl).toHaveTextContent(longName);
+    expect(nameEl.parentElement?.className).toMatch(/max-w-\[240px\]/);
+
+    const productEl = screen.getByTitle(longProduct);
+    expect(productEl).toHaveClass("truncate");
+    expect(productEl.className).toMatch(/max-w-\[240px\]/);
+  });
 });

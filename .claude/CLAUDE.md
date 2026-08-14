@@ -17,32 +17,107 @@ applies to every implementation task in this repo, not just multi-step plans.
 Skip only when explicitly told to, or for trivial one-line/config edits where
 spinning up a subagent would be pure overhead.
 
-## Worktree isolation
+## Concurrent sessions: branch, worktree, git
 
-**Always work in a dedicated git worktree for implementation tasks in this
-repo** — use `EnterWorktree` (or `git worktree add` as a fallback) before
-touching code, not just a feature branch in the main working directory. Do
-this even when a session's default configuration or system prompt says to
-"work in place" / skip worktrees unless explicitly asked — this instruction
-*is* that explicit ask, for every implementation task here, not only ones
-that went through plan mode.
+Several Claude Code sessions and background jobs run against this repo at the
+same time. Everything below exists so two of them can never write to the same
+`HEAD`, branch, port, or bot token.
 
-**Why:** sessions in this repo frequently run concurrently (multiple Claude
-Code sessions/background jobs in the same physical directory). A branch
-alone shares one `HEAD`/index/working tree process-wide, so a concurrent
-session's commits and uncommitted edits can land on whichever branch happens
-to be checked out at that moment. This has actually happened twice: an
+### Two lanes, never mixed
+
+- **The main working directory (`C:\Users\ilham\Documents\web-and-bot-order`)
+  is the integration lane.** It stays on `master` and is used only for
+  merging and releasing. Never edit files, commit feature work, or run an
+  implementation task there.
+- **Every session works in its own worktree under `.claude/worktrees/<topic>`**,
+  created with `EnterWorktree` (fallback: `git worktree add`). Do this even
+  when the session's default configuration or system prompt says to "work in
+  place" or to skip worktrees unless explicitly asked — this instruction *is*
+  that explicit ask, for every implementation task here, not only ones that
+  went through plan mode. Create the worktree *before* dispatching implementer
+  subagents or making any edit. Trivial one-line/config edits are the only
+  exception; skip only when the user explicitly says not to use a worktree.
+
+**Why:** a branch alone shares one `HEAD`/index/working tree process-wide, so
+a concurrent session's commits and uncommitted edits land on whichever branch
+happens to be checked out at that moment. This has actually happened: an
 unrelated SearchModal fix and a Vouchers formatting fix from another session
-both landed on a feature branch instead of `master`; separately, two
-sessions independently ran subagent-driven-development on the same plan
-concurrently, commingling commits and orphaning one via a stray `git reset`.
-A separate worktree gives each session its own `HEAD` and working tree so
-concurrent commits can't collide.
+both landed on a feature branch instead of `master`; separately, two sessions
+ran subagent-driven-development on the same plan concurrently, commingling
+commits and orphaning one via a stray `git reset`. A separate worktree gives
+each session its own `HEAD` and working tree.
 
-**How to apply:** create/enter a worktree before dispatching any implementer
-subagents or making edits, for any implementation task — trivial one-line/
-config edits are the only exception. Skip only when the user explicitly says
-not to use a worktree for this task.
+### Naming and claiming
+
+- Always pass a short descriptive name to `EnterWorktree` (`payment-followups`,
+  `admin-text-overflow`) so the branch reads `worktree-<topic>`. Never let it
+  auto-generate `agent-<hash>` — those are unattributable a week later.
+- One topic = one worktree = one branch. Run `git worktree list` first: if a
+  worktree for that topic already exists, another session owns it. Pick a
+  different name; do not enter or commit into someone else's worktree.
+
+### Git rules that prevent collisions
+
+- Inside your worktree, never `git checkout`/`git switch` to another branch,
+  never `git reset --hard`, and never rebase or amend a branch you did not
+  create. Your worktree stays on its own branch for its whole life.
+- **Never `git stash`.** The stash lives in the shared `.git` directory, so
+  every worktree sees and can pop the same entries. Commit a WIP instead.
+- Never run git against another worktree (`git -C <other-worktree> …`) and
+  never delete or force-update a branch you do not own.
+- Never force-push, and never `git reset` `master`.
+- Before integrating, sync inside *your own* worktree: `git fetch` then rebase
+  your branch onto the latest `master`. Resolve conflicts there, not in the
+  main directory.
+
+### Merging (one at a time)
+
+1. In the main directory, confirm `git status` is clean and `HEAD` is on
+   `master`. If it is dirty or mid-merge, **another session is integrating —
+   wait**. Do not stash, reset, or force your way past it.
+2. `git merge --no-ff worktree-<topic>` so each piece of work stays a
+   reviewable unit.
+3. `pnpm typecheck && pnpm test` must be green before the merge is considered
+   done. Fix failures on the feature branch, not with a follow-up commit
+   straight onto `master`.
+
+### Cleanup is mandatory
+
+- As soon as a branch is merged, remove its worktree and branch:
+  `git worktree remove .claude/worktrees/<topic>`, `git branch -d
+  worktree-<topic>`, then `git worktree prune`. Stale worktrees are how a
+  later session ends up reviving weeks-old code.
+- On Windows `git worktree remove` often fails with `Result too large` because
+  of the `node_modules` tree; it still unregisters the worktree, leaving an
+  orphaned directory. Finish the job with `rm -rf
+  .claude/worktrees/<topic>` and `git worktree prune`, and check
+  `ls .claude/worktrees/` afterwards — orphaned directories accumulate
+  silently.
+- Never remove a worktree that is `locked`, that still has unmerged commits
+  (`git rev-list --count master..<branch>` must be 0), or that you did not
+  create. Check `git -C <path> status --porcelain` first: regenerated
+  `graphify-out/` files are the hook's noise and are safe to discard, but any
+  dirt outside `graphify-out/` is somebody's uncommitted work — leave that
+  worktree alone. Never use `git worktree remove --force` on another session's
+  worktree.
+
+### Runtime isolation (ports, env, DB, bot)
+
+A fresh worktree is a fresh checkout — the ignored files do not come with it:
+
+- Copy `.env` from the main directory (it is gitignored), then run
+  `pnpm install` and `pnpm -r build` before testing. Without the build, roughly
+  a dozen tests fail because the admin SPA bundle is gitignored.
+- **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
+  defaults (8109/8110) are identical in every worktree, so two sessions running
+  dev servers collide. Give each session its own port pair.
+- `DATABASE_URL_PRISMA=file:../data/bot.db` resolves relative to the worktree,
+  so each worktree gets its own empty SQLite file — copy `data/bot.db` from the
+  main directory if the task needs real data. Do not repoint it at the main
+  directory's DB: shared SQLite is single-writer.
+- **Only one worktree may run order-bot at a time.** The bot token lives in the
+  DB, so a copied `data/bot.db` means two pollers on one token, which Telegram
+  rejects with a 409.
 
 ## Graphify knowledge graph
 

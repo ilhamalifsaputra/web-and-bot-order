@@ -46,6 +46,8 @@ import {
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
   runStorageCleanup,
+  listSettledOrdersAwaitingBubbleEdit,
+  clearOrderPaymentMessage,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -55,7 +57,12 @@ import {
   TOKOPAY_POLL_STALE_MS,
   PAYDISINI_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
+  MAX_ORDERS_PER_CYCLE,
+  SWEEP_EDIT_TIMEOUT_MS,
+  SWEEP_TOTAL_BUDGET_MS,
 } from "@app/core/payments/reconcileCycleBudget";
+import { withTimeout } from "../payments/telegramTimeout";
+import { settledPaymentBubble } from "../util/delivery";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
@@ -188,6 +195,73 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
     } catch (err) {
       logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
     }
+  }
+}
+
+/**
+ * Flip every settled order's stale payment bubble to its success message, for
+ * ALL six payment methods at once.
+ *
+ * Why this exists: both remaining settlement paths that can pay an order off
+ * — a gateway webhook and an admin's manual approval — run in the web process,
+ * which is forbidden from touching Telegram at all. Without this sweeper those
+ * buyers keep staring at a QR code (and a live Refresh/Cancel pair) for an
+ * order that is already paid and delivered. The three crypto rails clear their
+ * own anchor the moment they flip a bubble themselves, so orders they handled
+ * never show up in this query — by design, not by omission.
+ *
+ * Idempotent: the anchor IS the work queue, so clearing it makes a re-run a
+ * no-op. Bounded exactly the way the per-rail QRIS sweeps are (see
+ * `sweepDeliveredAwaitingEdit` in payments/tokopayReconcile.ts, whose shape
+ * this follows): the batch is capped at MAX_ORDERS_PER_CYCLE, each edit gets
+ * at most `editTimeoutMs`, and the whole sweep stops starting new rows once
+ * `totalBudgetMs` of wall clock is gone. A timed-out or budget-cut-off edit
+ * deliberately leaves its anchor in place so the next tick retries it —
+ * clearing happens only once an edit genuinely completed, which includes an
+ * edit that permanently failed (`editPaymentBubble` swallows those and reports
+ * them, so a bubble the buyer deleted self-heals instead of being retried
+ * forever).
+ *
+ * No fallback DM (`fallbackDm: null`): every order in this list already
+ * reached its buyer through the normal path — the account file, the
+ * ORDER_PROCESSING_DM, or the wallet top-up notice — so a DM here would only
+ * repeat news they already have.
+ *
+ * `opts` defaults to the shared exported constants; production never passes
+ * it. It exists so the black-holed-bubble tests can drive the identical
+ * give-up/budget-break logic with millisecond-scale values instead of really
+ * sleeping ~40s, the same trick the per-rail sweep tests already use.
+ */
+export async function sweepPaidOrderBubbles(
+  api: Api,
+  opts?: { editTimeoutMs?: number; totalBudgetMs?: number },
+): Promise<void> {
+  const editTimeoutMs = opts?.editTimeoutMs ?? SWEEP_EDIT_TIMEOUT_MS;
+  const totalBudgetMs = opts?.totalBudgetMs ?? SWEEP_TOTAL_BUDGET_MS;
+  const orders = await listSettledOrdersAwaitingBubbleEdit(prisma, MAX_ORDERS_PER_CYCLE);
+  const sweepStartedAt = Date.now();
+  for (const [index, order] of orders.entries()) {
+    if (Date.now() - sweepStartedAt > totalBudgetMs) {
+      logger.warn(`The paid-order bubble sweep ran out of its ${totalBudgetMs}ms whole-sweep budget with ${orders.length - index} order(s) still showing a stale payment bubble — their anchors are left in place on purpose so the next cycle picks them up again`);
+      break;
+    }
+    if (order.paymentMsgChatId == null || order.paymentMsgId == null) continue;
+    const { text, markup } = settledPaymentBubble(order);
+    const outcome = await withTimeout(
+      editPaymentBubble(api, {
+        chatId: Number(order.paymentMsgChatId),
+        messageId: order.paymentMsgId,
+        text,
+        markup,
+        fallbackDm: null,
+      }),
+      editTimeoutMs,
+    );
+    if (outcome === "timeout") {
+      logger.warn(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
+      continue;
+    }
+    await clearOrderPaymentMessage(prisma, order.id);
   }
 }
 
@@ -1015,5 +1089,15 @@ export function scheduleJobs(api: Api): Cron[] {
     // minutely/hourly ticks, and unlike those it's a single sweep rather
     // than something that needs to run often.
     new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
+    // Second 25, NOT "*/1 * * * *" (which would fire on second 0): this sweep
+    // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
+    // every tick — precisely the profile behind the P1008/P2028 write-lock
+    // pile-up above, where several jobs landing on second 0 queued behind each
+    // other on SQLite's single writer until one blew past the 5s busy_timeout.
+    // :25 is at least 5 seconds clear of every second already in use here:
+    // 0 (autoCancelExpiredOrders + the hourly/6-hourly jobs), 5/20/35/50
+    // (drainBroadcasts), 40 (announceStartedFlashSales), 15/17/19 (the QRIS
+    // watchdogs) and 30 (storageCleanupJob).
+    new Cron("25 * * * * *", { protect: true }, wrap("sweepPaidOrderBubbles", sweepPaidOrderBubbles)),
   ];
 }

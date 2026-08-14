@@ -216,6 +216,9 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
       orderCode: true,
       kind: true,
       currency: true,
+      // A WALLET_TOPUP bubble renders the topped-up amount (`walletTopupSuccessText`),
+      // so the sweeper needs the order's own total alongside its currency.
+      totalAmount: true,
       status: true,
       paymentMsgChatId: true,
       paymentMsgId: true,

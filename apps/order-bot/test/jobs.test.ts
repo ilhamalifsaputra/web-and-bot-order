@@ -5,8 +5,10 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createOrderDirect,
+  createWalletTopupOrder,
   finalizeOrderPayment,
   setOrderPaymentMessage,
+  clearOrderPaymentMessage,
   createBroadcast,
   createTicket,
   getSetting,
@@ -44,13 +46,14 @@ vi.mock("@app/db", async () => {
 });
 
 import { GrammyError, InlineKeyboard, type Api } from "grammy";
-import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
   editPaymentBubble,
+  sweepPaidOrderBubbles,
   scheduleJobs,
   drainBroadcasts,
   announceStartedFlashSales,
@@ -213,6 +216,250 @@ describe("editPaymentBubble", () => {
     expect(result).toEqual({ status: "dm_sent" });
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
     expect(api.sendMessage).toHaveBeenCalledWith(42, "hello", { parse_mode: "HTML", reply_markup: markup });
+  });
+});
+
+// ===========================================================================
+// T2-E — generic paid-order bubble sweeper (every payment method, both order
+// kinds, both settled statuses)
+// ===========================================================================
+
+/** The currency each rail settles a wallet top-up in — TokoPay/PayDisini are
+ * the two IDR rails, the other four are USDT (crud/wallet_topup.ts's
+ * IDR_TOPUP_METHODS / USDT_TOPUP_METHODS). Also the currency each rail's
+ * product orders are charged in, so one map drives both kinds. */
+const RAIL_CURRENCY: Record<string, "IDR" | "USDT"> = {
+  [PaymentMethod.TOKOPAY]: "IDR",
+  [PaymentMethod.PAYDISINI]: "IDR",
+  [PaymentMethod.BINANCE_INTERNAL]: "USDT",
+  [PaymentMethod.BYBIT]: "USDT",
+  [PaymentMethod.BYBIT_BSC]: "USDT",
+  [PaymentMethod.NOWPAYMENTS]: "USDT",
+};
+
+const SWEEP_METHODS = [
+  PaymentMethod.BINANCE_INTERNAL,
+  PaymentMethod.BYBIT,
+  PaymentMethod.BYBIT_BSC,
+  PaymentMethod.TOKOPAY,
+  PaymentMethod.PAYDISINI,
+  PaymentMethod.NOWPAYMENTS,
+] as const;
+
+/** Wallet balances the sweeper must render into a top-up's success bubble —
+ * distinct per currency so a test can tell which of the two columns was read. */
+const IDR_BALANCE = "123456";
+const USDT_BALANCE = "77.5";
+
+let anchorSeq = 0;
+
+/**
+ * A settled (DELIVERED/PROCESSING) order of any rail/kind that still carries
+ * its payment-bubble anchor — exactly what the sweeper is meant to find. The
+ * status is stamped directly (rather than driven through a real settlement
+ * path) because the sweeper reads nothing but `kind`/`status`/`currency`/the
+ * anchor, and doing it this way is the only way one helper can cover all six
+ * rails identically.
+ */
+async function makeSettledAnchoredOrder(opts: {
+  method: string;
+  kind: string;
+  status: string;
+}): Promise<{ id: number; orderCode: string; chatId: number; msgId: number }> {
+  const currency = RAIL_CURRENCY[opts.method]!;
+  const order =
+    opts.kind === OrderKind.WALLET_TOPUP
+      ? await prisma.$transaction((tx) =>
+          createWalletTopupOrder(tx, {
+            userId: sample.user.id,
+            amount: currency === "IDR" ? "50000" : "5",
+            currency,
+            method: opts.method as Parameters<typeof createWalletTopupOrder>[1]["method"],
+            rate: "16000",
+          }),
+        )
+      : await prisma.$transaction(async (tx) => {
+          const created = await createOrderDirect(tx, {
+            user: { id: sample.user.id, role: sample.user.role },
+            productId: sample.product.id,
+            quantity: 1,
+          });
+          return currency === "IDR"
+            ? finalizeOrderPayment(tx, created!.id, {
+                currency: OrderCurrency.IDR,
+                method: opts.method as typeof PaymentMethod.TOKOPAY,
+              })
+            : finalizeOrderPayment(tx, created!.id, {
+                currency: OrderCurrency.USDT,
+                rate: "16000",
+                method: opts.method as typeof PaymentMethod.BINANCE_INTERNAL,
+              });
+        });
+  await prisma.order.update({ where: { id: order!.id }, data: { status: opts.status } });
+  const chatId = 555;
+  const msgId = 1000 + ++anchorSeq;
+  await setOrderPaymentMessage(prisma, order!.id, chatId, msgId);
+  return { id: order!.id, orderCode: order!.orderCode, chatId, msgId };
+}
+
+/** The single edit the sweeper made, whichever grammY call carried it. */
+function onlyEdit(api: Api): { chatId: number; msgId: number; text: string; buttons: string[] } {
+  const caption = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls;
+  const text = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
+  expect(caption.length + text.length).toBe(1);
+  const [chatId, msgId, third, fourth] = (caption[0] ?? text[0])!;
+  const payload = (caption.length === 1 ? third : fourth) as {
+    caption?: string;
+    reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
+  };
+  return {
+    chatId: chatId as number,
+    msgId: msgId as number,
+    text: (caption.length === 1 ? payload.caption : third) as string,
+    buttons: payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data ?? ""),
+  };
+}
+
+describe("sweepPaidOrderBubbles", () => {
+  beforeEach(async () => {
+    // Give the buyer a distinct balance per currency so a top-up bubble's
+    // rendered "New balance" proves which column the sweeper read.
+    await prisma.user.update({
+      where: { id: sample.user.id },
+      data: { walletBalance: IDR_BALANCE, walletBalanceUsdt: USDT_BALANCE },
+    });
+  });
+
+  const matrix = SWEEP_METHODS.flatMap((method) =>
+    [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP].flatMap((kind) =>
+      [OrderStatus.DELIVERED, OrderStatus.PROCESSING].map((status) => ({ method, kind, status })),
+    ),
+  );
+
+  it.each(matrix)(
+    "flips a $method $kind order at $status exactly once, clears the anchor, and is a no-op on the next tick",
+    async ({ method, kind, status }) => {
+      const order = await makeSettledAnchoredOrder({ method, kind, status });
+      const api = fakeApi();
+
+      await sweepPaidOrderBubbles(api);
+
+      const edit = onlyEdit(api);
+      expect(edit.chatId).toBe(order.chatId);
+      expect(edit.msgId).toBe(order.msgId);
+      expect(edit.text).toContain(order.orderCode);
+      if (kind === OrderKind.WALLET_TOPUP) {
+        // Same wallet-top-up sentence the three crypto rails already send, and
+        // the wallet keyboard rather than paymentSuccessKb's "My Orders".
+        expect(edit.text).toContain("Top-up successful");
+        expect(edit.text).toContain(RAIL_CURRENCY[method] === "IDR" ? "Rp123.456" : "77.5 USDT");
+        expect(edit.buttons).toContain("v1:topup:open");
+      } else if (status === OrderStatus.DELIVERED) {
+        expect(edit.text).toContain("being delivered now");
+        expect(edit.buttons).toContain("v1:browse:prods");
+      } else {
+        expect(edit.text).toContain("being prepared for delivery manually");
+        expect(edit.buttons).toContain("v1:browse:prods");
+      }
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+
+      // Second tick: the anchor is gone, so this order is not even listed —
+      // still exactly the one edit from the first tick, no second one.
+      await sweepPaidOrderBubbles(api);
+      onlyEdit(api);
+    },
+  );
+
+  it("never sends a fallback DM — the buyer already heard about it through their delivery/top-up path", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.TOKOPAY,
+      kind: OrderKind.PRODUCT,
+      status: OrderStatus.DELIVERED,
+    });
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
+      editMessageText: vi.fn().mockRejectedValue(new Error("bubble gone")),
+    });
+
+    await sweepPaidOrderBubbles(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    // A permanently-uneditable bubble is a completed attempt, so the anchor is
+    // cleared anyway instead of being retried forever.
+    const after = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+  });
+
+  it("ignores an order whose own rail already cleared the anchor on its fast path", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.BINANCE_INTERNAL,
+      kind: OrderKind.PRODUCT,
+      status: OrderStatus.DELIVERED,
+    });
+    await clearOrderPaymentMessage(prisma, order.id);
+    const api = fakeApi();
+
+    await sweepPaidOrderBubbles(api);
+
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Same shape as tokopay-reconcile.test.ts's black-holed-bubble tests: real
+  // timers and real Prisma, with millisecond-scale bounds passed in instead of
+  // the real 10s/30s ones so the identical give-up/budget-break logic is
+  // proven in well under a second.
+  describe("safety bounds against a black-holed bubble edit", () => {
+    const editTimeoutMs = 200;
+    const totalBudgetMs = 600;
+    const hangingApi = () =>
+      ({
+        editMessageCaption: vi.fn(() => new Promise(() => {})),
+        editMessageText: vi.fn(() => new Promise(() => {})),
+        sendMessage: vi.fn(),
+      }) as unknown as Api;
+
+    it("leaves the anchor in place when a single edit hangs past its per-edit timeout", async () => {
+      const order = await makeSettledAnchoredOrder({
+        method: PaymentMethod.PAYDISINI,
+        kind: OrderKind.PRODUCT,
+        status: OrderStatus.DELIVERED,
+      });
+      const api = hangingApi();
+
+      await sweepPaidOrderBubbles(api, { editTimeoutMs, totalBudgetMs });
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).not.toBeNull();
+      expect(after?.paymentMsgId).not.toBeNull();
+    });
+
+    it("cuts the rest of the batch off once the whole-sweep budget is spent, leaving those anchors in place", async () => {
+      const orders = [];
+      for (let i = 0; i < 4; i++) {
+        orders.push(
+          await makeSettledAnchoredOrder({
+            method: PaymentMethod.TOKOPAY,
+            kind: OrderKind.PRODUCT,
+            status: OrderStatus.DELIVERED,
+          }),
+        );
+      }
+      const api = hangingApi();
+
+      await sweepPaidOrderBubbles(api, { editTimeoutMs, totalBudgetMs });
+
+      // Three rows each burned ~editTimeoutMs, which cumulatively crosses
+      // totalBudgetMs — so the between-rows budget check breaks the loop
+      // before the fourth is ever attempted.
+      expect(api.editMessageCaption).toHaveBeenCalledTimes(3);
+      const fourth = await prisma.order.findUnique({ where: { id: orders[3]!.id } });
+      expect(fourth?.paymentMsgChatId).not.toBeNull();
+    });
   });
 });
 
@@ -990,6 +1237,13 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // other job's minutely/hourly ticks.
       expect(crons[11]!.getPattern()).toBe("30 15 3 * * *");
       expect(crons[11]!.options.protect).toBe(true);
+      // sweepPaidOrderBubbles (T2-E) — every minute, but on second 25: it
+      // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing rows back to back,
+      // exactly the profile behind the P1008/P2028 write-lock pile-up on
+      // second 0 (2026-07-20). :25 is ≥5s clear of every other second in this
+      // list (0, 5/20/35/50, 40, 15/17/19, 30).
+      expect(crons[12]!.getPattern()).toBe("25 * * * * *");
+      expect(crons[12]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second

@@ -1453,18 +1453,28 @@ export function customerLabel(
  * figure with a USDT suffix (e.g. "8000 USDT" for a Rp8000 order instead of
  * "0.40 USDT").
  *
- * Each value is converted independently via `usdtFromIdr`, the same technique
+ * Each DISPLAYED figure is converted once, from its own pre-conversion
+ * central-IDR value — the same technique
  * apps/web-admin/src/routes/orderMoneyView.ts's `toOrderCurrency` uses for the
- * admin order-detail view, and it carries that helper's known, pre-existing
- * rounding caveat: `usdtFromIdr`'s own doc says to convert once per displayed
- * TOTAL, never per component, because independently rounding each of
- * subtotal/discount to the nearest 0.1 USDT means Subtotal minus Discount can
- * differ from Total by up to ~0.1 USDT (docs/audit-backend-2026-07-31.md's L-1
- * finding flags exactly this for orderMoneyView.ts). That's an acceptable,
- * pre-existing tradeoff for informational notification emails — getting the
- * right ORDER OF MAGNITUDE matters far more here than being reconciled to the
- * cent, which the admin ledger view separately owns. Do not attempt to solve
- * the L-1 rounding class of issue here; it is a larger, separate question.
+ * admin order-detail view. "Once per displayed figure" is the load-bearing
+ * half of `usdtFromIdr`'s own rule and callers must honour it: never feed a
+ * value that has ALREADY been through here back into further arithmetic (an
+ * item's line total, for instance, multiplies unit x quantity in IDR and
+ * converts the product — see enqueueBuyerOrderReadyEmailIfGuest — rather than
+ * scaling the rounded per-unit figure, which would scale its rounding error
+ * too).
+ *
+ * What remains, and is deliberately NOT solved here, is the other half of that
+ * rule: separately-rounded figures need not reconcile with each other. Since
+ * subtotal and discount are each rounded to the nearest 0.1 USDT on their own,
+ * Subtotal minus Discount can differ from Total by up to ~0.1 USDT, and the
+ * line totals of a multi-line order need not sum to exactly the subtotal
+ * (docs/audit-backend-2026-07-31.md's L-1 finding flags exactly this for
+ * orderMoneyView.ts). That's an acceptable, pre-existing tradeoff for
+ * informational notification emails — getting the right ORDER OF MAGNITUDE
+ * matters far more here than being reconciled to the cent, which the admin
+ * ledger view separately owns. Do not attempt to solve the L-1 rounding class
+ * of issue here; it is a larger, separate question.
  */
 function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
   return (value: Decimal.Value): Decimal =>
@@ -1529,6 +1539,16 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
       variant: item.product.durationLabel,
       quantity: item.quantity,
       unitPrice: toOrderCurrency(item.unitPrice),
+      // Multiply in central IDR, then convert the PRODUCT once — never
+      // `unitPrice * quantity` on the already-converted figure above. On a
+      // USDT order that figure has been rounded to the nearest 0.1, and
+      // scaling it scales the rounding error with it: 5 x Rp8.900 at an
+      // fxRate of 16.000 gives a unit price of 0.55625 -> 0.6, so the naive
+      // product prints "5 x 0.60 = 3.00 USDT" directly above a Subtotal of
+      // 44.500/16.000 = 2.78125 -> 2.80 USDT. This is `usdtFromIdr`'s own
+      // "convert once per displayed figure, never per component" rule, and
+      // the receipt's reader is the paying customer.
+      lineTotal: toOrderCurrency(new Decimal(item.unitPrice).times(item.quantity)),
     })),
     subtotal: toOrderCurrency(order.subtotalAmount),
     discount: toOrderCurrency(order.discountAmount),

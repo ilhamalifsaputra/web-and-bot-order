@@ -1360,8 +1360,20 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       orderCode,
       to: "guest@example.com",
       items: [
-        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: new Decimal("50.00") },
-        { name: "Spotify", variant: null, quantity: 1, unitPrice: new Decimal("30.00") },
+        {
+          name: "Netflix Premium",
+          variant: "1 Month",
+          quantity: 2,
+          unitPrice: new Decimal("50.00"),
+          lineTotal: new Decimal("100.00"),
+        },
+        {
+          name: "Spotify",
+          variant: null,
+          quantity: 1,
+          unitPrice: new Decimal("30.00"),
+          lineTotal: new Decimal("30.00"),
+        },
       ],
       subtotal: new Decimal("130.00"),
       discount: new Decimal("13.00"),
@@ -1388,8 +1400,8 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       to: "guest@example.com",
       order_code: "ORD-READY-FULL",
       items: [
-        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50" },
-        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30" },
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50", lineTotal: "100" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30", lineTotal: "30" },
       ],
       subtotal: "130",
       discount: "13",
@@ -1403,6 +1415,7 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
     expect(typeof payload.subtotal).toBe("string");
     expect(typeof payload.discount).toBe("string");
     expect(typeof (payload.items as Array<{ unitPrice: unknown }>)[0]!.unitPrice).toBe("string");
+    expect(typeof (payload.items as Array<{ lineTotal: unknown }>)[0]!.lineTotal).toBe("string");
   });
 
   it("enqueues regardless of the owner-email settings — it is the buyer's email, not the owner's", async () => {
@@ -1442,7 +1455,9 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       orderId,
       orderCode: "ORD-READY-NULLS",
       to: "guest@example.com",
-      items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: new Decimal("50") }],
+      items: [
+        { name: "Netflix Premium", variant: null, quantity: 1, unitPrice: new Decimal("50"), lineTotal: new Decimal("50") },
+      ],
       subtotal: new Decimal("50"),
       discount: new Decimal("0"),
       total: new Decimal("50"),

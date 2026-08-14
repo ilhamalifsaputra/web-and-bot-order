@@ -63,7 +63,7 @@ beforeEach(async () => {
 
 /** A manual (or manual_with_info) denomination with NO stock rows, using the
  * same category/product created for it. */
-async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
+async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL, price: string = "10.00") {
   const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
   const product = await createCatalogProduct(prisma, {
     categoryId: category.id,
@@ -74,7 +74,7 @@ async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
     name: "Manual Denom",
     type: "SHARED",
     durationLabel: "1 Month",
-    price: "10.00",
+    price,
   });
   await updateDenomination(prisma, denom.id, { deliveryType });
   return denom;
@@ -480,6 +480,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
         variant: "1 Month",
         quantity: 1,
         unitPrice: order.subtotalAmount.toString(),
+        lineTotal: order.subtotalAmount.toString(),
       },
     ]);
     // buildSampleData's denomination is created with warrantyDays: 30, frozen
@@ -511,6 +512,80 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload.to).toBe(GUEST_EMAIL);
     expect(payload.order_code).toBe(order.orderCode);
+  });
+
+  /**
+   * Collapse an order's per-unit OrderItem rows into ONE row of
+   * `quantity: n`, leaving `Order.subtotalAmount` untouched.
+   *
+   * Both order-creation paths persist one `quantity: 1` row per unit today
+   * (createOrderDirect's reservation loop, createOrderFromCart's createMany),
+   * so a real order never arrives here with a multi-unit line. The column,
+   * the payload, and the receipt's "n x unit = lineTotal" rendering all
+   * support one anyway, and the arithmetic on that line has to be right the
+   * day anything starts grouping — which is exactly what these two tests pin.
+   */
+  async function collapseItemsIntoOneLine(orderId: number, quantity: number) {
+    const items = await prisma.orderItem.findMany({ where: { orderId }, orderBy: { id: "asc" } });
+    await prisma.orderItem.deleteMany({ where: { id: { in: items.slice(1).map((it) => it.id) } } });
+    await prisma.orderItem.update({ where: { id: items[0]!.id }, data: { quantity } });
+  }
+
+  // Line-total rounding regression. `usdtFromIdr`'s own doc states the rule:
+  // convert once per displayed figure, NEVER per component. An item's line
+  // total used to be derived downstream as `unitPrice * quantity` from a unit
+  // price that had already been rounded to the nearest 0.1 USDT, which
+  // multiplies that rounding error by the quantity.
+  //
+  // 5 x Rp8.900 at an fxRate of 16.000 is the sharpest small case:
+  //   unit    8.900 / 16.000 = 0.55625  -> rounds UP to 0.6 USDT
+  //   naive   0.6 x 5                   =  3.00 USDT   (wrong)
+  //   correct 44.500 / 16.000 = 2.78125 -> 2.8 USDT    (== the subtotal)
+  // The receipt would otherwise print "5 x 0.60 = 3.00" directly above
+  // "Subtotal 2.80" — a 0.2 USDT self-contradiction in front of the buyer.
+  it("USDT multi-quantity line: lineTotal is converted once from the central-IDR line, so it agrees with the subtotal instead of scaling a rounded unit price", async () => {
+    await makeSampleUserAGuest();
+    const denom = await makeManualDenom(DeliveryType.MANUAL, "8900");
+    const order = await makePendingVerificationOrder(denom.id, 5);
+    await collapseItemsIntoOneLine(order.id, 5);
+    // Simulate a USDT-settled order the way finalizeOrderPayment would have
+    // left it — the same technique the owner-email currency test above uses.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { currency: "USDT", fxRate: "16000" },
+    });
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+    await fulfillManualOrder(prisma, order.id, { adminId, content: "user:pass" });
+
+    const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
+    const items = payload.items as Array<Record<string, unknown>>;
+    expect(items).toHaveLength(1);
+    expect(items[0]!.quantity).toBe(5);
+    expect(items[0]!.unitPrice).toBe(usdtFromIdr("8900", "16000").toString()); // "0.6"
+    expect(items[0]!.lineTotal).toBe(usdtFromIdr("44500", "16000").toString()); // "2.8"
+    // The naive product of the rounded unit price — the bug being pinned.
+    expect(items[0]!.lineTotal).not.toBe("3");
+    // This order has exactly one item line, so its line total IS the subtotal.
+    // Anything else is a receipt that contradicts itself.
+    expect(items[0]!.lineTotal).toBe(payload.subtotal);
+    expect(payload.subtotal).toBe("2.8");
+  });
+
+  it("IDR multi-quantity line (no conversion happens): lineTotal is the plain quantity x unitPrice product", async () => {
+    await makeSampleUserAGuest();
+    const denom = await makeManualDenom(DeliveryType.MANUAL, "8900");
+    const order = await makePendingVerificationOrder(denom.id, 5);
+    await collapseItemsIntoOneLine(order.id, 5);
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+    await fulfillManualOrder(prisma, order.id, { adminId, content: "user:pass" });
+
+    const payload = JSON.parse((await readyRows(order.id))[0]!.payloadJson) as Record<string, unknown>;
+    const items = payload.items as Array<Record<string, unknown>>;
+    expect(items[0]!.unitPrice).toBe("8900");
+    expect(items[0]!.lineTotal).toBe("44500");
+    expect(items[0]!.lineTotal).toBe(payload.subtotal);
   });
 
   it("registered (non-guest) buyer: no row, in either branch", async () => {

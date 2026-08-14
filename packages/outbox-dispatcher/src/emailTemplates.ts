@@ -145,6 +145,11 @@ interface OrderReadyPayloadItem {
   variant?: unknown;
   quantity?: unknown;
   unitPrice?: unknown;
+  /** The line's own money, converted once from central IDR by the enqueue
+   * side (crud/orders.ts). Optional only because rows enqueued before this
+   * field existed can still be PENDING at deploy time — see
+   * `toOrderReadyItem`'s fallback. */
+  lineTotal?: unknown;
 }
 
 interface OrderReadyPayload {
@@ -227,18 +232,32 @@ async function resolveBuyerBrandConfig(): Promise<BrandConfig> {
 
 /** Payload item -> `OrderReadyItem`, defensively parsed the same way
  * `toOrderPaidItem` handles a malformed entry. `unitPrice` and `lineTotal`
- * are formatted here (via `Decimal` + `formatMoney`) since `orderReady.ts`
- * only renders pre-formatted strings verbatim — `lineTotal` is computed via
+ * are only FORMATTED here (via `Decimal` + `formatMoney`), since
+ * `orderReady.ts` renders pre-formatted strings verbatim.
+ *
+ * `lineTotal` is deliberately taken from the payload rather than derived as
+ * `unitPrice * quantity`: on a currency-converted order the payload's
+ * `unitPrice` has already been rounded to the nearest 0.1 USDT, so scaling it
+ * here would scale that rounding error and print a line total contradicting
+ * the subtotal a few lines below. The enqueue side multiplies in central IDR
+ * and converts once (crud/orders.ts's enqueueBuyerOrderReadyEmailIfGuest).
+ *
+ * The fallback exists for one case only: outbox rows enqueued BEFORE
+ * `lineTotal` joined the payload, which are already PENDING when this code
+ * deploys. Those are all single-quantity IDR-or-converted lines where the
+ * product is the best available answer, and it is still computed with
  * `Decimal.times`, never float multiplication. */
 function toOrderReadyItem(it: OrderReadyPayloadItem, currency: string): OrderReadyItem {
   const unitPriceDecimal = new Decimal(String(it?.unitPrice ?? "0"));
   const quantity = Number.parseInt(String(it?.quantity ?? 1), 10) || 1;
+  const lineTotalDecimal =
+    it?.lineTotal == null ? unitPriceDecimal.times(quantity) : new Decimal(String(it.lineTotal));
   return {
     name: String(it?.name ?? "?"),
     variant: it?.variant == null ? null : String(it.variant),
     quantity,
     unitPrice: formatMoney(unitPriceDecimal, currency),
-    lineTotal: formatMoney(unitPriceDecimal.times(quantity), currency),
+    lineTotal: formatMoney(lineTotalDecimal, currency),
   };
 }
 

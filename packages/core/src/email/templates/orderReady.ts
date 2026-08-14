@@ -98,11 +98,16 @@ export interface OrderReadyItem {
   /** Already display-formatted by the caller (e.g. via `formatMoney`) — this
    * template renders it verbatim, same convention as `orderPaid.ts`. */
   unitPrice: string;
-  /** `unitPrice * quantity`, already display-formatted by the caller (via
+  /** The whole line's money, already display-formatted by the caller (via
    * `Decimal`, never float arithmetic) and rendered verbatim. Required so the
    * item line can show a line total next to the unit price — without it, a
    * multi-quantity line reads as if the printed figure were the line total
-   * when it is actually the per-unit price. */
+   * when it is actually the per-unit price.
+   *
+   * NOT necessarily `unitPrice * quantity`, and this template must never
+   * compute it that way: on a currency-converted order the caller's
+   * `unitPrice` is already rounded to the nearest 0.1 USDT, and the caller
+   * derives this from the unrounded line instead. */
   lineTotal: string;
 }
 

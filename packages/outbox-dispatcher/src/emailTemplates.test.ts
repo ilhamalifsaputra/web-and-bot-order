@@ -397,8 +397,8 @@ describe("emailTemplates.renderEmail", () => {
       to: "guest@example.com",
       order_code: DISTINCTIVE_ORDER_CODE,
       items: [
-        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50000" },
-        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30000" },
+        { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50000", lineTotal: "100000" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "30000", lineTotal: "30000" },
       ],
       subtotal: "130000",
       discount: "13000",
@@ -495,13 +495,44 @@ describe("emailTemplates.renderEmail", () => {
         subtotal: "10.5",
         discount: "0.5",
         total: "10",
-        items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: "10.5" }],
+        items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: "10.5", lineTotal: "10.5" }],
       });
       expect(result!.html).toContain("10.50 USDT");
       expect(result!.text).toContain("10.00 USDT");
     });
 
-    it("computes the line total via Decimal, not float, for a fractional multi-quantity price", async () => {
+    // The line total is a CONVERTED figure the enqueue side computed once, in
+    // central IDR, before rounding to the nearest 0.1 USDT — it is NOT
+    // `unitPrice * quantity` in the display currency, and this branch must not
+    // "helpfully" recompute it. 5 x Rp8.900 at an fxRate of 16.000 is the
+    // sharpest small case: the per-unit 0.55625 rounds UP to 0.6, so a naive
+    // 0.6 x 5 would print a 3.00 USDT line total directly above a Subtotal of
+    // 44.500/16.000 = 2.78125 -> 2.80 USDT, contradicting it by 0.2 USDT in a
+    // receipt a paying customer reads.
+    it("renders the caller's lineTotal verbatim instead of re-deriving it from the already-rounded unit price", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...payload,
+        currency: "USDT",
+        subtotal: "2.8",
+        discount: "0",
+        total: "2.8",
+        items: [{ name: "Netflix Premium", variant: null, quantity: 5, unitPrice: "0.6", lineTotal: "2.8" }],
+      });
+      expect(result!.html).toContain("5 × 0.60 USDT = 2.80 USDT");
+      expect(result!.text).toContain("5 × 0.60 USDT = 2.80 USDT");
+      // ...and it agrees with the Subtotal row printed a few lines below it,
+      // which is the whole point: this order has one line.
+      expect(result!.text).toMatch(/Subtotal \/ Subtotal[^\n]*2\.80 USDT/);
+      // The naive product, which would otherwise sit visibly above it.
+      expect(result!.html).not.toContain("3.00 USDT");
+      expect(result!.text).not.toContain("3.00 USDT");
+    });
+
+    // Backward compatibility for outbox rows enqueued before `lineTotal`
+    // joined the payload: those rows are already PENDING when the new code
+    // deploys and must still render a line total rather than a blank or a
+    // zero. The fallback multiplies via Decimal, never float.
+    it("falls back to quantity x unitPrice (via Decimal, not float) for a pre-existing row whose payload has no lineTotal", async () => {
       const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
         ...payload,
         currency: "USDT",

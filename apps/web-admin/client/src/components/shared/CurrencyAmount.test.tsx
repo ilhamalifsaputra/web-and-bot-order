@@ -55,4 +55,18 @@ describe("CurrencyStack", () => {
     expect(screen.getByText("Rp50.000")).toBeInTheDocument();
     expect(screen.queryByText(/USDT|USD/)).not.toBeInTheDocument();
   });
+
+  it("never truncates a large IDR figure — it wraps instead of clipping", () => {
+    render(<CurrencyStack amounts={[{ currency: "IDR", value: "1234567890" }]} />);
+    const amountEl = screen.getByText("Rp1.234.567.890");
+    expect(amountEl).not.toHaveClass("truncate");
+    expect(amountEl).toHaveClass("min-w-0");
+    expect(amountEl).toHaveClass("break-all");
+  });
+
+  it("keeps the currency label from compressing so the amount gets the width", () => {
+    render(<CurrencyStack amounts={[{ currency: "IDR", value: "1234567890" }]} />);
+    const labelEl = screen.getByText("IDR");
+    expect(labelEl).toHaveClass("shrink-0");
+  });
 });

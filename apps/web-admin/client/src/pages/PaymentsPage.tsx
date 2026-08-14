@@ -8,7 +8,7 @@ import { SearchBar } from "../components/shared/SearchBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
-import { StatusBadge } from "../components/shared/StatusBadge";
+import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
 import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { StatCard } from "../components/shared/StatCard";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
@@ -72,6 +72,12 @@ interface TxRow {
   currency: string | null;
   outcome: string;
   memo: string | null;
+  /** The order this payment settled, when there is one. `orderKind` is the
+   *  raw `OrderKind` code ("PRODUCT" | "WALLET_TOPUP") — all three are null on
+   *  transfers that were never matched to an order. */
+  orderId: number | null;
+  orderCode: string | null;
+  orderKind: string | null;
   processedAt: string;
   processedAtDisplay: string | null;
 }
@@ -127,6 +133,9 @@ interface PaymentsData {
   page: number;
   hasNext: boolean;
   outcomes: readonly string[];
+  /** Order kinds the ledger can be filtered by, sent by the server so the
+   *  dropdown and the server's validation share one list. */
+  kinds?: readonly string[];
   counts: Record<string, number>;
   health: PaymentsHealth;
   underpaid: UnderpaidOrderRow[];
@@ -142,12 +151,13 @@ interface OrderCodeSearchResult {
   exactOrderId: number | null;
 }
 
-function usePayments(outcome: string, q: string, page: number) {
+function usePayments(outcome: string, kind: string, q: string, page: number) {
   return useQuery<PaymentsData>({
-    queryKey: ["payments", outcome, q, page],
+    queryKey: ["payments", outcome, kind, q, page],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page) });
       if (outcome) params.set("outcome", outcome);
+      if (kind) params.set("kind", kind);
       if (q) params.set("q", q);
       const res = await fetch(`/api/payments?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load");
@@ -199,6 +209,9 @@ export function PaymentsPage() {
   // `initialStatus`/`initialQ` reading its own deep-link params.
   const initialOutcome = searchParams.get("outcome") ?? "";
   const [outcome, setOutcome] = useState(initialOutcome);
+  // Same deep-link seeding for the order-kind filter, so /payments?kind=
+  // WALLET_TOPUP lands on just the wallet top-ups.
+  const [kind, setKind] = useState(searchParams.get("kind") ?? "");
   const [page, setPage] = useState(1);
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
@@ -216,8 +229,8 @@ export function PaymentsPage() {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
-  useEffect(() => { setSelected(new Set()); }, [outcome, q, page]);
-  const { data, isError } = usePayments(outcome, q, page);
+  useEffect(() => { setSelected(new Set()); }, [outcome, kind, q, page]);
+  const { data, isError } = usePayments(outcome, kind, q, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
@@ -541,6 +554,21 @@ export function PaymentsPage() {
             </SelectContent>
           </Select>
         </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Type</label>
+          <Select
+            value={kind || "_all_"}
+            onValueChange={v => { setKind(v === "_all_" ? "" : v); setPage(1); }}
+          >
+            <SelectTrigger className="w-40" aria-label="Order type"><SelectValue placeholder="All types" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all_">All</SelectItem>
+              {(data?.kinds ?? []).map(k => (
+                <SelectItem key={k} value={k}>{statusLabel(k)}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         {data && <span className="text-sm text-ink-soft self-end">{data.total} transactions</span>}
       </FilterBar>
 
@@ -590,6 +618,21 @@ export function PaymentsPage() {
             key: "gateway",
             header: "Gateway",
             render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
+          },
+          {
+            key: "order",
+            header: "Order",
+            render: tx => (
+              <span className="font-mono text-xs">{tx.orderCode ?? "—"}</span>
+            ),
+          },
+          {
+            key: "kind",
+            header: "Type",
+            // Reuses StatusBadge (the same pill vocabulary the Outcome column
+            // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
+            // are registered in its tone map.
+            render: tx => tx.orderKind ? <StatusBadge status={tx.orderKind} /> : <span className="text-xs text-ink-soft">—</span>,
           },
           {
             key: "amount",
@@ -659,8 +702,8 @@ export function PaymentsPage() {
           <EmptyState
             icon={CreditCard}
             title="No transactions found"
-            description={outcome ? "Try a different outcome filter." : "Transactions will appear here once payments are processed."}
-            secondaryAction={outcome ? { label: "Clear Filters", onClick: () => { setOutcome(""); setPage(1); } } : undefined}
+            description={outcome || kind ? "Try a different filter." : "Transactions will appear here once payments are processed."}
+            secondaryAction={outcome || kind ? { label: "Clear Filters", onClick: () => { setOutcome(""); setKind(""); setPage(1); } } : undefined}
           />
         }
       />

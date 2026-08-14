@@ -254,13 +254,40 @@ export interface UnifiedLedgerRow {
   outcome: string;
   createdAt: Date;
   orderId: number | null;
+  /** Human-facing code of the order this payment settled (`ORD-…`), or null
+   *  when the row has no `orderId` (unmatched/dismissed transfers) or the
+   *  order has since been deleted. Lets an admin trace a ledger row back to
+   *  its order instead of staring at a bare numeric id. */
+  orderCode: string | null;
+  /** `Order.kind` — "PRODUCT" for a sale, "WALLET_TOPUP" for a wallet top-up
+   *  (see `OrderKind` in packages/core/src/enums.ts). Null on rows with no
+   *  order, same as `orderCode`. Without this the Payments ledger cannot tell
+   *  top-up money from product-sale money. */
+  orderKind: string | null;
 }
 
 export interface CombinedLedgerFilter {
   outcome?: string | null;
   q?: string | null;
+  /** Filter to one `Order.kind` ("PRODUCT" | "WALLET_TOPUP"). Rows with no
+   *  order are excluded by any non-null value here — they belong to neither
+   *  kind. Applied in JS after the order join, because `kind` lives on
+   *  `Order` and none of the five ledger tables carry it. */
+  kind?: string | null;
   limit?: number;
   offset?: number;
+}
+
+export interface CombinedLedgerPage {
+  rows: UnifiedLedgerRow[];
+  /** Rows the filter yields in total, across every page — NOT just this
+   *  page's length. Returned alongside the rows (rather than from a separate
+   *  `countCombinedLedger`) precisely because the `kind` filter cannot be
+   *  expressed as per-table `count()` calls: it depends on a join that only
+   *  exists once the five tables have been merged. Deriving both numbers from
+   *  the same merged-and-filtered array is what keeps `total` and the paged
+   *  rows from disagreeing. */
+  total: number;
 }
 
 /**
@@ -281,8 +308,21 @@ export interface CombinedLedgerFilter {
  * for every unfiltered page) — acceptable for these ledgers' size today, but
  * revisit with a real cross-table paginated query if any one of them grows
  * large.
+ *
+ * Each row is then enriched with its order's code and kind via ONE extra
+ * `order.findMany` over the distinct order ids in the merged set — never one
+ * query per row. That single query is the price of being able to tell a
+ * wallet top-up from a product sale on this page; anything per-row would
+ * multiply the linear cost described above by the page size.
+ *
+ * Returns `{ rows, total }` rather than rows alone, and there is deliberately
+ * no `countCombinedLedger` counterpart: the `kind` filter is applied to the
+ * merged, order-joined array (before slicing), so the only correct total is
+ * the length of that array. Five per-table `count()` calls cannot see `kind`
+ * at all and would report a total that disagrees with what the filter really
+ * yields.
  */
-export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}): Promise<UnifiedLedgerRow[]> {
+export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}): Promise<CombinedLedgerPage> {
   const q = opts.q && opts.q.trim() ? opts.q.trim() : null;
   const outcomeWhere = opts.outcome ? { outcome: opts.outcome } : {};
 
@@ -304,7 +344,10 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
     }),
   ]);
 
-  const merged: UnifiedLedgerRow[] = [
+  // Pre-join shape: everything the ledger tables themselves can supply.
+  // `orderCode`/`orderKind` are filled in from the single order query below.
+  type PreJoinRow = Omit<UnifiedLedgerRow, "orderCode" | "orderKind">;
+  const merged: PreJoinRow[] = [
     ...binance.map((r) => ({
       id: r.id,
       gateway: "binance" as const,
@@ -358,26 +401,29 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
   ];
   merged.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
+  // ONE query for every order referenced anywhere in the merged set — not one
+  // per row. Rows whose `orderId` is null (unmatched or dismissed transfers),
+  // and rows pointing at an order that no longer exists, keep null code/kind
+  // and are still returned; dropping them would hide exactly the transfers an
+  // admin most needs to see.
+  const orderIds = [...new Set(merged.map((r) => r.orderId).filter((id): id is number => id != null))];
+  const orders = orderIds.length
+    ? await db.order.findMany({ where: { id: { in: orderIds } }, select: { id: true, orderCode: true, kind: true } })
+    : [];
+  const orderById = new Map(orders.map((o) => [o.id, o]));
+
+  let joined: UnifiedLedgerRow[] = merged.map((r) => {
+    const order = r.orderId != null ? orderById.get(r.orderId) : undefined;
+    return { ...r, orderCode: order?.orderCode ?? null, orderKind: order?.kind ?? null };
+  });
+
+  // Applied to the whole merged set BEFORE slicing, so the filter spans every
+  // page and `total` below counts exactly the rows the filter yields.
+  if (opts.kind) joined = joined.filter((r) => r.orderKind === opts.kind);
+
   const offset = opts.offset ?? 0;
   const limit = opts.limit ?? 50;
-  return merged.slice(offset, offset + limit);
-}
-
-/** Total row count across all five gateway ledger tables, same filter shape
- *  as `listCombinedLedger` — analogous to `countProcessedBinanceTx` but
- *  cross-gateway, for the ledger's pagination total. */
-export async function countCombinedLedger(db: Db, opts: { outcome?: string | null; q?: string | null } = {}): Promise<number> {
-  const q = opts.q && opts.q.trim() ? opts.q.trim() : null;
-  const outcomeWhere = opts.outcome ? { outcome: opts.outcome } : {};
-
-  const counts = await Promise.all([
-    db.processedBinanceTx.count({ where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q } } : {}) } }),
-    db.processedBybitTx.count({ where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q } } : {}) } }),
-    db.processedTokopayTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
-    db.processedPaydisiniTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
-    db.processedNowpaymentsTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
-  ]);
-  return counts.reduce((sum, c) => sum + c, 0);
+  return { rows: joined.slice(offset, offset + limit), total: joined.length };
 }
 
 /** OrderItems whose warranty (delivered_at + snapshot days) falls in [start,end]. */

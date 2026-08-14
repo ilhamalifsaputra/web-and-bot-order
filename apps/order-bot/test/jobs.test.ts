@@ -26,6 +26,7 @@ import {
   pollOnce as tokopayPollOnce,
   RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS,
 } from "../src/payments/tokopayReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../src/payments/nowpaymentsReconcile";
 /**
  * Lets a single test make the drainer's mid-flight progress flush fail — the
  * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
@@ -409,10 +410,12 @@ describe("sweepPaidOrderBubbles", () => {
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
-  // Same shape as tokopay-reconcile.test.ts's black-holed-bubble tests: real
-  // timers and real Prisma, with millisecond-scale bounds passed in instead of
-  // the real 10s/30s ones so the identical give-up/budget-break logic is
-  // proven in well under a second.
+  // Same shape as the black-holed-bubble tests tokopay-reconcile.test.ts used
+  // to carry for its own per-rail sweep, before Task T2-F deleted that
+  // per-rail sweep in favor of the generic sweepPaidOrderBubbles exercised
+  // here: real timers and real Prisma, with millisecond-scale bounds passed
+  // in instead of the real 10s/30s ones so the identical give-up/budget-break
+  // logic is proven in well under a second.
   describe("safety bounds against a black-holed bubble edit", () => {
     const editTimeoutMs = 200;
     const totalBudgetMs = 600;
@@ -1414,8 +1417,8 @@ describe("binancePollWatchdog admin DM wording (Important #1 regression guard)",
 // reachable AND whose reconcile poller had also died left orders piling up
 // PENDING_PAYMENT with no one paged (docs/TROUBLESHOOTING.md's "webhook
 // gateway tidak pernah sampai" scenario). These pollers make up to 50
-// sequential gateway calls per cycle, so their own cycleTimeoutMs
-// (~820s TokoPay/PayDisini, ~780s NOWPayments) is already well past the
+// sequential gateway calls per cycle, so their own cycleTimeoutMs (~780s for
+// all three, TokoPay/PayDisini/NOWPayments alike) is already well past the
 // crypto rails' 5-minute staleness default — a legitimately slow (not
 // hung) cycle must not trip a watchdog sized for the crypto rails' much
 // lighter cadence.
@@ -1466,7 +1469,7 @@ describe("tokopayPollWatchdog (Task 12)", () => {
   });
 
   it("does not page for a cycle older than 5 minutes but still within TokoPay's own wider staleness window", async () => {
-    // TokoPay's cycleTimeoutMs is ~820s (~13m40s) because one cycle can make
+    // TokoPay's cycleTimeoutMs is ~780s (~13m) because one cycle can make
     // up to 50 sequential gateway calls — a cycle that finishes at, say, 10
     // minutes is unremarkable, not a hang. Using the crypto rails' flat
     // 5-minute threshold here would page admins on ordinary slowness.
@@ -1481,7 +1484,7 @@ describe("tokopayPollWatchdog (Task 12)", () => {
   });
 
   // Minor #4 (Task 12 review follow-up): the two staleness tests above sit
-  // 4m40s below and 5m20s above TokoPay's actual widened boundary
+  // 3m40s below and 6m20s above TokoPay's actual widened boundary
   // (TOKOPAY_POLL_STALE_MS) — comfortably wide of it, so a wrong-signed
   // margin, an omitted margin, or a copy-pasted NOWPayments threshold would
   // all still pass both unchanged. These two pin the boundary itself: the
@@ -1628,21 +1631,62 @@ describe("paydisiniPollWatchdog / nowpaymentsPollWatchdog wiring (Task 12)", () 
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
-  // Minor #4 (Task 12 review follow-up): NOWPayments' own threshold
-  // (NOWPAYMENTS_POLL_STALE_MS, ~780s cycleTimeoutMs + margin) is narrower
-  // than TokoPay's (TOKOPAY_POLL_STALE_MS, ~820s cycleTimeoutMs + the same
-  // margin) — both rails share the same flat QRIS_STALE_MARGIN_MS, so the gap
-  // between the two is exactly their cycleTimeoutMs difference. This age sits
-  // strictly between the two thresholds: NOWPayments' own (correct, lower)
-  // threshold must page here, but a copy-pasted TokoPay threshold in the
-  // NOWPayments wrapper would read this same age as still healthy and stay
-  // silent — so the two rails' thresholds cannot be conflated without this
-  // test catching it.
-  it("pages using NOWPayments' own narrower staleness threshold, not TokoPay's wider one", async () => {
+  // Minor #4 (Task 12 review follow-up), rewritten (payment-confirmation-
+  // refresh review, Finding 1): this used to page at
+  // "NOWPAYMENTS_POLL_STALE_MS + half the gap to TOKOPAY_POLL_STALE_MS", on
+  // the premise that NOWPayments' threshold was narrower than TokoPay's. That
+  // premise held only while TokoPay/PayDisini's cycle-timeout carried an
+  // extra per-rail sweep term NOWPayments never had; Task T2-F deleted that
+  // per-rail sweep (`sweepDeliveredAwaitingEdit`), so
+  // TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS and NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS
+  // (and therefore TOKOPAY_POLL_STALE_MS and NOWPAYMENTS_POLL_STALE_MS) are
+  // now numerically identical. "Half the gap" is now zero, so the old test
+  // asked for an age exactly ON the boundary and only passed because a few
+  // milliseconds of real wall-clock time elapse between the `setSetting`
+  // calls above and `evaluatePollHealth`'s `>` comparison — a timing
+  // accident, not a proof, and one that can no longer distinguish "reads its
+  // own constant" from "reads TokoPay's" since both constants are the same
+  // number today.
+  //
+  // No runtime comparison between the two rails' ages can prove that
+  // discrimination while their thresholds happen to coincide — instead, pin
+  // NOWPayments' own boundary directly against ITS OWN derivation
+  // (NOWPAYMENTS_POLL_STALE_MS = NOWPAYMENTS_CYCLE_TIMEOUT_MS + margin), the
+  // same way the TokoPay boundary-pin pair above pins TokoPay's. This proves
+  // nowpaymentsPollWatchdog's staleMs really is NOWPAYMENTS_POLL_STALE_MS
+  // (not some other value), and stays meaningful even if the two rails'
+  // numbers diverge again in the future.
+  it("does not page for a cycle just inside NOWPayments' own widened staleness margin (boundary pin)", async () => {
     await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "apikey-1");
     await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "ipnsecret-1");
-    const ageMs = NOWPAYMENTS_POLL_STALE_MS + Math.floor((TOKOPAY_POLL_STALE_MS - NOWPAYMENTS_POLL_STALE_MS) / 2);
-    const at = new Date(Date.now() - ageMs).toISOString();
+    const margin = NOWPAYMENTS_POLL_STALE_MS - NOWPAYMENTS_CYCLE_TIMEOUT_MS;
+    const at = new Date(Date.now() - (NOWPAYMENTS_POLL_STALE_MS - Math.floor(margin / 2))).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.nowpayments,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await nowpaymentsPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "nowpayments_poll_alert_sent")).not.toBe("1");
+  });
+
+  it("pages once a cycle is older than NOWPayments' own widened staleness threshold (boundary pin)", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "apikey-1");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "ipnsecret-1");
+    const at = new Date(Date.now() - (NOWPAYMENTS_POLL_STALE_MS + 5_000)).toISOString();
     await setSetting(
       prisma,
       POLL_HEALTH_KEYS.nowpayments,

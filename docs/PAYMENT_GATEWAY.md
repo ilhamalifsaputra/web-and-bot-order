@@ -190,10 +190,15 @@ jendela bayar: panggil `checkTransaction`/`getPaymentStatus` gateway, jika
 (ledger sama → tidak mungkin double-deliver). Read-only ke gateway (tidak
 membuat/mengubah apa pun di sisi mereka).
 
-Reconcile poller JUGA menyapu (`sweepDeliveredAwaitingEdit`) order
-`DELIVERED` yang bubble QR-nya belum di-flip ke sukses — menutup kasus
-webhook sampai lewat storefront (yang tidak pernah mengedit bubble bot,
-sesuai aturan "web tidak pernah kirim Telegram").
+Reconcile poller masing-masing rail (`reconcileOrder`) langsung membalik
+bubble QR ke sukses saat POLLER SENDIRI yang mendeteksi pembayaran — jalur
+ini tidak lagi menyapu order lain di luar itu (per-rail sweep
+`sweepDeliveredAwaitingEdit` sudah dihapus). Untuk kasus webhook sampai lewat
+storefront (yang tidak pernah mengedit bubble bot, sesuai aturan "web tidak
+pernah kirim Telegram"), job generik terpisah —
+`sweepPaidOrderBubbles` (`apps/order-bot/src/jobs/index.ts`, cron di detik
+ke-25 tiap menit) — menyapu bubble pembayaran yang masih basi untuk SEMUA
+metode pembayaran, bukan cuma tiga rail QRIS/IDR ini.
 
 ## Alert kegagalan delivery — "Manual action needed"
 

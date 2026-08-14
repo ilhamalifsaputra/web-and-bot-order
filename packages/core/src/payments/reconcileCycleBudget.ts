@@ -199,8 +199,10 @@ export const NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS =
  * (Binance/Bybit/Bybit BSC — `pollHealth.ts`'s `DEFAULT_STALE_MS`, 5
  * minutes): one cycle makes up to `MAX_ORDERS_PER_CYCLE` (50) sequential,
  * individually-timed-out gateway calls, so each rail's own cycle-timeout
- * constant above is already ~820s for TokoPay/PayDisini and ~780s for
- * NOWPayments — both already well past the crypto rails' 5-minute default.
+ * constant above is already ~780s for all three (TokoPay, PayDisini, and
+ * NOWPayments alike, since Task T2-F removed the per-rail sweep term that
+ * used to make TokoPay/PayDisini's ~40s higher) — already well past the
+ * crypto rails' 5-minute default.
  *
  * A rail's heartbeat is written exactly once per cycle — at the end
  * (success or failure) or, for a hung cycle, at its own cycle-timeout

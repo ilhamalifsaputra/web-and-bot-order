@@ -356,6 +356,131 @@ export async function listWalletLedger(
   }));
 }
 
+/** The only User columns the global wallet-transactions page needs, as an
+ *  explicit `select` on the relation. Never `include: { user: true }` here:
+ *  that would pull `passwordHash` and `email` into a web-admin JSON response.
+ *  Same rule and reasoning as USER_SELECT above, narrowed to a display label. */
+const WALLET_TX_USER_SELECT = {
+  id: true,
+  username: true,
+  fullName: true,
+  telegramId: true,
+} as const;
+
+/** Every `reason` code `adjustWallet` writes into `wallet_transactions`, in
+ *  the order the schema comment lists them (prisma/schema.prisma). Exported so
+ *  the admin page's reason dropdown and the route's validation share one list
+ *  instead of each hard-coding its own copy. Keep in sync with the schema
+ *  comment when a new reason is introduced. */
+export const WALLET_TX_REASONS = [
+  "admin_adjust",
+  "underpaid_refund",
+  "referral",
+  "order_payment",
+  "order_refund",
+  "adjust",
+  "wallet_topup",
+] as const;
+
+export interface WalletTransactionFilter {
+  userId?: number | null;
+  /** Machine reason code as stored: admin_adjust | underpaid_refund |
+   *  referral | order_payment | order_refund | adjust | wallet_topup. */
+  reason?: string | null;
+  currency?: string | null;
+  /** createdAt >= from */
+  from?: Date | null;
+  /** createdAt <= to */
+  to?: Date | null;
+}
+
+export interface GlobalWalletTransactionRow {
+  id: number;
+  createdAt: Date;
+  userId: number;
+  user: { id: number; username: string | null; fullName: string | null; telegramId: bigint | null } | null;
+  /** Display name for the customer, resolved the same way `recentOrders` does
+   *  it so both admin tables label the same person identically. */
+  customerLabel: string;
+  /** Signed: positive credits the wallet, negative debits it. */
+  delta: string;
+  balanceAfter: string;
+  currency: string;
+  reason: string;
+  note: string;
+  adminId: number | null;
+  orderId: number | null;
+}
+
+function walletTransactionWhere(f: WalletTransactionFilter): Prisma.WalletTransactionWhereInput {
+  const where: Prisma.WalletTransactionWhereInput = {};
+  if (f.userId != null) where.userId = f.userId;
+  if (f.reason) where.reason = f.reason;
+  if (f.currency) where.currency = f.currency;
+  if (f.from || f.to) {
+    where.createdAt = {
+      ...(f.from ? { gte: f.from } : {}),
+      ...(f.to ? { lte: f.to } : {}),
+    };
+  }
+  return where;
+}
+
+/**
+ * Every wallet movement across all users, newest first — the global
+ * counterpart to `listWalletLedger`, which is locked to one `userId` and is
+ * therefore only reachable from a single customer's detail page. Wallet
+ * top-ups (`reason: "wallet_topup"`, written by `adjustWallet`) had no
+ * shop-wide view at all before this.
+ *
+ * Ordered by `id desc` rather than `createdAt desc`: the ledger is
+ * append-only, so the primary key already encodes insertion order and sorting
+ * on it needs no extra index.
+ *
+ * Indexing, deliberately: `WalletTransaction` carries only `@@index([userId])`
+ * (prisma/schema.prisma), so filtering by `reason`/`currency`/`createdAt`
+ * full-scans the table. That is accepted at this table's size — this repo
+ * deploys schema with `prisma db push`, and adding an index here would mean a
+ * live schema change for a page an admin opens occasionally. Revisit if the
+ * ledger grows into the hundreds of thousands of rows.
+ */
+export async function listAllWalletTransactions(
+  db: Db,
+  opts: WalletTransactionFilter & { limit?: number; offset?: number } = {},
+): Promise<GlobalWalletTransactionRow[]> {
+  const rows = await db.walletTransaction.findMany({
+    where: walletTransactionWhere(opts),
+    orderBy: { id: "desc" },
+    skip: opts.offset ?? 0,
+    take: opts.limit ?? 50,
+    include: { user: { select: WALLET_TX_USER_SELECT } },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.createdAt,
+    userId: r.userId,
+    user: r.user ?? null,
+    customerLabel:
+      r.user?.username ??
+      r.user?.fullName ??
+      (r.user?.telegramId != null ? `Telegram ${r.user.telegramId}` : `Customer #${r.userId}`),
+    delta: new Decimal(r.delta).toString(),
+    balanceAfter: new Decimal(r.balanceAfter).toString(),
+    currency: r.currency,
+    reason: r.reason,
+    note: r.note ?? "",
+    adminId: r.adminId,
+    orderId: r.orderId,
+  }));
+}
+
+/** Row count for `listAllWalletTransactions`'s filter — the page's pagination
+ *  total. Unlike the Payments ledger's cross-table merge, every filter here
+ *  maps to a plain `where`, so a real `count()` is both possible and exact. */
+export function countAllWalletTransactions(db: Db, opts: WalletTransactionFilter = {}): Promise<number> {
+  return db.walletTransaction.count({ where: walletTransactionWhere(opts) });
+}
+
 // ---- Filtered list/count/KPIs for the Customers admin page ----------------
 
 export type UserSort = "newest" | "oldest" | "lastSeen" | "spend";

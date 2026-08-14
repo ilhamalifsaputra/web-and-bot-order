@@ -911,3 +911,119 @@ describe("GET /api/users", () => {
     expect(res.headers.location).toBe("/login");
   });
 });
+
+// T6: wallet movements were only visible one customer at a time, on that
+// customer's detail page — a shop owner had no way to watch top-up money
+// arrive shop-wide.
+describe("GET /api/wallet-transactions", () => {
+  interface WalletTxResponse {
+    rows: Array<{
+      id: number;
+      userId: number;
+      customerLabel: string;
+      delta: string;
+      balanceAfter: string;
+      currency: string;
+      reason: string;
+      orderId: number | null;
+      createdAtDisplay: string | null;
+      user: Record<string, unknown> | null;
+    }>;
+    total: number;
+    page: number;
+    hasNext: boolean;
+    reasons: string[];
+  }
+
+  function walletRow(args: { userId: number; delta: string; balanceAfter: string; reason: string; currency?: string; createdAt?: Date }) {
+    return prisma.walletTransaction.create({
+      data: {
+        userId: args.userId,
+        delta: args.delta,
+        balanceAfter: args.balanceAfter,
+        currency: args.currency ?? "IDR",
+        reason: args.reason,
+        ...(args.createdAt ? { createdAt: args.createdAt } : {}),
+      },
+    });
+  }
+
+  it("lists wallet movements across all customers with a label and a display date", async () => {
+    await walletRow({ userId: customerId, delta: "150000", balanceAfter: "150000", reason: "wallet_topup" });
+    await walletRow({ userId: adminId, delta: "-2000", balanceAfter: "1000", reason: "order_payment" });
+
+    const res = await get("/api/wallet-transactions", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as WalletTxResponse;
+    expect(body.total).toBe(2);
+    expect(body.rows).toHaveLength(2);
+    expect(body.hasNext).toBe(false);
+
+    const topup = body.rows.find((r) => r.reason === "wallet_topup")!;
+    expect(topup.delta).toBe("150000");
+    expect(topup.balanceAfter).toBe("150000");
+    expect(topup.customerLabel).toBe("buyer");
+    expect(topup.createdAtDisplay).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+
+  it("never sends the customer's passwordHash or email", async () => {
+    await prisma.user.update({ where: { id: customerId }, data: { passwordHash: "top-secret-hash", email: "buyer@example.com" } });
+    await walletRow({ userId: customerId, delta: "1", balanceAfter: "1", reason: "adjust" });
+
+    const res = await get("/api/wallet-transactions", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("top-secret-hash");
+    expect(res.body).not.toContain("buyer@example.com");
+    const body = JSON.parse(res.body) as WalletTxResponse;
+    expect(body.rows[0]!.user).not.toHaveProperty("passwordHash");
+    expect(body.rows[0]!.user).not.toHaveProperty("email");
+  });
+
+  it("filters by reason, currency, customer and date range", async () => {
+    await walletRow({ userId: customerId, delta: "100", balanceAfter: "100", reason: "wallet_topup", createdAt: new Date("2026-01-01T00:00:00.000Z") });
+    await walletRow({ userId: customerId, delta: "5", balanceAfter: "5", reason: "wallet_topup", currency: "USDT", createdAt: new Date("2026-06-01T00:00:00.000Z") });
+    await walletRow({ userId: adminId, delta: "-1", balanceAfter: "9", reason: "order_payment", createdAt: new Date("2026-06-01T00:00:00.000Z") });
+
+    const byReason = JSON.parse((await get("/api/wallet-transactions?reason=wallet_topup", cookie)).body) as WalletTxResponse;
+    expect(byReason.total).toBe(2);
+
+    const byCurrency = JSON.parse((await get("/api/wallet-transactions?currency=USDT", cookie)).body) as WalletTxResponse;
+    expect(byCurrency.total).toBe(1);
+    expect(byCurrency.rows[0]!.currency).toBe("USDT");
+
+    const byUser = JSON.parse((await get(`/api/wallet-transactions?user_id=${adminId}`, cookie)).body) as WalletTxResponse;
+    expect(byUser.total).toBe(1);
+    expect(byUser.rows[0]!.userId).toBe(adminId);
+
+    const sinceMarch = JSON.parse((await get("/api/wallet-transactions?since=2026-03-01", cookie)).body) as WalletTxResponse;
+    expect(sinceMarch.total).toBe(2);
+
+    const untilMarch = JSON.parse((await get("/api/wallet-transactions?until=2026-03-01", cookie)).body) as WalletTxResponse;
+    expect(untilMarch.total).toBe(1);
+  });
+
+  it("paginates with a total that counts every matching row, not just this page", async () => {
+    for (let i = 0; i < 55; i++) {
+      await walletRow({ userId: customerId, delta: "1", balanceAfter: String(i + 1), reason: "wallet_topup" });
+    }
+
+    const page1 = JSON.parse((await get("/api/wallet-transactions", cookie)).body) as WalletTxResponse;
+    expect(page1.rows).toHaveLength(50);
+    expect(page1.total).toBe(55);
+    expect(page1.hasNext).toBe(true);
+
+    const page2 = JSON.parse((await get("/api/wallet-transactions?page=2", cookie)).body) as WalletTxResponse;
+    expect(page2.rows).toHaveLength(5);
+    expect(page2.total).toBe(55);
+    expect(page2.hasNext).toBe(false);
+
+    const ids = new Set([...page1.rows, ...page2.rows].map((r) => r.id));
+    expect(ids.size).toBe(55);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await get("/api/wallet-transactions", null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+});

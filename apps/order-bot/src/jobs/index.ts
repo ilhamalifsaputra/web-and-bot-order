@@ -211,8 +211,8 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
  * never show up in this query — by design, not by omission.
  *
  * Idempotent: the anchor IS the work queue, so clearing it makes a re-run a
- * no-op. Bounded exactly the way the per-rail QRIS sweeps are (see
- * `sweepDeliveredAwaitingEdit` in payments/tokopayReconcile.ts, whose shape
+ * no-op. Bounded the same way TokoPay/PayDisini's own now-removed per-rail
+ * sweeps were (Task T2-F deleted `sweepDeliveredAwaitingEdit`, whose shape
  * this follows): the batch is capped at MAX_ORDERS_PER_CYCLE, each edit gets
  * at most `editTimeoutMs`, and the whole sweep stops starting new rows once
  * `totalBudgetMs` of wall clock is gone. A timed-out or budget-cut-off edit

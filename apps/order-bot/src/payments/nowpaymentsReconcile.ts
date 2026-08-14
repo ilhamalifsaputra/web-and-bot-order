@@ -196,12 +196,23 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
 // createPollLoop below) both now live in
 // packages/core/src/payments/reconcileCycleBudget.ts as
 // NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS (Task 13 review follow-up) — see
-// that module for the full derivation (unlike TokoPay/PayDisini there is no
-// bubble-sweep term: this rail has no anchored QR bubble to flip, so
-// `pollOnce` ends after the order loop), including the
+// that module for the full derivation, including the
 // NOWPAYMENTS_PAYMENT_WINDOW_MINUTES sanity check (enforced as a test in
 // poll-loop-wiring.test.ts). Re-exported under this file's original name so
 // existing imports (the wiring test, jobs/index.ts) keep working unchanged.
+//
+// This rail DOES anchor a payment-instructions bubble at checkout
+// (../handlers/walletTopup.ts:515, ../handlers/checkout.ts:1012) — an
+// earlier version of this comment wrongly claimed it didn't, which is
+// exactly why that bubble never got flipped: unlike TokoPay/PayDisini's
+// `reconcileOrder`, this rail's own `reconcileOrder` above never flips it
+// inline, so before the generic bubble-flip sweeper existed
+// (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E)
+// nothing ever cleared it. That generic sweeper now covers this rail (and
+// every other settled order with a stale anchor) on its own cron tick, so no
+// per-rail bubble-sweep term belongs in this rail's cycle-timeout budget
+// either — same as TokoPay/PayDisini after Task T2-F removed their own
+// per-rail sweeps.
 export const RECONCILE_CYCLE_TIMEOUT_MS = NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS;
 
 // MAX_ORDERS_PER_CYCLE caps how many of the pending backlog one cycle checks

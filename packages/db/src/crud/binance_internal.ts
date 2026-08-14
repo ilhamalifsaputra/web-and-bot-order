@@ -165,34 +165,15 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
   await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
 }
 
-/** DELIVERED orders of `method` that still carry an un-edited payment-message
- * anchor, oldest first. `limit`, when given, caps how many rows come back —
- * the QRIS reconcile pollers (TokoPay/PayDisini) pass a bound so one cycle's
- * sweep of grammY edit calls stays bounded regardless of backlog size, the
- * same reasoning as `listPendingTokopayOrders`' own `limit` (Task 11 review
- * follow-up, Important #2); omitted, every other caller keeps today's
- * unbounded behavior. */
-export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod, limit?: number) {
-  return db.order.findMany({
-    where: {
-      status: OrderStatus.DELIVERED,
-      paymentMethod: method,
-      paymentMsgChatId: { not: null },
-      paymentMsgId: { not: null },
-    },
-    include: { user: true },
-    orderBy: { createdAt: "asc" },
-    ...(limit != null ? { take: limit } : {}),
-  });
-}
-
 /** Settled (DELIVERED or manual-fulfilment PROCESSING) orders of ANY payment
  * method that still carry an un-edited payment-message anchor, oldest first —
- * the cross-method query the generic bubble-flip sweeper polls (unlike
- * `listDeliveredOrdersAwaitingEdit` above, this is not locked to one
- * `paymentMethod`, and it also picks up PROCESSING: manual-fulfilment orders
- * stop there instead of reaching DELIVERED, but their bubble still needs to
- * flip). `paymentMsgChatId`/`paymentMsgId` being non-null doubles as the
+ * the cross-method query the generic bubble-flip sweeper polls. Not locked to
+ * one `paymentMethod` (it replaced an earlier, TokoPay/PayDisini-only query,
+ * `listDeliveredOrdersAwaitingEdit`, removed in Task T2-F once the generic
+ * sweeper covered every rail), and it also picks up PROCESSING:
+ * manual-fulfilment orders stop there instead of reaching DELIVERED, but
+ * their bubble still needs to flip.
+ * `paymentMsgChatId`/`paymentMsgId` being non-null doubles as the
  * idempotency gate: the three crypto rails already null both out via
  * `clearOrderPaymentMessage` once they've flipped their own bubble, so this
  * query naturally skips anything already handled. It also does NOT catch

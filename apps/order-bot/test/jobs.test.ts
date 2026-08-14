@@ -43,13 +43,14 @@ vi.mock("@app/db", async () => {
   };
 });
 
-import { GrammyError, type Api } from "grammy";
+import { GrammyError, InlineKeyboard, type Api } from "grammy";
 import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
+  editPaymentBubble,
   scheduleJobs,
   drainBroadcasts,
   announceStartedFlashSales,
@@ -152,6 +153,66 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// T2-C: the shared bubble-edit helper notifyAutoCancelled above was refactored
+// to use — exported so the next task's generic bubble-flip sweeper can call it
+// too, in a mode that must NEVER send a fallback DM (the buyer already got the
+// news through another channel there).
+describe("editPaymentBubble", () => {
+  const markup = new InlineKeyboard().text("OK", "noop");
+
+  it("reports which edit method succeeded, and never touches sendMessage", async () => {
+    const api = fakeApi();
+
+    const result = await editPaymentBubble(api, {
+      chatId: 555,
+      messageId: 777,
+      text: "hello",
+      markup,
+      fallbackDm: null,
+    });
+
+    expect(result).toEqual({ status: "edited", via: "caption" });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("with fallback DM off, reports failure and sends no DM at all when the bubble can't be edited", async () => {
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
+      editMessageText: vi.fn().mockRejectedValue(new Error("gone")),
+    });
+
+    const result = await editPaymentBubble(api, {
+      chatId: 555,
+      messageId: 777,
+      text: "hello",
+      markup,
+      fallbackDm: null,
+    });
+
+    expect(result).toEqual({ status: "not_edited" });
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("with fallback DM on, sends a DM and reports it when the bubble can't be edited", async () => {
+    const api = fakeApi({
+      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
+      editMessageText: vi.fn().mockRejectedValue(new Error("gone")),
+    });
+
+    const result = await editPaymentBubble(api, {
+      chatId: 555,
+      messageId: 777,
+      text: "hello",
+      markup,
+      fallbackDm: { telegramId: 42 },
+    });
+
+    expect(result).toEqual({ status: "dm_sent" });
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith(42, "hello", { parse_mode: "HTML", reply_markup: markup });
   });
 });
 

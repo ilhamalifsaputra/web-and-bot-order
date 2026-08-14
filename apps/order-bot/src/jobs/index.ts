@@ -9,7 +9,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
-import { GrammyError, type Api } from "grammy";
+import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -61,6 +61,75 @@ import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
 import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastPhoto";
 
+/** What `editPaymentBubble` actually did, so the caller can tell a successful
+ * edit apart from a failed one instead of guessing from side effects:
+ *  - "edited"     — the bubble itself was updated in place (`via` says which
+ *                    grammY call worked: "caption" for a photo/QR bubble,
+ *                    "text" for a text-fallback bubble).
+ *  - "dm_sent"    — the bubble could not be edited, but the fallback DM
+ *                    (when the caller opted in) was sent instead.
+ *  - "not_edited" — the bubble could not be edited and no fallback DM was
+ *                    sent, either because the caller opted out (`fallbackDm:
+ *                    null`) or because the DM itself failed too — `error`
+ *                    carries that DM failure (unset in the opted-out case)
+ *                    so a caller that needs the original propagated (like
+ *                    `notifyAutoCancelled` below, preserving its pre-refactor
+ *                    behavior) doesn't have to re-attempt the send just to
+ *                    get it. */
+export type BubbleEditResult =
+  | { status: "edited"; via: "caption" | "text" }
+  | { status: "dm_sent" }
+  | { status: "not_edited"; error?: unknown };
+
+/**
+ * Edit an anchored payment/notification bubble in place: try `editMessageCaption`
+ * first (photo/QR bubbles), fall back to `editMessageText` (text bubbles).
+ * Extracted from `notifyAutoCancelled`'s original inline try/caption/text chain
+ * (Task T2-C) so the upcoming generic bubble-flip sweeper can share it.
+ *
+ * `fallbackDm` makes the two calling modes explicit at the call site instead
+ * of being an implicit side effect: `notifyAutoCancelled` below passes a
+ * target so a buyer whose bubble is gone still gets the news as a DM (its
+ * existing, unchanged behavior); the sweeper's own bubble-flip pass will
+ * pass `null` — those buyers already received the account/top-up DM through
+ * the normal delivery path, so a second DM here would only be noise.
+ *
+ * Never throws: every grammY call (including the fallback DM) is caught, so
+ * a stale/uneditable bubble or a blocked/deactivated recipient degrades to a
+ * reported outcome instead of an exception the caller must remember to guard.
+ */
+export async function editPaymentBubble(
+  api: Api,
+  args: {
+    chatId: number;
+    messageId: number;
+    text: string;
+    markup: InlineKeyboard;
+    /** Telegram id to DM as a fallback when the bubble can't be edited. Pass
+     * `null` to skip the DM entirely and just report the edit failed. */
+    fallbackDm: { telegramId: number } | null;
+  },
+): Promise<BubbleEditResult> {
+  try {
+    await api.editMessageCaption(args.chatId, args.messageId, { caption: args.text, parse_mode: "HTML", reply_markup: args.markup });
+    return { status: "edited", via: "caption" };
+  } catch {
+    try {
+      await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+      return { status: "edited", via: "text" };
+    } catch {
+      // Bubble gone/uneditable.
+      if (args.fallbackDm == null) return { status: "not_edited" };
+      try {
+        await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+        return { status: "dm_sent" };
+      } catch (error) {
+        return { status: "not_edited", error };
+      }
+    }
+  }
+}
+
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
  * notice in place — mirrors the reconcile pollers' success-bubble flip
@@ -76,18 +145,21 @@ async function notifyAutoCancelled(
   const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
   const markup = notificationKb(o.lang);
   if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
-    const chatId = Number(o.paymentMsgChatId);
-    try {
-      await api.editMessageCaption(chatId, o.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
-      return;
-    } catch {
-      try {
-        await api.editMessageText(chatId, o.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
-        return;
-      } catch {
-        /* bubble gone/uneditable — fall through to a fresh DM */
-      }
-    }
+    const result = await editPaymentBubble(api, {
+      chatId: Number(o.paymentMsgChatId),
+      messageId: o.paymentMsgId,
+      text,
+      markup,
+      fallbackDm: { telegramId: Number(o.tgId) },
+    });
+    // "error" only appears once a fallback DM was actually attempted (never
+    // for the sweeper's fallbackDm: null mode) — re-throwing it here
+    // reproduces the pre-refactor behavior exactly: a failed fallback send
+    // used to propagate out of this function uncaught, so
+    // autoCancelExpiredOrders' own try/catch would log "Failed to notify the
+    // customer...". Not re-attempting the send avoids DMing the buyer twice.
+    if (result.status === "not_edited" && "error" in result) throw result.error;
+    return;
   }
   await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
 }

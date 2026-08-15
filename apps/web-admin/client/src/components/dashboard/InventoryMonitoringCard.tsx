@@ -21,9 +21,13 @@ export function InventoryMonitoringCard() {
         {data && data.length > 0 && (
           <ul className="flex flex-col divide-y divide-line">
             {data.map((r) => (
-              <li key={r.denominationId} className="flex items-center justify-between py-2">
-                <span className="text-sm text-ink">{r.productName}</span>
-                <span className={`text-sm font-semibold ${r.available === 0 ? "text-rust" : "text-amberx"}`}>
+              <li key={r.denominationId} className="flex items-center justify-between gap-2 py-2">
+                <span className="truncate text-sm text-ink" title={r.productName}>
+                  {r.productName}
+                </span>
+                <span
+                  className={`shrink-0 text-sm font-semibold ${r.available === 0 ? "text-rust" : "text-amberx"}`}
+                >
                   {r.available} left
                   <span className="ml-1 text-xs font-normal text-ink-soft">/ {r.threshold}</span>
                 </span>

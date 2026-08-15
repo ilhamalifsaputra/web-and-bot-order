@@ -59,4 +59,25 @@ describe("StatCard", () => {
     render(<StatCard label="Total Orders" value={1} icon={Package} />);
     expect(document.querySelector("svg")).toBeInTheDocument();
   });
+
+  it("truncates a long label with a title attribute holding the full text", () => {
+    const longLabel = "A very long stat card label that would otherwise squeeze the icon out of view";
+    render(<StatCard label={longLabel} value={1} />);
+    const labelNode = screen.getByText(longLabel);
+    expect(labelNode).toHaveClass("truncate");
+    expect(labelNode).toHaveAttribute("title", longLabel);
+  });
+
+  // Scope note: this asserts the value is never truncated and wraps at
+  // spaces. It does NOT prove a single unbroken token wraps — `break-words`
+  // cannot break one. Money reaches StatCard as a `CurrencyStack`, whose
+  // amount span carries `break-all`; that unbroken-token case is covered by
+  // CurrencyAmount.test.tsx, not here.
+  it("wraps a long multi-word value at spaces instead of truncating it", () => {
+    const longValue = "Rp1.234.567.890,00 across 12 items";
+    render(<StatCard label="Total" value={longValue} />);
+    const valueNode = screen.getByText(longValue);
+    expect(valueNode).toHaveClass("break-words");
+    expect(valueNode).not.toHaveClass("truncate");
+  });
 });

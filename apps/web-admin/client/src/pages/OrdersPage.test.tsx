@@ -488,6 +488,20 @@ describe("OrdersPage — guest buyers", () => {
     expect(screen.queryByText("Registered Customer")).not.toBeInTheDocument();
   });
 
+  it("wraps a long guest email in the list instead of truncating it", async () => {
+    const longEmail = "budi.setiawan.pelanggan.setia.sekali@surel-yang-panjang-sekali.example.com";
+    mockFetchRouter({ orders: guestOrdersData({ ...GUEST_ORDER.user, guestEmail: longEmail }) });
+    render(<OrdersPage />, { wrapper: Wrapper });
+
+    // Same rule as OrderDetailPage: this address is the only way to reach a
+    // guest buyer, so it must stay fully readable. break-all needs
+    // whitespace-normal here to defeat TableCell's default nowrap.
+    const emailEl = await screen.findByText(longEmail);
+    expect(emailEl).toHaveClass("break-all");
+    expect(emailEl).toHaveClass("whitespace-normal");
+    expect(emailEl).not.toHaveClass("truncate");
+  });
+
   it("fills a guest row's customer cell with a no-contact note when the email is missing", async () => {
     mockFetchRouter({ orders: guestOrdersData({ ...GUEST_ORDER.user, guestEmail: null }) });
     render(<OrdersPage />, { wrapper: Wrapper });

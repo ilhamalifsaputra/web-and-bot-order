@@ -182,7 +182,7 @@ export function OutboxPage() {
         {data && (
           <DataTable
             columns={[
-              { key: "id", header: "ID", render: (row) => <span className="font-mono text-xs text-ink-soft">{row.id}</span> },
+              { key: "id", header: "ID", render: (row) => <span className="block max-w-[200px] truncate font-mono text-xs text-ink-soft" title={String(row.id)}>{row.id}</span> },
               { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
               { key: "channel", header: "Channel", render: (row) => <ChannelBadge channel={row.channel} /> },
               { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },

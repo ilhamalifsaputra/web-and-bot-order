@@ -53,6 +53,35 @@ add it to a single table's columns.
   content commonly scrolls past a full viewport height.
 - **Horizontal scroll:** the underlying `Table` primitive wraps itself in
   `overflow-x-auto` automatically — wide tables scroll instead of squashing columns.
+- **Cell text overflow (you must handle this per column):** `TableCell` is
+  `whitespace-nowrap`, so a long value never spills visibly — it **widens the
+  table** until the other columns are pushed off-screen behind that horizontal
+  scrollbar. A single long audit sentence or gateway reference is enough to do
+  it. Bound any column whose value length you don't control:
+
+  ```tsx
+  { key: "details", header: "Details",
+    render: (r) => (
+      <span className="block max-w-[320px] truncate" title={r.details}>
+        {r.details}
+      </span>
+    ) }
+  ```
+
+  Widths: **200px** for codes/IDs/references, **240px** for names, **320px** for
+  sentences. Values that must stay readable in full (credentials, emails) get
+  `break-all` + `whitespace-normal` instead of `truncate` — the explicit
+  `whitespace-normal` is required to undo the cell's own `nowrap`.
+
+  **The `max-w-*` is mandatory, and it is the part people forget.** A `<td>` is
+  shrink-to-fit: it grows to its content, so `truncate` (and `min-w-0`) inside a
+  table cell with no width bound does *nothing at all*. `CatalogPage.tsx` shipped
+  a `min-w-0 truncate` that was inert on desktop for exactly this reason — it
+  looked fixed and wasn't. Working examples:
+  `pages/WalletTransactionsPage.tsx`, `pages/PaymentsPage.tsx`, and the comment
+  in `pages/SupportPage.tsx`'s message cell, which explains the same constraint.
+  Full decision table for non-table surfaces: `03_COMPONENT_LIBRARY.md` §Text
+  overflow.
 - **Checkbox-column padding:** cells/headers containing a `role="checkbox"` element
   automatically lose their right padding (`[&:has([role=checkbox])]:pr-0`) — don't
   add manual padding overrides around selection checkboxes.

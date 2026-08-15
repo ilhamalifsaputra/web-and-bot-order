@@ -11,8 +11,8 @@ export function StatTile({ label, value }: StatTileProps): JSX.Element {
   return (
     <Card size="sm" className="shadow-none border-line">
       <CardContent>
-        <p className="text-xs text-ink-soft">{label}</p>
-        <p className="font-display text-xl font-semibold text-ink">{value}</p>
+        <p className="text-xs text-ink-soft truncate" title={label}>{label}</p>
+        <p className="font-display text-xl font-semibold text-ink break-words">{value}</p>
       </CardContent>
     </Card>
   );

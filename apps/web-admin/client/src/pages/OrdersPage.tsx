@@ -524,19 +524,30 @@ export function OrdersPage() {
               // somehow missing, say that outright rather than blank out.
               if (row.user?.isGuest) {
                 return (
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">Guest</Badge>
-                      <span className="text-sm text-ink">{row.user.guestEmail ?? "No contact email"}</span>
+                  <div className="max-w-[240px]">
+                    <div className="flex min-w-0 items-start gap-2">
+                      <Badge variant="secondary" className="shrink-0">Guest</Badge>
+                      {/* The only way to reach a guest buyer, so it wraps and
+                          stays fully readable — never truncated. whitespace-normal
+                          defeats TableCell's default nowrap, matching the
+                          treatment on OrderDetailPage. */}
+                      <span className="text-sm break-all whitespace-normal text-ink">
+                        {row.user.guestEmail ?? "No contact email"}
+                      </span>
                     </div>
                     <div className="text-xs text-ink-soft">Guest checkout — no account</div>
                   </div>
                 );
               }
               return (
-                <div>
-                  <div className="text-sm text-ink">{row.user?.fullName ?? row.user?.username ?? "—"}</div>
-                  <div className="text-xs text-ink-soft">
+                <div className="max-w-[240px]">
+                  <div
+                    className="truncate text-sm text-ink"
+                    title={row.user?.fullName ?? row.user?.username ?? undefined}
+                  >
+                    {row.user?.fullName ?? row.user?.username ?? "—"}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft">
                     {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
                   </div>
                 </div>
@@ -554,9 +565,11 @@ export function OrdersPage() {
               const first = row.items[0]!;
               const extra = row.items.length - 1;
               return (
-                <span className="text-sm text-ink">
-                  {first.product.name}
-                  {extra > 0 && <span className="text-ink-soft"> +{extra}</span>}
+                // The "+N more" suffix must never be the part that gets cut,
+                // so only the product name truncates.
+                <span className="flex max-w-[240px] items-baseline text-sm text-ink">
+                  <span className="truncate" title={first.product.name}>{first.product.name}</span>
+                  {extra > 0 && <span className="ml-1 shrink-0 text-ink-soft">+{extra}</span>}
                 </span>
               );
             },

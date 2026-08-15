@@ -70,13 +70,13 @@ export function StatCard({
     >
       <CardContent className="flex h-full flex-col justify-between gap-2">
         <div className="flex items-start justify-between gap-2">
-          <p className="text-xs text-ink-soft">{label}</p>
+          <p className="text-xs text-ink-soft truncate" title={label}>{label}</p>
           {Icon && <Icon className={cn("h-4 w-4 shrink-0", TONE_ICON_CLASS[tone])} />}
         </div>
         {isLoading ? (
           <Skeleton className="h-7 w-16" />
         ) : (
-          <div className="font-display text-xl font-semibold text-ink">{value}</div>
+          <div className="font-display text-xl font-semibold text-ink break-words">{value}</div>
         )}
       </CardContent>
     </Card>

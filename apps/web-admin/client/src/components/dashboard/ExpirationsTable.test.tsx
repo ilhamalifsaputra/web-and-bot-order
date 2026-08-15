@@ -29,4 +29,22 @@ describe("ExpirationsTable", () => {
     renderWith([]);
     await waitFor(() => expect(screen.getByText(/no upcoming expirations/i)).toBeInTheDocument());
   });
+
+  it("truncates a long product/customer name in the table cell and keeps the full value on hover", async () => {
+    const longProduct =
+      "Netflix Premium 1 Bulan Sharing Private Garansi Full Original Akun Termurah Terpercaya Aman";
+    const longCustomer = "customer.with.a.very.long.display.name.that.would.otherwise.overflow.the.table@example.com";
+    renderWith([
+      { orderId: 8, orderCode: "ORD-BBB", productName: longProduct, customerLabel: longCustomer, remainingDays: 2 },
+    ]);
+    const productEl = await screen.findByTitle(longProduct);
+    expect(productEl).toHaveClass("truncate");
+    expect(productEl).toHaveClass("max-w-[240px]");
+    expect(productEl).toHaveTextContent(longProduct);
+
+    const customerEl = screen.getByTitle(longCustomer);
+    expect(customerEl).toHaveClass("truncate");
+    expect(customerEl).toHaveClass("max-w-[200px]");
+    expect(customerEl).toHaveTextContent(longCustomer);
+  });
 });

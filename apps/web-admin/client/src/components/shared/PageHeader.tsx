@@ -33,7 +33,7 @@ export function PageHeader({ title, description, breadcrumb, actions }: PageHead
         </nav>
       )}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
+        <div className="min-w-0">
           <h1 className="font-display text-2xl font-semibold text-ink">
             {title}
           </h1>

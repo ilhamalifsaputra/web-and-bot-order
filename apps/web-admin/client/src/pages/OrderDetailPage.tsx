@@ -214,24 +214,26 @@ export function OrderDetailPage() {
               <StatusBadge status={order.status} />
             </div>
             <div className="flex justify-between gap-4">
-              <span className="text-ink-soft">Customer</span>
-              <span className="flex items-center gap-2 text-ink">
-                {isGuestBuyer && <Badge variant="secondary">Guest</Badge>}
-                <span>{buyerName ?? (isGuestBuyer ? "Guest checkout" : "—")}</span>
+              <span className="shrink-0 text-ink-soft">Customer</span>
+              <span className="flex min-w-0 items-center gap-2 text-ink">
+                {isGuestBuyer && <Badge variant="secondary" className="shrink-0">Guest</Badge>}
+                <span className="truncate" title={buyerName ?? undefined}>
+                  {buyerName ?? (isGuestBuyer ? "Guest checkout" : "—")}
+                </span>
               </span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-ink-soft">Telegram ID</span>
-              <span className="font-mono text-xs text-ink-soft">{order.user?.telegramId ?? "—"}</span>
+            <div className="flex justify-between gap-3">
+              <span className="shrink-0 text-ink-soft">Telegram ID</span>
+              <span className="min-w-0 font-mono text-xs break-all text-ink-soft">{order.user?.telegramId ?? "—"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-ink-soft">Date</span>
               <span className="text-ink">{order.createdAtDisplay ?? "—"}</span>
             </div>
             {order.voucher && (
-              <div className="flex justify-between">
-                <span className="text-ink-soft">Voucher</span>
-                <span className="font-mono text-xs">{order.voucher.code} ({order.voucher.type})</span>
+              <div className="flex justify-between gap-3">
+                <span className="shrink-0 text-ink-soft">Voucher</span>
+                <span className="min-w-0 font-mono text-xs break-all">{order.voucher.code} ({order.voucher.type})</span>
               </div>
             )}
           </CardContent>
@@ -271,7 +273,7 @@ export function OrderDetailPage() {
                 <span className="text-ink-soft">Contact email</span>
                 <a
                   href={`mailto:${order.user.guestEmail}`}
-                  className="w-fit font-medium text-ink underline underline-offset-4"
+                  className="w-fit font-medium break-all text-ink underline underline-offset-4"
                 >
                   {order.user.guestEmail}
                 </a>
@@ -306,12 +308,16 @@ export function OrderDetailPage() {
           <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>
           <DataTable
             columns={[
-              { key: "product", header: "Product", render: item => <span className="text-sm">{item.product.name}</span> },
+              { key: "product", header: "Product", render: item => <span className="block max-w-[240px] truncate text-sm" title={item.product.name}>{item.product.name}</span> },
               { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
               { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
               ...(isManualOrder
                 ? []
-                : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
+                // Credentials are email:password blobs an admin must read in
+                // full, so they wrap instead of truncating. TableCell is
+                // whitespace-nowrap by default, hence the explicit override —
+                // without it break-all has nothing to act on.
+                : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
             ]}
             data={order.items}
             keyExtractor={item => item.id}
@@ -329,10 +335,13 @@ export function OrderDetailPage() {
               <div key={i} className="flex flex-col gap-1">
                 {customerDataFields.map(field => (
                   <div key={field.key} className="flex justify-between gap-4">
-                    <span className="text-ink-soft">
+                    <span className="shrink-0 text-ink-soft">
                       {customerData.length > 1 ? `Unit ${i + 1} — ${field.label.en}` : field.label.en}
                     </span>
-                    <span className="text-ink text-right">{unit[field.key] || "—"}</span>
+                    {/* Buyer-typed free text — the least predictable value on
+                        this page, so it wraps rather than being clipped by the
+                        card's overflow-hidden. */}
+                    <span className="min-w-0 break-words text-ink text-right">{unit[field.key] || "—"}</span>
                   </div>
                 ))}
               </div>

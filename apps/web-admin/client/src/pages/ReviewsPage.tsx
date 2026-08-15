@@ -437,14 +437,18 @@ export function ReviewsPage() {
             key: "customer",
             header: "Customer",
             render: (row) => (
-              <div className="flex items-center gap-3">
-                <Avatar>
+              <div className="flex max-w-[240px] items-center gap-3">
+                <Avatar className="shrink-0">
                   <AvatarFallback>{reviewerInitial(row.user)}</AvatarFallback>
                 </Avatar>
-                <div>
-                  <div className="text-sm font-medium text-ink">{primaryIdentity(row.user)}</div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row.user)}>
+                    {primaryIdentity(row.user)}
+                  </div>
                   {secondaryIdentity(row.user) && (
-                    <div className="text-xs text-ink-soft">{secondaryIdentity(row.user)}</div>
+                    <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row.user)}>
+                      {secondaryIdentity(row.user)}
+                    </div>
                   )}
                   <Badge variant="secondary" className="mt-1">
                     Verified Purchase
@@ -466,7 +470,14 @@ export function ReviewsPage() {
           {
             key: "product",
             header: "Product",
-            render: (row) => <span className="text-sm text-ink-soft">{row.product?.name ?? "—"}</span>,
+            render: (row) => (
+              <span
+                className="block max-w-[240px] truncate text-sm text-ink-soft"
+                title={row.product?.name ?? undefined}
+              >
+                {row.product?.name ?? "—"}
+              </span>
+            ),
           },
           {
             key: "status",

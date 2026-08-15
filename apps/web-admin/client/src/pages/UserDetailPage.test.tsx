@@ -177,6 +177,71 @@ describe("UserDetailPage — wallet ledger currency column", () => {
   });
 });
 
+describe("UserDetailPage — wallet ledger reason/note truncation (Task 4)", () => {
+  it("truncates long Reason and Note values with a bounded width, keeping the full text in title", async () => {
+    const longReason =
+      "admin_adjust: manual correction for a duplicated wallet top-up that was processed twice by the payment gateway";
+    const longNote =
+      "Refunded after the customer reported a double-charge; verified against the gateway transaction log before approving the adjustment.";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          ledger: [
+            {
+              delta: "5.0000",
+              balanceAfter: "505000.0000",
+              currency: "IDR",
+              reason: longReason,
+              note: longNote,
+              createdAt: "2026-07-01T00:00:00.000Z",
+              createdAtDisplay: "2026-07-01",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    const reasonEl = await screen.findByTitle(longReason);
+    expect(reasonEl).toHaveClass("truncate");
+    expect(reasonEl.className).toMatch(/max-w-\[240px\]/);
+
+    const noteEl = screen.getByTitle(longNote);
+    expect(noteEl).toHaveClass("truncate");
+    expect(noteEl.className).toMatch(/max-w-\[240px\]/);
+  });
+
+  it("does not set a title on the Note cell when there is no note", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          ledger: [
+            {
+              delta: "5.0000",
+              balanceAfter: "505000.0000",
+              currency: "IDR",
+              reason: "admin_adjust",
+              note: null,
+              createdAt: "2026-07-01T00:00:00.000Z",
+              createdAtDisplay: "2026-07-01",
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    const noteEl = await screen.findByText("—", { selector: "span.text-xs" });
+    expect(noteEl).not.toHaveAttribute("title");
+  });
+});
+
 describe("UserDetailPage — support tickets", () => {
   it("renders a populated Support Tickets card with subject/status/date columns", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -201,6 +266,30 @@ describe("UserDetailPage — support tickets", () => {
     const columnHeaders = screen.getAllByRole("columnheader", { name: "Subject" });
     expect(columnHeaders.length).toBeGreaterThan(0);
     expect(screen.getAllByText("2026-07-15")).toHaveLength(1); // only in tickets
+  });
+});
+
+describe("UserDetailPage — support ticket subject truncation (Task 4)", () => {
+  it("truncates a long ticket message in the Subject column, keeping the full text in title", async () => {
+    const longMessage =
+      "My order was marked as delivered but I never received the product key, and the support bot did not respond to my follow-up messages for two days.";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          tickets: [
+            { id: 101, message: longMessage, status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    const subjectEl = await screen.findByTitle(longMessage);
+    expect(subjectEl).toHaveClass("truncate");
+    expect(subjectEl.className).toMatch(/max-w-\[320px\]/);
   });
 });
 

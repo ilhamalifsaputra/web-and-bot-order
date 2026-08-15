@@ -447,13 +447,17 @@ export function UsersPage() {
             key: "customer",
             header: "Customer",
             render: (row) => (
-              <div className="flex items-center gap-3">
-                <Avatar>
+              <div className="flex max-w-[240px] items-center gap-3">
+                <Avatar className="shrink-0">
                   <AvatarFallback>{initialFor(row)}</AvatarFallback>
                 </Avatar>
-                <div>
-                  <div className="text-sm font-medium text-ink">{primaryIdentity(row)}</div>
-                  <div className="text-xs text-ink-soft">{secondaryIdentity(row)}</div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row)}>
+                    {primaryIdentity(row)}
+                  </div>
+                  <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row)}>
+                    {secondaryIdentity(row)}
+                  </div>
                 </div>
               </div>
             ),

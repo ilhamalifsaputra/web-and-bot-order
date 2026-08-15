@@ -283,16 +283,25 @@ function ProductScopePicker({
             .filter((c) => byCategory.has(c.id))
             .map((c) => (
               <div key={c.id}>
-                <div className="mb-1 text-xs font-semibold tracking-wider text-ink-soft uppercase">{c.name}</div>
+                <div
+                  className="mb-1 truncate text-xs font-semibold tracking-wider text-ink-soft uppercase"
+                  title={c.name}
+                >
+                  {c.name}
+                </div>
                 <div className="flex flex-col gap-1">
                   {(byCategory.get(c.id) ?? []).map((p) => (
                     <label
                       key={p.id}
                       className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-sand"
                     >
-                      <Checkbox checked={selectedIds.includes(p.id)} onCheckedChange={() => toggle(p.id)} />
-                      {p.name}
-                      {p.isArchived && <span className="text-xs text-ink-soft">(archived)</span>}
+                      <Checkbox
+                        className="shrink-0"
+                        checked={selectedIds.includes(p.id)}
+                        onCheckedChange={() => toggle(p.id)}
+                      />
+                      <span className="truncate" title={p.name}>{p.name}</span>
+                      {p.isArchived && <span className="shrink-0 text-xs text-ink-soft">(archived)</span>}
                     </label>
                   ))}
                 </div>
@@ -730,12 +739,12 @@ export function VouchersPage() {
             render: v => (
               <div className="flex flex-col gap-0.5">
                 <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-sm">{v.code}</span>
+                  <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
                   <button
                     type="button"
                     onClick={() => handleCopy(v)}
                     aria-label={`Copy code ${v.code}`}
-                    className="text-ink-soft transition-colors hover:text-ink"
+                    className="shrink-0 text-ink-soft transition-colors hover:text-ink"
                   >
                     {copiedId === v.id
                       ? <Check className="h-3.5 w-3.5 text-grass-dark" />
@@ -797,7 +806,7 @@ export function VouchersPage() {
               const extra = v.products.length - shown.length;
               return (
                 <div className="flex flex-wrap gap-1">
-                  {shown.map(p => <Badge key={p.id} variant="default">{p.name}</Badge>)}
+                  {shown.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
                   {extra > 0 && <Badge variant="default">+{extra} more</Badge>}
                 </div>
               );
@@ -883,7 +892,7 @@ export function VouchersPage() {
         <Dialog open onOpenChange={open => { if (!open) setViewing(null); }}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle className="font-mono">{viewing.code}</DialogTitle>
+              <DialogTitle className="font-mono break-all">{viewing.code}</DialogTitle>
             </DialogHeader>
             <div className="flex flex-col gap-4 text-sm">
               <div className="flex items-center justify-between">
@@ -926,7 +935,7 @@ export function VouchersPage() {
                   <span className="text-sm text-ink-soft">No products selected</span>
                 ) : (
                   <div className="flex flex-wrap gap-1">
-                    {viewing.products.map(p => <Badge key={p.id} variant="default">{p.name}</Badge>)}
+                    {viewing.products.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
                   </div>
                 )}
               </div>

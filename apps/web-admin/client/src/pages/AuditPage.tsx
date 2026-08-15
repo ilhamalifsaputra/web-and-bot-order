@@ -167,18 +167,25 @@ function buildAuditColumns(adminNames: Map<number, string>) {
     {
       key: "target",
       header: "Target",
-      render: (r: AuditRow) => (
-        <span className="text-ink-soft">
-          {r.targetType ?? "—"}
-          {r.targetId ? ` #${r.targetId}` : ""}
-        </span>
-      ),
+      render: (r: AuditRow) => {
+        const target = `${r.targetType ?? "—"}${r.targetId ? ` #${r.targetId}` : ""}`;
+        return (
+          <span className="text-ink-soft block max-w-[200px] truncate" title={target}>
+            {target}
+          </span>
+        );
+      },
     },
     {
       key: "details",
       header: "Details",
       render: (r: AuditRow) => (
-        <span className="text-ink-soft">{r.details ?? "—"}</span>
+        <span
+          className="text-ink-soft block max-w-[320px] truncate"
+          title={r.details ?? undefined}
+        >
+          {r.details ?? "—"}
+        </span>
       ),
     },
   ];

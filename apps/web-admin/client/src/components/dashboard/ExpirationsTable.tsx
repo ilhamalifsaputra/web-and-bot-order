@@ -17,8 +17,24 @@ export function ExpirationsTable() {
         ) : (
           <DataTable
             columns={[
-              { key: "product", header: "Product", render: (r) => <span className="text-ink">{r.productName}</span> },
-              { key: "customer", header: "Customer", render: (r) => <span className="text-ink-soft">{r.customerLabel}</span> },
+              {
+                key: "product",
+                header: "Product",
+                render: (r) => (
+                  <span className="block max-w-[240px] truncate text-ink" title={r.productName}>
+                    {r.productName}
+                  </span>
+                ),
+              },
+              {
+                key: "customer",
+                header: "Customer",
+                render: (r) => (
+                  <span className="block max-w-[200px] truncate text-ink-soft" title={r.customerLabel}>
+                    {r.customerLabel}
+                  </span>
+                ),
+              },
               {
                 key: "remaining",
                 header: "Remaining",

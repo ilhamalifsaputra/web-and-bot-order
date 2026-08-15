@@ -81,6 +81,24 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
   });
 
+  it("truncates a long Transfer ID with a bounded width, keeping the full value in title (Task 4)", async () => {
+    const longRef = "0x9f8e7d6c5b4a39281706f5e4d3c2b1a0f9e8d7c6b5a4392817065e4d3c2b1a0";
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [{ ...TX, reference: longRef }],
+      total: 1,
+      page: 1,
+      hasNext: false,
+      outcomes: ["MATCHED"],
+      counts: { MATCHED: 1 },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+
+    const refEl = await screen.findByTitle(longRef);
+    expect(refEl).toHaveClass("truncate");
+    expect(refEl.className).toMatch(/max-w-\[200px\]/);
+  });
+
   it("shows error on fetch failure", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<PaymentsPage />, { wrapper: Wrapper });
@@ -155,6 +173,22 @@ describe("PaymentsPage", () => {
 
     fireEvent.click(suggestion);
     expect((orderInput as HTMLInputElement).value).toBe("ABC-1");
+  });
+
+  it("truncates a long order-code suggestion inside the bounded autocomplete dropdown, keeping the full code in title (Task 4)", async () => {
+    const longCode = "ABC-VERY-LONG-ORDER-CODE-1234567890";
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
+    vi.mocked(apiGet).mockResolvedValue({ q: longCode, exactOrderId: 42 });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+
+    const orderInput = screen.getByPlaceholderText("Order code");
+    fireEvent.focus(orderInput);
+    fireEvent.change(orderInput, { target: { value: longCode } });
+
+    const suggestionEl = await screen.findByTitle(longCode);
+    expect(suggestionEl).toHaveClass("truncate");
+    expect(suggestionEl).toHaveTextContent(longCode);
   });
 
   it("shows a 'no matching order code' hint when /api/search finds nothing", async () => {
@@ -707,6 +741,46 @@ describe("PaymentsPage — underpaid order resolution", () => {
     await waitFor(() => expect(screen.getByText("ORD-PI1")).toBeInTheDocument());
     expect(screen.getByText("REF-abc123")).toBeInTheDocument();
     expect(screen.getByText("2026-07-01 19:00")).toBeInTheDocument(); // expiresAtDisplay
+  });
+
+  it("truncates a long buyer name in the Underpaid Orders table, keeping the full name in title (Task 4)", async () => {
+    const longName = "Muhammad Alexander Wijayakusuma Setiawan Prabowo Nugroho";
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [],
+      total: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      underpaid: [{ ...UNDERPAID, user: { fullName: longName, username: "muhammad" } }],
+      pendingInternal: [],
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+
+    const nameEl = await screen.findByTitle(longName);
+    expect(nameEl).toHaveClass("truncate");
+    expect(nameEl.closest(".flex")?.className).toMatch(/max-w-\[200px\]/);
+  });
+
+  it("truncates a long Transfer Ref in the Pending Internal Transfers table, keeping the full value in title (Task 4)", async () => {
+    const longRef = "REF-0x9f8e7d6c5b4a3928170665e4d3c2b1a0-internal-transfer";
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [],
+      total: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      underpaid: [],
+      pendingInternal: [{ ...PENDING_INTERNAL, paymentRef: longRef }],
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+
+    const refEl = await screen.findByTitle(longRef);
+    expect(refEl).toHaveClass("truncate");
+    expect(refEl.className).toMatch(/max-w-\[200px\]/);
   });
 
   it("shows a toast when resolving an underpaid order fails", async () => {

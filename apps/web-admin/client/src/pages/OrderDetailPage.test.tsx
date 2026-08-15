@@ -198,6 +198,22 @@ describe("OrderDetailPage — guest buyers", () => {
     );
   });
 
+  it("wraps a long guest email instead of clipping it", async () => {
+    const longEmail = "budi.setiawan.pelanggan.setia.sekali@surel-yang-panjang-sekali.example.com";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      guestOrderResponse({ ...GUEST_USER, guestEmail: longEmail }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+
+    // This address is the only way to reach a guest buyer, so it must stay
+    // fully readable — break-all, never truncate. The card is overflow-hidden,
+    // so without a break opportunity the tail would be silently amputated.
+    const link = await screen.findByRole("link", { name: longEmail });
+    expect(link).toHaveClass("break-all");
+    expect(link).not.toHaveClass("truncate");
+    expect(link).toHaveAttribute("href", `mailto:${longEmail}`);
+  });
+
   it("does not mark a registered buyer's order as a guest order", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       guestOrderResponse({

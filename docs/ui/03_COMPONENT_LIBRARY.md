@@ -340,6 +340,82 @@ the full pattern, grounded in `SettingsPage.tsx`.
 
 ---
 
+## Text overflow
+
+Every admin surface renders values whose length nobody controls: product names,
+customer names, guest emails, order notes, voucher codes, stock credentials,
+payment references, audit sentences. Deciding what happens when one of them is
+long is **not optional polish** — a value with no overflow treatment is a bug.
+
+Two facts about `Card` drive the whole rule set:
+
+- `Card` is `overflow-hidden`. An unprotected long value is therefore **silently
+  amputated with no ellipsis** — the admin sees half a phone number or a
+  truncated rupiah figure with nothing signalling that text is missing. That is
+  worse than a visible spill, which at least looks wrong.
+- `Card` is `min-w-0`, so a card shrinks inside a grid track instead of widening
+  it. Without that, one long value stretched its track and put the whole page
+  into horizontal scroll.
+
+### Pick the treatment from the value, not the layout
+
+| Value | Treatment |
+|---|---|
+| Name, title, username, short label | `truncate` + `title={value}` |
+| Name plus a trailing metric in one row | name `truncate` + `title`; metric `shrink-0` |
+| Avatar/icon + two-line identity block | bounded wrapper, inner `min-w-0`, `truncate` per line |
+| Email, URL, credential, hash, token | `break-all` — **never** truncate |
+| Note, comment, review, ticket excerpt | `line-clamp-1` / `line-clamp-2` inside a box with an explicit `max-w-*` |
+| Arbitrary multi-line blob | `whitespace-pre-wrap break-words` |
+| Money | wraps, never truncates or clips (see below) |
+
+**Never truncate a value the admin must read in full.** A guest buyer's contact
+email is the only way to reach that buyer; stock credentials are what the order
+delivered; a money figure is a number someone acts on. These wrap. Truncation is
+for values where recognition is enough and the full text is one hover away.
+
+**Money is never clipped.** `CurrencyStack` wraps a long figure onto a second
+line rather than letting the card cut it off — a clipped amount is
+misinformation, not a cosmetic issue.
+
+### Mechanics worth knowing
+
+- `truncate` already includes `overflow-hidden`, which zeroes a flex item's
+  automatic minimum size. A flex child with `truncate` therefore shrinks on its
+  own — `min-w-0` belongs only on **intermediate wrappers** that are not
+  themselves `overflow-hidden`. Adding `min-w-0` everywhere is noise.
+- `break-words` will not break an unbroken token; `break-all` will. An email or a
+  formatted rupiah figure is one unbroken token, so `break-words` alone does
+  nothing for it.
+- `whitespace-pre-wrap` *preserves* long unbroken runs. Always pair it with
+  `break-words`.
+- Inside a table cell, `truncate` does nothing without an explicit `max-w-*` —
+  see `05_TABLE_GUIDELINES.md` §3.
+
+### Hover text uses `title`, not `Tooltip`
+
+Use the native `title` attribute to expose a truncated value's full text. Radix
+`Tooltip` requires a `TooltipProvider`, which is mounted once in `main.tsx` but
+not in most component tests — reaching for it in a shared component breaks
+otherwise-green suites. `title` is also the established idiom here
+(`Sidebar.tsx`, `AuditPage.tsx`, `BusinessHealthGrid.tsx`). The Tooltip section
+above still applies: a tooltip is never the only way to read something the admin
+genuinely needs.
+
+### Copy these
+
+| Idiom | Reference |
+|---|---|
+| Name + metric row | `pages/reviews/ProductRatingsCard.tsx` |
+| Avatar + two-line identity | `components/layout/SearchModal.tsx` |
+| `truncate` + `title` in a nav row | `components/layout/Sidebar.tsx` |
+| Bounded, truncating table cell | `pages/WalletTransactionsPage.tsx` |
+| Clamped excerpt with full text on demand | `pages/SupportPage.tsx` |
+| Multi-line blob | `pages/OrderDetailPage.tsx` (delivered content) |
+| Unbroken secret/URI | `pages/SettingsPage.tsx`, `pages/StockProductPage.tsx` |
+
+---
+
 ## Alert
 
 **File:** `components/ui/alert.tsx`

@@ -383,8 +383,11 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart }: Fie
         {FIELD_DESCRIPTIONS[field.key] && (
           <div className="mt-0.5 text-xs text-ink-soft">{FIELD_DESCRIPTIONS[field.key]}</div>
         )}
+        {/* break-all: setting values are webhook/base URLs, bank account
+            numbers and merchant ids — long unbroken tokens that used to run
+            into the Edit/Copy buttons. Matches the TOTP secret below. */}
         {!editing && (
-          <div className="mt-1 text-xs text-ink-soft">
+          <div className="mt-1 text-xs break-all text-ink-soft">
             {field.secret ? (
               field.hasValue ? "••••••••" : <StatusBadge status="NOT_CONFIGURED" />
             ) : (

@@ -36,4 +36,15 @@ describe("TopProductsList", () => {
     renderWith([]);
     await waitFor(() => expect(screen.getByText(/no sales in this period/i)).toBeInTheDocument());
   });
+
+  it("truncates a long product name and keeps the full name available on hover", async () => {
+    const longName =
+      "Netflix Premium 1 Bulan Sharing Private Garansi Full Original Akun Termurah Terpercaya Aman";
+    renderWith([
+      { productId: 3, productLabel: longName, unitsSold: 5, revenueIdrEquiv: "50000", profitIdrEquiv: "20000", costUnknownUnits: 0 },
+    ]);
+    const nameEl = await screen.findByTitle(longName);
+    expect(nameEl).toHaveClass("truncate");
+    expect(nameEl).toHaveTextContent(longName);
+  });
 });

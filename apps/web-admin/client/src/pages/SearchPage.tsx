@@ -98,12 +98,20 @@ export function SearchPage() {
                     {
                       key: "name",
                       header: "Name",
-                      render: u => u.fullName ?? "—",
+                      render: u => (
+                        <span className="block max-w-[240px] truncate" title={u.fullName ?? undefined}>
+                          {u.fullName ?? "—"}
+                        </span>
+                      ),
                     },
                     {
                       key: "username",
                       header: "Username",
-                      render: u => u.username ? `@${u.username}` : "—",
+                      render: u => (
+                        <span className="block max-w-[200px] truncate" title={u.username ? `@${u.username}` : undefined}>
+                          {u.username ? `@${u.username}` : "—"}
+                        </span>
+                      ),
                     },
                     {
                       key: "tid",
@@ -127,12 +135,20 @@ export function SearchPage() {
                     {
                       key: "denom",
                       header: "Denomination",
-                      render: p => p.name,
+                      render: p => (
+                        <span className="block max-w-[240px] truncate" title={p.name}>
+                          {p.name}
+                        </span>
+                      ),
                     },
                     {
                       key: "product",
                       header: "Product",
-                      render: p => p.product?.name ?? "—",
+                      render: p => (
+                        <span className="block max-w-[240px] truncate" title={p.product?.name ?? undefined}>
+                          {p.product?.name ?? "—"}
+                        </span>
+                      ),
                     },
                   ]}
                   data={data.products}

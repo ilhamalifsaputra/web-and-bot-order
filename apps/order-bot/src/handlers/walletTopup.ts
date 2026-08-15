@@ -2,7 +2,7 @@
  * Wallet top-up flow — buy wallet CREDIT itself through the existing payment
  * gateways, instead of paying for a product. Mirrors checkout.ts's buyNow*
  * rails structurally (gateway-claim dance, QR-bubble rendering,
- * anchorPaymentMessage/setActivePayment anchoring) but creates a bare
+ * anchorPaymentMessage anchoring) but creates a bare
  * WALLET_TOPUP order (packages/db/src/crud/wallet_topup.ts) instead of a
  * product order — no product/quantity, no voucher, no wallet-credit toggle.
  *
@@ -51,7 +51,6 @@ import { anchorPaymentMessage } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
 import { esc, formatIdr, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
-import { setActivePayment } from "./checkout/timers";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
@@ -608,7 +607,6 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
     await smartEdit(ctx, caption, waitingKb);
   }
   await anchorPaymentMessage(ctx, order.id, chatId);
-  setActivePayment(chatId, order.id);
 }
 
 /** PayDisini top-up. Mirrors checkout.buyNowPaydisini. */
@@ -699,5 +697,4 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
     await smartEdit(ctx, caption, waitingKb);
   }
   await anchorPaymentMessage(ctx, order.id, chatId);
-  setActivePayment(chatId, order.id);
 }

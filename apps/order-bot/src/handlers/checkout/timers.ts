@@ -1,12 +1,20 @@
 /**
- * Active-payment screen tracking + per-order timer teardown (extracted from
- * handlers/checkout.ts, A-02). The auto USDT rails (Binance Internal, Bybit)
- * mark which order a chat is currently viewing and tear down any timers an
- * order may still hold when the screen is left.
+ * Per-order timer teardown (extracted from handlers/checkout.ts, A-02): drop
+ * any countdown/reminder timers an order still holds once its payment screen
+ * is left. This module-level map is the single source of truth for them, so
+ * checkout.ts and the conversations import the helper below rather than
+ * keeping maps of their own.
  *
- * These module-level maps are the single source of truth for active payment
- * screens; checkout.ts and the conversations import the helpers below so every
- * caller mutates the SAME maps.
+ * There used to be a second map here, `activePaymentByChat` ("chatId → orderId
+ * currently on screen", inherited from the python-telegram-bot port), with
+ * `setActivePayment`/`clearActivePayment` writing and deleting entries from
+ * twelve call sites. Nothing ever READ it — so it never guarded anything, and
+ * in particular it never stopped a chat from opening a second checkout while
+ * the first was still pending. That is precisely how one Telegram message
+ * could end up claimed by two orders at once (see util/paymentAnchor.ts).
+ * Anchor takeover handles that case properly now, on the database row rather
+ * than in process memory, so the map was deleted rather than wired up: a guard
+ * that lives only in memory would have been lost on every restart anyway.
  */
 
 interface OrderTimers {
@@ -14,17 +22,6 @@ interface OrderTimers {
   timeouts: NodeJS.Timeout[];
 }
 const timersByOrder = new Map<number, OrderTimers>();
-/** chatId → orderId currently shown on the payment screen (the PTB guard). */
-const activePaymentByChat = new Map<number, number>();
-
-export function setActivePayment(chatId: number, orderId: number): void {
-  activePaymentByChat.set(chatId, orderId);
-}
-
-/** Clear the chat's active-payment marker (used when leaving the screen). */
-export function clearActivePayment(chatId: number): void {
-  activePaymentByChat.delete(chatId);
-}
 
 /** Remove all scheduled countdown/reminder timers for this order. */
 export function cancelPaymentJobs(orderId: number): void {

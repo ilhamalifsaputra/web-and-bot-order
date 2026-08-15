@@ -73,15 +73,11 @@ import { currentUsdtRate } from "../util/rate";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import * as ckb from "../keyboards/customer";
 import * as customer from "./customer";
-import {
-  setActivePayment,
-  clearActivePayment,
-  cancelPaymentJobs,
-} from "./checkout/timers";
+import { cancelPaymentJobs } from "./checkout/timers";
 
 // Re-export the timer surface so `import * as checkout` callers (callbacks,
 // conversations) keep working unchanged after the A-02 extraction.
-export { setActivePayment, clearActivePayment, cancelPaymentJobs };
+export { cancelPaymentJobs };
 
 const MAX_PENDING_ORDERS = 10;
 // USDT figures only (the charged total of Binance orders). Catalog/confirmation
@@ -1010,8 +1006,8 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   await smartEdit(ctx, text, kb);
   // Anchor the instructions message so the reconcile poller's admin alerts
   // (and any future success-flip) target the right bubble — mirrors
-  // buyNowInternal/buyNowBybit (no setActivePayment/countdown ticking here;
-  // that's only for the manual Binance Pay screen).
+  // buyNowInternal/buyNowBybit (no countdown ticking here; that's only for
+  // the manual Binance Pay screen).
   await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
 }
 
@@ -1166,7 +1162,6 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
-  setActivePayment(chatId, order.id);
 }
 
 /**
@@ -1316,7 +1311,6 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
-  setActivePayment(chatId, order.id);
 }
 
 /**
@@ -1465,7 +1459,6 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   }
 
   const chatId = ctx.chat!.id;
-  clearActivePayment(chatId);
   cancelPaymentJobs(orderId);
 
   // Delete the QR code photo that was sent alongside payment instructions.

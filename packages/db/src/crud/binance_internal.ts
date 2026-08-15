@@ -257,9 +257,9 @@ export async function clearPaymentMessageAnchorsAt(
  * edit overwrites the new order's still-unpaid deposit address and amount and
  * the buyer pays to nowhere. A lost tracking screen is recoverable; a
  * destroyed deposit address is money. Nothing in the bot blocks two parallel
- * checkouts in one chat (`activePaymentByChat` in
- * handlers/checkout/timers.ts is write-only), so this is a reachable path, not
- * a theoretical one.
+ * checkouts in one chat, so this is a reachable path, not a theoretical one —
+ * handlers/checkout/timers.ts used to carry a map that looked like such a
+ * guard but was never read; see its header.
  */
 export async function setOrderPaymentMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number) {
   await db.order.update({

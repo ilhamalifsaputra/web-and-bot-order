@@ -119,6 +119,18 @@ export async function deleteCategory(db: Db, categoryId: number): Promise<void> 
   await db.category.delete({ where: { id: categoryId } });
 }
 
+/**
+ * True when every id in `ids` names an existing category (vacuously true for
+ * an empty list). Lets a route validate a reorder/move payload before writing,
+ * instead of letting an unknown id surface as a raw Prisma P2025 from inside
+ * `reorderCategories`'s transaction.
+ */
+export async function allCategoriesExist(db: Db, ids: number[]): Promise<boolean> {
+  if (!ids.length) return true;
+  const found = await db.category.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  return new Set(found.map((c) => c.id)).size === new Set(ids).size;
+}
+
 /** Persist a new display order for categories: `sortOrder` becomes the given index. */
 export async function reorderCategories(db: PrismaClient, ids: number[]): Promise<void> {
   if (!ids.length) return;

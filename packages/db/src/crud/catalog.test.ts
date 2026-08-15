@@ -22,6 +22,7 @@ import {
   bulkSetCatalogProductsActive,
   bulkSetCatalogProductsCategory,
   reorderCategories,
+  allCategoriesExist,
   setCatalogProductArchived,
   bulkSetCatalogProductsArchived,
   listProducts,
@@ -270,6 +271,31 @@ describe("reorderCategories", () => {
 
   it("is a no-op for an empty id list", async () => {
     await expect(reorderCategories(prisma, [])).resolves.toBeUndefined();
+  });
+});
+
+describe("allCategoriesExist", () => {
+  it("is true when every id names an existing category", async () => {
+    const a = await makeCategory("Exist A");
+    const b = await makeCategory("Exist B");
+    expect(await allCategoriesExist(prisma, [a.id, b.id])).toBe(true);
+  });
+
+  it("is false when any id does not name an existing category", async () => {
+    const a = await makeCategory("Exist C");
+    expect(await allCategoriesExist(prisma, [a.id, 999999])).toBe(false);
+  });
+
+  it("is true for an empty id list (vacuous)", async () => {
+    expect(await allCategoriesExist(prisma, [])).toBe(true);
+  });
+
+  it("is not fooled by a duplicated id standing in for a missing one", async () => {
+    const a = await makeCategory("Exist D");
+    // Same length as [a.id, missing] but both entries are the real id — a
+    // naive `count === ids.length` check would wrongly pass this.
+    expect(await allCategoriesExist(prisma, [a.id, a.id])).toBe(true);
+    expect(await allCategoriesExist(prisma, [a.id, 999999])).toBe(false);
   });
 });
 

@@ -18,10 +18,15 @@ import {
   deleteCatalogProduct,
   deleteCatalogProductCascade,
   deleteDenomination,
+  deleteCategory,
   bulkSetCatalogProductsActive,
+  bulkSetCatalogProductsCategory,
+  reorderCategories,
+  allCategoriesExist,
   setCatalogProductArchived,
   bulkSetCatalogProductsArchived,
   listProducts,
+  listAllCategories,
   listCatalogProducts,
   listNewestCatalogProducts,
   listFlashSaleProducts,
@@ -165,6 +170,23 @@ describe("delete product", () => {
   });
 });
 
+describe("deleteCategory", () => {
+  it("deletes an empty category", async () => {
+    const cat = await makeCategory("Empty Cat");
+    await deleteCategory(prisma, cat.id);
+    expect(await prisma.category.findUnique({ where: { id: cat.id } })).toBeNull();
+  });
+
+  it("refuses to delete a category that still has a product", async () => {
+    const cat = await makeCategory("Full Cat");
+    await makeProduct(cat.id, "Occupant");
+    await expect(deleteCategory(prisma, cat.id)).rejects.toThrow(
+      "category not empty: move or delete its products first",
+    );
+    expect(await prisma.category.findUnique({ where: { id: cat.id } })).not.toBeNull();
+  });
+});
+
 describe("deleteDenomination", () => {
   it("deletes a denomination with no order history", async () => {
     const cat = await makeCategory();
@@ -206,6 +228,74 @@ describe("bulkSetCatalogProductsActive", () => {
 
   it("returns 0 for an empty id list", async () => {
     expect(await bulkSetCatalogProductsActive(prisma, [], true)).toBe(0);
+  });
+});
+
+describe("bulkSetCatalogProductsCategory", () => {
+  it("moves the given products to another category, returns the updated count", async () => {
+    const from = await makeCategory();
+    const to = await makeCategory();
+    const a = await makeProduct(from.id, "A");
+    const b = await makeProduct(from.id, "B");
+    const c = await makeProduct(from.id, "C");
+
+    const count = await bulkSetCatalogProductsCategory(prisma, [a.id, b.id], to.id);
+    expect(count).toBe(2);
+    expect((await prisma.product.findUnique({ where: { id: a.id } }))!.categoryId).toBe(to.id);
+    expect((await prisma.product.findUnique({ where: { id: b.id } }))!.categoryId).toBe(to.id);
+    expect((await prisma.product.findUnique({ where: { id: c.id } }))!.categoryId).toBe(from.id);
+  });
+
+  it("returns 0 for an empty id list", async () => {
+    const to = await makeCategory();
+    expect(await bulkSetCatalogProductsCategory(prisma, [], to.id)).toBe(0);
+  });
+});
+
+describe("reorderCategories", () => {
+  it("writes sortOrder from the given order, overriding alphabetical order", async () => {
+    // Pick names whose alphabetical order (Alpha, Beta, Gamma) differs from
+    // the requested display order (Gamma, Alpha, Beta) so the test only
+    // passes if reorderCategories actually wrote sortOrder.
+    const alpha = await makeCategory("Alpha");
+    const beta = await makeCategory("Beta");
+    const gamma = await makeCategory("Gamma");
+
+    await reorderCategories(prisma, [gamma.id, alpha.id, beta.id]);
+
+    const list = await listAllCategories(prisma);
+    const ids = [gamma.id, alpha.id, beta.id];
+    const ordered = list.filter((c) => ids.includes(c.id)).map((c) => c.id);
+    expect(ordered).toEqual([gamma.id, alpha.id, beta.id]);
+  });
+
+  it("is a no-op for an empty id list", async () => {
+    await expect(reorderCategories(prisma, [])).resolves.toBeUndefined();
+  });
+});
+
+describe("allCategoriesExist", () => {
+  it("is true when every id names an existing category", async () => {
+    const a = await makeCategory("Exist A");
+    const b = await makeCategory("Exist B");
+    expect(await allCategoriesExist(prisma, [a.id, b.id])).toBe(true);
+  });
+
+  it("is false when any id does not name an existing category", async () => {
+    const a = await makeCategory("Exist C");
+    expect(await allCategoriesExist(prisma, [a.id, 999999])).toBe(false);
+  });
+
+  it("is true for an empty id list (vacuous)", async () => {
+    expect(await allCategoriesExist(prisma, [])).toBe(true);
+  });
+
+  it("is not fooled by a duplicated id standing in for a missing one", async () => {
+    const a = await makeCategory("Exist D");
+    // Same length as [a.id, missing] but both entries are the real id — a
+    // naive `count === ids.length` check would wrongly pass this.
+    expect(await allCategoriesExist(prisma, [a.id, a.id])).toBe(true);
+    expect(await allCategoriesExist(prisma, [a.id, 999999])).toBe(false);
   });
 });
 

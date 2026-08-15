@@ -5,6 +5,10 @@ import {
   listProducts,
   getCategory,
   updateCategory,
+  deleteCategory,
+  countProductsInCategory,
+  reorderCategories,
+  allCategoriesExist,
   getCatalogProduct,
   getCatalogProductWithDenominations,
   updateCatalogProduct,
@@ -24,6 +28,7 @@ import {
   updateDenomination,
   deleteDenomination,
   bulkSetCatalogProductsActive,
+  bulkSetCatalogProductsCategory,
   bulkSetDenominationsActive,
   setCatalogProductArchived,
   bulkSetCatalogProductsArchived,
@@ -104,7 +109,12 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const name = (typeof body.name === "string" ? body.name : "").trim();
     if (!name) return reply.code(400).send({ error: "Name is required." });
 
-    const cat = await createCategory(prisma, { name });
+    const cat = await createCategory(prisma, {
+      name,
+      emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+      sortOrder: Number(body.sortOrder) || 0,
+    });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "category_create",
@@ -122,15 +132,29 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (!existing) return reply.code(404).send({ error: "Category not found." });
 
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const name = (typeof body.name === "string" ? body.name : "").trim();
-    if (!name) return reply.code(400).send({ error: "Name is required." });
 
-    await updateCategory(prisma, id, {
-      name,
-      emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
-      description: typeof body.description === "string" ? body.description.trim() || null : null,
-      sortOrder: Number(body.sortOrder) || 0,
-    });
+    // True partial patch: only the keys the request actually included are
+    // written, so omitting e.g. `emoji` leaves the stored value alone instead
+    // of nulling it out. `slug` is never in this set — it is frozen at
+    // creation (storefront URLs and the sitemap depend on it).
+    const fields: Record<string, unknown> = {};
+    if (body.name !== undefined) {
+      const name = (typeof body.name === "string" ? body.name : "").trim();
+      if (!name) return reply.code(400).send({ error: "Name is required." });
+      fields.name = name;
+    }
+    if (body.emoji !== undefined) {
+      fields.emoji = typeof body.emoji === "string" ? body.emoji.trim() || null : null;
+    }
+    if (body.description !== undefined) {
+      fields.description = typeof body.description === "string" ? body.description.trim() || null : null;
+    }
+    if (body.sortOrder !== undefined) {
+      fields.sortOrder = Number(body.sortOrder) || 0;
+    }
+
+    await updateCategory(prisma, id, fields);
+    const name = typeof fields.name === "string" ? fields.name : existing.name;
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "category_update",
@@ -139,6 +163,53 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `Updated category "${name}".`,
     });
     return reply.send({ id, name });
+  });
+
+  app.delete("/api/catalog/categories/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid category id." });
+    const existing = await getCategory(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Category not found." });
+
+    const productCount = await countProductsInCategory(prisma, id);
+    if (productCount > 0) {
+      return reply.code(409).send({
+        error: `Cannot delete: move or delete its ${productCount} product(s) first.`,
+        productCount,
+      });
+    }
+
+    await deleteCategory(prisma, id);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "category_delete",
+      targetType: "category",
+      targetId: id,
+      details: `Deleted category "${existing.name}".`,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/catalog/categories/reorder", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = body.ids;
+    if (!Array.isArray(ids) || ids.some((n) => !Number.isInteger(n))) {
+      return reply.code(400).send({ error: "ids must be an array of integers." });
+    }
+    const idList = ids as number[];
+    if (!(await allCategoriesExist(prisma, idList))) {
+      return reply.code(400).send({ error: "One or more categories were not found." });
+    }
+
+    await reorderCategories(prisma, idList);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "category_reorder",
+      targetType: "category",
+      targetId: null,
+      details: "Reordered categories.",
+    });
+    return reply.send({ ok: true });
   });
 
   app.post("/api/catalog/categories/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
@@ -249,17 +320,37 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const name = (typeof body.name === "string" ? body.name : "").trim();
     if (!name) return reply.code(400).send({ error: "Name is required." });
 
+    // Optional re-categorization, mirroring the categoryId validation in the
+    // product create route above (lines ~79-83).
+    let newCategory: Awaited<ReturnType<typeof getCategory>> = null;
+    if (body.categoryId !== undefined) {
+      const categoryId = Number(body.categoryId);
+      if (!Number.isInteger(categoryId) || categoryId <= 0) {
+        return reply.code(400).send({ error: "A valid category is required." });
+      }
+      newCategory = await getCategory(prisma, categoryId);
+      if (!newCategory) return reply.code(400).send({ error: "Category not found." });
+    }
+    const isMove = newCategory != null && newCategory.id !== existing.categoryId;
+
     await updateCatalogProduct(prisma, id, {
       name,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...storefrontDetailFields(body),
+      ...(newCategory ? { categoryId: newCategory.id } : {}),
     });
+
+    let details = `Updated product "${name}".`;
+    if (isMove) {
+      const oldCategory = await getCategory(prisma, existing.categoryId);
+      details = `Moved product "${name}" from "${oldCategory?.name ?? "Unknown"}" to "${newCategory!.name}".`;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "product_update",
       targetType: "product",
       targetId: id,
-      details: `Updated product "${name}".`,
+      details,
     });
     return reply.send({ id, name });
   });
@@ -298,6 +389,28 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       action: "product_bulk_active",
       targetType: "product",
       details: `${active ? "Activated" : "Deactivated"} ${count} product${count === 1 ? "" : "s"}.`,
+    });
+    return reply.send({ ok: true, count });
+  });
+
+  app.post("/api/catalog/products/bulk-category", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n)) : [];
+    if (ids.length === 0) return reply.code(400).send({ error: "At least one product id is required." });
+
+    const categoryId = Number(body.categoryId);
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return reply.code(400).send({ error: "A valid category is required." });
+    }
+    const category = await getCategory(prisma, categoryId);
+    if (!category) return reply.code(400).send({ error: "Category not found." });
+
+    const count = await bulkSetCatalogProductsCategory(prisma, ids, categoryId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_bulk_category",
+      targetType: "product",
+      details: `Moved ${count} product${count === 1 ? "" : "s"} to category "${category.name}".`,
     });
     return reply.send({ ok: true, count });
   });

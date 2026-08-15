@@ -1,14 +1,15 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProductCreatePage } from "./ProductCreatePage";
-import { apiPost } from "../api/client";
+import { apiPost, apiGet } from "../api/client";
 
 vi.mock("../api/client", () => ({
   apiPost: vi.fn(),
+  apiGet: vi.fn(),
 }));
 
 const CATALOG_DATA = {
@@ -39,6 +40,12 @@ beforeEach(() => {
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   Element.prototype.setPointerCapture = vi.fn();
   Element.prototype.releasePointerCapture = vi.fn();
+  // The page reads categories through the shared useCatalog hook, which calls
+  // apiGet. Route that back to the global fetch each test already stubs.
+  vi.mocked(apiGet).mockImplementation(async (path: string) => {
+    const res = await fetch(path);
+    return res.json();
+  });
 });
 
 describe("ProductCreatePage", () => {
@@ -217,5 +224,33 @@ describe("ProductCreatePage", () => {
     await waitFor(() =>
       expect(screen.getByText(/category not found/i)).toBeInTheDocument(),
     );
+  });
+
+  it("sets switched-off categories apart so a new product isn't filed into a dead shelf", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          categories: [
+            { id: 2, name: "Apps", isActive: true },
+            { id: 7, name: "Retired", isActive: false },
+          ],
+          products: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+    await user.click(screen.getByRole("combobox"));
+
+    const listbox = await screen.findByRole("listbox");
+    expect(within(listbox).getByText(/inactive — hidden from the shop/i)).toBeInTheDocument();
+
+    // The inactive one is still selectable, just not mixed in with the rest.
+    const group = within(listbox).getByRole("group");
+    expect(within(group).getByRole("option", { name: "Retired" })).toBeInTheDocument();
+    expect(within(group).queryByRole("option", { name: "Apps" })).not.toBeInTheDocument();
   });
 });

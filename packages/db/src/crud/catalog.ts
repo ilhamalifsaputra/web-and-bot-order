@@ -110,6 +110,37 @@ export async function countProductsInCategory(db: Db, categoryId: number) {
   return db.product.count({ where: { categoryId } });
 }
 
+/** Refuse to delete a category that still has products (move or delete them first). */
+export async function deleteCategory(db: Db, categoryId: number): Promise<void> {
+  const count = await countProductsInCategory(db, categoryId);
+  if (count > 0) {
+    throw new Error("category not empty: move or delete its products first");
+  }
+  await db.category.delete({ where: { id: categoryId } });
+}
+
+/**
+ * True when every id in `ids` names an existing category (vacuously true for
+ * an empty list). Lets a route validate a reorder/move payload before writing,
+ * instead of letting an unknown id surface as a raw Prisma P2025 from inside
+ * `reorderCategories`'s transaction.
+ */
+export async function allCategoriesExist(db: Db, ids: number[]): Promise<boolean> {
+  if (!ids.length) return true;
+  const found = await db.category.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  return new Set(found.map((c) => c.id)).size === new Set(ids).size;
+}
+
+/** Persist a new display order for categories: `sortOrder` becomes the given index. */
+export async function reorderCategories(db: PrismaClient, ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  await db.$transaction(async (tx) => {
+    for (const [index, id] of ids.entries()) {
+      await tx.category.update({ where: { id }, data: { sortOrder: index } });
+    }
+  });
+}
+
 // ---- Products (mid-tier) ----
 // Transitional `*CatalogProduct` names; renamed to `*Product` in Phase 5.
 
@@ -212,6 +243,13 @@ export function listProducts(db: Db, categoryId?: number, archived: "exclude" | 
 export async function bulkSetCatalogProductsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
   if (!ids.length) return 0;
   const res = await db.product.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+  return res.count;
+}
+
+/** Bulk move products (mid-tier) to another category in one writer. Returns count updated. */
+export async function bulkSetCatalogProductsCategory(db: Db, ids: number[], categoryId: number): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.product.updateMany({ where: { id: { in: ids } }, data: { categoryId } });
   return res.count;
 }
 

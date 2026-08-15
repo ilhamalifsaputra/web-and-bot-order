@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
@@ -17,7 +17,6 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectTrigger,
@@ -33,13 +32,6 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
   AlertCircle,
   Archive,
   ArchiveRestore,
@@ -52,34 +44,10 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
+import { apiPost, apiDelete } from "../api/client";
+import { useCatalog, type ProductRow } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
-
-interface CategoryRow {
-  id: number;
-  name: string;
-  emoji: string | null;
-  description: string | null;
-  sortOrder: number;
-  isActive: boolean;
-}
-
-interface ProductRow {
-  id: number;
-  name: string;
-  isActive: boolean;
-  isArchived: boolean;
-  webImageUrl: string | null;
-  createdAt: string;
-  category: { id: number; name: string; emoji: string | null } | null;
-  _count: { denominations: number };
-}
-
-interface CatalogData {
-  categories: CategoryRow[];
-  products: ProductRow[];
-}
 
 interface ImportPreviewRow {
   ok: boolean;
@@ -101,13 +69,6 @@ interface ImportPreview {
 type StatusFilter = "all" | "active" | "inactive" | "archived";
 type SortMode = "name" | "newest" | "category";
 
-function useCatalog() {
-  return useQuery<CatalogData>({
-    queryKey: ["catalog"],
-    queryFn: async () => apiGet<CatalogData>("/api/catalog"),
-  });
-}
-
 /** Order comparator for the Sort filter — "name" is the default/stable order. */
 function compareProducts(a: ProductRow, b: ProductRow, sortBy: SortMode): number {
   if (sortBy === "newest") {
@@ -122,98 +83,37 @@ function compareProducts(a: ProductRow, b: ProductRow, sortBy: SortMode): number
   return a.name.localeCompare(b.name);
 }
 
-function CategoryEditDialog({
-  category,
-  onClose,
-  onSaved,
-}: {
-  category: CategoryRow;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [name, setName] = useState(category.name);
-  const [emoji, setEmoji] = useState(category.emoji ?? "");
-  const [description, setDescription] = useState(category.description ?? "");
-  const [sortOrder, setSortOrder] = useState(String(category.sortOrder));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      await apiPatch(`/api/catalog/categories/${category.id}`, {
-        name,
-        emoji: emoji || null,
-        description: description || null,
-        sortOrder: Number(sortOrder) || 0,
-      });
-      onSaved();
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save category.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Edit category</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div>
-            <Label htmlFor="cat-name">Name</Label>
-            <Input id="cat-name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="cat-emoji">Emoji</Label>
-            <Input id="cat-emoji" value={emoji} onChange={(e) => setEmoji(e.target.value)} className="max-w-[100px]" />
-          </div>
-          <div>
-            <Label htmlFor="cat-desc">Description</Label>
-            <Textarea id="cat-desc" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="cat-sort">Sort order</Label>
-            <Input id="cat-sort" type="number" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="max-w-[100px]" />
-          </div>
-          {error && <p className="text-sm text-rust">{error}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving || !name.trim()}>
-            {saving ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function CatalogPage() {
   const navigate = useNavigate();
   const { data, isLoading, isError, refetch } = useCatalog();
   const [filter, setFilter] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState("all");
+  // Seeded from ?categoryId= so the product-count links on /categories land on
+  // this list already narrowed to that category.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [categoryFilter, setCategoryFilter] = useState(searchParams.get("categoryId") ?? "all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
-  const [showCategories, setShowCategories] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
-  const [togglingCategory, setTogglingCategory] = useState<Set<number>>(new Set());
   const [togglingArchive, setTogglingArchive] = useState<Set<number>>(new Set());
-  const [editingCategory, setEditingCategory] = useState<CategoryRow | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProductRow | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkActing, setBulkActing] = useState(false);
   const queryClient = useQueryClient();
+
+  /** Keep ?categoryId= in step with the filter, so the narrowed list stays
+   *  shareable and the browser's Back button undoes the narrowing. */
+  function changeCategoryFilter(value: string) {
+    setCategoryFilter(value);
+    const next = new URLSearchParams(searchParams);
+    if (value === "all") next.delete("categoryId");
+    else next.set("categoryId", value);
+    setSearchParams(next, { replace: true });
+  }
 
   // Catalog filters client-side, so a selection surviving a filter change would
   // let a bulk action silently apply to products no longer on screen. `sortBy`
@@ -232,20 +132,6 @@ export function CatalogPage() {
       await invalidateCatalog();
     } finally {
       setTogglingProduct((s) => {
-        const n = new Set(s);
-        n.delete(id);
-        return n;
-      });
-    }
-  }
-
-  async function toggleCategoryActive(id: number, active: boolean) {
-    setTogglingCategory((s) => new Set([...s, id]));
-    try {
-      await apiPost(`/api/catalog/categories/${id}/active`, { active });
-      await invalidateCatalog();
-    } finally {
-      setTogglingCategory((s) => {
         const n = new Set(s);
         n.delete(id);
         return n;
@@ -319,6 +205,24 @@ export function CatalogPage() {
     }
   }
 
+  async function bulkSetCategory(categoryId: number, ids: number[]) {
+    const category = categories.find((c) => c.id === categoryId);
+    setBulkActing(true);
+    try {
+      const res = await apiPost<{ count: number }>("/api/catalog/products/bulk-category", {
+        ids,
+        categoryId,
+      });
+      setSelected(new Set());
+      await invalidateCatalog();
+      toast.success(`${res.count} product(s) moved to "${category?.name ?? "the category"}".`);
+    } catch (e) {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to move products."));
+    } finally {
+      setBulkActing(false);
+    }
+  }
+
   const handlePreview = async () => {
     setImportError(null);
     try {
@@ -377,7 +281,7 @@ export function CatalogPage() {
     !!filter || categoryFilter !== "all" || statusFilter !== "all" || sortBy !== "name";
   const clearFilters = () => {
     setFilter("");
-    setCategoryFilter("all");
+    changeCategoryFilter("all");
     setStatusFilter("all");
     setSortBy("name");
   };
@@ -424,14 +328,10 @@ export function CatalogPage() {
     <PageLayout title="Catalog">
       <PageHeader
         title="Catalog"
-        description="Manage products, variants and categories."
+        description="Manage products and their variants."
         actions={
           <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowCategories(!showCategories)}
-            >
+            <Button variant="ghost" size="sm" onClick={() => navigate("/categories")}>
               Manage categories
             </Button>
             <Button
@@ -455,62 +355,15 @@ export function CatalogPage() {
 
       <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
         <StatTile label="Products" value={stats.products} />
-        <StatTile label="Categories" value={stats.categories} />
+        <StatTile
+          label="Categories"
+          value={stats.categories}
+          onClick={() => navigate("/categories")}
+        />
         <StatTile label="Variants" value={stats.variants} />
         <StatTile label="Active" value={stats.active} />
         <StatTile label="Inactive" value={stats.inactive} />
       </div>
-
-      {showCategories && (
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Categories</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {categories.map((cat) => {
-                const count = nonArchived.filter((p) => p.category?.id === cat.id).length;
-                return (
-                  <div
-                    key={cat.id}
-                    className="flex shrink-0 items-center gap-2 rounded-4xl border border-line bg-sand px-3 py-1.5 text-sm"
-                  >
-                    <span className="whitespace-nowrap text-ink">
-                      {cat.emoji ? `${cat.emoji} ` : ""}
-                      {cat.name} <span className="text-ink-soft">({count})</span>
-                    </span>
-                    <Switch
-                      aria-label={`${cat.name} active`}
-                      checked={cat.isActive}
-                      onCheckedChange={(checked) => void toggleCategoryActive(cat.id, checked)}
-                      disabled={togglingCategory.has(cat.id)}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label="Edit category"
-                      onClick={() => setEditingCategory(cat)}
-                    >
-                      <SquarePen className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                );
-              })}
-              {categories.length === 0 && (
-                <p className="py-2 text-sm text-ink-soft">No categories yet.</p>
-              )}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {editingCategory && (
-        <CategoryEditDialog
-          category={editingCategory}
-          onClose={() => setEditingCategory(null)}
-          onSaved={() => void invalidateCatalog()}
-        />
-      )}
 
       <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
         <SearchBar
@@ -521,7 +374,7 @@ export function CatalogPage() {
         />
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Category</label>
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+          <Select value={categoryFilter} onValueChange={changeCategoryFilter}>
             <SelectTrigger size="sm" className="w-40">
               <SelectValue placeholder="All categories" />
             </SelectTrigger>
@@ -681,6 +534,23 @@ export function CatalogPage() {
           <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetArchived(true, Array.from(visibleSelected))}>
             Archive
           </Button>
+          <Select
+            value=""
+            disabled={bulkActing || categories.length === 0}
+            onValueChange={(v) => void bulkSetCategory(Number(v), Array.from(visibleSelected))}
+          >
+            <SelectTrigger size="sm" className="w-[190px]" aria-label="Move to category">
+              <SelectValue placeholder="Move to category…" />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.map((cat) => (
+                <SelectItem key={cat.id} value={String(cat.id)}>
+                  {cat.emoji ? `${cat.emoji} ` : ""}
+                  {cat.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
           </Button>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -12,32 +12,14 @@ import {
   SelectValue,
   SelectContent,
   SelectItem,
+  SelectGroup,
+  SelectLabel,
+  SelectSeparator,
 } from "@/components/ui/select";
 import { apiPost } from "../api/client";
-
-interface CategoryRow {
-  id: number;
-  name: string;
-  isActive: boolean;
-}
-
-interface CatalogData {
-  categories: CategoryRow[];
-  products: unknown[];
-}
+import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
 
 const NEW_CATEGORY_SENTINEL = "__new__";
-
-function useCatalog() {
-  return useQuery<CatalogData>({
-    queryKey: ["catalog"],
-    queryFn: async () => {
-      const res = await fetch("/api/catalog");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<CatalogData>;
-    },
-  });
-}
 
 export function ProductCreatePage() {
   const navigate = useNavigate();
@@ -55,6 +37,9 @@ export function ProductCreatePage() {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [categoryError, setCategoryError] = useState<string | null>(null);
 
+  const activeCategories = (data?.categories ?? []).filter((c) => c.isActive);
+  const inactiveCategories = (data?.categories ?? []).filter((c) => !c.isActive);
+
   const createCategory = useMutation({
     mutationFn: () =>
       apiPost<{ category: { id: number; name: string } }>("/api/catalog/categories", {
@@ -62,7 +47,7 @@ export function ProductCreatePage() {
       }),
     onMutate: () => setCategoryError(null),
     onSuccess: ({ category }) => {
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
       setCategoryId(category.id);
       setCreatingCategory(false);
       setNewCategoryName("");
@@ -83,7 +68,7 @@ export function ProductCreatePage() {
       }),
     onMutate: () => setError(null),
     onSuccess: (product) => {
-      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      void qc.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
       navigate(`/catalog/${product.id}`);
     },
     onError: (e: Error) => setError(e.message),
@@ -148,11 +133,28 @@ export function ProductCreatePage() {
                 <SelectValue placeholder="Select category" />
               </SelectTrigger>
               <SelectContent>
-                {(data?.categories ?? []).map((cat) => (
+                {activeCategories.map((cat) => (
                   <SelectItem key={cat.id} value={String(cat.id)}>
+                    {cat.emoji ? `${cat.emoji} ` : ""}
                     {cat.name}
                   </SelectItem>
                 ))}
+                {/* Separated rather than hidden: filing a product under a
+                    switched-off category is occasionally deliberate (staging a
+                    shelf before opening it), but it should never happen by
+                    accident from a list that looks uniform. */}
+                {inactiveCategories.length > 0 && (
+                  <SelectGroup>
+                    <SelectLabel>Inactive — hidden from the shop</SelectLabel>
+                    {inactiveCategories.map((cat) => (
+                      <SelectItem key={cat.id} value={String(cat.id)}>
+                        {cat.emoji ? `${cat.emoji} ` : ""}
+                        {cat.name}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                )}
+                <SelectSeparator />
                 <SelectItem value={NEW_CATEGORY_SENTINEL}>+ New category</SelectItem>
               </SelectContent>
             </Select>

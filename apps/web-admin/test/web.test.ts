@@ -1552,6 +1552,21 @@ describe("catalog JSON API — create category", () => {
     expect(audit[0]?.details).toBe(`Created category "Streaming".`);
   });
 
+  it("persists emoji, description and sortOrder", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, {
+      name: "Streaming",
+      emoji: "🎬",
+      description: "Video streaming subscriptions",
+      sortOrder: 3,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.emoji).toBe("🎬");
+    expect(cat!.description).toBe("Video streaming subscriptions");
+    expect(cat!.sortOrder).toBe(3);
+  });
+
   it("rejects empty name with 400", async () => {
     const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
     expect(res.statusCode).toBe(400);
@@ -2003,6 +2018,129 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, "bad-token", { name: "X" });
       expect(res.statusCode).toBe(403);
     });
+
+    it("regression: a partial patch with only { name } leaves emoji, description and sortOrder untouched", async () => {
+      const full = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        name: "Base Cat",
+        emoji: "🎮",
+        description: "Games category",
+        sortOrder: 5,
+      });
+      expect(full.statusCode).toBe(200);
+      const beforeSlug = (await prisma.category.findUnique({ where: { id: seed.categoryId } }))!.slug;
+
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        name: "Renamed Only",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.name).toBe("Renamed Only");
+      expect(cat!.emoji).toBe("🎮");
+      expect(cat!.description).toBe("Games category");
+      expect(cat!.sortOrder).toBe(5);
+      expect(cat!.slug).toBe(beforeSlug); // slug is frozen, never rewritten
+    });
+  });
+
+  describe("DELETE /api/catalog/categories/:id", () => {
+    it("happy path: deletes an empty category and audits", async () => {
+      const cat = await createCategory(prisma, "Empty Cat");
+      const res = await deleteJson(`/api/catalog/categories/${cat.id}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect(await prisma.category.findUnique({ where: { id: cat.id } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "category_delete", targetId: cat.id } });
+      expect(audit?.details).toBe(`Deleted category "Empty Cat".`);
+    });
+
+    it("refuses with 409 and the product count while the category still has products; category survives", async () => {
+      const res = await deleteJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(409);
+      const body = JSON.parse(res.body) as { error: string; productCount: number };
+      expect(body.productCount).toBe(1);
+      expect(body.error).toBeTruthy();
+      expect(await prisma.category.findUnique({ where: { id: seed.categoryId } })).not.toBeNull();
+    });
+
+    it("rejects a non-integer id with 400", async () => {
+      const res = await deleteJson(`/api/catalog/categories/abc`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-existent category id with 404", async () => {
+      const res = await deleteJson(`/api/catalog/categories/99999`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const cat = await createCategory(prisma, "Empty Cat 2");
+      const res = await deleteJson(`/api/catalog/categories/${cat.id}`, null, "x");
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const cat = await createCategory(prisma, "Empty Cat 3");
+      const res = await deleteJson(`/api/catalog/categories/${cat.id}`, seed.cookie, "bad-token");
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/categories/reorder", () => {
+    it("happy path: changes the order returned by GET /api/catalog and audits", async () => {
+      const catB = await createCategory(prisma, "Cat B");
+      const catC = await createCategory(prisma, "Cat C");
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, seed.csrf, {
+        ids: [catC.id, seed.categoryId, catB.id],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+
+      const listed = await app.inject({ method: "GET", url: "/api/catalog", cookies: { [COOKIE]: seed.cookie } });
+      const { categories } = JSON.parse(listed.body) as { categories: Array<{ id: number }> };
+      const orderedIds = categories.map((c) => c.id).filter((id) => [catC.id, seed.categoryId, catB.id].includes(id));
+      expect(orderedIds).toEqual([catC.id, seed.categoryId, catB.id]);
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "category_reorder" } });
+      expect(audit?.details).toBe("Reordered categories.");
+    });
+
+    it("accepts a partial list without requiring every category id", async () => {
+      const catB = await createCategory(prisma, "Cat B2");
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, seed.csrf, { ids: [catB.id] });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.category.findUnique({ where: { id: catB.id } }))!.sortOrder).toBe(0);
+    });
+
+    it("rejects non-array ids with 400", async () => {
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, seed.csrf, { ids: "nope" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a list containing a non-integer with 400", async () => {
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, seed.csrf, {
+        ids: [seed.categoryId, "x"],
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an unknown category id with 400", async () => {
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, seed.csrf, {
+        ids: [seed.categoryId, 99999],
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/categories/reorder`, null, "x", { ids: [seed.categoryId] });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/categories/reorder`, seed.cookie, "bad-token", { ids: [seed.categoryId] });
+      expect(res.statusCode).toBe(403);
+    });
   });
 
   describe("POST /api/catalog/categories/:id/active", () => {
@@ -2092,6 +2230,134 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 
     it("rejects bad CSRF with 403", async () => {
       const res = await postJson(`/api/catalog/products/bulk-active`, seed.cookie, "bad-token", { ids: [seed.catalogProductId], active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("PATCH /api/catalog/products/:id", () => {
+    it("happy path: updates name without changing category", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: "Renamed Product",
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.name).toBe("Renamed Product");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_update", targetId: seed.catalogProductId } });
+      expect(audit?.details).toBe(`Updated product "Renamed Product".`);
+    });
+
+    it("moves a product to another category and audits naming both ends", async () => {
+      const target = await createCategory(prisma, "E-Wallet");
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const originalCategory = await prisma.category.findUnique({ where: { id: product.categoryId } });
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+        categoryId: target.id,
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.categoryId).toBe(target.id);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_update", targetId: seed.catalogProductId } });
+      expect(audit?.details).toBe(`Moved product "${product.name}" from "${originalCategory!.name}" to "E-Wallet".`);
+    });
+
+    it("moving to the category it is already in keeps the ordinary update wording", async () => {
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+        categoryId: product.categoryId,
+      });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_update", targetId: seed.catalogProductId } });
+      expect(audit?.details).toBe(`Updated product "${product.name}".`);
+    });
+
+    it("rejects an unknown categoryId with 400", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: "X",
+        categoryId: 99999,
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-integer categoryId with 400", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: "X",
+        categoryId: "abc",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects empty name with 400", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, { name: "" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await patchJson(`/api/catalog/products/99999`, seed.cookie, seed.csrf, { name: "X" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, null, "x", { name: "X" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, "bad-token", { name: "X" });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/products/bulk-category", () => {
+    it("happy path: moves every listed product, returns the count, and audits once", async () => {
+      const target = await createCategory(prisma, "Games");
+      const other = await createCatalogProduct(prisma, { categoryId: seed.categoryId, name: "Other" });
+      const res = await postJson(`/api/catalog/products/bulk-category`, seed.cookie, seed.csrf, {
+        ids: [seed.catalogProductId, other.id],
+        categoryId: target.id,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.categoryId).toBe(target.id);
+      expect((await getCatalogProduct(prisma, other.id))!.categoryId).toBe(target.id);
+      const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_category" } });
+      expect(audit.length).toBe(1);
+      expect(audit[0]?.details).toBe(`Moved 2 products to category "Games".`);
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const target = await createCategory(prisma, "Games");
+      const res = await postJson(`/api/catalog/products/bulk-category`, seed.cookie, seed.csrf, {
+        ids: [],
+        categoryId: target.id,
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an unknown categoryId with 400", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-category`, seed.cookie, seed.csrf, {
+        ids: [seed.catalogProductId],
+        categoryId: 99999,
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const target = await createCategory(prisma, "Games");
+      const res = await postJson(`/api/catalog/products/bulk-category`, null, "x", {
+        ids: [seed.catalogProductId],
+        categoryId: target.id,
+      });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const target = await createCategory(prisma, "Games");
+      const res = await postJson(`/api/catalog/products/bulk-category`, seed.cookie, "bad-token", {
+        ids: [seed.catalogProductId],
+        categoryId: target.id,
+      });
       expect(res.statusCode).toBe(403);
     });
   });
@@ -5175,6 +5441,49 @@ describe("rbac", () => {
     expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
     const cat = await post("/api/catalog/categories", seed.cookie, { csrf_token: seed.csrf, name: "Denied" });
     expect(cat.statusCode).toBe(403); // config denied
+  });
+
+  it("support is blocked from the new category/product-move endpoints (403), like their neighbours", async () => {
+    await setRole(ADMIN_TG, "support");
+    const jsonPost = (url: string, body: Record<string, unknown>) =>
+      app.inject({
+        method: "POST",
+        url,
+        headers: { "content-type": "application/json", "x-csrf-token": seed.csrf },
+        cookies: { [COOKIE]: seed.cookie },
+        payload: JSON.stringify(body),
+      });
+    const jsonPatch = (url: string, body: Record<string, unknown>) =>
+      app.inject({
+        method: "PATCH",
+        url,
+        headers: { "content-type": "application/json", "x-csrf-token": seed.csrf },
+        cookies: { [COOKIE]: seed.cookie },
+        payload: JSON.stringify(body),
+      });
+
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/catalog/categories/${seed.categoryId}`,
+      headers: { "x-csrf-token": seed.csrf },
+      cookies: { [COOKIE]: seed.cookie },
+    });
+    expect(del.statusCode).toBe(403);
+
+    const reorder = await jsonPost("/api/catalog/categories/reorder", { ids: [seed.categoryId] });
+    expect(reorder.statusCode).toBe(403);
+
+    const bulkMove = await jsonPost("/api/catalog/products/bulk-category", {
+      ids: [seed.catalogProductId],
+      categoryId: seed.categoryId,
+    });
+    expect(bulkMove.statusCode).toBe(403);
+
+    const patchCategoryId = await jsonPatch(`/api/catalog/products/${seed.catalogProductId}`, {
+      name: "X",
+      categoryId: seed.categoryId,
+    });
+    expect(patchCategoryId.statusCode).toBe(403);
   });
 
   it("/api/admins is super-only, assigns roles, and blocks self-demotion", async () => {

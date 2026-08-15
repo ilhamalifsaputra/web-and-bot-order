@@ -21,8 +21,16 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
+import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 
 interface DenominationRow {
@@ -74,6 +82,7 @@ export function ProductDetailPage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const { data, isError, refetch } = useProductDetail(productId ?? "");
+  const { data: catalog } = useCatalog();
   const queryClient = useQueryClient();
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const [togglingDenom, setTogglingDenom] = useState<Set<number>>(new Set());
@@ -85,6 +94,7 @@ export function ProductDetailPage() {
   const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
   const [termsDraft, setTermsDraft] = useState("");
   const [warrantyNoteDraft, setWarrantyNoteDraft] = useState("");
+  const [categoryDraft, setCategoryDraft] = useState<string>("");
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
   const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
@@ -99,9 +109,13 @@ export function ProductDetailPage() {
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
+        ...(categoryDraft ? { categoryId: Number(categoryDraft) } : {}),
       });
       setEditingProduct(false);
-      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+      // Prefix match, so this covers both this product's ["catalog", id] query
+      // and the shared ["catalog"] list the catalog and categories pages read —
+      // a move has to reach the category counts on both.
+      await queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
     } catch (e) {
       setProductError(e instanceof Error ? e.message : "Failed to save product.");
     } finally {
@@ -181,7 +195,21 @@ export function ProductDetailPage() {
 
       <Card className="mb-4">
         <CardContent className="flex items-center gap-4 text-sm">
-          <span className="text-ink-soft">Category: <span className="text-ink">{product.category?.name ?? "—"}</span></span>
+          <span className="text-ink-soft">
+            Category:{" "}
+            {product.category ? (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto px-0 align-baseline"
+                onClick={() => navigate(`/catalog?categoryId=${product.category!.id}`)}
+              >
+                {product.category.name}
+              </Button>
+            ) : (
+              <span className="text-ink">—</span>
+            )}
+          </span>
           <div className="flex items-center gap-2">
             <Switch
               checked={product.isActive}
@@ -200,11 +228,12 @@ export function ProductDetailPage() {
                 setWhatYouGetDraft(product.whatYouGet ?? "");
                 setTermsDraft(product.terms ?? "");
                 setWarrantyNoteDraft(product.warrantyNote ?? "");
+                setCategoryDraft(product.category ? String(product.category.id) : "");
                 setEditingProduct(true);
               }}
             >
               <SquarePen className="h-4 w-4" />
-              Edit storefront details
+              Edit product
             </Button>
           )}
         </CardContent>
@@ -213,6 +242,23 @@ export function ProductDetailPage() {
       {editingProduct && (
         <Card className="mb-4 max-w-lg">
           <CardContent className="flex flex-col gap-3">
+            <div>
+              <label className="text-sm font-medium text-ink" id="product-category-label">Category</label>
+              <Select value={categoryDraft} onValueChange={setCategoryDraft}>
+                <SelectTrigger className="mt-1" aria-labelledby="product-category-label">
+                  <SelectValue placeholder="Pick a category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {(catalog?.categories ?? []).map((cat) => (
+                    <SelectItem key={cat.id} value={String(cat.id)}>
+                      {cat.emoji ? `${cat.emoji} ` : ""}
+                      {cat.name}
+                      {cat.isActive ? "" : " (inactive)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div>
               <label className="text-sm font-medium text-ink">Name</label>
               <Input className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />

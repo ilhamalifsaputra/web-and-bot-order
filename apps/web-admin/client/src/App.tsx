@@ -2,6 +2,7 @@ import { Routes, Route } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CatalogPage } from "./pages/CatalogPage";
+import { CategoriesPage } from "./pages/CategoriesPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductCreatePage } from "./pages/ProductCreatePage";
 import { DenominationCreatePage } from "./pages/DenominationCreatePage";
@@ -58,6 +59,9 @@ export default function App() {
         <Route path="/catalog/:productId/denominations/new" element={<DenominationCreatePage />} />
         <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditPage />} />
         <Route path="/catalog/:productId" element={<ProductDetailPage />} />
+        {/* Deliberately not nested under /catalog: the sidebar's NavLink matches
+            by prefix, so /catalog/categories would light up both entries. */}
+        <Route path="/categories" element={<CategoriesPage />} />
         <Route path="/stock" element={<StockPage />} />
         <Route path="/stock/:productId" element={<StockProductPage />} />
         <Route path="/flash-sales" element={<FlashSalesPage />} />

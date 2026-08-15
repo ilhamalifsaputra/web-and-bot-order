@@ -1,7 +1,7 @@
 /**
  * Direct unit test for the anchored-payment-bubble failure classifier.
  *
- * Five call sites depend on this one judgement (the three crypto deposit
+ * Six call sites depend on this one judgement (the three crypto deposit
  * rails, the two QRIS reconcile rails, and the generic paid-order bubble
  * sweep), but until this file existed it was only ever exercised THROUGH
  * them — so its subtlest decision, that "there is no text/caption in the

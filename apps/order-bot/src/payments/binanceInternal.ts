@@ -340,7 +340,8 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
  * minute; a bubble the buyer deleted drops its anchor and stops consuming a
  * slot in every future sweep. `isPermanentBubbleEditFailure`
  * (util/bubbleEditFailure.ts) is where that line is drawn, shared with the two
- * Bybit rails, the generic sweeper and the Refresh button so all five agree.
+ * Bybit rails, the two QRIS reconcile rails, the generic sweeper and the
+ * Refresh button so all six agree.
  *
  * Never throws: the buyer already has their credentials (or their
  * ORDER_PROCESSING_DM), so nothing about the bubble is worth failing delivery

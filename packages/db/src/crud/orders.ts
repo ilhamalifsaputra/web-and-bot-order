@@ -1560,16 +1560,19 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
   // identity exact even if that ever stopped holding.
   const uniqueCents = new Decimal(order.uniqueCents);
   const netInOrderCurrency = new Decimal(order.totalAmount).minus(uniqueCents);
-  // An IDR order converts nothing and is left exactly as it was: its stored
-  // figures are already in the currency they print in, and `finalizeOrderPayment`
-  // zeroes its unique cents (QRIS/PayDisini confirm by gateway callback, not
-  // by amount matching), so there is no rounding to reconcile in the first
-  // place.
-  const isConverted = order.currency !== "IDR" && order.fxRate != null;
-  const discount = isConverted
-    ? Decimal.max(ZERO, toOrderCurrency(order.subtotalAmount).minus(netInOrderCurrency))
-    : toOrderCurrency(order.discountAmount);
-  const subtotal = isConverted ? netInOrderCurrency.plus(discount) : toOrderCurrency(order.subtotalAmount);
+  // Derived for IDR orders too, even though they convert nothing and so have
+  // no rounding to reconcile. The identity still needs the derivation for a
+  // second, independent reason: `order.discountAmount` is the VOUCHER discount
+  // alone, while `bulkDiscountAmount` reduces the total just as much (see
+  // `afterDiscount` in createOrderFromCart, ~line 477). Printing
+  // `discountAmount` verbatim therefore dropped every bulk discount off the
+  // page — a 10-unit order at Rp100.000 with Rp10.000 of bulk pricing printed
+  // a Rp100.000 subtotal, no discount row at all, and a Rp90.000 total.
+  // Subtracting the net from the subtotal recovers every reduction at once, so
+  // the printed figures reconcile whatever combination of bulk, voucher and
+  // wallet credit produced them.
+  const discount = Decimal.max(ZERO, toOrderCurrency(order.subtotalAmount).minus(netInOrderCurrency));
+  const subtotal = netInOrderCurrency.plus(discount);
 
   // The longest warranty covering anything in the order. Orders are
   // homogeneous in practice (one SKU per order), so this is the order's

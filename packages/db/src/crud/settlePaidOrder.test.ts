@@ -767,6 +767,72 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     expect(subtotal.minus(discount).plus(unique).toString()).toBe(String(payload.total));
   });
 
+  /**
+   * An IDR guest order carrying a bulk discount, and optionally a voucher on
+   * top. `createOrderDirect` takes neither, so the central-IDR shell is
+   * rewritten the way cart creation would have left it —
+   * `total = subtotal - bulk - voucher` (see `afterDiscount` in
+   * createOrderFromCart) — before the IDR branch of `finalizeOrderPayment`
+   * runs and zeroes the unique cents.
+   */
+  async function makeIdrGuestOrder(
+    opts: { priceIdr?: string; bulkIdr?: string; voucherIdr?: string } = {},
+  ): Promise<number> {
+    const priceIdr = opts.priceIdr ?? PRICE_IDR;
+    const bulkIdr = opts.bulkIdr ?? "0";
+    const voucherIdr = opts.voucherIdr ?? "0";
+    const denom = await makeManualDenom(DeliveryType.MANUAL, priceIdr);
+    const created = await createOrderDirect(prisma, { user: sample.user, productId: denom.id, quantity: 1 });
+    await prisma.order.update({
+      where: { id: created!.id },
+      data: {
+        bulkDiscountAmount: bulkIdr,
+        discountAmount: voucherIdr,
+        totalAmount: new Decimal(priceIdr).minus(bulkIdr).minus(voucherIdr).toString(),
+      },
+    });
+    await finalizeOrderPayment(prisma, created!.id, {
+      currency: OrderCurrency.IDR,
+      method: PaymentMethod.TOKOPAY,
+    });
+    await attachPaymentProof(prisma, created!.id, { fileId: "file123", txid: "TX-1" });
+    return created!.id;
+  }
+
+  // A bulk discount reduces the total exactly as a voucher does, but it is
+  // stored in its OWN column. Printing `discountAmount` verbatim therefore
+  // dropped it off the page entirely: subtotal and total disagreed by the bulk
+  // amount with no row explaining the gap — on the IDR rails, which carry most
+  // of this shop's traffic.
+  it("IDR receipt with a bulk discount: the bulk reduction is shown, and the figures reconcile", async () => {
+    await makeSampleUserAGuest();
+    const orderId = await makeIdrGuestOrder({ priceIdr: "100000", bulkIdr: "10000" });
+
+    const payload = await deliverAndReadReceipt(orderId);
+
+    expect(payload.subtotal).toBe("100000");
+    expect(payload.discount).toBe("10000"); // was "0" — the bulk reduction vanished
+    expect(payload.total).toBe("90000");
+    const subtotal = new Decimal(String(payload.subtotal));
+    const discount = new Decimal(String(payload.discount));
+    const unique = new Decimal(String(payload.unique_cents));
+    expect(subtotal.minus(discount).plus(unique).toString()).toBe(String(payload.total));
+  });
+
+  it("IDR receipt with a bulk discount AND a voucher: one row covering both, still reconciling", async () => {
+    await makeSampleUserAGuest();
+    const orderId = await makeIdrGuestOrder({ priceIdr: "100000", bulkIdr: "10000", voucherIdr: "5000" });
+
+    const payload = await deliverAndReadReceipt(orderId);
+
+    expect(payload.subtotal).toBe("100000");
+    expect(payload.discount).toBe("15000"); // bulk + voucher, not the voucher alone
+    expect(payload.total).toBe("85000");
+    const subtotal = new Decimal(String(payload.subtotal));
+    const discount = new Decimal(String(payload.discount));
+    expect(subtotal.minus(discount).toString()).toBe(String(payload.total));
+  });
+
   // Wallet credit is the one thing that could silently poison the derived
   // discount: `walletUsed` is subtracted from the total but never shown, so
   // a wallet-paying buyer would see it folded into "Discount". Guests have no

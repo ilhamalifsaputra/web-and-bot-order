@@ -6,6 +6,7 @@ import {
   ShoppingCart,
   CreditCard,
   Package,
+  FolderTree,
   Boxes,
   Tag,
   Users,
@@ -63,6 +64,7 @@ const NAV_GROUPS: NavGroup[] = [
     header: "Products",
     items: [
       { to: "/catalog", label: "Catalog", icon: Package },
+      { to: "/categories", label: "Categories", icon: FolderTree },
       { to: "/stock", label: "Stock", icon: Boxes, badge: "stock" },
       { to: "/flash-sales", label: "Flash Sales", icon: Zap },
       { to: "/vouchers", label: "Vouchers", icon: Tag },

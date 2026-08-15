@@ -40,7 +40,7 @@ import {
   getUser,
 } from "@app/db";
 import { esc } from "../util/format";
-import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
+import { editPaymentBubble } from "../jobs";
 import { settledPaymentBubbleFor } from "../util/delivery";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
@@ -68,11 +68,23 @@ type AnchoredOrder = {
 /**
  * Flip the anchored QR bubble to the already-composed success message
  * `bubble`, and report whether the order's anchor may now be dropped.
- * Best-effort: a photo bubble edits its caption; a text-fallback bubble edits
- * its text. Never throws — a rejected edit is caught right here rather than
- * propagating into the `withTimeout` race `editBubbleAndClear` wraps this in,
- * which is what lets that race keep meaning exactly one thing ("the call hung
- * past the deadline").
+ *
+ * HOW that bubble becomes the message is `editPaymentBubble`'s business
+ * (jobs/index.ts), not this rail's: a text bubble is edited in place, while a
+ * QRIS photo bubble is DELETED and the message sent afresh. Editing a photo
+ * bubble's caption instead — which is what this function used to do first —
+ * succeeds at the wrong thing, because Telegram cannot turn a photo message
+ * into a text one: the caption flips to "payment received" while the QR image
+ * itself stays parked above it, still scannable, for an order that is already
+ * paid and delivered. This rail carried its own copy of that caption-then-text
+ * chain rather than calling the shared helper, and since QRIS is the rail where
+ * payments are auto-confirmed most often, it was the likeliest place for a
+ * buyer to end up looking at a stale QR code.
+ *
+ * `fallbackDm: null` opts out of the helper's other mode deliberately: a buyer
+ * reached here has already been told the news through the normal delivery path
+ * (the notifier's account `.txt` or top-up receipt), so a DM from here would
+ * only repeat it.
  *
  * The message itself is the caller's, not this function's: composing it needs
  * a database read for a wallet top-up (see `editBubbleAndClear`), and that
@@ -84,19 +96,17 @@ type AnchoredOrder = {
  * (jobs/index.ts) — dropping it here would leave the buyer staring at a stale
  * QRIS QR, for an order that is already paid and delivered, with nothing left
  * in the system that would ever retry the edit. Returns "clear_anchor" when
- * the edit landed, or when Telegram said this bubble can never accept it, so
- * a bubble the buyer deleted self-heals out of that sweep's queue instead of
- * costing it a slot every minute forever. `isPermanentBubbleEditFailure`
- * (util/bubbleEditFailure.ts) draws that line once for all five call sites
- * that hold this contract, including the twin of this function in
- * tokopayReconcile.ts.
+ * the bubble was edited or replaced, and equally when Telegram said this
+ * bubble can never accept the message, so a bubble the buyer deleted
+ * self-heals out of that sweep's queue instead of costing it a slot every
+ * minute forever. `isPermanentBubbleEditFailure` (util/bubbleEditFailure.ts)
+ * draws that line once for every call site that holds this contract, and the
+ * helper is now the only place that consults it on this path.
  *
- * Both attempts' errors are classified, and either one proving the edit can
- * never land is enough — a photo/QR bubble that already shows this exact text
- * says so only through the CAPTION attempt ("message is not modified"), while
- * its text attempt answers the deliberately-not-permanent "there is no text
- * in the message to edit". Same rule `editPaymentBubble` (jobs/index.ts)
- * applies to its own two attempts.
+ * Never throws: `editPaymentBubble` catches every grammY call it makes, and
+ * the mapping below adds no throwing path of its own. That is what lets the
+ * `withTimeout` race in `editBubbleAndClear` keep meaning exactly one thing
+ * ("the call hung past the deadline").
  */
 async function editBubbleToSuccess(
   api: Api,
@@ -106,25 +116,36 @@ async function editBubbleToSuccess(
   // No anchor to begin with: nothing to edit and nothing to strand, so the
   // caller's clear is a harmless no-op.
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return "clear_anchor";
-  const chatId = Number(order.paymentMsgChatId);
-  const { text, markup } = bubble;
-  try {
-    await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
-  } catch (captionError) {
-    try {
-      await api.editMessageText(chatId, order.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
-    } catch (textError) {
-      if (!isPermanentBubbleEditFailure(textError) && !isPermanentBubbleEditFailure(captionError)) {
-        logger.warn(
-          { err: textError },
-          `PayDisini reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`,
-        );
-        return "keep_anchor";
-      }
-      /* bubble gone/uneditable for good — the credential DM already informed the buyer */
+  const result = await editPaymentBubble(api, {
+    chatId: Number(order.paymentMsgChatId),
+    messageId: order.paymentMsgId,
+    text: bubble.text,
+    markup: bubble.markup,
+    fallbackDm: null,
+  });
+  switch (result.status) {
+    case "edited":
+      return "clear_anchor";
+    case "replaced":
+      // The message id the anchor holds was deleted, and the fresh message in
+      // its place already IS the success message — re-anchoring on
+      // `result.messageId` would only queue a bubble that needs nothing.
+      return "clear_anchor";
+    case "dm_sent":
+      // Unreachable with `fallbackDm: null`, but a real outcome of the shared
+      // helper: the buyer was told, so nothing is left to retry either.
+      return "clear_anchor";
+    case "not_edited": {
+      if (result.permanent) return "clear_anchor"; // bubble gone/uneditable for good — the delivery DM already informed the buyer
+      const message = `PayDisini reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`;
+      // `error` only carries a FALLBACK DM's failure, which this call opted
+      // out of, so today it is always absent — logged when present rather than
+      // as a bare `err: undefined` a reader would mistake for a lost cause.
+      if (result.error === undefined) logger.warn(message);
+      else logger.warn({ err: result.error }, message);
+      return "keep_anchor";
     }
   }
-  return "clear_anchor";
 }
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline

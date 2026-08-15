@@ -16,6 +16,7 @@ import {
 } from "@app/db";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { onlyBubbleEdit } from "./helpers/settledBubble";
@@ -40,12 +41,38 @@ afterAll(async () => {
 });
 
 const CREDS = { merchantId: "M", secret: "s", channel: "QRIS", minAmount: null };
-const fakeApi = () =>
+
+/** The id `sendMessage` hands back for a replacement bubble — deliberately not
+ *  the anchored message's id, so a test cannot pass by confusing the two. */
+const REPLACEMENT_MSG_ID = 90210;
+
+/** `editMessageCaption` is still on the double even though nothing should ever
+ *  call it: this rail used to flip a paid order's bubble through the caption,
+ *  which "succeeded" while leaving the useless QR image in the buyer's chat, so
+ *  a test that finds it called is finding that bug back. */
+const fakeApi = (
+  overrides: Partial<{
+    editMessageText: unknown;
+    deleteMessage: unknown;
+    sendMessage: unknown;
+  }> = {},
+) =>
   ({
-    sendMessage: vi.fn().mockResolvedValue(undefined),
+    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue({ message_id: REPLACEMENT_MSG_ID }),
     editMessageCaption: vi.fn().mockResolvedValue(undefined),
-    editMessageText: vi.fn().mockResolvedValue(undefined),
+    editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
+    deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
   }) as unknown as Api;
+
+/** Telegram's answer to `editMessageText` on a PHOTO message — the one signal
+ *  that says "this bubble carries a QR image, not text". Deliberately absent
+ *  from `isPermanentBubbleEditFailure`'s permanent list, which is what routes
+ *  it onto the delete-and-resend path. */
+const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in the message to edit");
+
+/** The callback data on whatever keyboard a grammY call carried. */
+const buttonsOf = (payload: { reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> } }) =>
+  payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data);
 
 /** Stub the gateway status call. */
 function stubStatus(data: Record<string, unknown>) {
@@ -115,24 +142,60 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(stillPending).toBeDefined();
   });
 
-  it("immediately flips the anchored QR bubble to success when it delivers the order", async () => {
+  /** Deliver the one pending order with its bubble anchored at (555, 777), and
+   *  hand back the row so the anchor can be read afterwards. */
+  async function deliverAnchored(api: Api, trxId: string) {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    const charge = qrisChargeAmount(pending!.totalAmount);
-    stubStatus({ status: "Paid", trx_id: "TRX-FLIP", total_bayar: charge.toString() });
+    stubStatus({ status: "Paid", trx_id: trxId, total_bayar: qrisChargeAmount(pending!.totalAmount).toString() });
 
-    const api = fakeApi();
     await reconcileOrder(api, CREDS, pending!);
 
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    const [chatId, msgId, payload] = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    return prisma.order.findUnique({ where: { id: created!.id } });
+  }
+
+  it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
+    const api = fakeApi();
+
+    const after = await deliverAnchored(api, "TRX-FLIP");
+
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    const [chatId, msgId, , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(chatId).toBe(555);
     expect(msgId).toBe(777);
-    const flat = (payload.reply_markup.inline_keyboard as Array<Array<{ callback_data?: string }>>).flat().map((b) => b.callback_data);
-    expect(flat).toContain("v1:browse:prods");
+    expect(buttonsOf(payload)).toContain("v1:browse:prods");
+    // A bubble that took the edit is left exactly where it is.
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
 
-    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+  });
+
+  // The bug this rail's share of the change exists for: a photo bubble's
+  // CAPTION can be edited, so the old caption-first flip "succeeded" while
+  // Telegram left the now-meaningless QR image parked above the "payment
+  // received" line — on the path QRIS payments actually take most often.
+  // Telegram offers no way to turn a photo message into a text one, so the only
+  // way to get rid of the image is to delete the bubble and send it afresh.
+  it("replaces an anchored PHOTO (QR) bubble with a fresh message instead of leaving the QR image behind", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+    const after = await deliverAnchored(api, "TRX-FLIP-PHOTO");
+
+    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+    // Sent into the bubble's own chat, taking the deleted bubble's place —
+    // not as a fallback DM, which would only repeat news the buyer already got
+    // with their account file.
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const [target, text, payload] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(target).toBe(555);
+    expect(String(text)).toContain("Payment received");
+    expect(buttonsOf(payload)).toContain("v1:browse:prods");
+
     expect(after?.paymentMsgChatId).toBeNull();
     expect(after?.paymentMsgId).toBeNull();
   });
@@ -144,12 +207,30 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
   // order that is already paid and delivered. QRIS is this shop's dominant
   // payment method, so this rail is where that bug hurts most.
   describe("a failed success-bubble flip only drops the anchor when the failure is final", () => {
-    const flipWith = (captionError: unknown, textError = captionError) =>
-      ({
-        sendMessage: vi.fn().mockResolvedValue(undefined),
-        editMessageCaption: vi.fn().mockRejectedValue(captionError),
-        editMessageText: vi.fn().mockRejectedValue(textError),
-      }) as unknown as Api;
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+    });
+
+    /** True when the rail explained, in the log, why it is holding the anchor. */
+    const warnedAboutTheBubble = () =>
+      warnSpy.mock.calls.some((args) => args.some((arg) => typeof arg === "string" && arg.includes("payment bubble")));
+
+    /** An outage hits every call to Telegram, not just the first: an edit that
+     *  merely failed THIS minute is followed by a delete that fails the same
+     *  way, which is exactly what keeps the bubble (and the anchor) intact. A
+     *  delete that succeeded would mean the bubble really was a photo and the
+     *  replacement path could finish the job. */
+    const flipWith = (editError: unknown, deleteError = editError) =>
+      fakeApi({
+        editMessageText: vi.fn().mockRejectedValue(editError),
+        deleteMessage: vi.fn().mockRejectedValue(deleteError),
+      });
 
     /** A delivered order with an anchored bubble whose flip failed as given. */
     async function deliverWithFailedFlip(api: Api) {
@@ -164,34 +245,39 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     }
 
     it.each([
-      ["Telegram flood control", telegramError(429, "Too Many Requests: retry after 30")],
-      ["a Telegram server error", telegramError(502, "Bad Gateway")],
-      ["something that is not a Telegram API error at all, such as a network fault", new Error("socket hang up")],
-    ])("keeps the anchor when the flip fails with %s, so the paid-order bubble sweep retries it", async (_label, error) => {
-      const after = await deliverWithFailedFlip(flipWith(error));
+      ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
+      ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
+      ["something that is not a Telegram API error at all, such as a network fault", () => new Error("socket hang up")],
+    ])("keeps the anchor when the flip fails with %s, so the paid-order bubble sweep retries it", async (_label, makeError) => {
+      const api = flipWith(makeError());
+
+      const after = await deliverWithFailedFlip(api);
 
       expect(after?.status).toBe(OrderStatus.DELIVERED);
       expect(after?.paymentMsgChatId).not.toBeNull();
       expect(after?.paymentMsgId).not.toBeNull();
+      // Nothing was sent: a replacement standing next to a bubble that is still
+      // there would tell the buyer the same news twice.
+      expect(api.sendMessage).not.toHaveBeenCalled();
+      expect(warnedAboutTheBubble()).toBe(true);
     });
 
-    it("clears the anchor when Telegram says the bubble is gone for good, so it self-heals out of the sweep's queue", async () => {
-      const after = await deliverWithFailedFlip(flipWith(telegramError(400, "Bad Request: message to edit not found")));
+    // A bubble Telegram has declared dead, or that already shows this exact
+    // text, must never be deleted: there is nothing there worth replacing, and
+    // on "message is not modified" deleting would destroy a bubble that is
+    // already correct.
+    it.each([
+      ["the bubble is gone for good", "Bad Request: message to edit not found"],
+      ["the bubble already shows this exact text", "Bad Request: message is not modified"],
+    ])("clears the anchor when Telegram says %s, so it self-heals out of the sweep's queue", async (_label, description) => {
+      const api = flipWith(telegramError(400, description));
+
+      const after = await deliverWithFailedFlip(api);
 
       expect(after?.paymentMsgChatId).toBeNull();
       expect(after?.paymentMsgId).toBeNull();
-    });
-
-    it("clears the anchor when only the caption attempt says the bubble already shows this exact text", async () => {
-      const after = await deliverWithFailedFlip(
-        flipWith(
-          telegramError(400, "Bad Request: message is not modified"),
-          telegramError(400, "Bad Request: there is no text in the message to edit"),
-        ),
-      );
-
-      expect(after?.paymentMsgChatId).toBeNull();
-      expect(after?.paymentMsgId).toBeNull();
+      expect(api.deleteMessage).not.toHaveBeenCalled();
+      expect(api.sendMessage).not.toHaveBeenCalled();
     });
   });
 

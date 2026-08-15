@@ -84,13 +84,33 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const fakeApi = (overrides: Partial<{ editMessageCaption: unknown; editMessageText: unknown; sendMessage: unknown; sendPhoto: unknown }> = {}) =>
+/** The message id the fake `sendMessage` hands back, so a test can assert the
+ *  replaced-bubble result really carries the NEW message's id (that id is what
+ *  an anchor-owning caller re-anchors on). */
+const REPLACEMENT_MSG_ID = 90210;
+
+const fakeApi = (
+  overrides: Partial<{
+    editMessageCaption: unknown;
+    editMessageText: unknown;
+    deleteMessage: unknown;
+    sendMessage: unknown;
+    sendPhoto: unknown;
+  }> = {},
+) =>
   ({
-    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue(undefined),
+    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue({ message_id: REPLACEMENT_MSG_ID }),
     sendPhoto: overrides.sendPhoto ?? vi.fn().mockResolvedValue({ photo: [{ file_id: "small_fid" }, { file_id: "large_fid" }] }),
     editMessageCaption: overrides.editMessageCaption ?? vi.fn().mockResolvedValue(undefined),
     editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
+    deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
   }) as unknown as Api;
+
+/** Telegram's answer to `editMessageText` on a PHOTO message — the one signal
+ *  that says "this bubble carries a QR image, not text". Deliberately absent
+ *  from `isPermanentBubbleEditFailure`'s permanent list, which is what routes
+ *  it onto the delete-and-resend path. */
+const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in the message to edit");
 
 /** A PENDING_PAYMENT order whose window already expired (picked up by the job). */
 async function makeExpiredOrder() {
@@ -110,7 +130,7 @@ describe("autoCancelExpiredOrders", () => {
   it("edits the anchored text bubble in place instead of sending a new message", async () => {
     const order = await makeExpiredOrder();
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    const api = fakeApi({ editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")) });
+    const api = fakeApi();
 
     await autoCancelExpiredOrders(api);
 
@@ -122,22 +142,33 @@ describe("autoCancelExpiredOrders", () => {
       .flat()
       .map((b) => b.callback_data);
     expect(flat).toContain("v1:order:list");
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
 
     const after = await prisma.order.findUnique({ where: { id: order.id } });
     expect(after?.status).toBe(OrderStatus.CANCELLED);
   });
 
-  it("edits the anchored photo (QR) bubble's caption when available", async () => {
+  // Telegram cannot turn a photo message into a text one, so the caption edit
+  // this used to do left the now-irrelevant QR image sitting above the
+  // "cancelled" wording. The bubble is deleted and replaced instead.
+  it("replaces the anchored photo (QR) bubble with a fresh message instead of leaving the QR image behind", async () => {
     const order = await makeExpiredOrder();
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
-    const api = fakeApi();
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
 
     await autoCancelExpiredOrders(api);
 
-    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
-    expect(api.editMessageText).not.toHaveBeenCalled();
-    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+    // Sent into the bubble's own chat, not as a fallback DM — the replacement
+    // takes the deleted bubble's place.
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    const [target, text] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(target).toBe(555);
+    expect(String(text)).toContain(order.orderCode);
+
+    const after = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(after?.status).toBe(OrderStatus.CANCELLED);
   });
 
   it("falls back to a fresh DM when the order has no anchored bubble", async () => {
@@ -147,21 +178,27 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
-    expect(api.editMessageCaption).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.editMessageText).not.toHaveBeenCalled();
   });
 
+  // A GrammyError, not a bare Error: only Telegram's own answer proves the
+  // bubble is dead, and only a dead bubble skips the delete-and-replace path
+  // to land on the fallback DM.
   it("falls back to a fresh DM when the anchored bubble can no longer be edited", async () => {
     const order = await makeExpiredOrder();
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(new Error("gone")),
-      editMessageText: vi.fn().mockRejectedValue(new Error("gone")),
+      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")),
     });
 
     await autoCancelExpiredOrders(api);
 
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    // The DM goes to the buyer's telegram id, not to the dead bubble's chat.
+    expect((api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBe(Number(sample.user.telegramId));
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))?.status).toBe(OrderStatus.CANCELLED);
   });
 });
 
@@ -171,117 +208,139 @@ describe("autoCancelExpiredOrders", () => {
 // news through another channel there).
 describe("editPaymentBubble", () => {
   const markup = new InlineKeyboard().text("OK", "noop");
+  const bubble = { chatId: 555, messageId: 777, text: "hello", markup };
 
-  it("reports which edit method succeeded, and never touches sendMessage", async () => {
+  it("edits a text bubble in place, and neither deletes nor re-sends anything", async () => {
     const api = fakeApi();
 
-    const result = await editPaymentBubble(api, {
-      chatId: 555,
-      messageId: 777,
-      text: "hello",
-      markup,
-      fallbackDm: null,
-    });
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
 
-    expect(result).toEqual({ status: "edited", via: "caption" });
+    expect(result).toEqual({ status: "edited", via: "text" });
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("with fallback DM off, reports failure and sends no DM at all when the bubble can't be edited", async () => {
-    const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
-      editMessageText: vi.fn().mockRejectedValue(new Error("gone")),
-    });
+  // The bug this whole change exists for: a photo bubble's caption CAN be
+  // edited, so the old caption-first order "succeeded" while leaving the
+  // now-meaningless QR image in the buyer's chat. Telegram offers no way to
+  // turn a photo message into a text one, so the only way to get rid of the
+  // image is to delete the bubble and send a fresh message.
+  it("deletes a photo (QR) bubble and sends the message afresh, reporting the new message's id", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
 
-    const result = await editPaymentBubble(api, {
-      chatId: 555,
-      messageId: 777,
-      text: "hello",
-      markup,
-      fallbackDm: null,
-    });
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
 
-    // A bare Error is not evidence Telegram will refuse this edit forever, so
-    // it is reported as a NON-permanent failure and the caller keeps its anchor.
-    expect(result).toEqual({ status: "not_edited", permanent: false });
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+    expect(api.sendMessage).toHaveBeenCalledWith(555, "hello", { parse_mode: "HTML", reply_markup: markup });
+    // The new id is what an anchor-owning caller re-anchors on, so it has to
+    // be the id `sendMessage` came back with — not the deleted bubble's.
+    expect(result).toEqual({ status: "replaced", messageId: REPLACEMENT_MSG_ID });
+  });
+
+  // Anything that is not a Telegram answer at all (a network fault, an abort)
+  // may equally well be a photo bubble whose edit request never landed, so it
+  // takes the same replace path rather than being written off.
+  it("takes the same delete-and-replace path when the edit fails with something that is not a Telegram error", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(new Error("socket hang up")) });
+
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
+
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+    expect(result).toEqual({ status: "replaced", messageId: REPLACEMENT_MSG_ID });
+  });
+
+  // A bubble Telegram has declared dead (or that already shows this exact
+  // text) must NOT be deleted: there is nothing there to replace, and deleting
+  // on "message is not modified" would destroy a bubble that is already
+  // correct.
+  it.each([
+    ["Bad Request: message is not modified"],
+    ["Bad Request: message to edit not found"],
+    ["Bad Request: message can't be edited"],
+  ])("never deletes the bubble when Telegram answers %s, and reports a permanent failure", async (description) => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(telegramError(400, description)) });
+
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
+
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
-  });
-
-  it("reports a Telegram rejection that can never succeed as a permanent failure", async () => {
-    const gone = telegramError(400, "Bad Request: message to edit not found");
-    const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(gone),
-      editMessageText: vi.fn().mockRejectedValue(gone),
-    });
-
-    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
-
     expect(result).toEqual({ status: "not_edited", permanent: true });
   });
 
-  it("reports Telegram flood control as a NON-permanent failure, because the very same edit can succeed a minute later", async () => {
-    const flood = telegramError(429, "Too Many Requests: retry after 30");
+  it("with fallback DM on, DMs the buyer instead when the bubble is permanently uneditable", async () => {
     const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(flood),
-      editMessageText: vi.fn().mockRejectedValue(flood),
+      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")),
     });
 
-    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
-
-    expect(result).toEqual({ status: "not_edited", permanent: false });
-  });
-
-  // The two attempts fail with DIFFERENT errors here, unlike every case
-  // above — which is the whole point. A photo/QR bubble whose caption already
-  // shows the target text answers the caption attempt with "message is not
-  // modified" (permanent: the goal is already met) and the text attempt with
-  // "there is no text in the message to edit" (deliberately NOT permanent: it
-  // names the wrong edit method, not a dead bubble). Classifying only the text
-  // attempt read that pair as transient, so the sweeper kept the anchor and
-  // re-ran the identical doomed edit every minute forever, burning one of its
-  // MAX_ORDERS_PER_CYCLE slots for good.
-  it("reports a permanent failure when only the caption attempt's error says so, e.g. a photo bubble that already shows this exact text", async () => {
-    const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message is not modified")),
-      editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit")),
-    });
-
-    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
-
-    expect(result).toEqual({ status: "not_edited", permanent: true });
-  });
-
-  it("still reports a NON-permanent failure when neither attempt's error rules out a later retry", async () => {
-    const api = fakeApi({
-      // The natural pairing for a text-only bubble Telegram is currently
-      // flood-controlling: the caption attempt names the wrong method, the
-      // text attempt is throttled. Neither is evidence the bubble is dead.
-      editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no caption in the message to edit")),
-      editMessageText: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
-    });
-
-    const result = await editPaymentBubble(api, { chatId: 555, messageId: 777, text: "hello", markup, fallbackDm: null });
-
-    expect(result).toEqual({ status: "not_edited", permanent: false });
-  });
-
-  it("with fallback DM on, sends a DM and reports it when the bubble can't be edited", async () => {
-    const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(new Error("no caption to edit")),
-      editMessageText: vi.fn().mockRejectedValue(new Error("gone")),
-    });
-
-    const result = await editPaymentBubble(api, {
-      chatId: 555,
-      messageId: 777,
-      text: "hello",
-      markup,
-      fallbackDm: { telegramId: 42 },
-    });
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: { telegramId: 42 } });
 
     expect(result).toEqual({ status: "dm_sent" });
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
     expect(api.sendMessage).toHaveBeenCalledWith(42, "hello", { parse_mode: "HTML", reply_markup: markup });
+  });
+
+  // The anchor is the only thing that will ever bring this bubble back to the
+  // sweeper, so a delete that merely failed THIS minute must keep it.
+  it.each([
+    ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
+    ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
+    ["a network fault that never reached Telegram", () => new Error("socket hang up")],
+  ])("sends nothing and reports a NON-permanent failure when the delete fails with %s", async (_label, makeError) => {
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(noTextToEdit()),
+      deleteMessage: vi.fn().mockRejectedValue(makeError()),
+    });
+
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
+
+    // Nothing was sent: a replacement next to a bubble that is still there
+    // would show the buyer the same news twice.
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "not_edited", permanent: false });
+  });
+
+  it("reports a permanent failure when the delete says the bubble is already gone", async () => {
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(noTextToEdit()),
+      deleteMessage: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message to edit not found")),
+    });
+
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "not_edited", permanent: true });
+  });
+
+  // Delete landed, send didn't: the bubble is gone for good, so no later
+  // attempt at that message id can ever succeed and the anchor must be
+  // released rather than retried every minute forever.
+  it("reports a permanent failure when the bubble was deleted but the replacement could not be sent", async () => {
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(noTextToEdit()),
+      sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+    });
+
+    const result = await editPaymentBubble(api, { ...bubble, fallbackDm: null });
+
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ status: "not_edited", permanent: true });
+  });
+
+  it("never throws, whatever every single Telegram call does", async () => {
+    const boom = () => Promise.reject(new Error("everything is on fire"));
+    const api = fakeApi({
+      editMessageText: vi.fn(boom),
+      deleteMessage: vi.fn(boom),
+      sendMessage: vi.fn(boom),
+    });
+
+    // Both modes: the fallback DM's own failure is reported, never thrown.
+    await expect(editPaymentBubble(api, { ...bubble, fallbackDm: null })).resolves.toMatchObject({ status: "not_edited" });
+    const dmMode = await editPaymentBubble(api, { ...bubble, fallbackDm: { telegramId: 42 } });
+    expect(dmMode.status).toBe("not_edited");
+    expect(dmMode).toHaveProperty("error");
   });
 });
 
@@ -402,10 +461,7 @@ describe("sweepPaidOrderBubbles", () => {
       status: OrderStatus.DELIVERED,
     });
     const gone = telegramError(400, "Bad Request: message to edit not found");
-    const api = fakeApi({
-      editMessageCaption: vi.fn().mockRejectedValue(gone),
-      editMessageText: vi.fn().mockRejectedValue(gone),
-    });
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(gone) });
 
     await sweepPaidOrderBubbles(api);
 
@@ -422,10 +478,14 @@ describe("sweepPaidOrderBubbles", () => {
   // second kind strands the buyer on a stale QR forever, because the anchor is
   // the only thing that puts the order back in this sweep's work queue.
   describe("permanent vs. transient edit failures decide whether the anchor survives", () => {
+    /** Both halves of the flip refused with the same answer — which is what a
+     *  real outage looks like: flood control, a 5xx or a dead socket rejects
+     *  the delete just as readily as the edit, so a transient failure must
+     *  leave the bubble untouched AND its anchor in place. */
     const failEveryEditWith = (err: unknown) =>
       fakeApi({
-        editMessageCaption: vi.fn().mockRejectedValue(err),
         editMessageText: vi.fn().mockRejectedValue(err),
+        deleteMessage: vi.fn().mockRejectedValue(err),
       });
 
     const anchoredOrder = () =>
@@ -460,18 +520,38 @@ describe("sweepPaidOrderBubbles", () => {
       expect(after?.paymentMsgChatId).toBeNull();
     });
 
-    // The photo/QR bubble version of the case above, and the one the sweep
-    // actually meets in production: a caption edit that landed server-side but
-    // lost the SWEEP_EDIT_TIMEOUT_MS race, an anchor-clearing write that
-    // failed after a successful edit, or a buyer's Refresh tap racing the
-    // sweep all leave a bubble already showing this exact text with its anchor
-    // still set. The two attempts then fail with DIFFERENT errors — hence two
-    // distinct rejections here rather than the shared one the cases above use.
-    it("clears the anchor when only the caption attempt says the bubble already shows this text, instead of re-running a doomed edit every minute forever", async () => {
+    // The photo/QR bubble, which is what the QRIS rails actually anchor on:
+    // the sweep's edit bounces off it, so the bubble is deleted and the
+    // success message sent afresh. A replacement is a completed flip, so the
+    // anchor goes — it points at a message that no longer exists, and the new
+    // message carries no Refresh/Cancel pair that would ever need flipping.
+    it("replaces a photo (QR) bubble rather than editing it, and clears the anchor afterwards", async () => {
       const order = await anchoredOrder();
       const api = fakeApi({
-        editMessageCaption: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: message is not modified")),
         editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit")),
+      });
+
+      await sweepPaidOrderBubbles(api);
+
+      expect(api.deleteMessage).toHaveBeenCalledWith(order.chatId, order.msgId);
+      const [chatId, text, payload] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+      expect(chatId).toBe(order.chatId);
+      expect(String(text)).toContain(order.orderCode);
+      expect(String(text)).toContain("being delivered now");
+      expect(payload.reply_markup.inline_keyboard.flat().map((b: { callback_data?: string }) => b.callback_data)).toContain("v1:browse:prods");
+
+      const after = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
+    // Half-replaced is the one outcome that cannot be retried: the QR bubble
+    // is already destroyed, so no future edit at that message id can land.
+    it("clears the anchor when the photo bubble was deleted but its replacement could not be sent", async () => {
+      const order = await anchoredOrder();
+      const api = fakeApi({
+        editMessageText: vi.fn().mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit")),
+        sendMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
       });
 
       await sweepPaidOrderBubbles(api);
@@ -554,8 +634,8 @@ describe("sweepPaidOrderBubbles", () => {
 
     await sweepPaidOrderBubbles(api);
 
-    expect(api.editMessageCaption).not.toHaveBeenCalled();
     expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
     expect(api.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -576,8 +656,8 @@ describe("sweepPaidOrderBubbles", () => {
     const totalBudgetMs = 500;
     const hangingApi = () =>
       ({
-        editMessageCaption: vi.fn(() => new Promise(() => {})),
         editMessageText: vi.fn(() => new Promise(() => {})),
+        deleteMessage: vi.fn(() => new Promise(() => {})),
         sendMessage: vi.fn(),
       }) as unknown as Api;
 
@@ -615,7 +695,7 @@ describe("sweepPaidOrderBubbles", () => {
       // 500ms totalBudgetMs — so the between-rows budget check breaks the loop
       // before the fourth is ever attempted. Two rows (400ms) are still inside
       // the budget, which is why the count is three and not two.
-      expect(api.editMessageCaption).toHaveBeenCalledTimes(3);
+      expect(api.editMessageText).toHaveBeenCalledTimes(3);
       const fourth = await prisma.order.findUnique({ where: { id: orders[3]!.id } });
       expect(fourth?.paymentMsgChatId).not.toBeNull();
     });

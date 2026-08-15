@@ -1840,6 +1840,57 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
+  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it and
+  // sends the success message fresh — which leaves ctx.session.menuMsgId
+  // pointing at a message that no longer exists. Refresh is the ONLY flip path
+  // that can repair that: the reconcile pollers and the sweeper edit the same
+  // bubbles with no session in reach.
+  it("re-points the session anchor at the replacement when a photo (QR) bubble is deleted and re-sent", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const staleAnchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = staleAnchor;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi
+      .fn()
+      .mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit"));
+    // The fake api hands back a fresh message_id, so capture the one the
+    // replacement actually got rather than asserting "some other number".
+    const send = (ctx.api as unknown as { sendMessage: (...a: unknown[]) => Promise<{ message_id: number }> }).sendMessage;
+    let replacementId: number | undefined;
+    (ctx.api as unknown as { sendMessage: unknown }).sendMessage = vi.fn(async (...args: unknown[]) => {
+      const sent = await send(...args);
+      replacementId = sent.message_id;
+      return sent;
+    });
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(1);
+    expect(replacementId).toBeDefined();
+    expect(ctx.session.menuMsgId).toBe(replacementId);
+    expect(ctx.session.menuMsgId).not.toBe(staleAnchor);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
+  // The counterpart: a text bubble is edited in place, nothing is deleted, and
+  // the session anchor must be left exactly where it was.
+  it("leaves the session anchor alone when the bubble is edited in place", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const anchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = anchor;
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).toBe(anchor);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
   // Same shape as jobs.test.ts's "safety bounds against a black-holed bubble
   // edit" tests: a real hanging Telegram call, real timers, millisecond-scale
   // bound passed in instead of the real TELEGRAM_MESSAGE_TIMEOUT_MS (5s). This
@@ -1852,11 +1903,11 @@ describe("Refresh Status button (§7)", () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     // refreshPaymentStatus edits through ctx.api (unlike sweepPaidOrderBubbles,
-    // which takes a bare Api), so the hang is installed directly on it —
-    // editMessageCaption first (photo/QR bubbles), editMessageText as the
-    // fallback editPaymentBubble would otherwise try.
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = vi.fn(() => new Promise(() => {}));
+    // which takes a bare Api), so the hang is installed directly on it — on
+    // editMessageText, which is what editPaymentBubble tries first, and on the
+    // deleteMessage it would fall through to for a photo bubble.
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi.fn(() => new Promise(() => {}));
+    (ctx.api as unknown as { deleteMessage: unknown }).deleteMessage = vi.fn(() => new Promise(() => {}));
 
     await checkout.refreshPaymentStatus(ctx, order.id, { editTimeoutMs: 50 });
 
@@ -1879,18 +1930,25 @@ describe("Refresh Status button (§7)", () => {
     ["message is not modified (the bubble already shows this text)", "Bad Request: message is not modified"],
   ])("clears the anchor when Telegram answers %s", async (_label, description) => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
-    const { ctx } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     const reject = vi.fn().mockRejectedValue(telegramError(400, description));
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
 
     await checkout.refreshPaymentStatus(ctx, order.id);
 
+    // A bubble Telegram has written off is never deleted — there is nothing
+    // there to replace, and on "message is not modified" the bubble already
+    // shows exactly what a replacement would say.
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
     const after = await getOrder(prisma, order.id);
     expect(after!.paymentMsgChatId).toBeNull();
     expect(after!.paymentMsgId).toBeNull();
   });
 
+  // Both halves of the flip refused with the same answer, which is what a real
+  // outage looks like: flood control, a 5xx or a dead socket rejects the
+  // delete-and-replace path just as readily as the edit, so the buyer's bubble
+  // is left exactly as it was and its anchor with it.
   it.each([
     ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
     ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
@@ -1899,8 +1957,8 @@ describe("Refresh Status button (§7)", () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     const reject = vi.fn().mockImplementation(() => Promise.reject(makeError()));
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
+    (ctx.api as unknown as { deleteMessage: unknown }).deleteMessage = reject;
 
     await checkout.refreshPaymentStatus(ctx, order.id);
 

@@ -1,6 +1,7 @@
 /**
- * One question, asked from six places: when an anchored payment-bubble edit
- * fails, may the order's anchor (`paymentMsgChatId`/`paymentMsgId`) be cleared?
+ * One question, asked wherever an anchored payment bubble is flipped: when the
+ * edit fails, may the order's anchor (`paymentMsgChatId`/`paymentMsgId`) be
+ * cleared?
  *
  * The anchor IS the work queue. `sweepPaidOrderBubbles` (jobs/index.ts) lists
  * exactly the settled orders that still carry one, so clearing an anchor is
@@ -52,11 +53,15 @@ import { GrammyError } from "grammy";
  *    looking at the stale bubble anyway.
  *
  * Deliberately NOT here: `there is no text in the message to edit` and `there
- * is no caption in the message to edit`. Those say the WRONG edit method was
- * used for this bubble's shape, not that the bubble is dead — and
- * `editPaymentBubble` (jobs/index.ts) recovers from exactly that by trying the
- * other method. Calling them permanent would let a rail that only ever calls
- * `editMessageText` throw away an anchor the generic sweeper could still fix.
+ * is no caption in the message to edit`. Those say the edit did not fit this
+ * bubble's SHAPE, not that the bubble is dead. `editPaymentBubble`
+ * (jobs/index.ts) treats the first of the two as its signal that the bubble is
+ * a photo (a QRIS QR code) and recovers by deleting it and sending the message
+ * afresh — Telegram cannot turn a photo message into a text one, so editing
+ * its caption instead would leave the useless QR image parked above a
+ * "payment received" line. That recovery only happens because this list leaves
+ * the answer out: calling it permanent would make a live QR bubble look dead
+ * and throw away an anchor that is still perfectly fixable.
  */
 const PERMANENT_EDIT_FAILURES = [
   "message is not modified",

@@ -1605,6 +1605,13 @@ async function flipSettledBubble(
     logger.warn(`Refresh Status could not edit the settled payment bubble for order ${order.orderCode}, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
     return;
   }
+  // A QR bubble isn't edited but deleted and re-sent, so the id the session was
+  // pointing at no longer exists. Only this path can repair that: the poller
+  // and sweeper flip the same bubbles with no session in reach. Left stale it
+  // costs the buyer's next screen one doomed edit before smartEdit falls
+  // through to a fresh send (util/chat.ts) — recoverable, but only because
+  // that fallback exists, and there is no reason to lean on it here.
+  if (outcome.status === "replaced") ctx.session.menuMsgId = outcome.messageId;
   await clearOrderPaymentMessage(prisma, order.id);
 }
 

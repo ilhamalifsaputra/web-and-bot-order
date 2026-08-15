@@ -112,9 +112,9 @@ export function ProductDetailPage() {
         ...(categoryDraft ? { categoryId: Number(categoryDraft) } : {}),
       });
       setEditingProduct(false);
-      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
-      // The catalog list and the categories page both show this product's
-      // category, so a move here has to reach them too.
+      // Prefix match, so this covers both this product's ["catalog", id] query
+      // and the shared ["catalog"] list the catalog and categories pages read —
+      // a move has to reach the category counts on both.
       await queryClient.invalidateQueries({ queryKey: CATALOG_QUERY_KEY });
     } catch (e) {
       setProductError(e instanceof Error ? e.message : "Failed to save product.");

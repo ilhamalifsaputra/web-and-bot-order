@@ -1840,6 +1840,57 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
+  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it and
+  // sends the success message fresh — which leaves ctx.session.menuMsgId
+  // pointing at a message that no longer exists. Refresh is the ONLY flip path
+  // that can repair that: the reconcile pollers and the sweeper edit the same
+  // bubbles with no session in reach.
+  it("re-points the session anchor at the replacement when a photo (QR) bubble is deleted and re-sent", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const staleAnchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = staleAnchor;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi
+      .fn()
+      .mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit"));
+    // The fake api hands back a fresh message_id, so capture the one the
+    // replacement actually got rather than asserting "some other number".
+    const send = (ctx.api as unknown as { sendMessage: (...a: unknown[]) => Promise<{ message_id: number }> }).sendMessage;
+    let replacementId: number | undefined;
+    (ctx.api as unknown as { sendMessage: unknown }).sendMessage = vi.fn(async (...args: unknown[]) => {
+      const sent = await send(...args);
+      replacementId = sent.message_id;
+      return sent;
+    });
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(1);
+    expect(replacementId).toBeDefined();
+    expect(ctx.session.menuMsgId).toBe(replacementId);
+    expect(ctx.session.menuMsgId).not.toBe(staleAnchor);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
+  // The counterpart: a text bubble is edited in place, nothing is deleted, and
+  // the session anchor must be left exactly where it was.
+  it("leaves the session anchor alone when the bubble is edited in place", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const anchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = anchor;
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).toBe(anchor);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
   // Same shape as jobs.test.ts's "safety bounds against a black-holed bubble
   // edit" tests: a real hanging Telegram call, real timers, millisecond-scale
   // bound passed in instead of the real TELEGRAM_MESSAGE_TIMEOUT_MS (5s). This

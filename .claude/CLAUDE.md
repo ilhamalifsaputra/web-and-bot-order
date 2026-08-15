@@ -140,15 +140,19 @@ contents (e.g. verifying a specific line before editing), not architecture.
 
 ## Task tracking
 
-**Use the native CLI todo list (`TodoWrite`) for every non-trivial task in this
-repo.** Create the todo list before starting work, keep exactly one item
-`in_progress` at a time, and mark items `completed` immediately after finishing
-them — don't batch updates. Skip only for a single trivial one-line/config
-edit where a todo list would be pure overhead. If `TodoWrite` isn't in the
-session's available tool list (e.g. some background-job session types don't
-expose it), fall back to a plain markdown checklist and say so — don't
-silently substitute one for the other without noting the tool wasn't
-available.
+**Use the native task list (`TaskCreate` / `TaskUpdate` / `TaskList` /
+`TaskGet`) for every non-trivial task in this repo.** Run `TaskList` first to
+avoid duplicating tasks another session already created, then `TaskCreate` the
+items before starting work. Keep exactly one item `in_progress` at a time
+(`TaskUpdate` with `status: "in_progress"` *before* you begin it), and mark it
+`completed` immediately after finishing — don't batch updates. Use
+`addBlockedBy` when one item genuinely can't start until another lands, and
+`TaskGet` to re-read an item's latest state before updating it. Skip the task
+list only for a single trivial one-line/config edit where it would be pure
+overhead. If the `Task*` tools aren't in the session's available tool list
+(e.g. some background-job session types don't expose them), fall back to a
+plain markdown checklist and say so — don't silently substitute one for the
+other without noting the tools weren't available.
 
 ## Money, data, audit
 - **Decimal for all money** (`@app/core/money`), never `float`. Web formats it

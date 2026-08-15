@@ -102,6 +102,38 @@ export async function tryGenerateWebpVariants(
   }
 }
 
+/**
+ * Variant generation currently reading a source file, keyed by its full path.
+ *
+ * Generation runs unawaited so the admin's Save doesn't wait through three
+ * sharp passes, but sharp holds the source open while it reads it. Deleting a
+ * file in that state fails with EBUSY on Windows, so a replaced photo would
+ * survive its own replacement, and variants finished after the delete would
+ * outlive the image they came from. Anyone about to delete a source waits here
+ * first.
+ */
+const generationInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Begin generating variants for `dir/filename` without waiting for them, and
+ * track the work so `awaitWebpVariants` can wait on it later. Never rejects —
+ * `tryGenerateWebpVariants` logs its own failures.
+ */
+export function startWebpVariants(dir: string, filename: string, widths: number[]): void {
+  const key = join(dir, filename);
+  const work = tryGenerateWebpVariants(dir, filename, widths).finally(() => {
+    // Only clear our own entry: a re-upload under the same name would have
+    // replaced it, and that newer generation still needs to be waited on.
+    if (generationInFlight.get(key) === work) generationInFlight.delete(key);
+  });
+  generationInFlight.set(key, work);
+}
+
+/** Wait for any variant generation still reading `dir/filename`. */
+export async function awaitWebpVariants(dir: string, filename: string): Promise<void> {
+  await generationInFlight.get(join(dir, filename));
+}
+
 /** Remove the derivatives of a replaced/deleted upload so no orphans pile up. */
 export async function deleteWebpVariants(
   dir: string,

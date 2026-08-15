@@ -11,7 +11,8 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { prisma, getSetting, setSetting, logAdminAction } from "@app/db";
 import { sniffImageMime, canonicalImageMime } from "@app/core/media";
 import { canMutate } from "../plugins/auth";
-import { deleteWebpVariants, isConvertible, tryGenerateWebpVariants } from "./webpVariants";
+import { logger } from "@app/core/logger";
+import { awaitWebpVariants, deleteWebpVariants, isConvertible, startWebpVariants } from "./webpVariants";
 
 export interface HandleUploadOpts {
   /** Filename prefix, e.g. "banner" → banner-<hex>.png. */
@@ -112,11 +113,12 @@ export async function handleUpload(
     targetId: opts.auditTarget?.id,
     details: opts.details(filename),
   });
-  // Best-effort and self-logging (tryGenerateWebpVariants never throws), and the
-  // original is already safely on disk — no reason to make the admin's Save
-  // button wait through up to 3 sequential sharp resize/encode passes.
+  // Best-effort and self-logging, and the original is already safely on disk —
+  // no reason to make the admin's Save button wait through up to 3 sequential
+  // sharp resize/encode passes. The work is tracked so that whoever deletes
+  // this file next waits for it instead of yanking it out from under sharp.
   if (opts.webVariants && isConvertible(filename)) {
-    void tryGenerateWebpVariants(opts.destDir, filename, opts.webVariants);
+    startWebpVariants(opts.destDir, filename, opts.webVariants);
   }
   return reply.code(200).send({ url });
 }
@@ -130,7 +132,19 @@ export async function deleteOldUpload(
 ): Promise<void> {
   if (oldValue && oldValue.startsWith(`${urlPrefix}/`)) {
     const filename = basename(oldValue);
-    await unlink(join(destDir, filename)).catch(() => undefined);
+    // This file may still be open for reading by its own variant generation,
+    // which the upload path starts without waiting for. Deleting it now would
+    // fail with EBUSY on Windows and leave both the original and any
+    // late-written variants behind.
+    await awaitWebpVariants(destDir, filename);
+    await unlink(join(destDir, filename)).catch((err: NodeJS.ErrnoException) => {
+      // Already gone is the normal case for a legacy or hand-removed file.
+      if (err.code === "ENOENT") return;
+      logger.warn(
+        { err, filename },
+        "Could not delete the image file a new upload replaced, so it stays on disk taking up space. Nothing the admin did is lost — the new image saved correctly — but if this keeps happening the uploads directory will fill up with files no page references.",
+      );
+    });
     // The WebP siblings would otherwise outlive the image they were made from.
     if (webVariants) await deleteWebpVariants(destDir, filename, webVariants);
   }

@@ -729,8 +729,11 @@ describe("listAllWalletTransactions / countAllWalletTransactions", () => {
     const serialized = JSON.stringify(rows, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
     expect(serialized).not.toContain("secret-hash");
     expect(serialized).not.toContain("alice@example.com");
-    expect(rows[0]!.user).not.toHaveProperty("passwordHash");
-    expect(rows[0]!.user).not.toHaveProperty("email");
+    // Stronger than checking the joined user object for those two fields: the
+    // row carries no user object at all. The relation is read (behind
+    // WALLET_TX_USER_SELECT) purely to build `customerLabel`, so no User
+    // column can ride out of here even if that select is widened later.
+    expect(rows[0]!).not.toHaveProperty("user");
   });
 
   it("surfaces a wallet_topup row with its signed delta and resulting balance", async () => {

@@ -313,7 +313,13 @@ export interface CombinedLedgerPage {
  * `order.findMany` over the distinct order ids in the merged set — never one
  * query per row. That single query is the price of being able to tell a
  * wallet top-up from a product sale on this page; anything per-row would
- * multiply the linear cost described above by the page size.
+ * multiply the linear cost described above by the page size. Note that its
+ * `id IN (...)` list is unbounded for the same reason the merge is: it holds
+ * every distinct order referenced anywhere in the whole ledger, not just the
+ * requested page. So it grows with the ledger too, and on SQLite it does not
+ * merely get slower — past the bind-variable ceiling (~32k) the query throws
+ * outright. That ceiling, not the sort cost, is the real deadline for the
+ * properly paginated cross-table query mentioned above.
  *
  * Returns `{ rows, total }` rather than rows alone, and there is deliberately
  * no `countCombinedLedger` counterpart: the `kind` filter is applied to the

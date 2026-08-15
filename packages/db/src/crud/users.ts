@@ -359,7 +359,9 @@ export async function listWalletLedger(
 /** The only User columns the global wallet-transactions page needs, as an
  *  explicit `select` on the relation. Never `include: { user: true }` here:
  *  that would pull `passwordHash` and `email` into a web-admin JSON response.
- *  Same rule and reasoning as USER_SELECT above, narrowed to a display label. */
+ *  Same rule and reasoning as USER_SELECT above, narrowed to a display label.
+ *  These four columns are read only to build `customerLabel` — the relation
+ *  itself is not returned, so nothing here reaches the wire directly. */
 const WALLET_TX_USER_SELECT = {
   id: true,
   username: true,
@@ -398,9 +400,13 @@ export interface GlobalWalletTransactionRow {
   id: number;
   createdAt: Date;
   userId: number;
-  user: { id: number; username: string | null; fullName: string | null; telegramId: bigint | null } | null;
-  /** Display name for the customer, resolved the same way `recentOrders` does
-   *  it so both admin tables label the same person identically. */
+  /** Display name for the customer: `username`, else `fullName`, else
+   *  `Telegram <telegramId>`, else `Customer #<userId>`. Close to but
+   *  deliberately not identical to `recentOrders`' label (reports.ts), which
+   *  skips `fullName` and ends at "Unknown customer" — so a customer with no
+   *  username but a filled-in `fullName` reads as their name here and as
+   *  "Telegram <id>" there. This chain is the fuller one; if the two are ever
+   *  unified, unify on this one. */
   customerLabel: string;
   /** Signed: positive credits the wallet, negative debits it. */
   delta: string;
@@ -459,7 +465,6 @@ export async function listAllWalletTransactions(
     id: r.id,
     createdAt: r.createdAt,
     userId: r.userId,
-    user: r.user ?? null,
     customerLabel:
       r.user?.username ??
       r.user?.fullName ??

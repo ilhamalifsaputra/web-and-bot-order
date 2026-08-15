@@ -73,9 +73,10 @@ interface TxRow {
   outcome: string;
   memo: string | null;
   /** The order this payment settled, when there is one. `orderKind` is the
-   *  raw `OrderKind` code ("PRODUCT" | "WALLET_TOPUP") — all three are null on
-   *  transfers that were never matched to an order. */
-  orderId: number | null;
+   *  raw `OrderKind` code ("PRODUCT" | "WALLET_TOPUP") — both are null on
+   *  transfers that were never matched to an order. (The route also sends the
+   *  numeric `orderId`; this page renders the code, so it is left off the
+   *  type.) */
   orderCode: string | null;
   orderKind: string | null;
   processedAt: string;

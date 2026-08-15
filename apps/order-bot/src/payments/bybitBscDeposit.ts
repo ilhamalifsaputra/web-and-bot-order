@@ -59,9 +59,9 @@ import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveA
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
-import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
+import { bybitBscTrackingKb } from "../keyboards/customer";
 import type { InlineKeyboard } from "grammy";
-import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
+import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
 
 // AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
 // no on-chain "gas deducted from the sent amount" semantics the way
@@ -340,7 +340,12 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
         topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-        paymentSuccessKb(lang),
+        // Keyboard by order kind through the shared picker, so a top-up bubble
+        // this rail flips carries the wallet keyboard — the same one
+        // `settledPaymentBubble` gives it when the Refresh button or the
+        // sweeper gets there first (util/delivery.ts). Only the keyboard is
+        // shared; the text above stays this rail's own.
+        settledPaymentKb(order.kind, lang),
       ),
       TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
@@ -376,7 +381,11 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
       Number(order.paymentMsgChatId),
       order.paymentMsgId,
       coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-      paymentSuccessKb(lang),
+      // Same shared keyboard picker as onDelivered above. A PROCESSING order
+      // is always a product sale, so this is `paymentSuccessKb` in practice —
+      // routed through the picker anyway so the two edits in this file can
+      // never drift apart.
+      settledPaymentKb(order.kind, lang),
     ),
     TELEGRAM_MESSAGE_TIMEOUT_MS,
   );

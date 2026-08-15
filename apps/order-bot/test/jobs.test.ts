@@ -5,7 +5,6 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createOrderDirect,
-  createWalletTopupOrder,
   finalizeOrderPayment,
   setOrderPaymentMessage,
   clearOrderPaymentMessage,
@@ -51,6 +50,11 @@ import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, TicketStatus } fr
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
+import {
+  makeSettledAnchoredOrder as makeSettledAnchoredOrderShared,
+  onlyBubbleEdit,
+  type BubbleEdit,
+} from "./helpers/settledBubble";
 import {
   autoCancelExpiredOrders,
   autoCloseStaleTickets,
@@ -313,73 +317,29 @@ const SWEEP_METHODS = [
 const IDR_BALANCE = "123456";
 const USDT_BALANCE = "77.5";
 
-let anchorSeq = 0;
-
 /**
- * A settled (DELIVERED/PROCESSING) order of any rail/kind that still carries
- * its payment-bubble anchor — exactly what the sweeper is meant to find. The
- * status is stamped directly (rather than driven through a real settlement
- * path) because the sweeper reads nothing but `kind`/`status`/`currency`/the
- * anchor, and doing it this way is the only way one helper can cover all six
- * rails identically.
+ * The shared harness's settled-anchored-order builder, with this suite's own
+ * fixtures filled in: the sweeper covers all six rails, so the currency comes
+ * from RAIL_CURRENCY rather than being passed per call, and `kind`/`status`
+ * are required because the 24-case matrix below varies both.
  */
-async function makeSettledAnchoredOrder(opts: {
-  method: string;
-  kind: string;
-  status: string;
-}): Promise<{ id: number; orderCode: string; chatId: number; msgId: number }> {
-  const currency = RAIL_CURRENCY[opts.method]!;
-  const order =
-    opts.kind === OrderKind.WALLET_TOPUP
-      ? await prisma.$transaction((tx) =>
-          createWalletTopupOrder(tx, {
-            userId: sample.user.id,
-            amount: currency === "IDR" ? "50000" : "5",
-            currency,
-            method: opts.method as Parameters<typeof createWalletTopupOrder>[1]["method"],
-            rate: "16000",
-          }),
-        )
-      : await prisma.$transaction(async (tx) => {
-          const created = await createOrderDirect(tx, {
-            user: { id: sample.user.id, role: sample.user.role },
-            productId: sample.product.id,
-            quantity: 1,
-          });
-          return currency === "IDR"
-            ? finalizeOrderPayment(tx, created!.id, {
-                currency: OrderCurrency.IDR,
-                method: opts.method as typeof PaymentMethod.TOKOPAY,
-              })
-            : finalizeOrderPayment(tx, created!.id, {
-                currency: OrderCurrency.USDT,
-                rate: "16000",
-                method: opts.method as typeof PaymentMethod.BINANCE_INTERNAL,
-              });
-        });
-  await prisma.order.update({ where: { id: order!.id }, data: { status: opts.status } });
-  const chatId = 555;
-  const msgId = 1000 + ++anchorSeq;
-  await setOrderPaymentMessage(prisma, order!.id, chatId, msgId);
-  return { id: order!.id, orderCode: order!.orderCode, chatId, msgId };
-}
+const makeSettledAnchoredOrder = (opts: { method: string; kind: string; status: string }) =>
+  makeSettledAnchoredOrderShared(prisma, {
+    ...opts,
+    currency: RAIL_CURRENCY[opts.method]!,
+    buyer: { id: sample.user.id, role: sample.user.role },
+    productId: sample.product.id,
+  });
 
-/** The single edit the sweeper made, whichever grammY call carried it. */
-function onlyEdit(api: Api): { chatId: number; msgId: number; text: string; buttons: string[] } {
-  const caption = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls;
-  const text = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
-  expect(caption.length + text.length).toBe(1);
-  const [chatId, msgId, third, fourth] = (caption[0] ?? text[0])!;
-  const payload = (caption.length === 1 ? third : fourth) as {
-    caption?: string;
-    reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
-  };
-  return {
-    chatId: chatId as number,
-    msgId: msgId as number,
-    text: (caption.length === 1 ? payload.caption : third) as string,
-    buttons: payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data ?? ""),
-  };
+/** The single edit the sweeper made, whichever grammY call carried it. The
+ *  sweeper takes a bare `Api`, so the two call lists come off its `vi.fn()`
+ *  mocks — that is the only thing this suite has to supply that
+ *  handlers.test.ts's sink-based reader doesn't. */
+function onlyEdit(api: Api): BubbleEdit {
+  return onlyBubbleEdit(
+    (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls,
+    (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls,
+  );
 }
 
 describe("sweepPaidOrderBubbles", () => {
@@ -607,7 +567,13 @@ describe("sweepPaidOrderBubbles", () => {
   // logic is proven in well under a second.
   describe("safety bounds against a black-holed bubble edit", () => {
     const editTimeoutMs = 200;
-    const totalBudgetMs = 600;
+    // Deliberately NOT 3 × editTimeoutMs. The loop breaks when the elapsed
+    // time is strictly greater than the budget, so an exact 600 would put the
+    // third row's break on the wrong side of the comparison and leave the test
+    // passing only on scheduling overhead. At 500 the same three rows are
+    // wanted with 100ms of slack either way: two hung edits (400ms) stay under
+    // the budget and a third (600ms) is comfortably over it.
+    const totalBudgetMs = 500;
     const hangingApi = () =>
       ({
         editMessageCaption: vi.fn(() => new Promise(() => {})),
@@ -645,9 +611,10 @@ describe("sweepPaidOrderBubbles", () => {
 
       await sweepPaidOrderBubbles(api, { editTimeoutMs, totalBudgetMs });
 
-      // Three rows each burned ~editTimeoutMs, which cumulatively crosses
-      // totalBudgetMs — so the between-rows budget check breaks the loop
-      // before the fourth is ever attempted.
+      // Three rows each burned ~editTimeoutMs (600ms), which crosses the
+      // 500ms totalBudgetMs — so the between-rows budget check breaks the loop
+      // before the fourth is ever attempted. Two rows (400ms) are still inside
+      // the budget, which is why the count is three and not two.
       expect(api.editMessageCaption).toHaveBeenCalledTimes(3);
       const fourth = await prisma.order.findUnique({ where: { id: orders[3]!.id } });
       expect(fourth?.paymentMsgChatId).not.toBeNull();

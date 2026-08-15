@@ -60,16 +60,16 @@ const TONE: Record<string, Tone> = {
   // ReviewStatus / ReviewSentiment (Reviews dashboard, Phase A) — REPLIED and
   // CLOSED already fall back to neutral; NEUTRAL sentiment falls back to
   // neutral too, so only the tone-bearing values need an explicit entry.
+  PENDING_REPLY: "warning",
+  HIDDEN: "danger",
+  POSITIVE: "success",
+  NEGATIVE: "danger",
   // OrderKind (PaymentsPage's Type column) — a wallet top-up moves money into
   // a buyer's balance rather than selling stock, so it reads differently from
   // a product sale. PRODUCT would fall back to neutral anyway; it is listed so
   // the pair is visibly a pair.
   WALLET_TOPUP: "success",
   PRODUCT: "neutral",
-  PENDING_REPLY: "warning",
-  HIDDEN: "danger",
-  POSITIVE: "success",
-  NEGATIVE: "danger",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

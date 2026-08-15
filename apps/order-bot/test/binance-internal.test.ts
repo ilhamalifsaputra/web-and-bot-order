@@ -742,6 +742,18 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).not.toContain("items are being delivered");
     expect(edits[0]!.text).toContain("10.00 USDT");
+
+    // …and the wallet keyboard, not paymentSuccessKb's "My Orders". A top-up
+    // leaves nothing in the order history to look up, so offering it there is
+    // a dead end. This rail used to hand out "My Orders" while the sweeper and
+    // the Refresh button handed out the wallet keyboard for the same order, so
+    // which one the buyer saw depended on who reached the bubble first — both
+    // now go through `settledPaymentKb` (apps/order-bot/src/util/delivery.ts).
+    const markup = (edits[0]!.extra as { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } })
+      .reply_markup;
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:topup:open");
+    expect(flat).not.toContain("v1:order:list");
   });
 
   it("credits an IDR top-up's walletBalance (not walletBalanceUsdt) and formats the DM in Rupiah", async () => {

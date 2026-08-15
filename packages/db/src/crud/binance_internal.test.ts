@@ -735,6 +735,27 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     expect(result.map((o) => o.id)).toEqual([older]);
   });
 
+  it("projects the top-up sentence's own inputs — kind, currency and totalAmount", async () => {
+    const id = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
+    await prisma.order.update({
+      where: { id },
+      data: { kind: OrderKind.WALLET_TOPUP, currency: "IDR", totalAmount: "150000" },
+    });
+
+    const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
+
+    // `walletTopupSuccessText` (apps/order-bot/src/util/delivery.ts) renders
+    // the amount that was topped up, so the sweeper cannot flip a top-up
+    // bubble without these three fields. Pinned here rather than only through
+    // the sweeper's own matrix so dropping one from the `select` fails at the
+    // query that owns it.
+    expect(result).toHaveLength(1);
+    const [row] = result;
+    expect(row!.kind).toBe(OrderKind.WALLET_TOPUP);
+    expect(row!.currency).toBe("IDR");
+    expect(new Decimal(row!.totalAmount).equals(new Decimal("150000"))).toBe(true);
+  });
+
   it("never includes passwordHash on the returned user (explicit select, not include)", async () => {
     await prisma.user.update({ where: { id: sample.user.id }, data: { passwordHash: "should-never-leak" } });
     await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });

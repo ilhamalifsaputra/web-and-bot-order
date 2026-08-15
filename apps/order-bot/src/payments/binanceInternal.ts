@@ -51,8 +51,7 @@ import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
-import { paymentSuccessKb } from "../keyboards/customer";
-import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
+import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
 import {
   AMOUNT_TOLERANCE,
   noteMatches,
@@ -355,7 +354,12 @@ async function editAnchoredBubbleAndDecide(
   try {
     await api.editMessageText(args.chatId, args.messageId, args.text, {
       parse_mode: "HTML",
-      reply_markup: paymentSuccessKb(args.lang),
+      // Keyboard by order kind through the shared picker, so a top-up bubble
+      // this rail flips carries the wallet keyboard — the same one
+      // `settledPaymentBubble` gives it when the Refresh button or the sweeper
+      // gets there first (util/delivery.ts). Only the keyboard is shared; the
+      // text stays this rail's own, passed in by the caller.
+      reply_markup: settledPaymentKb(order.kind, args.lang),
     });
   } catch (err) {
     if (!isPermanentBubbleEditFailure(err)) {

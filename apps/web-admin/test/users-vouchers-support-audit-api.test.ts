@@ -927,7 +927,6 @@ describe("GET /api/wallet-transactions", () => {
       reason: string;
       orderId: number | null;
       createdAtDisplay: string | null;
-      user: Record<string, unknown> | null;
     }>;
     total: number;
     page: number;
@@ -975,8 +974,10 @@ describe("GET /api/wallet-transactions", () => {
     expect(res.body).not.toContain("top-secret-hash");
     expect(res.body).not.toContain("buyer@example.com");
     const body = JSON.parse(res.body) as WalletTxResponse;
-    expect(body.rows[0]!.user).not.toHaveProperty("passwordHash");
-    expect(body.rows[0]!.user).not.toHaveProperty("email");
+    // No user object goes out at all — the page renders `customerLabel`, and
+    // that string is the only thing derived from the User row that the route
+    // sends. Nothing to leak even if the crud select widens later.
+    expect(body.rows[0]!).not.toHaveProperty("user");
   });
 
   it("filters by reason, currency, customer and date range", async () => {

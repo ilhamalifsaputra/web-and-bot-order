@@ -75,6 +75,27 @@ export interface SettledBubbleOrder {
 }
 
 /**
+ * The keyboard a settled order's payment bubble carries, by what the order was
+ * for. A top-up gets the wallet screen's keyboard (`walletKb`): "My Orders" is
+ * the wrong offer after a top-up, because a top-up leaves nothing in the order
+ * history a buyer would go looking for — where they want to go next is their
+ * balance, or another top-up. A product sale keeps `paymentSuccessKb` (buy
+ * again / order history / menu).
+ *
+ * Exported so the three crypto rails' own fast paths (binanceInternal.ts,
+ * bybitDeposit.ts, bybitBscDeposit.ts) pick the keyboard through the same
+ * function `settledPaymentBubble` does, rather than each hard-coding
+ * `paymentSuccessKb`. That mismatch used to be real: whether a top-up buyer saw
+ * "My Orders" or the wallet keyboard depended on whether their own rail or the
+ * background sweeper flipped the bubble first. The rails' TEXT still differs
+ * deliberately (`checkout.internal_paid` / `checkout.bybit_bsc_paid` for a
+ * product sale); only the keyboard is unified here.
+ */
+export function settledPaymentKb(kind: string, lang: string): InlineKeyboard {
+  return kind === OrderKind.WALLET_TOPUP ? walletKb(lang) : paymentSuccessKb(lang);
+}
+
+/**
  * The one place an order maps to the success bubble it should now be showing.
  * Both post-payment bubble flips call it — the buyer's own "🔄 Refresh Status"
  * tap (`refreshPaymentStatus`, handlers/checkout.ts) and the background
@@ -84,15 +105,11 @@ export interface SettledBubbleOrder {
  *
  *  - WALLET_TOPUP (any status) → the same `walletTopupSuccessText` sentence the
  *    three crypto rails already send, so all six payment methods word a
- *    completed top-up identically. That unification is TEXT-only, though: this
- *    path's keyboard is the wallet screen's (`walletKb`), while the crypto
- *    rails' own fast path (binanceInternal.ts, bybitDeposit.ts,
- *    bybitBscDeposit.ts) still passes `paymentSuccessKb`'s "My Orders" for a
- *    WALLET_TOPUP order — a pre-existing mismatch left alone here, not
- *    something this function introduces. A top-up buyer therefore sees
- *    whichever keyboard belongs to whichever path got there first; neither
- *    keyboard is "more correct" and a top-up never produces an order the
- *    buyer would look for in their order history either way.
+ *    completed top-up identically, and the wallet screen's keyboard via
+ *    `settledPaymentKb` above. The crypto rails' fast path now picks its
+ *    keyboard through that same helper, so a top-up buyer sees the same
+ *    keyboard no matter which path reached the bubble first — the rails' own
+ *    product-sale TEXT still differs from this one deliberately.
  *  - PRODUCT + DELIVERED → items are on their way (the account file is
  *    already sent or enqueued).
  *  - PRODUCT + PROCESSING → manual fulfilment; the buyer waits for an admin.
@@ -107,10 +124,10 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
   const lang = langCode(order.user.language);
   if (order.kind === OrderKind.WALLET_TOPUP) {
     const newBalance = (order.currency ?? "USDT") === "IDR" ? order.user.walletBalance : order.user.walletBalanceUsdt;
-    return { text: walletTopupSuccessText(order, newBalance, lang), markup: walletKb(lang) };
+    return { text: walletTopupSuccessText(order, newBalance, lang), markup: settledPaymentKb(order.kind, lang) };
   }
   const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
-  return { text: coreT(key, lang, { code: order.orderCode }), markup: paymentSuccessKb(lang) };
+  return { text: coreT(key, lang, { code: order.orderCode }), markup: settledPaymentKb(order.kind, lang) };
 }
 
 /** Send the buyer their account file (caption + `.txt`). Throws on failure. */

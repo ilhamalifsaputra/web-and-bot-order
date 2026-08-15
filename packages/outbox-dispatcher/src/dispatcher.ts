@@ -20,8 +20,12 @@
  * more plain messages. Credentials/content NEVER ride in the outbox payload
  * (CLAUDE.md).
  *
- * EMAIL lane — the shop owner's OWNER_EMAIL_* rows (Task 3's enqueueOwner*Email
- * helpers). payload carries `to` (never `chat_id`); the body/subject come from
+ * EMAIL lane — every row whose channel is EMAIL, whoever it is addressed to.
+ * That is the shop owner's OWNER_EMAIL_* rows (Task 3's enqueueOwner*Email
+ * helpers) and, since the order-ready receipt shipped, the buyer-addressed
+ * BUYER_EMAIL_ORDER_READY as well. The lane does not care which: it is chosen
+ * by `row.channel` alone and the recipient is whatever `payload.to` says.
+ * payload carries `to` (never `chat_id`); the body/subject come from
  * `renderEmail` (emailTemplates.ts) and go out via SMTP creds resolved from
  * Settings (getSmtpCreds). SMTP being unconfigured is the shop's configuration,
  * not the row's fault, so those rows back off and retry forever rather than
@@ -148,13 +152,11 @@ export async function drainBatch(bot: Bot): Promise<void> {
 
     // EMAIL lane — decided by channel, not event name (checking channel first
     // is clearer/cheaper than relying on event names never colliding with the
-    // Telegram-only special cases below). Despite the helper's name (kept for
-    // continuity) this is not owner-only: it also carries the one buyer
-    // event, BUYER_EMAIL_ORDER_READY — see deliverOwnerEmail's own doc
-    // comment below. No rate-limit concept for email, so just move on to the
-    // next row either way.
+    // Telegram-only special cases below). Owner- and buyer-addressed rows both
+    // come through here; see deliverEmail's own doc comment below. No
+    // rate-limit concept for email, so just move on to the next row either way.
     if (row.channel === NotificationChannel.EMAIL) {
-      await deliverOwnerEmail(row, payload);
+      await deliverEmail(row, payload);
       continue;
     }
 
@@ -352,10 +354,10 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
 }
 
 /**
- * Deliver one EMAIL-channel row. Despite the name (kept for continuity) this
- * is NOT owner-only: it handles every EMAIL-channel event, and one of them —
- * BUYER_EMAIL_ORDER_READY — is addressed to the customer, not the shop owner.
- * No routing change was needed for that: this lane is selected purely by
+ * Deliver one EMAIL-channel row, whoever it is addressed to. It handles every
+ * EMAIL-channel event: the shop owner's OWNER_EMAIL_* rows, and
+ * BUYER_EMAIL_ORDER_READY, which goes to the customer instead. No routing
+ * change was needed to add the buyer one: this lane is selected purely by
  * `row.channel`, and the recipient comes from `payload.to` below, whoever
  * wrote it. Do not add per-event recipient logic here.
  *
@@ -367,7 +369,7 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
  * PENDING when PUBLIC_CHANNEL_ID is unset. Never returns a rate-limit signal
  * — there's no email analogue of Telegram flood control.
  */
-async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
+async function deliverEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
   // renderEmail is async (the OWNER_EMAIL_ORDER_PAID, OWNER_EMAIL_WALLET_TOPUP
   // and BUYER_EMAIL_ORDER_READY branches resolve brand — and for ORDER_PAID,
   // copy — from Settings via Prisma) — see emailTemplates.ts's header comment.

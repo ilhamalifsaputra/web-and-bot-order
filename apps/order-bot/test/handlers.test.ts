@@ -23,7 +23,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, createWalletTopupOrder, setOrderPaymentMessage, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -34,6 +34,11 @@ import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, telegramError, type SentCall } from "./helpers/ctx";
+import {
+  makeSettledAnchoredOrder as makeSettledAnchoredOrderShared,
+  onlyBubbleEdit as onlyBubbleEditShared,
+  type BubbleEdit,
+} from "./helpers/settledBubble";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
@@ -1760,52 +1765,26 @@ describe("Refresh Status button (§7)", () => {
   // the buyer is still looking at a QR code, and Refresh (the one button they
   // WILL press) used to answer with a toast and change nothing at all.
   /** A settled, still-anchored order of any rail/kind — what the buyer is
-   * staring at when they press Refresh after paying. */
-  async function makeSettledAnchoredOrder(opts: { method: string; kind?: string; status?: string; currency?: "IDR" | "USDT" }) {
-    const currency = opts.currency ?? "IDR";
-    const order =
-      opts.kind === OrderKind.WALLET_TOPUP
-        ? await prisma.$transaction((tx) =>
-            createWalletTopupOrder(tx, {
-              userId: sample.user.id,
-              amount: currency === "IDR" ? "50000" : "5",
-              currency,
-              method: opts.method as Parameters<typeof createWalletTopupOrder>[1]["method"],
-              rate: "16000",
-            }),
-          )
-        : await prisma.$transaction(async (tx) => {
-            const created = await createOrderDirect(tx, {
-              user: { id: sample.user.id, role: sample.user.role },
-              productId: sample.product.id,
-              quantity: 1,
-            });
-            return currency === "IDR"
-              ? finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.IDR, method: opts.method as typeof PaymentMethod.TOKOPAY })
-              : finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.USDT, rate: "16000", method: opts.method as typeof PaymentMethod.BINANCE_INTERNAL });
-          });
-    await prisma.order.update({ where: { id: order!.id }, data: { status: opts.status ?? OrderStatus.DELIVERED } });
-    await setOrderPaymentMessage(prisma, order!.id, 555, 4242);
-    return order!;
-  }
+   * staring at when they press Refresh after paying. The shared builder with
+   * this suite's fixtures filled in; unlike the sweeper's matrix, a Refresh
+   * test names one rail at a time, so kind/status/currency keep their
+   * PRODUCT/DELIVERED/IDR defaults. */
+  const makeSettledAnchoredOrder = (opts: { method: string; kind?: string; status?: string; currency?: "IDR" | "USDT" }) =>
+    makeSettledAnchoredOrderShared(prisma, {
+      ...opts,
+      buyer: { id: sample.user.id, role: sample.user.role },
+      productId: sample.product.id,
+    });
 
-  /** The single bubble edit the Refresh tap produced, whichever call carried it. */
-  function onlyBubbleEdit(sink: SentCall[]) {
-    const caption = calls(sink, "editMessageCaption");
-    const text = calls(sink, "editMessageText");
-    expect(caption.length + text.length).toBe(1);
-    const call = (caption[0] ?? text[0])!;
-    const payload = (caption.length === 1 ? call.args[2] : call.args[3]) as {
-      caption?: string;
-      reply_markup: { inline_keyboard: Array<Array<{ callback_data?: string }>> };
-    };
-    return {
-      chatId: call.args[0] as number,
-      msgId: call.args[1] as number,
-      text: (caption.length === 1 ? payload.caption : call.args[2]) as string,
-      buttons: payload.reply_markup.inline_keyboard.flat().map((b) => b.callback_data ?? ""),
-    };
-  }
+  /** The single bubble edit the Refresh tap produced, whichever call carried
+   * it. Refresh edits through `ctx.api`, so the two call lists come out of
+   * `makeCtx`'s sink — that is the only thing this suite has to supply that
+   * jobs.test.ts's mock-based reader doesn't. */
+  const onlyBubbleEdit = (sink: SentCall[]): BubbleEdit =>
+    onlyBubbleEditShared(
+      calls(sink, "editMessageCaption").map((c) => c.args),
+      calls(sink, "editMessageText").map((c) => c.args),
+    );
 
   it("flips a DELIVERED TokoPay order's anchored bubble on the spot and clears the anchor", async () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
@@ -1814,8 +1793,8 @@ describe("Refresh Status button (§7)", () => {
     await checkout.refreshPaymentStatus(ctx, order.id);
 
     const edit = onlyBubbleEdit(sink);
-    expect(edit.chatId).toBe(555);
-    expect(edit.msgId).toBe(4242);
+    expect(edit.chatId).toBe(order.chatId);
+    expect(edit.msgId).toBe(order.msgId);
     expect(edit.text).toContain(order.orderCode);
     expect(edit.text).toContain("being delivered now");
     expect(edit.buttons).toContain("v1:browse:prods");

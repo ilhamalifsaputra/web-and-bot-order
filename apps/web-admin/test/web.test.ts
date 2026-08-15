@@ -4658,7 +4658,15 @@ describe("payments", () => {
     expect(data.ledger.map((tx) => tx.reference)).toContain("PD-FILT-TOPUP");
     expect(data.ledger.map((tx) => tx.reference)).not.toContain("PD-FILT-SALE");
     expect(data.ledger.every((tx) => tx.orderKind === "WALLET_TOPUP")).toBe(true);
-    expect(data.total).toBe(data.ledger.length);
+    // `total` has to follow the filter, not the table. Comparing it to
+    // `ledger.length` proves nothing here — every row this test writes fits on
+    // one page, so the two agree even if the filter were ignored entirely.
+    // The same request without `kind` must therefore see strictly more rows
+    // (the sale row above guarantees at least one). The stronger guard, that
+    // `total` still agrees with the rows once they span several pages, lives
+    // with the query itself in packages/db/src/crud/reports.test.ts.
+    const unfiltered = JSON.parse((await get("/api/payments", seed.cookie)).body) as { total: number };
+    expect(data.total).toBeLessThan(unfiltered.total);
   });
 
   it("GET /api/payments ignores an unknown kind value rather than returning an empty ledger", async () => {

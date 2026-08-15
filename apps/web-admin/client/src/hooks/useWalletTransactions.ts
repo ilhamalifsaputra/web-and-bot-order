@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 
 /** One row of the shop-wide wallet ledger (GET /api/wallet-transactions).
- *  The `user` relation is a deliberately narrow projection server-side — it
- *  never carries passwordHash or email. */
+ *  The customer arrives as the pre-resolved `customerLabel` string only: the
+ *  route joins the User row server-side to build it and sends nothing else
+ *  from that row, so there is no user object here to widen by accident. */
 export interface WalletTransactionRow {
   id: number;
   userId: number;
@@ -17,7 +18,6 @@ export interface WalletTransactionRow {
   orderId: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
-  user: { id: number; username: string | null; fullName: string | null; telegramId: string | null } | null;
 }
 
 export interface WalletTransactionsResponse {

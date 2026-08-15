@@ -753,6 +753,17 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     expect(edits).toHaveLength(1);
     expect(edits[0]!.text).not.toContain("items are being delivered");
     expect(edits[0]!.text).toContain("3.00 USDT");
+
+    // …and the wallet keyboard, not paymentSuccessKb's "My Orders": a top-up
+    // leaves nothing in the order history to look up. Picked through
+    // `settledPaymentKb` (apps/order-bot/src/util/delivery.ts), the same helper
+    // the sweeper and the Refresh button use, so the buyer sees one keyboard
+    // regardless of which path reaches the bubble first.
+    const markup = (edits[0]!.extra as { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } })
+      .reply_markup;
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:topup:open");
+    expect(flat).not.toContain("v1:order:list");
   });
 });
 

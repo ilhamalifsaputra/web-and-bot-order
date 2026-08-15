@@ -44,12 +44,25 @@ function reasonLabel(reason: string): string {
   return REASON_LABELS[reason] ?? humanizeReason(reason);
 }
 
+/** A debit, read off the Decimal string the API sent rather than through
+ *  `Number()`. No money is computed either way here — the sign only picks a
+ *  glyph and a colour — but keeping this file free of `Number()` on money
+ *  strings matches the repo's Decimal-only rule and survives amounts too large
+ *  for a float to hold exactly. `Decimal#toString()` never emits a leading
+ *  "+", so "-" is the only sign that can appear. */
+const isDebit = (amount: string): boolean => amount.startsWith("-");
+
+/** A credit: not a debit, and not some spelling of zero ("0", "0.00") — those
+ *  get no sign glyph at all. Any digit other than 0 anywhere in the string
+ *  means there is magnitude. */
+const isCredit = (amount: string): boolean => !isDebit(amount) && /[1-9]/.test(amount);
+
 /** Money display only — the backend already did every Decimal computation.
  *  The sign is what makes the ledger readable at a glance, so a credit keeps
  *  an explicit "+" (formatCurrencyDisplay renders the "−" for debits itself). */
 function signedAmount(delta: string, currency: string): string {
   const formatted = formatCurrencyDisplay(delta, currency as "IDR" | "USDT" | "USD");
-  return Number(delta) > 0 ? `+${formatted}` : formatted;
+  return isCredit(delta) ? `+${formatted}` : formatted;
 }
 
 const COLUMNS = [
@@ -82,7 +95,7 @@ const COLUMNS = [
     key: "delta",
     header: "Amount",
     render: (r: WalletTransactionRow) => (
-      <span className={`font-mono text-sm ${Number(r.delta) < 0 ? "text-rust" : "text-grass-dark"}`}>
+      <span className={`font-mono text-sm ${isDebit(r.delta) ? "text-rust" : "text-grass-dark"}`}>
         {signedAmount(r.delta, r.currency)}
       </span>
     ),

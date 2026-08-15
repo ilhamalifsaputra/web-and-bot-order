@@ -30,7 +30,6 @@ const TOPUP = {
   orderId: 42,
   createdAt: "2026-06-26T10:00:00.000Z",
   createdAtDisplay: "2026-06-26 17:00",
-  user: { id: 7, username: "buyer", fullName: "Buyer", telegramId: "42" },
 };
 const SPEND = {
   ...TOPUP,

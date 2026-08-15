@@ -1,6 +1,7 @@
 /**
- * One question, asked from six places: when an anchored payment-bubble edit
- * fails, may the order's anchor (`paymentMsgChatId`/`paymentMsgId`) be cleared?
+ * One question, asked wherever an anchored payment bubble is flipped: when the
+ * edit fails, may the order's anchor (`paymentMsgChatId`/`paymentMsgId`) be
+ * cleared?
  *
  * The anchor IS the work queue. `sweepPaidOrderBubbles` (jobs/index.ts) lists
  * exactly the settled orders that still carry one, so clearing an anchor is

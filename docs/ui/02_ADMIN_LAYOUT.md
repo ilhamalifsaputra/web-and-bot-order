@@ -234,3 +234,75 @@ detail, and `01_DESIGN_SYSTEM.md` §11 for the raw breakpoint values.
 - Never nest `PageHeader` inside a `gap-*` container with the rest of the page body
   (§5).
 - Never pair a breadcrumb with a redundant separate back button.
+
+# GLOBAL TABLE GUIDELINE
+
+All data-heavy pages must follow the same layout pattern.
+
+1. Page Header
+
+Title
+
+Description
+
+Primary Action
+
+↓
+
+2. KPI Cards
+
+3–6 summary cards
+
+↓
+
+3. Filter Toolbar
+
+Search
+
+Quick Filters
+
+Dropdown Filters
+
+Sort
+
+↓
+
+4. Hybrid Card-Table
+
+Grouped information
+
+Primary/Secondary hierarchy
+
+Hover actions
+
+↓
+
+5. Bulk Actions
+
+Visible only when rows are selected.
+
+↓
+
+6. Pagination
+
+↓
+
+7. Empty State
+
+↓
+
+8. Loading State
+
+Skeleton loading
+
+↓
+
+9. Responsive
+
+Desktop = Hybrid Card Table
+
+Tablet = Compact Hybrid
+
+Mobile = Cards
+
+Every module should feel like part of the same product, not individually designed pages.

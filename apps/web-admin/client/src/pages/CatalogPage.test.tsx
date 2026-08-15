@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CatalogPage } from "./CatalogPage";
 
@@ -29,11 +29,52 @@ const PRODUCT = {
 const CATEGORY = {
   id: 2,
   name: "Apps",
+  slug: "apps",
   emoji: "📱",
   description: null,
   sortOrder: 0,
   isActive: true,
 };
+
+const GAMES = {
+  id: 5,
+  name: "Games",
+  slug: "games",
+  emoji: "🎮",
+  description: null,
+  sortOrder: 1,
+  isActive: true,
+};
+
+const GAMES_PRODUCT = {
+  ...PRODUCT,
+  id: 4,
+  name: "Free Fire",
+  category: { id: 5, name: "Games", emoji: "🎮" },
+};
+
+/** Renders the page at a given URL and exposes where navigation lands. */
+let location = "";
+function LocationProbe() {
+  location = `${useLocation().pathname}`;
+  return null;
+}
+
+function renderAt(entry: string) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
+      <QueryClientProvider client={qc}>
+        <CatalogPage />
+        <LocationProbe />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
+function currentPath() {
+  return location;
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -203,58 +244,49 @@ describe("CatalogPage", () => {
     expect(errorEl.className).toMatch(/max-w-\[320px\]/);
   });
 
-  it("shows categories (with product counts) and toggles one active when 'Manage categories' is clicked", async () => {
+  it("sends 'Manage categories' and the Categories tile to the categories page", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ categories: [CATEGORY], products: [PRODUCT] }),
-    );
-    render(<CatalogPage />, { wrapper: Wrapper });
+    fetchSpy.mockResolvedValue(jsonResponse({ categories: [CATEGORY], products: [PRODUCT] }));
+    renderAt("/catalog");
     await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("button", { name: /manage categories/i }));
-    const categoriesPanel = screen
-      .getByRole("switch", { name: "Apps active" })
-      .closest('[data-slot="card"]') as HTMLElement;
-    expect(within(categoriesPanel).getByText(/📱/)).toBeInTheDocument();
-    expect(within(categoriesPanel).getByText("(1)")).toBeInTheDocument();
+    expect(currentPath()).toBe("/categories");
 
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ id: 2, isActive: false }),
-    );
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ categories: [{ ...CATEGORY, isActive: false }], products: [PRODUCT] }),
-    );
-    fireEvent.click(screen.getByRole("switch", { name: "Apps active" }));
-
-    await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/categories/2/active", expect.objectContaining({ method: "POST" })),
-    );
+    fireEvent.click(screen.getByRole("button", { name: /Categories 1/ }));
+    expect(currentPath()).toBe("/categories");
   });
 
-  it("edits a category via the edit dialog", async () => {
+  it("moves the selected products to a category in bulk", async () => {
+    const user = userEvent.setup();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ categories: [CATEGORY], products: [PRODUCT] }),
-    );
-    render(<CatalogPage />, { wrapper: Wrapper });
+    fetchSpy.mockResolvedValue(jsonResponse({ categories: [CATEGORY, GAMES], products: [PRODUCT] }));
+    renderAt("/catalog");
     await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /manage categories/i }));
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit category" }));
-    const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
-
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ id: 2, name: "Renamed" }),
-    );
-    fetchSpy.mockResolvedValueOnce(
-      jsonResponse({ categories: [{ ...CATEGORY, name: "Renamed" }], products: [PRODUCT] }),
-    );
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("checkbox", { name: /select CapCut Pro/i }));
+    await user.click(screen.getByRole("combobox", { name: "Move to category" }));
+    await user.click(await screen.findByRole("option", { name: /Games/ }));
 
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/categories/2", expect.objectContaining({ method: "PATCH" })),
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/catalog/products/bulk-category",
+        expect.objectContaining({ method: "POST" }),
+      ),
     );
+    const call = fetchSpy.mock.calls.find(([url]) => url === "/api/catalog/products/bulk-category")!;
+    expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({ ids: [1], categoryId: 5 });
+  });
+
+  it("starts filtered when the URL names a category", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValue(
+      jsonResponse({ categories: [CATEGORY, GAMES], products: [PRODUCT, GAMES_PRODUCT] }),
+    );
+    renderAt("/catalog?categoryId=5");
+
+    expect(await screen.findByText("Free Fire")).toBeInTheDocument();
+    expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument();
   });
 
   it("deletes a product via the row's actions menu, after confirming", async () => {

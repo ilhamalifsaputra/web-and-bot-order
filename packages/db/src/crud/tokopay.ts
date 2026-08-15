@@ -28,7 +28,7 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid, enqueueWalletTopupCreditedDm } from "./notifications";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
-import { settleWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 /** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
@@ -121,9 +121,13 @@ export async function deliverPaidTokopayOrder(
   try {
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
+      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+      // the buyer paid after the window closed, and a top-up reserves nothing
+      // that cancelling gave away. A cancelled PRODUCT order is NOT — its
+      // stock went back to the pool — so it keeps falling through to "stale".
       if (
         !order ||
-        order.status !== OrderStatus.PENDING_PAYMENT ||
+        (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order)) ||
         order.paymentMethod !== PaymentMethod.TOKOPAY
       ) {
         // Correct the audit row: the trx matched an order that's no longer payable.

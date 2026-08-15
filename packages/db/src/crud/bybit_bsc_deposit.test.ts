@@ -34,7 +34,7 @@ import {
   markUnderpaidBybitBsc,
   recordUnmatchedBybitBscTx,
 } from "./bybit_bsc_deposit";
-import { createOrderDirect } from "./orders";
+import { createOrderDirect, cancelOrder } from "./orders";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
@@ -673,6 +673,51 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
 
     const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
     expect(rows).toHaveLength(1);
+  });
+
+  // F8 Part A. Distinct from the CONFIRMED case below: CONFIRMED is a
+  // pre-delivery milestone this rail normalizes back to PENDING_PAYMENT before
+  // settling, whereas CANCELLED is a terminal state settleWalletTopup claims
+  // directly — the normalization must NOT swallow it, or the "credited past
+  // its window" warning ops relies on would never be logged.
+  it("a top-up auto-cancelled at window close is still credited when the deposit lands late", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    const txId = "0x" + "9".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
+    const productOrder = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+    }))!;
+    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired"));
+    const txId = "0x" + "a".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, {
+      orderId: productOrder.id,
+      bybitTxId: txId,
+      amount: productOrder.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: productOrder.id } });
+    expect(reloaded.status).toBe(OrderStatus.CANCELLED);
   });
 
   // Regression: unlike the other 5 gateways, an on-chain Bybit BSC deposit

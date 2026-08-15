@@ -42,7 +42,7 @@ import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
-import { settleWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 
 // ---------------------------------------------------------------------------
@@ -410,7 +410,14 @@ export async function deliverPaidInternalOrder(
   try {
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
-      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+      // the transfer arrived after the window closed, and a top-up reserves
+      // nothing that cancelling gave away. This poller only ever hands us a
+      // PENDING_PAYMENT order, so in practice this covers the order being
+      // auto-cancelled between the poller's read and this delivery. A
+      // cancelled PRODUCT order is NOT payable — its stock went back to the
+      // pool — so it keeps falling through to "stale".
+      if (!order || (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order))) {
         // If step 1 re-claimed this row from a non-delivering outcome, undo
         // that claim — restore the outcome/orderId/amount it overwrote —
         // instead of leaving the row "matched" against an order that never

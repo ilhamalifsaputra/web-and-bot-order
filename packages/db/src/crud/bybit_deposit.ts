@@ -27,7 +27,7 @@ import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
-import { settleWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
@@ -213,7 +213,12 @@ export async function deliverPaidBybitOrder(
   try {
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
-      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+      // the deposit arrived after the window closed, and a top-up reserves
+      // nothing that cancelling gave away. A cancelled PRODUCT order is NOT —
+      // its stock went back to the pool — so it keeps falling through to
+      // "stale".
+      if (!order || (order.status !== OrderStatus.PENDING_PAYMENT && !isLateSettleableWalletTopup(order))) {
         // If step 1 re-claimed this row from a non-delivering outcome, undo
         // that claim — restore the outcome/orderId/amount it overwrote —
         // instead of leaving the row "matched" against an order that never

@@ -19,8 +19,10 @@
  *
  * Settlement (`settleWalletTopup`) is deliberately simpler than
  * `settlePaidOrder`/`approveOrder`: no stock to allocate, no referral
- * commission, no delivery DM — just an atomic PENDING_PAYMENT → DELIVERED
- * claim (same idiom as `approveOrder`) followed by one `adjustWallet` credit.
+ * commission, no delivery DM — just an atomic "still awaiting payment, or
+ * cancelled when its window lapsed" → DELIVERED claim (the `approveOrder`
+ * idiom, widened per `isLateSettleableWalletTopup`) followed by one
+ * `adjustWallet` credit.
  * Gateway-specific settlement functions (Task 3) call this after their own
  * `ProcessedXTx` idempotency claim succeeds; the `claim.count !== 1` no-op
  * branch here is defense-in-depth, not the primary idempotency gate.
@@ -260,6 +262,20 @@ export async function createWalletTopupOrder(
       walletUsed: ZERO,
       status: OrderStatus.PENDING_PAYMENT,
       voucherId: null,
+      // IDR top-ups get their payment window HERE, at creation, exactly the
+      // way createOrderDirect/createOrderFromCart stamp one on a product
+      // order — and deliberately NOT inside finalizeOrderPayment's IDR
+      // branch, which product orders share and which must keep leaving their
+      // creation-time window alone. Without a window the order's expiresAt
+      // stayed null, and both QRIS reconcile pollers filter on
+      // `expiresAt > now`, which null never satisfies — so no IDR top-up was
+      // ever reconcilable and a missed storefront webhook meant a paid buyer
+      // with nothing watching. USDT top-ups are left alone: each of their
+      // four rails gets its own, shorter auto-confirm window from
+      // finalizeWalletTopupPayment below.
+      ...(args.currency === "IDR"
+        ? { expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES) }
+        : {}),
     },
   });
 
@@ -282,8 +298,9 @@ export async function createWalletTopupOrder(
 }
 
 /**
- * Settle a paid wallet-topup order: atomically claim PENDING_PAYMENT ->
- * DELIVERED (same idiom as `approveOrder`, orders.ts:1284), then credit the
+ * Settle a paid wallet-topup order: atomically claim PENDING_PAYMENT (or
+ * CANCELLED — see `isLateSettleableWalletTopup`) -> DELIVERED (same idiom as
+ * `approveOrder`, orders.ts:1284), then credit the
  * buyer's wallet via `adjustWallet` — the only function allowed to mutate a
  * wallet balance — for `order.totalAmount` in `order.currency`. Must run
  * inside the caller's `$transaction` (same contract as `settlePaidOrder`) —
@@ -299,8 +316,9 @@ export async function createWalletTopupOrder(
  * mismatch is logged, not silently ignored, so a gateway reporting a
  * different amount than the order expects is visible to ops.
  *
- * If the order is no longer PENDING_PAYMENT when this runs (double-settlement
- * — e.g. a retried gateway callback), this is a no-op: returns the current
+ * If the order is neither PENDING_PAYMENT nor CANCELLED when this runs
+ * (double-settlement — e.g. a retried gateway callback landing on an already
+ * DELIVERED top-up), this is a no-op: returns the current
  * order unchanged with `credited: 0`. This is defense-in-depth only; the real
  * idempotency gate is each gateway's own `ProcessedXTx` unique-claim (Task 3),
  * which runs before this function is ever called.
@@ -348,8 +366,15 @@ export async function settleWalletTopup(
   }
 
   const now = new Date();
+  // CANCELLED is claimable alongside PENDING_PAYMENT (see
+  // `isLateSettleableWalletTopup`): a top-up whose window lapsed was
+  // auto-cancelled, but the buyer's money can still land afterwards, and a
+  // top-up reserves nothing that cancelling gave away. Every other status —
+  // DELIVERED above all — still fails the claim, so the double-settlement
+  // no-op below is untouched.
+  const wasCancelled = order.status === OrderStatus.CANCELLED;
   const claim = await db.order.updateMany({
-    where: { id: orderId, status: OrderStatus.PENDING_PAYMENT },
+    where: { id: orderId, status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED] } },
     data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now },
   });
   if (claim.count !== 1) {
@@ -359,6 +384,17 @@ export async function settleWalletTopup(
       current!.currency === OrderCurrency.USDT ? currentUser.walletBalanceUsdt : currentUser.walletBalance,
     );
     return { order: current!, credited: new Decimal(0), newBalance: currentBalance };
+  }
+
+  if (wasCancelled) {
+    logger.warn(
+      `Wallet top-up order ${order.orderCode} was credited after its payment window had already closed — the order had ` +
+        `been auto-cancelled as expired, and the buyer's payment reached the gateway afterwards. Crediting it is still ` +
+        `correct: a top-up reserves no stock and no voucher, so nothing was given away when it was cancelled and the ` +
+        `only alternative would be keeping money the buyer has already paid. The buyer was told the order was ` +
+        `cancelled, so they will now receive a separate "balance credited" message. If this happens often, the ` +
+        `payment window is too short for how long the payment gateways actually take to confirm.`,
+    );
   }
 
   const reportedAmount = new Decimal(args.amount);
@@ -399,6 +435,31 @@ export async function settleWalletTopup(
 
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed!, credited: new Decimal(order.totalAmount), newBalance };
+}
+
+/**
+ * True for a wallet top-up whose order was already cancelled — in practice
+ * always by `autoCancelExpiredOrders` once the payment window lapsed — but
+ * whose money has now genuinely arrived at the gateway. Every rail's
+ * "this order is no longer payable → stale" guard consults this so a late
+ * payment is settled instead of silently pocketed.
+ *
+ * Safe for a top-up and ONLY for a top-up: a `WALLET_TOPUP` order reserves
+ * nothing. No stock is held, no voucher is consumed, no referral is pending —
+ * there is nothing that had to be given back when it was cancelled, and so
+ * nothing that has to be taken back to settle it now. Crediting it is purely
+ * "add the balance whose money we are already holding". A cancelled PRODUCT
+ * order is the exact opposite: its stock was released back to the pool and may
+ * already belong to someone else, so it must stay stale — reviving one is a
+ * different and far bigger problem, deliberately out of scope here.
+ *
+ * The gateway invoice does not expire alongside our own `expiresAt` (none of
+ * the QRIS rails are told about it — `createTransaction` sends only the
+ * nominal), so paying after the window closed is an ordinary thing for a
+ * buyer to do, not an edge case.
+ */
+export function isLateSettleableWalletTopup(order: { kind: string; status: string }): boolean {
+  return order.kind === OrderKind.WALLET_TOPUP && order.status === OrderStatus.CANCELLED;
 }
 
 /**

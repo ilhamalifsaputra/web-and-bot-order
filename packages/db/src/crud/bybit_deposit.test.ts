@@ -28,7 +28,7 @@ import {
   markUnderpaidBybit,
   recordUnmatchedBybitTx,
 } from "./bybit_deposit";
-import { createOrderDirect } from "./orders";
+import { createOrderDirect, cancelOrder } from "./orders";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
@@ -683,6 +683,43 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
     expect(stock.every((s) => s.status === StockStatus.AVAILABLE)).toBe(true);
     const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
     expect(referral).toBeNull();
+  });
+
+  // F8 Part A: money that arrives after the payment window closed.
+  it("a top-up auto-cancelled at window close is still credited when the deposit lands late", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "tx-topup-late-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+  });
+
+  it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
+    const productOrder = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+    }))!;
+    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired"));
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: productOrder.id,
+      bybitTxId: "tx-product-late-1",
+      amount: productOrder.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: productOrder.id } })).status).toBe(OrderStatus.CANCELLED);
   });
 
   it("a duplicate gateway tx id does not double-credit the wallet", async () => {

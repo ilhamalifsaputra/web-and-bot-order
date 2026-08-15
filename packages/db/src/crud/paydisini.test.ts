@@ -35,6 +35,7 @@ import {
   createWalletTopupOrder,
   upsertUser,
   bulkAddStock,
+  cancelOrder,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -630,6 +631,71 @@ describe("getPaydisiniCreds — minAmount", () => {
 // (`.slice(0, 50)`). This crud-level test instead proves the cap lives in the
 // query AND pins the oldest-first ordering the reconcile poller's whole
 // "closest to auto-cancelling gets checked first" justification depends on.
+// F8. Part A at the rail level, plus Part B's poller visibility — the two
+// halves of the same defect: a top-up nobody reconciles, and a reconciled
+// top-up nobody credits.
+describe("deliverPaidPaydisiniOrder / listPendingPaydisiniOrders — late-paid and reconcilable top-ups", () => {
+  async function makePendingTopupOrder(amount: string = "20000") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount,
+        currency: "IDR",
+        method: PaymentMethod.PAYDISINI,
+      }),
+    );
+  }
+
+  it("a freshly created IDR wallet top-up shows up for the reconcile poller", async () => {
+    const order = await makePendingTopupOrder();
+    expect(order.expiresAt).not.toBeNull();
+
+    const pending = await listPendingPaydisiniOrders(prisma, new Date());
+    expect(pending.map((o) => o.id)).toContain(order.id);
+  });
+
+  it("a top-up auto-cancelled at window close is still credited when the payment lands late", async () => {
+    const order = await makePendingTopupOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-topup-late-pd-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+  });
+
+  it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
+    const order = await makePendingPaydisiniOrder();
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-product-late-pd-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-product-late-pd-1" } });
+    expect(ledgerRow?.outcome).toBe("stale");
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(reloaded.status).toBe(OrderStatus.CANCELLED);
+  });
+});
+
 describe("listPendingPaydisiniOrders — the query-level cap returns the oldest rows first", () => {
   it("returns exactly `limit` rows, and they are the `limit` oldest by createdAt", async () => {
     const extraCreds = Array.from({ length: 53 }, (_, i) => `cap-test-${i}@example.com:pwd`);

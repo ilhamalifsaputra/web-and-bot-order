@@ -29,7 +29,11 @@ import {
   createWalletTopupOrder,
   upsertUser,
   bulkAddStock,
+  cancelOrder,
+  finalizeOrderPayment,
 } from "@app/db";
+import { OrderCurrency } from "@app/core/enums";
+import { config } from "@app/core/config";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
@@ -342,6 +346,75 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
     expect(payload.new_balance).toBe(new Decimal(order.totalAmount).toString());
   });
 
+  // F8 Part A. A top-up reserves nothing — no stock, no voucher, nothing to
+  // give back — so once its money has actually arrived, crediting it is always
+  // right, even though `autoCancelExpiredOrders` already cancelled the order
+  // when the payment window lapsed. The alternative is keeping the buyer's
+  // money, which never is.
+  it("a top-up auto-cancelled at window close is still credited when the payment lands late", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "20000");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-topup-late-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-topup-late-1" } });
+    expect(ledgerRow?.outcome).toBe("matched"); // not "stale"
+
+    // The buyer already got an "order cancelled" DM from the auto-cancel job;
+    // this credit DM is the follow-up, and there must be exactly one of it.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+  });
+
+  // The most important guard on the relaxation above: a cancelled PRODUCT
+  // order has already released its stock, so reviving it is a different (and
+  // far larger) problem. It must stay stale.
+  it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
+    const order = await makePendingTokopayOrder();
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    // Snapshot AFTER the cancel: the cancel itself legitimately released the
+    // reservation. What must not change is anything the late callback does.
+    const stockBefore = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-product-late-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-product-late-1" } });
+    expect(ledgerRow?.outcome).toBe("stale");
+
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(reloaded.status).toBe(OrderStatus.CANCELLED);
+
+    // No wallet credit, no stock movement, no buyer notification.
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
+    const stockAfter = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(stockAfter.map((s) => `${s.id}:${s.status}`).sort()).toEqual(
+      stockBefore.map((s) => `${s.id}:${s.status}`).sort(),
+    );
+    const outbox = await prisma.notificationOutbox.count({ where: { orderId: order.id } });
+    expect(outbox).toBe(0);
+  });
+
   it("a duplicate gateway tx id does not double-credit the wallet", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "20000");
 
@@ -536,6 +609,61 @@ describe("getTokopayCreds — minAmount", () => {
 // (`.slice(0, 50)`). This crud-level test instead proves the cap lives in the
 // query AND pins the oldest-first ordering the reconcile poller's whole
 // "closest to auto-cancelling gets checked first" justification depends on.
+// F8 Part B. `listPendingTokopayOrders` filters on `expiresAt > now`, and a
+// null expiresAt does NOT pass that filter — so until wallet top-ups were
+// given a payment window, not a single IDR top-up was ever visible to the
+// reconcile poller, leaving the storefront webhook as the only thing that
+// could ever settle one.
+describe("listPendingTokopayOrders — wallet top-ups are reconcilable", () => {
+  it("a freshly created IDR wallet top-up shows up for the reconcile poller", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "50000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    expect(order.expiresAt).not.toBeNull();
+
+    const pending = await listPendingTokopayOrders(prisma, new Date());
+    expect(pending.map((o) => o.id)).toContain(order.id);
+  });
+
+  it("an expired top-up drops back out of the poller's view (the window still means something)", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "50000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+
+    const pending = await listPendingTokopayOrders(prisma, new Date());
+    expect(pending.map((o) => o.id)).not.toContain(order.id);
+  });
+
+  // Regression: a PRODUCT order's window is stamped at creation
+  // (createOrderDirect/createOrderFromCart). finalizeOrderPayment's IDR branch
+  // must keep leaving it alone — never extend, never overwrite.
+  it("finalizing a PRODUCT IDR order's payment leaves its creation-time expiresAt untouched", async () => {
+    const order = await makePendingTokopayOrder();
+    const before = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).expiresAt;
+    expect(before).not.toBeNull();
+    expect((before!.getTime() - Date.now()) / 60_000).toBeLessThanOrEqual(config.PAYMENT_WINDOW_MINUTES);
+
+    await finalizeOrderPayment(prisma, order.id, {
+      currency: OrderCurrency.IDR,
+      method: PaymentMethod.TOKOPAY,
+    });
+
+    const after = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).expiresAt;
+    expect(after?.getTime()).toBe(before!.getTime());
+  });
+});
+
 describe("listPendingTokopayOrders — the query-level cap returns the oldest rows first", () => {
   it("returns exactly `limit` rows, and they are the `limit` oldest by createdAt", async () => {
     const extraCreds = Array.from({ length: 53 }, (_, i) => `cap-test-${i}@example.com:pwd`);

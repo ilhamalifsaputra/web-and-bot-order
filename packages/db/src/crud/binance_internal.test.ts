@@ -32,6 +32,7 @@ import {
   setOrderPaymentMessage,
   clearPaymentMessageAnchorsAt,
   bulkAddStock,
+  cancelOrder,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -584,6 +585,46 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
   // directly by that poller's onDelivered handler instead. Settlement here
   // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
   // buyer would be notified twice.
+  // F8 Part A. A top-up reserves nothing, so once the transfer has actually
+  // arrived, crediting it is right even though the order was auto-cancelled
+  // when its window lapsed. Keeping the buyer's USDT is not an option.
+  it("a top-up auto-cancelled at window close is still credited when the transfer lands late", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-topup-late-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
+    const order = await makePendingInternalOrder();
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-product-late-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(reloaded.status).toBe(OrderStatus.CANCELLED);
+  });
+
   it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
 

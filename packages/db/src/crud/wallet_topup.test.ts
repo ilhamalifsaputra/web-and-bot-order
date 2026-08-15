@@ -6,6 +6,8 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { getSetting, setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
+import { config } from "@app/core/config";
+import { cancelOrder } from "./orders";
 import {
   resolveWalletTopupLimits,
   createWalletTopupOrder,
@@ -467,6 +469,187 @@ describe("settleWalletTopup", () => {
   });
 });
 
+describe("createWalletTopupOrder — payment window (Part B)", () => {
+  /** Allow a couple of minutes of slack so a slow test box can't flake this. */
+  function minutesFromNow(at: Date | null): number {
+    if (!at) throw new Error("expiresAt was null");
+    return (at.getTime() - Date.now()) / 60_000;
+  }
+
+  it("an IDR top-up gets an expiresAt, so the QRIS reconcile pollers can actually see it", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "50000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    expect(order.expiresAt).not.toBeNull();
+    // Same window product IDR orders use — they pay through the very same two
+    // gateways, so there is no reason for a top-up to get a different one.
+    expect(minutesFromNow(order.expiresAt)).toBeGreaterThan(config.PAYMENT_WINDOW_MINUTES - 2);
+    expect(minutesFromNow(order.expiresAt)).toBeLessThanOrEqual(config.PAYMENT_WINDOW_MINUTES);
+  });
+
+  it("a PayDisini IDR top-up gets the same window (the setting is per-currency, not per-gateway)", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "50000",
+        currency: "IDR",
+        method: PaymentMethod.PAYDISINI,
+      }),
+    );
+    expect(order.expiresAt).not.toBeNull();
+    expect(minutesFromNow(order.expiresAt)).toBeGreaterThan(config.PAYMENT_WINDOW_MINUTES - 2);
+    expect(minutesFromNow(order.expiresAt)).toBeLessThanOrEqual(config.PAYMENT_WINDOW_MINUTES);
+  });
+
+  // Regression: the IDR window must not leak onto the USDT rails, each of
+  // which finalizeWalletTopupPayment gives its own, deliberately different
+  // auto-confirm window.
+  it("a Binance Internal USDT top-up keeps its own per-rail window, not the IDR one", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "10",
+        currency: "USDT",
+        method: PaymentMethod.BINANCE_INTERNAL,
+        rate: "16000",
+      }),
+    );
+    expect(order.expiresAt).not.toBeNull();
+    expect(minutesFromNow(order.expiresAt)).toBeGreaterThan(config.INTERNAL_PAYMENT_WINDOW_MINUTES - 2);
+    expect(minutesFromNow(order.expiresAt)).toBeLessThanOrEqual(config.INTERNAL_PAYMENT_WINDOW_MINUTES);
+  });
+
+  it("a Bybit BSC USDT top-up keeps its own per-rail window too", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "10",
+        currency: "USDT",
+        method: PaymentMethod.BYBIT_BSC,
+        rate: "16000",
+      }),
+    );
+    expect(order.expiresAt).not.toBeNull();
+    expect(minutesFromNow(order.expiresAt)).toBeGreaterThan(config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES - 2);
+    expect(minutesFromNow(order.expiresAt)).toBeLessThanOrEqual(config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES);
+  });
+});
+
+describe("settleWalletTopup — money that arrives after the payment window closed (Part A)", () => {
+  /** Create a top-up, let its window lapse, and auto-cancel it exactly the way
+   * `autoCancelExpiredOrders` does — the state a late-paying buyer's order is
+   * really in by the time the gateway confirms. */
+  async function makeExpiredCancelledTopup(args: { currency: "IDR" | "USDT"; amount: string }) {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(
+        tx,
+        args.currency === "IDR"
+          ? { userId: sample.user.id, amount: args.amount, currency: "IDR", method: PaymentMethod.TOKOPAY }
+          : {
+              userId: sample.user.id,
+              amount: args.amount,
+              currency: "USDT",
+              method: PaymentMethod.NOWPAYMENTS,
+              rate: "16000",
+            },
+      ),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    const cancelled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(cancelled.status).toBe(OrderStatus.CANCELLED);
+    return order;
+  }
+
+  it("credits an auto-cancelled IDR top-up whose payment lands late, and marks it DELIVERED", async () => {
+    const order = await makeExpiredCancelledTopup({ currency: "IDR", amount: "20000" });
+
+    const result = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    expect(result.credited.equals(order.totalAmount)).toBe(true);
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("credits an auto-cancelled USDT top-up whose payment lands late (this rail has been losing money today)", async () => {
+    const order = await makeExpiredCancelledTopup({ currency: "USDT", amount: "10" });
+
+    const result = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    expect(result.credited.equals(order.totalAmount)).toBe(true);
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+    expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
+  });
+
+  it("a revived top-up settled a second time is still a no-op — the anti-double-credit claim survives the relaxation", async () => {
+    const order = await makeExpiredCancelledTopup({ currency: "IDR", amount: "20000" });
+
+    const first = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    expect(first.credited.equals(order.totalAmount)).toBe(true);
+
+    const second = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    expect(second.credited.equals(0)).toBe(true);
+    expect(second.order.status).toBe(OrderStatus.DELIVERED);
+    expect(second.newBalance.equals(order.totalAmount)).toBe(true);
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("still refuses a CANCELLED PRODUCT order — the relaxation is scoped to WALLET_TOPUP only", async () => {
+    const productOrder = await prisma.order.create({
+      data: {
+        orderCode: "TEST-CANCELLED-PRODUCT",
+        userId: sample.user.id,
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        status: OrderStatus.CANCELLED,
+      },
+    });
+
+    await expect(
+      prisma.$transaction((tx) => settleWalletTopup(tx, productOrder.id, { amount: "10000" })),
+    ).rejects.toMatchObject({ key: "error.order_not_wallet_topup" });
+
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: productOrder.id } });
+    expect(reloaded.status).toBe(OrderStatus.CANCELLED);
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
+  });
+
+  it("a REJECTED top-up is not revived — only the auto-cancel path is forgiven", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "20000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.REJECTED } });
+
+    const result = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    expect(result.credited.equals(0)).toBe(true);
+    expect(result.order.status).toBe(OrderStatus.REJECTED);
+
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
+  });
+});
+
 describe("settleWalletTopup — owner wallet-topup email (Task T3)", () => {
   async function makeIdrTopupOrder(amount: string = "20000") {
     return prisma.$transaction((tx) =>
@@ -535,6 +718,21 @@ describe("settleWalletTopup — owner wallet-topup email (Task T3)", () => {
       where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
     });
     expect(afterSecond).toBe(1);
+  });
+
+  it("a late-paid, auto-cancelled top-up enqueues exactly one owner email, and none on a repeat settlement", async () => {
+    await configureOwnerEmail();
+    const order = await makeIdrTopupOrder("20000");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_WALLET_TOPUP, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
   });
 
   it("stays completely inert (writes no outbox row at all) when the owner-email feature is unconfigured", async () => {

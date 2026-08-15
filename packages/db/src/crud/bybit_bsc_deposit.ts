@@ -34,7 +34,7 @@ import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
-import { settleWalletTopup } from "./wallet_topup";
+import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
@@ -448,7 +448,13 @@ export async function deliverPaidBybitBscOrder(
   try {
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
-      if (!order || !PRE_DELIVERY_STATUSES.includes(order.status)) {
+      // A cancelled WALLET_TOPUP is still payable (isLateSettleableWalletTopup):
+      // the deposit arrived after the window closed, and a top-up reserves
+      // nothing that cancelling gave away. A cancelled PRODUCT order is NOT —
+      // its stock went back to the pool — so it keeps falling through to
+      // "stale". CANCELLED stays OUT of PRE_DELIVERY_STATUSES itself, which
+      // is what keeps the status normalization below from swallowing it.
+      if (!order || (!PRE_DELIVERY_STATUSES.includes(order.status) && !isLateSettleableWalletTopup(order))) {
         // If step 1 re-claimed this row from a non-delivering outcome, undo
         // that claim — restore the outcome/orderId/amount it overwrote —
         // instead of leaving the row "matched" against an order that never
@@ -486,7 +492,13 @@ export async function deliverPaidBybitBscOrder(
         // state is never externally observable (no separate commit, and
         // settleWalletTopup writes no OrderStatusHistory row for this
         // transition either, mirroring approveOrder's claim idiom).
-        if (order.status !== OrderStatus.PENDING_PAYMENT) {
+        //
+        // Scoped to PRE_DELIVERY_STATUSES on purpose: a CANCELLED top-up also
+        // reaches this line now (a late-arriving deposit on a window that had
+        // already closed), and settleWalletTopup claims CANCELLED directly —
+        // normalizing that one away would erase the very fact it needs in
+        // order to log that a top-up was credited past its window.
+        if (order.status !== OrderStatus.PENDING_PAYMENT && PRE_DELIVERY_STATUSES.includes(order.status)) {
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });

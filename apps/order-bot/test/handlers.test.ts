@@ -1852,11 +1852,11 @@ describe("Refresh Status button (§7)", () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     // refreshPaymentStatus edits through ctx.api (unlike sweepPaidOrderBubbles,
-    // which takes a bare Api), so the hang is installed directly on it —
-    // editMessageCaption first (photo/QR bubbles), editMessageText as the
-    // fallback editPaymentBubble would otherwise try.
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = vi.fn(() => new Promise(() => {}));
+    // which takes a bare Api), so the hang is installed directly on it — on
+    // editMessageText, which is what editPaymentBubble tries first, and on the
+    // deleteMessage it would fall through to for a photo bubble.
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi.fn(() => new Promise(() => {}));
+    (ctx.api as unknown as { deleteMessage: unknown }).deleteMessage = vi.fn(() => new Promise(() => {}));
 
     await checkout.refreshPaymentStatus(ctx, order.id, { editTimeoutMs: 50 });
 
@@ -1879,18 +1879,25 @@ describe("Refresh Status button (§7)", () => {
     ["message is not modified (the bubble already shows this text)", "Bad Request: message is not modified"],
   ])("clears the anchor when Telegram answers %s", async (_label, description) => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
-    const { ctx } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     const reject = vi.fn().mockRejectedValue(telegramError(400, description));
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
 
     await checkout.refreshPaymentStatus(ctx, order.id);
 
+    // A bubble Telegram has written off is never deleted — there is nothing
+    // there to replace, and on "message is not modified" the bubble already
+    // shows exactly what a replacement would say.
+    expect(calls(sink, "deleteMessage")).toHaveLength(0);
     const after = await getOrder(prisma, order.id);
     expect(after!.paymentMsgChatId).toBeNull();
     expect(after!.paymentMsgId).toBeNull();
   });
 
+  // Both halves of the flip refused with the same answer, which is what a real
+  // outage looks like: flood control, a 5xx or a dead socket rejects the
+  // delete-and-replace path just as readily as the edit, so the buyer's bubble
+  // is left exactly as it was and its anchor with it.
   it.each([
     ["Telegram flood control", () => telegramError(429, "Too Many Requests: retry after 30")],
     ["a Telegram server error", () => telegramError(502, "Bad Gateway")],
@@ -1899,8 +1906,8 @@ describe("Refresh Status button (§7)", () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
     const reject = vi.fn().mockImplementation(() => Promise.reject(makeError()));
-    (ctx.api as unknown as { editMessageCaption: unknown }).editMessageCaption = reject;
     (ctx.api as unknown as { editMessageText: unknown }).editMessageText = reject;
+    (ctx.api as unknown as { deleteMessage: unknown }).deleteMessage = reject;
 
     await checkout.refreshPaymentStatus(ctx, order.id);
 

@@ -71,9 +71,16 @@ import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastP
 
 /** What `editPaymentBubble` actually did, so the caller can tell a successful
  * edit apart from a failed one instead of guessing from side effects:
- *  - "edited"     — the bubble itself was updated in place (`via` says which
- *                    grammY call worked: "caption" for a photo/QR bubble,
- *                    "text" for a text-fallback bubble).
+ *  - "edited"     — the bubble itself was updated in place. `via` has only
+ *                    one member ("text") because that is the only edit this
+ *                    helper performs; it is kept as a field so a caller that
+ *                    already discriminates on it keeps compiling, and so a
+ *                    future second edit method has somewhere to go.
+ *  - "replaced"   — the bubble could not carry this text (it is a photo/QR
+ *                    message), so it was DELETED and the text sent as a fresh
+ *                    message. `messageId` is that new message's id: a caller
+ *                    holding an anchor must re-point it there or drop it,
+ *                    because the id it was holding no longer exists.
  *  - "dm_sent"    — the bubble could not be edited, but the fallback DM
  *                    (when the caller opted in) was sent instead.
  *  - "not_edited" — the bubble could not be edited and no fallback DM was
@@ -89,26 +96,56 @@ import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastP
  *                    tells an anchor-owning caller it is safe to stop
  *                    retrying — see util/bubbleEditFailure.ts. */
 export type BubbleEditResult =
-  | { status: "edited"; via: "caption" | "text" }
+  | { status: "edited"; via: "text" }
+  | { status: "replaced"; messageId: number }
   | { status: "dm_sent" }
   | { status: "not_edited"; permanent: boolean; error?: unknown };
 
 /**
- * Edit an anchored payment/notification bubble in place: try `editMessageCaption`
- * first (photo/QR bubbles), fall back to `editMessageText` (text bubbles).
- * Extracted from `notifyAutoCancelled`'s original inline try/caption/text chain
- * (Task T2-C) so the upcoming generic bubble-flip sweeper can share it.
+ * Turn an anchored payment/notification bubble into `text`, whatever shape that
+ * bubble has: edit it in place when it is a text message, and DELETE-then-send
+ * when it is a photo (a QRIS QR code).
+ *
+ * Why not simply edit the caption of a photo bubble, which is what this used to
+ * do (Task T2-C)? Because that edit SUCCEEDS, and succeeds at the wrong thing:
+ * Telegram has no way to turn a photo message into a text one, so the caption
+ * flipped to "payment received" while the now-meaningless QR image stayed
+ * parked in the buyer's chat — the exact complaint this helper's callers exist
+ * to prevent. `editMessageMedia` would only swap one image for another, so
+ * removing the picture at all means removing the message.
+ *
+ * The shape is never asked for up front (nothing carries it: the anchor is two
+ * numbers) — it is inferred from how Telegram answers the text edit, using the
+ * SAME classification the anchor decision already depends on
+ * (`isPermanentBubbleEditFailure`, util/bubbleEditFailure.ts), rather than a
+ * second, private list of Telegram strings that could drift away from it:
+ *
+ *  - The edit lands → it was a text bubble, and this is exactly the old
+ *    behavior for the USDT rails and the QRIS text fallback.
+ *  - Telegram says the bubble is dead or already shows this text (permanent)
+ *    → there is nothing to replace. Deleting here would be actively wrong on
+ *    "message is not modified": that bubble is already correct, and we would
+ *    destroy it to re-send the identical thing.
+ *  - Anything else (transient) → most likely "there is no text in the message
+ *    to edit", which is Telegram's way of saying "this is a photo" and which
+ *    bubbleEditFailure.ts deliberately keeps OFF the permanent list for
+ *    exactly this recovery. A genuine transient fault (flood control, a 5xx, a
+ *    dead socket) lands here too, and that is safe: the delete it triggers
+ *    fails for the same reason, and nothing is sent.
  *
  * `fallbackDm` makes the two calling modes explicit at the call site instead
  * of being an implicit side effect: `notifyAutoCancelled` below passes a
  * target so a buyer whose bubble is gone still gets the news as a DM (its
- * existing, unchanged behavior); the sweeper's own bubble-flip pass will
- * pass `null` — those buyers already received the account/top-up DM through
+ * existing, unchanged behavior); the sweeper's bubble-flip pass passes
+ * `null` — those buyers already received the account/top-up DM through
  * the normal delivery path, so a second DM here would only be noise.
  *
- * Never throws: every grammY call (including the fallback DM) is caught, so
- * a stale/uneditable bubble or a blocked/deactivated recipient degrades to a
- * reported outcome instead of an exception the caller must remember to guard.
+ * Never throws: every grammY call (the edit, the delete, the replacement send
+ * and the fallback DM) is caught, so a stale/uneditable bubble or a
+ * blocked/deactivated recipient degrades to a reported outcome instead of an
+ * exception the caller must remember to guard. Callers run this inside a
+ * `withTimeout` race, where a throw would be indistinguishable from neither
+ * side of the race having settled.
  */
 export async function editPaymentBubble(
   api: Api,
@@ -122,49 +159,68 @@ export async function editPaymentBubble(
     fallbackDm: { telegramId: number } | null;
   },
 ): Promise<BubbleEditResult> {
-  try {
-    await api.editMessageCaption(args.chatId, args.messageId, { caption: args.text, parse_mode: "HTML", reply_markup: args.markup });
-    return { status: "edited", via: "caption" };
-  } catch (captionError) {
+  /** The shared give-up tail, reached from every point where the bubble
+   * itself turned out to be untouchable. `permanent` describes THAT failure
+   * (never the DM's), because it is what tells an anchor-owning caller
+   * whether retrying could ever pay off. */
+  const giveUp = async (permanent: boolean): Promise<BubbleEditResult> => {
+    if (args.fallbackDm == null) return { status: "not_edited", permanent };
     try {
-      await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
-      return { status: "edited", via: "text" };
-    } catch (textError) {
-      // Bubble gone/uneditable — or merely unreachable this minute. BOTH
-      // attempts' errors get classified, and either one proving the edit can
-      // never land is enough: for a photo/QR bubble that already shows this
-      // exact text, the caption attempt is the ONLY one that says so ("message
-      // is not modified" — the goal is already met), while the text attempt
-      // answers "there is no text in the message to edit", which deliberately
-      // is not permanent because it names the wrong edit method rather than a
-      // dead bubble. Reading the text attempt alone called that pair transient
-      // and re-ran the identical doomed edit every minute forever, holding one
-      // of the sweep's MAX_ORDERS_PER_CYCLE slots for good.
-      //
-      // The reverse mistake can't happen here: a caption failure the text edit
-      // then recovers from never reaches this branch at all, and neither
-      // "there is no caption…" nor "there is no text…" is on the permanent
-      // list, so a wrong-method answer from either attempt never on its own
-      // condemns a bubble the other method could still fix.
-      const permanent = isPermanentBubbleEditFailure(textError) || isPermanentBubbleEditFailure(captionError);
-      if (args.fallbackDm == null) return { status: "not_edited", permanent };
-      try {
-        await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
-        return { status: "dm_sent" };
-      } catch (error) {
-        return { status: "not_edited", permanent, error };
-      }
+      await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+      return { status: "dm_sent" };
+    } catch (error) {
+      return { status: "not_edited", permanent, error };
+    }
+  };
+
+  try {
+    await api.editMessageText(args.chatId, args.messageId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+    return { status: "edited", via: "text" };
+  } catch (editError) {
+    // Dead bubble, or one that already shows this exact text. Either way there
+    // is nothing here worth replacing, and on "message is not modified"
+    // replacing would be destructive: the bubble is already what we wanted.
+    if (isPermanentBubbleEditFailure(editError)) return giveUp(true);
+
+    // Everything else is treated as "probably a photo bubble" — see the doc
+    // comment above for why that read is safe even when it is wrong.
+    try {
+      await api.deleteMessage(args.chatId, args.messageId);
+    } catch (deleteError) {
+      // Classified on the DELETE's own answer alone: `editError` reaching this
+      // line is transient by construction (the permanent case returned above),
+      // so an "edit-or-delete says permanent" rule would be this same value.
+      // Nothing was sent, so a transient answer here leaves the buyer looking
+      // at exactly what they were looking at before — safe to retry.
+      return giveUp(isPermanentBubbleEditFailure(deleteError));
+    }
+
+    try {
+      const replacement = await api.sendMessage(args.chatId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+      return { status: "replaced", messageId: replacement.message_id };
+    } catch (sendError) {
+      // The only outcome here that cannot be undone or retried: the bubble is
+      // already deleted, so every future attempt at that message id can only
+      // ever answer "message to edit not found". Reporting it as permanent
+      // releases the anchor instead of burning one of the sweep's per-cycle
+      // slots every minute on an edit that provably cannot land. The stale QR
+      // is at least gone; what is lost is the success message itself, which is
+      // why this is worth a warning even though the sweeper otherwise
+      // summarises failures by count.
+      logger.warn({ err: sendError }, "Deleted a stale payment bubble but could not send its replacement, so the buyer's chat now shows neither the QR code nor the success message — the order itself is unaffected and the buyer can still see it under My Orders, but nothing will retry this message because the bubble it was anchored to no longer exists");
+      return giveUp(true);
     }
   }
 }
 
 /**
- * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
- * notice in place — mirrors the reconcile pollers' success-bubble flip
- * (tokopayReconcile.editBubbleToSuccess): try caption edit first (QR photo
- * bubbles), fall back to text edit, and only send a fresh DM when no anchor
- * exists or the bubble is gone, so the stale Refresh/Cancel buttons never
- * survive next to a brand-new message.
+ * Turn the anchored payment-instructions bubble (if any) into the
+ * auto-cancelled notice, and only send a fresh DM when no anchor exists or the
+ * bubble is gone — so the stale Refresh/Cancel buttons never survive next to a
+ * brand-new message. `editPaymentBubble` decides how: a text bubble is edited
+ * in place, a QR photo bubble is deleted and replaced (the QR is worthless for
+ * an order that just expired, and leaving the image sitting above a
+ * "cancelled" caption is what that used to look like).
  */
 async function notifyAutoCancelled(
   api: Api,
@@ -221,7 +277,10 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
 
 /**
  * Flip every settled order's stale payment bubble to its success message, for
- * ALL six payment methods at once.
+ * ALL six payment methods at once. "Flip" is `editPaymentBubble`'s job and
+ * means one of two things depending on the bubble: a text bubble is edited in
+ * place, while a QRIS photo bubble is deleted and its success message sent
+ * afresh, since the QR image cannot be edited away.
  *
  * Why this exists: both remaining settlement paths that can pay an order off
  * — a gateway webhook and an admin's manual approval — run in the web process,
@@ -298,6 +357,12 @@ export async function sweepPaidOrderBubbles(
       logger.debug(`The paid-order bubble sweep could not edit order ${order.orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later`);
       continue;
     }
+    // Everything else is a finished attempt, "replaced" included: the QR
+    // bubble is gone and the success message that took its place carries no
+    // Refresh/Cancel pair, so there is nothing left for a later sweep to fix
+    // and the anchor it used to point at no longer exists. Deliberately NOT
+    // re-anchored on the replacement's `messageId` — that would put a message
+    // needing no further edit back into this queue forever.
     await clearOrderPaymentMessage(prisma, order.id);
   }
   if (keptForRetry > 0) {

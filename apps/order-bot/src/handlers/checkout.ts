@@ -38,7 +38,6 @@ import {
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
-  setOrderPaymentMessage,
   clearOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
@@ -63,6 +62,7 @@ import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payment
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
+import { anchorPaymentMessage } from "../util/paymentAnchor";
 import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
 import { editPaymentBubble } from "../jobs";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
@@ -683,7 +683,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
   // Anchor the instructions message so the poller can flip it to success.
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   internalImmediatePoll(ctx.api);
@@ -769,7 +769,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }) + minAmountNote(ctx, bybit.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   bybitImmediatePoll(ctx.api);
@@ -858,7 +858,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }) + minAmountNote(ctx, bybitBsc.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   // The real floor here is the on-chain confirmation Bybit itself requires —
@@ -1012,7 +1012,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // (and any future success-flip) target the right bubble — mirrors
   // buyNowInternal/buyNowBybit (no setActivePayment/countdown ticking here;
   // that's only for the manual Binance Pay screen).
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
 }
 
 /**
@@ -1165,7 +1165,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, chatId);
   setActivePayment(chatId, order.id);
 }
 
@@ -1315,7 +1315,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   }
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, chatId);
   setActivePayment(chatId, order.id);
 }
 

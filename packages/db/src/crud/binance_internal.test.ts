@@ -29,6 +29,8 @@ import {
   createWalletTopupOrder,
   upsertUser,
   listSettledOrdersAwaitingBubbleEdit,
+  setOrderPaymentMessage,
+  clearPaymentMessageAnchorsAt,
   bulkAddStock,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
@@ -743,5 +745,132 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     const [row] = result;
     expect(row!.user).not.toHaveProperty("passwordHash");
     expect(row!.user).not.toHaveProperty("email");
+  });
+});
+
+// F2: a payment bubble IS the chat's menu message (every caller passes
+// `ctx.session.menuMsgId`), so a second checkout in the same chat re-renders
+// the SAME Telegram message with new instructions. Whoever anchors a
+// (chatId, messageId) pair last is the only order that message still shows —
+// every earlier anchor on that pair is stale and must be dropped, or the
+// sweeper flips a bubble that now carries somebody else's unpaid instructions.
+describe("payment-message anchor reuse", () => {
+  /** Create an order and point its anchor at (chatId, messageId). */
+  async function makeAnchoredOrder(
+    opts: { status?: string; chatId?: number; messageId?: number } = {},
+  ) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: opts.status ?? OrderStatus.PENDING_PAYMENT,
+        paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+        paymentMsgChatId: BigInt(opts.chatId ?? 555),
+        paymentMsgId: opts.messageId ?? 777,
+      },
+    });
+    return order.id;
+  }
+
+  /** A bare order with no anchor yet — the "next checkout" in these tests. */
+  async function makeUnanchoredOrder() {
+    return (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!.id;
+  }
+
+  /** The (chatId, messageId) an order currently points at. */
+  async function anchorOf(orderId: number) {
+    const row = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { paymentMsgChatId: true, paymentMsgId: true },
+    });
+    return { chatId: row!.paymentMsgChatId, messageId: row!.paymentMsgId };
+  }
+
+  it("clears an older order's anchor when a newer order takes over the same message", async () => {
+    const older = await makeAnchoredOrder({ chatId: 555, messageId: 777 });
+    const newer = await makeUnanchoredOrder();
+
+    await setOrderPaymentMessage(prisma, newer, 555, 777);
+
+    expect(await anchorOf(older)).toEqual({ chatId: null, messageId: null });
+    expect(await anchorOf(newer)).toEqual({ chatId: BigInt(555), messageId: 777 });
+  });
+
+  it("leaves an order anchored at a different message in the same chat alone", async () => {
+    const other = await makeAnchoredOrder({ chatId: 555, messageId: 776 });
+    const newer = await makeUnanchoredOrder();
+
+    await setOrderPaymentMessage(prisma, newer, 555, 777);
+
+    expect(await anchorOf(other)).toEqual({ chatId: BigInt(555), messageId: 776 });
+  });
+
+  it("leaves another chat's order alone even when its message id is identical", async () => {
+    const otherChat = await makeAnchoredOrder({ chatId: 556, messageId: 777 });
+    const newer = await makeUnanchoredOrder();
+
+    await setOrderPaymentMessage(prisma, newer, 555, 777);
+
+    expect(await anchorOf(otherChat)).toEqual({ chatId: BigInt(556), messageId: 777 });
+  });
+
+  it("re-anchoring the same order to the same message keeps that order's own anchor", async () => {
+    const order = await makeAnchoredOrder({ chatId: 555, messageId: 777 });
+
+    await setOrderPaymentMessage(prisma, order, 555, 777);
+
+    expect(await anchorOf(order)).toEqual({ chatId: BigInt(555), messageId: 777 });
+  });
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "clears even a Bybit BSC %s order's anchor when another order takes the message over",
+    async (status) => {
+      // The message now shows the NEW order's deposit address, so the tracked
+      // order's claim on it is false whatever its status. Leaving it would let
+      // the confirmation tracker edit that bubble every cycle, straight over
+      // an unpaid deposit address — money lost. The accepted cost is the
+      // tracked buyer's live tracking screen going quiet (My Orders still
+      // works); see setOrderPaymentMessage's comment.
+      const tracked = await makeAnchoredOrder({ status, chatId: 555, messageId: 777 });
+      const newer = await makeUnanchoredOrder();
+
+      await setOrderPaymentMessage(prisma, newer, 555, 777);
+
+      expect(await anchorOf(tracked)).toEqual({ chatId: null, messageId: null });
+      expect(await anchorOf(newer)).toEqual({ chatId: BigInt(555), messageId: 777 });
+    },
+  );
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "keeps a Bybit BSC %s order's anchor when the caller asks for keepOnChainTracked",
+    async (status) => {
+      // The navigate-away path (releasePaymentAnchorIfReused): nobody else
+      // claimed the bubble, and the on-chain tracker will re-render it.
+      const tracked = await makeAnchoredOrder({ status, chatId: 555, messageId: 777 });
+
+      await clearPaymentMessageAnchorsAt(prisma, 555, 777, { keepOnChainTracked: true });
+
+      expect(await anchorOf(tracked)).toEqual({ chatId: BigInt(555), messageId: 777 });
+    },
+  );
+
+  it("clearPaymentMessageAnchorsAt drops every stale anchor on one message", async () => {
+    const first = await makeAnchoredOrder({ chatId: 555, messageId: 777 });
+    const second = await makeAnchoredOrder({ chatId: 555, messageId: 777 });
+    const elsewhere = await makeAnchoredOrder({ chatId: 555, messageId: 778 });
+
+    await clearPaymentMessageAnchorsAt(prisma, 555, 777);
+
+    expect(await anchorOf(first)).toEqual({ chatId: null, messageId: null });
+    expect(await anchorOf(second)).toEqual({ chatId: null, messageId: null });
+    expect(await anchorOf(elsewhere)).toEqual({ chatId: BigInt(555), messageId: 778 });
+  });
+
+  it("clearPaymentMessageAnchorsAt leaves everything alone when nothing is anchored there", async () => {
+    const anchored = await makeAnchoredOrder({ chatId: 555, messageId: 777 });
+
+    await clearPaymentMessageAnchorsAt(prisma, 555, 999);
+
+    expect(await anchorOf(anchored)).toEqual({ chatId: BigInt(555), messageId: 777 });
   });
 });

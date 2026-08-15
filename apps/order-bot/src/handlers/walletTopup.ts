@@ -2,7 +2,7 @@
  * Wallet top-up flow — buy wallet CREDIT itself through the existing payment
  * gateways, instead of paying for a product. Mirrors checkout.ts's buyNow*
  * rails structurally (gateway-claim dance, QR-bubble rendering,
- * setOrderPaymentMessage/setActivePayment anchoring) but creates a bare
+ * anchorPaymentMessage/setActivePayment anchoring) but creates a bare
  * WALLET_TOPUP order (packages/db/src/crud/wallet_topup.ts) instead of a
  * product order — no product/quantity, no voucher, no wallet-credit toggle.
  *
@@ -32,7 +32,6 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
-  setOrderPaymentMessage,
   cancelOrder,
   claimGatewaySlot,
   commitGatewayResult,
@@ -48,6 +47,7 @@ import { triggerImmediatePoll as bybitImmediatePoll } from "../payments/bybitDep
 import { triggerImmediatePoll as bybitBscImmediatePoll } from "../payments/bybitBscDeposit";
 import type { MyContext } from "../context";
 import { smartEdit, menuAnchor, consumeInput } from "../util/chat";
+import { anchorPaymentMessage } from "../util/paymentAnchor";
 import { t } from "../util/i18n";
 import { esc, formatIdr, formatUsdtAmount } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
@@ -285,7 +285,7 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
     text,
     ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
   );
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   internalImmediatePoll(ctx.api);
 }
 
@@ -349,7 +349,7 @@ export async function payTopupBybit(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   bybitImmediatePoll(ctx.api);
 }
 
@@ -414,7 +414,7 @@ export async function payTopupBybitBsc(ctx: MyContext): Promise<void> {
     expiry,
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
   bybitBscImmediatePoll(ctx.api);
 }
 
@@ -512,7 +512,7 @@ export async function payTopupNowpayments(ctx: MyContext): Promise<void> {
     .row()
     .text(t(ctx, "menu.main"), ckb.cb("menu", "main"));
   await smartEdit(ctx, text, kb);
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
 }
 
 /** QRIS (TokoPay) top-up. Mirrors checkout.buyNowTokopay. */
@@ -607,7 +607,7 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, chatId);
   setActivePayment(chatId, order.id);
 }
 
@@ -698,6 +698,6 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
-  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
+  await anchorPaymentMessage(ctx, order.id, chatId);
   setActivePayment(chatId, order.id);
 }

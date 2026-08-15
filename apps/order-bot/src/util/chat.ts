@@ -9,6 +9,7 @@
 import { InputFile, type InlineKeyboard, type Keyboard } from "grammy";
 import { GrammyError } from "grammy";
 import type { MyContext } from "../context";
+import { releasePaymentAnchorIfReused } from "./paymentAnchor";
 
 // Inline keyboards can ride on a message edit; reply keyboards (Keyboard /
 // ReplyKeyboardRemove) cannot, so smartEdit routes those through a fresh send.
@@ -106,6 +107,10 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
         const prev = ctx.session.menuMsgId;
         if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
         ctx.session.menuMsgId = cqMsg.message_id;
+        // This bubble may have been an order's payment screen a moment ago; it
+        // now shows a menu, so that order's claim on it has to go. Session-gated
+        // and free when nothing is anchored — see util/paymentAnchor.ts.
+        await releasePaymentAnchorIfReused(ctx, cqMsg.message_id);
       }
       return;
     }
@@ -161,6 +166,11 @@ export async function renderMenu(
           const prev = ctx.session.menuMsgId;
           if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
           ctx.session.menuMsgId = cqMsg.message_id;
+          // A caption edit leaves the message alive showing this menu, so an
+          // anchored payment screen here is now gone — release it (same gate as
+          // smartEdit). The QRIS/PayDisini wait screen IS a photo+caption
+          // bubble, so this path is reachable with a live anchor.
+          await releasePaymentAnchorIfReused(ctx, cqMsg.message_id);
           return;
         }
       }

@@ -48,6 +48,11 @@ export interface SessionData {
   adminMsgId?: number;
   /** Message id of the QR code photo sent alongside payment instructions. */
   qrMsgId?: number;
+  /** Message id currently holding an order's payment instructions, i.e. the one
+   *  an order's DB payment-message anchor points at. Lets the render helpers
+   *  release that anchor when they overwrite the bubble, without a table scan
+   *  per render — see util/paymentAnchor.ts. */
+  paymentAnchorMsgId?: number;
   /** Set while waiting for a free-text quantity reply (browse flow). */
   awaitingQtyDenomId?: number;
   /** Set while waiting for a free-text wallet top-up amount reply (walletTopup

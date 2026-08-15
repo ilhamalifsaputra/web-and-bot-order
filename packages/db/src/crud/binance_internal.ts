@@ -152,12 +152,121 @@ export async function createInternalOrder(
   return walletAmount != null ? getOrder(db, created.id) : finalized;
 }
 
-/** Remember which message holds the payment instructions, so the poller can edit it. */
+/**
+ * Bybit BSC's on-chain tracking milestones — the statuses whose bubble a live
+ * poller is still re-rendering on its own schedule.
+ *
+ * `onPaymentDetected` (bybitBscDeposit.ts) and the confirmation tracker
+ * (bybitBscConfirmationTracker.ts) keep editing that one bubble as
+ * confirmations arrive, so while an order sits here its anchor is not merely a
+ * pointer the sweeper might act on later — it is the address of a screen
+ * something is actively writing to. Every other status either still owns a
+ * bubble the buyer can simply navigate away from (PENDING_PAYMENT) or is
+ * settled and waiting for the sweeper.
+ *
+ * This list is NOT a blanket exemption from anchor clearing: it only matters
+ * to callers that pass `keepOnChainTracked`, and exactly one does — see
+ * {@link clearPaymentMessageAnchorsAt} for why the two callers need opposite
+ * rules.
+ */
+const ONCHAIN_TRACKED_STATUSES = [
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.CONFIRMED,
+] as const;
+
+/**
+ * Drop every stale payment-message anchor pointing at one Telegram message.
+ *
+ * An anchor means "this message still shows THIS order's payment
+ * instructions". A Telegram message can only show one thing at a time, so the
+ * moment something else is rendered into it every anchor on it but the new
+ * owner's is a lie — and acting on that lie is destructive: the bubble sweeper
+ * would overwrite whatever the buyer is actually looking at, which in the worst
+ * case is another order's unpaid deposit address and amount.
+ *
+ * Gated on the (chatId, messageId) PAIR, never on messageId alone: Telegram
+ * message ids are per-chat counters, so a bare messageId match would clear a
+ * completely unrelated buyer's anchor.
+ *
+ * `keepOnChainTracked` spares orders in {@link ONCHAIN_TRACKED_STATUSES}, and
+ * it defaults to OFF because the two callers need opposite rules and only one
+ * of them can afford the exemption:
+ *
+ * - The buyer navigated away and the bubble became a menu
+ *   (`releasePaymentAnchorIfReused`, apps/order-bot/src/util/paymentAnchor.ts)
+ *   — pass `keepOnChainTracked: true`. The tracker still conceptually owns
+ *   that bubble and will re-render it on its next cycle, so the worst an
+ *   over-kept anchor does there is overwrite a menu.
+ * - Another order took the message over (`setOrderPaymentMessage` below) —
+ *   leave it off. The message now shows a DIFFERENT order's payment
+ *   instructions, so every older claim on it is false regardless of status,
+ *   and honouring the exemption there re-creates a money bug: two orders
+ *   anchored on one bubble, with the Bybit BSC confirmation tracker editing it
+ *   every cycle straight over the second order's unpaid deposit address.
+ *
+ * `paymentMsgChatId`/`paymentMsgId` are unindexed, so this is a full scan of
+ * `Order` holding the SQLite write lock for its duration — and
+ * `setOrderPaymentMessage` runs it on every single checkout, not only when an
+ * anchor is known to exist. That is accepted today because the table is small
+ * and a comparable scan already runs every minute from
+ * `listSettledOrdersAwaitingBubbleEdit` (same unindexed columns), so this adds
+ * no new class of load. Revisit — index or narrow the scan — if `Order` grows
+ * past a few hundred thousand rows, if checkout rate makes this a hot path, or
+ * if this shop ever moves off single-writer SQLite. The render path is
+ * separately protected: it only reaches here behind a session-level gate
+ * (see util/paymentAnchor.ts) so a mere button tap never pays for a scan.
+ */
+export async function clearPaymentMessageAnchorsAt(
+  db: Db,
+  chatId: number | bigint,
+  messageId: number,
+  opts: { exceptOrderId?: number; keepOnChainTracked?: boolean } = {},
+): Promise<void> {
+  await db.order.updateMany({
+    where: {
+      paymentMsgChatId: BigInt(chatId),
+      paymentMsgId: messageId,
+      ...(opts.keepOnChainTracked ? { status: { notIn: [...ONCHAIN_TRACKED_STATUSES] } } : {}),
+      ...(opts.exceptOrderId != null ? { id: { not: opts.exceptOrderId } } : {}),
+    },
+    data: { paymentMsgChatId: null, paymentMsgId: null },
+  });
+}
+
+/**
+ * Remember which message holds the payment instructions, so the poller can edit it.
+ *
+ * Every caller anchors `ctx.session.menuMsgId` — the chat's ONE menu bubble,
+ * which the next checkout re-renders in place — so taking over a message is
+ * also the moment any earlier order's claim on it becomes stale. Clearing that
+ * claim here is what stops the sweeper from later flipping this bubble to
+ * "payment received, order A" on top of order B's still-unpaid deposit address
+ * and amount. Own anchor first, stale ones after: if the second statement ever
+ * fails, the worst outcome is the old (already broken) double-anchor rather
+ * than an order left with no anchor at all and a bubble that never flips.
+ *
+ * The clear runs WITHOUT `keepOnChainTracked` on purpose, and that costs
+ * something real: if the overtaken order was a Bybit BSC deposit in
+ * PAYMENT_DETECTED/CONFIRMING/CONFIRMED, dropping its anchor makes
+ * `onPaymentDetected` (apps/order-bot/src/payments/bybitBscDeposit.ts) and the
+ * confirmation tracker return early, so that buyer's live tracking screen
+ * simply stops updating and no DM replaces it — they have to open My Orders to
+ * see progress. That is a deliberate trade, not an oversight: the alternative
+ * is leaving two orders anchored on one bubble, where the tracker's per-cycle
+ * edit overwrites the new order's still-unpaid deposit address and amount and
+ * the buyer pays to nowhere. A lost tracking screen is recoverable; a
+ * destroyed deposit address is money. Nothing in the bot blocks two parallel
+ * checkouts in one chat (`activePaymentByChat` in
+ * handlers/checkout/timers.ts is write-only), so this is a reachable path, not
+ * a theoretical one.
+ */
 export async function setOrderPaymentMessage(db: Db, orderId: number, chatId: number | bigint, messageId: number) {
   await db.order.update({
     where: { id: orderId },
     data: { paymentMsgChatId: BigInt(chatId), paymentMsgId: messageId },
   });
+  await clearPaymentMessageAnchorsAt(db, chatId, messageId, { exceptOrderId: orderId });
 }
 
 /** Clear the anchored payment-message pointer (idempotency gate for the success sweep). */

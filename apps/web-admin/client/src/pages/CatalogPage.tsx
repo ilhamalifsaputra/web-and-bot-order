@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -17,7 +17,6 @@ import { Switch } from "@/components/ui/switch";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectTrigger,
@@ -33,13 +32,6 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
-import {
   AlertCircle,
   Archive,
   ArchiveRestore,
@@ -52,34 +44,11 @@ import {
   X,
 } from "lucide-react";
 import { toast } from "sonner";
-import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
+import { apiPost, apiDelete } from "../api/client";
+import { useCatalog, type CategoryRow, type ProductRow } from "../api/catalog";
+import { CategoryDialog } from "../components/catalog/CategoryDialog";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
-
-interface CategoryRow {
-  id: number;
-  name: string;
-  emoji: string | null;
-  description: string | null;
-  sortOrder: number;
-  isActive: boolean;
-}
-
-interface ProductRow {
-  id: number;
-  name: string;
-  isActive: boolean;
-  isArchived: boolean;
-  webImageUrl: string | null;
-  createdAt: string;
-  category: { id: number; name: string; emoji: string | null } | null;
-  _count: { denominations: number };
-}
-
-interface CatalogData {
-  categories: CategoryRow[];
-  products: ProductRow[];
-}
 
 interface ImportPreviewRow {
   ok: boolean;
@@ -101,13 +70,6 @@ interface ImportPreview {
 type StatusFilter = "all" | "active" | "inactive" | "archived";
 type SortMode = "name" | "newest" | "category";
 
-function useCatalog() {
-  return useQuery<CatalogData>({
-    queryKey: ["catalog"],
-    queryFn: async () => apiGet<CatalogData>("/api/catalog"),
-  });
-}
-
 /** Order comparator for the Sort filter — "name" is the default/stable order. */
 function compareProducts(a: ProductRow, b: ProductRow, sortBy: SortMode): number {
   if (sortBy === "newest") {
@@ -120,77 +82,6 @@ function compareProducts(a: ProductRow, b: ProductRow, sortBy: SortMode): number
     );
   }
   return a.name.localeCompare(b.name);
-}
-
-function CategoryEditDialog({
-  category,
-  onClose,
-  onSaved,
-}: {
-  category: CategoryRow;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [name, setName] = useState(category.name);
-  const [emoji, setEmoji] = useState(category.emoji ?? "");
-  const [description, setDescription] = useState(category.description ?? "");
-  const [sortOrder, setSortOrder] = useState(String(category.sortOrder));
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      await apiPatch(`/api/catalog/categories/${category.id}`, {
-        name,
-        emoji: emoji || null,
-        description: description || null,
-        sortOrder: Number(sortOrder) || 0,
-      });
-      onSaved();
-      onClose();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save category.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Edit category</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          <div>
-            <Label htmlFor="cat-name">Name</Label>
-            <Input id="cat-name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="cat-emoji">Emoji</Label>
-            <Input id="cat-emoji" value={emoji} onChange={(e) => setEmoji(e.target.value)} className="max-w-[100px]" />
-          </div>
-          <div>
-            <Label htmlFor="cat-desc">Description</Label>
-            <Textarea id="cat-desc" rows={3} value={description} onChange={(e) => setDescription(e.target.value)} />
-          </div>
-          <div>
-            <Label htmlFor="cat-sort">Sort order</Label>
-            <Input id="cat-sort" type="number" value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} className="max-w-[100px]" />
-          </div>
-          {error && <p className="text-sm text-rust">{error}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => void save()} disabled={saving || !name.trim()}>
-            {saving ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
 }
 
 export function CatalogPage() {
@@ -505,7 +396,7 @@ export function CatalogPage() {
       )}
 
       {editingCategory && (
-        <CategoryEditDialog
+        <CategoryDialog
           category={editingCategory}
           onClose={() => setEditingCategory(null)}
           onSaved={() => void invalidateCatalog()}

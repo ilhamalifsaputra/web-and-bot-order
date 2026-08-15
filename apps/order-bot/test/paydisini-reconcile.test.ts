@@ -5,17 +5,20 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
   prisma,
   createOrderDirect,
+  createWalletTopupOrder,
   finalizeOrderPayment,
   listPendingPaydisiniOrders,
   setOrderPaymentMessage,
   setSetting,
   bulkAddStock,
   getPollHealth,
+  updateDenomination,
 } from "@app/db";
 import type { Api } from "grammy";
-import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
+import { onlyBubbleEdit } from "./helpers/settledBubble";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/paydisiniReconcile";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 
@@ -172,6 +175,109 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
 
       expect(after?.paymentMsgChatId).toBeNull();
       expect(after?.paymentMsgId).toBeNull();
+    });
+  });
+
+  // Twin of the identical suite in tokopay-reconcile.test.ts — see there for
+  // why a top-up settled on a QRIS rail used to end on the product sale's
+  // sentence and keyboard with no balance in sight, and why the anchor being
+  // cleared right afterwards meant the generic sweeper could never repair it.
+  describe("the success bubble a settled order is flipped to", () => {
+    /** Pre-credit balance, deliberately distinct from the post-credit one so a
+     *  bubble quoting a stale snapshot is visibly wrong rather than plausible. */
+    const STARTING_IDR = "123456";
+    const TOPUP_IDR = "50000";
+
+    const bubbleEdit = (api: Api) =>
+      onlyBubbleEdit(
+        (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls,
+        (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls,
+      );
+
+    /** Reconcile the one pending PayDisini order, with the gateway reporting
+     *  it paid in full. */
+    async function reconcilePaid(api: Api, trxId: string): Promise<void> {
+      const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+      stubStatus({ status: "success", unique_code: trxId, amount: pending!.totalAmount.toString() });
+      await reconcileOrder(api, CREDS, pending!);
+    }
+
+    async function makeAnchoredTopup() {
+      await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: STARTING_IDR } });
+      const order = await prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: TOPUP_IDR,
+          currency: "IDR",
+          method: PaymentMethod.PAYDISINI,
+        }),
+      );
+      // Same pre-existing gap the TokoPay twin documents: an IDR top-up is
+      // created with a null `expiresAt`, so `listPendingPaydisiniOrders` never
+      // lists it. Stamped here so the poller can do its real job.
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { expiresAt: new Date(Date.now() + 30 * 60_000) },
+      });
+      await setOrderPaymentMessage(prisma, order.id, 555, 777);
+      return order;
+    }
+
+    it("words a settled wallet top-up as a top-up, quoting the balance AFTER the credit landed", async () => {
+      const topup = await makeAnchoredTopup();
+      const api = fakeApi();
+
+      await reconcilePaid(api, "TRX-TOPUP");
+
+      const edit = bubbleEdit(api);
+      expect(edit.chatId).toBe(555);
+      expect(edit.msgId).toBe(777);
+      expect(edit.text).toContain("Top-up successful");
+      expect(edit.text).toContain(topup.orderCode);
+      expect(edit.text).toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
+      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot
+    });
+
+    it("offers a settled wallet top-up the wallet keyboard, never the product sale's order history", async () => {
+      await makeAnchoredTopup();
+      const api = fakeApi();
+
+      await reconcilePaid(api, "TRX-TOPUP-KB");
+
+      const edit = bubbleEdit(api);
+      expect(edit.buttons).toContain("v1:topup:open");
+      expect(edit.buttons).not.toContain("v1:order:list");
+    });
+
+    it("still tells a delivered product sale its items are on the way, with the product keyboard", async () => {
+      const created = await makePaydisiniOrder();
+      await setOrderPaymentMessage(prisma, created!.id, 555, 778);
+      const api = fakeApi();
+
+      await reconcilePaid(api, "TRX-PRODUCT-DELIVERED");
+
+      expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.DELIVERED);
+      const edit = bubbleEdit(api);
+      expect(edit.text).toContain("Payment received");
+      expect(edit.text).toContain("being delivered now");
+      expect(edit.buttons).toContain("v1:order:list");
+      expect(edit.buttons).not.toContain("v1:topup:open");
+    });
+
+    it("tells a manual-fulfilment product sale it is being prepared, with the same product keyboard", async () => {
+      await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
+      const created = await makePaydisiniOrder();
+      await setOrderPaymentMessage(prisma, created!.id, 555, 779);
+      const api = fakeApi();
+
+      await reconcilePaid(api, "TRX-PRODUCT-PROCESSING");
+
+      expect((await prisma.order.findUnique({ where: { id: created!.id } }))?.status).toBe(OrderStatus.PROCESSING);
+      const edit = bubbleEdit(api);
+      expect(edit.text).toContain("Payment received");
+      expect(edit.text).toContain("being prepared for delivery manually");
+      expect(edit.buttons).toContain("v1:order:list");
+      expect(edit.buttons).not.toContain("v1:topup:open");
     });
   });
 });

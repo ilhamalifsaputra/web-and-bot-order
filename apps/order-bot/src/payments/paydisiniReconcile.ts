@@ -17,14 +17,13 @@
  * The only gateway call is `checkTransaction` (GET /v1/transaction, idempotent
  * on ref_id). It never creates or mutates anything on PayDisini's side.
  */
-import type { Api } from "grammy";
+import type { Api, InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode } from "@app/core/enums";
+import { OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
-import { t as coreT } from "@app/core/i18n";
 import { checkTransaction } from "@app/core/payments/paydisini";
 import {
   MAX_ORDERS_PER_CYCLE,
@@ -38,30 +37,46 @@ import {
   deliverPaidPaydisiniOrder,
   clearOrderPaymentMessage,
   recordPollHealth,
+  getUser,
 } from "@app/db";
 import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
-import { paymentSuccessKb } from "../keyboards/customer";
+import { settledPaymentBubbleFor } from "../util/delivery";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingPaydisiniOrders>>[number];
 
+/** Twin of tokopayReconcile.ts's own `AnchoredOrder` — the anchor to edit, the
+ * row cleared afterwards, everything `settledPaymentBubbleFor` reads to decide
+ * WHICH success message this order gets (`util/delivery.ts`), and `userId` for
+ * a wallet top-up's post-credit balance read. `deliverPaidPaydisiniOrder`
+ * returns a full `getOrder` row, so every field here is already on it. */
 type AnchoredOrder = {
   id: number;
+  userId: number;
   orderCode: string;
+  kind: string;
+  status: string;
+  currency: string | null;
+  totalAmount: Decimal.Value;
   paymentMsgChatId: bigint | null;
   paymentMsgId: number | null;
   user: { language: string };
 };
 
 /**
- * Flip the anchored QR bubble to a success message, and report whether the
- * order's anchor may now be dropped. Best-effort: a photo bubble edits its
- * caption; a text-fallback bubble edits its text. Never throws — a rejected
- * edit is caught right here rather than propagating into the `withTimeout`
- * race `editBubbleAndClear` wraps this in, which is what lets that race keep
- * meaning exactly one thing ("the call hung past the deadline").
+ * Flip the anchored QR bubble to the already-composed success message
+ * `bubble`, and report whether the order's anchor may now be dropped.
+ * Best-effort: a photo bubble edits its caption; a text-fallback bubble edits
+ * its text. Never throws — a rejected edit is caught right here rather than
+ * propagating into the `withTimeout` race `editBubbleAndClear` wraps this in,
+ * which is what lets that race keep meaning exactly one thing ("the call hung
+ * past the deadline").
+ *
+ * The message itself is the caller's, not this function's: composing it needs
+ * a database read for a wallet top-up (see `editBubbleAndClear`), and that
+ * read has no business inside the Telegram-call timeout above.
  *
  * Returns "keep_anchor" for a failure a later attempt could still get past
  * (flood control, a 5xx, a network fault, anything unrecognised), because the
@@ -83,14 +98,16 @@ type AnchoredOrder = {
  * in the message to edit". Same rule `editPaymentBubble` (jobs/index.ts)
  * applies to its own two attempts.
  */
-async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<"clear_anchor" | "keep_anchor"> {
+async function editBubbleToSuccess(
+  api: Api,
+  order: AnchoredOrder,
+  bubble: { text: string; markup: InlineKeyboard },
+): Promise<"clear_anchor" | "keep_anchor"> {
   // No anchor to begin with: nothing to edit and nothing to strand, so the
   // caller's clear is a harmless no-op.
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return "clear_anchor";
-  const lang = langCode(order.user.language);
   const chatId = Number(order.paymentMsgChatId);
-  const text = coreT("checkout.payment_received", lang, { code: order.orderCode });
-  const markup = paymentSuccessKb(lang);
+  const { text, markup } = bubble;
   try {
     await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
   } catch (captionError) {
@@ -174,7 +191,16 @@ export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
  * the rejection itself), so `outcome` is either its own clear/keep verdict or
  * "timeout", the one case it cannot see. */
 async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
-  const outcome = await withTimeout(editBubbleToSuccess(api, order), RECONCILE_TELEGRAM_TIMEOUT_MS);
+  // Same composition step, and the same reasons for it, as the TokoPay twin in
+  // tokopayReconcile.ts: `settledPaymentBubbleFor` (util/delivery.ts) is the
+  // one mapping that decides a settled order's ending for every rail, a wallet
+  // top-up's sentence needs the buyer's balance read fresh (post-credit — the
+  // settling transaction has committed by now), and that read stays outside the
+  // `withTimeout` race so a "timeout" outcome still means only that the
+  // Telegram call hung.
+  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
+  const bubble = settledPaymentBubbleFor(order, buyer);
+  const outcome = await withTimeout(editBubbleToSuccess(api, order, bubble), RECONCILE_TELEGRAM_TIMEOUT_MS);
   if (outcome === "timeout") {
     logger.warn(`PayDisini reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — anchor left in place so the next sweep retries`);
     return;

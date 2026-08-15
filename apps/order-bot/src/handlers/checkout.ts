@@ -63,7 +63,7 @@ import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { anchorPaymentMessage } from "../util/paymentAnchor";
-import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubbleFor } from "../util/delivery";
 import { editPaymentBubble } from "../jobs";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
@@ -1588,22 +1588,11 @@ async function flipSettledBubble(
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   // A wallet top-up's bubble quotes the buyer's balance, so read it fresh —
   // the order row doesn't carry one. Skipped entirely for a product order,
-  // whose text needs no balance at all. Falling back to the order's own total
-  // when the user row somehow can't be read mirrors what the crypto rails'
-  // fast path does (payments/binanceInternal.ts onDelivered).
+  // whose text needs no balance at all; `settledPaymentBubbleFor`
+  // (util/delivery.ts) owns what to fall back to when the read comes back
+  // empty, so the two QRIS reconcile pollers and this handler can't drift.
   const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
-  const { text, markup } = settledPaymentBubble({
-    orderCode: order.orderCode,
-    kind: order.kind,
-    status: order.status,
-    currency: order.currency,
-    totalAmount: order.totalAmount,
-    user: {
-      language: order.user.language,
-      walletBalance: buyer?.walletBalance ?? order.totalAmount,
-      walletBalanceUsdt: buyer?.walletBalanceUsdt ?? order.totalAmount,
-    },
-  });
+  const { text, markup } = settledPaymentBubbleFor(order, buyer);
   const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
   const outcome = await withTimeout(
     editPaymentBubble(ctx.api, {

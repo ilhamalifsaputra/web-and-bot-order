@@ -97,11 +97,16 @@ export function settledPaymentKb(kind: string, lang: string): InlineKeyboard {
 
 /**
  * The one place an order maps to the success bubble it should now be showing.
- * Both post-payment bubble flips call it — the buyer's own "🔄 Refresh Status"
- * tap (`refreshPaymentStatus`, handlers/checkout.ts) and the background
- * sweeper that catches every settlement the bot process never saw
- * (`sweepPaidOrderBubbles`, jobs/index.ts) — so a buyer can never be shown two
+ * Every post-payment bubble flip calls it — the buyer's own "🔄 Refresh Status"
+ * tap (`refreshPaymentStatus`, handlers/checkout.ts), the background sweeper
+ * that catches every settlement the bot process never saw
+ * (`sweepPaidOrderBubbles`, jobs/index.ts), and the two QRIS reconcile pollers'
+ * own fast paths (payments/tokopayReconcile.ts, paydisiniReconcile.ts, via
+ * `settledPaymentBubbleFor` below) — so a buyer can never be shown two
  * different endings for the same order depending on which one got there first.
+ * The QRIS pollers are the reason that matters most in practice: they clear the
+ * order's anchor as soon as they flip it, which retires the order from the
+ * sweeper's queue, so whatever they write is final.
  *
  *  - WALLET_TOPUP (any status) → the same `walletTopupSuccessText` sentence the
  *    three crypto rails already send, so all six payment methods word a
@@ -128,6 +133,55 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
   }
   const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
   return { text: coreT(key, lang, { code: order.orderCode }), markup: settledPaymentKb(order.kind, lang) };
+}
+
+/** A settled order as an ordinary order row carries it — everything
+ * `settledPaymentBubble` needs EXCEPT the buyer's two wallet columns, which no
+ * order row has (`ORDER_USER_SELECT`, packages/db/src/crud/orders.ts, projects
+ * only identity and language). Structurally satisfied by `getOrder`'s result
+ * and by the two QRIS rails' `AnchoredOrder`. */
+export interface SettledBubbleOrderRow {
+  orderCode: string;
+  kind: string;
+  status: string;
+  currency: string | null;
+  totalAmount: Decimal.Value;
+  user: { language: string };
+}
+
+/**
+ * `settledPaymentBubble` for the callers that hold an ordinary order row and
+ * have read the buyer separately.
+ *
+ * Because the row carries no balance, every such caller has to read the buyer
+ * fresh (AFTER the credit landed, or the top-up sentence quotes a pre-credit
+ * figure) and then decide what to show if that read comes back empty. Deciding
+ * it once, here, is the whole point: `buyer` is null both for a product sale —
+ * whose sentence quotes no balance at all, so its caller skips the read
+ * entirely — and for a top-up whose buyer row could not be re-read. In that
+ * second case the fallback is the order's own total: the credit that just
+ * landed is at least that much, which is far nearer the truth than a zero.
+ * Shared by the buyer's "🔄 Refresh Status" tap (handlers/checkout.ts) and both
+ * QRIS reconcile pollers (payments/tokopayReconcile.ts, paydisiniReconcile.ts);
+ * the background sweeper needs none of this, since its own query
+ * (`listSettledOrdersAwaitingBubbleEdit`) already projects both wallet columns.
+ */
+export function settledPaymentBubbleFor(
+  order: SettledBubbleOrderRow,
+  buyer: { walletBalance: Decimal.Value; walletBalanceUsdt: Decimal.Value } | null,
+): { text: string; markup: InlineKeyboard } {
+  return settledPaymentBubble({
+    orderCode: order.orderCode,
+    kind: order.kind,
+    status: order.status,
+    currency: order.currency,
+    totalAmount: order.totalAmount,
+    user: {
+      language: order.user.language,
+      walletBalance: buyer?.walletBalance ?? order.totalAmount,
+      walletBalanceUsdt: buyer?.walletBalanceUsdt ?? order.totalAmount,
+    },
+  });
 }
 
 /** Send the buyer their account file (caption + `.txt`). Throws on failure. */

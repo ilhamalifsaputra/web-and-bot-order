@@ -157,6 +157,11 @@ interface OrderReadyPayload {
   items?: OrderReadyPayloadItem[];
   subtotal?: unknown;
   discount?: unknown;
+  /** The order's unique-cents surcharge — part of what the buyer paid, and
+   * the missing term that used to make this receipt not add up. Optional only
+   * because rows enqueued before this field existed can still be PENDING at
+   * deploy time; those default to zero and render exactly as they did. */
+  unique_cents?: unknown;
   total?: unknown;
   currency?: unknown;
   warranty_days?: unknown;
@@ -333,6 +338,16 @@ export async function renderEmail(
     const subtotalDecimal = new Decimal(String(payload.subtotal ?? "0"));
     const discountDecimal = new Decimal(String(payload.discount ?? "0"));
     const totalDecimal = new Decimal(String(payload.total ?? "0"));
+    const uniqueCentsDecimal = new Decimal(String(payload.unique_cents ?? "0"));
+    // The unique-cents row hides when it is worth nothing AT THE PRECISION
+    // THIS RECEIPT PRINTS, not merely when the stored value is exactly zero:
+    // computeUniqueCents' two smallest buckets (0.002 and 0.004 USDT) both
+    // render as "0.00 USDT", which reads as a bug to a buyer. Hiding such a
+    // row keeps the summary reconciling — it contributes exactly zero to the
+    // printed total — whereas printing it would show a term that visibly adds
+    // nothing. Compared through formatMoney rather than a hardcoded 2dp so
+    // this stays correct whatever precision the currency renders at.
+    const uniqueCodeFormatted = formatMoney(uniqueCentsDecimal, currency);
     const input: OrderReadyInput = {
       orderCode: String(payload.order_code ?? "unknown"),
       items: (payload.items ?? []).map((it) => toOrderReadyItem(it as OrderReadyPayloadItem, currency)),
@@ -340,6 +355,8 @@ export async function renderEmail(
       // "" (not formatMoney's zero output) hides the Discount row/line
       // entirely — same convention as the OWNER_EMAIL_ORDER_PAID branch.
       discount: discountDecimal.isZero() ? "" : formatMoney(discountDecimal, currency),
+      uniqueCode:
+        uniqueCodeFormatted === formatMoney(new Decimal(0), currency) ? "" : uniqueCodeFormatted,
       total: formatMoney(totalDecimal, currency),
       warranty: formatWarranty(payload.warranty_days),
       orderUrl: payload.order_url == null ? null : String(payload.order_url),

@@ -14,6 +14,7 @@
  *     needs it most (expired cookie, different device).
  */
 import { describe, it, expect } from "vitest";
+import { Decimal } from "../../money";
 import { renderOrderReadyEmail } from "./orderReady";
 import type { OrderReadyInput } from "./orderReady";
 import type { BrandConfig } from "../types";
@@ -36,6 +37,10 @@ const fullInput: OrderReadyInput = {
   ],
   subtotal: "Rp130.000",
   discount: "Rp13.000",
+  // An IDR order carries no unique code (finalizeOrderPayment zeroes it on the
+  // IDR branch), so the row is hidden by the same empty-string convention the
+  // discount uses — and Rp130.000 - Rp13.000 = Rp117.000 already balances.
+  uniqueCode: "",
   total: "Rp117.000",
   warranty: "30 days / 30 hari",
   orderUrl: "https://shop.test/checkout/ORD-20260814-READY01/pay",
@@ -115,6 +120,83 @@ describe("renderOrderReadyEmail — full fixture", () => {
     expect(result.text).toContain("Pesanan kamu sudah siap");
     expect(result.html).toContain("Your order is ready");
     expect(result.text).toContain("Your order is ready");
+  });
+});
+
+/**
+ * The receipt has to RECONCILE, not merely be roughly right: a customer who
+ * paid reads these four figures stacked on top of each other, and a summary
+ * that does not add up reads as an overcharge and becomes a support ticket.
+ *
+ * The unique code is the reason it never could before: on a USDT order
+ * `finalizeOrderPayment` adds 0.002-0.098 USDT of deterministic noise so the
+ * payment poller can match the transfer by amount, that noise is part of
+ * `totalAmount`, and nothing printed it. "Kode unik" is also the exact word an
+ * Indonesian buyer already expects on a transfer/QRIS payment, so it belongs
+ * on the page rather than hidden inside the total.
+ */
+describe("renderOrderReadyEmail — the unique code, and a summary that adds up", () => {
+  /** The value the plain-text receipt actually PRINTS for a summary row —
+   * the digits the buyer reads, not the input handed to the renderer. */
+  function printedRow(text: string, label: string): string | null {
+    const line = text.split("\n").find((l) => l.startsWith(`${label}: `));
+    return line ? line.slice(label.length + 2) : null;
+  }
+
+  /** "2.34 USDT" -> Decimal(2.34). */
+  function amountOf(printed: string): Decimal {
+    return new Decimal(printed.replace(/[^0-9.-]/g, ""));
+  }
+
+  // A USDT order as the dispatcher formats one: every figure at 2dp with a
+  // "USDT" suffix. Rp45.000 with a 20% voucher at an fxRate of 16.000 —
+  // see the enqueue-side test in packages/db/src/crud/settlePaidOrder.test.ts
+  // for where these particular numbers come from.
+  const usdtInput: OrderReadyInput = {
+    ...fullInput,
+    items: [
+      { name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: "2.80 USDT", lineTotal: "2.80 USDT" },
+    ],
+    subtotal: "2.80 USDT",
+    discount: "0.50 USDT",
+    uniqueCode: "0.04 USDT",
+    total: "2.34 USDT",
+  };
+
+  it("prints the unique code as its own bilingually labelled row, in html and text", () => {
+    const result = renderOrderReadyEmail(usdtInput, brand);
+    expect(result.html).toContain("Unique code / Kode unik");
+    expect(result.html).toContain("0.04 USDT");
+    expect(result.text).toContain("Unique code / Kode unik");
+    expect(printedRow(result.text, "Unique code / Kode unik")).toBe("0.04 USDT");
+  });
+
+  it("prints figures that reconcile: Subtotal - Discount + Unique code = Total", () => {
+    const result = renderOrderReadyEmail(usdtInput, brand);
+    const subtotal = amountOf(printedRow(result.text, "Subtotal / Subtotal")!);
+    const discount = amountOf(printedRow(result.text, "Discount / Diskon")!);
+    const unique = amountOf(printedRow(result.text, "Unique code / Kode unik")!);
+    const total = amountOf(printedRow(result.text, "Total / Total")!);
+    expect(subtotal.minus(discount).plus(unique).toString()).toBe(total.toString());
+  });
+
+  it("hides the unique-code row entirely when it is the empty string, like the discount row", () => {
+    const noUnique = renderOrderReadyEmail({ ...usdtInput, uniqueCode: "" }, brand);
+    expect(noUnique.html).not.toContain("Unique code");
+    expect(noUnique.html).not.toContain("Kode unik");
+    expect(noUnique.text).not.toContain("Unique code");
+    expect(noUnique.text).not.toContain("Kode unik");
+    // The rest of the summary is untouched.
+    expect(noUnique.html).toContain("2.80 USDT");
+    expect(noUnique.text).toContain("2.34 USDT");
+  });
+
+  it("orders the summary the way it is read: subtotal, discount, unique code, then total", () => {
+    const result = renderOrderReadyEmail(usdtInput, brand);
+    const at = (needle: string) => result.text.indexOf(needle);
+    expect(at("Subtotal / Subtotal")).toBeLessThan(at("Discount / Diskon"));
+    expect(at("Discount / Diskon")).toBeLessThan(at("Unique code / Kode unik"));
+    expect(at("Unique code / Kode unik")).toBeLessThan(at("Total / Total"));
   });
 });
 

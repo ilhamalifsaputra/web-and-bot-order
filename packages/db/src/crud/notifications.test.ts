@@ -1375,8 +1375,12 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
           lineTotal: new Decimal("30.00"),
         },
       ],
+      // An IDR order: no conversion, and finalizeOrderPayment zeroes its
+      // unique cents. 130 - 13 + 0 = 117, the identity this payload owes the
+      // receipt.
       subtotal: new Decimal("130.00"),
       discount: new Decimal("13.00"),
+      uniqueCents: new Decimal("0"),
       total: new Decimal("117.00"),
       currency: "IDR",
       warrantyDays: 30,
@@ -1405,6 +1409,7 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       ],
       subtotal: "130",
       discount: "13",
+      unique_cents: "0",
       total: "117",
       currency: "IDR",
       warranty_days: 30,
@@ -1414,8 +1419,35 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
     expect(typeof payload.total).toBe("string");
     expect(typeof payload.subtotal).toBe("string");
     expect(typeof payload.discount).toBe("string");
+    expect(typeof payload.unique_cents).toBe("string");
     expect(typeof (payload.items as Array<{ unitPrice: unknown }>)[0]!.unitPrice).toBe("string");
     expect(typeof (payload.items as Array<{ lineTotal: unknown }>)[0]!.lineTotal).toBe("string");
+  });
+
+  it("carries a non-zero unique-cents surcharge through as its own string field — it is money the buyer paid", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueBuyerOrderReadyEmail(prisma, {
+      ...fullArgs(orderId, "ORD-READY-UNIQUE"),
+      currency: "USDT",
+      subtotal: new Decimal("2.8"),
+      discount: new Decimal("0.5"),
+      uniqueCents: new Decimal("0.042"),
+      total: new Decimal("2.342"),
+    });
+
+    const row = (await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.BUYER_EMAIL_ORDER_READY, orderId },
+    }))[0]!;
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect(payload.unique_cents).toBe("0.042");
+    // The identity the receipt is rendered from, on the enqueued figures.
+    expect(
+      new Decimal(String(payload.subtotal))
+        .minus(String(payload.discount))
+        .plus(String(payload.unique_cents))
+        .toString(),
+    ).toBe(payload.total);
   });
 
   it("enqueues regardless of the owner-email settings — it is the buyer's email, not the owner's", async () => {
@@ -1460,6 +1492,7 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       ],
       subtotal: new Decimal("50"),
       discount: new Decimal("0"),
+      uniqueCents: new Decimal("0"),
       total: new Decimal("50"),
       currency: "IDR",
       warrantyDays: null,

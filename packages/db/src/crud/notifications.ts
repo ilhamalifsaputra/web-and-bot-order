@@ -465,8 +465,21 @@ export async function enqueueBuyerOrderReadyEmail(
        * right below it. See the call site in crud/orders.ts. */
       lineTotal: Decimal;
     }[];
+    /** The three money figures below must satisfy
+     * `subtotal - discount + uniqueCents === total`, exactly, in the order's
+     * settlement currency — the caller derives them so that they do (see
+     * enqueueBuyerOrderReadyEmailIfGuest in crud/orders.ts). The reader is the
+     * customer who just paid, and a receipt that does not reconcile reads as
+     * an overcharge. */
     subtotal: Decimal;
     discount: Decimal;
+    /** The order's unique-cents surcharge: 0.002-0.098 USDT of deterministic
+     * noise finalizeOrderPayment folds into the total so the payment poller
+     * can match the buyer's transfer by amount (zero on the IDR rails, which
+     * confirm by gateway callback instead). It is money the buyer paid, so
+     * the receipt prints it as its own row rather than burying it in the
+     * total. */
+    uniqueCents: Decimal;
     total: Decimal;
     currency: string;
     warrantyDays: number | null;
@@ -494,6 +507,7 @@ export async function enqueueBuyerOrderReadyEmail(
         })),
         subtotal: args.subtotal.toString(),
         discount: args.discount.toString(),
+        unique_cents: args.uniqueCents.toString(),
         total: args.total.toString(),
         currency: args.currency,
         warranty_days: args.warrantyDays,

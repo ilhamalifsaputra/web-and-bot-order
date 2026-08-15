@@ -29,6 +29,7 @@ vi.mock("@app/core/config", () => ({
 import { renderEmail } from "./emailTemplates";
 import { getSetting } from "@app/db";
 import { config } from "@app/core/config";
+import { Decimal } from "@app/core/money";
 
 const DISTINCTIVE_ORDER_CODE = "ZZZTESTCODE99";
 
@@ -402,12 +403,26 @@ describe("emailTemplates.renderEmail", () => {
       ],
       subtotal: "130000",
       discount: "13000",
+      unique_cents: "0",
       total: "117000",
       currency: "IDR",
       warranty_days: 30,
       order_url: "https://shop.test/checkout/ZZZTESTCODE99/pay",
       track_url: "https://shop.test/track",
     };
+
+    /** The value the rendered plain-text receipt PRINTS for a summary row —
+     * the digits a buyer reads, not the payload we handed the dispatcher. */
+    function printedRow(text: string, label: string): string | null {
+      const line = text.split("\n").find((l) => l.startsWith(`${label}: `));
+      return line ? line.slice(label.length + 2) : null;
+    }
+
+    /** "2.34 USDT" / "Rp117.000" -> Decimal. */
+    function amountOf(printed: string): Decimal {
+      const digits = printed.startsWith("Rp") ? printed.slice(2).replace(/\./g, "") : printed.replace(/[^0-9.-]/g, "");
+      return new Decimal(digits);
+    }
 
     it("renders a subject, text, and html with the order summary", async () => {
       const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
@@ -541,6 +556,87 @@ describe("emailTemplates.renderEmail", () => {
       // 0.1 * 3 as a naive float is 0.30000000000000004 — Decimal must give
       // exactly 0.30.
       expect(result!.html).toContain("3 × 0.10 USDT = 0.30 USDT");
+    });
+
+    // The receipt a paying customer reads has to RECONCILE. On a USDT order
+    // `finalizeOrderPayment` folds 0.002-0.098 USDT of deterministic
+    // "unique cents" into totalAmount so the payment poller can match the
+    // transfer by amount — a real component of what the buyer paid, and one
+    // no line of this receipt used to print. Rp45.000 with a 20% voucher at
+    // an fxRate of 16.000 is the enqueue side's worked example: subtotal
+    // 2.8, discount 0.5, unique code 0.042, total 2.342.
+    const usdtPayload = {
+      ...payload,
+      currency: "USDT",
+      items: [{ name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: "2.8", lineTotal: "2.8" }],
+      subtotal: "2.8",
+      discount: "0.5",
+      unique_cents: "0.042",
+      total: "2.342",
+    };
+
+    it("prints the unique code as its own bilingually labelled row on a USDT order", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", usdtPayload);
+      expect(result!.html).toContain("Unique code / Kode unik");
+      expect(result!.text).toContain("Unique code / Kode unik");
+      expect(printedRow(result!.text, "Unique code / Kode unik")).toBe("0.04 USDT");
+    });
+
+    it("prints a USDT summary that reconciles: Subtotal - Discount + Unique code = Total, on the digits themselves", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", usdtPayload);
+      const subtotal = amountOf(printedRow(result!.text, "Subtotal / Subtotal")!);
+      const discount = amountOf(printedRow(result!.text, "Discount / Diskon")!);
+      const unique = amountOf(printedRow(result!.text, "Unique code / Kode unik")!);
+      const total = amountOf(printedRow(result!.text, "Total / Total")!);
+      expect(subtotal.minus(discount).plus(unique).toString()).toBe(total.toString());
+      // And concretely, so a regression can't quietly redefine "reconciles":
+      expect(printedRow(result!.text, "Subtotal / Subtotal")).toBe("2.80 USDT");
+      expect(printedRow(result!.text, "Discount / Diskon")).toBe("0.50 USDT");
+      expect(printedRow(result!.text, "Total / Total")).toBe("2.34 USDT");
+    });
+
+    // Buckets 1 and 2 of computeUniqueCents (0.002 and 0.004) round to
+    // nothing at the 2dp this receipt prints. A "0.00 USDT" row reads as a
+    // bug, and hiding it keeps the arithmetic true rather than breaking it:
+    // a row worth exactly zero at display precision contributes exactly zero
+    // to the printed total.
+    it("hides the unique-code row when it would round to zero at the printed precision, and the summary still adds up", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", {
+        ...usdtPayload,
+        unique_cents: "0.002",
+        total: "2.302",
+      });
+      expect(result!.html).not.toContain("Unique code");
+      expect(result!.html).not.toContain("Kode unik");
+      expect(result!.text).not.toContain("Unique code");
+      const subtotal = amountOf(printedRow(result!.text, "Subtotal / Subtotal")!);
+      const discount = amountOf(printedRow(result!.text, "Discount / Diskon")!);
+      const total = amountOf(printedRow(result!.text, "Total / Total")!);
+      expect(subtotal.minus(discount).toString()).toBe(total.toString());
+    });
+
+    it("hides the unique-code row on an IDR order, whose unique cents are zero — and that summary adds up too", async () => {
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", payload);
+      expect(result!.html).not.toContain("Unique code");
+      expect(result!.html).not.toContain("Kode unik");
+      expect(result!.text).not.toContain("Unique code");
+      const subtotal = amountOf(printedRow(result!.text, "Subtotal / Subtotal")!);
+      const discount = amountOf(printedRow(result!.text, "Discount / Diskon")!);
+      const total = amountOf(printedRow(result!.text, "Total / Total")!);
+      expect(subtotal.minus(discount).toString()).toBe(total.toString());
+    });
+
+    // Rows enqueued before `unique_cents` joined the payload are already
+    // PENDING when this code deploys; they must render exactly as they did
+    // before rather than showing a row or a stray "NaN"/"null".
+    it("renders a pre-existing row whose payload has no unique_cents at all, with no unique-code row", async () => {
+      const { unique_cents: _omitted, ...legacy } = payload;
+      const result = await renderEmail("BUYER_EMAIL_ORDER_READY", legacy);
+      expect(result).not.toBeNull();
+      expect(result!.html).not.toContain("Unique code");
+      expect(result!.html).not.toContain("NaN");
+      expect(result!.text).not.toContain("NaN");
+      expect(result!.html).toContain("Rp117.000");
     });
 
     it("resolves the buyer's brand logo against the STOREFRONT origin, never the admin panel's", async () => {

@@ -87,6 +87,10 @@ const ID_TRACK_NOTE = "Browser ini hilang, atau kamu pindah perangkat? Buka lagi
 const BANNER_HEADING = `${EN_HEADING} / ${ID_HEADING}`;
 const LABEL_SUBTOTAL = "Subtotal / Subtotal";
 const LABEL_DISCOUNT = "Discount / Diskon";
+/** "Kode unik" is the everyday Indonesian term for the few-digit surcharge a
+ * transfer/QRIS payment carries so the shop can tell two identical payments
+ * apart — the reader already knows what this row is. */
+const LABEL_UNIQUE_CODE = "Unique code / Kode unik";
 const LABEL_TOTAL = "Total / Total";
 const LABEL_WARRANTY = "Warranty / Garansi";
 const BUTTON_LABEL = "View Your Order / Lihat Pesanan";
@@ -120,7 +124,27 @@ export interface OrderReadyInput {
    * an empty string hides the Discount row/line entirely, same convention as
    * `orderPaid.ts`. */
   discount: string;
-  /** Already display-formatted by the caller — rendered verbatim. */
+  /** The order's unique-cents surcharge, already display-formatted by the
+   * caller, or `""` to hide the row (the same convention `discount` uses).
+   *
+   * It is NOT decoration: on a USDT order `finalizeOrderPayment` adds
+   * 0.002-0.098 USDT of deterministic noise to the total so the payment
+   * poller can match the buyer's transfer by amount. That surcharge is money
+   * the buyer actually paid, and while it went unprinted this receipt could
+   * not add up no matter how carefully the other figures were rounded. The
+   * caller hides the row only when it is worth zero AT THE PRECISION THIS
+   * RECEIPT PRINTS — a row that would read "0.00" contributes exactly nothing
+   * to the printed total, so hiding it keeps the arithmetic true rather than
+   * breaking it. */
+  uniqueCode: string;
+  /** Already display-formatted by the caller — rendered verbatim.
+   *
+   * Subtotal - Discount + Unique code must equal this, exactly, on the
+   * printed digits: the reader is the customer who just paid, and a summary
+   * that does not reconcile reads as an overcharge. The caller owns that
+   * guarantee (see enqueueBuyerOrderReadyEmailIfGuest in
+   * packages/db/src/crud/orders.ts); this template only lays the figures out
+   * and must never recompute one from the others. */
   total: string;
   /** Already display-formatted by the caller (e.g. "30 days / 30 hari"), or
    * null when the order carries no warranty — null hides the row/line
@@ -188,6 +212,10 @@ export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig
   const summaryRows = [
     { label: LABEL_SUBTOTAL, value: input.subtotal },
     { label: LABEL_DISCOUNT, value: input.discount },
+    // Between the discount and the total, which is where it is added: the
+    // reader can run Subtotal - Discount + Unique code down the column and
+    // land on the Total.
+    { label: LABEL_UNIQUE_CODE, value: input.uniqueCode },
     { label: LABEL_TOTAL, value: input.total },
     // infoTable drops any row whose value is empty, so a null warranty needs
     // no branch here — but it does below in the plain-text build.
@@ -234,6 +262,7 @@ export function renderOrderReadyEmail(input: OrderReadyInput, brand: BrandConfig
     itemLines,
     ptKeyValue(LABEL_SUBTOTAL, input.subtotal),
     ...(input.discount !== "" ? [ptKeyValue(LABEL_DISCOUNT, input.discount)] : []),
+    ...(input.uniqueCode !== "" ? [ptKeyValue(LABEL_UNIQUE_CODE, input.uniqueCode)] : []),
     ptKeyValue(LABEL_TOTAL, input.total),
     ...(input.warranty ? [ptKeyValue(LABEL_WARRANTY, input.warranty)] : []),
     "",

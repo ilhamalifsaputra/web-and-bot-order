@@ -29,7 +29,10 @@ import {
 } from "@app/core/deliveryFields";
 import { setSetting } from "./settings";
 import { addAdminIdToDb } from "./admins";
+import { finalizeOrderPayment } from "./pricing";
 import { usdtFromIdr } from "@app/core/formatters";
+import { Decimal } from "@app/core/money";
+import { OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { config } from "@app/core/config";
 
 let db: TestDb;
@@ -549,10 +552,21 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const order = await makePendingVerificationOrder(denom.id, 5);
     await collapseItemsIntoOneLine(order.id, 5);
     // Simulate a USDT-settled order the way finalizeOrderPayment would have
-    // left it — the same technique the owner-email currency test above uses.
+    // left it: subtotal/unitPrice stay central-IDR, but `totalAmount` is
+    // converted — round(baseIdr / rate, 0.1) plus the unique cents. Patching
+    // only currency+fxRate and leaving a central-IDR total behind would be a
+    // state no real order is ever in, and the receipt's figures are now
+    // derived from that total.
+    const preFinalize = (await prisma.order.findUnique({ where: { id: order.id } }))!;
     await prisma.order.update({
       where: { id: order.id },
-      data: { currency: "USDT", fxRate: "16000" },
+      data: {
+        currency: "USDT",
+        fxRate: "16000",
+        totalAmount: usdtFromIdr(new Decimal(preFinalize.totalAmount).minus(preFinalize.uniqueCents), "16000")
+          .plus(preFinalize.uniqueCents)
+          .toString(),
+      },
     });
 
     await settlePaidOrder(prisma, order.id, { adminId });
@@ -586,6 +600,195 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     expect(items[0]!.unitPrice).toBe("8900");
     expect(items[0]!.lineTotal).toBe("44500");
     expect(items[0]!.lineTotal).toBe(payload.subtotal);
+  });
+
+  /**
+   * The receipt must RECONCILE, not merely be roughly right — the reader is
+   * the customer who just paid, and a summary that does not add up reads as
+   * an overcharge.
+   *
+   * Three separate roundings used to guarantee it never would. `subtotal` and
+   * `discount` were each converted to the nearest 0.1 USDT on their own while
+   * `total` had already been converted, once, by finalizeOrderPayment — and
+   * on top of that, finalizeOrderPayment folds 0.002-0.098 USDT of
+   * deterministic "unique cents" into `totalAmount` (so the payment poller can
+   * match the transfer by amount) that no line of the receipt printed at all.
+   *
+   * Rp45.000 with a 20% voucher at an fxRate of 16.000 is the clean worked
+   * example of the rounding half:
+   *   subtotal 45.000 / 16.000 = 2.8125  -> 2.8 USDT
+   *   discount  9.000 / 16.000 = 0.5625  -> 0.6 USDT   (converted alone)
+   *   net      36.000 / 16.000 = 2.25    -> 2.3 USDT   (what total is built on)
+   * so the old receipt printed "2.8 - 0.6 = 2.2" above a total of 2.3 + cents.
+   */
+  const USDT_RATE = "16000";
+  const PRICE_IDR = "45000";
+  const DISCOUNT_IDR = "9000";
+
+  /**
+   * A guest order settled in USDT on a given rail, driven through the real
+   * `finalizeOrderPayment` rather than a hand-written DB row — the unique
+   * cents, the fxRate snapshot and the converted total all have to be the
+   * ones production actually produces for this test to mean anything.
+   *
+   * The voucher discount is applied by rewriting the central-IDR shell the
+   * way order creation would have (subtotal - discount, with the unique cents
+   * order creation already stamped still riding on top), because
+   * createOrderDirect has no voucher argument.
+   */
+  async function makeUsdtGuestOrder(
+    method: string,
+    opts: { priceIdr?: string; discountIdr?: string } = {},
+  ): Promise<number> {
+    const priceIdr = opts.priceIdr ?? PRICE_IDR;
+    const discountIdr = opts.discountIdr ?? "0";
+    const denom = await makeManualDenom(DeliveryType.MANUAL, priceIdr);
+    const created = await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: denom.id,
+      quantity: 1,
+    });
+    const shell = (await prisma.order.findUnique({ where: { id: created!.id } }))!;
+    await prisma.order.update({
+      where: { id: shell.id },
+      data: {
+        discountAmount: discountIdr,
+        totalAmount: new Decimal(priceIdr).minus(discountIdr).plus(shell.uniqueCents).toString(),
+      },
+    });
+    await finalizeOrderPayment(prisma, shell.id, {
+      currency: OrderCurrency.USDT,
+      rate: USDT_RATE,
+      method: method as never,
+    });
+    await attachPaymentProof(prisma, shell.id, { fileId: "file123", txid: "TX-1" });
+    return shell.id;
+  }
+
+  /** Settle + hand-fulfil a MANUAL order and return its receipt payload. */
+  async function deliverAndReadReceipt(orderId: number) {
+    await settlePaidOrder(prisma, orderId, { adminId });
+    await fulfillManualOrder(prisma, orderId, { adminId, content: "user:pass" });
+    return JSON.parse((await readyRows(orderId))[0]!.payloadJson) as Record<string, unknown>;
+  }
+
+  // Every USDT rail the storefront offers reaches this receipt
+  // (apps/storefront/src/routes/checkout.ts maps the buyer's choice onto all
+  // four), and finalizeOrderPayment gives every one of them unique cents —
+  // only WALLET is excluded. Testing one rail would leave three shipping the
+  // broken receipt.
+  const USDT_RAILS = [
+    PaymentMethod.BINANCE_INTERNAL,
+    PaymentMethod.BYBIT,
+    PaymentMethod.BYBIT_BSC,
+    PaymentMethod.NOWPAYMENTS,
+  ];
+
+  it.each(USDT_RAILS)(
+    "USDT receipt on the %s rail: subtotal - discount + unique cents equals the total, exactly",
+    async (method) => {
+      await makeSampleUserAGuest();
+      const orderId = await makeUsdtGuestOrder(method, { discountIdr: DISCOUNT_IDR });
+      const order = (await prisma.order.findUnique({ where: { id: orderId } }))!;
+
+      const payload = await deliverAndReadReceipt(orderId);
+
+      expect(payload.currency).toBe("USDT");
+      // The unique cents are real money the buyer transferred — the receipt
+      // has to carry them, or it can never balance.
+      expect(payload.unique_cents).toBe(order.uniqueCents.toString());
+      expect(new Decimal(String(payload.unique_cents)).isZero()).toBe(false);
+      expect(payload.total).toBe(order.totalAmount.toString());
+
+      const subtotal = new Decimal(String(payload.subtotal));
+      const discount = new Decimal(String(payload.discount));
+      const unique = new Decimal(String(payload.unique_cents));
+      expect(subtotal.minus(discount).plus(unique).toString()).toBe(String(payload.total));
+    },
+  );
+
+  it("USDT receipt: the subtotal stays the converted subtotal and the discount absorbs the rounding, so the figures above the total keep their meaning", async () => {
+    await makeSampleUserAGuest();
+    const orderId = await makeUsdtGuestOrder(PaymentMethod.BINANCE_INTERNAL, { discountIdr: DISCOUNT_IDR });
+
+    const payload = await deliverAndReadReceipt(orderId);
+
+    // Anchored: converted once from central IDR, exactly as before.
+    expect(payload.subtotal).toBe(usdtFromIdr(PRICE_IDR, USDT_RATE).toString()); // "2.8"
+    // Derived: subtotal minus the net the total is actually built on (2.3),
+    // NOT the independently-rounded 9.000/16.000 = 0.5625 -> "0.6" that used
+    // to leave the receipt 0.1 USDT short of its own total.
+    expect(payload.discount).toBe("0.5");
+    expect(payload.discount).not.toBe(usdtFromIdr(DISCOUNT_IDR, USDT_RATE).toString());
+  });
+
+  it("USDT receipt with no discount at all: still balances, and prints no discount", async () => {
+    await makeSampleUserAGuest();
+    const orderId = await makeUsdtGuestOrder(PaymentMethod.NOWPAYMENTS);
+    const order = (await prisma.order.findUnique({ where: { id: orderId } }))!;
+
+    const payload = await deliverAndReadReceipt(orderId);
+
+    expect(payload.discount).toBe("0");
+    expect(payload.subtotal).toBe(usdtFromIdr(PRICE_IDR, USDT_RATE).toString());
+    const subtotal = new Decimal(String(payload.subtotal));
+    const unique = new Decimal(String(payload.unique_cents));
+    expect(subtotal.plus(unique).toString()).toBe(order.totalAmount.toString());
+  });
+
+  it("IDR receipt (TOKOPAY): unchanged central-IDR figures, and no unique cents to print", async () => {
+    await makeSampleUserAGuest();
+    const denom = await makeManualDenom(DeliveryType.MANUAL, PRICE_IDR);
+    const created = await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: denom.id,
+      quantity: 1,
+    });
+    // finalizeOrderPayment's IDR branch strips the unique cents (QRIS
+    // confirms by callback, not by amount matching) and converts nothing.
+    await finalizeOrderPayment(prisma, created!.id, {
+      currency: OrderCurrency.IDR,
+      method: PaymentMethod.TOKOPAY,
+    });
+    await attachPaymentProof(prisma, created!.id, { fileId: "file123", txid: "TX-1" });
+    const order = (await prisma.order.findUnique({ where: { id: created!.id } }))!;
+
+    const payload = await deliverAndReadReceipt(created!.id);
+
+    expect(payload.currency).toBe("IDR");
+    expect(payload.subtotal).toBe(order.subtotalAmount.toString());
+    expect(payload.discount).toBe(order.discountAmount.toString());
+    expect(payload.total).toBe(order.totalAmount.toString());
+    expect(payload.unique_cents).toBe("0");
+    // And it balances on its own terms: Rp45.000 - Rp0 + Rp0 = Rp45.000.
+    const subtotal = new Decimal(String(payload.subtotal));
+    const discount = new Decimal(String(payload.discount));
+    const unique = new Decimal(String(payload.unique_cents));
+    expect(subtotal.minus(discount).plus(unique).toString()).toBe(String(payload.total));
+  });
+
+  // Wallet credit is the one thing that could silently poison the derived
+  // discount: `walletUsed` is subtracted from the total but never shown, so
+  // a wallet-paying buyer would see it folded into "Discount". Guests have no
+  // wallet — the storefront never offers one and a guest User row is created
+  // with a zero balance — so the receipt can rely on that. Pinned rather than
+  // assumed, because the derivation depends on it.
+  it("a guest order never carries wallet credit, so nothing invisible can leak into the derived discount", async () => {
+    await makeSampleUserAGuest();
+    const orderId = await makeUsdtGuestOrder(PaymentMethod.BYBIT, { discountIdr: DISCOUNT_IDR });
+    const order = (await prisma.order.findUnique({ where: { id: orderId } }))!;
+    const guest = (await prisma.user.findUnique({ where: { id: sample.user.id } }))!;
+
+    expect(new Decimal(order.walletUsed).isZero()).toBe(true);
+    expect(new Decimal(guest.walletBalance).isZero()).toBe(true);
+
+    const payload = await deliverAndReadReceipt(orderId);
+    // With no wallet credit, the net the total is built on is exactly
+    // subtotal - discount, so the derived discount is a discount and nothing
+    // else.
+    expect(new Decimal(String(payload.subtotal)).minus(String(payload.discount)).toString()).toBe(
+      new Decimal(order.totalAmount).minus(order.uniqueCents).toString(),
+    );
   });
 
   it("registered (non-guest) buyer: no row, in either branch", async () => {

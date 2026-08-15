@@ -1464,17 +1464,22 @@ export function customerLabel(
  * scaling the rounded per-unit figure, which would scale its rounding error
  * too).
  *
- * What remains, and is deliberately NOT solved here, is the other half of that
- * rule: separately-rounded figures need not reconcile with each other. Since
- * subtotal and discount are each rounded to the nearest 0.1 USDT on their own,
- * Subtotal minus Discount can differ from Total by up to ~0.1 USDT, and the
- * line totals of a multi-line order need not sum to exactly the subtotal
- * (docs/audit-backend-2026-07-31.md's L-1 finding flags exactly this for
- * orderMoneyView.ts). That's an acceptable, pre-existing tradeoff for
- * informational notification emails — getting the right ORDER OF MAGNITUDE
- * matters far more here than being reconciled to the cent, which the admin
- * ledger view separately owns. Do not attempt to solve the L-1 rounding class
- * of issue here; it is a larger, separate question.
+ * BEWARE THE OTHER HALF OF THAT RULE: separately-rounded figures need not
+ * reconcile with each other. Two values that each went through here are each
+ * rounded to the nearest 0.1 USDT on their own, so their difference can be up
+ * to ~0.1 USDT away from the converted difference (docs/audit-backend-2026-07
+ * -31.md's L-1 finding flags exactly this for orderMoneyView.ts). A caller
+ * whose figures a reader will ADD UP therefore cannot convert each of them
+ * here and hope: it must convert ONE and derive the rest from figures already
+ * in the settlement currency, which is what enqueueBuyerOrderReadyEmailIfGuest
+ * does for the buyer's receipt.
+ *
+ * The owner-facing OWNER_EMAIL_ORDER_PAID call site below still converts
+ * subtotal and discount independently, and its figures can still disagree by
+ * ~0.1 USDT — an accepted tradeoff there, where the reader is the shop admin
+ * and the reconciled view they act on is the admin ledger. The wider L-1
+ * class (line totals summing to the subtotal, orderMoneyView.ts, etc.) is
+ * deliberately still open; do not try to solve it here.
  */
 function orderCurrencyConverter(order: { currency: string; fxRate: Decimal | null }) {
   return (value: Decimal.Value): Decimal =>
@@ -1523,6 +1528,49 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
 
   const toOrderCurrency = orderCurrencyConverter(order);
   const base = storefrontBase();
+
+  // ── The four figures the buyer reads stacked on top of each other ───────
+  //
+  // They have to RECONCILE — Subtotal - Discount + Unique code = Total,
+  // exactly — because the reader is the customer who just paid, and a summary
+  // that does not add up reads as an overcharge and becomes a support ticket.
+  //
+  // Two facts make that achievable rather than lucky. First, `totalAmount` and
+  // `uniqueCents` are both stored exactly in the settlement currency, so
+  // `totalAmount - uniqueCents` IS `usdtFromIdr(baseIdr, fxRate)` — the single
+  // conversion finalizeOrderPayment already performed, recovered without
+  // rounding anything again. Second, converting a figure through
+  // `toOrderCurrency` rounds it to the nearest 0.1 USDT, and two such figures
+  // subtracted from each other need not land on a third (Rp45.000 with a
+  // Rp9.000 voucher at an fxRate of 16.000: 2.8 - 0.6 = 2.2, against a net of
+  // 2.3 — the receipt used to contradict itself by 0.1 USDT).
+  //
+  // So convert exactly ONE figure and derive the rest. The SUBTOTAL is the
+  // anchor: it sits directly beneath the item lines, which are themselves
+  // converted from central IDR, so it is the figure a reader cross-checks
+  // against something else on the page. The discount is the derived one — it
+  // is an adjustment rather than a quantity, it already has a hide-when-zero
+  // convention, and being off by up to 0.1 USDT from its own converted value
+  // is the cheapest place on the page to absorb the rounding.
+  //
+  // `Decimal.max` is defensive, not load-bearing: `usdtFromIdr` is monotonic
+  // and `baseIdr` can never exceed `subtotalAmount`, so the derived discount
+  // is already non-negative for every order that reaches here. Deriving the
+  // subtotal back from it (rather than reusing the converted value) keeps the
+  // identity exact even if that ever stopped holding.
+  const uniqueCents = new Decimal(order.uniqueCents);
+  const netInOrderCurrency = new Decimal(order.totalAmount).minus(uniqueCents);
+  // An IDR order converts nothing and is left exactly as it was: its stored
+  // figures are already in the currency they print in, and `finalizeOrderPayment`
+  // zeroes its unique cents (QRIS/PayDisini confirm by gateway callback, not
+  // by amount matching), so there is no rounding to reconcile in the first
+  // place.
+  const isConverted = order.currency !== "IDR" && order.fxRate != null;
+  const discount = isConverted
+    ? Decimal.max(ZERO, toOrderCurrency(order.subtotalAmount).minus(netInOrderCurrency))
+    : toOrderCurrency(order.discountAmount);
+  const subtotal = isConverted ? netInOrderCurrency.plus(discount) : toOrderCurrency(order.subtotalAmount);
+
   // The longest warranty covering anything in the order. Orders are
   // homogeneous in practice (one SKU per order), so this is the order's
   // warranty; `max` just keeps it honest if that ever stops being true.
@@ -1550,8 +1598,12 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
       // the receipt's reader is the paying customer.
       lineTotal: toOrderCurrency(new Decimal(item.unitPrice).times(item.quantity)),
     })),
-    subtotal: toOrderCurrency(order.subtotalAmount),
-    discount: toOrderCurrency(order.discountAmount),
+    subtotal,
+    discount,
+    // Stored in the settlement currency already, and printed as its own row:
+    // it is money the buyer transferred, and while it went unprinted the
+    // receipt could not add up however carefully the rest was rounded.
+    uniqueCents,
     // Already in the order's settlement currency — finalizeOrderPayment
     // converts this one, so it must NOT go through toOrderCurrency again.
     total: order.totalAmount,

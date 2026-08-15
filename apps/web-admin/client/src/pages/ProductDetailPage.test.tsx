@@ -195,4 +195,64 @@ describe("ProductDetailPage", () => {
     );
     await waitFor(() => expect(screen.queryByText("Private")).not.toBeInTheDocument());
   });
+
+  it("moves the product to another category from the edit card", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    Element.prototype.scrollIntoView = vi.fn();
+    Element.prototype.hasPointerCapture = vi.fn(() => false);
+    Element.prototype.setPointerCapture = vi.fn();
+    Element.prototype.releasePointerCapture = vi.fn();
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body =
+        url === "/api/catalog"
+          ? {
+              categories: [
+                { id: 2, name: "Apps", slug: "apps", emoji: null, description: null, sortOrder: 0, isActive: true },
+                { id: 5, name: "Games", slug: "games", emoji: null, description: null, sortOrder: 1, isActive: true },
+              ],
+              products: [],
+            }
+          : url.startsWith("/api/catalog/1") && !init?.method
+            ? PRODUCT_DETAIL
+            : { ok: true };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+    await user.click(screen.getByRole("combobox", { name: "Category" }));
+    await user.click(await screen.findByRole("option", { name: "Games" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/catalog/products/1",
+        expect.objectContaining({ method: "PATCH" }),
+      ),
+    );
+    const patch = fetchSpy.mock.calls.find(
+      ([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH",
+    )!;
+    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ categoryId: 5 });
+  });
+
+  it("links the category to that category's products", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify(PRODUCT_DETAIL), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: "Apps" })).toBeInTheDocument();
+  });
 });

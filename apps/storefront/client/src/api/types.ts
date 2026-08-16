@@ -172,6 +172,10 @@ export interface ProductPageData {
      * `reviews` below (which is limited to 10). */
     rating: number | null;
     rating_count: number;
+    /** Category.checkoutFlow (Task 6, Digiflazz instant-buy pilot): "instant"
+     * renders InstantBuyPage.tsx instead of this page's usual plan picker +
+     * Cart→Checkout hop. */
+    checkout_flow: "catalog" | "instant";
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;

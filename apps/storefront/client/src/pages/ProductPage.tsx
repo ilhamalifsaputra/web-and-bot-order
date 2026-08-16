@@ -35,6 +35,7 @@ import DenominationCard from "../components/shop/DenominationCard";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
+import InstantBuyPage from "./InstantBuyPage";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
@@ -227,6 +228,14 @@ export default function ProductPage() {
 
   const { product, denominations, reviews, related_products, low_threshold } = data;
   const fx = ctx?.fx;
+
+  // Task 6 (Digiflazz instant-buy pilot): a category flagged checkoutFlow
+  // "instant" renders the single-page buy flow instead of this page's usual
+  // image/plan-picker + Cart→Checkout hop. InstantBuyPage re-fetches this
+  // same product payload itself (same query key, so it hits the cache this
+  // fetch just populated) rather than threading two dozen props through —
+  // everything below this line is the unchanged catalog-flow path.
+  if (product.checkout_flow === "instant") return <InstantBuyPage />;
 
   // Preselect the first in-stock plan, else the first plan — same order as
   // the script's `firstEnabled || radios[0]`.

@@ -21,7 +21,6 @@ import {
   Clock,
   Coins,
   CreditCard,
-  Gamepad2,
   Headphones,
   KeyRound,
   LifeBuoy,
@@ -458,20 +457,6 @@ export default function HomePage() {
                 </span>
               </div>
               <p className="mt-1 text-sm text-ink-soft">{t("web.sosmed_desc")}</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
-              <Gamepad2 className="h-6 w-6" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-semibold text-ink">{t("web.topup_title")}</h3>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amberx-tint px-2.5 py-1 text-xs font-medium text-amberx">
-                  <Clock className="h-3.5 w-3.5" /> {t("web.coming_soon")}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-ink-soft">{t("web.topup_desc")}</p>
             </div>
           </div>
         </div>

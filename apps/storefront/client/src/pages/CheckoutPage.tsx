@@ -30,79 +30,31 @@
  * departures from template parity documented at PaymentMethodRow (selected
  * state) and at the sticky total bar near the bottom of this file.
  */
-import { useEffect, useState, type ReactNode, type KeyboardEvent } from "react";
+import { useEffect, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronRight, ShoppingCart, Wallet } from "lucide-react";
+import { AlertTriangle, ShoppingCart } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
-import { formatIdr, formatNativeUsdt } from "../lib/format";
+import { formatIdr } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
-import FlashBadge, { flashPercentLabel } from "../components/shop/FlashBadge";
-import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import Spinner from "../components/shop/Spinner";
-
-/** All-or-nothing wallet-credit gates: only "sufficient" when the balance
- * covers the live total outright — never offered as a partial discount.
- * `wallet_*_enabled` comes first because it answers a different question: may
- * this shop offer a balance payment to THIS visitor at all (it is false for a
- * guest, who has no wallet behind the number). Reading the server's flag
- * rather than `is_guest` keeps that decision on the server side. */
-function isIdrWalletSufficient(data: CheckoutData): boolean {
-  return data.wallet_idr_enabled && Number(data.total) > 0 && Number(data.wallet_idr) >= Number(data.total);
-}
-function isUsdtWalletSufficient(data: CheckoutData): boolean {
-  return (
-    data.wallet_usdt_enabled && data.total_usdt != null && Number(data.wallet_usdt) >= Number(data.total_usdt)
-  );
-}
-
-/** checkout.njk's default-selection cascade: the first enabled method wins,
- * in file/priority order (qris → paydisini → binance → bybit → bybit_bsc →
- * nowpayments), falling back to wallet credit only when no gateway is
- * configured at all — a buyer with both a gateway and wallet credit
- * available shouldn't have their credit silently pre-selected for them.
- * Returns null when nothing is payable. */
-function defaultMethod(data: CheckoutData): string | null {
-  if (data.idr_enabled) return "qris";
-  if (data.paydisini_enabled) return "paydisini";
-  if (data.binance_enabled) return "binance";
-  if (data.bybit_enabled) return "bybit";
-  if (data.bybit_bsc_enabled) return "bybit_bsc";
-  if (data.nowpayments_enabled) return "nowpayments";
-  if (isIdrWalletSufficient(data)) return "wallet_idr";
-  if (isUsdtWalletSufficient(data)) return "wallet_usdt";
-  return null;
-}
-
-/**
- * The biggest live flash discount in the cart, plus the last moment any of
- * them is still running — the summary's one modest "this is a sale price"
- * marker. Read from the checkout payload's own `items`, which are priced and
- * flagged against the same instant as the totals beside them, so the marker
- * can never disagree with the figures it annotates.
- */
-function cartFlashSummary(data: CheckoutData | undefined): { percent: number; endsAt: string | null } | null {
-  let percent: number | null = null;
-  let endsAt: string | null = null;
-  for (const line of data?.items ?? []) {
-    const pct = flashPercentLabel(line.flash?.discount_percent);
-    if (pct === null) continue;
-    if (percent === null || pct > percent) percent = pct;
-    const lineEnd = line.flash?.ends_at ?? null;
-    if (lineEnd && (endsAt === null || lineEnd > endsAt)) endsAt = lineEnd;
-  }
-  return percent === null ? null : { percent, endsAt };
-}
+import PaymentMethodSelector, {
+  anyMethodEnabled,
+  defaultMethod,
+  isIdrWalletSufficient,
+  isUsdtWalletSufficient,
+} from "../components/shop/PaymentMethodSelector";
+import OrderSummaryCard from "../components/shop/OrderSummaryCard";
 
 /**
  * Turn whatever an API rejection carried into something a shopper can read.
@@ -117,72 +69,6 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
  */
 function humanError(message: string): string {
   return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
-}
-
-function anyMethodEnabled(data: CheckoutData): boolean {
-  return (
-    data.idr_enabled ||
-    data.paydisini_enabled ||
-    data.binance_enabled ||
-    data.bybit_enabled ||
-    data.bybit_bsc_enabled ||
-    data.nowpayments_enabled
-  );
-}
-
-/**
- * One payment-method radio row (gateway or wallet credit — they are the same
- * radio group). The row has always been a `<label>` wrapping its radio, so the
- * whole rectangle was already tappable; what it lacked was a selected state a
- * thumb-held phone can read. The native radio dot sits at the row's left edge,
- * exactly where the hand covering the screen is, so the buyer could not tell
- * which rail was armed without moving their hand. `has-[:checked]:` tints and
- * outlines the entire row instead, and `focus-within` gives the same row a
- * visible ring when the group is walked with the arrow keys. checkout.njk had
- * neither (that pattern only existed on product.njk's DenominationCard) — a
- * deliberate departure from template parity, not a porting oversight.
- *
- * Extracted from eight near-identical inline labels so the row treatment lives
- * in one place; which rows render, and under what conditions, stays at the
- * call sites untouched.
- */
-function PaymentMethodRow({
-  value,
-  checked,
-  onSelect,
-  icon,
-  title,
-  subtitle,
-  feeNote,
-}: {
-  value: string;
-  checked: boolean;
-  onSelect: () => void;
-  icon: ReactNode;
-  title: string;
-  subtitle: string;
-  feeNote?: string;
-}) {
-  return (
-    <label className="flex items-start gap-3 p-3 rounded-xl border border-line transition-colors cursor-pointer hover:border-pine focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:bg-pine-tint">
-      <input
-        type="radio"
-        name="method"
-        value={value}
-        className="mt-1 size-4 shrink-0 accent-pine"
-        checked={checked}
-        onChange={onSelect}
-      />
-      {icon}
-      {/* min-w-0 lets a long gateway description wrap rather than push the row
-          wider than a 320px viewport. */}
-      <span className="min-w-0">
-        <span className="font-semibold text-sm block">{title}</span>
-        <span className="text-xs text-ink-soft block mt-0.5">{subtitle}</span>
-        {feeNote && <span className="text-xs text-ink-faint block mt-0.5">{feeNote}</span>}
-      </span>
-    </label>
-  );
 }
 
 /**
@@ -280,7 +166,7 @@ function InfoStepCard({
  *    points at it whenever it's showing, so a screen reader hears the reason
  *    rather than a bare "invalid".
  */
-function GuestContactCard({
+export function GuestContactCard({
   email,
   onChange,
   serverRejected,
@@ -546,9 +432,6 @@ export default function CheckoutPage() {
   // ever at most one manual_with_info line.
   const infoItem = page.items.find((i) => i.delivery_type === "manual_with_info") ?? null;
   const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
-  // `page` holds the item list; `totals` is the re-priced payload after a
-  // voucher apply. Either carries the same per-line flash flags.
-  const flashSummary = cartFlashSummary(page);
   // Both submit controls share one set of gates so neither can offer an order
   // the other refuses: `blocked` is the permanent "not payable yet" state the
   // dimmed styling explains, `disabled` adds the transient in-flight state.
@@ -605,240 +488,26 @@ export default function CheckoutPage() {
             <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
           )}
 
-          <div className="card card-pad">
-            <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
-            <div className="space-y-3">
-              {page.idr_enabled && (
-                <PaymentMethodRow
-                  value="qris"
-                  checked={method === "qris"}
-                  onSelect={() => setMethod("qris")}
-                  icon={
-                    <img
-                      src="/static/pay/qris.png"
-                      alt="QRIS"
-                      className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_idr_title")}
-                  subtitle={t("web.pay_idr_sub")}
-                  feeNote={t("web.qris_admin_fee_note")}
-                />
-              )}
-              {page.paydisini_enabled && (
-                <PaymentMethodRow
-                  value="paydisini"
-                  checked={method === "paydisini"}
-                  onSelect={() => setMethod("paydisini")}
-                  icon={
-                    <img
-                      src="/static/pay/qris.png"
-                      alt="PayDisini"
-                      className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_paydisini_title")}
-                  subtitle={t("web.pay_paydisini_sub")}
-                />
-              )}
-              {page.binance_enabled && (
-                <PaymentMethodRow
-                  value="binance"
-                  checked={method === "binance"}
-                  onSelect={() => setMethod("binance")}
-                  icon={
-                    <img
-                      src="/static/pay/binance.png"
-                      alt="Binance"
-                      className="h-7 w-7 object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_usdt_title")}
-                  subtitle={t("web.pay_usdt_sub")}
-                />
-              )}
-              {page.bybit_enabled && (
-                <PaymentMethodRow
-                  value="bybit"
-                  checked={method === "bybit"}
-                  onSelect={() => setMethod("bybit")}
-                  icon={
-                    <img
-                      src="/static/pay/bybit.png"
-                      alt="Bybit"
-                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_bybit_title")}
-                  subtitle={t("web.pay_bybit_sub")}
-                />
-              )}
-              {page.bybit_bsc_enabled && (
-                <PaymentMethodRow
-                  value="bybit_bsc"
-                  checked={method === "bybit_bsc"}
-                  onSelect={() => setMethod("bybit_bsc")}
-                  icon={
-                    <img
-                      src="/static/pay/bybit.png"
-                      alt="Bybit"
-                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_bybit_bsc_title")}
-                  subtitle={t("web.pay_bybit_bsc_sub")}
-                />
-              )}
-              {page.nowpayments_enabled && (
-                <PaymentMethodRow
-                  value="nowpayments"
-                  checked={method === "nowpayments"}
-                  onSelect={() => setMethod("nowpayments")}
-                  icon={
-                    <img
-                      src="/static/pay/nowpayments.png"
-                      alt="NOWPayments"
-                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                    />
-                  }
-                  title={t("web.pay_nowpayments_title")}
-                  subtitle={t("web.pay_nowpayments_sub")}
-                />
-              )}
-              {idrWalletSufficient && (
-                <PaymentMethodRow
-                  value="wallet_idr"
-                  checked={method === "wallet_idr"}
-                  onSelect={() => setMethod("wallet_idr")}
-                  icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-                  title={t("web.pay_wallet_idr_title")}
-                  subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(page.wallet_idr) })}
-                />
-              )}
-              {usdtWalletSufficient && (
-                <PaymentMethodRow
-                  value="wallet_usdt"
-                  checked={method === "wallet_usdt"}
-                  onSelect={() => setMethod("wallet_usdt")}
-                  icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-                  title={t("web.pay_wallet_usdt_title")}
-                  subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(page.wallet_usdt) })}
-                />
-              )}
-              {!anyMethodEnabled(page) && !idrWalletSufficient && !usdtWalletSufficient && (
-                <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
-                  <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-                  <p>
-                    {t("web.pay_none_available_prefix")}{" "}
-                    <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
-                      {t("web.pay_none_available_link")}
-                    </Link>
-                    {t("web.pay_none_available_suffix")}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="card card-pad">
-            <label className="field-label" htmlFor="voucher_code">
-              {t("web.voucher_label")}
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="voucher_code"
-                value={voucherInput}
-                onChange={(e) => setVoucherInput(e.target.value)}
-                onKeyDown={onVoucherKeyDown}
-                className="field uppercase"
-                placeholder={t("web.voucher_placeholder")}
-                maxLength={32}
-                aria-invalid={totals.error_key ? true : undefined}
-                aria-describedby={totals.error_key ? "voucher_code_error" : undefined}
-              />
-              <button
-                type="button"
-                id="voucher_apply"
-                className="btn btn-soft shrink-0"
-                disabled={previewMutation.isPending}
-                onClick={applyVoucher}
-              >
-                {previewMutation.isPending && <Spinner />}
-                {t("web.voucher_apply")}
-              </button>
-            </div>
-            {/* STO-005: the voucher error belongs next to the field it
-                validates, on every viewport — it used to render in the
-                summary column, a full column gutter away on desktop. */}
-            {totals.error_key && (
-              <p id="voucher_code_error" role="alert" className="mt-2 text-sm text-rust-dark flex items-center gap-1.5">
-                <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
-              </p>
-            )}
-          </div>
+          <PaymentMethodSelector data={page} method={method} onSelect={setMethod} />
         </div>
 
-        <div id="checkout-summary">
-          <div className="card card-pad">
-            <h2 className="section-title mb-3">{t("web.summary")}</h2>
-            <div className="text-sm divide-y divide-line">
-              <div className="flex justify-between py-2">
-                <span className="text-ink-soft">{t("web.subtotal")}</span>
-                <span>{formatIdr(totals.subtotal)}</span>
-              </div>
-              {/* Modest marker only: the subtotal above is already the sale
-                  price, and the full countdown belongs on the product page. */}
-              {flashSummary && (
-                <div className="flex flex-wrap items-center justify-between gap-2 py-2">
-                  <span className="text-ink-soft">{t("web.flash_applied")}</span>
-                  <FlashBadge percent={flashSummary.percent} endsAt={flashSummary.endsAt} />
-                </div>
-              )}
-              {totals.bulk_discount !== "0" && (
-                <div className="flex justify-between py-2 text-grass-dark">
-                  <span>{t("web.bulk_discount")}</span>
-                  <span>−{formatIdr(totals.bulk_discount)}</span>
-                </div>
-              )}
-              {totals.voucher_discount !== "0" && (
-                <div className="flex justify-between py-2 text-grass-dark">
-                  <span>{t("web.voucher_discount")}</span>
-                  <span>−{formatIdr(totals.voucher_discount)}</span>
-                </div>
-              )}
-              {method === "qris" && (
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
-                  <span>{formatIdr(totals.qris_admin_fee)}</span>
-                </div>
-              )}
-              <div className="flex justify-between py-3 items-baseline">
-                <span className="font-semibold">{t("web.order_total")}</span>
-                <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={ctx?.fx} size="text-lg" />
-              </div>
-            </div>
-            {ctx?.fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
-            {/* Desktop only: on a phone this button lives in the sticky bar
-                below instead. Rendering it in both places would put two
-                identically-labelled submits in the page for assistive tech to
-                disambiguate, so only one exists at a time. */}
-            {isDesktop && (
-              <button
-                type="button"
-                className="btn btn-primary w-full mt-4"
-                disabled={placeOrderDisabled}
-                style={placeOrderBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-                onClick={() => placeOrderMutation.mutate()}
-              >
-                {placeOrderMutation.isPending && <Spinner />}
-                {t("web.place_order")} <ChevronRight className="w-4 h-4" />
-              </button>
-            )}
-            <Link to="/cart" className="btn btn-ghost w-full mt-2">
-              {t("web.back_to_cart")}
-            </Link>
-          </div>
-        </div>
+        <OrderSummaryCard
+          totals={totals}
+          method={method}
+          fx={ctx?.fx}
+          voucherInput={voucherInput}
+          onVoucherInputChange={setVoucherInput}
+          onVoucherApply={applyVoucher}
+          onVoucherKeyDown={onVoucherKeyDown}
+          voucherPending={previewMutation.isPending}
+          showDesktopSubmit={isDesktop}
+          submitLabel={t("web.place_order")}
+          submitDisabled={placeOrderDisabled}
+          submitBlocked={placeOrderBlocked}
+          onSubmit={() => placeOrderMutation.mutate()}
+          submitPending={placeOrderMutation.isPending}
+          backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
+        />
       </form>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method

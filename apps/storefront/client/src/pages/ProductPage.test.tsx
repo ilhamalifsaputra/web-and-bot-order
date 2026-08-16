@@ -87,6 +87,7 @@ const productData: ProductPageData = {
     image: "/img/netflix.jpg",
     rating: 4.6,
     rating_count: 12,
+    checkout_flow: "catalog",
   },
   denominations: [
     {

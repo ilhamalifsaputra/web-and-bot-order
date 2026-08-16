@@ -239,6 +239,11 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
       rating: productRatingAvg,
       rating_count: productRatingCount,
+      // Task 6 (Digiflazz instant-buy pilot): already fetched via
+      // getCatalogProductBySlugWithDenominations's `include: { category: true }`
+      // — no crud-layer change needed. Drives ProductPage.tsx's branch to
+      // InstantBuyPage.tsx.
+      checkout_flow: product.category.checkoutFlow,
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,

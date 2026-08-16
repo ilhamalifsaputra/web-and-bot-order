@@ -159,11 +159,15 @@ describe("HomePage", () => {
     expect(screen.getByText("Telegram")).toBeInTheDocument();
   });
 
-  it("gives the two 'coming soon' teaser cards a dashed border so they read as non-interactive", async () => {
+  // Task 6 (Digiflazz instant-buy pilot): the "Top Up Game" placeholder card
+  // is gone — the real category (once it exists with active products) shows
+  // up in the live "Kategori" grid instead, same as any other category. The
+  // sibling "Sosmed" placeholder is untouched.
+  it("gives the one remaining 'coming soon' teaser card a dashed border so it reads as non-interactive", async () => {
     const { container } = renderHome(homeFixture());
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const teasers = container.querySelectorAll(".border-dashed");
-    expect(teasers.length).toBe(2);
+    expect(teasers.length).toBe(1);
   });
 
   // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never

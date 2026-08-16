@@ -23,10 +23,12 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
+  getDigiflazzCreds,
 } from "@app/db";
 import { checkTransaction as tokopayCheckTransaction } from "@app/core/payments/tokopay";
 import { checkTransaction as paydisiniCheckTransaction } from "@app/core/payments/paydisini";
 import { getPaymentStatus as nowpaymentsGetStatus } from "@app/core/payments/nowpayments";
+import { getPriceList } from "@app/core/suppliers/digiflazz";
 
 export interface ConnectionTestResult {
   ok: boolean;
@@ -197,9 +199,28 @@ export async function testBinanceInternal(): Promise<ConnectionTestResult> {
   }
 }
 
-/** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS) → tester.
- * "bybit_bsc" intentionally reuses testBybit — it shares the same account
- * credentials as "bybit", so there is nothing separate to verify here. */
+/** Fetches Digiflazz's price list with the currently-saved credentials — the
+ * lightest read-only call that actually proves the username/API key pair is
+ * accepted, same "call the real endpoint, don't just check the shape"
+ * approach as Bybit/Binance above. Not gated behind a PAYMENT_METHODS entry
+ * (Digiflazz is a supplier, not a checkout payment method) — this key only
+ * needs to exist in CONNECTION_TESTS for the generic
+ * /api/settings/payments/:method/test route to dispatch it. */
+export async function testDigiflazz(): Promise<ConnectionTestResult> {
+  const creds = await getDigiflazzCreds(prisma);
+  if (!creds) return { ok: false, detail: "Digiflazz username and API key are not both set." };
+  try {
+    const items = await getPriceList(creds);
+    return { ok: true, detail: `Connected — ${items.length} SKU(s) in the price list.` };
+  } catch (err) {
+    return { ok: false, detail: `Digiflazz test failed: ${errorMessage(err)}` };
+  }
+}
+
+/** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS, or — for
+ * Digiflazz — the supplier equivalent) → tester. "bybit_bsc" intentionally
+ * reuses testBybit — it shares the same account credentials as "bybit", so
+ * there is nothing separate to verify here. */
 export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult>> = {
   tokopay: testTokopay,
   paydisini: testPaydisini,
@@ -207,4 +228,5 @@ export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult
   bybit: testBybit,
   bybit_bsc: testBybit,
   binance_internal: testBinanceInternal,
+  digiflazz: testDigiflazz,
 };

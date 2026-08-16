@@ -106,9 +106,14 @@ const EDITABLE: Record<string, string> = {
   wallet_topup_max_amount_idr: "Wallet top-up max amount (IDR)",
   wallet_topup_min_amount_usdt: "Wallet top-up min amount (USDT)",
   wallet_topup_max_amount_usdt: "Wallet top-up max amount (USDT)",
+  digiflazz_username: "Digiflazz username",
+  digiflazz_api_key: "Digiflazz API key",
+  digiflazz_enabled: "Digiflazz enabled",
+  digiflazz_markup_type: "Digiflazz markup type (percent or flat)",
+  digiflazz_markup_value: "Digiflazz markup value",
 };
 
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key"]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat
 // reachable" flow — the original public_channel_id plus the two join-gate
@@ -307,6 +312,16 @@ async function applyFieldEdit(
 
   if (key === "bulk_purchase_broadcast_template" && value.length > 500) {
     throw new FieldEditError(400, "Template is too long — keep it under 500 characters.");
+  }
+
+  if (key === "digiflazz_markup_type" && value !== "" && value !== "percent" && value !== "flat") {
+    throw new FieldEditError(400, 'Markup type must be "percent" or "flat".');
+  }
+
+  if (key === "digiflazz_markup_value" && value !== "") {
+    let valid = false;
+    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThanOrEqualTo(0); } catch { valid = false; }
+    if (!valid) throw new FieldEditError(400, "Markup value must be a non-negative number, or blank to disable.");
   }
 
   const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);

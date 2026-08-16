@@ -196,6 +196,11 @@ model Product {
   /// storefront falls back to its curated Unsplash map (plan.md §8).
   webImageUrl String?  @map("web_image_url")
   imageFileId String?  @map("image_file_id")
+  /// The exact Digiflazz `brand` string this Product was imported from (Import
+  /// Wizard). Null for hand-created products. Re-sync matching key — chosen
+  /// over matching by name so the admin can rename the display name freely
+  /// without breaking future syncs.
+  digiflazzBrand String? @map("digiflazz_brand")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
@@ -240,6 +245,12 @@ model Denomination {
   /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
   /// points at the Digiflazz supplier.
   supplierSku          String?   @map("supplier_sku")
+  /// True once an admin has manually edited this SKU's price after import.
+  /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
+  /// resyncDigiflazzCatalog) skips price recomputation for any row where this
+  /// is true, so a deliberate manual price change is never silently
+  /// overwritten by the next sync tick.
+  priceOverridden      Boolean   @default(false) @map("price_overridden")
   warrantyDays         Int       @default(30) @map("warranty_days")
   sortOrder            Int       @default(0) @map("sort_order")
   isActive             Boolean   @default(true) @map("is_active")

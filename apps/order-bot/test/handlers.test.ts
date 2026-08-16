@@ -1843,11 +1843,13 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
-  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it and
-  // sends the success message fresh — which leaves ctx.session.menuMsgId
-  // pointing at a message that no longer exists. Refresh is the ONLY flip path
-  // that can repair that: the reconcile pollers and the sweeper edit the same
-  // bubbles with no session in reach.
+  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it —
+  // and for a PRODUCT order (this test) sends the success message fresh in its
+  // place. Either way ctx.session.menuMsgId is left pointing at a message that
+  // no longer exists. Refresh is the ONLY flip path that can repair that: the
+  // reconcile pollers and the sweeper edit the same bubbles with no session in
+  // reach. A settled WALLET_TOPUP takes the other branch — deleted with nothing
+  // sent, so there is no replacement id to re-point at; see the test below.
   it("re-points the session anchor at the replacement when a photo (QR) bubble is deleted and re-sent", async () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });

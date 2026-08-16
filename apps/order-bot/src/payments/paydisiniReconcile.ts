@@ -143,8 +143,11 @@ async function editBubbleToSuccess(
       // retry either way, so this clears exactly like "replaced" does.
       return "clear_anchor";
     case "dm_sent":
-      // Unreachable with `fallbackDm: null`, but a real outcome of the shared
-      // helper: the buyer was told, so nothing is left to retry either.
+      // Unreachable from here twice over: this rail never passes a `fallbackDm`
+      // target on the "replace" branch, and the "delete" branch has no such
+      // field to pass. Still a real outcome of the shared helper, and the right
+      // verdict if it ever did arrive: the buyer was told, so nothing is left
+      // to retry.
       return "clear_anchor";
     case "not_edited": {
       if (result.permanent) return "clear_anchor"; // bubble gone/uneditable for good — the delivery DM already informed the buyer

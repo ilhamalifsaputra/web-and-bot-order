@@ -35,8 +35,10 @@ describe("isPermanentBubbleEditFailure", () => {
 
   // The two deliberate exclusions. Both mean "you used the wrong edit method
   // for this bubble's shape", not "this bubble is dead" — `editPaymentBubble`
-  // (jobs/index.ts) recovers from exactly that by trying the other method, so
-  // calling either permanent would throw away a still-fixable bubble.
+  // (jobs/index.ts) recovers by deleting the bubble and then, depending on the
+  // caller's `onPhoto` choice, either re-sending the text in its place or
+  // leaving it gone. Calling either answer permanent would skip that recovery
+  // and strand a still-fixable bubble.
   it.each([
     ["Bad Request: there is no text in the message to edit"],
     ["Bad Request: there is no caption in the message to edit"],

@@ -144,8 +144,18 @@ export type BubbleEditResult =
  *    to edit", which is Telegram's way of saying "this is a photo" and which
  *    bubbleEditFailure.ts deliberately keeps OFF the permanent list for
  *    exactly this recovery. A genuine transient fault (flood control, a 5xx, a
- *    dead socket) lands here too, and that is safe: the delete it triggers
- *    fails for the same reason, and nothing is sent.
+ *    dead socket) lands here too, and what that costs depends on `onPhoto`.
+ *    Under "replace" it costs nothing: the delete usually fails for the same
+ *    reason and nothing is sent, and even if the delete lands, the replacement
+ *    send puts the same text back. Under "delete" there is no such self-heal —
+ *    a text bubble whose edit hit a transient fault but whose delete succeeded
+ *    is simply gone, with nothing in its place. That is accepted rather than
+ *    guarded against: "delete" is only ever chosen for a settled WALLET_TOPUP,
+ *    whose buyer is told what happened by the outbox's
+ *    WALLET_TOPUP_CREDITED_DM regardless, so the worst case is that a stale
+ *    payment-instructions bubble vanishes a little earlier than intended —
+ *    strictly better than the duplicate success message this mode exists to
+ *    prevent.
  *
  * `onPhoto` is required at every call site, not defaulted (Task E2): the five
  * callers' intents genuinely differ (a settled WALLET_TOPUP wants silence, a
@@ -169,7 +179,11 @@ export type BubbleEditResult =
  * `editBubbleToSuccess`, all via `bubbleOnPhotoFor`, util/delivery.ts) already
  * wanted `fallbackDm: null` regardless of `onPhoto`, so this costs none of
  * them anything and closes off the contradictory combination for good instead
- * of leaving it to be silently allowed later.
+ * of leaving it to be silently allowed later. The guard holds for the form the
+ * call sites actually use, not just a hand-written literal: excess-property
+ * checking rejects `{ ...bubbleOnPhotoFor(kind), fallbackDm: x }` too, because
+ * the spread's union type is distributed over the argument before the extra
+ * key is checked (verified against this repo's tsc, not assumed).
  *
  * Never throws: every grammY call (the edit, the delete, the replacement send
  * and the fallback DM) is caught, so a stale/uneditable bubble or a

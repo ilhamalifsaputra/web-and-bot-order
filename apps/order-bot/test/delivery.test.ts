@@ -141,12 +141,11 @@ describe("settledPaymentKb", () => {
 // function, so none of them can drift apart on which order kind gets its QR
 // silently deleted vs. replaced.
 describe("bubbleOnPhotoFor", () => {
-  it("tells a settled WALLET_TOPUP's photo bubble to be deleted with no fallback DM option at all", () => {
-    const mode = bubbleOnPhotoFor(OrderKind.WALLET_TOPUP);
-    expect(mode).toEqual({ onPhoto: "delete" });
-    // No `fallbackDm` key on this branch — `editPaymentBubble`'s type makes
-    // combining "delete" with a fallback DM unrepresentable on purpose.
-    expect(mode).not.toHaveProperty("fallbackDm");
+  it("tells a settled WALLET_TOPUP's photo bubble to be deleted, carrying no fallback DM target", () => {
+    // `toEqual` already pins the absence of `fallbackDm`. That the combination
+    // is *unrepresentable* is a type-level guarantee (`editPaymentBubble`'s
+    // argument union), which no runtime assertion here could demonstrate.
+    expect(bubbleOnPhotoFor(OrderKind.WALLET_TOPUP)).toEqual({ onPhoto: "delete" });
   });
 
   it("tells a settled PRODUCT order's photo bubble to be replaced, with no fallback DM", () => {

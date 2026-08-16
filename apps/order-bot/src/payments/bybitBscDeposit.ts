@@ -325,7 +325,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
     if (outcome === "timeout") {
-      logger.warn(`Bybit BSC deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+      logger.warn(`Bybit BSC deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
     } else if (outcome === "clear_anchor") {
       await clearOrderPaymentMessage(prisma, order.id);
     }
@@ -399,7 +399,7 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
     TELEGRAM_MESSAGE_TIMEOUT_MS,
   );
   if (outcome === "timeout") {
-    logger.warn(`Bybit BSC deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+    logger.warn(`Bybit BSC deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
   } else if (outcome === "clear_anchor") {
     await clearOrderPaymentMessage(prisma, order.id);
   }

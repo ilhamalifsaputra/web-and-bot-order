@@ -1543,8 +1543,9 @@ const REFRESHABLE_STATUSES: readonly string[] = [
  * or has no anchor left (its own rail's fast path already flipped it) —
  * `flipSettledOrderBubble` (jobs/index.ts) is the shared body that decides
  * both, and does the actual edit/classify/clear-anchor sequence: the same one
- * `sweepPaidOrderBubbles` (jobs/index.ts), both QRIS reconcile pollers and the
- * payment-bubble flush hook (Task E3) all call, so a buyer can never be shown
+ * `sweepPaidOrderBubbles` (jobs/index.ts), both QRIS reconcile pollers, the
+ * NOWPayments reconcile poller and the payment-bubble flush hook (Task E3) all
+ * call, so a buyer can never be shown
  * a different ending for the same order depending on which one got there
  * first. This wrapper only owns what's specific to the Refresh button: which
  * log line to print for "timeout"/"kept", and repointing the session's
@@ -1573,7 +1574,7 @@ async function flipSettledBubble(
   const outcome = await flipSettledOrderBubble(ctx.api, order, editTimeoutMs);
   if (outcome === "not_settled" || outcome === "no_anchor") return;
   if (outcome === "timeout") {
-    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
+    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background sweep retries it within a minute`);
     return;
   }
   if (outcome === "kept") {

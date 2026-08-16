@@ -35,7 +35,6 @@
  * bounds and swallows the call: a hung or failing flush must never block or
  * fail the DM it precedes.
  *
-
  * EMAIL lane — every row whose channel is EMAIL, whoever it is addressed to.
  * That is the shop owner's OWNER_EMAIL_* rows (Task 3's enqueueOwner*Email
  * helpers) and, since the order-ready receipt shipped, the buyer-addressed

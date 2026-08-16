@@ -29,6 +29,7 @@ import {
   createWalletTopupOrder,
   upsertUser,
   listSettledOrdersAwaitingBubbleEdit,
+  getSettledBubbleOrder,
   setOrderPaymentMessage,
   clearPaymentMessageAnchorsAt,
   bulkAddStock,
@@ -815,6 +816,63 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     const [row] = result;
     expect(row!.user).not.toHaveProperty("passwordHash");
     expect(row!.user).not.toHaveProperty("email");
+  });
+});
+
+// E3: the single-row counterpart the payment-bubble flush hook
+// (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) reads through
+// once per settlement DM. It exists because that hook used to call `getOrder`,
+// whose `fullInclude` drags the buyer's items, stockItem CREDENTIALS, product
+// and voucher into memory to read six scalars — on single-writer SQLite, on
+// every settled order. These tests pin both halves of "same projection as the
+// sweep query, minus the sweep's where clause".
+describe("getSettledBubbleOrder", () => {
+  /** Create + stamp one order with the given status/anchor. */
+  async function makeOrder(opts: { status: string; anchored: boolean }) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: opts.status,
+        paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+        paymentMsgChatId: opts.anchored ? BigInt(555) : null,
+        paymentMsgId: opts.anchored ? 777 : null,
+      },
+    });
+    return order.id;
+  }
+
+  it("projects exactly the bubble-flip fields, and never the buyer's credentials or passwordHash", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { passwordHash: "should-never-leak" } });
+    const id = await makeOrder({ status: OrderStatus.DELIVERED, anchored: true });
+
+    const row = await getSettledBubbleOrder(prisma, id);
+
+    expect(row).not.toBeNull();
+    expect(Object.keys(row!).sort()).toEqual(
+      ["id", "kind", "orderCode", "paymentMsgChatId", "paymentMsgId", "status", "user"].sort(),
+    );
+    expect(row!.user).not.toHaveProperty("passwordHash");
+    expect(row!.user).not.toHaveProperty("email");
+    expect(Object.keys(row!.user!)).toEqual(["language"]);
+  });
+
+  it("still returns an order the sweep query would filter out, so the caller can classify it itself", async () => {
+    // No `where` on status/anchor here on purpose: `flipSettledOrderBubble`
+    // already turns these two into "not_settled"/"no_anchor". Filtering in the
+    // query would collapse both into an indistinguishable "order not found".
+    const unsettled = await makeOrder({ status: OrderStatus.PENDING_PAYMENT, anchored: true });
+    const unanchored = await makeOrder({ status: OrderStatus.DELIVERED, anchored: false });
+
+    const unsettledRow = await getSettledBubbleOrder(prisma, unsettled);
+    const unanchoredRow = await getSettledBubbleOrder(prisma, unanchored);
+
+    expect(unsettledRow?.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(unanchoredRow?.paymentMsgId).toBeNull();
+  });
+
+  it("returns null for an order id that does not exist", async () => {
+    expect(await getSettledBubbleOrder(prisma, 999_999)).toBeNull();
   });
 });
 

@@ -23,7 +23,7 @@ import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
-import type { ProcessedBinanceTx } from "@prisma/client";
+import type { Prisma, ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -274,6 +274,30 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
   await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
 }
 
+/** The exact projection `flipSettledOrderBubble` (apps/order-bot/src/jobs/
+ * index.ts) needs off an order, shared by both the batch sweep below and
+ * `getSettledBubbleOrder`'s single-row lookup: `id`/`orderCode`/`kind`/
+ * `status`/`paymentMsgChatId`/`paymentMsgId` plus the buyer's `language` —
+ * exactly `AnchoredSettledOrder`'s shape there, no more. Just `language` on
+ * `user` — `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts)
+ * interpolates no buyer balance into either branch (a WALLET_TOPUP bubble is
+ * a neutral status line; the balance-quoting sentence lives exclusively in
+ * the outbox's WALLET_TOPUP_CREDITED_DM), so `currency`/`totalAmount` and the
+ * user's two wallet columns were dropped from this projection along with
+ * `SettledBubbleOrder`'s own fields. `select` (not `include: { user: true }`)
+ * for the same H-4 leak class as `listPendingInternalOrders`' own comment
+ * above: an `include` here would pull `passwordHash`/`email` into memory for
+ * no reason. */
+const SETTLED_BUBBLE_ORDER_SELECT = {
+  id: true,
+  orderCode: true,
+  kind: true,
+  status: true,
+  paymentMsgChatId: true,
+  paymentMsgId: true,
+  user: { select: { language: true } },
+} satisfies Prisma.OrderSelect;
+
 /** Settled (DELIVERED or manual-fulfilment PROCESSING) orders of ANY payment
  * method that still carry an un-edited payment-message anchor, oldest first —
  * the cross-method query the generic bubble-flip sweeper polls. Not locked to
@@ -288,12 +312,7 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
  * query naturally skips anything already handled. It also does NOT catch
  * Bybit BSC's PAYMENT_DETECTED/CONFIRMING/CONFIRMED — those intermediate
  * statuses deliberately keep the anchor alive for on-chain tracking
- * (bybitBscDeposit.ts, bybitBscConfirmationTracker.ts) and must not be swept.
- *
- * `select` (not `include: { user: true }`) projects only what a bubble edit
- * needs — same H-4 leak class as `listPendingInternalOrders`' own comment
- * above: an `include` here would pull `passwordHash`/`email` into memory for
- * no reason. */
+ * (bybitBscDeposit.ts, bybitBscConfirmationTracker.ts) and must not be swept. */
 export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
   return db.order.findMany({
     where: {
@@ -301,24 +320,29 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
       paymentMsgChatId: { not: null },
       paymentMsgId: { not: null },
     },
-    select: {
-      id: true,
-      orderCode: true,
-      kind: true,
-      status: true,
-      paymentMsgChatId: true,
-      paymentMsgId: true,
-      // Just `language` — `settledPaymentBubble` (apps/order-bot/src/util/
-      // delivery.ts) interpolates no buyer balance into either branch (a
-      // WALLET_TOPUP bubble is a neutral status line; the balance-quoting
-      // sentence lives exclusively in the outbox's WALLET_TOPUP_CREDITED_DM),
-      // so `currency`/`totalAmount` and the user's two wallet columns were
-      // dropped from this projection along with `SettledBubbleOrder`'s own
-      // fields.
-      user: { select: { language: true } },
-    },
+    select: SETTLED_BUBBLE_ORDER_SELECT,
     orderBy: { createdAt: "asc" },
     ...(limit != null ? { take: limit } : {}),
+  });
+}
+
+/** Single-row counterpart to `listSettledOrdersAwaitingBubbleEdit` above, for
+ * the one caller that already knows the order id and just needs this order's
+ * bubble-flip fields: `flushSettledOrderBubble` (apps/order-bot/src/jobs/
+ * index.ts), the payment-bubble flush hook that runs once per settlement DM
+ * on single-writer SQLite. That hot path used to call `getOrder`, whose
+ * `fullInclude` pulls in items, `stockItem` credentials, product and voucher
+ * to extract six scalars and `user.language` — needlessly materialising the
+ * buyer's credentials into memory on every settlement DM. This reuses the
+ * exact same lean `select` for the reason explained on it above, just without
+ * the status/anchor `where` filter: `flipSettledOrderBubble` itself already
+ * turns a wrong status or a missing anchor into "not_settled"/"no_anchor", so
+ * filtering here would only turn those into a silent "order not found"
+ * instead. Returns `null` when the order doesn't exist, same as `getOrder`. */
+export function getSettledBubbleOrder(db: Db, orderId: number) {
+  return db.order.findUnique({
+    where: { id: orderId },
+    select: SETTLED_BUBBLE_ORDER_SELECT,
   });
 }
 

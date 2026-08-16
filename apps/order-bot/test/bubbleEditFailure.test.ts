@@ -1,9 +1,12 @@
 /**
  * Direct unit test for the anchored-payment-bubble failure classifier.
  *
- * Six call sites depend on this one judgement (the three crypto deposit
- * rails, the two QRIS reconcile rails, and the generic paid-order bubble
- * sweep), but until this file existed it was only ever exercised THROUGH
+ * Every settled-bubble flip in the app depends on this one judgement: the
+ * three crypto deposit rails call it directly, and since Task E3 everything
+ * else (the generic paid-order bubble sweep, the Refresh button, the two QRIS
+ * reconcilers, NOWPayments and the payment-bubble flush hook) reaches it
+ * through the one shared `editPaymentBubble` in jobs/index.ts. Until this
+ * file existed it was only ever exercised THROUGH
  * them — so its subtlest decision, that "there is no text/caption in the
  * message to edit" is deliberately NOT permanent, had no test of its own and
  * could have been reversed without a single suite turning red. That reversal

@@ -313,7 +313,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
     if (outcome === "timeout") {
-      logger.warn(`Binance internal poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+      logger.warn(`Binance internal poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
     }
   }
 
@@ -360,9 +360,12 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
  * or network-faulted edit keeps its anchor so that sweep retries it within a
  * minute; a bubble the buyer deleted drops its anchor and stops consuming a
  * slot in every future sweep. `isPermanentBubbleEditFailure`
- * (util/bubbleEditFailure.ts) is where that line is drawn, shared with the two
- * Bybit rails, the two QRIS reconcile rails, the generic sweeper and the
- * Refresh button so all six agree.
+ * (util/bubbleEditFailure.ts) is where that line is drawn. Since Task E3 it
+ * has four direct callers: this rail, its two Bybit siblings, and
+ * `editPaymentBubble` (jobs/index.ts) — the shared body behind every other
+ * flip in the app (the generic sweeper, the Refresh button, the two QRIS
+ * reconcilers, NOWPayments and the payment-bubble flush hook), which is why
+ * all of them still draw the anchor-keeping line in exactly the same place.
  *
  * Never throws: whatever this edit fails at, nothing about the bubble is
  * worth failing delivery over. For the "processing" caller

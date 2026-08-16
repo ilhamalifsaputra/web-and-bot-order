@@ -15,7 +15,7 @@ import { langCode, OrderStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  getOrder,
+  getSettledBubbleOrder,
   listExpiredPendingOrders,
   cancelOrder,
   listStaleRepliedTickets,
@@ -381,14 +381,19 @@ export async function flipSettledOrderBubble(
  * order id — the dispatcher knows nothing about bubble/anchor state, only
  * that this order just settled.
  *
- * Re-reads the order fresh (the dispatcher has no row to hand back) and
- * flips it through the exact same `flipSettledOrderBubble` every other
- * caller uses. In the overwhelmingly common case the settling rail's own
- * fast path (or the background sweeper) already got there and cleared the
- * anchor, so this is a single indexed read that resolves to "no_anchor" —
- * not an extra Telegram call. It only does real work on the path that lost
- * that race, or never ran one at all (a storefront webhook, or admin manual
- * approval — both forbidden from touching Telegram directly).
+ * Re-reads the order fresh (the dispatcher has no row to hand back) via
+ * `getSettledBubbleOrder` (packages/db/src/crud/binance_internal.ts) — the
+ * same lean `select` projection `listSettledOrdersAwaitingBubbleEdit` uses,
+ * not `getOrder`'s `fullInclude`, since this runs once per settlement DM and
+ * has no reason to materialise the buyer's items/stockItem credentials just
+ * to read six scalars and `user.language` — and flips it through the exact
+ * same `flipSettledOrderBubble` every other caller uses. In the
+ * overwhelmingly common case the settling rail's own fast path (or the
+ * background sweeper) already got there and cleared the anchor, so this is a
+ * single indexed read that resolves to "no_anchor" — not an extra Telegram
+ * call. It only does real work on the path that lost that race, or never ran
+ * one at all (a storefront webhook, or admin manual approval — both
+ * forbidden from touching Telegram directly).
  *
  * Never throws — an unhandled rejection here must never take down the
  * dispatcher's tick, and `packages/outbox-dispatcher` itself independently
@@ -400,7 +405,7 @@ export async function flipSettledOrderBubble(
  */
 export async function flushSettledOrderBubble(api: Api, orderId: number): Promise<void> {
   try {
-    const order = await getOrder(prisma, orderId);
+    const order = await getSettledBubbleOrder(prisma, orderId);
     if (!order) return; // shouldn't happen — a settlement DM's order id always exists — but never worth throwing over
     await flipSettledOrderBubble(api, order, TELEGRAM_MESSAGE_TIMEOUT_MS);
   } catch (err) {
@@ -482,18 +487,22 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
  * has its success message sent afresh (a PRODUCT sale) or is left deleted with
  * nothing in its place (a settled WALLET_TOPUP — Task E2: its outbox
  * WALLET_TOPUP_CREDITED_DM already told the buyer, so a replacement bubble
- * here would only be a second copy of that news). `bubbleOnPhotoFor`
- * (util/delivery.ts) makes that choice from `order.kind`, the same mapping
- * `flipSettledBubble` (handlers/checkout.ts) and both QRIS reconcile pollers
- * use, so a buyer can't get a different photo-bubble outcome depending on
- * which of the four flips got there first.
+ * here would only be a second copy of that news). This whole sequence is
+ * `flipSettledOrderBubble` above — the one body all five flip callers share,
+ * which reads the onPhoto choice from `bubbleOnPhotoFor` (util/delivery.ts)
+ * off `order.kind`, so a buyer can't get a different photo-bubble outcome
+ * depending on which flip got there first.
  *
- * Why this exists: both remaining settlement paths that can pay an order off
- * — a gateway webhook and an admin's manual approval — run in the web process,
- * which is forbidden from touching Telegram at all. Without this sweeper those
- * buyers keep staring at a QR code (and a live Refresh/Cancel pair) for an
- * order that is already paid and delivered. The three crypto rails clear their
- * own anchor the moment they flip a bubble themselves, so orders they handled
+ * Why this exists: the two settlement paths that can pay an order off without
+ * a bot Api anywhere in reach — a gateway webhook and an admin's manual
+ * approval — run in the web process, which is forbidden from touching
+ * Telegram at all. Since Task E3 the payment-bubble flush hook
+ * (`flushSettledOrderBubble` above) normally flips those orders' bubbles
+ * within the same second, right before their settlement DM, so this sweep is
+ * the backstop rather than the first responder: it catches an order whose
+ * flush lost a race, timed out, hit flood control, or never ran because that
+ * process had no bot registered. The three crypto rails clear their own
+ * anchor the moment they flip a bubble themselves, so orders they handled
  * never show up in this query — by design, not by omission.
  *
  * Idempotent: the anchor IS the work queue, so clearing it makes a re-run a
@@ -551,7 +560,7 @@ export async function sweepPaidOrderBubbles(
     if (outcome === "not_settled" || outcome === "no_anchor") continue;
     if (outcome === "timeout") {
       keptForRetry++;
-      logger.debug(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the next cycle retries the edit`);
+      logger.debug(`The paid-order bubble sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the next cycle retries it`);
       continue;
     }
     if (outcome === "kept") {

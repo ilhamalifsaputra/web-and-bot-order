@@ -12,6 +12,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
+// Wraps (not replaces) the real alertDigiflazzDispatchFailed so a single test
+// below can force it to throw (mockImplementationOnce) — verifying the Gagal
+// branch's try/catch still 200s — while every other test keeps the real
+// enqueue-alert + audit-log behavior.
+vi.mock("@app/db", async (orig) => {
+  const actual = await orig<typeof import("@app/db")>();
+  return {
+    ...actual,
+    alertDigiflazzDispatchFailed: vi.fn(actual.alertDigiflazzDispatchFailed),
+  };
+});
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
@@ -22,6 +33,7 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  alertDigiflazzDispatchFailed,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   ADMIN_IDS_KEY,
@@ -205,6 +217,23 @@ describe("POST /pay/digiflazz/callback", () => {
       where: { action: "order.digiflazz_dispatch_failed", targetId: order.id },
     });
     expect(auditRow).not.toBeNull();
+  });
+
+  it("a Gagal callback whose admin alert throws still 200s instead of 500ing", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await createProcessingDigiflazzOrder("ORD-DFGAGALTHROWS");
+    const payload = signedPayload({ refId: order.orderCode, status: "Gagal", message: "Saldo tidak cukup" });
+
+    vi.mocked(alertDigiflazzDispatchFailed).mockImplementationOnce(() => {
+      throw new Error("transient DB write failure");
+    });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
   });
 
   it("a Pending callback takes no action and leaves the order PROCESSING", async () => {

@@ -1097,11 +1097,18 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // raises when Digiflazz reports Gagal synchronously — reused here
       // rather than duplicated so the alert text/audit trail stay identical
       // regardless of which path (poller vs. this webhook) sees the failure.
-      await alertDigiflazzDispatchFailed(
-        prisma,
-        order,
-        `Digiflazz callback reported Gagal${cb.message ? ` (${cb.message})` : ""}`,
-      );
+      try {
+        await alertDigiflazzDispatchFailed(
+          prisma,
+          order,
+          `Digiflazz callback reported Gagal${cb.message ? ` (${cb.message})` : ""}`,
+        );
+      } catch (err) {
+        // Same guarantee as the Sukses branch above: a transient failure here
+        // (e.g. the admin-alert/audit-log write) must not surface as an HTTP
+        // 500, or Digiflazz will retry-storm this endpoint.
+        logger.warn({ err }, `Digiflazz callback failed to alert admins for order ${order.orderCode} — Gagal status was still reported`);
+      }
     }
     // "Pending" needs no action here — the order stays PROCESSING, awaiting a
     // future callback or the next dispatch-poller tick.

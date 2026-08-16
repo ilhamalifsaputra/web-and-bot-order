@@ -19,25 +19,60 @@ import {
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
+import { isUniqueViolation } from "./_types";
 import { resolveAdminIds } from "./admins";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
 type Db = PrismaClient | Tx;
 
-/** Insert one outbox row. Caller's transaction owns the commit. */
+/**
+ * Insert one outbox row. Caller's transaction owns the commit.
+ *
+ * `dedupeKey` is optional and defaults to null. When given, it is written to
+ * the UNIQUE `notification_outbox.dedupe_key` column and a UNIQUE violation
+ * (P2002) is swallowed: the row already exists, the notification is already
+ * queued or sent, and re-enqueueing is a no-op rather than an error. That is
+ * the same insert-first-on-unique idiom the payment ledgers use
+ * (`isUniqueViolation`, crud/tokopay.ts) — the database, not the placement of
+ * the call, is what makes the enqueue happen at most once.
+ *
+ * Exactly one event sets a key today: `WALLET_TOPUP_CREDITED_DM`, as
+ * `topup-credited:<orderId>` — genuinely one DM per top-up order; see
+ * `enqueueWalletTopupCreditedDm`.
+ *
+ * Every other event leaves it null, and NULLs are distinct in a SQLite UNIQUE
+ * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
+ * must NOT get a key even though it looks once-per-order: an admin can
+ * legitimately re-send a buyer's credentials (`POST /api/orders/:orderId/resend`
+ * and the bulk `resend` action in apps/web-admin/src/routes/api/orders.ts),
+ * and that re-send goes through this same helper — a key there would silently
+ * swallow the second send instead of delivering it. The per-admin fan-out
+ * events and the per-recipient broadcasts deliberately write many rows too.
+ *
+ * Note the swallow is per row, not per call: a caller that loops over admins
+ * gets exactly the rows whose keys were new.
+ */
 export async function enqueueNotification(
   db: Db,
   event: NotificationEvent,
   orderId: number,
   payload: Record<string, unknown>,
+  dedupeKey?: string,
 ): Promise<void> {
-  await db.notificationOutbox.create({
-    data: {
-      event,
-      orderId,
-      payloadJson: JSON.stringify(payload),
-    },
-  });
+  try {
+    await db.notificationOutbox.create({
+      data: {
+        event,
+        orderId,
+        payloadJson: JSON.stringify(payload),
+        dedupeKey: dedupeKey ?? null,
+      },
+    });
+  } catch (e) {
+    // Only the dedupe-key collision is a no-op. Anything else — including a
+    // FK violation on orderId — is a real failure and must still throw.
+    if (!(dedupeKey !== undefined && isUniqueViolation(e))) throw e;
+  }
 }
 
 /**
@@ -775,18 +810,33 @@ export async function enqueueManualDeliveredDm(
  * `settleWalletTopup` before calling this, same as the `credited.greaterThan(0)`
  * gate — see that function's own doc-comment. Money is carried as Decimal
  * `.toString()` — never `number` — per money rules.
+ *
+ * Carries the dedupe key `topup-credited:<orderId>`, so a second enqueue for
+ * the same top-up order writes nothing instead of a second row. The atomic
+ * claim in `settleWalletTopup` is still the primary guard and still the
+ * reason this has exactly one call site; the key is the database-level
+ * backstop for the case that guard is bypassed — a caller re-passing an
+ * upstream ledger claim, or a future second call site. It does NOT make the
+ * DM idempotent end to end: it stops a duplicate row being queued, and says
+ * nothing about whether Telegram delivered the first one.
  */
 export async function enqueueWalletTopupCreditedDm(
   db: Db,
   args: { orderId: number; orderCode: string; chatId: number; amount: Decimal; currency: string; newBalance: Decimal },
 ): Promise<void> {
-  await enqueueNotification(db, NotificationEvent.WALLET_TOPUP_CREDITED_DM, args.orderId, {
-    chat_id: args.chatId,
-    order_code: args.orderCode,
-    amount: args.amount.toString(),
-    currency: args.currency,
-    new_balance: args.newBalance.toString(),
-  });
+  await enqueueNotification(
+    db,
+    NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+    args.orderId,
+    {
+      chat_id: args.chatId,
+      order_code: args.orderCode,
+      amount: args.amount.toString(),
+      currency: args.currency,
+      new_balance: args.newBalance.toString(),
+    },
+    `topup-credited:${args.orderId}`,
+  );
 }
 
 /**

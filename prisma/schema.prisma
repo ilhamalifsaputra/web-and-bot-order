@@ -792,6 +792,18 @@ model NotificationOutbox {
   /// every tick until max-attempts, starving valid rows enqueued after it
   /// (Infra-3 fix, security audit 2026-06-23).
   nextRetryAt DateTime? @map("next_retry_at")
+  /// Optional caller-supplied idempotency key for "enqueue this row at most
+  /// once". NULL for almost every row, and NULLs are distinct in a SQLite
+  /// UNIQUE index, so unkeyed rows are unaffected and may repeat freely —
+  /// which is what the per-admin fan-out events (ADMIN_OVERPAID,
+  /// ORDER_PIPELINE_FAILED, ADMIN_MANUAL_ORDER_QUEUED, ADMIN_STALE_PAYMENT)
+  /// and the per-recipient broadcasts need. `enqueueNotification` treats the
+  /// UNIQUE violation as a successful no-op, so a key turns "enqueued exactly
+  /// once" from a property of where the call sits into one the database
+  /// holds. Only one event sets it today; see `enqueueNotification`'s own
+  /// doc-comment for which, and for why ORDER_DELIVERED_DM deliberately
+  /// does not.
+  dedupeKey   String?   @unique(map: "ix_notification_outbox_dedupe_key") @map("dedupe_key")
 
   order Order? @relation(fields: [orderId], references: [id], onUpdate: NoAction)
 

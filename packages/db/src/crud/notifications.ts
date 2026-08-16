@@ -11,6 +11,7 @@
 import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   NotificationEvent,
   NotificationStatus,
@@ -76,7 +77,26 @@ export async function enqueueNotification(
     // Only the dedupe-key collision is a no-op. Anything else — including a
     // FK violation on orderId — is a real failure and must still throw.
     if (!(dedupeKey !== undefined && isUniqueViolation(e))) throw e;
+    // Deliberately silent, and NOT a NOTIFICATION_CREATED: no row was
+    // written, so claiming one was created would be a lie, and a line per
+    // swallowed duplicate would be noise — the dedupe key exists precisely
+    // because the caller is expected to try more than once (the NOWPayments
+    // poller re-enters its alert branch every cycle). The row that WAS created
+    // is already logged below.
+    return;
   }
+  // The one line that says a notification now exists for this order. Logged
+  // here rather than at each of the dozen enqueue* wrappers because this is
+  // the single row-writing chokepoint they all funnel through, so it cannot
+  // drift out of sync with them. `provider` is absent by design — see
+  // PaymentLogFields (@app/core/payments/logEvents) for why the outbox does
+  // not know which rail it is serving. Low volume: this is once per queued
+  // notification, not per dispatcher tick — the broadcast fan-outs write their
+  // thousands of rows through their own helpers, not through here.
+  logger.info(
+    { event: PaymentLogEvent.NOTIFICATION_CREATED, orderId, notificationEvent: event },
+    `Queued a ${event} notification for order ${orderId} — it will be delivered on the outbox dispatcher's next tick`,
+  );
 }
 
 /**

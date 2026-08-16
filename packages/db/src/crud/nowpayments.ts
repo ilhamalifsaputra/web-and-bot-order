@@ -19,6 +19,7 @@ import {
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -114,7 +115,23 @@ export async function deliverPaidNowpaymentsOrder(
       where: { trxId: args.trxId, outcome: { in: [...QRIS_RECLAIMABLE_OUTCOMES] } },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (reclaimed.count === 0) return { status: "already_processed" };
+    if (reclaimed.count === 0) {
+      // The idempotency gate working, not a fault: this payment was already
+      // settled by whichever of the webhook or the reconcile poller got here
+      // first. Logged at info for exactly that reason — see PaymentLogEvent
+      // (@app/core/payments/logEvents) on why an expected race is never a warning.
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.NOWPAYMENTS,
+          providerPaymentId: args.trxId,
+          status: "already_processed",
+        },
+        `Skipped settling NOWPayments transaction ${args.trxId} for order ${args.orderId} because it had already been processed — the ledger claim was lost to whichever path confirmed this payment first, so nothing was delivered or credited twice`,
+      );
+      return { status: "already_processed" };
+    }
   }
 
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)
@@ -138,6 +155,16 @@ export async function deliverPaidNowpaymentsOrder(
         await tx.processedNowpaymentsTx
           .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
           .catch(() => undefined);
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.NOWPAYMENTS,
+            providerPaymentId: args.trxId,
+            status: "stale",
+          },
+          `Did not settle NOWPayments transaction ${args.trxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a NOWPayments order, so the ledger row is marked stale and a human decides what the payment was for`,
+        );
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -148,7 +175,16 @@ export async function deliverPaidNowpaymentsOrder(
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        logger.info(`Auto-delivered NOWPayments wallet top-up order ${settled.orderCode} for transaction ${args.trxId}`);
+        logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.NOWPAYMENTS,
+          providerPaymentId: args.trxId,
+          status: "delivered",
+        },
+        `Settled NOWPayments wallet top-up order ${settled.orderCode} for transaction ${args.trxId} — the buyer's balance was credited and their notification queued`,
+        );
         return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
@@ -197,10 +233,28 @@ export async function deliverPaidNowpaymentsOrder(
         );
       }
       if (result.kind === "delivered") {
-        logger.info(`Auto-delivered NOWPayments order ${result.order.orderCode} for transaction ${args.trxId}`);
+        logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.NOWPAYMENTS,
+          providerPaymentId: args.trxId,
+          status: "delivered",
+        },
+        `Auto-delivered NOWPayments order ${result.order.orderCode} for transaction ${args.trxId}`,
+        );
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
       }
-      logger.info(`NOWPayments order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`);
+      logger.info(
+      {
+        event: PaymentLogEvent.PAYMENT_CONFIRMED,
+        orderId: args.orderId,
+        provider: PaymentMethod.NOWPAYMENTS,
+        providerPaymentId: args.trxId,
+        status: "processing",
+      },
+      `NOWPayments order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`,
+      );
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {

@@ -21,6 +21,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
 import type { Prisma, ProcessedBinanceTx } from "@prisma/client";
@@ -422,13 +423,35 @@ export async function deliverPaidInternalOrder(
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
     if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — its ledger row is in a terminal outcome that may not be reclaimed, so nothing was delivered or credited twice`,
+      );
       return { status: "already_processed" };
     }
     const reclaimed = await db.processedBinanceTx.updateMany({
       where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (reclaimed.count === 0) return { status: "already_processed" };
+    if (reclaimed.count === 0) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
+      );
+      return { status: "already_processed" };
+    }
     reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
@@ -468,6 +491,16 @@ export async function deliverPaidInternalOrder(
             `Binance transfer ${args.binanceTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so it stays in the manual-match queue. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered by another path first.`,
           );
         }
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "stale",
+          },
+          `Did not settle Binance Binance transaction ${args.binanceTxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a internal-transfer order, so the ledger row is marked stale and a human decides what the payment was for`,
+        );
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -481,7 +514,16 @@ export async function deliverPaidInternalOrder(
         // binanceInternal.ts) no longer sends a DM for a WALLET_TOPUP order
         // either; it only nudges the outbox dispatcher and updates the
         // payment bubble.
-        logger.info(`Auto-delivered internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId}`);
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "delivered",
+          },
+        `Settled internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId} — the buyer's balance was credited and their notification queued`,
+        );
         return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
@@ -520,10 +562,28 @@ export async function deliverPaidInternalOrder(
         );
       }
       if (result.kind === "delivered") {
-        logger.info(`Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`);
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "delivered",
+          },
+        `Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`,
+        );
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
       }
-      logger.info(`Internal-transfer order ${result.order.orderCode} paid — queued for manual fulfilment (Binance transaction ${args.binanceTxId})`);
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "processing",
+        },
+      `Internal-transfer order ${result.order.orderCode} paid — queued for manual fulfilment (Binance transaction ${args.binanceTxId})`,
+      );
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {

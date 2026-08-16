@@ -80,8 +80,15 @@ export interface PaymentLogFields {
   /** `Order.id`. */
   orderId: number;
   /** Which rail. `PaymentMethod` values (`@app/core/enums`), so this filters
-   *  the same way `Order.paymentMethod` does. */
-  provider: string;
+   *  the same way `Order.paymentMethod` does.
+   *
+   *  Optional for ONE event, `NOTIFICATION_CREATED`. The outbox is
+   *  provider-agnostic on purpose — that is what makes it the single delivery
+   *  path all six rails share — so `enqueueNotification` genuinely does not
+   *  know which rail it is serving, and reading the order back to find out
+   *  would cost a query per enqueued notification to fill in a field the
+   *  `orderId` already joins to. Every payment-state event carries it. */
+  provider?: string;
   /** The gateway's own public transaction/payment id, where the rail has one
    *  at this point. Never a secret — see the module comment. */
   providerPaymentId?: string;

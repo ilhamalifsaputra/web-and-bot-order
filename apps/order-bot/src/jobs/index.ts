@@ -13,6 +13,7 @@ import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   prisma,
   getSettledBubbleOrder,
@@ -368,6 +369,22 @@ export async function flipSettledOrderBubble(
   if (outcome === "timeout") return "timeout";
   if (outcome.status === "not_edited" && !outcome.permanent) return "kept";
   await clearOrderPaymentMessage(prisma, order.id);
+  // The bubble has reached its final state — edited in place, replaced, or
+  // deleted — and its anchor is gone, so no later sweep will touch it again.
+  // Emitted HERE, in the one shared flip body, rather than at each of the five
+  // callers: that is what makes "the buyer's payment message is settled"
+  // greppable once per order instead of five different ways depending on which
+  // caller won the race. Deliberately not emitted for "timeout"/"kept" — those
+  // keep their anchor precisely because they are NOT final, and the callers
+  // already log them with their own rail-specific wording.
+  logger.info(
+    {
+      event: PaymentLogEvent.TELEGRAM_PAYMENT_MESSAGE_UPDATED,
+      orderId: order.id,
+      status: outcome.status,
+    },
+    `Settled order ${order.orderCode}'s payment message in Telegram (${outcome.status}) and cleared its anchor, so no later sweep will revisit it`,
+  );
   return outcome;
 }
 

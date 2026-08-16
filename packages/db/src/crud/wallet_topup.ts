@@ -34,6 +34,7 @@ import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
@@ -397,6 +398,15 @@ export async function settleWalletTopup(
     const currentBalance = new Decimal(
       current!.currency === OrderCurrency.USDT ? currentUser.walletBalanceUsdt : currentUser.walletBalance,
     );
+    logger.info(
+      {
+        event: PaymentLogEvent.WALLET_CREDIT_ALREADY_APPLIED,
+        orderId,
+        provider: order.paymentMethod,
+        status: current!.status,
+      },
+      `Credited nothing for wallet top-up order ${order.orderCode} because its settlement claim was lost — another path settled this top-up first, so the buyer's balance was moved exactly once and this call is a no-op`,
+    );
     return { order: current!, credited: new Decimal(0), newBalance: currentBalance };
   }
 
@@ -426,6 +436,22 @@ export async function settleWalletTopup(
     orderId: order.id,
     adminId: null,
   });
+
+  // The one line that says a buyer's balance actually moved, for every rail.
+  // Deliberately AFTER the write rather than around it: `adjustWallet` throws
+  // on an overdraw or a duplicate ledger row, so reaching here is what proves
+  // the money moved. No balance figure in the message — the amount and the new
+  // balance are the buyer's business, and the log's job here is only to say
+  // this top-up was the one that credited them.
+  logger.info(
+    {
+      event: PaymentLogEvent.WALLET_CREDIT_APPLIED,
+      orderId: order.id,
+      provider: order.paymentMethod,
+      status: "credited",
+    },
+    `Credited wallet top-up order ${order.orderCode} to the buyer's ${order.currency} balance`,
+  );
 
   // Owner-notification email — the single call site for all six top-up rails
   // (see this function's own doc-comment). Placed after the atomic claim

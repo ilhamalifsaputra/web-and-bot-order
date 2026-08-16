@@ -9,6 +9,36 @@ tag git yang sungguhan sampai dokumen ini ditulis.
 ## [Unreleased]
 
 ### Added
+- **Audit alur pembayaran menyeluruh (6 rail: TokoPay, PayDisini, NOWPayments,
+  Binance Internal, Bybit Internal, Bybit BSC).** Dikerjakan sebagai satu
+  branch bertahap; ringkasnya:
+  - Notifikasi top-up sukses kini punya **satu produsen** untuk semua rail —
+    event outbox `WALLET_TOPUP_CREDITED_DM`, di-enqueue dari satu titik di
+    dalam `settleWalletTopup` di balik klaim atomiknya. Sebelumnya tiga rail
+    webhook meng-enqueue outbox sementara tiga rail kripto DM langsung, dan
+    keduanya sama-sama mengira dirinya satu-satunya — itulah penyebab pembeli
+    QRIS menerima dua pesan "top-up berhasil" dengan format berbeda.
+  - Bubble QR top-up yang sudah settle kini **dihapus tanpa pengganti**
+    (order produk tetap diganti pesan sukses), lewat satu pemetaan
+    `bubbleOnPhotoFor(order.kind)`.
+  - Bubble pembayaran kini **dibalik sebelum** DM penyelesaian dikirim, di
+    semua jalur, lewat hook flush yang dipanggil outbox dispatcher — termasuk
+    jalur webhook dan approval admin yang berjalan di proses web dan tidak
+    boleh menyentuh Telegram sama sekali. Ini yang membuat kredensial tidak
+    lagi tampak datang sebelum "Pembayaran diterima" (tidak ada yang pernah
+    terkirim lebih awal — `approveOrder` selalu menggerbanginya; murni urutan
+    pesan).
+  - Kunci ledger sintetis `reconcile-<orderCode>` dihapus: poller dan webhook
+    tiap rail kini menurunkan kunci yang sama, sehingga ledger UNIQUE benar-benar
+    menangkap duplikat alih-alih menyerahkannya ke lapisan di bawahnya.
+  - `notification_outbox.dedupeKey` (UNIQUE, nullable) dan
+    `wallet_transactions @@unique([orderId, reason])` — dua aturan "tepat
+    sekali" yang tadinya hanya dijaga letak pemanggilan, kini dijaga database.
+  - Kosakata log terstruktur seragam di seluruh jalur pembayaran
+    (`PaymentLogEvent`), plus pemetaan status gateway terpusat
+    (`paymentStatus.ts`) yang membuat enum Bybit `2` vs `3` yang saling
+    terbalik mustahil tertukar di call site.
+
 - Live confirmation-count tracking untuk deposit Bybit BSC on-chain: kolom
   `network`/`confirmations`/`requiredConfirmations`/`firstDetectedAt`/
   `confirmedAt` di `Order`, plus tabel append-only baru `OrderStatusHistory`

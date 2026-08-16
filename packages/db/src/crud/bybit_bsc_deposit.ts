@@ -23,13 +23,14 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import type { ProcessedBybitTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
-import { enqueueOrderPipelineFailed } from "./notifications";
+import { enqueueOrderPipelineFailed, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
@@ -433,13 +434,35 @@ export async function deliverPaidBybitBscOrder(
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBybitTx.findUnique({ where: { bybitTxId: args.bybitTxId } });
     if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BYBIT_BSC,
+          providerPaymentId: args.bybitTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Bybit BSC transaction ${args.bybitTxId} for order ${args.orderId} because it had already been processed — its ledger row is in a terminal outcome that may not be reclaimed, so nothing was delivered or credited twice`,
+      );
       return { status: "already_processed" };
     }
     const reclaimed = await db.processedBybitTx.updateMany({
       where: { bybitTxId: args.bybitTxId, outcome: prior.outcome, orderId: prior.orderId },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (reclaimed.count === 0) return { status: "already_processed" };
+    if (reclaimed.count === 0) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BYBIT_BSC,
+          providerPaymentId: args.bybitTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Bybit BSC transaction ${args.bybitTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
+      );
+      return { status: "already_processed" };
+    }
     reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
@@ -475,6 +498,16 @@ export async function deliverPaidBybitBscOrder(
             `Bybit BSC deposit ${args.bybitTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so a later poller pass can still re-claim it. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered/expired/failed by another path first.`,
           );
         }
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BYBIT_BSC,
+            providerPaymentId: args.bybitTxId,
+            status: "stale",
+          },
+          `Did not settle Bybit BSC transaction ${args.bybitTxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a Bybit BSC order, so the ledger row is marked stale and a human decides what the payment was for`,
+        );
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -502,13 +535,25 @@ export async function deliverPaidBybitBscOrder(
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
-        // function only ever runs inside the bot process's own Bybit BSC
-        // deposit poller (never a web request), so the buyer is DM'd
-        // directly by that poller's `onDelivered` handler
-        // (apps/order-bot/src/payments/bybitBscDeposit.ts) right after this
-        // call returns — enqueueing to the outbox here too would double-notify.
-        logger.info(`Auto-delivered Bybit BSC wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId}`);
+        // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
+        // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
+        // deeper on the line above, behind its own atomic claim — that single
+        // call site is shared by all six top-up-capable rails, this one
+        // included, so nothing here may enqueue it again or DM the buyer
+        // directly. `onDelivered` (apps/order-bot/src/payments/
+        // bybitBscDeposit.ts) no longer sends a DM for a WALLET_TOPUP order
+        // either; it only nudges the outbox dispatcher and updates the
+        // payment bubble.
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BYBIT_BSC,
+            providerPaymentId: args.bybitTxId,
+            status: "delivered",
+          },
+        `Settled Bybit BSC wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId} — the buyer's balance was credited and their notification queued`,
+        );
         return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
@@ -522,11 +567,62 @@ export async function deliverPaidBybitBscOrder(
         meta: `bybitTxId=${args.bybitTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      // Overpayment: the buyer sent more USDT on-chain than the order total.
+      // Still deliver (handled above) but flag the ledger row and alert admins
+      // so the excess can be refunded/credited manually — never
+      // auto-refunded. Identical shape to bybit_deposit.ts's own branch and to
+      // binance_internal.ts's (M-13, backend audit 2026-07-31); this rail and
+      // Internal Transfer were the last two of the six that delivered an
+      // overpayment and surfaced the excess to nobody. Unconditional with
+      // respect to delivery type — a buyer can overpay regardless of whether
+      // the SKU auto-delivers or is fulfilled by hand.
+      //
+      // "overpaid" is as terminal as the "matched" it replaces on the SHARED
+      // `processed_bybit_tx` ledger this rail uses with Internal Transfer:
+      // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES holds only "delivery_failed", so
+      // neither rail's re-claim behaviour changes (see that constant's
+      // doc-comment in binance_internal.ts), and the `catch` below still
+      // overwrites this row with "delivery_failed" if the transaction throws
+      // after this point.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: result.order.id,
+          orderCode: result.order.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `Bybit BSC order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+        );
+      }
       if (result.kind === "delivered") {
-        logger.info(`Auto-delivered Bybit BSC order ${result.order.orderCode} for transaction ${args.bybitTxId}`);
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BYBIT_BSC,
+            providerPaymentId: args.bybitTxId,
+            status: "delivered",
+          },
+        `Auto-delivered Bybit BSC order ${result.order.orderCode} for transaction ${args.bybitTxId}`,
+        );
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
       }
-      logger.info(`Bybit BSC order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`);
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BYBIT_BSC,
+          providerPaymentId: args.bybitTxId,
+          status: "processing",
+        },
+      `Bybit BSC order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`,
+      );
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {

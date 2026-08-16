@@ -52,13 +52,34 @@ import {
   getNowpaymentsCreds,
   listPendingNowpaymentsOrders,
   deliverPaidNowpaymentsOrder,
+  enqueueAdminUnconfirmablePayment,
   recordPollHealth,
 } from "@app/db";
 import { esc } from "../util/format";
+import { flipSettledOrderBubble } from "../jobs";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingNowpaymentsOrders>>[number];
+
+/** Twin of tokopayReconcile.ts/paydisiniReconcile.ts's own `AnchoredOrder` —
+ * what `editBubbleAndClear` needs off a settled order to hand to
+ * `flipSettledOrderBubble` (jobs/index.ts): the anchor to edit, the row
+ * cleared afterwards, and everything `settledPaymentBubble`
+ * (`util/delivery.ts`) reads to decide WHICH success message this order
+ * gets. No buyer read is needed — `settledPaymentBubble` interpolates no
+ * balance into either branch — so this carries no
+ * `userId`/`currency`/`totalAmount`. `deliverPaidNowpaymentsOrder` returns a
+ * full `getOrder` row, so every field here is already on it. */
+type AnchoredOrder = {
+  id: number;
+  orderCode: string;
+  kind: string;
+  status: string;
+  paymentMsgChatId: bigint | null;
+  paymentMsgId: number | null;
+  user: { language: string };
+};
 
 // RECONCILE_TELEGRAM_TIMEOUT_MS (wait-at-most for a Telegram call on the
 // reconcile path — grammY's own client default is 500s, longer than this
@@ -88,6 +109,40 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
       },
     );
   });
+}
+
+/**
+ * Flip this order's anchored bubble to its success message and clear the
+ * anchor once that's settled for good — the bubble flip this rail never had
+ * (Task E3): unlike TokoPay/PayDisini, this rail's `reconcileOrder` used to
+ * never call anything like this at all, leaving a delivered order's bubble
+ * stale until the generic paid-order bubble sweep's next cron tick (up to
+ * ~60s later, `sweepPaidOrderBubbles`, jobs/index.ts). Delegates the actual
+ * edit/classify/clear-anchor sequence to the one shared body every
+ * settled-bubble flip in this app now calls, `flipSettledOrderBubble`
+ * (jobs/index.ts) — identical shape and reasoning to the TokoPay/PayDisini
+ * twins in tokopayReconcile.ts/paydisiniReconcile.ts: same
+ * `settledPaymentBubble`/`bubbleOnPhotoFor` mapping (util/delivery.ts), same
+ * `isPermanentBubbleEditFailure` (util/bubbleEditFailure.ts) anchor policy.
+ * This wrapper only owns what's specific to this rail: bounding the edit at
+ * `RECONCILE_TELEGRAM_TIMEOUT_MS` (see that constant's own doc comment,
+ * reconcileCycleBudget.ts, for why the cycle-timeout arithmetic already
+ * accounted for exactly this call before this rail ever made it) and its own
+ * log wording for "timeout"/"kept".
+ */
+async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
+  const outcome = await flipSettledOrderBubble(api, order, RECONCILE_TELEGRAM_TIMEOUT_MS);
+  if (outcome === "timeout") {
+    logger.warn(`NOWPayments reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
+    return;
+  }
+  if (outcome === "kept") {
+    logger.warn(`NOWPayments reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`);
+    return;
+  }
+  // "not_settled" / "no_anchor" / a finished BubbleEditResult: nothing left
+  // to do — flipSettledOrderBubble already cleared the anchor itself on any
+  // finished attempt.
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
@@ -125,6 +180,12 @@ function extractInvoiceId(paymentRef: string | null): string | null {
  * silently. Extracted from the loop so it can be unit-tested with
  * `getPaymentStatus` stubbed.
  *
+ * A `finished` payment the gateway reports without a `payment_id` is NOT
+ * delivered — `payment_id` is this rail's ledger key and the IPN webhook
+ * rejects a callback that lacks one, so this path matches that rather than
+ * inventing a key the webhook could never collide with. See the comment at
+ * that check below for the full reasoning and its accepted cost.
+ *
  * Returns `"gateway_error"` only when the `getPaymentStatus` call itself
  * failed (network/HTTP/parse) — every other outcome, including a
  * delivery-side throw, is `"ok"`: not evidence the gateway is unreachable.
@@ -149,10 +210,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     return "gateway_error";
   }
 
-  // Exact match only — partially_paid/failed/refunded/expired and the
-  // in-flight states (waiting/confirming/confirmed/sending) are all "not
-  // ready yet", never an error condition worth alerting on.
-  if (status.status !== "finished") return "ok";
+  // Reads `status.paid`, which `getPaymentStatus` (@app/core/payments/nowpayments)
+  // already derived through `isProviderPaid` — this used to re-compare the raw
+  // string against "finished" itself, which was the one place left where the
+  // accepted-status decision was duplicated outside paymentStatus.ts, exactly
+  // what Task E7 exists to prevent. Only an exact `finished` is paid;
+  // partially_paid/failed/refunded/expired and the in-flight states
+  // (waiting/confirming/confirmed/sending) are all "not ready yet", never an
+  // error condition worth alerting on.
+  if (!status.paid) return "ok";
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
   if (status.amount.lessThan(new Decimal(order.totalAmount))) {
@@ -160,18 +226,80 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     return "ok";
   }
 
+  // No gateway payment id, no delivery — the same rule `verifyIpn`
+  // (packages/core/src/payments/nowpayments.ts) applies to the IPN webhook,
+  // the only other path that can settle this order. `payment_id` IS this
+  // rail's idempotency-ledger key (`ProcessedNowpaymentsTx.trxId`, UNIQUE),
+  // and the webhook refuses a callback that carries no usable one (the M-12
+  // fix) rather than inventing a substitute. This poller used to invent
+  // `reconcile-<orderCode>`, which the webhook can never produce — so the two
+  // paths wrote two different UNIQUE rows for one payment and the ledger, the
+  // primary idempotency gate, missed the duplicate. Unlike TokoPay/PayDisini,
+  // there is no order-scoped fallback that would converge them here: the
+  // webhook has no fallback at all, so matching its strictness is the only
+  // rule that holds on both paths.
+  //
+  // A `finished` payment that carries no `payment_id` is a contradiction on
+  // NOWPayments' side, so in practice this means our status-endpoint parsing
+  // is wrong — which is exactly the ⚠ ASSUMPTION flagged on
+  // `getPaymentStatus` (the `/v1/invoice/{id}` vs `/v1/payment/{id}` path is
+  // unverified). Warn loudly and leave the order PENDING_PAYMENT: the IPN
+  // webhook can still settle it, and the next cycle re-checks.
+  //
+  // The cost of that refusal is that if the webhook never arrives either, the
+  // order runs out its payment window and auto-cancels with the buyer's money
+  // paid. Task E5 item 4 stops that happening in silence: alert the admins so
+  // a human can settle the order by hand before the window closes. The alert
+  // is deduped per (order, admin) inside `enqueueAdminUnconfirmablePayment`,
+  // which is what makes it safe to call from a branch this poller re-enters
+  // every cycle — without that key each admin would be DMed once a cycle for
+  // the whole payment window.
+  if (!status.trxId) {
+    logger.warn(
+      `NOWPayments reports order ${order.orderCode} finished but returned no payment id, so there is no idempotency-ledger key to claim it under — refusing to deliver rather than inventing one the IPN webhook could never collide with. The order stays PENDING_PAYMENT for the webhook or a later cycle, and the admins have been alerted to settle it by hand; if this repeats, the status-endpoint assumption in @app/core/payments/nowpayments is wrong and needs verifying against the live dashboard`,
+    );
+    try {
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "NOWPayments",
+      });
+      nudgeOutboxDispatcher();
+    } catch (err) {
+      // Never let the alert's own failure abort the cycle: the next cycle
+      // re-enters this branch and tries again, and the dedupe key means a
+      // retry that lands after a partial fan-out only fills in the admins who
+      // are still missing a row.
+      logger.error(
+        { err, orderId: order.id },
+        `Could not queue the admin alert for order ${order.orderCode}, whose payment NOWPayments reports as finished but cannot be confirmed — if no later cycle succeeds, this order will auto-cancel with the buyer already charged and nobody told`,
+      );
+    }
+    return "ok";
+  }
+
   try {
     const r = await deliverPaidNowpaymentsOrder(prisma, {
       orderId: order.id,
-      trxId: status.trxId ?? `reconcile-${order.orderCode}`,
+      trxId: status.trxId,
       amount: status.amount,
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
+      logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — flipping its payment bubble, then nudging the notifier to DM the account file immediately`);
+      // Flip BEFORE nudging (Task E3): the buyer's chat must show "Payment
+      // received" before their account file arrives, not after — the outbox
+      // dispatcher's own payment-bubble flush hook (packages/core/src/nudge.ts)
+      // is the structural backstop if this still loses the race (e.g. a slow
+      // Telegram edit), but the ordering here should teach the right lesson
+      // regardless. This rail never flipped its own bubble at all before
+      // Task E3 — see editBubbleAndClear's own doc comment above.
+      await editBubbleAndClear(api, r.order);
       nudgeOutboxDispatcher();
     } else if (r.status === "processing") {
       logger.info(`NOWPayments reconcile order ${order.orderCode} paid — queued for manual fulfilment`);
+      await editBubbleAndClear(api, r.order);
+      nudgeOutboxDispatcher();
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }

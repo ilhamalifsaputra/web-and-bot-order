@@ -463,11 +463,12 @@ describe("enqueueAdminStalePayment", () => {
 });
 
 describe("enqueueWalletTopupCreditedDm", () => {
-  it("writes one WALLET_TOPUP_CREDITED_DM row with orderId set and money stringified via Decimal.toString()", async () => {
+  it("writes one WALLET_TOPUP_CREDITED_DM row with orderId/order_code set and money stringified via Decimal.toString()", async () => {
     const orderId = await seedOrder();
 
     await enqueueWalletTopupCreditedDm(prisma, {
       orderId,
+      orderCode: "ORD-TOPUP-8001",
       chatId: 8001,
       amount: new Decimal("50000"),
       currency: "IDR",
@@ -482,6 +483,7 @@ describe("enqueueWalletTopupCreditedDm", () => {
     const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload).toEqual({
       chat_id: 8001,
+      order_code: "ORD-TOPUP-8001",
       amount: "50000",
       currency: "IDR",
       new_balance: "125000",
@@ -495,6 +497,7 @@ describe("enqueueWalletTopupCreditedDm", () => {
 
     await enqueueWalletTopupCreditedDm(prisma, {
       orderId,
+      orderCode: "ORD-TOPUP-8002",
       chatId: 8002,
       amount: new Decimal("10.5"),
       currency: "USDT",
@@ -505,9 +508,89 @@ describe("enqueueWalletTopupCreditedDm", () => {
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId },
     });
     const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe("ORD-TOPUP-8002");
     expect(payload.amount).toBe("10.5");
     expect(payload.currency).toBe("USDT");
     expect(payload.new_balance).toBe("30.25");
+  });
+
+  // E5 item 1: the DB-level backstop under "one top-up DM per order". The
+  // atomic claim in `settleWalletTopup` is still the primary guard and still
+  // the reason this has exactly one call site — this pins what happens if that
+  // guard is ever bypassed, which is the scenario a UNIQUE key exists for.
+  it("writes nothing on a second enqueue for the same order, instead of a second row", async () => {
+    const orderId = await seedOrder();
+    const args = {
+      orderId,
+      orderCode: "ORD-TOPUP-8003",
+      chatId: 8003,
+      amount: new Decimal("1000"),
+      currency: "IDR",
+      newBalance: new Decimal("11000"),
+    };
+
+    await enqueueWalletTopupCreditedDm(prisma, args);
+    await expect(enqueueWalletTopupCreditedDm(prisma, args)).resolves.toBeUndefined();
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.dedupeKey).toBe(`topup-credited:${orderId}`);
+  });
+
+  it("still writes a row per order — the key is order-scoped, not global", async () => {
+    const first = await seedOrder();
+    const second = await seedOrder();
+    const args = { chatId: 8004, amount: new Decimal("1000"), currency: "IDR", newBalance: new Decimal("2000") };
+
+    await enqueueWalletTopupCreditedDm(prisma, { ...args, orderId: first, orderCode: "ORD-TOPUP-8004" });
+    await enqueueWalletTopupCreditedDm(prisma, { ...args, orderId: second, orderCode: "ORD-TOPUP-8005" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: { in: [first, second] } },
+    });
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// E5 item 1: `dedupeKey` is opt-in. These pin the two halves of that — an
+// unkeyed enqueue must keep repeating freely (the per-admin fan-out events and
+// the per-recipient broadcasts depend on it, and ORDER_DELIVERED_DM depends on
+// it for admin credential resend), and a keyed one must collapse.
+describe("enqueueNotification dedupeKey", () => {
+  it("leaves dedupeKey null and allows unlimited repeats when no key is given", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { chat_id: 1 });
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { chat_id: 1 });
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { chat_id: 1 });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ORDER_DELIVERED_DM, orderId },
+    });
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.dedupeKey === null)).toBe(true);
+  });
+
+  it("swallows the collision on a repeated key, keeping the FIRST row's payload", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "first" }, "k:1");
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "second" }, "k:1");
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { dedupeKey: "k:1" } });
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson).attempt).toBe("first");
+  });
+
+  it("still throws on a real failure — a keyed enqueue for an order that does not exist", async () => {
+    // Proves the catch is narrow: it swallows the dedupe collision only, not
+    // every error that happens to arrive while a key was passed. A missing
+    // orderId is a foreign-key violation, not a unique one.
+    await expect(
+      enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, 999_999, { chat_id: 1 }, "k:missing-order"),
+    ).rejects.toThrow();
   });
 });
 

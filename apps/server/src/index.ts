@@ -26,7 +26,8 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
 import { htmlDefaultsTransformer } from "@app/order-bot/util/apiDefaults";
-import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
+import { scheduleJobs, scheduleFxRefresh, flushSettledOrderBubble } from "@app/order-bot/jobs";
+import { registerPaymentBubbleFlush } from "@app/core/nudge";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
 import { startPolling as startBybitBscPolling, stopPolling as stopBybitBscPolling } from "@app/order-bot/payments/bybitBscDeposit";
@@ -266,6 +267,18 @@ export async function start(): Promise<void> {
         }
       }
     }
+    // Payment-bubble flush hook (Task E3): lets the outbox dispatcher below
+    // (`startNotifier` → `packages/outbox-dispatcher`) ask this process to
+    // finish flipping an order's payment bubble right before it sends that
+    // order's settlement DM — see packages/core/src/nudge.ts's own doc
+    // comment for the full "why". Registered with THIS process's main bot
+    // Api, not the notifier's possibly-separate one (startNotifier below):
+    // the bubble was anchored by the main bot, and Telegram only lets the
+    // bot that sent a message edit it. Registered unconditionally whenever a
+    // bot exists — the standalone order-bot binary (apps/order-bot/src/main.ts)
+    // never runs the dispatcher at all, so this registration only ever
+    // matters in this combined process.
+    registerPaymentBubbleFlush((orderId) => flushSettledOrderBubble(bot.api, orderId));
     // In-process workers — exactly one instance each (single process). Each
     // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);

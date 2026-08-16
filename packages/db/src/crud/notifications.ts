@@ -11,6 +11,7 @@
 import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
   NotificationEvent,
   NotificationStatus,
@@ -19,25 +20,95 @@ import {
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
+import { isUniqueViolation } from "./_types";
 import { resolveAdminIds } from "./admins";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
 type Db = PrismaClient | Tx;
 
-/** Insert one outbox row. Caller's transaction owns the commit. */
+/**
+ * Insert one outbox row. Caller's transaction owns the commit.
+ *
+ * `dedupeKey` is optional and defaults to null. When given, it is written to
+ * the UNIQUE `notification_outbox.dedupe_key` column and a UNIQUE violation
+ * (P2002) is swallowed: the row already exists, the notification is already
+ * queued or sent, and re-enqueueing is a no-op rather than an error. That is
+ * the same insert-first-on-unique idiom the payment ledgers use
+ * (`isUniqueViolation`, crud/tokopay.ts) — the database, not the placement of
+ * the call, is what makes the enqueue happen at most once.
+ *
+ * Two events set a key today:
+ *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
+ *    DM per top-up order; see `enqueueWalletTopupCreditedDm`.
+ *  - `ADMIN_UNCONFIRMABLE_PAYMENT`, as
+ *    `unconfirmable-payment:<orderId>:<adminId>` — one per admin per order,
+ *    NOT one per order, because that event fans out a row per admin; see
+ *    `enqueueAdminUnconfirmablePayment`.
+ *
+ * Every other event leaves it null, and NULLs are distinct in a SQLite UNIQUE
+ * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
+ * must NOT get a key even though it looks once-per-order: an admin can
+ * legitimately re-send a buyer's credentials (`POST /api/orders/:orderId/resend`
+ * and the bulk `resend` action in apps/web-admin/src/routes/api/orders.ts),
+ * and that re-send goes through this same helper — a key there would silently
+ * swallow the second send instead of delivering it. The per-admin fan-out
+ * events and the per-recipient broadcasts deliberately write many rows too.
+ *
+ * Note the swallow is per row, not per call: a caller that loops over admins
+ * gets exactly the rows whose keys were new.
+ *
+ * ⚠ SQLite-specific, and a landmine for the Postgres migration CLAUDE.md
+ * anticipates (its trigger is ≥2 concurrent writers). Catching a UNIQUE
+ * violation and CONTINUING works here because SQLite tolerates a failed
+ * statement mid-transaction — and most callers do pass a `tx`. PostgreSQL
+ * does not: a constraint violation aborts the whole transaction, and every
+ * later statement in it fails with `25P02 current transaction is aborted`,
+ * so a deduped enqueue would take its caller's settlement down with it. The
+ * payment ledgers' own `isUniqueViolation` claims share this shape, but they
+ * return immediately rather than continuing inside someone else's
+ * transaction. On Postgres this needs a SAVEPOINT, or an upsert on the
+ * dedupe key instead of catch-and-continue.
+ */
 export async function enqueueNotification(
   db: Db,
   event: NotificationEvent,
   orderId: number,
   payload: Record<string, unknown>,
+  dedupeKey?: string,
 ): Promise<void> {
-  await db.notificationOutbox.create({
-    data: {
-      event,
-      orderId,
-      payloadJson: JSON.stringify(payload),
-    },
-  });
+  try {
+    await db.notificationOutbox.create({
+      data: {
+        event,
+        orderId,
+        payloadJson: JSON.stringify(payload),
+        dedupeKey: dedupeKey ?? null,
+      },
+    });
+  } catch (e) {
+    // Only the dedupe-key collision is a no-op. Anything else — including a
+    // FK violation on orderId — is a real failure and must still throw.
+    if (!(dedupeKey !== undefined && isUniqueViolation(e))) throw e;
+    // Deliberately silent, and NOT a NOTIFICATION_CREATED: no row was
+    // written, so claiming one was created would be a lie, and a line per
+    // swallowed duplicate would be noise — the dedupe key exists precisely
+    // because the caller is expected to try more than once (the NOWPayments
+    // poller re-enters its alert branch every cycle). The row that WAS created
+    // is already logged below.
+    return;
+  }
+  // The one line that says a notification now exists for this order. Logged
+  // here rather than at each of the dozen enqueue* wrappers because this is
+  // the single row-writing chokepoint they all funnel through, so it cannot
+  // drift out of sync with them. `provider` is absent by design — see
+  // PaymentLogFields (@app/core/payments/logEvents) for why the outbox does
+  // not know which rail it is serving. Low volume: this is once per queued
+  // notification, not per dispatcher tick — the broadcast fan-outs write their
+  // thousands of rows through their own helpers, not through here.
+  logger.info(
+    { event: PaymentLogEvent.NOTIFICATION_CREATED, orderId, notificationEvent: event },
+    `Queued a ${event} notification for order ${orderId} — it will be delivered on the outbox dispatcher's next tick`,
+  );
 }
 
 /**
@@ -66,8 +137,12 @@ export async function enqueueAdminPasswordReset(
 /**
  * Enqueue one admin DM per resolved admin (env ADMIN_IDS ∪ the DB `admin_ids`
  * Setting — same allow-list the bot/web panel resolve at runtime via
- * `resolveAdminIds`/`adminIds()`) alerting that a payment-gateway webhook
- * delivered an order whose paid amount exceeded the total. Previously looped
+ * `resolveAdminIds`/`adminIds()`) alerting that a payment path delivered an
+ * order whose paid amount exceeded the total. All six rails call this now, not
+ * only the three gateway webhooks: the QRIS/IDR + NOWPayments webhooks
+ * (`deliverPaid{Tokopay,Paydisini,Nowpayments}Order`) and the three
+ * amount-matched deposit pollers (`deliverPaidInternalOrder`,
+ * `deliverPaidBybitOrder`, `deliverPaidBybitBscOrder`). Previously looped
  * over `config.ADMIN_IDS` alone, so a shop managed entirely through the
  * DB/setup-wizard (no env ADMIN_IDS) never got these alerts (Infra-4 fix,
  * security audit 2026-06-23). orderId is set (unlike ADMIN_PW_RESET) so the
@@ -201,6 +276,43 @@ export async function enqueueAdminStalePayment(
         }),
       },
     });
+  }
+}
+
+/**
+ * Tell every admin that an order's payment may have succeeded at the gateway
+ * while nothing in the system can confirm it — so a human can settle it before
+ * the payment window closes and the order auto-cancels with the buyer's money
+ * paid (Task E5 item 4).
+ *
+ * One caller today: the NOWPayments reconcile poller, on the branch where the
+ * gateway reports an order `finished` but returns no `payment_id`. That id is
+ * the rail's idempotency-ledger key, so Task E4 made the poller refuse to
+ * deliver rather than invent one the IPN webhook could never collide with.
+ * That refusal is correct and stays — this alert exists because its cost is
+ * otherwise silent.
+ *
+ * Deduped per (order, admin), not per order. The admin events fan out one row
+ * per admin (see ADMIN_DM_EVENTS, packages/outbox-dispatcher/src/dispatcher.ts),
+ * so an order-only key would let the first admin's row swallow every other
+ * admin's — they would never be told at all. Deduping matters here more than
+ * for most events because the poller re-enters this branch on EVERY cycle
+ * until the order expires: without a key, each admin would be DMed once a
+ * cycle for the whole payment window. With it, each admin is told exactly
+ * once per order, however many cycles run.
+ */
+export async function enqueueAdminUnconfirmablePayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await enqueueNotification(
+      db,
+      NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT,
+      args.orderId,
+      { chat_id: adminId, order_code: args.orderCode, gateway: args.gateway },
+      `unconfirmable-payment:${args.orderId}:${adminId}`,
+    );
   }
 }
 
@@ -761,28 +873,43 @@ export async function enqueueManualDeliveredDm(
 }
 
 /**
- * Enqueue the buyer's "wallet top-up credited" DM — ONLY for the three
- * webhook-driven top-up rails (TokoPay/PayDisini/NOWPayments), called from
- * their `deliverPaid*` settlement transaction right after `settleWalletTopup`
- * credits the wallet. The other three top-up rails (Binance Internal, Bybit,
- * Bybit BSC) settle exclusively inside bot-process pollers, which DM the
- * buyer directly instead (see `onDelivered` in each rail's
- * apps/order-bot/src/payments/*.ts) — never call this helper from those, or
- * the buyer gets notified twice. No `telegramId == null` guard is needed here
- * (unlike enqueueOrderDeliveredDm) — the three webhook rails only reach this
- * call after confirming the buyer has a chat id; see each call site. Money is
- * carried as Decimal `.toString()` — never `number` — per money rules.
+ * Enqueue the buyer's "wallet top-up credited" DM — the ONE call site for
+ * this event across all six top-up-capable rails (TokoPay, PayDisini,
+ * NOWPayments, Binance Internal, Bybit, Bybit BSC). Called from
+ * `settleWalletTopup` (packages/db/src/crud/wallet_topup.ts) right after the
+ * wallet credit lands, which sits behind that function's atomic claim — so
+ * no rail-specific caller may enqueue this event itself, or the buyer would
+ * be notified twice for the same top-up. `telegramId == null` is checked by
+ * `settleWalletTopup` before calling this, same as the `credited.greaterThan(0)`
+ * gate — see that function's own doc-comment. Money is carried as Decimal
+ * `.toString()` — never `number` — per money rules.
+ *
+ * Carries the dedupe key `topup-credited:<orderId>`, so a second enqueue for
+ * the same top-up order writes nothing instead of a second row. The atomic
+ * claim in `settleWalletTopup` is still the primary guard and still the
+ * reason this has exactly one call site; the key is the database-level
+ * backstop for the case that guard is bypassed — a caller re-passing an
+ * upstream ledger claim, or a future second call site. It does NOT make the
+ * DM idempotent end to end: it stops a duplicate row being queued, and says
+ * nothing about whether Telegram delivered the first one.
  */
 export async function enqueueWalletTopupCreditedDm(
   db: Db,
-  args: { orderId: number; chatId: number; amount: Decimal; currency: string; newBalance: Decimal },
+  args: { orderId: number; orderCode: string; chatId: number; amount: Decimal; currency: string; newBalance: Decimal },
 ): Promise<void> {
-  await enqueueNotification(db, NotificationEvent.WALLET_TOPUP_CREDITED_DM, args.orderId, {
-    chat_id: args.chatId,
-    amount: args.amount.toString(),
-    currency: args.currency,
-    new_balance: args.newBalance.toString(),
-  });
+  await enqueueNotification(
+    db,
+    NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+    args.orderId,
+    {
+      chat_id: args.chatId,
+      order_code: args.orderCode,
+      amount: args.amount.toString(),
+      currency: args.currency,
+      new_balance: args.newBalance.toString(),
+    },
+    `topup-credited:${args.orderId}`,
+  );
 }
 
 /**

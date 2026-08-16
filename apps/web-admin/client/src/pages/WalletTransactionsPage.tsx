@@ -33,6 +33,11 @@ const REASON_LABELS: Record<string, string> = {
   order_refund: "Order refund",
   adjust: "Adjustment",
   wallet_topup: "Wallet top-up",
+  // Written by `creditOrderToBalance` when a paid order can't be fulfilled and
+  // its payment becomes store credit instead. Labelled for what the shop did
+  // rather than after the code — the humanizing fallback would render this as
+  // "Unfulfilled credit", which reads as a credit that failed.
+  unfulfilled_credit: "Credited to balance",
 };
 
 function humanizeReason(reason: string): string {

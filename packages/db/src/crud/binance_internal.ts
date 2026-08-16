@@ -21,9 +21,10 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
-import type { ProcessedBinanceTx } from "@prisma/client";
+import type { Prisma, ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -274,6 +275,30 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
   await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
 }
 
+/** The exact projection `flipSettledOrderBubble` (apps/order-bot/src/jobs/
+ * index.ts) needs off an order, shared by both the batch sweep below and
+ * `getSettledBubbleOrder`'s single-row lookup: `id`/`orderCode`/`kind`/
+ * `status`/`paymentMsgChatId`/`paymentMsgId` plus the buyer's `language` —
+ * exactly `AnchoredSettledOrder`'s shape there, no more. Just `language` on
+ * `user` — `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts)
+ * interpolates no buyer balance into either branch (a WALLET_TOPUP bubble is
+ * a neutral status line; the balance-quoting sentence lives exclusively in
+ * the outbox's WALLET_TOPUP_CREDITED_DM), so `currency`/`totalAmount` and the
+ * user's two wallet columns were dropped from this projection along with
+ * `SettledBubbleOrder`'s own fields. `select` (not `include: { user: true }`)
+ * for the same H-4 leak class as `listPendingInternalOrders`' own comment
+ * above: an `include` here would pull `passwordHash`/`email` into memory for
+ * no reason. */
+const SETTLED_BUBBLE_ORDER_SELECT = {
+  id: true,
+  orderCode: true,
+  kind: true,
+  status: true,
+  paymentMsgChatId: true,
+  paymentMsgId: true,
+  user: { select: { language: true } },
+} satisfies Prisma.OrderSelect;
+
 /** Settled (DELIVERED or manual-fulfilment PROCESSING) orders of ANY payment
  * method that still carry an un-edited payment-message anchor, oldest first —
  * the cross-method query the generic bubble-flip sweeper polls. Not locked to
@@ -288,12 +313,7 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
  * query naturally skips anything already handled. It also does NOT catch
  * Bybit BSC's PAYMENT_DETECTED/CONFIRMING/CONFIRMED — those intermediate
  * statuses deliberately keep the anchor alive for on-chain tracking
- * (bybitBscDeposit.ts, bybitBscConfirmationTracker.ts) and must not be swept.
- *
- * `select` (not `include: { user: true }`) projects only what a bubble edit
- * needs — same H-4 leak class as `listPendingInternalOrders`' own comment
- * above: an `include` here would pull `passwordHash`/`email` into memory for
- * no reason. */
+ * (bybitBscDeposit.ts, bybitBscConfirmationTracker.ts) and must not be swept. */
 export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
   return db.order.findMany({
     where: {
@@ -301,21 +321,29 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
       paymentMsgChatId: { not: null },
       paymentMsgId: { not: null },
     },
-    select: {
-      id: true,
-      orderCode: true,
-      kind: true,
-      currency: true,
-      // A WALLET_TOPUP bubble renders the topped-up amount (`walletTopupSuccessText`),
-      // so the sweeper needs the order's own total alongside its currency.
-      totalAmount: true,
-      status: true,
-      paymentMsgChatId: true,
-      paymentMsgId: true,
-      user: { select: { language: true, walletBalance: true, walletBalanceUsdt: true } },
-    },
+    select: SETTLED_BUBBLE_ORDER_SELECT,
     orderBy: { createdAt: "asc" },
     ...(limit != null ? { take: limit } : {}),
+  });
+}
+
+/** Single-row counterpart to `listSettledOrdersAwaitingBubbleEdit` above, for
+ * the one caller that already knows the order id and just needs this order's
+ * bubble-flip fields: `flushSettledOrderBubble` (apps/order-bot/src/jobs/
+ * index.ts), the payment-bubble flush hook that runs once per settlement DM
+ * on single-writer SQLite. That hot path used to call `getOrder`, whose
+ * `fullInclude` pulls in items, `stockItem` credentials, product and voucher
+ * to extract six scalars and `user.language` — needlessly materialising the
+ * buyer's credentials into memory on every settlement DM. This reuses the
+ * exact same lean `select` for the reason explained on it above, just without
+ * the status/anchor `where` filter: `flipSettledOrderBubble` itself already
+ * turns a wrong status or a missing anchor into "not_settled"/"no_anchor", so
+ * filtering here would only turn those into a silent "order not found"
+ * instead. Returns `null` when the order doesn't exist, same as `getOrder`. */
+export function getSettledBubbleOrder(db: Db, orderId: number) {
+  return db.order.findUnique({
+    where: { id: orderId },
+    select: SETTLED_BUBBLE_ORDER_SELECT,
   });
 }
 
@@ -395,13 +423,35 @@ export async function deliverPaidInternalOrder(
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
     if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — its ledger row is in a terminal outcome that may not be reclaimed, so nothing was delivered or credited twice`,
+      );
       return { status: "already_processed" };
     }
     const reclaimed = await db.processedBinanceTx.updateMany({
       where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (reclaimed.count === 0) return { status: "already_processed" };
+    if (reclaimed.count === 0) {
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "already_processed",
+        },
+        `Skipped settling Binance transaction ${args.binanceTxId} for order ${args.orderId} because it had already been processed — another path won the race to reclaim its ledger row, so nothing was delivered or credited twice`,
+      );
+      return { status: "already_processed" };
+    }
     reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
@@ -441,17 +491,39 @@ export async function deliverPaidInternalOrder(
             `Binance transfer ${args.binanceTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so it stays in the manual-match queue. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered by another path first.`,
           );
         }
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "stale",
+          },
+          `Did not settle Binance Binance transaction ${args.binanceTxId} because order ${args.orderId} is no longer payable — it was cancelled, already settled, or is not a internal-transfer order, so the ledger row is marked stale and a human decides what the payment was for`,
+        );
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
-        // function only ever runs inside the bot process's own internal-
-        // transfer poller (never a web request), so the buyer is DM'd
-        // directly by that poller's `onDelivered` handler
-        // (apps/order-bot/src/payments/binanceInternal.ts) right after this
-        // call returns — enqueueing to the outbox here too would double-notify.
-        logger.info(`Auto-delivered internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId}`);
+        // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
+        // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
+        // deeper on the line above, behind its own atomic claim — that single
+        // call site is shared by all six top-up-capable rails, this one
+        // included, so nothing here may enqueue it again or DM the buyer
+        // directly. `onDelivered` (apps/order-bot/src/payments/
+        // binanceInternal.ts) no longer sends a DM for a WALLET_TOPUP order
+        // either; it only nudges the outbox dispatcher and updates the
+        // payment bubble.
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "delivered",
+          },
+        `Settled internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId} — the buyer's balance was credited and their notification queued`,
+        );
         return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
@@ -490,10 +562,28 @@ export async function deliverPaidInternalOrder(
         );
       }
       if (result.kind === "delivered") {
-        logger.info(`Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`);
+        logger.info(
+          {
+            event: PaymentLogEvent.PAYMENT_CONFIRMED,
+            orderId: args.orderId,
+            provider: PaymentMethod.BINANCE_INTERNAL,
+            providerPaymentId: args.binanceTxId,
+            status: "delivered",
+          },
+        `Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`,
+        );
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
       }
-      logger.info(`Internal-transfer order ${result.order.orderCode} paid — queued for manual fulfilment (Binance transaction ${args.binanceTxId})`);
+      logger.info(
+        {
+          event: PaymentLogEvent.PAYMENT_CONFIRMED,
+          orderId: args.orderId,
+          provider: PaymentMethod.BINANCE_INTERNAL,
+          providerPaymentId: args.binanceTxId,
+          status: "processing",
+        },
+      `Internal-transfer order ${result.order.orderCode} paid — queued for manual fulfilment (Binance transaction ${args.binanceTxId})`,
+      );
       return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {

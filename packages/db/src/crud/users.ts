@@ -188,6 +188,14 @@ export interface WalletAdjustOpts {
  * Every applied move also writes a `wallet_transactions` ledger row (running
  * balance + reason + optional admin/order), so the per-user money timeline is
  * complete — nothing that touches a balance is missed.
+ *
+ * That ledger row is written BEFORE the balance, and can be rejected: since
+ * Task E5 the table is UNIQUE on (orderId, reason), so a second movement for
+ * the same order and reason throws instead of doubling a buyer's money. See
+ * the comment at the write itself for why the order of the two writes is what
+ * makes that rejection safe. Callers that legitimately move a wallet more than
+ * once for one order must pass a different `reason`; callers with no order
+ * (`orderId` null) are unconstrained.
  */
 export async function adjustWallet(
   db: Db,
@@ -202,10 +210,17 @@ export async function adjustWallet(
   if (newBalance.lessThan(0) && !opts.allowNegative) {
     throw new ValidationError("error.insufficient_wallet");
   }
-  await db.user.update({
-    where: { id: userId },
-    data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
-  });
+  // Ledger row FIRST, balance second — the order matters (Task E5 item 2).
+  // `wallet_transactions` is UNIQUE on (orderId, reason), so this insert can
+  // legitimately fail: it is what stops one order being credited twice if a
+  // caller's own guard is ever bypassed. Writing the balance first would move
+  // the buyer's money and only then discover the movement is a duplicate,
+  // leaving the balance and the ledger permanently disagreeing whenever the
+  // caller did not wrap this in a transaction — a worse outcome than the
+  // double-credit being prevented. Inserting first makes the rejection
+  // abort before any money moves, transaction or no transaction. Both writes
+  // use `newBalance`, which was computed above, so neither depends on the
+  // other having run.
   await db.walletTransaction.create({
     data: {
       userId,
@@ -217,6 +232,10 @@ export async function adjustWallet(
       adminId: opts.adminId ?? null,
       orderId: opts.orderId ?? null,
     },
+  });
+  await db.user.update({
+    where: { id: userId },
+    data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
   });
   invalidateWarmUser(userId);
   return newBalance;
@@ -373,7 +392,16 @@ const WALLET_TX_USER_SELECT = {
  *  the order the schema comment lists them (prisma/schema.prisma). Exported so
  *  the admin page's reason dropdown and the route's validation share one list
  *  instead of each hard-coding its own copy. Keep in sync with the schema
- *  comment when a new reason is introduced. */
+ *  comment when a new reason is introduced.
+ *
+ *  This list is a FILTER vocabulary for the wallet-ledger admin page, not a
+ *  write-side allowlist — every writer passes its own literal, and the only
+ *  admin-initiated one is hard-coded `admin_adjust` (web-admin's users route
+ *  and the bot's admin handler). So a reason missing from here does not block
+ *  any write; it just makes those rows impossible to isolate in the admin UI,
+ *  which is exactly what happened to `unfulfilled_credit` (written by
+ *  `creditOrderToBalance`, crud/orders.ts) until Task E5's audit of every
+ *  order-scoped reason turned it up. */
 export const WALLET_TX_REASONS = [
   "admin_adjust",
   "underpaid_refund",
@@ -382,12 +410,14 @@ export const WALLET_TX_REASONS = [
   "order_refund",
   "adjust",
   "wallet_topup",
+  "unfulfilled_credit",
 ] as const;
 
 export interface WalletTransactionFilter {
   userId?: number | null;
   /** Machine reason code as stored: admin_adjust | underpaid_refund |
-   *  referral | order_payment | order_refund | adjust | wallet_topup. */
+   *  referral | order_payment | order_refund | adjust | wallet_topup |
+   *  unfulfilled_credit. */
   reason?: string | null;
   currency?: string | null;
   /** createdAt >= from */

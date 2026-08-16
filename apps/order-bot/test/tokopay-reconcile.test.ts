@@ -13,9 +13,12 @@ import {
   bulkAddStock,
   getPollHealth,
   updateDenomination,
+  deliverPaidTokopayOrder,
 } from "@app/db";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
@@ -118,6 +121,49 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
     const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
     expect(stillPending).toBeDefined();
+  });
+
+  // The poller used to claim `reconcile-<orderCode>` when TokoPay's status
+  // response carried no trx_id — a UNIQUE ledger row the storefront webhook
+  // can never write, so one payment confirmed from both directions produced
+  // TWO rows and the ledger (the primary idempotency gate) caught neither.
+  // Both paths now derive the key the same way: the live call's id, falling
+  // back to the order code, which is the ref_id we handed TokoPay.
+  it("keys the ledger on the order code, not a synthetic reconcile- key, when the gateway returns no trx_id", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    stubStatus({ status: "Paid", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() }); // no trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const rows = await prisma.processedTokopayTx.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.trxId).toBe(created!.orderCode);
+    expect(rows[0]!.outcome).toBe("matched");
+  });
+
+  // The collision the shared key buys: a webhook arriving after the poller
+  // already settled the payment hits the row the poller claimed, in the
+  // ledger, instead of inserting a second one. `deliverPaidTokopayOrder` is
+  // the exact function the storefront webhook route calls, with the exact key
+  // that route now derives for a live response carrying no trx_id.
+  it("makes a later webhook for the same payment collide on the poller's own ledger row", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    const charge = qrisChargeAmount(pending!.totalAmount);
+    stubStatus({ status: "Paid", total_bayar: charge.toString() }); // no trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const webhook = await deliverPaidTokopayOrder(prisma, {
+      orderId: created!.id,
+      trxId: gatewayLedgerTrxId(null, created!.orderCode),
+      amount: charge,
+      shopUrl: null,
+    });
+
+    expect(webhook.status).toBe("already_processed");
+    expect(await prisma.processedTokopayTx.count()).toBe(1);
   });
 
   it("leaves the order pending when the gateway reports unpaid", async () => {
@@ -335,7 +381,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       return order;
     }
 
-    it("words a settled wallet top-up as a top-up, quoting the balance AFTER the credit landed", async () => {
+    it("words a settled wallet top-up as a neutral 'payment received' status — the balance-quoting success sentence now lives in the outbox DM instead", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
 
@@ -344,10 +390,18 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.chatId).toBe(555);
       expect(edit.msgId).toBe(777);
-      expect(edit.text).toContain("Top-up successful");
-      expect(edit.text).toContain(topup.orderCode);
-      expect(edit.text).toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
-      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot
+      expect(edit.text).toContain("Payment received");
+      expect(edit.text).toContain("top-up has been credited");
+      // The bubble no longer quotes the order code or the credited balance —
+      // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+      expect(edit.text).not.toContain(topup.orderCode);
+      expect(edit.text).not.toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
+      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot either
+
+      // The wallet WAS actually credited even though the bubble stays silent
+      // about the number — that number is what the outbox DM carries.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+      expect(new Decimal(user.walletBalance).toString()).toBe("173456");
     });
 
     it("offers a settled wallet top-up the wallet keyboard, never the product sale's order history", async () => {
@@ -359,6 +413,24 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.buttons).toContain("v1:topup:open");
       expect(edit.buttons).not.toContain("v1:order:list");
+    });
+
+    // Task E2: a settled wallet top-up's photo (QR) bubble is deleted with NO
+    // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
+    // them the news, so a second message here would be the exact duplicate
+    // this task removes. The anchor still clears afterwards.
+    it("deletes a settled wallet top-up's photo (QR) bubble and sends nothing in its place", async () => {
+      const topup = await makeAnchoredTopup();
+      const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+      await reconcilePaid(api, "TRX-TOPUP-PHOTO");
+
+      expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      const after = await prisma.order.findUnique({ where: { id: topup.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
     });
 
     it("still tells a delivered product sale its items are on the way, with the product keyboard", async () => {

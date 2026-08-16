@@ -274,6 +274,50 @@ describe("POST /pay/tokopay/callback", () => {
     expect(second.json()).toEqual({ status: "already_processed" });
   });
 
+  // The ledger's UNIQUE `trxId` is the PRIMARY idempotency gate, and it only
+  // works if this route and the bot's reconcile poller derive the same key
+  // from the same payment. When TokoPay's live status call hands back no
+  // trx_id of its own, both now fall back to the order code — the ref_id we
+  // gave TokoPay when the transaction was created. The route deliberately
+  // does NOT reach for the callback body's own `trx_id` here: the signature
+  // (md5(merchantId:secret:refId)) does not cover it, and the poller has no
+  // body to read it from at all.
+  it("keys the ledger on the order code when the live status check returns no trx_id, ignoring the unsigned body field", async () => {
+    const order = await createPendingTokopayOrder("ORD-TPNOLIVEID", "50000");
+    const charge = qrisChargeAmount(order.totalAmount).toString();
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge })); // live call: no trxId
+    const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-BODY-ONLY" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
+    expect(res.json()).toEqual({ status: "delivered" });
+
+    const ledger = await prisma.processedTokopayTx.findUnique({ where: { trxId: order.orderCode } });
+    expect(ledger).not.toBeNull();
+    expect(ledger!.outcome).toBe("matched");
+    expect(await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-BODY-ONLY" } })).toBeNull();
+  });
+
+  // The other half of that convergence: the reconcile poller got there first
+  // and already claimed the row. The webhook must land on THAT row — in the
+  // ledger, the intended gate — rather than inserting a second one and
+  // relying on the order-status check underneath it.
+  it("collides on the ledger row the reconcile poller already claimed for the same payment", async () => {
+    const order = await createPendingTokopayOrder("ORD-TPPOLLERFIRST", "50000");
+    const charge = qrisChargeAmount(order.totalAmount).toString();
+    // Exactly the row `deliverPaidTokopayOrder` writes when the poller settles
+    // a payment TokoPay reported without a trx_id of its own.
+    await prisma.processedTokopayTx.create({
+      data: { trxId: order.orderCode, orderId: order.id, amount: charge, outcome: "matched" },
+    });
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge }));
+    const payload = signedPayload({ refId: order.orderCode, amount: charge });
+
+    const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
+
+    expect(res.json()).toEqual({ status: "already_processed" });
+    expect(await prisma.processedTokopayTx.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
   it("records an unmatched tx when no TOKOPAY order matches the ref_id (live check is skipped — no order)", async () => {
     const payload = signedPayload({ refId: "ORD-NO-SUCH-ORDER", amount: "12345", trxId: "TRX-UNMATCHED-1" });
     const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });

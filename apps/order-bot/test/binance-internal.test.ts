@@ -25,9 +25,9 @@ import type { Api } from "grammy";
 import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
+import { registerOutboxNudge } from "@app/core/nudge";
+import { OrderStatus, PaymentMethod, StockStatus, NotificationEvent } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { formatUsdt } from "../src/util/format";
 import {
   classifyTx,
   noteMatches,
@@ -706,7 +706,44 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
       }),
     );
 
-  it("delivers, credits the wallet, and DMs the credited-amount + new-balance text — never the bare placeholder, never a credential file", async () => {
+    // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
+  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
+  // silently revert to `nudge(); flip();` — the reported credential-before-
+  // confirmation ordering — with the whole suite still green. The outbox
+  // dispatcher's flush hook makes such a regression cosmetic in the combined
+  // server, but the standalone order-bot binary registers no flush hook at
+  // all, so there it is fully user-visible.
+  it("flips the settled bubble BEFORE nudging the outbox dispatcher", async () => {
+    const order = await makeTopupOrder("10");
+    await setOrderPaymentMessage(prisma, order.id, 555, 778);
+    const sequence: string[] = [];
+    registerOutboxNudge(() => sequence.push("nudge"));
+    const api = {
+      sendMessage: async () => {
+        sequence.push("bubble");
+        return { message_id: 1 };
+      },
+      sendDocument: async () => ({ message_id: 1 }),
+      editMessageText: async () => {
+        sequence.push("bubble");
+        return {};
+      },
+      deleteMessage: async () => {
+        sequence.push("bubble");
+        return true;
+      },
+    } as unknown as Api;
+
+    await processTransfers(api, [txFor({ txId: "T-ORDERING", note: order.paymentRef!, amount: order.totalAmount })], await pending());
+
+    // Both must have happened — a pass because neither ran is worthless.
+    expect(sequence).toContain("bubble");
+    expect(sequence).toContain("nudge");
+    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    registerOutboxNudge(null);
+  });
+
+  it("delivers, credits the wallet, and enqueues exactly one outbox top-up DM — never a direct Telegram DM, never a credential file", async () => {
     const order = await makeTopupOrder("10");
     const { api, sent, sendDocumentCalls } = fakeApi();
     await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: order.totalAmount })], await pending());
@@ -717,21 +754,31 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     // No account file — a top-up has no product/credentials to deliver.
     expect(sendDocumentCalls()).toBe(0);
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.text).not.toBe("Top-up successful."); // the old bare placeholder is gone
-    // Credited amount, formatted as USDT (with unit, not IDR).
-    expect(sent[0]!.text).toContain("10.00 USDT");
+    // No direct Telegram DM either (Task E1) — this rail used to send the
+    // "top-up successful" message straight from the bot process, which could
+    // double-notify the buyer once the outbox also carried it for the same
+    // top-up. The buyer's actual success message now comes exclusively from
+    // the outbox, enqueued inside settleWalletTopup.
+    expect(sent).toHaveLength(0);
+
     // New balance reads walletBalanceUsdt, not walletBalance — proves the
-    // IDR/USDT currency branch picked the right field — and carries an
-    // explicit "USDT" unit (not the bare unitless number).
+    // IDR/USDT currency branch picked the right field.
     const freshUser = await getUser(prisma, sample.user.id);
     expect(freshUser!.walletBalanceUsdt.toString()).toBe("10");
-    expect(sent[0]!.text).toContain(formatUsdt(freshUser!.walletBalanceUsdt));
-    expect(sent[0]!.text).toMatch(/10 USDT/);
-    expect(sent[0]!.extra).toMatchObject({ parse_mode: "HTML" });
+
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+    const payload = JSON.parse(dmRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(payload.amount).toBe("10");
+    expect(payload.currency).toBe("USDT");
+    expect(payload.new_balance).toBe("10");
   });
 
-  it("flips the anchored payment bubble to the SAME top-up success text, not the generic 'items being delivered' product copy", async () => {
+  it("flips the anchored payment bubble to a neutral 'payment received' status, not the generic 'items being delivered' product copy or a balance-quoting success sentence", async () => {
     const order = await makeTopupOrder("10");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
@@ -741,7 +788,11 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     expect(edits[0]!.chatId).toBe(555);
     expect(edits[0]!.messageId).toBe(777);
     expect(edits[0]!.text).not.toContain("items are being delivered");
-    expect(edits[0]!.text).toContain("10.00 USDT");
+    // The bubble no longer quotes the credited amount or new balance — that
+    // now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+    expect(edits[0]!.text).not.toContain("10.00 USDT");
+    expect(edits[0]!.text).toContain("Payment received");
+    expect(edits[0]!.text).toContain("top-up has been credited");
 
     // …and the wallet keyboard, not paymentSuccessKb's "My Orders". A top-up
     // leaves nothing in the order history to look up, so offering it there is
@@ -756,7 +807,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     expect(flat).not.toContain("v1:order:list");
   });
 
-  it("credits an IDR top-up's walletBalance (not walletBalanceUsdt) and formats the DM in Rupiah", async () => {
+  it("credits an IDR top-up's walletBalance (not walletBalanceUsdt) and enqueues the outbox DM with IDR-currency payload", async () => {
     const order = await prisma.$transaction((tx) =>
       createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
     );
@@ -778,8 +829,16 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     const freshUser = await getUser(prisma, sample.user.id);
     expect(freshUser!.walletBalance.toString()).toBe("50000");
     expect(freshUser!.walletBalanceUsdt.toString()).toBe("0"); // never crossed into the USDT field
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.text).toContain("Rp50.000");
+    expect(sent).toHaveLength(0); // no direct DM — the outbox carries it instead
+
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+    const payload = JSON.parse(dmRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.currency).toBe("IDR");
+    expect(payload.amount).toBe("50000");
+    expect(payload.new_balance).toBe("50000");
   });
 });
 

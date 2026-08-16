@@ -83,14 +83,16 @@ export const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
  * this now belongs to the generic paid-order bubble sweeper
  * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E),
  * which covers every payment method that anchors a bubble — including
- * NOWPayments: it DOES anchor one at checkout
+ * NOWPayments: it anchors one at checkout
  * (apps/order-bot/src/handlers/walletTopup.ts:515,
- * apps/order-bot/src/handlers/checkout.ts:1012), it just never flips it
- * inline the way TokoPay/PayDisini's `reconcileOrder` does, so the generic
- * sweeper is the only thing that ever clears it (an earlier version of this
- * comment wrongly claimed NOWPayments had no anchored bubble at all — that
- * wrong assumption is exactly why NOWPayments bubbles never got swept before
- * the generic sweeper existed). grammY's `Api` client DOES have a built-in
+ * apps/order-bot/src/handlers/checkout.ts:1012) and, since Task E3, flips it
+ * inline the same way TokoPay/PayDisini's `reconcileOrder` always has (see
+ * `editBubbleAndClear`, apps/order-bot/src/payments/nowpaymentsReconcile.ts)
+ * — before that task this rail was the one exception that never flipped its
+ * own bubble at all, so a delivered order's bubble sat stale until the
+ * generic sweeper's next cron tick (up to ~60s later); this sweeper remains
+ * the backstop for whatever any rail's own fast path misses, on every rail
+ * alike. grammY's `Api` client DOES have a built-in
  * per-call timeout (`ApiClientOptions.timeoutSeconds`, verified against
  * grammy@1.43.0's `core/client.js` — an `AbortController`-backed deadline,
  * defaulting to 500s). There is no bot-wide bound today (an earlier attempt
@@ -162,22 +164,32 @@ export const PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS =
 /**
  * NOWPayments' `cycleTimeoutMs`: one cycle makes at most
  * `MAX_ORDERS_PER_CYCLE` sequential `getPaymentStatus` calls, each
- * individually bounded. An order whose delivery then throws also sends an
- * admin alert bounded at `RECONCILE_TELEGRAM_TIMEOUT_MS`, so
- * `PER_ORDER_WORST_CASE_MS` (15s) and the raw worst case is 750_000ms,
- * pessimistically assuming every order both answers slowly AND fails
- * delivery. `CYCLE_TIMEOUT_MARGIN_MS` (30s) covers the DB list/deliver work
- * around those calls each cycle. Total: 750_000 + 30_000 = 780_000ms — the
- * same value (and, since Task T2-F, the same shape) as TokoPay/PayDisini's
- * own derivation above. This rail's `pollOnce` never flips a bubble inline
- * either way, so no per-rail bubble-sweep term belongs in any of the three
- * rails' cycle-timeout math. That does NOT mean this rail has no anchored
- * bubble to flip — it does, anchored at checkout
+ * individually bounded, plus — for an order that comes back paid — exactly
+ * ONE more bounded Telegram call inline: either the success-bubble edit
+ * (`editBubbleAndClear`, apps/order-bot/src/payments/nowpaymentsReconcile.ts,
+ * Task E3) when delivery succeeds, or the admin alert
+ * (`RECONCILE_TELEGRAM_TIMEOUT_MS`) when delivery throws — the two are
+ * mutually exclusive per order, exactly the shape `PER_ORDER_WORST_CASE_MS`
+ * (15s) already describes for every rail above. Raw worst case is 750_000ms,
+ * pessimistically assuming every order both answers slowly AND either fails
+ * delivery or needs its bubble flipped. `CYCLE_TIMEOUT_MARGIN_MS` (30s)
+ * covers the DB list/deliver work around those calls each cycle. Total:
+ * 750_000 + 30_000 = 780_000ms — the same value (and, since Task T2-F, the
+ * same shape) as TokoPay/PayDisini's own derivation above.
+ *
+ * Before Task E3 this rail's `reconcileOrder` never flipped a bubble inline
+ * at all — it anchors one at checkout
  * (apps/order-bot/src/handlers/walletTopup.ts:515,
- * apps/order-bot/src/handlers/checkout.ts:1012) — only that nothing in this
- * rail's own reconcile loop flips it inline; the generic
- * `sweepPaidOrderBubbles` (apps/order-bot/src/jobs/index.ts, Task T2-E) is
- * what clears it, on its own cron schedule, independent of this budget.
+ * apps/order-bot/src/handlers/checkout.ts:1012) but left it stale until the
+ * generic `sweepPaidOrderBubbles` (apps/order-bot/src/jobs/index.ts, Task
+ * T2-E) caught it on its next cron tick. This constant's own arithmetic
+ * already priced in "one Telegram call per order, mutually exclusive with
+ * the admin alert" before that gap was closed (see `PER_ORDER_WORST_CASE_MS`
+ * above), so adding the actual call needed no change here — only this
+ * comment, which used to describe the gap as permanent. The generic sweeper
+ * remains the backstop for whatever this rail's own fast path still misses
+ * (a timed-out or flood-controlled edit), on its own cron schedule,
+ * independent of this budget.
  *
  * Sanity check, enforced by a test (poll-loop-wiring.test.ts) rather than
  * narrated here: this must stay under half of

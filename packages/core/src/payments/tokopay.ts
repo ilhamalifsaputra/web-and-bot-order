@@ -11,6 +11,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
+import { isProviderPaid, StatusProvider } from "./paymentStatus";
 
 export const TOKOPAY_MERCHANT_KEY = "tokopay_merchant_id";
 export const TOKOPAY_SECRET_KEY = "tokopay_secret";
@@ -151,8 +152,15 @@ export interface TokopayStatus {
   trxId: string | null;
 }
 
-/** Gateway payment-status strings we treat as "paid/settled". */
-const PAID_STATES = ["paid", "success", "completed", "settlement", "lunas", "berhasil"];
+// Which status strings count as "paid/settled" is decided by
+// `isProviderPaid(StatusProvider.TOKOPAY, …)` (./paymentStatus.ts, Task E7),
+// not by a list in this file. BOTH ways a TokoPay payment can reach us go
+// through it — the reconcile poller's `checkTransaction` below and the
+// storefront webhook's `verifyCallback` further down. `verifyCallback` used
+// to carry its own shorter inline copy without `lunas`/`berhasil`, so a
+// transaction TokoPay reported in Indonesian was honoured by the poller and
+// rejected by the webhook: the same payment settled or not depending purely
+// on which path saw it first. Do not re-inline either copy.
 
 /**
  * Poll the gateway for an order's current payment status (reconcile path — used
@@ -198,7 +206,7 @@ export async function checkTransaction(
     amount = new Decimal(args.amountIdr);
   }
   const trxId = (typeof d.trx_id === "string" && d.trx_id) || (typeof d.reference === "string" && d.reference) || null;
-  return { paid: PAID_STATES.includes(statusStr), amount, trxId };
+  return { paid: isProviderPaid(StatusProvider.TOKOPAY, statusStr), amount, trxId };
 }
 
 export interface TokopayCallback {
@@ -208,7 +216,13 @@ export interface TokopayCallback {
   paid: boolean;
 }
 
-/** Verify a callback's signature + normalize. Returns null on bad/missing signature. */
+/**
+ * Verify a callback's signature + normalize. Returns null on bad/missing
+ * signature. `paid` is decided by `isProviderPaid` (./paymentStatus.ts) — the
+ * same list `checkTransaction` uses — so the webhook and the reconcile poller
+ * can never disagree about whether a given gateway status string means the
+ * money arrived.
+ */
 export function verifyCallback(
   body: Record<string, unknown>,
   creds: Pick<TokopayCreds, "merchantId" | "secret">,
@@ -237,7 +251,7 @@ export function verifyCallback(
     refId,
     trxId: firstString(body.trx_id, body.reference) ?? refId,
     amount,
-    paid: ["success", "completed", "paid", "settlement"].includes(status),
+    paid: isProviderPaid(StatusProvider.TOKOPAY, status),
   };
 }
 

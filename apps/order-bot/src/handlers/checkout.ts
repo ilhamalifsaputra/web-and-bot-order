@@ -15,7 +15,7 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderKind, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -38,7 +38,6 @@ import {
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
-  clearOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
   getTokopayCreds,
@@ -63,9 +62,9 @@ import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { anchorPaymentMessage } from "../util/paymentAnchor";
-import { sendAccountFile, settledPaymentBubbleFor } from "../util/delivery";
-import { editPaymentBubble } from "../jobs";
-import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
+import { sendAccountFile } from "../util/delivery";
+import { flipSettledOrderBubble } from "../jobs";
+import { TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatIdr, formatUsdtAmount, priceIdr, usdtFromIdr } from "../util/format";
@@ -1388,6 +1387,22 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // dispatcher running. Re-read the order fresh so stock is SOLD with live
     // credentials. Only if the direct send fails do we fall back to the
     // outbox DM.
+    // Confirmation FIRST, credentials second (final whole-branch review).
+    // This path has no payment bubble and never touches the outbox, so
+    // neither the per-rail reordering nor the dispatcher's flush hook can
+    // reach it — yet the buyer saw exactly the reported bug here: the account
+    // file arriving above a checkout screen still showing the unpaid summary,
+    // reading as "the shop sent my account before I paid". Nothing was ever
+    // delivered early (`completeOrderWithWalletCredit`'s claim gates the
+    // send); flipping the screen first is all it takes. `smartEdit` is a
+    // single bounded Telegram edit and its failure is already swallowed
+    // internally, so it cannot delay or block the delivery below.
+    await smartEdit(
+      ctx,
+      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
+      ckb.paymentSuccessKb(lang),
+    );
+
     const deliveredOrder = await getOrder(prisma, result.order.id);
     const tgId =
       deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
@@ -1414,11 +1429,6 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       }
     }
 
-    await smartEdit(
-      ctx,
-      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
-      ckb.paymentSuccessKb(lang),
-    );
     return;
   }
 
@@ -1538,27 +1548,21 @@ const REFRESHABLE_STATUSES: readonly string[] = [
   OrderStatus.CONFIRMED,
 ];
 
-/** The two settled states a payment bubble can still be flipped from. NOT the
- * three in-flight ones in REFRESHABLE_STATUSES above (PAYMENT_DETECTED /
- * CONFIRMING / CONFIRMED): those orders are still waiting on on-chain
- * confirmations and their bubble is what shows that progress, so they belong
- * on the polling path and must never be flipped to a success message. */
-const FLIPPABLE_SETTLED_STATUSES: readonly string[] = [OrderStatus.DELIVERED, OrderStatus.PROCESSING];
-
 /**
  * Flip an already-settled order's still-anchored payment bubble to its success
  * message, then drop the anchor. No-op for an order that either isn't settled
- * or has no anchor left (its own rail's fast path already flipped it).
- *
- * No fallback DM: the buyer is right here pressing the button and just got a
- * toast, and their account file / top-up notice already arrived through the
- * normal path — a DM would only repeat it. The anchor is cleared even when the
- * edit failed permanently (`editPaymentBubble` swallows and reports that), so
- * a bubble the buyer deleted self-heals instead of being retried by the
- * sweeper forever — but NOT when it failed for a reason that might not hold a
- * minute later (flood control, a 5xx, a network fault), since the anchor is
- * the only thing that puts this order back in the sweeper's queue at all. See
- * util/bubbleEditFailure.ts for where that line is drawn.
+ * or has no anchor left (its own rail's fast path already flipped it) —
+ * `flipSettledOrderBubble` (jobs/index.ts) is the shared body that decides
+ * both, and does the actual edit/classify/clear-anchor sequence: the same one
+ * `sweepPaidOrderBubbles` (jobs/index.ts), both QRIS reconcile pollers, the
+ * NOWPayments reconcile poller and the payment-bubble flush hook (Task E3) all
+ * call, so a buyer can never be shown
+ * a different ending for the same order depending on which one got there
+ * first. This wrapper only owns what's specific to the Refresh button: which
+ * log line to print for "timeout"/"kept", and repointing the session's
+ * `menuMsgId` when the shared call reports the bubble was replaced or deleted
+ * — the poller and sweeper flip the same bubbles with no session in reach, so
+ * only this handler can repair that pointer.
  *
  * The edit itself is bounded at `editTimeoutMs` (`TELEGRAM_MESSAGE_TIMEOUT_MS`
  * in production): this whole flip sits directly on the buyer's `sequentialize`
@@ -1577,42 +1581,37 @@ async function flipSettledBubble(
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
   opts?: { editTimeoutMs?: number },
 ): Promise<void> {
-  if (!FLIPPABLE_SETTLED_STATUSES.includes(order.status)) return;
-  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
-  // A wallet top-up's bubble quotes the buyer's balance, so read it fresh —
-  // the order row doesn't carry one. Skipped entirely for a product order,
-  // whose text needs no balance at all; `settledPaymentBubbleFor`
-  // (util/delivery.ts) owns what to fall back to when the read comes back
-  // empty, so the two QRIS reconcile pollers and this handler can't drift.
-  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
-  const { text, markup } = settledPaymentBubbleFor(order, buyer);
   const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
-  const outcome = await withTimeout(
-    editPaymentBubble(ctx.api, {
-      chatId: Number(order.paymentMsgChatId),
-      messageId: order.paymentMsgId,
-      text,
-      markup,
-      fallbackDm: null,
-    }),
-    editTimeoutMs,
-  );
+  const outcome = await flipSettledOrderBubble(ctx.api, order, editTimeoutMs);
+  if (outcome === "not_settled" || outcome === "no_anchor") return;
   if (outcome === "timeout") {
-    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
+    logger.warn(`Refresh Status gave up waiting on the settled-order payment bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background sweep retries it within a minute`);
     return;
   }
-  if (outcome.status === "not_edited" && !outcome.permanent) {
+  if (outcome === "kept") {
     logger.warn(`Refresh Status could not edit the settled payment bubble for order ${order.orderCode}, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
     return;
   }
-  // A QR bubble isn't edited but deleted and re-sent, so the id the session was
-  // pointing at no longer exists. Only this path can repair that: the poller
-  // and sweeper flip the same bubbles with no session in reach. Left stale it
-  // costs the buyer's next screen one doomed edit before smartEdit falls
-  // through to a fresh send (util/chat.ts) — recoverable, but only because
-  // that fallback exists, and there is no reason to lean on it here.
+  // A finished attempt (edited/replaced/deleted/dm_sent, or a permanent
+  // failure) — the anchor is already cleared by flipSettledOrderBubble. A QR
+  // bubble isn't edited: it's deleted, and either re-sent ("replaced") or
+  // left gone with nothing in its place ("deleted" — a settled WALLET_TOPUP,
+  // whose outbox DM already told the buyer; Task E2). Either way the id the
+  // session was pointing at no longer exists. Only this handler can repair
+  // that: the poller and sweeper flip the same bubbles with no session in
+  // reach.
+  //  - "replaced": re-point at the new message, exactly like before.
+  //  - "deleted": there is no replacement id to point at, so the anchor must
+  //    be cleared rather than left stale. smartEdit (util/chat.ts) tolerates a
+  //    stale menuMsgId fine on its own — a callback-triggered render edits the
+  //    tapped message directly rather than menuMsgId, and a typed-input render
+  //    falls through to a fresh `ctx.reply` and best-effort retires the old id
+  //    — but pointing session state at a message that no longer exists is
+  //    simply wrong, and this is the one place that can put it right (compare
+  //    the identical delete-then-clear pattern a few screens over when Product
+  //    Detail replaces a QR wait screen, above).
   if (outcome.status === "replaced") ctx.session.menuMsgId = outcome.messageId;
-  await clearOrderPaymentMessage(prisma, order.id);
+  else if (outcome.status === "deleted") ctx.session.menuMsgId = undefined;
 }
 
 export async function refreshPaymentStatus(

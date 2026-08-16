@@ -53,6 +53,31 @@ describe("verifyCallback", () => {
     expect(verifyCallback({ ref_id: "x" }, CREDS)).toBeNull();
   });
 
+  // The webhook used to carry its own inline paid-status list without the two
+  // Indonesian values, so TokoPay reporting a settled transaction as `lunas`
+  // or `berhasil` was honoured by the reconcile poller (`checkTransaction`)
+  // and rejected here — one payment, two answers, decided by whichever path
+  // happened to see it. Both now read the same PAID_STATES constant.
+  it.each(["lunas", "berhasil", "settlement", "completed", "paid", "success"])(
+    "accepts '%s' as paid, exactly like checkTransaction's own status check does",
+    (status) => {
+      const refId = `ORD-PAIDSTATE-${status}`;
+      const result = verifyCallback(
+        { ref_id: refId, signature: makeSignature(refId), nominal: "50000", status },
+        CREDS,
+      );
+      expect(result?.paid).toBe(true);
+    },
+  );
+
+  it("still treats an unlisted status as not paid, whatever its language", () => {
+    const refId = "ORD-PAIDSTATE-NEG";
+    const sign = makeSignature(refId);
+    for (const status of ["pending", "menunggu", "gagal", "expired"]) {
+      expect(verifyCallback({ ref_id: refId, signature: sign, nominal: "50000", status }, CREDS)?.paid).toBe(false);
+    }
+  });
+
   it("marks status 'failed' as not paid", () => {
     const refId = "ORD-002";
     const body = {

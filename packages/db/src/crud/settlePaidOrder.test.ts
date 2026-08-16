@@ -13,11 +13,13 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
   settlePaidOrder,
+  approveOrder,
   fulfillManualOrder,
   createOrderDirect,
   attachPaymentProof,
   updateOrderCustomerData,
 } from "./orders";
+import { createWalletTopupOrder } from "./wallet_topup";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { LEGAL_TRANSITIONS, transitionOrderStatus } from "./orderStatus";
 import { DeliveryType, OrderStatus, NotificationEvent, StockStatus } from "@app/core/enums";
@@ -1242,5 +1244,66 @@ describe("validateFieldAnswer (pure, @app/core/deliveryFields)", () => {
     const field = baseField({ type: AdditionalFieldType.TEXT, required: false });
     expect(validateFieldAnswer(field, "")).toBe("");
     expect(validateFieldAnswer(field, undefined)).toBe("");
+  });
+});
+
+// E5 item 3: the mirror image of settleWalletTopup's own "not a wallet top-up"
+// guard. Without these, a top-up routed to the product-delivery path would
+// pass approveOrder's atomic claim, iterate its zero line items, allocate no
+// stock and land in DELIVERED with the buyer's money taken and NOTHING
+// credited — a silent loss, which is why it is guarded at both doors rather
+// than argued to be unreachable.
+describe("wallet top-ups cannot be settled through the product-delivery path", () => {
+  async function makeTopupOrder(): Promise<number> {
+    const order = await createWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      amount: "50000",
+      currency: "IDR",
+      method: PaymentMethod.TOKOPAY as never,
+    });
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { status: OrderStatus.PENDING_VERIFICATION },
+    });
+    return order.id;
+  }
+
+  it("settlePaidOrder refuses a WALLET_TOPUP order", async () => {
+    const orderId = await makeTopupOrder();
+
+    await expect(settlePaidOrder(prisma, orderId, { adminId: 1 })).rejects.toMatchObject({
+      key: "error.order_is_wallet_topup",
+    });
+  });
+
+  it("approveOrder refuses a WALLET_TOPUP order, and leaves its status untouched", async () => {
+    const orderId = await makeTopupOrder();
+
+    await expect(approveOrder(prisma, orderId, { adminId: 1 })).rejects.toMatchObject({
+      key: "error.order_is_wallet_topup",
+    });
+
+    // The claim never ran: still PENDING_VERIFICATION, never DELIVERED, and no
+    // status-history row was written for a delivery that did not happen.
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(after.status).toBe(OrderStatus.PENDING_VERIFICATION);
+    expect(after.deliveredAt).toBeNull();
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.DELIVERED } })).toBe(0);
+  });
+
+  it("still settles an ordinary PRODUCT order — the guard reads kind, not shape", async () => {
+    const order = await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+    });
+    await prisma.order.update({
+      where: { id: order!.id },
+      data: { status: OrderStatus.PENDING_VERIFICATION },
+    });
+
+    const result = await settlePaidOrder(prisma, order!.id, { adminId: 1 });
+
+    expect(result.kind).toBe("delivered");
   });
 });

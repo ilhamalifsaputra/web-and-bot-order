@@ -41,7 +41,6 @@ import {
   recordBinancePollHealth,
   resolveBinanceInternalConfig,
   enqueueNotification,
-  getUser,
   clearOrderPaymentMessage,
   type BinanceInternalConfig,
   type DeliverResult,
@@ -51,7 +50,8 @@ import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
-import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
+import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
 import {
   AMOUNT_TOLERANCE,
   noteMatches,
@@ -271,32 +271,76 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Non-null only for a WALLET_TOPUP order — both the DM below and the
-  // anchored-bubble edit further down reuse this exact text, so it's built
-  // once and shared instead of re-fetching the fresh balance twice.
-  let topupSuccessText: string | null = null;
+  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit below
+  // uses this neutral status text instead of a success sentence: the buyer's
+  // actual "top-up successful" DM (amount + new balance + order code) comes
+  // exclusively from the outbox, enqueued once inside settleWalletTopup —
+  // see that function's own doc-comment. Duplicating that sentence here as a
+  // direct DM is exactly what used to double-notify a buyer whose top-up
+  // settled through both this poller AND the outbox. Computed up front
+  // (pure, no Telegram call) because the bubble flip below now runs BEFORE
+  // the nudge/delivery step (Task E3).
+  const topupBubbleText = order.kind === OrderKind.WALLET_TOPUP ? settledPaymentBubble(order).text : null;
+
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — BEFORE the nudge/delivery step below
+  // (Task E3): the buyer's chat must show "Payment received" first, not
+  // after their account file/top-up notice, or it reads as "the shop sent my
+  // account before I paid" even though nothing was ever delivered early
+  // (approveOrder's atomic claim gates every credential send — this was
+  // purely a message-ordering artefact). The outbox dispatcher's own
+  // payment-bubble flush hook (packages/core/src/nudge.ts) is the structural
+  // backstop if this still loses the race (e.g. a slow Telegram edit), but
+  // the ordering here should teach the right lesson regardless.
+  //
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS and never throws out of here —
+  // the buyer's credentials have NOT been delivered yet at this point, but a
+  // bubble problem must still never block or delay that delivery below:
+  // `editAnchoredBubbleAndDecide` catches and classifies every Telegram
+  // error itself (WHY it failed decides whether the anchor goes — see its
+  // own doc comment), and the `withTimeout` race here ensures a hung edit
+  // gives up and falls through instead of stalling the credential send that
+  // follows.
+  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
+    const outcome = await withTimeout(
+      editAnchoredBubbleAndDecide(api, order, {
+        chatId: Number(order.paymentMsgChatId),
+        messageId: order.paymentMsgId,
+        text: topupBubbleText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+        lang,
+        what: "success",
+      }),
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
+    );
+    if (outcome === "timeout") {
+      logger.warn(`Binance internal poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
+    }
+  }
 
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
-    // the wallet, so there's no account file to send; tell the buyer what
-    // was credited and their new balance instead.
-    const freshUser = await getUser(prisma, order.userId);
-    const newBalance = freshUser
-      ? order.currency === "IDR"
-        ? freshUser.walletBalance
-        : freshUser.walletBalanceUsdt
-      : order.totalAmount;
-    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
-    try {
-      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
-    } catch (err) {
-      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
-    }
+    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
+    // it wakes immediately instead of waiting for its next poll tick — but
+    // only when a dispatcher is registered in THIS process
+    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
+    // server (apps/server/src/index.ts) runs one, so the claim holds there,
+    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
+    // not, and nudging is then a no-op — the DM still goes out, just on the
+    // notifier process's own next poll tick.
+    nudgeOutboxDispatcher();
   } else {
     // Delivery is instant: skip the interim "payment verified / being prepared"
-    // notice and send the account file straight away.
+    // notice and send the account file straight away. Bounded at
+    // TELEGRAM_DOCUMENT_TIMEOUT_MS, matching both Bybit siblings — a document
+    // upload is legitimately slower than a plain text call (see
+    // telegramTimeout.ts), but this was the one rail with no bound at all, so
+    // a hung upload fell back to grammY's 500s default and stalled the whole
+    // poller for most of its cycle budget. On timeout the throw routes into
+    // the same catch a failed send does, so the buyer still gets their
+    // credentials through the outbox retry below.
     try {
-      await sendAccountFile(api, tgId, order, lang);
+      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error(
         { err },
@@ -312,21 +356,6 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       }
     }
   }
-
-  // Turn the payment-instructions bubble into a success message in place, then
-  // clear the anchor pointer. The edit never throws out of here — the buyer's
-  // credentials have already been delivered, so a bubble problem must not
-  // interrupt anything — but WHY it failed decides whether the anchor goes:
-  // see editAnchoredBubbleAndDecide below.
-  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
-    await editAnchoredBubbleAndDecide(api, order, {
-      chatId: Number(order.paymentMsgChatId),
-      messageId: order.paymentMsgId,
-      text: topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-      lang,
-      what: "success",
-    });
-  }
 }
 
 /**
@@ -339,13 +368,25 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
  * or network-faulted edit keeps its anchor so that sweep retries it within a
  * minute; a bubble the buyer deleted drops its anchor and stops consuming a
  * slot in every future sweep. `isPermanentBubbleEditFailure`
- * (util/bubbleEditFailure.ts) is where that line is drawn, shared with the two
- * Bybit rails, the two QRIS reconcile rails, the generic sweeper and the
- * Refresh button so all six agree.
+ * (util/bubbleEditFailure.ts) is where that line is drawn. Since Task E3 it
+ * has four direct callers: this rail, its two Bybit siblings, and
+ * `editPaymentBubble` (jobs/index.ts) — the shared body behind every other
+ * flip in the app (the generic sweeper, the Refresh button, the two QRIS
+ * reconcilers, NOWPayments and the payment-bubble flush hook), which is why
+ * all of them still draw the anchor-keeping line in exactly the same place.
  *
- * Never throws: the buyer already has their credentials (or their
- * ORDER_PROCESSING_DM), so nothing about the bubble is worth failing delivery
- * over.
+ * Never throws: whatever this edit fails at, nothing about the bubble is
+ * worth failing delivery over. For the "processing" caller
+ * (`editBubbleToProcessing` below) the buyer already has a separate
+ * ORDER_PROCESSING_DM by the time this runs (enqueued by `settlePaidOrder`
+ * before this function is ever reached), so a bubble problem there truly
+ * changes nothing the buyer sees elsewhere. For the "success" caller
+ * (`onDelivered` above) this now runs BEFORE the credential/nudge step
+ * (Task E3) — never-throws still holds (the caller's own `withTimeout` wrap
+ * bounds a hang, and everything Telegram can reject is caught right here),
+ * so a bubble problem here still can't block or skip that credential send;
+ * it just means the "Payment received" bubble itself stays stale for the
+ * background sweep to retry.
  */
 async function editAnchoredBubbleAndDecide(
   api: Api,
@@ -370,7 +411,7 @@ async function editAnchoredBubbleAndDecide(
       );
       return;
     }
-    /* bubble gone/uneditable for good — the credential or processing direct message already informed the buyer */
+    /* bubble gone/uneditable for good — a "processing" caller's ORDER_PROCESSING_DM already informed the buyer; a "success" caller's account file/top-up DM is about to */
   }
   await clearOrderPaymentMessage(prisma, order.id);
 }

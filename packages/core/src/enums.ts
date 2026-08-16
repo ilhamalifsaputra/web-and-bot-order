@@ -276,9 +276,11 @@ export const zSenderType = z.nativeEnum(SenderType);
 
 export const NotificationEvent = {
   ORDER_DELIVERED: "ORDER_DELIVERED",
-  // Admin DM (not a channel post): a payment-gateway webhook (TokoPay/
-  // PayDisini/NOWPayments) delivered an order whose paid amount exceeded the
-  // order total. payload carries `chat_id` (the admin's telegram id) plus
+  // Admin DM (not a channel post): a payment path delivered an order whose
+  // paid amount exceeded the order total. Enqueued by all six rails — the
+  // gateway webhooks (TokoPay/PayDisini/NOWPayments) and the amount-matched
+  // deposit pollers (Binance Internal, Bybit Internal Transfer, Bybit BSC).
+  // payload carries `chat_id` (the admin's telegram id) plus
   // order_code/paid/expected/excess/currency so the dispatcher DMs each admin
   // directly instead of posting to PUBLIC_CHANNEL_ID.
   ADMIN_OVERPAID: "ADMIN_OVERPAID",
@@ -300,15 +302,17 @@ export const NotificationEvent = {
   // dispatch time, never placed in the payload (same rule as ORDER_DELIVERED_DM).
   ORDER_MANUAL_DELIVERED_DM: "ORDER_MANUAL_DELIVERED_DM",
   // Buyer DM: a wallet top-up settled and the buyer's balance was credited.
-  // Only enqueued by the three WEBHOOK-driven top-up rails (TokoPay/
-  // PayDisini/NOWPayments — settlement can run in the web process, which must
-  // never send Telegram itself, hence the outbox). The other three top-up
-  // rails (Binance Internal, Bybit, Bybit BSC) settle exclusively inside
-  // bot-process pollers and DM the buyer directly instead (see each rail's
-  // `onDelivered` handler under apps/order-bot/src/payments/) — enqueueing
-  // this event for those too would double-notify the buyer. payload carries
-  // `chat_id` + `amount`/`currency`/`new_balance` (all money as Decimal
-  // `.toString()`), no order_code — the dispatcher needs no live DB read.
+  // Enqueued from exactly ONE place for ALL SIX top-up rails —
+  // `settleWalletTopup` (packages/db/src/crud/wallet_topup.ts), behind that
+  // function's atomic claim, so the double-settlement no-op branch can never
+  // reach it. This used to be split: the three webhook rails enqueued it
+  // per-rail while the three poller rails (Binance Internal, Bybit, Bybit BSC)
+  // DM'd the buyer directly from their own `onDelivered`. That split is what
+  // let a QRIS top-up notify the buyer twice, so the direct sends were
+  // deleted — no rail may send this itself, and no caller other than
+  // `settleWalletTopup` may enqueue it. payload carries `chat_id` +
+  // `order_code` + `amount`/`currency`/`new_balance` (all money as Decimal
+  // `.toString()`), so the dispatcher needs no live DB read.
   WALLET_TOPUP_CREDITED_DM: "WALLET_TOPUP_CREDITED_DM",
   // Admin DM (not a channel post): a Bybit BSC order's automated tracking
   // pipeline failed post-detection (tracker lookup-failure grace period
@@ -356,6 +360,20 @@ export const NotificationEvent = {
   // `chat_id` (the admin's telegram id) plus order_code/gateway/trx_id, same
   // fan-out-per-admin shape as ADMIN_OVERPAID.
   ADMIN_STALE_PAYMENT: "ADMIN_STALE_PAYMENT",
+  // Admin DM (not a channel post): the NOWPayments reconcile poller found an
+  // order the gateway reports `finished`, but the response carried no
+  // `payment_id` — and `payment_id` IS that rail's idempotency-ledger key, so
+  // there is nothing to claim the delivery under. Task E4 made the poller
+  // refuse to deliver in that case rather than invent a key its IPN webhook
+  // could never collide with; this alert is Task E5's mitigation for the cost
+  // of that refusal. Without it, an order whose IPN also never arrives simply
+  // runs out its payment window and auto-cancels with the buyer's money paid,
+  // and nobody is told. Carries a dedupe key per (order, admin) because the
+  // poller re-hits this branch every cycle until the order expires — see
+  // `enqueueAdminUnconfirmablePayment`. payload carries `chat_id` (the
+  // admin's telegram id) plus order_code and gateway, same fan-out-per-admin
+  // shape as ADMIN_STALE_PAYMENT above.
+  ADMIN_UNCONFIRMABLE_PAYMENT: "ADMIN_UNCONFIRMABLE_PAYMENT",
   // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner,
   // at the single `owner_email` address configured in Settings — receives
   // this when an AUTO-delivery order is paid (settlePaidOrder's AUTO branch,

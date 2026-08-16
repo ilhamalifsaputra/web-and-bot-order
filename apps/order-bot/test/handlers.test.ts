@@ -1822,7 +1822,7 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
-  it("flips a settled wallet top-up's bubble to the top-up wording with the wallet keyboard", async () => {
+  it("flips a settled wallet top-up's bubble to the neutral 'payment received' wording with the wallet keyboard", async () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY, kind: OrderKind.WALLET_TOPUP });
     await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "123456" } });
 
@@ -1830,9 +1830,12 @@ describe("Refresh Status button (§7)", () => {
     await checkout.refreshPaymentStatus(ctx, order.id);
 
     const edit = onlyBubbleEdit(sink);
-    expect(edit.text).toContain("Top-up successful");
-    // The buyer's CURRENT balance, read fresh — not a stale session copy.
-    expect(edit.text).toContain("Rp123.456");
+    expect(edit.text).toContain("Payment received");
+    expect(edit.text).toContain("top-up has been credited");
+    // The bubble no longer quotes the order code or the credited balance —
+    // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+    expect(edit.text).not.toContain(order.orderCode);
+    expect(edit.text).not.toContain("Rp123.456");
     // A top-up produces nothing to look up under "My Orders", so the wallet
     // keyboard replaces paymentSuccessKb here.
     expect(edit.buttons).toContain("v1:topup:open");
@@ -1840,11 +1843,13 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
-  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it and
-  // sends the success message fresh — which leaves ctx.session.menuMsgId
-  // pointing at a message that no longer exists. Refresh is the ONLY flip path
-  // that can repair that: the reconcile pollers and the sweeper edit the same
-  // bubbles with no session in reach.
+  // A QR bubble cannot be edited into text, so editPaymentBubble deletes it —
+  // and for a PRODUCT order (this test) sends the success message fresh in its
+  // place. Either way ctx.session.menuMsgId is left pointing at a message that
+  // no longer exists. Refresh is the ONLY flip path that can repair that: the
+  // reconcile pollers and the sweeper edit the same bubbles with no session in
+  // reach. A settled WALLET_TOPUP takes the other branch — deleted with nothing
+  // sent, so there is no replacement id to re-point at; see the test below.
   it("re-points the session anchor at the replacement when a photo (QR) bubble is deleted and re-sent", async () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY });
     const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
@@ -1870,6 +1875,29 @@ describe("Refresh Status button (§7)", () => {
     expect(replacementId).toBeDefined();
     expect(ctx.session.menuMsgId).toBe(replacementId);
     expect(ctx.session.menuMsgId).not.toBe(staleAnchor);
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
+  // Task E2: a settled wallet top-up's photo bubble is deleted with NO
+  // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
+  // them the news, so a second message here would be the exact duplicate this
+  // task removes. The session anchor can't be re-pointed at a replacement that
+  // was never sent, so it must be cleared instead of left stale.
+  it("deletes a settled wallet top-up's photo (QR) bubble, sends nothing, and clears the session anchor", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY, kind: OrderKind.WALLET_TOPUP });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const staleAnchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = staleAnchor;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi
+      .fn()
+      .mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit"));
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).toBeUndefined();
     const after = await getOrder(prisma, order.id);
     expect(after!.paymentMsgId).toBeNull();
   });

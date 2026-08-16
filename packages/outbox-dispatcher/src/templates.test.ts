@@ -233,37 +233,74 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("http");
   });
 
-  it("renders WALLET_TOPUP_CREDITED_DM as a bilingual DM with the credited IDR amount and new balance", () => {
+  it("renders WALLET_TOPUP_CREDITED_DM as a bilingual DM with the order code and money formatted as Rupiah (IDR)", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      order_code: "TOPUP-IDR-1",
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+    });
+    expect(out).toContain("TOPUP-IDR-1");
+    expect(out).toContain("Rp50.000");
+    expect(out).toContain("Rp125.000");
+    expect(out).toMatch(/top-?up successful/i);
+    expect(out).toMatch(/top up berhasil/i); // Indonesian line
+  });
+
+  it("renders WALLET_TOPUP_CREDITED_DM correctly for a USDT top-up — money formatted with an explicit unit, not IDR", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      order_code: "TOPUP-USDT-1",
+      amount: "10.5",
+      currency: "USDT",
+      new_balance: "30.25",
+    });
+    expect(out).toContain("TOPUP-USDT-1");
+    expect(out).toContain("10.5 USDT");
+    expect(out).toContain("30.25 USDT");
+    expect(out).not.toContain("Rp");
+  });
+
+  it("HTML-escapes a malicious WALLET_TOPUP_CREDITED_DM order_code", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      order_code: "<script>alert(1)</script>",
+      amount: "100",
+      currency: "IDR",
+      new_balance: "100",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;script&gt;");
+  });
+
+  it("omits the 'Order <code>' line for WALLET_TOPUP_CREDITED_DM when order_code is absent (legacy pre-Task-E1 row, Finding 5)", () => {
+    // A row enqueued before this event carried an order_code and still
+    // PENDING at deploy has none — must not render a dangling
+    // `Order <code></code> —` prefix, just the sentence without it.
     const out = render("WALLET_TOPUP_CREDITED_DM", {
       amount: "50000",
       currency: "IDR",
       new_balance: "125000",
     });
-    expect(out).toContain("50000 IDR");
-    expect(out).toContain("125000 IDR");
-    expect(out).toMatch(/top-?up successful/i);
-    expect(out).toMatch(/top up berhasil/i); // Indonesian line
+    expect(out).not.toContain("Order <code>");
+    expect(out).not.toContain("Order <code></code>");
+    expect(out).toContain("Rp50.000 has been added to your wallet.");
+    expect(out).toContain("Rp50.000 telah ditambahkan ke saldo kamu.");
   });
 
-  it("renders WALLET_TOPUP_CREDITED_DM correctly for a USDT top-up", () => {
-    const out = render("WALLET_TOPUP_CREDITED_DM", {
-      amount: "10.5",
-      currency: "USDT",
-      new_balance: "30.25",
-    });
-    expect(out).toContain("10.5 USDT");
-    expect(out).toContain("30.25 USDT");
-  });
-
-  it("HTML-escapes WALLET_TOPUP_CREDITED_DM interpolated values", () => {
-    const out = render("WALLET_TOPUP_CREDITED_DM", {
-      amount: "<script>alert(1)</script>",
-      currency: "<b>IDR</b>",
-      new_balance: "100",
-    });
-    expect(out).not.toContain("<script>");
-    expect(out).not.toContain("<b>IDR</b>");
-    expect(out).toContain("&lt;script&gt;");
+  it("(deliberate contract, Finding 4) render() THROWS for WALLET_TOPUP_CREDITED_DM when amount/new_balance is non-numeric — formatIdr/formatUsdt reject it, and this template does not swallow that", () => {
+    // The old raw-passthrough template could never throw; formatIdr/formatUsdt
+    // (money formatters shared with live checkout/settlement code) throw on
+    // garbage on purpose. Rendering is not the place to silently coerce a
+    // corrupt payload into "0" — the caller (dispatcher.ts's drainBatch) is
+    // the one that decides what happens next, and is covered separately in
+    // dispatcher.test.ts.
+    expect(() =>
+      render("WALLET_TOPUP_CREDITED_DM", {
+        order_code: "TOPUP-BAD-1",
+        amount: "not-a-number",
+        currency: "IDR",
+        new_balance: "100",
+      }),
+    ).toThrow();
   });
 
   it("HTML-escapes ORDER_PROCESSING_DM interpolated values", () => {

@@ -30,6 +30,8 @@ import {
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
+  enqueueWalletTopupCreditedDm,
+  enqueueNotification,
   adjustWallet,
   createOrderDirect,
   attachPaymentProof,
@@ -39,6 +41,7 @@ import {
   createCatalogProduct,
   createDenomination,
   updateDenomination,
+  bulkAddStock,
   upsertUser,
   addAdminIdToDb,
   setSetting,
@@ -47,8 +50,10 @@ import {
   createTicket,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { NotificationEvent, NotificationChannel, OrderCurrency, DeliveryType } from "@app/core/enums";
+import { registerPaymentBubbleFlush } from "@app/core/nudge";
+import { NotificationEvent, NotificationChannel, OrderCurrency, DeliveryType, ProductType } from "@app/core/enums";
 import { config } from "@app/core/config";
+import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch } from "./dispatcher";
@@ -323,6 +328,249 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
     });
     expect(dm!.status).toBe("SENT");
   });
+});
+
+/**
+ * Task E3: the payment-bubble flush hook (`flushPaymentBubble`,
+ * `@app/core/nudge`) must run, and finish, before this dispatcher sends any
+ * of the four order-scoped settlement DMs — ORDER_DELIVERED_DM,
+ * ORDER_MANUAL_DELIVERED_DM, WALLET_TOPUP_CREDITED_DM, ORDER_PROCESSING_DM —
+ * never for an admin
+ * DM, a channel post, or a broadcast (see dispatcher.ts's own module doc-
+ * comment for the full "why": a buyer's account file/top-up notice used to
+ * land before the "Payment received" bubble flip, purely a message-ordering
+ * artefact this hook exists to close).
+ *
+ * These tests register a FAKE flush implementation via
+ * `registerPaymentBubbleFlush` — the same registry apps/server's boot uses
+ * in production — so call order can be observed directly, without a real
+ * order-bot `Api` or a real anchored bubble. The real implementation
+ * (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) has its own
+ * dedicated tests in apps/order-bot/test/jobs.test.ts.
+ */
+describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)", () => {
+  afterEach(() => registerPaymentBubbleFlush(null));
+
+  /** A DELIVERED order with real stock credentials (own category/product/
+   *  denomination/user, all with unique ids — this file shares one temp DB
+   *  across every test with no per-test reset, so nothing here may reuse
+   *  buildSampleData's fixed telegramId 42). */
+  async function makeDeliveredOrder(telegramId: number) {
+    const user = await upsertUser(prisma, { telegramId, username: `e3buyer${telegramId}`, fullName: "E3 Buyer" });
+    const category = await createCategory(prisma, `e3-cat-${telegramId}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: `E3 Product ${telegramId}` });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "E3 Denom",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, denom.id, [`e3-cred-${telegramId}@example.com:pwd`]);
+    // Real wallet credit first (matches the pre-existing ORDER_DELIVERED_DM
+    // test above) — completeOrderWithWalletCredit deducts the price from the
+    // ACTUAL DB balance, not from whatever `walletBalance` is passed in.
+    await adjustWallet(prisma, user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const funded = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+    const { order } = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: { id: funded.id, role: funded.role, walletBalance: funded.walletBalance },
+        productId: denom.id,
+        quantity: 1,
+        currency: OrderCurrency.IDR,
+      }),
+    );
+    return { user, order };
+  }
+
+  it("flushes before an ORDER_DELIVERED_DM's sendDocument", async () => {
+    const { order } = await makeDeliveredOrder(600_101);
+    await enqueueOrderDeliveredDm(prisma, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      telegramId: BigInt(600_101),
+      language: "en",
+    });
+
+    const log: string[] = [];
+    registerPaymentBubbleFlush(async (orderId) => {
+      expect(orderId).toBe(order.id);
+      log.push("flush");
+    });
+    const sendDocument = vi.fn(async () => {
+      log.push("dm");
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendDocument, sendMessage: vi.fn() } } as unknown as Bot;
+
+    await drainBatch(bot);
+
+    expect(log).toEqual(["flush", "dm"]);
+  });
+
+  it("flushes before a WALLET_TOPUP_CREDITED_DM's sendMessage", async () => {
+    const { order } = await makeDeliveredOrder(600_102);
+    await enqueueWalletTopupCreditedDm(prisma, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      chatId: 600_102,
+      amount: new Decimal("50000"),
+      currency: "IDR",
+      newBalance: new Decimal("125000"),
+    });
+
+    const log: string[] = [];
+    registerPaymentBubbleFlush(async (orderId) => {
+      expect(orderId).toBe(order.id);
+      log.push("flush");
+    });
+    const sendMessage = vi.fn(async () => {
+      log.push("dm");
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendMessage, sendDocument: vi.fn() } } as unknown as Bot;
+
+    await drainBatch(bot);
+
+    expect(log).toEqual(["flush", "dm"]);
+  });
+
+  it("flushes before an ORDER_MANUAL_DELIVERED_DM's sendMessage", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 600_103, username: "e3manualbuyer", fullName: "E3 Manual Buyer" });
+    const admin = await prisma.user.create({
+      data: { telegramId: BigInt(900_600_103), referralCode: `e3-admin-${Math.random()}`, role: "ADMIN" },
+    });
+    const category = await createCategory(prisma, "e3-manual-cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "E3 Manual Product" });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "E3 Manual Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+    });
+    await updateDenomination(prisma, denom.id, { deliveryType: DeliveryType.MANUAL });
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-E3" });
+
+    // settlePaidOrder enqueues ORDER_PROCESSING_DM — drain it FIRST, with no
+    // flush hook registered, so the flush-count assertion below can only
+    // count the ORDER_MANUAL_DELIVERED_DM's own flush. (That DM flushes too
+    // since the final whole-branch review; the test immediately below is the
+    // one that pins it. Draining it here is isolation, not a statement that
+    // it does not flush — which is what this test's own name used to imply.)
+    const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    expect(result.kind).toBe("processing");
+    const preBot = { api: { sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }), sendDocument: vi.fn() } } as unknown as Bot;
+    await drainBatch(preBot);
+
+    await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "user: e3@example.com / pass: hunter2" });
+
+    const log: string[] = [];
+    let flushCount = 0;
+    registerPaymentBubbleFlush(async (orderId) => {
+      expect(orderId).toBe(order!.id);
+      flushCount++;
+      log.push("flush");
+    });
+    const sendMessage = vi.fn(async () => {
+      log.push("dm");
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendMessage, sendDocument: vi.fn() } } as unknown as Bot;
+
+    await drainBatch(bot);
+
+    expect(flushCount).toBe(1); // exactly once — the ORDER_MANUAL_DELIVERED_DM row only
+    expect(log).toEqual(["flush", "dm"]);
+  });
+
+  // Added by the final whole-branch review. ORDER_PROCESSING_DM was the one
+  // order-scoped settlement DM the hook did not cover, and the one the
+  // per-rail reordering could never fix on its own: `settlePaidOrder` enqueues
+  // it INSIDE the settlement transaction, so it can already be sitting in the
+  // outbox before the rail reaches its own bubble flip. A buyer of a
+  // hand-fulfilled SKU would read "your order is being prepared" above a
+  // bubble still saying "waiting for payment" — the reported bug's symptom on
+  // a different message.
+  it("flushes before an ORDER_PROCESSING_DM, the DM a rail cannot order correctly by itself", async () => {
+    const { order } = await makeDeliveredOrder(600_107);
+    await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order.id, {
+      chat_id: 600_107,
+      order_code: order.orderCode,
+      buyer_language: "en",
+    });
+
+    const log: string[] = [];
+    registerPaymentBubbleFlush(async (orderId) => {
+      expect(orderId).toBe(order.id);
+      log.push("flush");
+    });
+    const sendMessage = vi.fn(async () => {
+      log.push("dm");
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendMessage, sendDocument: vi.fn() } } as unknown as Bot;
+
+    await drainBatch(bot);
+
+    expect(log).toEqual(["flush", "dm"]);
+  });
+
+  it("does NOT call the flush hook for an admin DM (ADMIN_PW_RESET has no payment bubble)", async () => {
+    await enqueueAdminPasswordReset(prisma, { telegramId: 600_104, code: "E3CODE1", ttlMinutes: 10 });
+
+    const flush = vi.fn(async () => undefined);
+    registerPaymentBubbleFlush(flush);
+    const { bot, sendMessage } = fakeBot();
+
+    await drainBatch(bot);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it("still sends the ORDER_DELIVERED_DM when the flush hook throws", async () => {
+    const { order } = await makeDeliveredOrder(600_105);
+    await enqueueOrderDeliveredDm(prisma, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      telegramId: BigInt(600_105),
+      language: "en",
+    });
+    registerPaymentBubbleFlush(async () => {
+      throw new Error("flush blew up");
+    });
+    const { bot, sendDocument } = fakeDocBot();
+
+    await drainBatch(bot);
+
+    expect(sendDocument).toHaveBeenCalledTimes(1);
+    const dm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(dm!.status).toBe("SENT");
+  });
+
+  it("still sends the ORDER_DELIVERED_DM when the flush hook hangs past its bound", async () => {
+    const { order } = await makeDeliveredOrder(600_106);
+    await enqueueOrderDeliveredDm(prisma, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      telegramId: BigInt(600_106),
+      language: "en",
+    });
+    registerPaymentBubbleFlush(() => new Promise<void>(() => undefined)); // never resolves
+    const { bot, sendDocument } = fakeDocBot();
+
+    await drainBatch(bot);
+
+    expect(sendDocument).toHaveBeenCalledTimes(1);
+    const dm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(dm!.status).toBe("SENT");
+  }, 10_000);
 });
 
 /** A manual (or manual_with_info) denomination with NO stock rows, using its
@@ -816,5 +1064,76 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
       orderBy: { id: "desc" },
     });
     expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Finding 4 (Task E1 review follow-up): `render()` (templates.ts) runs money
+ * fields through `formatIdr`/`formatUsdt`, which throw on a non-numeric
+ * value — unlike the old raw-passthrough template, which could never throw.
+ * Deciding that contract deliberately: `render()` itself stays a strict
+ * formatter (throwing is correct for the live checkout/settlement code that
+ * also calls those formatters), and `drainBatch` is the caller made
+ * resilient — a malformed outbox payload fails just that one row
+ * (maxAttempts=1, mirroring the pre-existing "bad payload json" isolation
+ * just above it in dispatcher.ts) instead of aborting the rest of the batch
+ * and leaving the claimed row stuck in SENDING until the stale-claim window.
+ */
+describe("drainBatch isolates a render() failure instead of aborting the batch (Finding 4)", () => {
+  it("fails a WALLET_TOPUP_CREDITED_DM row with a non-numeric amount at once, without crashing drainBatch or re-sending it", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: 600_001,
+          order_code: "TOPUP-CORRUPT-1",
+          amount: "not-a-number",
+          currency: "IDR",
+          new_balance: "100",
+        }),
+      },
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-1" } },
+      orderBy: { id: "desc" },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await expect(drainBatch(bot)).resolves.toBeUndefined(); // must not throw out of drainBatch
+
+    expect(sendMessage).not.toHaveBeenCalledWith(600_001, expect.anything(), expect.anything());
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after!.status).toBe("FAILED");
+    expect(after!.attempts).toBe(1);
+    expect(after!.lastError).toContain("template render failed");
+  });
+
+  it("keeps draining the rest of the batch after a malformed row — a good row queued alongside it still sends", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: 600_002,
+          order_code: "TOPUP-CORRUPT-2",
+          amount: "also-not-a-number",
+          currency: "USDT",
+          new_balance: "5",
+        }),
+      },
+    });
+    await enqueueAdminPasswordReset(prisma, { telegramId: 600_003, code: "AFTERBAD1", ttlMinutes: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const goodCall = sendMessage.mock.calls.find((c) => c[0] === 600_003);
+    expect(goodCall).toBeDefined(); // the good row after the bad one was still sent
+
+    const badRow = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-2" } },
+    });
+    expect(badRow!.status).toBe("FAILED");
   });
 });

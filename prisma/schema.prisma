@@ -88,7 +88,7 @@ model WalletTransaction {
   /// Currency of this ledger row's balance/delta. Existing rows default to IDR
   /// (the system was IDR-base); USDT rows track the USDT credit balance.
   currency     String   @default("IDR")
-  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup
+  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup | unfulfilled_credit
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
   orderId      Int?     @map("order_id")
@@ -101,6 +101,33 @@ model WalletTransaction {
   user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([userId], map: "ix_wallet_transactions_user_id")
+  /// "One wallet movement per order per reason" (Task E5 item 2). Every
+  /// order-scoped reason is already once-per-order in the code, but each by a
+  /// DIFFERENT mechanism — an atomic claim (`wallet_topup`, via
+  /// settleWalletTopup), a read-then-throw (`unfulfilled_credit`, via
+  /// creditOrderToBalance), a status transition inside the same transaction
+  /// (`underpaid_refund`, via refundUnderpaidOrder), a terminal-status guard
+  /// on all three callers (`order_refund`, via releaseOrderHolds), a UNIQUE on
+  /// another table (`referral`, via Referral.refereeId) and simply having one
+  /// creation path per order (`order_payment`). This constraint is the one
+  /// place that statement is true structurally rather than six times over by
+  /// argument, so weakening any of those six can no longer silently double a
+  /// buyer's money.
+  ///
+  /// Rows with a NULL orderId are unconstrained — NULLs are distinct in a
+  /// SQLite UNIQUE index — which is what the two `admin_adjust` sites and the
+  /// `adjust` default need: an admin may top a customer up any number of
+  /// times, and those movements belong to no order.
+  ///
+  /// Deliberately NOT `[orderId, reason, currency]`. Today an order settles in
+  /// exactly one currency, so adding it would constrain nothing. But the
+  /// six-mechanism argument above is currency-BLIND: if a future caller ever
+  /// lets one order spend both IDR and USDT credit — which
+  /// `applyUsdtWalletToOrder` (crud/orders.ts) explicitly anticipates in its
+  /// own doc comment — the second `order_payment` row would throw P2002 in
+  /// production, on a legitimate payment, with no test catching it first.
+  /// Widen this constraint in the same change that adds such a caller.
+  @@unique([orderId, reason], map: "ix_wallet_transactions_order_id_reason")
   @@map("wallet_transactions")
 }
 
@@ -792,6 +819,18 @@ model NotificationOutbox {
   /// every tick until max-attempts, starving valid rows enqueued after it
   /// (Infra-3 fix, security audit 2026-06-23).
   nextRetryAt DateTime? @map("next_retry_at")
+  /// Optional caller-supplied idempotency key for "enqueue this row at most
+  /// once". NULL for almost every row, and NULLs are distinct in a SQLite
+  /// UNIQUE index, so unkeyed rows are unaffected and may repeat freely —
+  /// which is what the per-admin fan-out events (ADMIN_OVERPAID,
+  /// ORDER_PIPELINE_FAILED, ADMIN_MANUAL_ORDER_QUEUED, ADMIN_STALE_PAYMENT)
+  /// and the per-recipient broadcasts need. `enqueueNotification` treats the
+  /// UNIQUE violation as a successful no-op, so a key turns "enqueued exactly
+  /// once" from a property of where the call sits into one the database
+  /// holds. Only two events set it today; see `enqueueNotification`'s own
+  /// doc-comment for which, and for why ORDER_DELIVERED_DM deliberately
+  /// does not.
+  dedupeKey   String?   @unique(map: "ix_notification_outbox_dedupe_key") @map("dedupe_key")
 
   order Order? @relation(fields: [orderId], references: [id], onUpdate: NoAction)
 

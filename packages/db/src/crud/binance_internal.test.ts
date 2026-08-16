@@ -29,6 +29,7 @@ import {
   createWalletTopupOrder,
   upsertUser,
   listSettledOrdersAwaitingBubbleEdit,
+  getSettledBubbleOrder,
   setOrderPaymentMessage,
   clearPaymentMessageAnchorsAt,
   bulkAddStock,
@@ -579,12 +580,6 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     expect(rows).toHaveLength(1);
   });
 
-  // Anti-double-notify guarantee (Task 7): Binance Internal is a POLLER-ONLY
-  // rail — deliverPaidInternalOrder only ever runs inside the bot process's
-  // own internal-transfer poller, never a web request — so the buyer is DM'd
-  // directly by that poller's onDelivered handler instead. Settlement here
-  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
-  // buyer would be notified twice.
   // F8 Part A. A top-up reserves nothing, so once the transfer has actually
   // arrived, crediting it is right even though the order was auto-cancelled
   // when its window lapsed. Keeping the buyer's USDT is not an option.
@@ -625,7 +620,17 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     expect(reloaded.status).toBe(OrderStatus.CANCELLED);
   });
 
-  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+  // Task E1: WALLET_TOPUP_CREDITED_DM is now enqueued from inside
+  // settleWalletTopup itself — the ONE call site for that event across all
+  // six top-up rails, including this poller-only one (Binance Internal is a
+  // POLLER-ONLY rail: deliverPaidInternalOrder only ever runs inside the bot
+  // process's own internal-transfer poller, never a web request). This used
+  // to be split — three webhook rails enqueued it while three poller rails
+  // (including this one) DM'd the buyer directly from the bot process — and
+  // that split is exactly what let a QRIS top-up double-notify; the poller's
+  // own `onDelivered` no longer sends a direct DM, so this row is now the
+  // buyer's only notification.
+  it("enqueues a WALLET_TOPUP_CREDITED_DM outbox row — settleWalletTopup is the one producer, even for this poller-only rail", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
 
     const result = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: "tx-topup-nodm-1", amount: order.totalAmount });
@@ -634,7 +639,9 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
     });
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe(order.orderCode);
   });
 });
 
@@ -776,7 +783,14 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     expect(result.map((o) => o.id)).toEqual([older]);
   });
 
-  it("projects the top-up sentence's own inputs — kind, currency and totalAmount", async () => {
+  it("projects kind for a WALLET_TOPUP row", async () => {
+    // `currency`/`totalAmount` used to be pinned here too, but
+    // `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts) no longer
+    // reads either off its `SettledBubbleOrder` parameter — the WALLET_TOPUP
+    // bubble renders a neutral status line (Task E1) and neither field was
+    // ever added back — so this `select` (and this test) dropped them along
+    // with the rest of that review follow-up. `kind` stays pinned since the
+    // sweeper still branches on it via `settledPaymentBubble`.
     const id = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
     await prisma.order.update({
       where: { id },
@@ -785,16 +799,11 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
 
     const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
 
-    // `walletTopupSuccessText` (apps/order-bot/src/util/delivery.ts) renders
-    // the amount that was topped up, so the sweeper cannot flip a top-up
-    // bubble without these three fields. Pinned here rather than only through
-    // the sweeper's own matrix so dropping one from the `select` fails at the
-    // query that owns it.
     expect(result).toHaveLength(1);
     const [row] = result;
     expect(row!.kind).toBe(OrderKind.WALLET_TOPUP);
-    expect(row!.currency).toBe("IDR");
-    expect(new Decimal(row!.totalAmount).equals(new Decimal("150000"))).toBe(true);
+    expect(row).not.toHaveProperty("currency");
+    expect(row).not.toHaveProperty("totalAmount");
   });
 
   it("never includes passwordHash on the returned user (explicit select, not include)", async () => {
@@ -807,6 +816,63 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     const [row] = result;
     expect(row!.user).not.toHaveProperty("passwordHash");
     expect(row!.user).not.toHaveProperty("email");
+  });
+});
+
+// E3: the single-row counterpart the payment-bubble flush hook
+// (`flushSettledOrderBubble`, apps/order-bot/src/jobs/index.ts) reads through
+// once per settlement DM. It exists because that hook used to call `getOrder`,
+// whose `fullInclude` drags the buyer's items, stockItem CREDENTIALS, product
+// and voucher into memory to read six scalars — on single-writer SQLite, on
+// every settled order. These tests pin both halves of "same projection as the
+// sweep query, minus the sweep's where clause".
+describe("getSettledBubbleOrder", () => {
+  /** Create + stamp one order with the given status/anchor. */
+  async function makeOrder(opts: { status: string; anchored: boolean }) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: opts.status,
+        paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+        paymentMsgChatId: opts.anchored ? BigInt(555) : null,
+        paymentMsgId: opts.anchored ? 777 : null,
+      },
+    });
+    return order.id;
+  }
+
+  it("projects exactly the bubble-flip fields, and never the buyer's credentials or passwordHash", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { passwordHash: "should-never-leak" } });
+    const id = await makeOrder({ status: OrderStatus.DELIVERED, anchored: true });
+
+    const row = await getSettledBubbleOrder(prisma, id);
+
+    expect(row).not.toBeNull();
+    expect(Object.keys(row!).sort()).toEqual(
+      ["id", "kind", "orderCode", "paymentMsgChatId", "paymentMsgId", "status", "user"].sort(),
+    );
+    expect(row!.user).not.toHaveProperty("passwordHash");
+    expect(row!.user).not.toHaveProperty("email");
+    expect(Object.keys(row!.user!)).toEqual(["language"]);
+  });
+
+  it("still returns an order the sweep query would filter out, so the caller can classify it itself", async () => {
+    // No `where` on status/anchor here on purpose: `flipSettledOrderBubble`
+    // already turns these two into "not_settled"/"no_anchor". Filtering in the
+    // query would collapse both into an indistinguishable "order not found".
+    const unsettled = await makeOrder({ status: OrderStatus.PENDING_PAYMENT, anchored: true });
+    const unanchored = await makeOrder({ status: OrderStatus.DELIVERED, anchored: false });
+
+    const unsettledRow = await getSettledBubbleOrder(prisma, unsettled);
+    const unanchoredRow = await getSettledBubbleOrder(prisma, unanchored);
+
+    expect(unsettledRow?.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(unanchoredRow?.paymentMsgId).toBeNull();
+  });
+
+  it("returns null for an order id that does not exist", async () => {
+    expect(await getSettledBubbleOrder(prisma, 999_999)).toBeNull();
   });
 });
 

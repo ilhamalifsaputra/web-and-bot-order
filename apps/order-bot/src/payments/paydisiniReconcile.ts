@@ -17,14 +17,14 @@
  * The only gateway call is `checkTransaction` (GET /v1/transaction, idempotent
  * on ref_id). It never creates or mutates anything on PayDisini's side.
  */
-import type { Api, InlineKeyboard } from "grammy";
+import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { checkTransaction } from "@app/core/payments/paydisini";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
@@ -35,118 +35,32 @@ import {
   getPaydisiniCreds,
   listPendingPaydisiniOrders,
   deliverPaidPaydisiniOrder,
-  clearOrderPaymentMessage,
   recordPollHealth,
-  getUser,
 } from "@app/db";
 import { esc } from "../util/format";
-import { editPaymentBubble } from "../jobs";
-import { settledPaymentBubbleFor } from "../util/delivery";
+import { flipSettledOrderBubble } from "../jobs";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingPaydisiniOrders>>[number];
 
-/** Twin of tokopayReconcile.ts's own `AnchoredOrder` — the anchor to edit, the
- * row cleared afterwards, everything `settledPaymentBubbleFor` reads to decide
- * WHICH success message this order gets (`util/delivery.ts`), and `userId` for
- * a wallet top-up's post-credit balance read. `deliverPaidPaydisiniOrder`
+/** Twin of tokopayReconcile.ts's own `AnchoredOrder` — what `editBubbleAndClear`
+ * needs off a settled order to hand to `flipSettledOrderBubble`
+ * (jobs/index.ts): the anchor to edit, the row cleared afterwards, and
+ * everything `settledPaymentBubble` (`util/delivery.ts`) reads to decide
+ * WHICH success message this order gets. No buyer read is needed —
+ * `settledPaymentBubble` interpolates no balance into either branch — so
+ * this carries no `userId`/`currency`/`totalAmount`. `deliverPaidPaydisiniOrder`
  * returns a full `getOrder` row, so every field here is already on it. */
 type AnchoredOrder = {
   id: number;
-  userId: number;
   orderCode: string;
   kind: string;
   status: string;
-  currency: string | null;
-  totalAmount: Decimal.Value;
   paymentMsgChatId: bigint | null;
   paymentMsgId: number | null;
   user: { language: string };
 };
-
-/**
- * Flip the anchored QR bubble to the already-composed success message
- * `bubble`, and report whether the order's anchor may now be dropped.
- *
- * HOW that bubble becomes the message is `editPaymentBubble`'s business
- * (jobs/index.ts), not this rail's: a text bubble is edited in place, while a
- * QRIS photo bubble is DELETED and the message sent afresh. Editing a photo
- * bubble's caption instead — which is what this function used to do first —
- * succeeds at the wrong thing, because Telegram cannot turn a photo message
- * into a text one: the caption flips to "payment received" while the QR image
- * itself stays parked above it, still scannable, for an order that is already
- * paid and delivered. This rail carried its own copy of that caption-then-text
- * chain rather than calling the shared helper, and since QRIS is the rail where
- * payments are auto-confirmed most often, it was the likeliest place for a
- * buyer to end up looking at a stale QR code.
- *
- * `fallbackDm: null` opts out of the helper's other mode deliberately: a buyer
- * reached here has already been told the news through the normal delivery path
- * (the notifier's account `.txt` or top-up receipt), so a DM from here would
- * only repeat it.
- *
- * The message itself is the caller's, not this function's: composing it needs
- * a database read for a wallet top-up (see `editBubbleAndClear`), and that
- * read has no business inside the Telegram-call timeout above.
- *
- * Returns "keep_anchor" for a failure a later attempt could still get past
- * (flood control, a 5xx, a network fault, anything unrecognised), because the
- * anchor is the ONLY thing that lists this order for `sweepPaidOrderBubbles`
- * (jobs/index.ts) — dropping it here would leave the buyer staring at a stale
- * QRIS QR, for an order that is already paid and delivered, with nothing left
- * in the system that would ever retry the edit. Returns "clear_anchor" when
- * the bubble was edited or replaced, and equally when Telegram said this
- * bubble can never accept the message, so a bubble the buyer deleted
- * self-heals out of that sweep's queue instead of costing it a slot every
- * minute forever. `isPermanentBubbleEditFailure` (util/bubbleEditFailure.ts)
- * draws that line once for every call site that holds this contract, and the
- * helper is now the only place that consults it on this path.
- *
- * Never throws: `editPaymentBubble` catches every grammY call it makes, and
- * the mapping below adds no throwing path of its own. That is what lets the
- * `withTimeout` race in `editBubbleAndClear` keep meaning exactly one thing
- * ("the call hung past the deadline").
- */
-async function editBubbleToSuccess(
-  api: Api,
-  order: AnchoredOrder,
-  bubble: { text: string; markup: InlineKeyboard },
-): Promise<"clear_anchor" | "keep_anchor"> {
-  // No anchor to begin with: nothing to edit and nothing to strand, so the
-  // caller's clear is a harmless no-op.
-  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return "clear_anchor";
-  const result = await editPaymentBubble(api, {
-    chatId: Number(order.paymentMsgChatId),
-    messageId: order.paymentMsgId,
-    text: bubble.text,
-    markup: bubble.markup,
-    fallbackDm: null,
-  });
-  switch (result.status) {
-    case "edited":
-      return "clear_anchor";
-    case "replaced":
-      // The message id the anchor holds was deleted, and the fresh message in
-      // its place already IS the success message — re-anchoring on
-      // `result.messageId` would only queue a bubble that needs nothing.
-      return "clear_anchor";
-    case "dm_sent":
-      // Unreachable with `fallbackDm: null`, but a real outcome of the shared
-      // helper: the buyer was told, so nothing is left to retry either.
-      return "clear_anchor";
-    case "not_edited": {
-      if (result.permanent) return "clear_anchor"; // bubble gone/uneditable for good — the delivery DM already informed the buyer
-      const message = `PayDisini reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`;
-      // `error` only carries a FALLBACK DM's failure, which this call opted
-      // out of, so today it is always absent — logged when present rather than
-      // as a bare `err: undefined` a reader would mistake for a lost cause.
-      if (result.error === undefined) logger.warn(message);
-      else logger.warn({ err: result.error }, message);
-      return "keep_anchor";
-    }
-  }
-}
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying grammY call isn't cancelled when this loses the race —
@@ -171,7 +85,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
 }
 
 /** Bound for the two Telegram calls reconcileOrder makes directly on the
- * payment path — editBubbleToSuccess and alertAdmins — once a gateway call
+ * payment path — the bubble flip and alertAdmins — once a gateway call
  * has already reported an order paid (Task 11 review follow-up, Critical
  * #1). main.ts no longer sets a bot-wide client timeout (that "wider lever"
  * was itself the regression it introduced — see buildBot() there), so
@@ -200,35 +114,37 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
  * canonical value the web-admin dashboard can also read. */
 export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
 
-/** Wait at most RECONCILE_TELEGRAM_TIMEOUT_MS for the success-bubble edit,
- * then clear the anchor only once the edit genuinely completed — a timed-out
- * edit leaves the anchor in place so the next cycle's fast path retries it,
- * the same trade-off the generic paid-order bubble sweeper
- * (`sweepPaidOrderBubbles`, apps/order-bot/src/jobs/index.ts, Task T2-E)
- * makes for its own edits — that generic sweeper is also the backstop that
- * eventually catches this order's bubble if this fast path's own edit times
- * out here. So does an edit Telegram refused for a reason that might not hold
- * next minute: `editBubbleToSuccess` never throws (it catches and classifies
- * the rejection itself), so `outcome` is either its own clear/keep verdict or
- * "timeout", the one case it cannot see. */
+/**
+ * Flip this order's anchored bubble to its success message and clear the
+ * anchor once that's settled for good — delegating the actual edit/classify/
+ * clear-anchor sequence to the one shared body every settled-bubble flip in
+ * this app now calls, `flipSettledOrderBubble` (jobs/index.ts): same
+ * composition step, and the same reasons for it, as the TokoPay twin in
+ * tokopayReconcile.ts — `settledPaymentBubble`/`bubbleOnPhotoFor`
+ * (util/delivery.ts) is the one mapping that decides a settled order's ending
+ * for every rail, and `isPermanentBubbleEditFailure`
+ * (util/bubbleEditFailure.ts) the one anchor policy. This wrapper only owns
+ * what's specific to this rail: bounding the edit at
+ * `RECONCILE_TELEGRAM_TIMEOUT_MS` (tighter than the shared body's own
+ * default, since this sits inside the reconcile loop's per-order budget —
+ * see that constant's own doc comment above) and its own log wording for
+ * "timeout"/"kept" — a timed-out or flood-controlled edit leaves the anchor
+ * in place so the next cycle's fast path, or the generic paid-order bubble
+ * sweep (`sweepPaidOrderBubbles`, jobs/index.ts), retries it.
+ */
 async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
-  // Same composition step, and the same reasons for it, as the TokoPay twin in
-  // tokopayReconcile.ts: `settledPaymentBubbleFor` (util/delivery.ts) is the
-  // one mapping that decides a settled order's ending for every rail, a wallet
-  // top-up's sentence needs the buyer's balance read fresh (post-credit — the
-  // settling transaction has committed by now), and that read stays outside the
-  // `withTimeout` race so a "timeout" outcome still means only that the
-  // Telegram call hung.
-  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
-  const bubble = settledPaymentBubbleFor(order, buyer);
-  const outcome = await withTimeout(editBubbleToSuccess(api, order, bubble), RECONCILE_TELEGRAM_TIMEOUT_MS);
+  const outcome = await flipSettledOrderBubble(api, order, RECONCILE_TELEGRAM_TIMEOUT_MS);
   if (outcome === "timeout") {
-    logger.warn(`PayDisini reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — anchor left in place so the next sweep retries`);
+    logger.warn(`PayDisini reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
     return;
   }
-  // "keep_anchor" already logged its own reason inside editBubbleToSuccess.
-  if (outcome === "keep_anchor") return;
-  await clearOrderPaymentMessage(prisma, order.id);
+  if (outcome === "kept") {
+    logger.warn(`PayDisini reconcile could not flip order ${order.orderCode}'s payment bubble to the success message, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the paid-order bubble sweep retries the edit within a minute`);
+    return;
+  }
+  // "not_settled" / "no_anchor" / a finished BubbleEditResult: nothing left
+  // to do — flipSettledOrderBubble already cleared the anchor itself on any
+  // finished attempt.
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
@@ -277,18 +193,29 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     const r = await deliverPaidPaydisiniOrder(prisma, {
       orderId: order.id,
-      trxId: status.trxId ?? `reconcile-${order.orderCode}`,
+      // The SAME ledger-key rule the storefront's PayDisini webhook applies
+      // (`gatewayLedgerTrxId`, @app/core/payments/ledgerKey) — see the
+      // identical note in tokopayReconcile.ts and that helper's own doc
+      // comment for why inventing `reconcile-<orderCode>` here defeated the
+      // ledger's UNIQUE idempotency gate.
+      trxId: gatewayLedgerTrxId(status.trxId, order.orderCode),
       amount: status.amount,
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`PayDisini reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
-      nudgeOutboxDispatcher();
+      logger.info(`PayDisini reconcile delivered order ${order.orderCode} — flipping its payment bubble, then nudging the notifier to DM the account file immediately`);
+      // Flip BEFORE nudging (Task E3): the buyer's chat must show "Payment
+      // received" before their account file arrives, not after — the outbox
+      // dispatcher's own payment-bubble flush hook (packages/core/src/nudge.ts)
+      // is the structural backstop if this still loses the race (e.g. a slow
+      // Telegram edit), but the ordering here should teach the right lesson
+      // regardless.
       await editBubbleAndClear(api, r.order);
+      nudgeOutboxDispatcher();
     } else if (r.status === "processing") {
       logger.info(`PayDisini reconcile order ${order.orderCode} paid — queued for manual fulfilment`);
-      nudgeOutboxDispatcher();
       await editBubbleAndClear(api, r.order);
+      nudgeOutboxDispatcher();
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }

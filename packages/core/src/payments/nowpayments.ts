@@ -21,6 +21,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
+import { isProviderPaid, StatusProvider } from "./paymentStatus";
 
 export const NOWPAYMENTS_API_KEY_KEY = "nowpayments_api_key";
 export const NOWPAYMENTS_IPN_SECRET_KEY = "nowpayments_ipn_secret";
@@ -167,7 +168,7 @@ export async function getPaymentStatus(
     (typeof body.payment_id === "string" && body.payment_id) ||
     (typeof body.payment_id === "number" && String(body.payment_id)) ||
     null;
-  return { paid: statusStr === "finished", amount, trxId, status: statusStr };
+  return { paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr), amount, trxId, status: statusStr };
 }
 
 export interface NowpaymentsIpn {
@@ -188,6 +189,14 @@ export interface NowpaymentsIpn {
  * order would never be delivered or flagged. Rejecting here (same null
  * contract as a bad signature) means the callback is never processed and
  * never touches the ledger.
+ *
+ * The reconcile poller (apps/order-bot/src/payments/nowpaymentsReconcile.ts)
+ * now applies this same rule to `getPaymentStatus`'s answer: it declines to
+ * deliver a `finished` payment that carries no id instead of inventing one.
+ * That keeps `ProcessedNowpaymentsTx.trxId` — this rail's UNIQUE idempotency
+ * gate — always holding the gateway's own `payment_id`, whichever of the two
+ * paths claimed it, so the poller and the webhook can never write two rows
+ * for one payment.
  *
  * Signature scheme (well documented publicly, not a guess): HMAC-SHA512 over
  * `JSON.stringify` of the body with its keys sorted **recursively, alphabetically**

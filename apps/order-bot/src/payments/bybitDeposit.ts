@@ -44,7 +44,6 @@ import {
   recordBybitPollHealth,
   resolveBybitConfig,
   enqueueNotification,
-  getUser,
   clearOrderPaymentMessage,
   type BybitConfig,
   type BybitDeliverResult,
@@ -57,12 +56,21 @@ import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import type { InlineKeyboard } from "grammy";
-import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
+import { isProviderPaid, StatusProvider } from "@app/core/payments/paymentStatus";
 
-/** Bybit internal-deposit status: 1=Processing, 2=Success, 3=Failed (per
- * Bybit V5 docs — DIFFERS from the on-chain ledger, where 3=success). Deliver
- * only on Success. */
-const STATUS_SUCCESS = 2;
+/** Whether Bybit reported this internal-transfer deposit as credited.
+ *
+ * The integer itself now lives in `paymentStatus.ts` (@app/core/payments/paymentStatus),
+ * behind `StatusProvider.BYBIT_INTERNAL`. That matters here more than it looks:
+ * the on-chain sibling rail (bybitBscDeposit.ts) reads the SAME kind of Bybit
+ * deposit status through an INVERTED enum, where this rail's Failed value means
+ * Success. Naming the provider at the call site is what makes the two
+ * impossible to confuse — passing the wrong one no longer silently compiles
+ * into "deliver on a failed deposit". */
+function isCredited(status: number): boolean {
+  return isProviderPaid(StatusProvider.BYBIT_INTERNAL, status);
+}
 
 export interface BybitDeposit {
   txId: string;
@@ -160,7 +168,7 @@ export function normalizeInternalDeposit(raw: Record<string, unknown>): BybitDep
   const status = Number(raw.status);
   if (txId == null || amount == null) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
-  if (status !== STATUS_SUCCESS) return null; // processing/failed → skip until credited
+  if (!isCredited(status)) return null; // processing/failed → skip until credited
   return { txId: String(txId), amount };
 }
 
@@ -236,33 +244,73 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Non-null only for a WALLET_TOPUP order — both the DM below and the
-  // anchored-bubble edit further down reuse this exact text, so it's built
-  // once and shared instead of re-fetching the fresh balance twice.
-  let topupSuccessText: string | null = null;
+  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit below
+  // uses this neutral status text instead of a success sentence: the buyer's
+  // actual "top-up successful" DM (amount + new balance + order code) comes
+  // exclusively from the outbox, enqueued once inside settleWalletTopup —
+  // see that function's own doc-comment. Duplicating that sentence here as a
+  // direct DM is exactly what used to double-notify a buyer whose top-up
+  // settled through both this poller AND the outbox. Computed up front
+  // (pure, no Telegram call) because the bubble flip below now runs BEFORE
+  // the nudge/delivery step (Task E3).
+  const topupBubbleText = order.kind === OrderKind.WALLET_TOPUP ? settledPaymentBubble(order).text : null;
+
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — BEFORE the nudge/delivery step below
+  // (Task E3): the buyer's chat must show "Payment received" first, not
+  // after their account file/top-up notice, or it reads as "the shop sent my
+  // account before I paid" even though nothing was ever delivered early
+  // (approveOrder's atomic claim gates every credential send — this was
+  // purely a message-ordering artefact). The outbox dispatcher's own
+  // payment-bubble flush hook (packages/core/src/nudge.ts) is the structural
+  // backstop if this still loses the race (e.g. a slow Telegram edit), but
+  // the ordering here should teach the right lesson regardless.
+  //
+  // Keep it for anything that could still work on a later attempt.
+  // editAnchoredBubble never throws (it catches and classifies the
+  // rejection itself), so `outcome` here is its own clear/keep verdict or
+  // "timeout", the one case it cannot see. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS so a stuck edit call can't stall the
+  // credential send that follows below, let alone the poller past its own
+  // tick.
+  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
+    const outcome = await withTimeout(
+      editAnchoredBubble(
+        api,
+        order.orderCode,
+        Number(order.paymentMsgChatId),
+        order.paymentMsgId,
+        topupBubbleText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+        // Keyboard by order kind through the shared picker, so a top-up bubble
+        // this rail flips carries the wallet keyboard — the same one
+        // `settledPaymentBubble` gives it when the Refresh button or the
+        // sweeper gets there first (util/delivery.ts). For a WALLET_TOPUP,
+        // the text above is shared too — it's `settledPaymentBubble`'s own
+        // text, set as `topupBubbleText` earlier in this function. Only the
+        // PRODUCT-order fallback text (`checkout.internal_paid`, right
+        // above) stays this rail's own.
+        settledPaymentKb(order.kind, lang),
+      ),
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
+    );
+    if (outcome === "timeout") {
+      logger.warn(`Bybit deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
+    } else if (outcome === "clear_anchor") {
+      await clearOrderPaymentMessage(prisma, order.id);
+    }
+  }
 
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
-    // the wallet, so there's no account file to send; tell the buyer what
-    // was credited and their new balance instead.
-    const freshUser = await getUser(prisma, order.userId);
-    const newBalance = freshUser
-      ? order.currency === "IDR"
-        ? freshUser.walletBalance
-        : freshUser.walletBalanceUsdt
-      : order.totalAmount;
-    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
-    // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS (Finding #2, followup-review-
-    // fixes-2) — main.ts deliberately sets no bot-wide grammY client timeout
-    // (see telegramTimeout.ts's own doc-comment), so without this an
-    // un-awaited call falls back to grammY's 500s default and can
-    // singlehandedly consume most of a poll cycle.
-    try {
-      const outcome = await withTimeout(api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" }), TELEGRAM_MESSAGE_TIMEOUT_MS);
-      if (outcome === "timeout") throw new Error(`sendMessage timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
-    } catch (err) {
-      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
-    }
+    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
+    // it wakes immediately instead of waiting for its next poll tick — but
+    // only when a dispatcher is registered in THIS process
+    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
+    // server (apps/server/src/index.ts) runs one, so the claim holds there,
+    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
+    // not, and nudging is then a no-op — the DM still goes out, just on the
+    // notifier process's own next poll tick.
+    nudgeOutboxDispatcher();
   } else {
     // Delivery is instant: send the account file straight away. Bounded at
     // TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is legitimately
@@ -284,36 +332,6 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       } catch (eq) {
         logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
       }
-    }
-  }
-
-  // Turn the payment-instructions bubble into a success message in place, then
-  // clear the anchor pointer — but keep it for anything that could still work
-  // on a later attempt. editAnchoredBubble never throws (it catches and
-  // classifies the rejection itself), so `outcome` here is its own
-  // clear/keep verdict or "timeout", the one case it cannot see. Bounded at
-  // TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
-  if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
-    const outcome = await withTimeout(
-      editAnchoredBubble(
-        api,
-        order.orderCode,
-        Number(order.paymentMsgChatId),
-        order.paymentMsgId,
-        topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-        // Keyboard by order kind through the shared picker, so a top-up bubble
-        // this rail flips carries the wallet keyboard — the same one
-        // `settledPaymentBubble` gives it when the Refresh button or the
-        // sweeper gets there first (util/delivery.ts). Only the keyboard is
-        // shared; the text above stays this rail's own.
-        settledPaymentKb(order.kind, lang),
-      ),
-      TELEGRAM_MESSAGE_TIMEOUT_MS,
-    );
-    if (outcome === "timeout") {
-      logger.warn(`Bybit deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
-    } else if (outcome === "clear_anchor") {
-      await clearOrderPaymentMessage(prisma, order.id);
     }
   }
 }
@@ -351,7 +369,7 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
     TELEGRAM_MESSAGE_TIMEOUT_MS,
   );
   if (outcome === "timeout") {
-    logger.warn(`Bybit deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
+    logger.warn(`Bybit deposit poller gave up waiting on the "processing" bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — the edit was not cancelled and may still land on its own; if it does not, the anchor stays put and the background bubble sweep retries it`);
   } else if (outcome === "clear_anchor") {
     await clearOrderPaymentMessage(prisma, order.id);
   }

@@ -8,6 +8,7 @@
  * returns here. We match on the stored name (NotificationEvent.ORDER_DELIVERED).
  */
 import { NotificationEvent } from "@app/core/enums";
+import { formatIdr, formatUsdt } from "@app/core/formatters";
 
 interface Strings {
   title: string;
@@ -183,6 +184,7 @@ interface AdminStalePaymentPayload {
 }
 
 interface WalletTopupCreditedPayload {
+  order_code?: unknown;
   amount?: unknown;
   currency?: unknown;
   new_balance?: unknown;
@@ -204,24 +206,37 @@ export function render(
     WalletTopupCreditedPayload,
 ): string {
   if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
-    // Buyer DM: only enqueued by the three webhook-driven top-up rails
-    // (TokoPay/PayDisini/NOWPayments — see enqueueWalletTopupCreditedDm).
-    // The three poller-driven rails (Binance Internal/Bybit/Bybit BSC) DM the
-    // buyer directly from the bot process instead (walletTopupSuccessText in
-    // apps/order-bot/src/util/delivery.ts), so this template never fires
-    // twice for the same top-up. No buyer_language in the payload (unlike
-    // ORDER_PROCESSING_DM) — bilingual EN+ID in one message, same fallback
-    // every other per-order DM template here uses.
-    const amount = escape(String(payload.amount ?? "0"));
-    const currency = escape(String(payload.currency ?? ""));
-    const newBalance = escape(String(payload.new_balance ?? "0"));
+    // Buyer DM: the single producer for a wallet top-up's success message
+    // across ALL SIX top-up rails — enqueued exactly once, from inside
+    // settleWalletTopup (packages/db/src/crud/wallet_topup.ts), right after
+    // its atomic claim succeeds. No rail-specific caller may enqueue this
+    // event itself, or the buyer would be notified twice for the same
+    // top-up — this used to be split across two different producers (three
+    // webhook rails enqueuing here, three poller rails DMing the buyer
+    // directly from the bot process) that each assumed they were the only
+    // one, which is exactly what let a QRIS top-up double-notify. No
+    // buyer_language in the payload (unlike ORDER_PROCESSING_DM) — bilingual
+    // EN+ID in one message, same fallback every other per-order DM template
+    // here uses.
+    // `order_code` is absent on a row enqueued before this event carried one
+    // and still PENDING at deploy (a pre-existing legacy row) — render the
+    // amount/balance sentence without a dangling `Order <code></code> —`
+    // prefix rather than an empty tag pair.
+    const rawCode = payload.order_code;
+    const code = typeof rawCode === "string" && rawCode ? escape(rawCode) : "";
+    const currency = String(payload.currency ?? "");
+    const formatMoney = currency === "IDR" ? formatIdr : formatUsdt;
+    const amount = escape(formatMoney(String(payload.amount ?? "0")));
+    const newBalance = escape(formatMoney(String(payload.new_balance ?? "0")));
+    const creditedEn = code ? `Order <code>${code}</code> — ${amount} has been added to your wallet.` : `${amount} has been added to your wallet.`;
+    const creditedId = code ? `Order <code>${code}</code> — ${amount} telah ditambahkan ke saldo kamu.` : `${amount} telah ditambahkan ke saldo kamu.`;
     return (
-      `✅ <b>Top-up successful!</b>\n` +
-      `+${amount} ${currency} has been added to your wallet.\n` +
-      `New balance: <b>${newBalance} ${currency}</b>\n\n` +
-      `✅ <b>Top up berhasil!</b>\n` +
-      `+${amount} ${currency} sudah ditambahkan ke saldo kamu.\n` +
-      `Saldo baru: <b>${newBalance} ${currency}</b>`
+      `✅ <b>Top-up successful!</b>\n\n` +
+      `${creditedEn}\n` +
+      `New balance: <b>${newBalance}</b>\n\n` +
+      `✅ <b>Top up berhasil!</b>\n\n` +
+      `${creditedId}\n` +
+      `Saldo baru: <b>${newBalance}</b>`
     );
   }
   if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {
@@ -347,9 +362,31 @@ export function render(
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
   }
+  if (event === NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT) {
+    // Admin DM: the gateway says this order is paid, but returned no
+    // transaction id — and that id is the rail's idempotency-ledger key, so
+    // the poller refuses to deliver rather than claim the delivery under a key
+    // the webhook could never match (Task E4). Nothing recovers this on its
+    // own: if the webhook never arrives either, the order runs out its payment
+    // window and auto-cancels with the buyer already charged. The message has
+    // to tell the admin the deadline, not just the fault — this arrives once
+    // per order and there is no second reminder.
+    const code = escape(String(payload.order_code ?? ""));
+    const gateway = escape(String(payload.gateway ?? ""));
+    return (
+      `⚠️ <b>${gateway} reports order <code>${code}</code> as paid, but sent no transaction id</b>\n` +
+      `Without that id the payment cannot be confirmed automatically, so nothing has been delivered. ` +
+      `Check this order in the ${gateway} dashboard and either approve or cancel it by hand — ` +
+      `if it is left alone, the payment window will close and the order will auto-cancel even though the buyer paid.\n\n` +
+      `⚠️ <b>${gateway} melaporkan pesanan <code>${code}</code> sudah dibayar, tapi tidak mengirim id transaksi</b>\n` +
+      `Tanpa id itu pembayaran tidak bisa dikonfirmasi otomatis, jadi belum ada yang dikirim. ` +
+      `Periksa pesanan ini di dashboard ${gateway} lalu setujui atau batalkan secara manual — ` +
+      `kalau dibiarkan, jendela pembayaran akan tutup dan pesanan otomatis dibatalkan padahal pelanggan sudah membayar.`
+    );
+  }
   if (event === NotificationEvent.ADMIN_OVERPAID) {
-    // Admin DM (not a channel post): a gateway webhook delivered an order
-    // whose paid amount exceeded the total. All values are escaped even
+    // Admin DM (not a channel post): one of the six payment rails delivered
+    // an order whose paid amount exceeded the total. All values are escaped even
     // though they originate from our own Decimal math, not gateway input.
     const code = escape(String(payload.order_code ?? ""));
     const paid = escape(String(payload.paid ?? "0"));

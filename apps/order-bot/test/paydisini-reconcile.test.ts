@@ -13,10 +13,14 @@ import {
   bulkAddStock,
   getPollHealth,
   updateDenomination,
+  deliverPaidPaydisiniOrder,
 } from "@app/db";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { onlyBubbleEdit } from "./helpers/settledBubble";
@@ -107,6 +111,43 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     expect(tx?.outcome).toBe("matched");
   });
 
+  // Twin of the TokoPay case (apps/order-bot/test/tokopay-reconcile.test.ts):
+  // this poller used to claim `reconcile-<orderCode>` when PayDisini's status
+  // response carried no id, a UNIQUE ledger row the storefront webhook can
+  // never write. Both paths now derive the key the same way.
+  it("keys the ledger on the order code, not a synthetic reconcile- key, when the gateway returns no id", async () => {
+    const created = await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "success", amount: pending!.totalAmount.toString() }); // no unique_code/trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const rows = await prisma.processedPaydisiniTx.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.trxId).toBe(created!.orderCode);
+    expect(rows[0]!.outcome).toBe("matched");
+  });
+
+  it("makes a later webhook for the same payment collide on the poller's own ledger row", async () => {
+    const created = await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "success", amount: pending!.totalAmount.toString() }); // no unique_code/trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    // Exactly what the storefront's PayDisini route now passes when the live
+    // status call comes back without an id of its own.
+    const webhook = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: created!.id,
+      trxId: gatewayLedgerTrxId(null, created!.orderCode),
+      amount: pending!.totalAmount,
+      shopUrl: null,
+    });
+
+    expect(webhook.status).toBe("already_processed");
+    expect(await prisma.processedPaydisiniTx.count()).toBe(1);
+  });
+
   it("leaves the order pending when the gateway reports unpaid", async () => {
     await makePaydisiniOrder();
     const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
@@ -141,6 +182,42 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
 
     return prisma.order.findUnique({ where: { id: created!.id } });
   }
+
+  // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
+  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
+  // silently revert to `nudge(); flip();` — the reported credential-before-
+  // confirmation ordering — with the whole suite still green. The dispatcher's
+  // flush hook makes such a regression cosmetic in the combined server, but
+  // the standalone order-bot binary registers no flush hook at all, so there
+  // it is fully user-visible.
+  it("flips the bubble BEFORE nudging the outbox dispatcher", async () => {
+    const sequence: string[] = [];
+    registerOutboxNudge(() => sequence.push("nudge"));
+    const api = {
+      sendMessage: vi.fn(async () => {
+        sequence.push("bubble");
+        return { message_id: 90210 };
+      }),
+      editMessageCaption: vi.fn(async () => undefined),
+      editMessageText: vi.fn(async () => {
+        sequence.push("bubble");
+      }),
+      deleteMessage: vi.fn(async () => {
+        sequence.push("bubble");
+        return true;
+      }),
+    } as unknown as Api;
+
+    await deliverAnchored(api, "TRX-ORDERING");
+
+    // Both must have happened — a pass because neither ran is worthless.
+    expect(sequence).toContain("bubble");
+    expect(sequence).toContain("nudge");
+    // `lastIndexOf`, not the first: a photo bubble is a delete AND a send, and
+    // the DM must not be triggered while the replacement is still in flight.
+    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    registerOutboxNudge(null);
+  });
 
   it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
     const api = fakeApi();
@@ -308,7 +385,7 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       return order;
     }
 
-    it("words a settled wallet top-up as a top-up, quoting the balance AFTER the credit landed", async () => {
+    it("words a settled wallet top-up as a neutral 'payment received' status — the balance-quoting success sentence now lives in the outbox DM instead", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
 
@@ -317,10 +394,18 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.chatId).toBe(555);
       expect(edit.msgId).toBe(777);
-      expect(edit.text).toContain("Top-up successful");
-      expect(edit.text).toContain(topup.orderCode);
-      expect(edit.text).toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
-      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot
+      expect(edit.text).toContain("Payment received");
+      expect(edit.text).toContain("top-up has been credited");
+      // The bubble no longer quotes the order code or the credited balance —
+      // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+      expect(edit.text).not.toContain(topup.orderCode);
+      expect(edit.text).not.toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
+      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot either
+
+      // The wallet WAS actually credited even though the bubble stays silent
+      // about the number — that number is what the outbox DM carries.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+      expect(new Decimal(user.walletBalance).toString()).toBe("173456");
     });
 
     it("offers a settled wallet top-up the wallet keyboard, never the product sale's order history", async () => {
@@ -332,6 +417,24 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.buttons).toContain("v1:topup:open");
       expect(edit.buttons).not.toContain("v1:order:list");
+    });
+
+    // Task E2: a settled wallet top-up's photo (QR) bubble is deleted with NO
+    // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
+    // them the news, so a second message here would be the exact duplicate
+    // this task removes. The anchor still clears afterwards.
+    it("deletes a settled wallet top-up's photo (QR) bubble and sends nothing in its place", async () => {
+      const topup = await makeAnchoredTopup();
+      const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+      await reconcilePaid(api, "TRX-TOPUP-PHOTO");
+
+      expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      const after = await prisma.order.findUnique({ where: { id: topup.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
     });
 
     it("still tells a delivered product sale its items are on the way, with the product keyboard", async () => {

@@ -75,7 +75,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       favicon_url: favicon || "/static/favicon.svg",
       logo_url: logo || "",
       bot_username: botUsername,
-      wa_number: waNumber ?? null,
+      wa_number: (waNumber ?? "").replace(/[^0-9]/g, "") || null,
       tzname: config.TIMEZONE,
       // Whether this shop loads Google Analytics at all — the privacy page
       // only mentions tracking when there genuinely is some. The ID itself

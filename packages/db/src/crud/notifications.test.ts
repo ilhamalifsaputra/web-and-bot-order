@@ -463,11 +463,12 @@ describe("enqueueAdminStalePayment", () => {
 });
 
 describe("enqueueWalletTopupCreditedDm", () => {
-  it("writes one WALLET_TOPUP_CREDITED_DM row with orderId set and money stringified via Decimal.toString()", async () => {
+  it("writes one WALLET_TOPUP_CREDITED_DM row with orderId/order_code set and money stringified via Decimal.toString()", async () => {
     const orderId = await seedOrder();
 
     await enqueueWalletTopupCreditedDm(prisma, {
       orderId,
+      orderCode: "ORD-TOPUP-8001",
       chatId: 8001,
       amount: new Decimal("50000"),
       currency: "IDR",
@@ -482,6 +483,7 @@ describe("enqueueWalletTopupCreditedDm", () => {
     const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload).toEqual({
       chat_id: 8001,
+      order_code: "ORD-TOPUP-8001",
       amount: "50000",
       currency: "IDR",
       new_balance: "125000",
@@ -495,6 +497,7 @@ describe("enqueueWalletTopupCreditedDm", () => {
 
     await enqueueWalletTopupCreditedDm(prisma, {
       orderId,
+      orderCode: "ORD-TOPUP-8002",
       chatId: 8002,
       amount: new Decimal("10.5"),
       currency: "USDT",
@@ -505,6 +508,7 @@ describe("enqueueWalletTopupCreditedDm", () => {
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId },
     });
     const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe("ORD-TOPUP-8002");
     expect(payload.amount).toBe("10.5");
     expect(payload.currency).toBe("USDT");
     expect(payload.new_balance).toBe("30.25");

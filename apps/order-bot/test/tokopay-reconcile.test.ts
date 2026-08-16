@@ -16,6 +16,7 @@ import {
 } from "@app/db";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
@@ -335,7 +336,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       return order;
     }
 
-    it("words a settled wallet top-up as a top-up, quoting the balance AFTER the credit landed", async () => {
+    it("words a settled wallet top-up as a neutral 'payment received' status — the balance-quoting success sentence now lives in the outbox DM instead", async () => {
       const topup = await makeAnchoredTopup();
       const api = fakeApi();
 
@@ -344,10 +345,18 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       const edit = bubbleEdit(api);
       expect(edit.chatId).toBe(555);
       expect(edit.msgId).toBe(777);
-      expect(edit.text).toContain("Top-up successful");
-      expect(edit.text).toContain(topup.orderCode);
-      expect(edit.text).toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
-      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot
+      expect(edit.text).toContain("Payment received");
+      expect(edit.text).toContain("top-up has been credited");
+      // The bubble no longer quotes the order code or the credited balance —
+      // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+      expect(edit.text).not.toContain(topup.orderCode);
+      expect(edit.text).not.toContain("Rp173.456"); // Rp123.456 already held + Rp50.000 topped up
+      expect(edit.text).not.toContain("Rp123.456"); // never the pre-credit snapshot either
+
+      // The wallet WAS actually credited even though the bubble stays silent
+      // about the number — that number is what the outbox DM carries.
+      const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+      expect(new Decimal(user.walletBalance).toString()).toBe("173456");
     });
 
     it("offers a settled wallet top-up the wallet keyboard, never the product sale's order history", async () => {

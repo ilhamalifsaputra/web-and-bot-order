@@ -44,7 +44,6 @@ import {
   recordBybitPollHealth,
   resolveBybitConfig,
   enqueueNotification,
-  getUser,
   clearOrderPaymentMessage,
   type BybitConfig,
   type BybitDeliverResult,
@@ -57,7 +56,7 @@ import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import type { InlineKeyboard } from "grammy";
-import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubbleFor, settledPaymentKb } from "../util/delivery";
 
 /** Bybit internal-deposit status: 1=Processing, 2=Success, 3=Failed (per
  * Bybit V5 docs — DIFFERS from the on-chain ledger, where 3=success). Deliver
@@ -236,33 +235,23 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Non-null only for a WALLET_TOPUP order — both the DM below and the
-  // anchored-bubble edit further down reuse this exact text, so it's built
-  // once and shared instead of re-fetching the fresh balance twice.
-  let topupSuccessText: string | null = null;
+  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit further
+  // down uses this neutral status text instead of a success sentence: the
+  // buyer's actual "top-up successful" DM (amount + new balance + order code)
+  // now comes exclusively from the outbox, enqueued once inside
+  // settleWalletTopup — see that function's own doc-comment. Duplicating that
+  // sentence here as a direct DM is exactly what used to double-notify a
+  // buyer whose top-up settled through both this poller AND the outbox.
+  let topupBubbleText: string | null = null;
 
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
-    // the wallet, so there's no account file to send; tell the buyer what
-    // was credited and their new balance instead.
-    const freshUser = await getUser(prisma, order.userId);
-    const newBalance = freshUser
-      ? order.currency === "IDR"
-        ? freshUser.walletBalance
-        : freshUser.walletBalanceUsdt
-      : order.totalAmount;
-    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
-    // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS (Finding #2, followup-review-
-    // fixes-2) — main.ts deliberately sets no bot-wide grammY client timeout
-    // (see telegramTimeout.ts's own doc-comment), so without this an
-    // un-awaited call falls back to grammY's 500s default and can
-    // singlehandedly consume most of a poll cycle.
-    try {
-      const outcome = await withTimeout(api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" }), TELEGRAM_MESSAGE_TIMEOUT_MS);
-      if (outcome === "timeout") throw new Error(`sendMessage timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
-    } catch (err) {
-      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
-    }
+    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
+    // that DM goes out immediately instead of waiting for its next poll
+    // tick, and give the bubble the same neutral "payment received" text
+    // every other settled top-up gets.
+    nudgeOutboxDispatcher();
+    topupBubbleText = settledPaymentBubbleFor(order, null).text;
   } else {
     // Delivery is instant: send the account file straight away. Bounded at
     // TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is legitimately
@@ -300,7 +289,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         order.orderCode,
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
-        topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+        topupBubbleText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
         // Keyboard by order kind through the shared picker, so a top-up bubble
         // this rail flips carries the wallet keyboard — the same one
         // `settledPaymentBubble` gives it when the Refresh button or the

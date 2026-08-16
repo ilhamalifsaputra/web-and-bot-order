@@ -41,7 +41,6 @@ import {
   recordBinancePollHealth,
   resolveBinanceInternalConfig,
   enqueueNotification,
-  getUser,
   clearOrderPaymentMessage,
   type BinanceInternalConfig,
   type DeliverResult,
@@ -51,7 +50,7 @@ import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
-import { sendAccountFile, walletTopupSuccessText, settledPaymentKb } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubbleFor, settledPaymentKb } from "../util/delivery";
 import {
   AMOUNT_TOLERANCE,
   noteMatches,
@@ -271,27 +270,23 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Non-null only for a WALLET_TOPUP order — both the DM below and the
-  // anchored-bubble edit further down reuse this exact text, so it's built
-  // once and shared instead of re-fetching the fresh balance twice.
-  let topupSuccessText: string | null = null;
+  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit further
+  // down uses this neutral status text instead of a success sentence: the
+  // buyer's actual "top-up successful" DM (amount + new balance + order code)
+  // now comes exclusively from the outbox, enqueued once inside
+  // settleWalletTopup — see that function's own doc-comment. Duplicating that
+  // sentence here as a direct DM is exactly what used to double-notify a
+  // buyer whose top-up settled through both this poller AND the outbox.
+  let topupBubbleText: string | null = null;
 
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
-    // the wallet, so there's no account file to send; tell the buyer what
-    // was credited and their new balance instead.
-    const freshUser = await getUser(prisma, order.userId);
-    const newBalance = freshUser
-      ? order.currency === "IDR"
-        ? freshUser.walletBalance
-        : freshUser.walletBalanceUsdt
-      : order.totalAmount;
-    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
-    try {
-      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
-    } catch (err) {
-      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
-    }
+    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
+    // that DM goes out immediately instead of waiting for its next poll
+    // tick, and give the bubble the same neutral "payment received" text
+    // every other settled top-up gets.
+    nudgeOutboxDispatcher();
+    topupBubbleText = settledPaymentBubbleFor(order, null).text;
   } else {
     // Delivery is instant: skip the interim "payment verified / being prepared"
     // notice and send the account file straight away.
@@ -322,7 +317,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     await editAnchoredBubbleAndDecide(api, order, {
       chatId: Number(order.paymentMsgChatId),
       messageId: order.paymentMsgId,
-      text: topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+      text: topupBubbleText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
       lang,
       what: "success",
     });

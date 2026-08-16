@@ -40,7 +40,7 @@ import { parseMinAmount } from "./_minAmount";
 import { getOrder, uniqueOrderCode, customerLabel } from "./orders";
 import { adjustWallet } from "./users";
 import { finalizeOrderPayment } from "./pricing";
-import { enqueueOwnerWalletTopupEmail } from "./notifications";
+import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
 const ZERO = new Decimal(0);
 
@@ -335,24 +335,38 @@ export async function createWalletTopupOrder(
  *
  * Returns `newBalance` (the buyer's post-credit balance in `order.currency`)
  * alongside `order`/`credited` — `adjustWallet` already computes this value
- * internally, so surfacing it here lets the three webhook-rail callers
- * (Task 7 — TokoPay/PayDisini/NOWPayments) build their
- * `enqueueWalletTopupCreditedDm` payload without a second wallet read. On the
- * no-op double-settlement path, `newBalance` reflects the buyer's CURRENT
- * balance (re-read fresh) rather than a stale/zero figure, even though
- * `credited` is 0 — callers should gate any notification on
- * `credited.greaterThan(0)`, not on `newBalance` alone.
+ * internally, so surfacing it here lets this function build the buyer DM
+ * payload below without a second wallet read. On the no-op double-settlement
+ * path, `newBalance` reflects the buyer's CURRENT balance (re-read fresh)
+ * rather than a stale/zero figure, even though `credited` is 0 — the gate
+ * on `credited.greaterThan(0)` below is what keeps that no-op path from
+ * enqueueing anything.
  *
- * Also enqueues the shop OWNER's OWNER_EMAIL_WALLET_TOPUP notification
- * (`enqueueOwnerWalletTopupEmail`) right after the `adjustWallet` credit
- * lands — this is the ONE call site for that email, shared by all six
- * top-up-capable rails, so callers must never enqueue it themselves per-rail
- * (that would produce a duplicate email). Placed after the atomic claim, so
- * the no-op double-settlement early-return above never reaches it — the
- * claim is what guarantees the email is sent at most once per top-up. This
- * is distinct from `enqueueWalletTopupCreditedDm`, which the three webhook
- * rail callers enqueue separately for the BUYER over Telegram DM — different
- * recipient, different channel, never to be conflated.
+ * Also enqueues two notifications right after the `adjustWallet` credit
+ * lands, and both are the ONE call site for their event across all six
+ * top-up-capable rails, so no rail-specific caller may enqueue either itself
+ * (that would produce a duplicate):
+ *
+ *  - `enqueueOwnerWalletTopupEmail` — the shop OWNER's OWNER_EMAIL_WALLET_TOPUP
+ *    email. Itself a no-op unless the owner has configured the feature; see
+ *    its own doc-comment.
+ *  - `enqueueWalletTopupCreditedDm` — the BUYER's WALLET_TOPUP_CREDITED_DM
+ *    Telegram DM, gated on `credited.greaterThan(0)` (never notify the no-op
+ *    double-settlement path) and on `order.user.telegramId != null` (a
+ *    web-only buyer has no chat to DM). This used to be enqueued separately
+ *    by the three webhook rails (TokoPay/PayDisini/NOWPayments) while the
+ *    other three (Binance Internal/Bybit/Bybit BSC) DM'd the buyer directly
+ *    from the bot process — two different code paths that both assumed they
+ *    were the only producer, which is exactly what let a QRIS top-up
+ *    double-notify. Consolidating both into this one place, behind the
+ *    atomic claim above, makes "exactly one notification per rail" a
+ *    structural guarantee instead of a per-call-site convention.
+ *
+ * Both are placed after the atomic claim succeeded and the credit landed, so
+ * neither can ever fire on the no-op double-settlement branch above (that
+ * branch returns early, before this line) — the claim is what guarantees
+ * each is sent at most once per top-up. Different recipients, different
+ * channels; never conflate the two.
  */
 export async function settleWalletTopup(
   db: Db,
@@ -433,8 +447,25 @@ export async function settleWalletTopup(
     toppedUpAt: now,
   });
 
+  // Buyer notification — the single call site for WALLET_TOPUP_CREDITED_DM
+  // across all six top-up rails (see this function's own doc-comment).
+  // Gated on `credited.greaterThan(0)` so the no-op double-settlement branch
+  // above never reaches it, and on the buyer having a Telegram id at all —
+  // mirrors the gating every one of the former per-rail call sites used.
+  const credited = new Decimal(order.totalAmount);
+  if (credited.greaterThan(0) && order.user.telegramId != null) {
+    await enqueueWalletTopupCreditedDm(db, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      chatId: Number(order.user.telegramId),
+      amount: credited,
+      currency: order.currency,
+      newBalance,
+    });
+  }
+
   const refreshed = await getOrder(db, orderId);
-  return { order: refreshed!, credited: new Decimal(order.totalAmount), newBalance };
+  return { order: refreshed!, credited, newBalance };
 }
 
 /**

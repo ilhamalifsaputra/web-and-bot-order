@@ -809,3 +809,116 @@ describe("settleWalletTopup — owner wallet-topup email (Task T3)", () => {
     expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
   });
 });
+
+// Task E1: settleWalletTopup is now the ONE call site for
+// WALLET_TOPUP_CREDITED_DM (the buyer's "top-up successful" Telegram DM)
+// across all six top-up rails — moved here, behind the atomic claim, from
+// three separate per-rail call sites (TokoPay/PayDisini/NOWPayments enqueued
+// it themselves; Binance Internal/Bybit/Bybit BSC DM'd the buyer directly
+// from the bot process instead). Mirrors the owner-email coverage above,
+// which pins the analogous guarantee for OWNER_EMAIL_WALLET_TOPUP.
+describe("settleWalletTopup — buyer WALLET_TOPUP_CREDITED_DM (Task E1)", () => {
+  async function makeIdrTopupOrder(amount: string = "20000") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+  }
+  async function makeUsdtTopupOrder(amount: string = "10") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount,
+        currency: "USDT",
+        method: PaymentMethod.NOWPAYMENTS,
+        rate: "16000",
+      }),
+    );
+  }
+
+  it("enqueues WALLET_TOPUP_CREDITED_DM exactly once on a successful settlement", async () => {
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("does not enqueue anything on the no-op double-settlement path (claim.count !== 1) — anti-duplicate-DM guard", async () => {
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    const afterFirst = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(afterFirst).toBe(1);
+
+    // Second call settles nothing (claim.count !== 1) — must not enqueue a
+    // second DM for an already-notified top-up.
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    const afterSecond = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(afterSecond).toBe(1);
+  });
+
+  it("a late-paid, auto-cancelled top-up enqueues exactly one DM, and none on a repeat settlement", async () => {
+    const order = await makeIdrTopupOrder("20000");
+    await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("stays inert (no outbox row) when the buyer has no Telegram id — a web-only account", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { telegramId: null } });
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("payload carries chat_id, order_code, amount, currency and new_balance — money as strings, not numbers (IDR)", async () => {
+    const order = await makeIdrTopupOrder("20000");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const row = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(payload.currency).toBe("IDR");
+    expect(typeof payload.amount).toBe("string");
+    expect(new Decimal(payload.amount as string).equals(order.totalAmount)).toBe(true);
+    expect(typeof payload.new_balance).toBe("string");
+    expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
+  });
+
+  it("payload carries amount/currency/new balance correctly for a USDT top-up too", async () => {
+    const order = await makeUsdtTopupOrder("10");
+
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const row = await prisma.notificationOutbox.findFirstOrThrow({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+    expect(payload.currency).toBe("USDT");
+    expect(new Decimal(payload.amount as string).equals(order.totalAmount)).toBe(true);
+    expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
+  });
+});

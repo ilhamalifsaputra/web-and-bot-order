@@ -25,7 +25,7 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
-import { enqueueNotification, enqueueAdminOverpaid, enqueueWalletTopupCreditedDm } from "./notifications";
+import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
@@ -140,20 +140,13 @@ export async function deliverPaidTokopayOrder(
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
-        const { order: settled, credited, newBalance } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // Buyer DM via the outbox — this settlement runs in the web process
-        // (a TokoPay webhook), which must never send Telegram itself. Guarded
-        // on credited > 0 so the rare double-settlement no-op never enqueues
-        // a second DM for an already-notified top-up.
-        if (credited.greaterThan(0) && settled.user.telegramId != null) {
-          await enqueueWalletTopupCreditedDm(tx, {
-            orderId: settled.id,
-            chatId: Number(settled.user.telegramId),
-            amount: credited,
-            currency: settled.currency,
-            newBalance,
-          });
-        }
+        // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
+        // settleWalletTopup itself — the ONE call site for that event across
+        // all six top-up rails, behind its own atomic claim. This webhook
+        // (running in the web process, which must never send Telegram
+        // itself) must not enqueue it again here, or the buyer would be
+        // notified twice.
+        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
         logger.info(`Auto-delivered TokoPay wallet top-up order ${settled.orderCode} for transaction ${args.trxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

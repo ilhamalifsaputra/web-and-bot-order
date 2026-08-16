@@ -428,17 +428,25 @@ describe("sweepPaidOrderBubbles", () => {
       const edit = onlyEdit(api);
       expect(edit.chatId).toBe(order.chatId);
       expect(edit.msgId).toBe(order.msgId);
-      expect(edit.text).toContain(order.orderCode);
       if (kind === OrderKind.WALLET_TOPUP) {
-        // Same wallet-top-up sentence the three crypto rails already send, and
-        // the wallet keyboard rather than paymentSuccessKb's "My Orders".
-        expect(edit.text).toContain("Top-up successful");
-        expect(edit.text).toContain(RAIL_CURRENCY[method] === "IDR" ? "Rp123.456" : "77.5 USDT");
+        // A neutral "payment received" status, not a balance-quoting success
+        // sentence — the buyer's actual "top-up successful" DM (with order
+        // code, amount and new balance) now comes exclusively from the
+        // outbox (WALLET_TOPUP_CREDITED_DM, enqueued inside
+        // settleWalletTopup), so this bubble interpolates neither the order
+        // code nor the balance. Still gets the wallet keyboard rather than
+        // paymentSuccessKb's "My Orders".
+        expect(edit.text).toContain("Payment received");
+        expect(edit.text).toContain("top-up has been credited");
+        expect(edit.text).not.toContain(order.orderCode);
+        expect(edit.text).not.toContain(RAIL_CURRENCY[method] === "IDR" ? "Rp123.456" : "77.5 USDT");
         expect(edit.buttons).toContain("v1:topup:open");
       } else if (status === OrderStatus.DELIVERED) {
+        expect(edit.text).toContain(order.orderCode);
         expect(edit.text).toContain("being delivered now");
         expect(edit.buttons).toContain("v1:browse:prods");
       } else {
+        expect(edit.text).toContain(order.orderCode);
         expect(edit.text).toContain("being prepared for delivery manually");
         expect(edit.buttons).toContain("v1:browse:prods");
       }

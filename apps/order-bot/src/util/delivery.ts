@@ -24,40 +24,11 @@ import {
   type DeliveredItem,
 } from "@app/core/delivery";
 import { notificationKb, paymentSuccessKb, walletKb } from "../keyboards/customer";
-import { orderAmount, formatIdr, formatUsdt } from "./format";
 import { coreT } from "./i18n";
 
 interface DeliverableOrder {
   orderCode: string;
   items: DeliveredItem[];
-}
-
-interface WalletTopupOrder {
-  orderCode: string;
-  currency: string | null;
-  totalAmount: Decimal.Value;
-}
-
-/**
- * Shared "top-up successful" text — both the buyer DM and the anchored
- * payment-instructions bubble edit use this (binanceInternal.ts /
- * bybitDeposit.ts / bybitBscDeposit.ts onDelivered; the TokoPay/PayDisini/
- * NOWPayments rails settle via the outbox instead, see wallet_topup.ts's
- * TODO(Task 7)). `order`'s own currency/totalAmount are what
- * createWalletTopupOrder validated and finalized; `newBalance` is the
- * caller's post-credit balance for that same currency (read fresh — the
- * order row itself doesn't carry it). Uses `formatUsdt` (not the bare
- * `formatUsdtAmount`) for the USDT branch so the balance always carries an
- * explicit unit, matching `formatIdr`'s "Rp" prefix on the IDR branch — a
- * bare "New balance: 10" with no currency word would be ambiguous.
- */
-export function walletTopupSuccessText(order: WalletTopupOrder, newBalance: Decimal.Value, lang: string): string {
-  const isIdr = (order.currency ?? "USDT") === "IDR";
-  return coreT("wallet.topup_success", lang, {
-    code: order.orderCode,
-    amount: orderAmount(order),
-    balance: isIdr ? formatIdr(newBalance) : formatUsdt(newBalance),
-  });
 }
 
 /** A settled order as far as its payment bubble is concerned: what it was for
@@ -108,28 +79,28 @@ export function settledPaymentKb(kind: string, lang: string): InlineKeyboard {
  * order's anchor as soon as they flip it, which retires the order from the
  * sweeper's queue, so whatever they write is final.
  *
- *  - WALLET_TOPUP (any status) → the same `walletTopupSuccessText` sentence the
- *    three crypto rails already send, so all six payment methods word a
- *    completed top-up identically, and the wallet screen's keyboard via
- *    `settledPaymentKb` above. The crypto rails' fast path now picks its
+ *  - WALLET_TOPUP (any status) → a neutral "payment received" status line
+ *    (`checkout.topup_payment_received`), not a success sentence — the
+ *    buyer's actual "top-up successful" DM, with the credited amount, the
+ *    new balance and the order code, comes from the outbox instead
+ *    (WALLET_TOPUP_CREDITED_DM, enqueued once inside settleWalletTopup; see
+ *    packages/db/src/crud/wallet_topup.ts and packages/outbox-dispatcher/src/
+ *    templates.ts). This bubble used to duplicate that sentence itself,
+ *    which is exactly what let a top-up settled here AND enqueued to the
+ *    outbox produce two "top-up successful" messages for the same order.
+ *    All six payment methods now word a completed top-up identically (one
+ *    neutral bubble, one DM), and the wallet screen's keyboard via
+ *    `settledPaymentKb` above. The crypto rails' fast path picks its
  *    keyboard through that same helper, so a top-up buyer sees the same
- *    keyboard no matter which path reached the bubble first — the rails' own
- *    product-sale TEXT still differs from this one deliberately.
+ *    keyboard no matter which path reached the bubble first.
  *  - PRODUCT + DELIVERED → items are on their way (the account file is
  *    already sent or enqueued).
  *  - PRODUCT + PROCESSING → manual fulfilment; the buyer waits for an admin.
- *
- * The top-up balance is the buyer's CURRENT balance, not their balance at the
- * instant the credit landed: if they spent some of it between the credit and
- * this flip, the number shown here is lower than what was credited. That is
- * accepted as-is (the crypto rails' own fast path shows exactly the same
- * figure), not a bug to chase.
  */
 export function settledPaymentBubble(order: SettledBubbleOrder): { text: string; markup: InlineKeyboard } {
   const lang = langCode(order.user.language);
   if (order.kind === OrderKind.WALLET_TOPUP) {
-    const newBalance = (order.currency ?? "USDT") === "IDR" ? order.user.walletBalance : order.user.walletBalanceUsdt;
-    return { text: walletTopupSuccessText(order, newBalance, lang), markup: settledPaymentKb(order.kind, lang) };
+    return { text: coreT("checkout.topup_payment_received", lang), markup: settledPaymentKb(order.kind, lang) };
   }
   const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
   return { text: coreT(key, lang, { code: order.orderCode }), markup: settledPaymentKb(order.kind, lang) };

@@ -579,12 +579,6 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     expect(rows).toHaveLength(1);
   });
 
-  // Anti-double-notify guarantee (Task 7): Binance Internal is a POLLER-ONLY
-  // rail — deliverPaidInternalOrder only ever runs inside the bot process's
-  // own internal-transfer poller, never a web request — so the buyer is DM'd
-  // directly by that poller's onDelivered handler instead. Settlement here
-  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
-  // buyer would be notified twice.
   // F8 Part A. A top-up reserves nothing, so once the transfer has actually
   // arrived, crediting it is right even though the order was auto-cancelled
   // when its window lapsed. Keeping the buyer's USDT is not an option.
@@ -625,7 +619,17 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     expect(reloaded.status).toBe(OrderStatus.CANCELLED);
   });
 
-  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+  // Task E1: WALLET_TOPUP_CREDITED_DM is now enqueued from inside
+  // settleWalletTopup itself — the ONE call site for that event across all
+  // six top-up rails, including this poller-only one (Binance Internal is a
+  // POLLER-ONLY rail: deliverPaidInternalOrder only ever runs inside the bot
+  // process's own internal-transfer poller, never a web request). This used
+  // to be split — three webhook rails enqueued it while three poller rails
+  // (including this one) DM'd the buyer directly from the bot process — and
+  // that split is exactly what let a QRIS top-up double-notify; the poller's
+  // own `onDelivered` no longer sends a direct DM, so this row is now the
+  // buyer's only notification.
+  it("enqueues a WALLET_TOPUP_CREDITED_DM outbox row — settleWalletTopup is the one producer, even for this poller-only rail", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
 
     const result = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: "tx-topup-nodm-1", amount: order.totalAmount });
@@ -634,7 +638,9 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
     });
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe(order.orderCode);
   });
 });
 
@@ -776,7 +782,7 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     expect(result.map((o) => o.id)).toEqual([older]);
   });
 
-  it("projects the top-up sentence's own inputs — kind, currency and totalAmount", async () => {
+  it("projects kind, currency and totalAmount for a WALLET_TOPUP row", async () => {
     const id = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
     await prisma.order.update({
       where: { id },
@@ -785,11 +791,12 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
 
     const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
 
-    // `walletTopupSuccessText` (apps/order-bot/src/util/delivery.ts) renders
-    // the amount that was topped up, so the sweeper cannot flip a top-up
-    // bubble without these three fields. Pinned here rather than only through
-    // the sweeper's own matrix so dropping one from the `select` fails at the
-    // query that owns it.
+    // `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts) requires
+    // these fields on its `SettledBubbleOrder` parameter even though the
+    // WALLET_TOPUP bubble itself no longer interpolates them (Task E1 — it
+    // now renders a neutral status line). Pinned here rather than only
+    // through the sweeper's own matrix so dropping one from the `select`
+    // fails at the query that owns it.
     expect(result).toHaveLength(1);
     const [row] = result;
     expect(row!.kind).toBe(OrderKind.WALLET_TOPUP);

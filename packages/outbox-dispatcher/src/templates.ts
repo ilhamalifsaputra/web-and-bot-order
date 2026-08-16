@@ -8,6 +8,7 @@
  * returns here. We match on the stored name (NotificationEvent.ORDER_DELIVERED).
  */
 import { NotificationEvent } from "@app/core/enums";
+import { formatIdr, formatUsdt } from "@app/core/formatters";
 
 interface Strings {
   title: string;
@@ -183,6 +184,7 @@ interface AdminStalePaymentPayload {
 }
 
 interface WalletTopupCreditedPayload {
+  order_code?: unknown;
   amount?: unknown;
   currency?: unknown;
   new_balance?: unknown;
@@ -204,24 +206,30 @@ export function render(
     WalletTopupCreditedPayload,
 ): string {
   if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
-    // Buyer DM: only enqueued by the three webhook-driven top-up rails
-    // (TokoPay/PayDisini/NOWPayments — see enqueueWalletTopupCreditedDm).
-    // The three poller-driven rails (Binance Internal/Bybit/Bybit BSC) DM the
-    // buyer directly from the bot process instead (walletTopupSuccessText in
-    // apps/order-bot/src/util/delivery.ts), so this template never fires
-    // twice for the same top-up. No buyer_language in the payload (unlike
-    // ORDER_PROCESSING_DM) — bilingual EN+ID in one message, same fallback
-    // every other per-order DM template here uses.
-    const amount = escape(String(payload.amount ?? "0"));
-    const currency = escape(String(payload.currency ?? ""));
-    const newBalance = escape(String(payload.new_balance ?? "0"));
+    // Buyer DM: the single producer for a wallet top-up's success message
+    // across ALL SIX top-up rails — enqueued exactly once, from inside
+    // settleWalletTopup (packages/db/src/crud/wallet_topup.ts), right after
+    // its atomic claim succeeds. No rail-specific caller may enqueue this
+    // event itself, or the buyer would be notified twice for the same
+    // top-up — this used to be split across two different producers (three
+    // webhook rails enqueuing here, three poller rails DMing the buyer
+    // directly from the bot process) that each assumed they were the only
+    // one, which is exactly what let a QRIS top-up double-notify. No
+    // buyer_language in the payload (unlike ORDER_PROCESSING_DM) — bilingual
+    // EN+ID in one message, same fallback every other per-order DM template
+    // here uses.
+    const code = escape(String(payload.order_code ?? ""));
+    const currency = String(payload.currency ?? "");
+    const formatMoney = currency === "IDR" ? formatIdr : formatUsdt;
+    const amount = escape(formatMoney(String(payload.amount ?? "0")));
+    const newBalance = escape(formatMoney(String(payload.new_balance ?? "0")));
     return (
-      `✅ <b>Top-up successful!</b>\n` +
-      `+${amount} ${currency} has been added to your wallet.\n` +
-      `New balance: <b>${newBalance} ${currency}</b>\n\n` +
-      `✅ <b>Top up berhasil!</b>\n` +
-      `+${amount} ${currency} sudah ditambahkan ke saldo kamu.\n` +
-      `Saldo baru: <b>${newBalance} ${currency}</b>`
+      `✅ <b>Top-up successful!</b>\n\n` +
+      `Order <code>${code}</code> — ${amount} has been added to your wallet.\n` +
+      `New balance: <b>${newBalance}</b>\n\n` +
+      `✅ <b>Top up berhasil!</b>\n\n` +
+      `Order <code>${code}</code> — ${amount} telah ditambahkan ke saldo kamu.\n` +
+      `Saldo baru: <b>${newBalance}</b>`
     );
   }
   if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {

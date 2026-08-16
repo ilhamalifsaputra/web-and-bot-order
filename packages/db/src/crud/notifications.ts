@@ -761,24 +761,24 @@ export async function enqueueManualDeliveredDm(
 }
 
 /**
- * Enqueue the buyer's "wallet top-up credited" DM — ONLY for the three
- * webhook-driven top-up rails (TokoPay/PayDisini/NOWPayments), called from
- * their `deliverPaid*` settlement transaction right after `settleWalletTopup`
- * credits the wallet. The other three top-up rails (Binance Internal, Bybit,
- * Bybit BSC) settle exclusively inside bot-process pollers, which DM the
- * buyer directly instead (see `onDelivered` in each rail's
- * apps/order-bot/src/payments/*.ts) — never call this helper from those, or
- * the buyer gets notified twice. No `telegramId == null` guard is needed here
- * (unlike enqueueOrderDeliveredDm) — the three webhook rails only reach this
- * call after confirming the buyer has a chat id; see each call site. Money is
- * carried as Decimal `.toString()` — never `number` — per money rules.
+ * Enqueue the buyer's "wallet top-up credited" DM — the ONE call site for
+ * this event across all six top-up-capable rails (TokoPay, PayDisini,
+ * NOWPayments, Binance Internal, Bybit, Bybit BSC). Called from
+ * `settleWalletTopup` (packages/db/src/crud/wallet_topup.ts) right after the
+ * wallet credit lands, which sits behind that function's atomic claim — so
+ * no rail-specific caller may enqueue this event itself, or the buyer would
+ * be notified twice for the same top-up. `telegramId == null` is checked by
+ * `settleWalletTopup` before calling this, same as the `credited.greaterThan(0)`
+ * gate — see that function's own doc-comment. Money is carried as Decimal
+ * `.toString()` — never `number` — per money rules.
  */
 export async function enqueueWalletTopupCreditedDm(
   db: Db,
-  args: { orderId: number; chatId: number; amount: Decimal; currency: string; newBalance: Decimal },
+  args: { orderId: number; orderCode: string; chatId: number; amount: Decimal; currency: string; newBalance: Decimal },
 ): Promise<void> {
   await enqueueNotification(db, NotificationEvent.WALLET_TOPUP_CREDITED_DM, args.orderId, {
     chat_id: args.chatId,
+    order_code: args.orderCode,
     amount: args.amount.toString(),
     currency: args.currency,
     new_balance: args.newBalance.toString(),

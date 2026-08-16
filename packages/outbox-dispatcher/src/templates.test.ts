@@ -233,36 +233,41 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("http");
   });
 
-  it("renders WALLET_TOPUP_CREDITED_DM as a bilingual DM with the credited IDR amount and new balance", () => {
+  it("renders WALLET_TOPUP_CREDITED_DM as a bilingual DM with the order code and money formatted as Rupiah (IDR)", () => {
     const out = render("WALLET_TOPUP_CREDITED_DM", {
+      order_code: "TOPUP-IDR-1",
       amount: "50000",
       currency: "IDR",
       new_balance: "125000",
     });
-    expect(out).toContain("50000 IDR");
-    expect(out).toContain("125000 IDR");
+    expect(out).toContain("TOPUP-IDR-1");
+    expect(out).toContain("Rp50.000");
+    expect(out).toContain("Rp125.000");
     expect(out).toMatch(/top-?up successful/i);
     expect(out).toMatch(/top up berhasil/i); // Indonesian line
   });
 
-  it("renders WALLET_TOPUP_CREDITED_DM correctly for a USDT top-up", () => {
+  it("renders WALLET_TOPUP_CREDITED_DM correctly for a USDT top-up — money formatted with an explicit unit, not IDR", () => {
     const out = render("WALLET_TOPUP_CREDITED_DM", {
+      order_code: "TOPUP-USDT-1",
       amount: "10.5",
       currency: "USDT",
       new_balance: "30.25",
     });
+    expect(out).toContain("TOPUP-USDT-1");
     expect(out).toContain("10.5 USDT");
     expect(out).toContain("30.25 USDT");
+    expect(out).not.toContain("Rp");
   });
 
-  it("HTML-escapes WALLET_TOPUP_CREDITED_DM interpolated values", () => {
+  it("HTML-escapes a malicious WALLET_TOPUP_CREDITED_DM order_code", () => {
     const out = render("WALLET_TOPUP_CREDITED_DM", {
-      amount: "<script>alert(1)</script>",
-      currency: "<b>IDR</b>",
+      order_code: "<script>alert(1)</script>",
+      amount: "100",
+      currency: "IDR",
       new_balance: "100",
     });
     expect(out).not.toContain("<script>");
-    expect(out).not.toContain("<b>IDR</b>");
     expect(out).toContain("&lt;script&gt;");
   });
 

@@ -306,8 +306,12 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
       orderCode: true,
       kind: true,
       currency: true,
-      // A WALLET_TOPUP bubble renders the topped-up amount (`walletTopupSuccessText`),
-      // so the sweeper needs the order's own total alongside its currency.
+      // `currency`/`totalAmount` here, and `user`'s two wallet columns below,
+      // are no longer interpolated into the WALLET_TOPUP bubble itself (it
+      // now renders a neutral status line — see settledPaymentBubble,
+      // apps/order-bot/src/util/delivery.ts) but are kept selected so this
+      // row shape still structurally satisfies that function's
+      // `SettledBubbleOrder` parameter without a second query.
       totalAmount: true,
       status: true,
       paymentMsgChatId: true,

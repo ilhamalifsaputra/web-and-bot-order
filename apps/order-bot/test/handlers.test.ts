@@ -1822,7 +1822,7 @@ describe("Refresh Status button (§7)", () => {
     expect((await getOrder(prisma, order.id))!.paymentMsgId).toBeNull();
   });
 
-  it("flips a settled wallet top-up's bubble to the top-up wording with the wallet keyboard", async () => {
+  it("flips a settled wallet top-up's bubble to the neutral 'payment received' wording with the wallet keyboard", async () => {
     const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY, kind: OrderKind.WALLET_TOPUP });
     await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "123456" } });
 
@@ -1830,9 +1830,12 @@ describe("Refresh Status button (§7)", () => {
     await checkout.refreshPaymentStatus(ctx, order.id);
 
     const edit = onlyBubbleEdit(sink);
-    expect(edit.text).toContain("Top-up successful");
-    // The buyer's CURRENT balance, read fresh — not a stale session copy.
-    expect(edit.text).toContain("Rp123.456");
+    expect(edit.text).toContain("Payment received");
+    expect(edit.text).toContain("top-up has been credited");
+    // The bubble no longer quotes the order code or the credited balance —
+    // that now lives exclusively in the outbox DM (WALLET_TOPUP_CREDITED_DM).
+    expect(edit.text).not.toContain(order.orderCode);
+    expect(edit.text).not.toContain("Rp123.456");
     // A top-up produces nothing to look up under "My Orders", so the wallet
     // keyboard replaces paymentSuccessKb here.
     expect(edit.buttons).toContain("v1:topup:open");

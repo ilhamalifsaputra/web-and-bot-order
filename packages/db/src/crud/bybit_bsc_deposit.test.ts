@@ -745,13 +745,17 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
     expect(rows).toHaveLength(1);
   });
 
-  // Anti-double-notify guarantee (Task 7): Bybit BSC is a POLLER-ONLY rail —
-  // deliverPaidBybitBscOrder only ever runs inside the bot process's own
-  // Bybit BSC deposit poller, never a web request — so the buyer is DM'd
-  // directly by that poller's onDelivered handler instead. Settlement here
-  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
-  // buyer would be notified twice.
-  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+  // Task E1: WALLET_TOPUP_CREDITED_DM is now enqueued from inside
+  // settleWalletTopup itself — the ONE call site for that event across all
+  // six top-up rails, including this poller-only one (Bybit BSC is a
+  // POLLER-ONLY rail: deliverPaidBybitBscOrder only ever runs inside the bot
+  // process's own Bybit BSC deposit poller, never a web request). This used
+  // to be split — three webhook rails enqueued here while three poller rails
+  // (including this one) DM'd the buyer directly from the bot process — and
+  // that split is exactly what let a QRIS top-up double-notify; the poller's
+  // own `onDelivered` no longer sends a direct DM, so this row is now the
+  // buyer's only notification.
+  it("enqueues a WALLET_TOPUP_CREDITED_DM outbox row — settleWalletTopup is the one producer, even for this poller-only rail", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
     const txId = "0x" + "4".repeat(64);
 
@@ -761,7 +765,9 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
     const dmRows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
     });
-    expect(dmRows).toHaveLength(0);
+    expect(dmRows).toHaveLength(1);
+    const payload = JSON.parse(dmRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe(order.orderCode);
   });
 });
 

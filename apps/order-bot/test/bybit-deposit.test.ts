@@ -26,10 +26,9 @@ import type { Api } from "grammy";
 import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
+import { OrderStatus, PaymentMethod, StockStatus, NotificationEvent } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { normalizeInternalDeposit, processDeposits, pollOnce, fetchRecentDeposits, type BybitDeposit } from "../src/payments/bybitDeposit";
-import { formatUsdt } from "../src/util/format";
 
 let sample: SampleData;
 
@@ -560,7 +559,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
       createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "USDT", method: PaymentMethod.BYBIT, rate: "16000" }),
     );
 
-  it("delivers, DMs the credited-amount + new-balance text (not the bare placeholder), sends no credential file, and flips the anchored bubble to the same text", async () => {
+  it("delivers, enqueues exactly one outbox top-up DM (never a direct Telegram DM), sends no credential file, and flips the anchored bubble to a neutral status", async () => {
     const order = await makeTopupOrder("7");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
@@ -572,19 +571,36 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     // No account file — a top-up has no product/credentials to deliver.
     expect(sendDocumentCalls()).toBe(0);
 
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.text).not.toBe("Top-up successful."); // the old bare placeholder is gone
-    expect(sent[0]!.text).toContain("7.00 USDT"); // credited amount, with unit
+    // No direct Telegram DM either (Task E1) — this rail used to send the
+    // "top-up successful" message straight from the bot process, which could
+    // double-notify the buyer once the outbox also carried it for the same
+    // top-up. The buyer's actual success message now comes exclusively from
+    // the outbox, enqueued inside settleWalletTopup.
+    expect(sent).toHaveLength(0);
+
     const freshUser = await getUser(prisma, sample.user.id);
     expect(freshUser!.walletBalanceUsdt.toString()).toBe("7"); // credited to the right currency field
-    expect(sent[0]!.text).toContain(formatUsdt(freshUser!.walletBalanceUsdt)); // new balance, with unit
-    expect(sent[0]!.extra).toMatchObject({ parse_mode: "HTML" });
 
-    // Anchored bubble uses the SAME top-up text, not the generic
-    // "your items are being delivered now" product copy.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+    const payload = JSON.parse(dmRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(payload.amount).toBe("7");
+    expect(payload.currency).toBe("USDT");
+    expect(payload.new_balance).toBe("7");
+
+    // Anchored bubble carries a neutral "payment received" status — not the
+    // generic "your items are being delivered now" product copy, and no
+    // longer the balance-quoting success sentence (that now lives
+    // exclusively in the outbox DM above).
     expect(edits).toHaveLength(1);
     expect(edits[0]!.text).not.toContain("items are being delivered");
-    expect(edits[0]!.text).toContain("7.00 USDT");
+    expect(edits[0]!.text).not.toContain("7.00 USDT");
+    expect(edits[0]!.text).toContain("Payment received");
+    expect(edits[0]!.text).toContain("top-up has been credited");
 
     // …and the wallet keyboard, not paymentSuccessKb's "My Orders": a top-up
     // leaves nothing in the order history to look up. Picked through

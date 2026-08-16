@@ -329,6 +329,10 @@ export async function createDenomination(
      * lets dispatchPendingDigiflazzOrders / resyncDigiflazzCatalog match this
      * row back to a Digiflazz price-list entry. */
     supplierSku?: string | null;
+    /** KokinPay's game_code for this denomination's title (Task 7) — offers
+     * the storefront's live nickname-check UX. Independent of supplierSku/
+     * autoDeliverySource above. */
+    nicknameCheckGameCode?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -352,6 +356,7 @@ export async function createDenomination(
       ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
       supplierSku: args.supplierSku ?? null,
+      nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
     },
   });
 }

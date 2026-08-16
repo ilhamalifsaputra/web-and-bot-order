@@ -320,6 +320,13 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     // switching away from Manual + Info in the form) — same rule as
     // additionalFields above, the delivery type is the source of truth.
 
+    // nicknameCheckGameCode (Task 7): a plain optional string, independent of
+    // deliveryType/autoDeliverySource — unlike supplierSku, it needs no
+    // coupling validation, it's just KokinPay's game_code for this SKU's
+    // title, copied by hand from KokinPay's own docs.
+    const nicknameCheckGameCode =
+      typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
+
     const denom = await createDenomination(prisma, {
       productId,
       name,
@@ -334,6 +341,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       additionalFields,
       autoDeliverySource,
       supplierSku,
+      nicknameCheckGameCode,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -653,6 +661,12 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
+    // nicknameCheckGameCode (Task 7): a plain optional string, same
+    // always-set-from-this-request convention as description above — unlike
+    // autoDeliverySource/supplierSku it needs no deliveryType coupling.
+    const nicknameCheckGameCode =
+      typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
+
     await updateDenomination(prisma, id, {
       name,
       type: type as ProductType,
@@ -667,6 +681,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       ...(additionalFields !== undefined ? { additionalFields } : {}),
       autoDeliverySource,
       supplierSku,
+      nicknameCheckGameCode,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

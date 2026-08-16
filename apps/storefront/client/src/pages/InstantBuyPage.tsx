@@ -128,6 +128,7 @@ export default function InstantBuyPage() {
   const denominations = data?.denominations ?? [];
   const fallback = denominations.find((d) => d.in_stock) ?? denominations[0];
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
+  const needsInfo = selected?.delivery_type === "manual_with_info" && selected.additional_fields.length > 0;
 
   // Fetched only after a cart sync lands (see below) — the checkout payload
   // prices whatever the persisted cart currently holds, so reading it before
@@ -171,6 +172,70 @@ export default function InstantBuyPage() {
   useEffect(() => {
     setAnswers({});
   }, [selected?.id]);
+
+  // Task 7: live KokinPay nickname-check lookup on the account field(s),
+  // debounced ~800ms and cancelled on every keystroke via AbortController so
+  // a stale response can never overwrite a newer one. `user_id`/`server_id`
+  // are the field-key convention Task 4's wizard/manual-entry template both
+  // pre-fill (DeliveryTypeSection.tsx's AUTO_DELIVERY_FIELDS_TEMPLATE) — this
+  // is how the endpoint's `id`/`server` request fields get their values.
+  // A denomination whose fields were hand-edited to different keys simply
+  // never has `answers["user_id"]` populated, so no lookup fires and the
+  // field behaves exactly as it does today — same silent no-op as every
+  // other non-available outcome below.
+  const [nicknameCheck, setNicknameCheck] = useState<{
+    pending: boolean;
+    nickname: string | null;
+    notFound: boolean;
+  }>({ pending: false, nickname: null, notFound: false });
+
+  const accountId = (answers.user_id ?? "").trim();
+  const accountServer = (answers.server_id ?? "").trim();
+
+  useEffect(() => {
+    // Any change to the account field(s) (including a denomination switch,
+    // which resets `answers` above) invalidates whatever the last check
+    // showed — clear immediately rather than let a stale nickname linger
+    // next to a since-edited id.
+    setNicknameCheck({ pending: false, nickname: null, notFound: false });
+    if (!needsInfo || !selected || !accountId) return;
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setNicknameCheck((prev) => ({ ...prev, pending: true }));
+      apiPost<{ available: boolean; valid?: boolean; nickname?: string | null }>(
+        "/api/v1/topup/check-account",
+        { denomination_id: selected.id, id: accountId, server: accountServer || undefined },
+        controller.signal,
+      )
+        .then((res) => {
+          if (cancelled) return;
+          if (res.available && res.valid && res.nickname) {
+            setNicknameCheck({ pending: false, nickname: res.nickname, notFound: false });
+          } else if (res.available && res.valid === false) {
+            setNicknameCheck({ pending: false, nickname: null, notFound: true });
+          } else {
+            // available: false — no check configured, no credentials, or a
+            // network/HTTP failure. Never surfaced: the field looks and
+            // behaves exactly as it does today.
+            setNicknameCheck({ pending: false, nickname: null, notFound: false });
+          }
+        })
+        .catch(() => {
+          // A cancelled (AbortError) or otherwise failed request — same
+          // silent no-op, never an error state shown to the buyer.
+          if (cancelled) return;
+          setNicknameCheck({ pending: false, nickname: null, notFound: false });
+        });
+    }, 800);
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [needsInfo, selected?.id, accountId, accountServer]);
 
   const syncCart = useMutation({
     mutationFn: async (denominationId: number) => {
@@ -224,8 +289,6 @@ export default function InstantBuyPage() {
     event.preventDefault();
     applyVoucher();
   }
-
-  const needsInfo = selected?.delivery_type === "manual_with_info" && selected.additional_fields.length > 0;
 
   // Mirrors CheckoutPage.tsx's placeOrderMutation exactly (same endpoint,
   // same guest-mode full-reload vs. signed-in client nav, same order-code
@@ -357,6 +420,25 @@ export default function InstantBuyPage() {
                   />
                 ))}
               </div>
+              {/* Task 7: live KokinPay nickname-check result — every
+                  non-happy-path (no check configured, no credentials, a
+                  network failure) renders nothing at all, so the field looks
+                  and behaves exactly as it does today in those cases. */}
+              {nicknameCheck.pending && (
+                <p className="mt-2 text-xs text-ink-soft flex items-center gap-1.5" data-testid="nickname-check-pending">
+                  <Spinner /> {t("web.nickname_checking")}
+                </p>
+              )}
+              {!nicknameCheck.pending && nicknameCheck.nickname && (
+                <p className="mt-2 text-xs text-grass-dark" data-testid="nickname-check-found">
+                  {t("web.nickname_check_found", { nickname: nicknameCheck.nickname })}
+                </p>
+              )}
+              {!nicknameCheck.pending && !nicknameCheck.nickname && nicknameCheck.notFound && (
+                <p className="mt-2 text-xs text-ink-soft" data-testid="nickname-check-not-found">
+                  {t("web.nickname_check_not_found")}
+                </p>
+              )}
             </div>
           )}
 

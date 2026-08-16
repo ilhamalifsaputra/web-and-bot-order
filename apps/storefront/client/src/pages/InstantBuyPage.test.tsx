@@ -556,4 +556,147 @@ describe("InstantBuyPage", () => {
       expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled();
     });
   });
+
+  // Task 7: the live KokinPay nickname-check lookup on the account field.
+  // Fake timers drive the ~800ms debounce (same convention as web-admin's
+  // SearchPage.test.tsx "debounces typed input" test: vi.useFakeTimers() +
+  // vi.advanceTimersByTime + vi.waitFor, which polls with real time so
+  // pending microtasks from the mocked apiPost still resolve).
+  describe("live nickname check (Task 7)", () => {
+    it("fires the debounced check-account lookup ~800ms after the account field stops changing, mapping user_id -> id", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: false };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        // Not fired yet — still inside the debounce window.
+        expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/check-account")).toBe(false);
+
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/topup/check-account",
+            { denomination_id: 1, id: "1234567", server: undefined },
+            expect.any(AbortSignal),
+          ),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels the in-flight lookup via AbortController when the account field changes again before it resolves", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") {
+            // Never resolves within this test — the point is to inspect the
+            // signal passed alongside this still-pending call, not its result.
+            return new Promise(() => {});
+          }
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "111" } });
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/topup/check-account",
+            { denomination_id: 1, id: "111", server: undefined },
+            expect.any(AbortSignal),
+          ),
+        );
+        const firstCall = (apiPost as Mock).mock.calls.find(
+          (c) => c[0] === "/api/v1/topup/check-account" && (c[1] as Record<string, unknown>).id === "111",
+        )!;
+        const firstSignal = firstCall[2] as AbortSignal;
+        expect(firstSignal.aborted).toBe(false);
+
+        // The field changes again before the first lookup resolves — its
+        // request must be cancelled (not just superseded).
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "222" } });
+        expect(firstSignal.aborted).toBe(true);
+
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/topup/check-account",
+            { denomination_id: 1, id: "222", server: undefined },
+            expect.any(AbortSignal),
+          ),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("renders the resolved nickname once the debounced lookup resolves with a match", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: true, nickname: "ProGamer99" };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        vi.advanceTimersByTime(800);
+
+        await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("shows nothing at all when the endpoint degrades to available:false — the field behaves exactly as it does today", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: false };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/topup/check-account",
+            { denomination_id: 1, id: "1234567", server: undefined },
+            expect.any(AbortSignal),
+          ),
+        );
+
+        // The lookup resolves asynchronously after the call above lands —
+        // wait for the pending indicator to clear before asserting the
+        // final (silent) state.
+        await vi.waitFor(() => expect(screen.queryByTestId("nickname-check-pending")).not.toBeInTheDocument());
+        expect(screen.queryByTestId("nickname-check-found")).not.toBeInTheDocument();
+        expect(screen.queryByTestId("nickname-check-not-found")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

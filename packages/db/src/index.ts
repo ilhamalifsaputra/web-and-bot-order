@@ -27,6 +27,7 @@ export * from "./crud/broadcasts";
 export * from "./crud/pricing";
 export * from "./crud/tokopay";
 export * from "./crud/digiflazz";
+export * from "./crud/kokinpay";
 export * from "./crud/paydisini";
 export * from "./crud/nowpayments";
 export * from "./crud/wallet_checkout";

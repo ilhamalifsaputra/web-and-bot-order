@@ -151,6 +151,11 @@ describe("DenominationEditPage", () => {
         description: "Shared profile",
         sortOrder: 5,
         deliveryType: "auto",
+        // Task 7: nicknameCheckGameCode is always sent on an edit (unlike
+        // create) — see DenominationEditPage.tsx's submit payload — so an
+        // admin can clear a previously-set value by blanking the field, not
+        // just set one. This fixture never touched the field, so it's null.
+        nicknameCheckGameCode: null,
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());

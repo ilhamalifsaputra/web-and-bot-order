@@ -39,6 +39,7 @@ interface EditableDenomination {
   additionalFields: string | null;
   autoDeliverySource: string | null;
   supplierSku: string | null;
+  nicknameCheckGameCode: string | null;
 }
 
 /** Parses a denomination's stored additionalFields JSON into editable
@@ -122,6 +123,7 @@ export function DenominationEditPage() {
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -145,6 +147,7 @@ export function DenominationEditPage() {
     setAdditionalFields(parseStoredAdditionalFields(denomination.additionalFields));
     setAutoDeliverySource(denomination.autoDeliverySource ?? null);
     setSupplierSku(denomination.supplierSku ?? "");
+    setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -172,6 +175,7 @@ export function DenominationEditPage() {
         ...(deliveryType === "manual_with_info" && autoDeliverySource
           ? { autoDeliverySource, supplierSku: supplierSku.trim() }
           : {}),
+        nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -278,6 +282,8 @@ export function DenominationEditPage() {
           onAutoDeliverySourceChange={setAutoDeliverySource}
           supplierSku={supplierSku}
           onSupplierSkuChange={setSupplierSku}
+          nicknameCheckGameCode={nicknameCheckGameCode}
+          onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
         />
 
         <div>

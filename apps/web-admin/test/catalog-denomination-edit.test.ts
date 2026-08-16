@@ -368,6 +368,49 @@ describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSk
   });
 });
 
+describe("PATCH /api/catalog/denominations/:id — nicknameCheckGameCode (Task 7)", () => {
+  it("sets nicknameCheckGameCode independent of autoDeliverySource (no Digiflazz link required)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: [
+        { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ],
+      nicknameCheckGameCode: "mobile-legends",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.nicknameCheckGameCode).toBe("mobile-legends");
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("trims the value and clears it to null when the request sends blank/omits it", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      nicknameCheckGameCode: "  free-fire  ",
+    });
+    expect(setup.statusCode).toBe(200);
+    expect((await prisma.denomination.findUnique({ where: { id } }))!.nicknameCheckGameCode).toBe("free-fire");
+
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.denomination.findUnique({ where: { id } }))!.nicknameCheckGameCode).toBeNull();
+  });
+});
+
 describe("DELETE /api/catalog/denominations/:id", () => {
   it("happy path: deletes the denomination and audits", async () => {
     const id = await seedDenomination();

@@ -1937,6 +1937,40 @@ describe("catalog JSON API — create denomination", () => {
     expect(row!.autoDeliverySource).toBeNull();
     expect(row!.supplierSku).toBeNull();
   });
+
+  // Task 7: nicknameCheckGameCode is independent of autoDeliverySource — a
+  // manual_with_info denomination with no Digiflazz link can still offer a
+  // live nickname check, so it needs none of the digiflazz-only coupling
+  // tested above.
+  it("creates a denomination with nicknameCheckGameCode, with no autoDeliverySource required", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      nicknameCheckGameCode: "mobile-legends",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBe("mobile-legends");
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("defaults nicknameCheckGameCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBeNull();
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------

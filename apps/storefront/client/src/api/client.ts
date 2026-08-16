@@ -78,13 +78,19 @@ export async function apiGet<T>(path: string): Promise<T> {
 /** Attaches the page's CSRF token as a header (the storefront csrfCheck in
  * apps/storefront/src/plugins/auth.ts accepts x-csrf-token as an alternative
  * to the form-field token the HTML forms used). Guests may call this with an
- * empty token — the cart routes exempt them, everything else 401s first. */
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+ * empty token — the cart routes exempt them, everything else 401s first.
+ *
+ * `signal` is optional and only used by callers that need to cancel an
+ * in-flight request (e.g. InstantBuyPage.tsx's debounced nickname-check
+ * lookup, cancelled on every keystroke so a stale response can never
+ * overwrite a newer one) — every existing call site is unaffected. */
+export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
+    signal,
   });
   // Guest checkout's 201 AND its 4xx both carry the guest session's CSRF token
   // once that session exists, so a failed attempt still leaves the page able to

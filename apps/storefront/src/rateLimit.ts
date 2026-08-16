@@ -239,3 +239,33 @@ export function trackLookupRateLimited(ip: string): boolean {
     TRACK_LOOKUP_RATE_LIMIT_MAX,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Nickname-check rate limit (per IP, in-process) — Task 7, the KokinPay
+// live-typing lookup on InstantBuyPage's account field. Fired on every
+// debounced (~800ms) keystroke, so it's a "live-typing lookup" endpoint in
+// the same sense as checkoutPreviewRateLimited above, but even chattier —
+// unlike that endpoint it's called continuously while the buyer is still
+// typing their account id, not once per page load/voucher attempt. A
+// generous per-IP cap is enough: this endpoint costs at most one outbound
+// KokinPay HTTP call (never a DB write), and every non-happy-path already
+// degrades to `{ available: false }` rather than surfacing an error, so the
+// only thing this limiter needs to bound is outbound call volume to KokinPay
+// itself, not anything security-sensitive (there is no secret or oracle here
+// — the endpoint reveals nothing an attacker couldn't already learn by
+// calling KokinPay directly with their own key).
+// ---------------------------------------------------------------------------
+
+const nicknameCheckHits = new Map<string, number[]>();
+export const NICKNAME_CHECK_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const NICKNAME_CHECK_RATE_LIMIT_MAX = 40;
+
+/** True if `ip` has exceeded its nickname-check quota within the window. */
+export function nicknameCheckRateLimited(ip: string): boolean {
+  return slidingWindowLimited(
+    nicknameCheckHits,
+    ip,
+    NICKNAME_CHECK_RATE_LIMIT_WINDOW_SECONDS,
+    NICKNAME_CHECK_RATE_LIMIT_MAX,
+  );
+}

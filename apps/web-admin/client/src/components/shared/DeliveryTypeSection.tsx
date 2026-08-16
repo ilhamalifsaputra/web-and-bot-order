@@ -77,6 +77,8 @@ export function DeliveryTypeSection({
   onAutoDeliverySourceChange,
   supplierSku,
   onSupplierSkuChange,
+  nicknameCheckGameCode,
+  onNicknameCheckGameCodeChange,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -86,6 +88,12 @@ export function DeliveryTypeSection({
   onAutoDeliverySourceChange: (next: string | null) => void;
   supplierSku: string;
   onSupplierSkuChange: (next: string) => void;
+  /** KokinPay's game_code for this denomination's title (Task 7) — an
+   * independent, optional field: it offers the storefront's live
+   * nickname-check UX for ANY manual_with_info product, not just ones with a
+   * Digiflazz auto-delivery link. Blank = no live check for this product. */
+  nicknameCheckGameCode: string;
+  onNicknameCheckGameCodeChange: (next: string) => void;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
@@ -111,13 +119,15 @@ export function DeliveryTypeSection({
   // information required" default, same as a fresh row. `deliveryType` is
   // the single source of truth; there's nothing to restore once it's been
   // overwritten to "auto". Leaving Manual + buyer info required this way
-  // also hides Step 4, so its state is reset too — otherwise a value like
-  // "digiflazz" would sit unseen in the parent's state and could resurface
-  // silently if the admin flips back to buyer info required later.
+  // also hides Step 4 and the nickname-check field, so their state is reset
+  // too — otherwise a value like "digiflazz" or a stale game code would sit
+  // unseen in the parent's state and could resurface silently if the admin
+  // flips back to buyer info required later.
   function selectMethod(next: DeliveryMethod) {
     onDeliveryTypeChange(next === "auto" ? "auto" : "manual");
     onAutoDeliverySourceChange(null);
     onSupplierSkuChange("");
+    onNicknameCheckGameCodeChange("");
   }
 
   // Same "no hidden memory" reset as selectMethod above, for the other path
@@ -128,6 +138,7 @@ export function DeliveryTypeSection({
     if (next === "none") {
       onAutoDeliverySourceChange(null);
       onSupplierSkuChange("");
+      onNicknameCheckGameCodeChange("");
     }
   }
 
@@ -242,6 +253,28 @@ export function DeliveryTypeSection({
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Nickname check (Task 7) — an independent storefront UX enhancement,
+          NOT gated on autoDeliverySource above: a manual_with_info product
+          with no Digiflazz link can still offer a live nickname lookup on the
+          buyer's account field before they pay. Shown under the same
+          requiresInfo condition as Step 3, since the check needs a buyer
+          account field to run against. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Nickname check game code (optional)</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. mobile-legends"
+            value={nicknameCheckGameCode}
+            onChange={(e) => onNicknameCheckGameCodeChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
+            the live nickname check for this product.
+          </p>
         </div>
       )}
     </div>

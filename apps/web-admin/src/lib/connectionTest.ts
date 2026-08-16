@@ -24,11 +24,13 @@ import {
   getPaydisiniCreds,
   getNowpaymentsCreds,
   getDigiflazzCreds,
+  getKokinpayCreds,
 } from "@app/db";
 import { checkTransaction as tokopayCheckTransaction } from "@app/core/payments/tokopay";
 import { checkTransaction as paydisiniCheckTransaction } from "@app/core/payments/paydisini";
 import { getPaymentStatus as nowpaymentsGetStatus } from "@app/core/payments/nowpayments";
 import { getPriceList } from "@app/core/suppliers/digiflazz";
+import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 
 export interface ConnectionTestResult {
   ok: boolean;
@@ -217,10 +219,32 @@ export async function testDigiflazz(): Promise<ConnectionTestResult> {
   }
 }
 
+/** A throwaway lookup that will never match a real account — reports whether
+ * KokinPay accepted the request at all (a well-formed found-OR-not-found
+ * response), not whether this particular id happens to exist. Mirrors
+ * testDigiflazz's "call the real endpoint, don't just check the shape"
+ * approach: `id: "0"` is not a real KokinPay account id for any game, so a
+ * "not found" response here is the EXPECTED, connection-works outcome. */
+export async function testKokinpay(): Promise<ConnectionTestResult> {
+  const creds = await getKokinpayCreds(prisma);
+  if (!creds) return { ok: false, detail: "KokinPay API key is not set." };
+  try {
+    const result = await checkGameNickname(creds, { gameCode: "mobile-legends", id: "0" });
+    return {
+      ok: true,
+      detail: result.valid
+        ? `Connected — KokinPay accepted the API key and returned a nickname ("${result.nickname}").`
+        : "Connected — KokinPay accepted the API key and responded (the test id wasn't found, as expected).",
+    };
+  } catch (err) {
+    return { ok: false, detail: `KokinPay test failed: ${errorMessage(err)}` };
+  }
+}
+
 /** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS, or — for
- * Digiflazz — the supplier equivalent) → tester. "bybit_bsc" intentionally
- * reuses testBybit — it shares the same account credentials as "bybit", so
- * there is nothing separate to verify here. */
+ * Digiflazz/KokinPay — the supplier equivalent) → tester. "bybit_bsc"
+ * intentionally reuses testBybit — it shares the same account credentials as
+ * "bybit", so there is nothing separate to verify here. */
 export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult>> = {
   tokopay: testTokopay,
   paydisini: testPaydisini,
@@ -229,4 +253,5 @@ export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult
   bybit_bsc: testBybit,
   binance_internal: testBinanceInternal,
   digiflazz: testDigiflazz,
+  kokinpay: testKokinpay,
 };

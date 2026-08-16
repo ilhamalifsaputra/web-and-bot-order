@@ -245,6 +245,15 @@ model Denomination {
   /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
   /// points at the Digiflazz supplier.
   supplierSku          String?   @map("supplier_sku")
+  /// KokinPay's game_code for this denomination's title (e.g. "mobile-legends"),
+  /// used to offer a live nickname lookup on the buyer's account field before
+  /// they pay. Null = no live check for this product — the field still works
+  /// as plain text, never blocks the buyer. Admin copies this value from
+  /// KokinPay's own game-code list (api.kokinpay.com/docs/kode-game).
+  /// Independent of autoDeliverySource/supplierSku — this is a storefront UX
+  /// enhancement, not a fulfilment link, so it applies to any manual_with_info
+  /// product regardless of who (if anyone) auto-fulfils it.
+  nicknameCheckGameCode String?  @map("nickname_check_game_code")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this

@@ -67,6 +67,7 @@ export function DenominationCreatePage() {
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -89,6 +90,7 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info" && autoDeliverySource
             ? { autoDeliverySource, supplierSku: supplierSku.trim() }
             : {}),
+          ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -173,6 +175,8 @@ export function DenominationCreatePage() {
           onAutoDeliverySourceChange={setAutoDeliverySource}
           supplierSku={supplierSku}
           onSupplierSkuChange={setSupplierSku}
+          nicknameCheckGameCode={nicknameCheckGameCode}
+          onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
         />
 
         <div>

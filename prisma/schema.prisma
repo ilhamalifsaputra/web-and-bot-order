@@ -159,6 +159,11 @@ model Category {
   image       String?
   sortOrder   Int     @default(0) @map("sort_order")
   isActive    Boolean @default(true) @map("is_active")
+  /// How checkout behaves for every product/denomination under this category:
+  /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
+  /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
+  /// at checkout and the order auto-dispatches to the supplier on payment).
+  checkoutFlow String @default("catalog") @map("checkout_flow")
 
   products Product[]
 
@@ -231,6 +236,10 @@ model Denomination {
   resellerPrice        Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
   autoDeliverySource   String?   @map("auto_delivery_source")
+  /// The Digiflazz `buyer_sku_code` this denomination maps to (e.g. "ML86").
+  /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
+  /// points at the Digiflazz supplier.
+  supplierSku          String?   @map("supplier_sku")
   warrantyDays         Int       @default(30) @map("warranty_days")
   sortOrder            Int       @default(0) @map("sort_order")
   isActive             Boolean   @default(true) @map("is_active")
@@ -411,6 +420,12 @@ model Order {
   /// can still auto-deliver it. Cleared back to null the next time an
   /// explorer lookup succeeds.
   trackingStaleAt       DateTime? @map("tracking_stale_at")
+  /// Idempotency guard for the Digiflazz dispatch poller (later task): set
+  /// atomically via an `updateMany`-with-status-guard claim (mirrors
+  /// `fulfillManualOrder`'s pattern, packages/db/src/crud/orders.ts:1657-1661)
+  /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
+  /// can never place the same top-up order twice. Null = not yet dispatched.
+  digiflazzDispatchedAt DateTime? @map("digiflazz_dispatched_at")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)

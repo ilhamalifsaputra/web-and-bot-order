@@ -114,6 +114,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       sortOrder: Number(body.sortOrder) || 0,
+      // Has a safe schema default ("catalog"), so an absent or invalid value
+      // silently falls back instead of 400ing — unlike PATCH below, where an
+      // admin explicitly sending a bad value is a mistake worth surfacing.
+      checkoutFlow: body.checkoutFlow === "instant" ? "instant" : "catalog",
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -151,6 +155,12 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     }
     if (body.sortOrder !== undefined) {
       fields.sortOrder = Number(body.sortOrder) || 0;
+    }
+    if (body.checkoutFlow !== undefined) {
+      if (body.checkoutFlow !== "catalog" && body.checkoutFlow !== "instant") {
+        return reply.code(400).send({ error: "Checkout flow must be \"catalog\" or \"instant\"." });
+      }
+      fields.checkoutFlow = body.checkoutFlow;
     }
 
     await updateCategory(prisma, id, fields);

@@ -71,6 +71,7 @@ export async function createCategory(
         description?: string | null;
         image?: string | null;
         sortOrder?: number;
+        checkoutFlow?: string;
       },
   emojiLegacy: string | null = null,
   sortOrderLegacy = 0,
@@ -88,6 +89,7 @@ export async function createCategory(
       description: ("description" in a ? a.description : null) ?? null,
       image: ("image" in a ? a.image : null) ?? null,
       sortOrder: a.sortOrder ?? 0,
+      checkoutFlow: ("checkoutFlow" in a ? a.checkoutFlow : null) ?? "catalog",
     },
   });
 }

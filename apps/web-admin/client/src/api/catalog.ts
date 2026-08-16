@@ -16,6 +16,7 @@ export interface CategoryRow {
   description: string | null;
   sortOrder: number;
   isActive: boolean;
+  checkoutFlow: "catalog" | "instant";
 }
 
 export interface ProductRow {

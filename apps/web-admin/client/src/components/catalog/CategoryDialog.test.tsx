@@ -12,6 +12,7 @@ const CATEGORY: CategoryRow = {
   description: "Mobile apps",
   sortOrder: 3,
   isActive: true,
+  checkoutFlow: "catalog",
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -48,7 +49,7 @@ describe("CategoryDialog", () => {
     const req = lastRequest(fetchMock);
     expect(req.url).toBe("/api/catalog/categories");
     expect(req.method).toBe("POST");
-    expect(req.body).toEqual({ name: "Games", emoji: "🎮", description: null });
+    expect(req.body).toEqual({ name: "Games", emoji: "🎮", description: null, checkoutFlow: "catalog" });
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -67,9 +68,37 @@ describe("CategoryDialog", () => {
     const req = lastRequest(fetchMock);
     expect(req.url).toBe("/api/catalog/categories/7");
     expect(req.method).toBe("PATCH");
-    expect(req.body).toEqual({ name: "Applications", emoji: "📱", description: "Mobile apps" });
+    expect(req.body).toEqual({
+      name: "Applications",
+      emoji: "📱",
+      description: "Mobile apps",
+      checkoutFlow: "catalog",
+    });
     expect(req.body).not.toHaveProperty("slug");
     expect(req.body).not.toHaveProperty("sortOrder");
+  });
+
+  it("seeds the checkout-flow radio from the category being edited and sends a changed value", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 7, name: "Apps" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+
+    render(
+      <CategoryDialog
+        category={{ ...CATEGORY, checkoutFlow: "instant" }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    expect(screen.getByRole("radio", { name: /^instant/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^catalog\b/i })).not.toBeChecked();
+
+    fireEvent.click(screen.getByRole("radio", { name: /^catalog\b/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const req = lastRequest(fetchMock);
+    expect(req.body.checkoutFlow).toBe("catalog");
   });
 
   it("shows the frozen web address while editing so a rename is not mistaken for a moved link", () => {

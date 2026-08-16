@@ -1567,6 +1567,30 @@ describe("catalog JSON API — create category", () => {
     expect(cat!.sortOrder).toBe(3);
   });
 
+  it("defaults checkoutFlow to \"catalog\" when omitted", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
+  it("persists checkoutFlow \"instant\" when given", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Top-ups", checkoutFlow: "instant" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("instant");
+  });
+
+  it("silently falls back to \"catalog\" for an invalid checkoutFlow instead of rejecting the request", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Flow", checkoutFlow: "bogus" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
   it("rejects empty name with 400", async () => {
     const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
     expect(res.statusCode).toBe(400);
@@ -2078,6 +2102,25 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     it("rejects empty name with 400", async () => {
       const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, { name: "" });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("persists checkoutFlow \"instant\"", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "instant",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.checkoutFlow).toBe("instant");
+    });
+
+    it("rejects an invalid checkoutFlow with 400 and writes nothing", async () => {
+      const before = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "bogus",
+      });
+      expect(res.statusCode).toBe(400);
+      const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(after!.checkoutFlow).toBe(before!.checkoutFlow);
     });
 
     it("rejects a non-existent category id with 404", async () => {

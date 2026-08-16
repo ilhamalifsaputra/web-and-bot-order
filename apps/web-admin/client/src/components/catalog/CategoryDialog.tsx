@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +34,9 @@ export function CategoryDialog({
   const [name, setName] = useState(category?.name ?? "");
   const [emoji, setEmoji] = useState(category?.emoji ?? "");
   const [description, setDescription] = useState(category?.description ?? "");
+  const [checkoutFlow, setCheckoutFlow] = useState<"catalog" | "instant">(
+    category?.checkoutFlow ?? "catalog",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +47,7 @@ export function CategoryDialog({
       name: name.trim(),
       emoji: emoji.trim() || null,
       description: description.trim() || null,
+      checkoutFlow,
     };
     try {
       if (editing) {
@@ -96,6 +101,39 @@ export function CategoryDialog({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
+          </div>
+          <div>
+            <Label>Checkout flow</Label>
+            <RadioGroup
+              className="mt-2"
+              value={checkoutFlow}
+              onValueChange={(v) => setCheckoutFlow(v as "catalog" | "instant")}
+            >
+              <label
+                htmlFor="cat-checkout-flow-catalog"
+                className="flex items-start gap-3 rounded-lg border border-line p-3 cursor-pointer transition-colors hover:border-pine/50 has-[[data-state=checked]]:border-pine has-[[data-state=checked]]:bg-pine-tint"
+              >
+                <RadioGroupItem id="cat-checkout-flow-catalog" value="catalog" className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-ink">Catalog</span>
+                  <span className="block text-xs text-ink-soft">
+                    Standard multi-page shop flow (browse → cart → checkout).
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cat-checkout-flow-instant"
+                className="flex items-start gap-3 rounded-lg border border-line p-3 cursor-pointer transition-colors hover:border-pine/50 has-[[data-state=checked]]:border-pine has-[[data-state=checked]]:bg-pine-tint"
+              >
+                <RadioGroupItem id="cat-checkout-flow-instant" value="instant" className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-ink">Instant</span>
+                  <span className="block text-xs text-ink-soft">
+                    Single-page instant-buy flow for Digiflazz-backed top-up categories.
+                  </span>
+                </span>
+              </label>
+            </RadioGroup>
           </div>
           {editing && (
             <p className="text-sm text-ink-soft">

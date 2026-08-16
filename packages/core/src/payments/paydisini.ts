@@ -122,8 +122,10 @@ export interface PaydisiniStatus {
   trxId: string | null;
 }
 
-/** Gateway payment-status strings we treat as "paid/settled". */
-
+// Which status strings count as "paid/settled" lives in
+// `isProviderPaid(StatusProvider.PAYDISINI, …)` (./paymentStatus.ts, Task E7),
+// shared with TokoPay and used by both this rail's paths — the reconcile
+// poller's `checkTransaction` below and the webhook's `verifyCallback`.
 
 /**
  * Poll the gateway for an order's current payment status (reconcile path — used

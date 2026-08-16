@@ -1387,6 +1387,22 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     // dispatcher running. Re-read the order fresh so stock is SOLD with live
     // credentials. Only if the direct send fails do we fall back to the
     // outbox DM.
+    // Confirmation FIRST, credentials second (final whole-branch review).
+    // This path has no payment bubble and never touches the outbox, so
+    // neither the per-rail reordering nor the dispatcher's flush hook can
+    // reach it — yet the buyer saw exactly the reported bug here: the account
+    // file arriving above a checkout screen still showing the unpaid summary,
+    // reading as "the shop sent my account before I paid". Nothing was ever
+    // delivered early (`completeOrderWithWalletCredit`'s claim gates the
+    // send); flipping the screen first is all it takes. `smartEdit` is a
+    // single bounded Telegram edit and its failure is already swallowed
+    // internally, so it cannot delay or block the delivery below.
+    await smartEdit(
+      ctx,
+      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
+      ckb.paymentSuccessKb(lang),
+    );
+
     const deliveredOrder = await getOrder(prisma, result.order.id);
     const tgId =
       deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
@@ -1413,11 +1429,6 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       }
     }
 
-    await smartEdit(
-      ctx,
-      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
-      ckb.paymentSuccessKb(lang),
-    );
     return;
   }
 

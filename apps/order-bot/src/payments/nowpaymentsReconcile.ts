@@ -210,10 +210,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     return "gateway_error";
   }
 
-  // Exact match only — partially_paid/failed/refunded/expired and the
-  // in-flight states (waiting/confirming/confirmed/sending) are all "not
-  // ready yet", never an error condition worth alerting on.
-  if (status.status !== "finished") return "ok";
+  // Reads `status.paid`, which `getPaymentStatus` (@app/core/payments/nowpayments)
+  // already derived through `isProviderPaid` — this used to re-compare the raw
+  // string against "finished" itself, which was the one place left where the
+  // accepted-status decision was duplicated outside paymentStatus.ts, exactly
+  // what Task E7 exists to prevent. Only an exact `finished` is paid;
+  // partially_paid/failed/refunded/expired and the in-flight states
+  // (waiting/confirming/confirmed/sending) are all "not ready yet", never an
+  // error condition worth alerting on.
+  if (!status.paid) return "ok";
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
   if (status.amount.lessThan(new Decimal(order.totalAmount))) {

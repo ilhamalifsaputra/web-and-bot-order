@@ -177,8 +177,8 @@ export type BubbleEditResult =
  * failure) in the same call is contradictory: a caller that wants total
  * silence when the bubble edit works cannot also want a DM when it doesn't.
  * No caller combines them today — every real `"delete"` call site goes
- * through the shared `flipSettledOrderBubble` above (`flipSettledBubble`,
- * `sweepPaidOrderBubbles`, all three QRIS/IDR reconcile pollers, and the
+ * through the shared `flipSettledOrderBubble` below (`flipSettledBubble`,
+ * `sweepPaidOrderBubbles`, the three reconcile pollers, and the
  * payment-bubble flush hook alike), which passes `bubbleOnPhotoFor`'s
  * (util/delivery.ts) choice straight through and always wanted
  * `fallbackDm: null` regardless of `onPhoto`, so this costs none of
@@ -329,8 +329,8 @@ export type BubbleFlipOutcome = "not_settled" | "no_anchor" | "timeout" | "kept"
  * QRIS reconcile pollers' `editBubbleAndClear`
  * (payments/tokopayReconcile.ts, payments/paydisiniReconcile.ts) and the
  * NOWPayments reconcile poller's own twin, and the payment-bubble flush hook
- * (`flushSettledOrderBubble` below, Task E3). These five used to carry four
- * near-identical copies of this exact edit-classify-clear sequence — this is
+ * (`flushSettledOrderBubble` below, Task E3). Those six callers used to carry
+ * four near-identical copies of this exact edit-classify-clear sequence — this is
  * the one body they now all call, differing only in what they do with a
  * "not_settled"/"no_anchor"/"timeout"/"kept" outcome (silently return, log +
  * count, or log + return) and, for `flipSettledBubble` alone, whether to

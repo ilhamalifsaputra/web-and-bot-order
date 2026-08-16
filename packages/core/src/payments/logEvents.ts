@@ -56,8 +56,10 @@ export const PaymentLogEvent = {
    *  `credited: 0` and moved no money. The wallet half of
    *  `PAYMENT_ALREADY_CONFIRMED`. */
   WALLET_CREDIT_ALREADY_APPLIED: "WALLET_CREDIT_ALREADY_APPLIED",
-  /** A buyer-facing outbox row was enqueued. Not emitted for a deduped
-   *  enqueue that wrote nothing — that did not create a notification. */
+  /** An outbox row was enqueued — buyer-facing or admin-facing; the row's own
+   *  event is carried alongside as `notificationEvent`. Not emitted for a
+   *  deduped enqueue that wrote nothing: no row means no notification was
+   *  created, and saying otherwise would make the count untrustworthy. */
   NOTIFICATION_CREATED: "NOTIFICATION_CREATED",
   /** A payment bubble reached its final state: edited in place, replaced, or
    *  deleted. Not emitted for an attempt left to be retried. */
@@ -71,6 +73,14 @@ export type PaymentLogEvent = (typeof PaymentLogEvent)[keyof typeof PaymentLogEv
  * followed across processes with a single grep. Consistency IS the feature
  * here: a field that means `orderId` on one rail and `order_id` on another
  * cannot be filtered on.
+ *
+ * DOCUMENTATION, not enforcement — pino's first argument is a plain object and
+ * no call site annotates it with this type, so nothing stops a future line
+ * spelling a field differently. Making it enforcing would mean a wrapper every
+ * emitter has to remember to use, which is the same discipline problem one
+ * layer down. Treat this as the field list to copy from, and grep
+ * `PaymentLogEvent` when adding one. Individual events may carry extra fields
+ * beyond these (NOTIFICATION_CREATED adds `notificationEvent`).
  *
  * `orderId` (not `orderCode`) because it is the join key every table already
  * uses; the code is in the message sentence beside it, where a human reads it.

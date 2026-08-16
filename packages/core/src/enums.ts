@@ -371,8 +371,8 @@ export const NotificationEvent = {
   // and nobody is told. Carries a dedupe key per (order, admin) because the
   // poller re-hits this branch every cycle until the order expires — see
   // `enqueueAdminUnconfirmablePayment`. payload carries `chat_id` (the
-  // admin's telegram id) plus order_code, same fan-out-per-admin shape as
-  // ADMIN_STALE_PAYMENT above.
+  // admin's telegram id) plus order_code and gateway, same fan-out-per-admin
+  // shape as ADMIN_STALE_PAYMENT above.
   ADMIN_UNCONFIRMABLE_PAYMENT: "ADMIN_UNCONFIRMABLE_PAYMENT",
   // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner,
   // at the single `owner_email` address configured in Settings — receives

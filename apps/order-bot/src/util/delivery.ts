@@ -15,7 +15,7 @@
  * `flipSettledOrderBubble` (jobs/index.ts) — the one shared edit/classify/
  * clear-anchor body behind the Refresh button's on-the-spot flip
  * (handlers/checkout.ts), the background sweeper (jobs/index.ts), all three
- * QRIS/IDR reconcile pollers (payments/tokopayReconcile.ts,
+ * reconcile pollers (payments/tokopayReconcile.ts,
  * payments/paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts) and the
  * payment-bubble flush hook (Task E3) alike, so none of them can show the
  * buyer a different ending for the same order.
@@ -83,13 +83,13 @@ export function settledPaymentKb(kind: string, lang: string): InlineKeyboard {
  * `flipSettledOrderBubble` body (jobs/index.ts): the buyer's own
  * "🔄 Refresh Status" tap (`refreshPaymentStatus`, handlers/checkout.ts), the
  * background sweeper that catches every settlement the bot process never saw
- * (`sweepPaidOrderBubbles`, jobs/index.ts), all three QRIS/IDR reconcile
+ * (`sweepPaidOrderBubbles`, jobs/index.ts), the three reconcile
  * pollers' own fast paths (payments/tokopayReconcile.ts,
  * paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts), the payment-
  * bubble flush hook (Task E3), and the three crypto rails' own fast paths
  * (binanceInternal.ts, bybitDeposit.ts, bybitBscDeposit.ts) — so a buyer can
  * never be shown two different endings for the same order depending on which
- * one got there first. The QRIS/IDR pollers are the reason that matters most
+ * one got there first. Those pollers are the reason that matters most
  * in practice: they clear the order's anchor as soon as they flip it, which
  * retires the order from the sweeper's queue, so whatever they write is
  * final.
@@ -139,7 +139,7 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
  * `settledPaymentBubble` and `settledPaymentKb` above already make, kept in
  * one place for the same reason: `flipSettledOrderBubble` (jobs/index.ts) —
  * the one shared body behind `flipSettledBubble` (handlers/checkout.ts),
- * `sweepPaidOrderBubbles` (jobs/index.ts), all three QRIS/IDR reconcile
+ * `sweepPaidOrderBubbles` (jobs/index.ts), the three reconcile
  * pollers' `editBubbleAndClear` (payments/tokopayReconcile.ts,
  * payments/paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts) and the
  * payment-bubble flush hook (Task E3) — all flip the same bubbles and must

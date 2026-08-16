@@ -31,6 +31,7 @@ import {
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
   enqueueWalletTopupCreditedDm,
+  enqueueNotification,
   adjustWallet,
   createOrderDirect,
   attachPaymentProof,
@@ -332,8 +333,9 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
 /**
  * Task E3: the payment-bubble flush hook (`flushPaymentBubble`,
  * `@app/core/nudge`) must run, and finish, before this dispatcher sends any
- * of the three order-scoped settlement DMs — ORDER_DELIVERED_DM,
- * ORDER_MANUAL_DELIVERED_DM, WALLET_TOPUP_CREDITED_DM — never for an admin
+ * of the four order-scoped settlement DMs — ORDER_DELIVERED_DM,
+ * ORDER_MANUAL_DELIVERED_DM, WALLET_TOPUP_CREDITED_DM, ORDER_PROCESSING_DM —
+ * never for an admin
  * DM, a channel post, or a broadcast (see dispatcher.ts's own module doc-
  * comment for the full "why": a buyer's account file/top-up notice used to
  * land before the "Payment received" bubble flip, purely a message-ordering
@@ -433,7 +435,7 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
     expect(log).toEqual(["flush", "dm"]);
   });
 
-  it("flushes before an ORDER_MANUAL_DELIVERED_DM's sendMessage, but not before the earlier ORDER_PROCESSING_DM for the same order", async () => {
+  it("flushes before an ORDER_MANUAL_DELIVERED_DM's sendMessage", async () => {
     const buyer = await upsertUser(prisma, { telegramId: 600_103, username: "e3manualbuyer", fullName: "E3 Manual Buyer" });
     const admin = await prisma.user.create({
       data: { telegramId: BigInt(900_600_103), referralCode: `e3-admin-${Math.random()}`, role: "ADMIN" },
@@ -453,7 +455,10 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
 
     // settlePaidOrder enqueues ORDER_PROCESSING_DM — drain it FIRST, with no
     // flush hook registered, so the flush-count assertion below can only
-    // count the ORDER_MANUAL_DELIVERED_DM's own flush.
+    // count the ORDER_MANUAL_DELIVERED_DM's own flush. (That DM flushes too
+    // since the final whole-branch review; the test immediately below is the
+    // one that pins it. Draining it here is isolation, not a statement that
+    // it does not flush — which is what this test's own name used to imply.)
     const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
     expect(result.kind).toBe("processing");
     const preBot = { api: { sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }), sendDocument: vi.fn() } } as unknown as Bot;
@@ -477,6 +482,38 @@ describe("drainBatch flushes the payment bubble before a settlement DM (Task E3)
     await drainBatch(bot);
 
     expect(flushCount).toBe(1); // exactly once — the ORDER_MANUAL_DELIVERED_DM row only
+    expect(log).toEqual(["flush", "dm"]);
+  });
+
+  // Added by the final whole-branch review. ORDER_PROCESSING_DM was the one
+  // order-scoped settlement DM the hook did not cover, and the one the
+  // per-rail reordering could never fix on its own: `settlePaidOrder` enqueues
+  // it INSIDE the settlement transaction, so it can already be sitting in the
+  // outbox before the rail reaches its own bubble flip. A buyer of a
+  // hand-fulfilled SKU would read "your order is being prepared" above a
+  // bubble still saying "waiting for payment" — the reported bug's symptom on
+  // a different message.
+  it("flushes before an ORDER_PROCESSING_DM, the DM a rail cannot order correctly by itself", async () => {
+    const { order } = await makeDeliveredOrder(600_107);
+    await enqueueNotification(prisma, NotificationEvent.ORDER_PROCESSING_DM, order.id, {
+      chat_id: 600_107,
+      order_code: order.orderCode,
+      buyer_language: "en",
+    });
+
+    const log: string[] = [];
+    registerPaymentBubbleFlush(async (orderId) => {
+      expect(orderId).toBe(order.id);
+      log.push("flush");
+    });
+    const sendMessage = vi.fn(async () => {
+      log.push("dm");
+      return { message_id: 1 };
+    });
+    const bot = { api: { sendMessage, sendDocument: vi.fn() } } as unknown as Bot;
+
+    await drainBatch(bot);
+
     expect(log).toEqual(["flush", "dm"]);
   });
 

@@ -21,9 +21,9 @@
  * (CLAUDE.md).
  *
  * Payment-bubble flush hook (Task E3): right before sending
- * ORDER_DELIVERED_DM, ORDER_MANUAL_DELIVERED_DM, or WALLET_TOPUP_CREDITED_DM
- * — the three order-scoped settlement DMs that follow a buyer paying — this
- * calls `flushPaymentBubble` (`@app/core/nudge`) so the order's payment
+ * ORDER_DELIVERED_DM, ORDER_MANUAL_DELIVERED_DM, WALLET_TOPUP_CREDITED_DM or
+ * ORDER_PROCESSING_DM — the four order-scoped DMs that follow a buyer paying
+ * — this calls `flushPaymentBubble` (`@app/core/nudge`) so the order's payment
  * bubble (the "🔄 Refresh Status" / QR bubble) has finished flipping to its
  * settled state before the DM lands. Without this, a buyer could see their
  * credentials or top-up notice arrive above a still-pending "waiting for
@@ -140,7 +140,7 @@ const BUBBLE_FLUSH_TIMEOUT_MS = 5_000;
 /**
  * Ask the registered payment-bubble flush implementation (if any) to finish
  * flipping `orderId`'s payment bubble before the settlement DM that's about
- * to go out. Called only for the three order-scoped settlement DMs — see
+ * to go out. Called only for the four order-scoped settlement DMs — see
  * this file's own module doc-comment.
  *
  * The registered implementation (apps/order-bot's `flushSettledOrderBubble`,
@@ -308,11 +308,23 @@ export async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
-    // The third and last order-scoped settlement DM (Task E3) — see this
-    // file's own module doc-comment. Every other event reaching this generic
-    // send (admin DMs, channel posts, broadcasts) has no payment bubble, so
-    // it's deliberately excluded.
-    if (row.event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
+    // The last two order-scoped settlement DMs (Task E3) — see this file's own
+    // module doc-comment. Every other event reaching this generic send (admin
+    // DMs, channel posts, broadcasts) has no payment bubble, so it's
+    // deliberately excluded.
+    //
+    // ORDER_PROCESSING_DM was missing here until the final whole-branch
+    // review, and it is the one settlement DM the per-rail reordering could
+    // never fix on its own: `settlePaidOrder` enqueues it INSIDE the
+    // settlement transaction, so it can already be waiting in the outbox
+    // before the rail reaches its own bubble flip at all. A buyer of a
+    // hand-fulfilled SKU would then read "your order is being prepared" above
+    // a bubble still saying "waiting for payment", with a live Refresh button
+    // under it — the same thing the credential DM used to do.
+    if (
+      row.event === NotificationEvent.WALLET_TOPUP_CREDITED_DM ||
+      row.event === NotificationEvent.ORDER_PROCESSING_DM
+    ) {
       await flushBubbleBeforeDm(row.orderId);
     }
 

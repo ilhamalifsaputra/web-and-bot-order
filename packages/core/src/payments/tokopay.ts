@@ -152,20 +152,15 @@ export interface TokopayStatus {
   trxId: string | null;
 }
 
-/**
- * Gateway payment-status strings we treat as "paid/settled" — compared
- * case-insensitively (callers lowercase the gateway's value first).
- *
- * ONE list, shared by BOTH ways a TokoPay payment can reach us: the reconcile
- * poller's `checkTransaction` below and the storefront webhook's
- * `verifyCallback` further down. `verifyCallback` used to carry its own
- * shorter inline copy without `lunas`/`berhasil`, so a transaction TokoPay
- * reported in Indonesian was honoured by the poller and rejected by the
- * webhook — the same payment settled or not depending purely on which path
- * saw it first. Mirrors paydisini.ts, which has always shared one constant
- * across both of its paths. Do not re-inline either copy.
- */
-
+// Which status strings count as "paid/settled" is decided by
+// `isProviderPaid(StatusProvider.TOKOPAY, …)` (./paymentStatus.ts, Task E7),
+// not by a list in this file. BOTH ways a TokoPay payment can reach us go
+// through it — the reconcile poller's `checkTransaction` below and the
+// storefront webhook's `verifyCallback` further down. `verifyCallback` used
+// to carry its own shorter inline copy without `lunas`/`berhasil`, so a
+// transaction TokoPay reported in Indonesian was honoured by the poller and
+// rejected by the webhook: the same payment settled or not depending purely
+// on which path saw it first. Do not re-inline either copy.
 
 /**
  * Poll the gateway for an order's current payment status (reconcile path — used

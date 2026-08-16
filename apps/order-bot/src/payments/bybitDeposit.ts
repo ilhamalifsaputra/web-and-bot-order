@@ -57,11 +57,20 @@ import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import type { InlineKeyboard } from "grammy";
 import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
+import { isProviderPaid, StatusProvider } from "@app/core/payments/paymentStatus";
 
-/** Bybit internal-deposit status: 1=Processing, 2=Success, 3=Failed (per
- * Bybit V5 docs — DIFFERS from the on-chain ledger, where 3=success). Deliver
- * only on Success. */
-const STATUS_SUCCESS = 2;
+/** Whether Bybit reported this internal-transfer deposit as credited.
+ *
+ * The integer itself now lives in `paymentStatus.ts` (@app/core/payments/paymentStatus),
+ * behind `StatusProvider.BYBIT_INTERNAL`. That matters here more than it looks:
+ * the on-chain sibling rail (bybitBscDeposit.ts) reads the SAME kind of Bybit
+ * deposit status through an INVERTED enum, where this rail's Failed value means
+ * Success. Naming the provider at the call site is what makes the two
+ * impossible to confuse — passing the wrong one no longer silently compiles
+ * into "deliver on a failed deposit". */
+function isCredited(status: number): boolean {
+  return isProviderPaid(StatusProvider.BYBIT_INTERNAL, status);
+}
 
 export interface BybitDeposit {
   txId: string;
@@ -159,7 +168,7 @@ export function normalizeInternalDeposit(raw: Record<string, unknown>): BybitDep
   const status = Number(raw.status);
   if (txId == null || amount == null) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
-  if (status !== STATUS_SUCCESS) return null; // processing/failed → skip until credited
+  if (!isCredited(status)) return null; // processing/failed → skip until credited
   return { txId: String(txId), amount };
 }
 

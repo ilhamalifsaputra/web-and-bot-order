@@ -13,6 +13,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
+import { isProviderPaid, StatusProvider } from "./paymentStatus";
 
 export const PAYDISINI_USERKEY_KEY = "paydisini_userkey";
 export const PAYDISINI_APIKEY_KEY = "paydisini_apikey";
@@ -122,7 +123,7 @@ export interface PaydisiniStatus {
 }
 
 /** Gateway payment-status strings we treat as "paid/settled". */
-const PAID_STATES = ["paid", "success", "completed", "settlement", "lunas", "berhasil"];
+
 
 /**
  * Poll the gateway for an order's current payment status (reconcile path — used
@@ -169,7 +170,7 @@ export async function checkTransaction(
     amount = new Decimal(args.amountIdr);
   }
   const trxId = (typeof d.unique_code === "string" && d.unique_code) || (typeof d.trx_id === "string" && d.trx_id) || null;
-  return { paid: PAID_STATES.includes(statusStr), amount, trxId };
+  return { paid: isProviderPaid(StatusProvider.PAYDISINI, statusStr), amount, trxId };
 }
 
 export interface PaydisiniCallback {
@@ -218,7 +219,7 @@ export function verifyCallback(
     refId,
     trxId: firstString(body.unique_code, body.trx_id) ?? refId,
     amount,
-    paid: PAID_STATES.includes(status),
+    paid: isProviderPaid(StatusProvider.PAYDISINI, status),
   };
 }
 

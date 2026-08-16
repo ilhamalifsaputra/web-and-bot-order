@@ -61,6 +61,7 @@ import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS 
 import { bybitBscTrackingKb } from "../keyboards/customer";
 import type { InlineKeyboard } from "grammy";
 import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
+import { isProviderPaid, StatusProvider } from "@app/core/payments/paymentStatus";
 
 // AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
 // no on-chain "gas deducted from the sent amount" semantics the way
@@ -83,6 +84,24 @@ const IN_FLIGHT_BYBIT_STATUSES: ReadonlySet<number> = new Set([
   STATUS_PROCESSING,
   STATUS_SUCCESS,
 ]);
+
+/** Whether Bybit reported this ON-CHAIN deposit as credited.
+ *
+ * Delegates the success value to `paymentStatus.ts`
+ * (@app/core/payments/paymentStatus) behind `StatusProvider.BYBIT_BSC`, the
+ * counterpart to bybitDeposit.ts's own `isCredited`. The two rails share an
+ * exchange, an API credential and a ledger table but NOT this enum: 3 is
+ * Success here and Failed there, 2 is Processing here and Success there.
+ * Naming the provider at the call site is what stops the wrong one compiling
+ * cleanly into "deliver on a failed deposit".
+ *
+ * The three constants above stay local: they are this rail's own
+ * in-flight-tracking vocabulary (PAYMENT_DETECTED / CONFIRMING), which is
+ * about following a deposit toward confirmation rather than deciding whether
+ * it is paid — and that tracking exists on no other rail. */
+function isCredited(status: number): boolean {
+  return isProviderPaid(StatusProvider.BYBIT_BSC, status);
+}
 
 export interface BybitBscDeposit {
   txId: string;
@@ -575,7 +594,7 @@ export async function processDeposits(
       matchByAmount({ amount: dep.amount }, pendingOnly, AMOUNT_TOLERANCE);
 
     if (!order) {
-      if (dep.bybitStatus === STATUS_SUCCESS) {
+      if (isCredited(dep.bybitStatus)) {
         // Short of every match candidate — try the mirrored short-side search
         // (M-14, backend audit 2026-07-31) before giving up as unmatched: if
         // exactly one pending order is uniquely pricier than this deposit,
@@ -598,7 +617,7 @@ export async function processDeposits(
       continue;
     }
 
-    if (dep.bybitStatus !== STATUS_SUCCESS) {
+    if (!isCredited(dep.bybitStatus)) {
       // Still confirming — record/refresh PAYMENT_DETECTED only. Never
       // claims the delivery ledger; that stays exclusively the branch below.
       // Only push a bubble edit the cycle this ACTUALLY transitions — a

@@ -21,6 +21,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
+import { isProviderPaid, StatusProvider } from "./paymentStatus";
 
 export const NOWPAYMENTS_API_KEY_KEY = "nowpayments_api_key";
 export const NOWPAYMENTS_IPN_SECRET_KEY = "nowpayments_ipn_secret";
@@ -167,7 +168,7 @@ export async function getPaymentStatus(
     (typeof body.payment_id === "string" && body.payment_id) ||
     (typeof body.payment_id === "number" && String(body.payment_id)) ||
     null;
-  return { paid: statusStr === "finished", amount, trxId, status: statusStr };
+  return { paid: isProviderPaid(StatusProvider.NOWPAYMENTS, statusStr), amount, trxId, status: statusStr };
 }
 
 export interface NowpaymentsIpn {

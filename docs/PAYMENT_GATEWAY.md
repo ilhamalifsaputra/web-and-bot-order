@@ -23,6 +23,38 @@ level-kode: endpoint, signature, idempotency, dan jalur kegagalan.
 | Bybit Internal Transfer | USDT | Poller (by unique-amount) | `ProcessedBybitTx` (UNIQUE `bybitTxId`) | `.../bybitDeposit.ts` |
 | Bybit BSC (on-chain) | USDT | Poller (by unique-amount + chain/address filter) | `ProcessedBybitTx` (UNIQUE `bybitTxId`, SHARED dengan Internal Transfer) | `.../bybitBscDeposit.ts` |
 
+### Pemetaan status: satu tempat (`paymentStatus.ts`)
+
+Sejak Task E7, jawaban atas "gateway bilang ini sudah dibayar?" tidak lagi
+tersebar di enam file. Semuanya ada di
+`packages/core/src/payments/paymentStatus.ts`, lewat
+`normalizeProviderStatus(provider, raw)` yang mengembalikan
+`"paid" | "pending" | "failed" | "expired"` (plus pembungkus `isProviderPaid`
+untuk pemanggil yang cuma butuh ya/tidak). Adapter tiap rail sekarang memanggil
+itu, bukan mencocokkan string atau angka sendiri.
+
+Dua konsekuensi yang perlu diketahui sebelum mengubah apa pun di situ:
+
+- **Dua rail Bybit sengaja jadi dua provider terpisah**
+  (`BYBIT_INTERNAL` dan `BYBIT_BSC`), bukan satu `BYBIT`. Enum status deposit
+  Bybit **terbalik** di antara keduanya: pada ledger internal-transfer `2` =
+  Success dan `3` = Failed; pada ledger on-chain `3` = Success dan `2` baru
+  Processing. Karena provider-nya disebut di call site, memilih yang salah
+  tidak lagi diam-diam terkompilasi jadi "kirim barang untuk deposit gagal".
+- **Binance Internal sengaja TIDAK ada di sana**, dan tercatat eksplisit di
+  `PROVIDERS_WITHOUT_STATUS`. Rail itu tidak punya field status dari gateway
+  sama sekali — konfirmasinya murni hasil pencocokan kita sendiri (kode order
+  di catatan transfer, atau jumlah unik). Memaksakannya masuk berarti mengarang
+  status yang tidak pernah dikirim gateway.
+
+Nilai yang tidak dikenali selalu jatuh ke `pending`, tidak pernah `paid`
+(respons rusak tidak boleh menyelesaikan order) dan tidak pernah `failed`
+(satu respons kacau tidak boleh menelantarkan pembeli yang benar-benar bayar).
+
+Yang dinormalisasi hanyalah **pemetaan status**. Model kanonik tetap
+`OrderStatus` + ledger `Processed*Tx` per gateway; tidak ada kolom
+`PaymentStatus`, tabel `Payment`, atau state machine kedua.
+
 Bybit BSC berbagi ledger `ProcessedBybitTx` yang sama dengan Bybit Internal
 Transfer (lihat §Bybit BSC di bawah untuk alasan mengapa ini aman) — jadi 6
 metode di atas tetap hanya memakai 5 tabel ledger. Semua 5 idempotency ledger
@@ -48,8 +80,10 @@ diproses" (`isUniqueViolation`).
 - **Cek status (reconcile):** `GET {API_BASE}/v1/order` dengan `ref_id` yang
   sama — idempoten, dipakai poller fallback.
 - **PAID_STATES:** `paid`, `success`, `completed`, `settlement`, `lunas`,
-  `berhasil` (case-insensitive). Satu konstanta yang sama dipakai `verifyCallback`
-  (webhook) DAN `checkTransaction` (reconcile poller), persis seperti PayDisini —
+  `berhasil` (case-insensitive). Daftarnya kini tinggal di
+  `paymentStatus.ts` (lihat §Pemetaan status di atas) dan dipakai
+  `verifyCallback` (webhook) DAN `checkTransaction` (reconcile poller) lewat
+  `isProviderPaid`, persis seperti PayDisini yang berbagi daftar yang sama —
   dulu webhook punya salinan inline lebih pendek tanpa `lunas`/`berhasil`,
   sehingga transaksi yang dilaporkan TokoPay dalam bahasa Indonesia diterima
   poller tapi ditolak webhook.
@@ -77,9 +111,13 @@ diproses" (`isUniqueViolation`).
   di-**sort rekursif alfabetis** (`sortKeysDeep`, termasuk objek nested),
   dikirim via header `x-nowpayments-sig` — skema ini **terdokumentasi baik
   secara publik, bukan tebakan** (beda dari TokoPay/PayDisini). Hanya status
-  `payment_status === "finished"` dianggap `paid` — status lain
+  `payment_status === "finished"` dianggap `paid` (dicek lewat `isProviderPaid`,
+  lihat §Pemetaan status di atas) — status lain
   (`waiting`/`confirming`/`confirmed`/`sending`/`partially_paid`/`failed`/
-  `refunded`/`expired`) selalu `"ignored"`, tidak pernah error.
+  `refunded`/`expired`) selalu `"ignored"`, tidak pernah error. Perhatikan
+  `confirmed` dan `sending`: keduanya terdengar final padahal dananya belum
+  masuk ke akun merchant, dan `partially_paid` terdengar cukup dekat padahal
+  itu kurang bayar.
 - **Cek status (reconcile):** `GET {API_BASE}/v1/invoice/{invoiceId}` —
   endpoint persis ini **flagged ASSUMPTION** (mungkin NOWPayments
   menyediakan `/v1/payment/{id}` terpisah).

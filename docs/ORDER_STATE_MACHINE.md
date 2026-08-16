@@ -126,6 +126,19 @@ stateDiagram-v2
   `transitionOrderStatus` (lihat poin berikutnya) — klaim atomiknya sendiri
   sudah jadi mekanisme keamanan konkurensi; ia menambahkan baris
   `OrderStatusHistory` sendiri tepat setelah klaim berhasil.
+- **Order `kind: WALLET_TOPUP` ditolak di jalur delivery produk** (Task E5).
+  `approveOrder` dan `settlePaidOrder` sama-sama menolaknya dengan
+  `error.order_is_wallet_topup`. Ini kebalikan dari guard yang sudah lama ada
+  di `settleWalletTopup` (`error.order_not_wallet_topup`), dan alasannya sama
+  persis: top-up **tidak punya baris `OrderItem`**, jadi tanpa guard ini ia
+  akan lolos klaim atomik, mengiterasi nol item, tidak mengalokasikan stok apa
+  pun, lalu mendarat di `DELIVERED` tanpa **sama sekali** mengkredit saldo
+  pembeli — uangnya diambil, ditukar jadi order terkirim yang isinya kosong,
+  tanpa error di mana pun. Dijaga di dua pintu: `approveOrder` yang otoritatif
+  (chokepoint tunggal ke `DELIVERED`, jadi semua pemanggil mewarisinya) dan
+  `settlePaidOrder` yang menolak lebih awal, sebelum percabangan
+  AUTO/MANUAL berjalan dan sebelum email owner mana pun di-enqueue. Jalur
+  yang benar untuk top-up tetap `settleWalletTopup`.
 - **`transitionOrderStatus`/`tryTransitionOrderStatus`
   (`packages/db/src/crud/orderStatus.ts`) adalah satu-satunya jalur penulisan
   status untuk SEMUA fungsi lain** — memvalidasi bentuk transisi terhadap

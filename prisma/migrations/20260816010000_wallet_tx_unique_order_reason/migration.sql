@@ -16,19 +16,22 @@
 -- most one row per pair (see the schema comment on the constraint for the
 -- six mechanisms), but historical rows predate some of those guards.
 --
--- VERIFY BEFORE APPLYING, against the live database:
+-- VERIFY BEFORE APPLYING, against the live database, from the repo root:
 --
---   SELECT order_id, reason, COUNT(*) AS n
---     FROM wallet_transactions
---    WHERE order_id IS NOT NULL
---    GROUP BY order_id, reason
---   HAVING n > 1;
+--   DATABASE_URL_PRISMA="file:./data/bot.db" \
+--     pnpm exec tsx scripts/check-wallet-tx-duplicates.ts
 --
--- Zero rows means this is safe to apply. Any row is a real historical
--- double-movement on a buyer's balance and must be understood — and decided
--- on by a human — before the index is created. Do NOT delete ledger rows to
--- make the index fit: wallet_transactions is an append-only financial ledger
--- (see the onDelete: Restrict guardrails on the model).
+-- Exit 0 means no duplicates and this is safe to apply; exit 1 lists them.
+-- Any duplicate is a real historical double-movement on a buyer's balance and
+-- must be understood — and decided on by a human — before the index is
+-- created. Do NOT delete ledger rows to make the index fit:
+-- wallet_transactions is an append-only financial ledger (see the
+-- onDelete: Restrict guardrails on the model).
+--
+-- Use that script, not `prisma db execute` with a SELECT: db execute runs the
+-- statement but discards its result set, so it reports "Script executed
+-- successfully" whether the query matched zero rows or a thousand. It cannot
+-- answer this question.
 --
 -- DEPLOY: apply with `pnpm exec prisma db push` (this repo's actual mechanism
 -- — `migrate deploy` is NOT used, see docs/MIGRATIONS.md) and restart

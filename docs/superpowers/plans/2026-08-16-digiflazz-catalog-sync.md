@@ -1547,6 +1547,34 @@ git commit -m "feat(digiflazz): hourly catalog re-sync cron"
 - Manual end-to-end walk (after Task 6): Settings → enter Digiflazz credentials + a markup rule → Test Connection succeeds → Catalog → Sync Digiflazz → brand groups render, filtered to Game → pick a target category → check a brand's SKUs → adjust one price → Impor Terpilih → Catalog page shows the new Product (inactive) with its Denominations, each carrying the Game ID + Server template and a `supplierSku` → activate it → confirm the hourly job (trigger `resyncDigiflazzCatalog` directly in a REPL/test if waiting an hour isn't practical) updates `costPrice`/`price` and leaves a hand-edited price alone.
 - Confirm `Order.digiflazzDispatchedAt`-based dispatch (Task 1, already built) still works end-to-end against a denomination created by the wizard, not just a hand-created one — the wizard's output must be indistinguishable from manual entry to every downstream consumer.
 
+## Known storefront cosmetic gap — verify once the pilot has a real product
+
+Confirmed by live-checking trustance.id (`/c/entertainment`, its one single-product
+category) at both a 375px mobile viewport and 1440px desktop, with bounding-box
+inspection (not just a screenshot glance): `apps/storefront/client/src/pages/CategoryPage.tsx`'s
+product grid, on the `products.length === 1` branch (`className={... "max-w-xs" ...}`),
+has no `mx-auto` — the single card sits left-aligned (flush with the category
+heading/pills above it, so it's *consistent* alignment, not broken/overflowing)
+with a large empty gap to its right. Not a bug in the technical sense (no
+overflow, no squashed content, confirmed at both breakpoints), but it reads as
+visually unbalanced/unfinished, worse the wider the viewport.
+
+This is directly relevant to this plan's own outcome: once the admin imports
+and activates just one Digiflazz game into a "Top Up Game" category (the
+likely first state right after Task 6 ships, before more games are added),
+that category will show this exact same left-aligned-with-dead-space layout.
+Per the user's explicit instruction, this is **not** being fixed now as a
+standalone change (out of scope for this admin-focused plan, and doing it
+before a real single-product Top Up Game category exists would risk fixing
+the wrong thing twice) — track it here and apply the fix during this plan's
+own final manual walkthrough, once a real single-product "Top Up Game"
+category exists to verify against:
+
+- Likely fix: add `mx-auto` to that `max-w-xs` branch in `CategoryPage.tsx`
+  (one Tailwind class), so a single-product category centers its lone card
+  instead of pinning it to the left edge. Confirm at both mobile (~375px)
+  and desktop (~1440px) that this reads as intentional, not just less empty.
+
 ## Final review (after Task 7)
 
 Once all 7 tasks are complete and individually reviewed:

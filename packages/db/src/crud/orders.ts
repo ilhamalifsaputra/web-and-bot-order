@@ -1275,6 +1275,16 @@ export async function rejectOrder(
  * Admin approves a pending order: allocate/flip stock → SOLD, mark DELIVERED,
  * pay referral commission, enqueue the testimoni outbox row (same tx), and
  * return the credentials to DM the buyer.
+ *
+ * Refuses a WALLET_TOPUP order outright (Task E5 item 3). This is the mirror
+ * image of the guard `settleWalletTopup` (crud/wallet_topup.ts) already puts
+ * on its own door, and it exists for the same reason: this is the single
+ * chokepoint into DELIVERED, and a top-up reaching it would pass the atomic
+ * claim, iterate zero items (a top-up order has no line items), allocate no
+ * stock, and land in DELIVERED having credited the buyer NOTHING — their money
+ * taken and silently converted into a delivered order with nothing in it.
+ * Nothing routes a top-up here today; the guard is what stops a future caller
+ * from being the first, because the failure is silent and about money.
  */
 export async function approveOrder(
   db: Db,
@@ -1283,6 +1293,9 @@ export async function approveOrder(
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    throw new ValidationError("error.order_is_wallet_topup");
+  }
 
   // Atomic conditional claim: only ONE caller can flip PENDING_VERIFICATION ->
   // DELIVERED for this order, regardless of DB isolation level — a single
@@ -1751,6 +1764,17 @@ export async function settlePaidOrder(
 ): Promise<SettleResult> {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
+  // Refuse a WALLET_TOPUP before the branch split below (Task E5 item 3).
+  // `approveOrder` carries the authoritative guard — it is the chokepoint into
+  // DELIVERED — but rejecting here as well means a gateway that called the
+  // wrong settlement helper fails before either branch runs and before either
+  // owner email is enqueued, and names the entry point it actually used.
+  // Note the AUTO branch is the one a top-up would take: `isManual` reads
+  // `order.items`, and a top-up order has none, so `.some()` is false. That is
+  // a second implicit argument this guard makes unnecessary to trust.
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    throw new ValidationError("error.order_is_wallet_topup");
+  }
 
   // Orders are homogeneous (the storefront cart blocks mixing delivery types,
   // and the bot orders one SKU at a time), so any manual line makes the whole

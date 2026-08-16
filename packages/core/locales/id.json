@@ -204,6 +204,7 @@
   "error.ticket_not_closed": "Tiket ini belum ditutup.",
   "error.ticket_reopen_expired": "Tiket ini sudah tidak bisa dibuka lagi — silakan buat tiket baru.",
   "error.order_not_pending_verification": "Pesanan ini tidak sedang menunggu verifikasi.",
+  "error.order_is_wallet_topup": "Ini top-up saldo, bukan pesanan produk — hanya bisa diselesaikan lewat jalur top-up yang mengkredit saldo.",
   "error.stock_item_not_eligible": "Item stok ini sudah terjual atau mati dan tidak bisa diubah lagi.",
   "error.illegal_status_transition": "Status pesanan ini tidak dapat berubah dari {from} ke {to}.",
   "error.out_of_stock": "<b>{product}</b> habis. Coba produk lain.",

@@ -130,6 +130,30 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     expect(tx?.outcome).toBe("matched");
   });
 
+  // This rail's ledger key IS the gateway's `payment_id`, and `verifyIpn`
+  // refuses an IPN that carries no usable one rather than inventing a
+  // substitute (the M-12 fix). The poller used to invent
+  // `reconcile-<orderCode>` instead — a UNIQUE row the webhook could never
+  // collide with, so one payment confirmed from both directions produced two
+  // rows. Unlike TokoPay/PayDisini there is no order-scoped fallback that
+  // converges the two paths here, because the webhook has no fallback at all,
+  // so the poller matches its strictness.
+  it('refuses to deliver a "finished" payment the gateway reports without a payment_id, instead of inventing a ledger key', async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() }); // no payment_id
+
+    const outcome = await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    // The gateway DID answer, so this is not evidence of an outage.
+    expect(outcome).toBe("ok");
+    // Nothing was claimed under any key — synthetic or otherwise.
+    expect(await prisma.processedNowpaymentsTx.count()).toBe(0);
+    // And the order is left for the IPN webhook (or a later cycle) to settle.
+    const after = await prisma.order.findUnique({ where: { id: created.id } });
+    expect(after?.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
   it('leaves the order pending on in-flight statuses ("waiting"/"confirming")', async () => {
     await makeNowpaymentsOrder();
     const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());

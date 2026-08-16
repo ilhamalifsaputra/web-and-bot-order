@@ -13,7 +13,9 @@ import {
   bulkAddStock,
   getPollHealth,
   updateDenomination,
+  deliverPaidPaydisiniOrder,
 } from "@app/db";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -106,6 +108,43 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     expect(after?.status).toBe(OrderStatus.DELIVERED);
     const tx = await prisma.processedPaydisiniTx.findFirst({ where: { orderId: created!.id } });
     expect(tx?.outcome).toBe("matched");
+  });
+
+  // Twin of the TokoPay case (apps/order-bot/test/tokopay-reconcile.test.ts):
+  // this poller used to claim `reconcile-<orderCode>` when PayDisini's status
+  // response carried no id, a UNIQUE ledger row the storefront webhook can
+  // never write. Both paths now derive the key the same way.
+  it("keys the ledger on the order code, not a synthetic reconcile- key, when the gateway returns no id", async () => {
+    const created = await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "success", amount: pending!.totalAmount.toString() }); // no unique_code/trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const rows = await prisma.processedPaydisiniTx.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.trxId).toBe(created!.orderCode);
+    expect(rows[0]!.outcome).toBe("matched");
+  });
+
+  it("makes a later webhook for the same payment collide on the poller's own ledger row", async () => {
+    const created = await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "success", amount: pending!.totalAmount.toString() }); // no unique_code/trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    // Exactly what the storefront's PayDisini route now passes when the live
+    // status call comes back without an id of its own.
+    const webhook = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: created!.id,
+      trxId: gatewayLedgerTrxId(null, created!.orderCode),
+      amount: pending!.totalAmount,
+      shopUrl: null,
+    });
+
+    expect(webhook.status).toBe("already_processed");
+    expect(await prisma.processedPaydisiniTx.count()).toBe(1);
   });
 
   it("leaves the order pending when the gateway reports unpaid", async () => {

@@ -29,6 +29,7 @@
     "./payments/tokopay": "./src/payments/tokopay.ts",
     "./payments/paydisini": "./src/payments/paydisini.ts",
     "./payments/nowpayments": "./src/payments/nowpayments.ts",
+    "./payments/ledgerKey": "./src/payments/ledgerKey.ts",
     "./payments/pollHealth": "./src/payments/pollHealth.ts",
     "./payments/reconcileCycleBudget": "./src/payments/reconcileCycleBudget.ts",
     "./nudge": "./src/nudge.ts"

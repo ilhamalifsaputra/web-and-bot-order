@@ -23,6 +23,7 @@ import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { checkTransaction, qrisChargeAmount } from "@app/core/payments/tokopay";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
@@ -194,7 +195,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     const r = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
-      trxId: status.trxId ?? `reconcile-${order.orderCode}`,
+      // The SAME ledger-key rule the storefront's TokoPay webhook applies
+      // (`gatewayLedgerTrxId`, @app/core/payments/ledgerKey), so whichever of
+      // the two paths sees this payment second collides on the row the first
+      // one already claimed. This poller used to invent
+      // `reconcile-<orderCode>` here instead, which is a different UNIQUE row
+      // from anything the webhook could ever write — the ledger, the primary
+      // idempotency gate, then missed the duplicate entirely and left it to
+      // the order-status check one layer down.
+      trxId: gatewayLedgerTrxId(status.trxId, order.orderCode),
       amount: status.amount,
       shopUrl: null,
     });

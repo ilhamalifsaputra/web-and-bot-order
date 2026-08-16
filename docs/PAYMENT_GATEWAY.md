@@ -194,6 +194,26 @@ jendela bayar: panggil `checkTransaction`/`getPaymentStatus` gateway, jika
 (ledger sama → tidak mungkin double-deliver). Read-only ke gateway (tidak
 membuat/mengubah apa pun di sisi mereka).
 
+**Kunci ledger (`trxId`) harus sama persis di kedua jalur**, karena kolom
+`trxId` yang UNIQUE itulah gate idempotency utamanya. Aturannya per-rail:
+
+- **TokoPay & PayDisini:** `gatewayLedgerTrxId(live.trxId, order.orderCode)`
+  (`packages/core/src/payments/ledgerKey.ts`) — id dari hasil `checkTransaction`
+  live, fallback ke `orderCode` (yaitu `ref_id` yang kita kirim sendiri saat
+  transaksi dibuat). Dipakai identik oleh route webhook storefront dan poller.
+  Field `trx_id`/`unique_code` di BODY callback sengaja tidak ikut dipakai:
+  signature kedua rail tidak mencakupnya, dan poller tidak punya body sama
+  sekali.
+- **NOWPayments:** hanya `payment_id` dari gateway, tanpa fallback apa pun.
+  `verifyIpn` menolak callback tanpa `payment_id` (fix M-12), jadi poller pun
+  **tidak mengirim** order yang `finished` tapi tanpa `payment_id` — ia
+  menulis log warn dan membiarkan order tetap `PENDING_PAYMENT`.
+
+Sebelumnya ketiga poller memakai kunci sintetis `reconcile-<orderCode>` saat
+gateway tidak memberi id — baris UNIQUE yang berbeda dari apa pun yang bisa
+ditulis webhook, sehingga duplikat baru tertangkap satu lapis di bawahnya
+(cek status order yang mengembalikan `"stale"`), bukan oleh ledger.
+
 Reconcile poller masing-masing rail (`reconcileOrder`) langsung membalik
 bubble QR ke sukses saat POLLER SENDIRI yang mendeteksi pembayaran — jalur
 ini tidak lagi menyapu order lain di luar itu (per-rail sweep

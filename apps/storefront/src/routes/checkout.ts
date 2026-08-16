@@ -83,6 +83,7 @@ import {
   verifyIpn,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
@@ -841,34 +842,40 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       );
       return reply.send({ status: "not confirmed live" });
     }
+    // The idempotency-ledger key for this payment, derived by the one shared
+    // rule the TokoPay reconcile poller also uses (`gatewayLedgerTrxId`,
+    // @app/core/payments/ledgerKey) so the two paths always collide on the
+    // same UNIQUE row when they see the same payment. Note this deliberately
+    // ignores the body's own `trx_id`: the signature does not cover it, and
+    // the live call is already this route's source of truth.
+    const ledgerTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
     // Amount sanity: never deliver on a short payment. Trust the LIVE amount
     // from checkTransaction, not the unsigned callback body field.
     if (live.amount.lessThan(expectedCharge)) {
       logger.warn(
         `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${expectedCharge.toString()} — recording it as unmatched instead of delivering`,
       );
-      await recordUnmatchedTokopayTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
+      await recordUnmatchedTokopayTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
     }
 
     try {
       const r = await deliverPaidTokopayOrder(prisma, {
         orderId: order.id,
-        trxId: live.trxId ?? cb.trxId,
+        trxId: ledgerTrxId,
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
-        const trxId = live.trxId ?? cb.trxId;
         logger.warn(
-          `TokoPay confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+          `TokoPay confirmed payment for order ${order.orderCode} (tx ${ledgerTrxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
         );
         await enqueueAdminStalePayment(prisma, {
           orderId: order.id,
           orderCode: order.orderCode,
           gateway: "TokoPay",
-          trxId,
+          trxId: ledgerTrxId,
         });
       }
       return reply.send({ status: r.status });
@@ -927,34 +934,38 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       );
       return reply.send({ status: "not confirmed live" });
     }
+    // Same shared ledger-key rule as the TokoPay callback above — see the
+    // comment there and `gatewayLedgerTrxId`'s own doc comment
+    // (@app/core/payments/ledgerKey) for why the body's `unique_code`/`trx_id`
+    // is deliberately not part of the chain.
+    const ledgerTrxId = gatewayLedgerTrxId(live.trxId, order.orderCode);
     // Amount sanity: never deliver on a short payment. Trust the LIVE amount
     // from checkTransaction, not the unsigned callback body field.
     if (live.amount.lessThan(order.totalAmount)) {
       logger.warn(
         `PayDisini callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: ledgerTrxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
     }
 
     try {
       const r = await deliverPaidPaydisiniOrder(prisma, {
         orderId: order.id,
-        trxId: live.trxId ?? cb.trxId,
+        trxId: ledgerTrxId,
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
       if (r.status === "stale") {
-        const trxId = live.trxId ?? cb.trxId;
         logger.warn(
-          `PayDisini confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+          `PayDisini confirmed payment for order ${order.orderCode} (tx ${ledgerTrxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
         );
         await enqueueAdminStalePayment(prisma, {
           orderId: order.id,
           orderCode: order.orderCode,
           gateway: "PayDisini",
-          trxId,
+          trxId: ledgerTrxId,
         });
       }
       return reply.send({ status: r.status });

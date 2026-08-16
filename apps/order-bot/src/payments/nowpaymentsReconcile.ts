@@ -179,6 +179,12 @@ function extractInvoiceId(paymentRef: string | null): string | null {
  * silently. Extracted from the loop so it can be unit-tested with
  * `getPaymentStatus` stubbed.
  *
+ * A `finished` payment the gateway reports without a `payment_id` is NOT
+ * delivered — `payment_id` is this rail's ledger key and the IPN webhook
+ * rejects a callback that lacks one, so this path matches that rather than
+ * inventing a key the webhook could never collide with. See the comment at
+ * that check below for the full reasoning and its accepted cost.
+ *
  * Returns `"gateway_error"` only when the `getPaymentStatus` call itself
  * failed (network/HTTP/parse) — every other outcome, including a
  * delivery-side throw, is `"ok"`: not evidence the gateway is unreachable.
@@ -214,10 +220,40 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     return "ok";
   }
 
+  // No gateway payment id, no delivery — the same rule `verifyIpn`
+  // (packages/core/src/payments/nowpayments.ts) applies to the IPN webhook,
+  // the only other path that can settle this order. `payment_id` IS this
+  // rail's idempotency-ledger key (`ProcessedNowpaymentsTx.trxId`, UNIQUE),
+  // and the webhook refuses a callback that carries no usable one (the M-12
+  // fix) rather than inventing a substitute. This poller used to invent
+  // `reconcile-<orderCode>`, which the webhook can never produce — so the two
+  // paths wrote two different UNIQUE rows for one payment and the ledger, the
+  // primary idempotency gate, missed the duplicate. Unlike TokoPay/PayDisini,
+  // there is no order-scoped fallback that would converge them here: the
+  // webhook has no fallback at all, so matching its strictness is the only
+  // rule that holds on both paths.
+  //
+  // A `finished` payment that carries no `payment_id` is a contradiction on
+  // NOWPayments' side, so in practice this means our status-endpoint parsing
+  // is wrong — which is exactly the ⚠ ASSUMPTION flagged on
+  // `getPaymentStatus` (the `/v1/invoice/{id}` vs `/v1/payment/{id}` path is
+  // unverified). Warn loudly and leave the order PENDING_PAYMENT: the IPN
+  // webhook can still settle it, and the next cycle re-checks. This does mean
+  // that if the webhook never arrives either, such an order runs out its
+  // payment window and auto-cancels with the buyer's money paid — that is a
+  // real cost, accepted because the alternative is writing a ledger key the
+  // webhook can never collide with, which is the defect this replaces.
+  if (!status.trxId) {
+    logger.warn(
+      `NOWPayments reports order ${order.orderCode} finished but returned no payment id, so there is no idempotency-ledger key to claim it under — refusing to deliver rather than inventing one the IPN webhook could never collide with. The order stays PENDING_PAYMENT for the webhook or a later cycle; if this repeats, the status-endpoint assumption in @app/core/payments/nowpayments is wrong and needs verifying against the live dashboard`,
+    );
+    return "ok";
+  }
+
   try {
     const r = await deliverPaidNowpaymentsOrder(prisma, {
       orderId: order.id,
-      trxId: status.trxId ?? `reconcile-${order.orderCode}`,
+      trxId: status.trxId,
       amount: status.amount,
       shopUrl: null,
     });

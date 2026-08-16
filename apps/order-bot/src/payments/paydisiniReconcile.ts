@@ -24,6 +24,7 @@ import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { checkTransaction } from "@app/core/payments/paydisini";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import {
   MAX_ORDERS_PER_CYCLE,
   RECONCILE_TELEGRAM_TIMEOUT_MS,
@@ -192,7 +193,12 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     const r = await deliverPaidPaydisiniOrder(prisma, {
       orderId: order.id,
-      trxId: status.trxId ?? `reconcile-${order.orderCode}`,
+      // The SAME ledger-key rule the storefront's PayDisini webhook applies
+      // (`gatewayLedgerTrxId`, @app/core/payments/ledgerKey) — see the
+      // identical note in tokopayReconcile.ts and that helper's own doc
+      // comment for why inventing `reconcile-<orderCode>` here defeated the
+      // ledger's UNIQUE idempotency gate.
+      trxId: gatewayLedgerTrxId(status.trxId, order.orderCode),
       amount: status.amount,
       shopUrl: null,
     });

@@ -189,6 +189,14 @@ export interface NowpaymentsIpn {
  * contract as a bad signature) means the callback is never processed and
  * never touches the ledger.
  *
+ * The reconcile poller (apps/order-bot/src/payments/nowpaymentsReconcile.ts)
+ * now applies this same rule to `getPaymentStatus`'s answer: it declines to
+ * deliver a `finished` payment that carries no id instead of inventing one.
+ * That keeps `ProcessedNowpaymentsTx.trxId` — this rail's UNIQUE idempotency
+ * gate — always holding the gateway's own `payment_id`, whichever of the two
+ * paths claimed it, so the poller and the webhook can never write two rows
+ * for one payment.
+ *
  * Signature scheme (well documented publicly, not a guess): HMAC-SHA512 over
  * `JSON.stringify` of the body with its keys sorted **recursively, alphabetically**
  * (nested objects too — see `sortKeysDeep`), keyed with the merchant's IPN secret.

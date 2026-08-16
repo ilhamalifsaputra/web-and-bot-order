@@ -13,7 +13,9 @@ import {
   bulkAddStock,
   getPollHealth,
   updateDenomination,
+  deliverPaidTokopayOrder,
 } from "@app/db";
+import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import type { Api } from "grammy";
 import { DeliveryType, OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -119,6 +121,49 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
     const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
     expect(stillPending).toBeDefined();
+  });
+
+  // The poller used to claim `reconcile-<orderCode>` when TokoPay's status
+  // response carried no trx_id — a UNIQUE ledger row the storefront webhook
+  // can never write, so one payment confirmed from both directions produced
+  // TWO rows and the ledger (the primary idempotency gate) caught neither.
+  // Both paths now derive the key the same way: the live call's id, falling
+  // back to the order code, which is the ref_id we handed TokoPay.
+  it("keys the ledger on the order code, not a synthetic reconcile- key, when the gateway returns no trx_id", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    stubStatus({ status: "Paid", total_bayar: qrisChargeAmount(pending!.totalAmount).toString() }); // no trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const rows = await prisma.processedTokopayTx.findMany();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.trxId).toBe(created!.orderCode);
+    expect(rows[0]!.outcome).toBe("matched");
+  });
+
+  // The collision the shared key buys: a webhook arriving after the poller
+  // already settled the payment hits the row the poller claimed, in the
+  // ledger, instead of inserting a second one. `deliverPaidTokopayOrder` is
+  // the exact function the storefront webhook route calls, with the exact key
+  // that route now derives for a live response carrying no trx_id.
+  it("makes a later webhook for the same payment collide on the poller's own ledger row", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    const charge = qrisChargeAmount(pending!.totalAmount);
+    stubStatus({ status: "Paid", total_bayar: charge.toString() }); // no trx_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const webhook = await deliverPaidTokopayOrder(prisma, {
+      orderId: created!.id,
+      trxId: gatewayLedgerTrxId(null, created!.orderCode),
+      amount: charge,
+      shopUrl: null,
+    });
+
+    expect(webhook.status).toBe("already_processed");
+    expect(await prisma.processedTokopayTx.count()).toBe(1);
   });
 
   it("leaves the order pending when the gateway reports unpaid", async () => {

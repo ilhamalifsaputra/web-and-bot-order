@@ -20,6 +20,22 @@
  * more plain messages. Credentials/content NEVER ride in the outbox payload
  * (CLAUDE.md).
  *
+ * Payment-bubble flush hook (Task E3): right before sending
+ * ORDER_DELIVERED_DM, ORDER_MANUAL_DELIVERED_DM, or WALLET_TOPUP_CREDITED_DM
+ * — the three order-scoped settlement DMs that follow a buyer paying — this
+ * calls `flushPaymentBubble` (`@app/core/nudge`) so the order's payment
+ * bubble (the "🔄 Refresh Status" / QR bubble) has finished flipping to its
+ * settled state before the DM lands. Without this, a buyer could see their
+ * credentials or top-up notice arrive above a still-pending "waiting for
+ * payment" bubble, reading as "the shop sent my account before I paid" —
+ * nothing was ever delivered early (`approveOrder`'s atomic claim gates
+ * every credential send), it was purely a message-ordering artefact. Not
+ * called for admin DMs, channel posts or broadcasts — those have no payment
+ * bubble, so it would just cost a DB read each. `flushBubbleBeforeDm` below
+ * bounds and swallows the call: a hung or failing flush must never block or
+ * fail the DM it precedes.
+ *
+
  * EMAIL lane — every row whose channel is EMAIL, whoever it is addressed to.
  * That is the shop owner's OWNER_EMAIL_* rows (Task 3's enqueueOwner*Email
  * helpers) and, since the order-ready receipt shipped, the buyer-addressed
@@ -51,7 +67,7 @@ import {
   getSmtpCreds,
 } from "@app/db";
 import { config } from "@app/core/config";
-import { registerOutboxNudge } from "@app/core/nudge";
+import { registerOutboxNudge, flushPaymentBubble } from "@app/core/nudge";
 import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { NotificationEvent, NotificationChannel, langCode } from "@app/core/enums";
@@ -87,6 +103,66 @@ const TELEGRAM_MESSAGE_MAX_LEN = 4096;
 type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
+ * wins. The underlying promise isn't cancelled when this loses the race — it
+ * may still complete in the background — so this only bounds how long the
+ * caller waits on it, not the call itself. Mirrors the identical small
+ * `withTimeout` helper duplicated per-module across apps/order-bot's payment
+ * rails (e.g. payments/telegramTimeout.ts) rather than importing one of
+ * theirs: this package must not depend on `apps/order-bot` (see
+ * `flushBubbleBeforeDm` below), and the duplication is the codebase's own
+ * established pattern for this exact utility. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "timeout"> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/** Bound for the payment-bubble flush hook (Task E3, `flushPaymentBubble`,
+ * `@app/core/nudge`) — same value as `TELEGRAM_MESSAGE_TIMEOUT_MS`/
+ * `RECONCILE_TELEGRAM_TIMEOUT_MS` elsewhere on this path (a single bounded
+ * Telegram call reliably finishes in well under a second in the normal
+ * case, so 5s stays generous). */
+const BUBBLE_FLUSH_TIMEOUT_MS = 5_000;
+
+/**
+ * Ask the registered payment-bubble flush implementation (if any) to finish
+ * flipping `orderId`'s payment bubble before the settlement DM that's about
+ * to go out. Called only for the three order-scoped settlement DMs — see
+ * this file's own module doc-comment.
+ *
+ * The registered implementation (apps/order-bot's `flushSettledOrderBubble`,
+ * jobs/index.ts) already self-bounds with its own `withTimeout`
+ * (payments/telegramTimeout.ts) and never throws by contract — this is a
+ * second, independent bound at the boundary THIS package owns, since
+ * nothing here can assume the registered function honours that contract
+ * forever (defence in depth, not redundancy: a bubble flip is cosmetic, the
+ * DM it precedes carries the buyer's credentials or wallet credit, so a hung
+ * or failing flush must never block or fail that send).
+ */
+async function flushBubbleBeforeDm(orderId: number | null): Promise<void> {
+  if (orderId == null) return;
+  try {
+    const outcome = await withTimeout(flushPaymentBubble(orderId), BUBBLE_FLUSH_TIMEOUT_MS);
+    if (outcome === "timeout") {
+      logger.warn(`Gave up waiting on the payment-bubble flush for order ${orderId} after ${BUBBLE_FLUSH_TIMEOUT_MS}ms — sending its settlement DM regardless; the background paid-order bubble sweep will still catch a stale bubble within a minute`);
+    }
+  } catch (err) {
+    logger.warn({ err, orderId }, `The payment-bubble flush for order ${orderId} failed — sending its settlement DM regardless; the background paid-order bubble sweep will still catch a stale bubble within a minute`);
+  }
+}
 
 /**
  * Sleep for `ms` milliseconds, but wake immediately if `nudgeOutboxDispatcher`
@@ -162,7 +238,10 @@ export async function drainBatch(bot: Bot): Promise<void> {
 
     // Buyer account-delivery DM: send the account(s) as a .txt document, with
     // credentials read live from the DB (never from the outbox payload).
+    // Flush the payment bubble first (Task E3) — see this file's own module
+    // doc-comment.
     if (row.event === NotificationEvent.ORDER_DELIVERED_DM) {
+      await flushBubbleBeforeDm(row.orderId);
       if ((await deliverAccountDm(bot, row, payload)) === "ratelimited") return;
       continue;
     }
@@ -170,7 +249,10 @@ export async function drainBatch(bot: Bot): Promise<void> {
     // Buyer manual-fulfilment DM: send the admin-typed deliveredContent as a
     // plain message, with the content read live from the DB (never from the
     // outbox payload) — same credential-safety rule as ORDER_DELIVERED_DM.
+    // Flush the payment bubble first (Task E3) — see this file's own module
+    // doc-comment.
     if (row.event === NotificationEvent.ORDER_MANUAL_DELIVERED_DM) {
+      await flushBubbleBeforeDm(row.orderId);
       if ((await deliverManualContentDm(bot, row, payload)) === "ratelimited") return;
       continue;
     }
@@ -224,6 +306,14 @@ export async function drainBatch(bot: Bot): Promise<void> {
     if (!Number.isFinite(chatId)) {
       await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
       continue;
+    }
+
+    // The third and last order-scoped settlement DM (Task E3) — see this
+    // file's own module doc-comment. Every other event reaching this generic
+    // send (admin DMs, channel posts, broadcasts) has no payment bubble, so
+    // it's deliberately excluded.
+    if (row.event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
+      await flushBubbleBeforeDm(row.orderId);
     }
 
     if ((await trySend(bot, row, () => bot.api.sendMessage(chatId, text, { parse_mode: "HTML" }))) === "ratelimited") {

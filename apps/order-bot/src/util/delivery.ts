@@ -11,11 +11,14 @@
  * Also owns `settledPaymentBubble`, the canonical text/keyboard mapping for
  * an already-settled order's payment bubble, and `bubbleOnPhotoFor`, the
  * canonical mapping for what `editPaymentBubble` should do when that bubble
- * turns out to be a photo — shared by the Refresh button's on-the-spot flip
- * (handlers/checkout.ts), the background sweeper (jobs/index.ts) and both
- * QRIS reconcile pollers (payments/tokopayReconcile.ts,
- * payments/paydisiniReconcile.ts) so all four show the buyer the identical
- * ending.
+ * turns out to be a photo. Both are read by exactly one caller,
+ * `flipSettledOrderBubble` (jobs/index.ts) — the one shared edit/classify/
+ * clear-anchor body behind the Refresh button's on-the-spot flip
+ * (handlers/checkout.ts), the background sweeper (jobs/index.ts), all three
+ * QRIS/IDR reconcile pollers (payments/tokopayReconcile.ts,
+ * payments/paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts) and the
+ * payment-bubble flush hook (Task E3) alike, so none of them can show the
+ * buyer a different ending for the same order.
  */
 import { InputFile, type Api, type InlineKeyboard } from "grammy";
 import { OrderKind, OrderStatus, langCode } from "@app/core/enums";
@@ -76,17 +79,20 @@ export function settledPaymentKb(kind: string, lang: string): InlineKeyboard {
 
 /**
  * The one place an order maps to the success bubble it should now be showing.
- * Every post-payment bubble flip calls it directly — the buyer's own
+ * Every post-payment bubble flip calls it, directly or through the shared
+ * `flipSettledOrderBubble` body (jobs/index.ts): the buyer's own
  * "🔄 Refresh Status" tap (`refreshPaymentStatus`, handlers/checkout.ts), the
  * background sweeper that catches every settlement the bot process never saw
- * (`sweepPaidOrderBubbles`, jobs/index.ts), the two QRIS reconcile pollers'
- * own fast paths (payments/tokopayReconcile.ts, paydisiniReconcile.ts), and
- * the three crypto rails' own fast paths (binanceInternal.ts,
- * bybitDeposit.ts, bybitBscDeposit.ts) — so a buyer can never be shown two
- * different endings for the same order depending on which one got there
- * first. The QRIS pollers are the reason that matters most in practice: they
- * clear the order's anchor as soon as they flip it, which retires the order
- * from the sweeper's queue, so whatever they write is final.
+ * (`sweepPaidOrderBubbles`, jobs/index.ts), all three QRIS/IDR reconcile
+ * pollers' own fast paths (payments/tokopayReconcile.ts,
+ * paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts), the payment-
+ * bubble flush hook (Task E3), and the three crypto rails' own fast paths
+ * (binanceInternal.ts, bybitDeposit.ts, bybitBscDeposit.ts) — so a buyer can
+ * never be shown two different endings for the same order depending on which
+ * one got there first. The QRIS/IDR pollers are the reason that matters most
+ * in practice: they clear the order's anchor as soon as they flip it, which
+ * retires the order from the sweeper's queue, so whatever they write is
+ * final.
  *
  * Every caller can pass its order straight through with no extra database
  * read: this function interpolates no buyer balance into either branch below
@@ -131,11 +137,13 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
  * The `onPhoto` mode every settled-bubble flip passes to `editPaymentBubble`
  * (jobs/index.ts), by what the order was for — the same `kind` switch
  * `settledPaymentBubble` and `settledPaymentKb` above already make, kept in
- * one place for the same reason: `flipSettledBubble` (handlers/checkout.ts),
- * `sweepPaidOrderBubbles` (jobs/index.ts) and both QRIS reconcile pollers'
- * `editBubbleToSuccess` (payments/tokopayReconcile.ts,
- * payments/paydisiniReconcile.ts) all flip the same bubbles and must not be
- * able to drift apart on which one gets its QR silently deleted.
+ * one place for the same reason: `flipSettledOrderBubble` (jobs/index.ts) —
+ * the one shared body behind `flipSettledBubble` (handlers/checkout.ts),
+ * `sweepPaidOrderBubbles` (jobs/index.ts), all three QRIS/IDR reconcile
+ * pollers' `editBubbleAndClear` (payments/tokopayReconcile.ts,
+ * payments/paydisiniReconcile.ts, payments/nowpaymentsReconcile.ts) and the
+ * payment-bubble flush hook (Task E3) — all flip the same bubbles and must
+ * not be able to drift apart on which one gets its QR silently deleted.
  *
  * A WALLET_TOPUP whose bubble turns out to be a QR photo gets `"delete"`: the
  * buyer's outbox WALLET_TOPUP_CREDITED_DM (enqueued once inside
@@ -148,9 +156,10 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
  * message when the QR it replaces can't be edited into it.
  *
  * `fallbackDm: null` on the `"replace"` branch, not omitted, because none of
- * these four callers want a fallback DM either way — the buyer already got
- * the news through the normal delivery/top-up path (see each call site's own
- * comment for why), so a DM here would only repeat it. `"delete"` carries no
+ * `flipSettledOrderBubble`'s callers want a fallback DM either way — the
+ * buyer already got the news through the normal delivery/top-up path (see
+ * each call site's own comment for why), so a DM here would only repeat it.
+ * `"delete"` carries no
  * `fallbackDm` at all: `editPaymentBubble`'s type makes that combination
  * unrepresentable on purpose (see its own doc comment), because a caller
  * asking for total silence on success cannot also ask for a DM on failure

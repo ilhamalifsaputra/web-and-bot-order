@@ -79,8 +79,10 @@ export function buildBot(token?: string): Bot<MyContext> {
   // which just re-creates the same coupling. The actual problem that fix was
   // chasing — an unbounded Telegram call able to stall a bounded reconcile
   // cycle — is now bounded at the call site instead: see
-  // editBubbleToSuccess/alertAdmins in tokopayReconcile.ts and
-  // paydisiniReconcile.ts, wrapped in `withTimeout`.
+  // editBubbleAndClear/alertAdmins in tokopayReconcile.ts,
+  // paydisiniReconcile.ts and nowpaymentsReconcile.ts, wrapped in
+  // `withTimeout` (editBubbleAndClear's own bound now lives inside the
+  // shared `flipSettledOrderBubble`, jobs/index.ts, Task E3).
   const bot = new Bot<MyContext>(resolvedToken);
 
   // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview))

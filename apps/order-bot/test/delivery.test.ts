@@ -136,10 +136,12 @@ describe("settledPaymentKb", () => {
 });
 
 // Task E2: the canonical `onPhoto` choice every editPaymentBubble call site
-// (flipSettledBubble, sweepPaidOrderBubbles, both QRIS reconcile pollers'
-// editBubbleToSuccess) now derives from `order.kind` through this one
-// function, so none of them can drift apart on which order kind gets its QR
-// silently deleted vs. replaced.
+// derives from `order.kind` through this one function, so none of them can
+// drift apart on which order kind gets its QR silently deleted vs. replaced.
+// Since Task E3 there is exactly one caller of editPaymentBubble left —
+// `flipSettledOrderBubble` (jobs/index.ts) — shared by flipSettledBubble, the
+// paid-order bubble sweep, all three QRIS/IDR reconcile pollers, and the
+// payment-bubble flush hook alike.
 describe("bubbleOnPhotoFor", () => {
   it("tells a settled WALLET_TOPUP's photo bubble to be deleted, carrying no fallback DM target", () => {
     // `toEqual` already pins the absence of `fallbackDm`. That the combination

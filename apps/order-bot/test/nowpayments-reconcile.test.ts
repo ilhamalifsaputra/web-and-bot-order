@@ -5,15 +5,20 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
   prisma,
   createOrderDirect,
+  createWalletTopupOrder,
   finalizeOrderPayment,
   listPendingNowpaymentsOrders,
+  setOrderPaymentMessage,
+  updateDenomination,
   setSetting,
   bulkAddStock,
   getPollHealth,
 } from "@app/db";
 import type { Api } from "grammy";
-import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod, DeliveryType } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { telegramError } from "./helpers/ctx";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/nowpaymentsReconcile";
 import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
 
@@ -34,7 +39,27 @@ afterAll(async () => {
 });
 
 const CREDS = { apiKey: "ak", ipnSecret: "secret", payCurrency: "usdttrc20", minAmount: null };
-const fakeApi = () => ({ sendMessage: vi.fn().mockResolvedValue(undefined) }) as unknown as Api;
+
+/** `editMessageCaption` is still on the double even though nothing should
+ *  ever call it — the QRIS rails' own fakeApi carries the identical comment:
+ *  this rail used to have no bubble-flip call at all (Task E3 gives it one,
+ *  through the same `editPaymentBubble`/`editMessageText` path the QRIS
+ *  rails use), so a test that finds it called is finding a regression back
+ *  toward the caption-edit bug those rails already fixed. */
+const REPLACEMENT_MSG_ID = 90211;
+const fakeApi = (
+  overrides: Partial<{ editMessageText: unknown; deleteMessage: unknown; sendMessage: unknown }> = {},
+) =>
+  ({
+    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue({ message_id: REPLACEMENT_MSG_ID }),
+    editMessageCaption: vi.fn().mockResolvedValue(undefined),
+    editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
+    deleteMessage: overrides.deleteMessage ?? vi.fn().mockResolvedValue(true),
+  }) as unknown as Api;
+
+/** Telegram's answer to `editMessageText` on a PHOTO message — the one signal
+ *  that says "this bubble carries a QR image, not text". */
+const noTextToEdit = () => telegramError(400, "Bad Request: there is no text in the message to edit");
 
 /** Stub the gateway's GET /v1/invoice/{id} status call. */
 function stubStatus(body: Record<string, unknown>) {
@@ -133,6 +158,120 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     expect(stillPending).toBeDefined();
     const tx = await prisma.processedNowpaymentsTx.findFirst({ where: { orderId: pending!.id } });
     expect(tx).toBeNull();
+  });
+});
+
+/**
+ * Task E3: this rail never flipped its own anchored payment bubble at all
+ * before this task — a delivered order's bubble sat stale until the generic
+ * `sweepPaidOrderBubbles` cron sweep next ticked (up to ~60s later). These
+ * tests mirror tokopay-reconcile.test.ts's own "the success bubble a settled
+ * order is flipped to" suite (same shared `editPaymentBubble`/
+ * `settledPaymentBubble` mapping, via the shared `flipSettledOrderBubble`,
+ * jobs/index.ts), proving this rail now flips immediately like TokoPay/
+ * PayDisini instead of waiting on the sweep.
+ */
+describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
+  /** Deliver the one pending order with its bubble anchored at (555, 777). */
+  async function deliverAnchored(api: Api, trxId: string) {
+    const created = await makeNowpaymentsOrder();
+    await setOrderPaymentMessage(prisma, created.id, 555, 777);
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", payment_id: trxId, actually_paid: pending!.totalAmount.toString() });
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    return prisma.order.findUnique({ where: { id: created.id } });
+  }
+
+  it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
+    const api = fakeApi();
+
+    const after = await deliverAnchored(api, "TRX-E3-FLIP");
+
+    expect(api.editMessageText).toHaveBeenCalledTimes(1);
+    const [chatId, msgId, , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(chatId).toBe(555);
+    expect(msgId).toBe(777);
+    expect(payload.reply_markup.inline_keyboard.flat().map((b: { callback_data?: string }) => b.callback_data)).toContain("v1:order:list");
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+  });
+
+  it("replaces an anchored PHOTO (QR) bubble with a fresh message instead of leaving the QR image behind", async () => {
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+    const after = await deliverAnchored(api, "TRX-E3-PHOTO");
+
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+  });
+
+  it("also flips the bubble for a manual-fulfilment order queued as PROCESSING", async () => {
+    await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
+    const api = fakeApi();
+
+    const after = await deliverAnchored(api, "TRX-E3-PROCESSING");
+
+    expect(after?.status).toBe(OrderStatus.PROCESSING);
+    const [, , , payload] = (api.editMessageText as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(payload.reply_markup.inline_keyboard.flat().map((b: { callback_data?: string }) => b.callback_data)).toContain("v1:order:list");
+    expect(after?.paymentMsgChatId).toBeNull();
+  });
+
+  it("keeps the anchor when the bubble flip is flood-controlled, so the paid-order bubble sweep retries it", async () => {
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+      deleteMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+    });
+
+    const after = await deliverAnchored(api, "TRX-E3-FLOOD");
+
+    expect(after?.status).toBe(OrderStatus.DELIVERED); // delivery itself is unaffected by a bubble problem
+    expect(after?.paymentMsgChatId).not.toBeNull();
+    expect(after?.paymentMsgId).not.toBeNull();
+  });
+
+  it("words a settled wallet top-up as a neutral 'payment received' status and deletes a photo (QR) bubble with no replacement", async () => {
+    const STARTING_USDT = "10";
+    const TOPUP_USDT = "5";
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalanceUsdt: STARTING_USDT } });
+    const topup = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: TOPUP_USDT,
+        currency: "USDT",
+        method: PaymentMethod.NOWPAYMENTS,
+        rate: "16000",
+      }),
+    );
+    // finalizeWalletTopupPayment's NOWPAYMENTS branch stamps expiresAt/
+    // paymentMethod but not paymentRef — no live invoice call is made by
+    // this test util (that only happens in real checkout, over HTTP). Stamp
+    // the same tagged-JSON `extractInvoiceId` reads, mirroring
+    // makeNowpaymentsOrder above.
+    await prisma.order.update({
+      where: { id: topup.id },
+      data: { paymentRef: JSON.stringify({ gateway: "nowpayments", invoiceId: "INV-E3-TOPUP" }) },
+    });
+    await setOrderPaymentMessage(prisma, topup.id, 555, 888);
+    const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", payment_id: "TRX-E3-TOPUP", actually_paid: pending!.totalAmount.toString() });
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    expect(api.deleteMessage).toHaveBeenCalledWith(555, 888);
+    expect(api.sendMessage).not.toHaveBeenCalled(); // no replacement — the outbox WALLET_TOPUP_CREDITED_DM already told the buyer
+    const after = await prisma.order.findUnique({ where: { id: topup.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).toString()).toBe("15");
   });
 });
 

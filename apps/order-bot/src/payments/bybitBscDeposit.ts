@@ -275,58 +275,35 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit further
-  // down uses this neutral status text instead of a success sentence: the
-  // buyer's actual "top-up successful" DM (amount + new balance + order code)
-  // now comes exclusively from the outbox, enqueued once inside
-  // settleWalletTopup — see that function's own doc-comment. Duplicating that
-  // sentence here as a direct DM is exactly what used to double-notify a
-  // buyer whose top-up settled through both this poller AND the outbox.
-  let topupBubbleText: string | null = null;
+  // Non-null only for a WALLET_TOPUP order — the anchored-bubble edit below
+  // uses this neutral status text instead of a success sentence: the buyer's
+  // actual "top-up successful" DM (amount + new balance + order code) comes
+  // exclusively from the outbox, enqueued once inside settleWalletTopup —
+  // see that function's own doc-comment. Duplicating that sentence here as a
+  // direct DM is exactly what used to double-notify a buyer whose top-up
+  // settled through both this poller AND the outbox. Computed up front
+  // (pure, no Telegram call) because the bubble flip below now runs BEFORE
+  // the nudge/delivery step (Task E3).
+  const topupBubbleText = order.kind === OrderKind.WALLET_TOPUP ? settledPaymentBubble(order).text : null;
 
-  if (order.kind === OrderKind.WALLET_TOPUP) {
-    // There is nothing to deliver here — settleWalletTopup already credited
-    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
-    // it wakes immediately instead of waiting for its next poll tick — but
-    // only when a dispatcher is registered in THIS process
-    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
-    // server (apps/server/src/index.ts) runs one, so the claim holds there,
-    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
-    // not, and nudging is then a no-op — the DM still goes out, just on the
-    // notifier process's own next poll tick. Also give the bubble the same
-    // neutral "payment received" text every other settled top-up gets.
-    nudgeOutboxDispatcher();
-    topupBubbleText = settledPaymentBubble(order).text;
-  } else {
-    // Bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is
-    // legitimately slower than a plain text call (see telegramTimeout.ts),
-    // but still must not fall back to grammY's 500s default.
-    try {
-      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
-      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
-    } catch (err) {
-      logger.error(
-        { err },
-        `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
-      );
-      try {
-        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
-          chat_id: tgId,
-          order_code: order.orderCode,
-        });
-      } catch (eq) {
-        logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
-      }
-    }
-  }
-
-  // Turn the payment-instructions bubble into a success message in place, then
-  // clear the anchor pointer — but keep it for anything that could still work
-  // on a later attempt. editAnchoredBubble never throws (it catches and
-  // classifies the rejection itself), so `outcome` here is its own
-  // clear/keep verdict or "timeout", the one case it cannot see. Bounded at
-  // TELEGRAM_MESSAGE_TIMEOUT_MS so a stuck edit call can't stall the poller
-  // past its own tick.
+  // Turn the payment-instructions bubble into a success message in place,
+  // then clear the anchor pointer — BEFORE the nudge/delivery step below
+  // (Task E3): the buyer's chat must show "Payment received" first, not
+  // after their account file/top-up notice, or it reads as "the shop sent my
+  // account before I paid" even though nothing was ever delivered early
+  // (approveOrder's atomic claim gates every credential send — this was
+  // purely a message-ordering artefact). The outbox dispatcher's own
+  // payment-bubble flush hook (packages/core/src/nudge.ts) is the structural
+  // backstop if this still loses the race (e.g. a slow Telegram edit), but
+  // the ordering here should teach the right lesson regardless.
+  //
+  // Keep the anchor for anything that could still work on a later attempt.
+  // editAnchoredBubble never throws (it catches and classifies the
+  // rejection itself), so `outcome` here is its own clear/keep verdict or
+  // "timeout", the one case it cannot see. Bounded at
+  // TELEGRAM_MESSAGE_TIMEOUT_MS so a stuck edit call can't stall the
+  // credential send that follows below, let alone the poller past its own
+  // tick.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     const outcome = await withTimeout(
       editAnchoredBubble(
@@ -351,6 +328,40 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       logger.warn(`Bybit BSC deposit poller gave up waiting on the bubble edit for order ${order.orderCode} after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — anchor left in place so a later sweep retries`);
     } else if (outcome === "clear_anchor") {
       await clearOrderPaymentMessage(prisma, order.id);
+    }
+  }
+
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    // There is nothing to deliver here — settleWalletTopup already credited
+    // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
+    // it wakes immediately instead of waiting for its next poll tick — but
+    // only when a dispatcher is registered in THIS process
+    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
+    // server (apps/server/src/index.ts) runs one, so the claim holds there,
+    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
+    // not, and nudging is then a no-op — the DM still goes out, just on the
+    // notifier process's own next poll tick.
+    nudgeOutboxDispatcher();
+  } else {
+    // Bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is
+    // legitimately slower than a plain text call (see telegramTimeout.ts),
+    // but still must not fall back to grammY's 500s default.
+    try {
+      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+      );
+      try {
+        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
+          chat_id: tgId,
+          order_code: order.orderCode,
+        });
+      } catch (eq) {
+        logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      }
     }
   }
 }

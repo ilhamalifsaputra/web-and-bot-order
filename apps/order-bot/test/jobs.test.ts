@@ -60,6 +60,7 @@ import {
   autoCloseStaleTickets,
   editPaymentBubble,
   sweepPaidOrderBubbles,
+  flushSettledOrderBubble,
   scheduleJobs,
   drainBroadcasts,
   announceStartedFlashSales,
@@ -771,6 +772,78 @@ describe("sweepPaidOrderBubbles", () => {
       const fourth = await prisma.order.findUnique({ where: { id: orders[3]!.id } });
       expect(fourth?.paymentMsgChatId).not.toBeNull();
     });
+  });
+});
+
+/**
+ * The order-bot side of the Task E3 payment-bubble flush hook: what
+ * `apps/server`'s boot registers via `registerPaymentBubbleFlush`
+ * (packages/core/src/nudge.ts) so `packages/outbox-dispatcher` can ask this
+ * process to finish flipping an order's payment bubble before it sends that
+ * order's settlement DM. `packages/outbox-dispatcher/src/dispatcher.test.ts`
+ * covers the generic hook mechanism (a fake registered implementation,
+ * proving call order and the defence-in-depth timeout/swallow at that
+ * boundary); these tests cover THIS implementation's own behavior — reading
+ * the order fresh and flipping it through the same `flipSettledOrderBubble`
+ * every other caller uses.
+ */
+describe("flushSettledOrderBubble (Task E3 payment-bubble flush hook)", () => {
+  it("flips a settled order's anchored bubble to its success message and clears the anchor", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.TOKOPAY,
+      kind: OrderKind.PRODUCT,
+      status: OrderStatus.DELIVERED,
+    });
+    const api = fakeApi();
+
+    await flushSettledOrderBubble(api, order.id);
+
+    const edit = onlyEdit(api);
+    expect(edit.chatId).toBe(order.chatId);
+    expect(edit.msgId).toBe(order.msgId);
+    expect(edit.text).toContain(order.orderCode);
+    const after = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+  });
+
+  it("is a no-op — no Telegram call at all — when the order's own rail already cleared the anchor", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.BINANCE_INTERNAL,
+      kind: OrderKind.PRODUCT,
+      status: OrderStatus.DELIVERED,
+    });
+    await clearOrderPaymentMessage(prisma, order.id);
+    const api = fakeApi();
+
+    await flushSettledOrderBubble(api, order.id);
+
+    expect(api.editMessageText).not.toHaveBeenCalled();
+    expect(api.deleteMessage).not.toHaveBeenCalled();
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("never throws when the order id doesn't exist", async () => {
+    const api = fakeApi();
+    await expect(flushSettledOrderBubble(api, 999_999_999)).resolves.toBeUndefined();
+    expect(api.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("never throws when the edit fails, and leaves the anchor for the background sweep to retry", async () => {
+    const order = await makeSettledAnchoredOrder({
+      method: PaymentMethod.PAYDISINI,
+      kind: OrderKind.PRODUCT,
+      status: OrderStatus.DELIVERED,
+    });
+    const api = fakeApi({
+      editMessageText: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+      deleteMessage: vi.fn().mockRejectedValue(telegramError(429, "Too Many Requests: retry after 30")),
+    });
+
+    await expect(flushSettledOrderBubble(api, order.id)).resolves.toBeUndefined();
+
+    const after = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(after?.paymentMsgChatId).not.toBeNull();
   });
 });
 

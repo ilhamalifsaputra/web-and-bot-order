@@ -16,10 +16,20 @@
 -- most one row per pair (see the schema comment on the constraint for the
 -- six mechanisms), but historical rows predate some of those guards.
 --
--- VERIFY BEFORE APPLYING, against the live database, from the repo root:
+-- VERIFIED against the live database on 2026-08-16, before this migration was
+-- committed: zero duplicate (order_id, reason) pairs, so the index applies
+-- cleanly to the data as it stands. Re-run the check below if any significant
+-- time or traffic passes before this is actually deployed — the guarantee is
+-- about the data at a moment, not a property of the schema.
 --
---   DATABASE_URL_PRISMA="file:./data/bot.db" \
---     pnpm exec tsx scripts/check-wallet-tx-duplicates.ts
+--   pnpm exec tsx scripts/check-wallet-tx-duplicates.ts <path-to>/data/bot.db
+--
+-- Pass the database path as an argument. A relative DATABASE_URL_PRISMA is
+-- resolved by Prisma against prisma/, not against your current directory, so
+-- the obvious `file:./data/bot.db` quietly points at prisma/data/bot.db and
+-- fails with "Unable to open the database file". The script resolves its
+-- argument against your current directory and prints the file it opened —
+-- read that line before trusting the answer.
 --
 -- Exit 0 means no duplicates and this is safe to apply; exit 1 lists them.
 -- Any duplicate is a real historical double-movement on a buyer's balance and

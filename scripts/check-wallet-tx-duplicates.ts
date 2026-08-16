@@ -21,19 +21,56 @@
  * real historical double-movement on a buyer's balance and needs a human
  * decision — never a delete to make the index fit.
  *
- * Usage, from the repo root, against the live database:
+ * Usage — pass the database file as an argument:
  *
- *   DATABASE_URL_PRISMA="file:./data/bot.db" pnpm exec tsx scripts/check-wallet-tx-duplicates.ts
+ *   pnpm exec tsx scripts/check-wallet-tx-duplicates.ts ../../../data/bot.db
+ *   pnpm exec tsx scripts/check-wallet-tx-duplicates.ts C:/path/to/data/bot.db
+ *
+ * The argument is resolved against your CURRENT directory and passed to Prisma
+ * as an absolute path, which is the whole reason it exists. A relative
+ * `DATABASE_URL_PRISMA` is resolved by Prisma against `prisma/` (where
+ * schema.prisma lives), not against the directory you are standing in — which
+ * is why the repo's own `.env` reads `file:../data/bot.db` — so the obvious
+ * `file:./data/bot.db` silently points at `prisma/data/bot.db` and fails with
+ * "Unable to open the database file". With no argument, this falls back to
+ * whatever `DATABASE_URL_PRISMA` is already set to.
+ *
+ * It prints the file it actually opened. Check that line before believing the
+ * result: pointed at the wrong database — an empty worktree copy, say — this
+ * reports "no duplicates" perfectly truthfully and tells you nothing about
+ * production.
  *
  * Exit code 0 = no duplicates, safe to apply. Exit code 1 = duplicates found,
  * listed on stdout. Any other failure exits 2.
  */
+import { resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { PrismaClient } from "@prisma/client";
 
 type DuplicateRow = { order_id: number; reason: string; n: bigint | number };
 
+/** Turn the CLI argument into an absolute `file:` URL, or return null to fall
+ *  back to whatever `DATABASE_URL_PRISMA` already points at. Fails loudly on a
+ *  path that does not exist rather than letting Prisma's "Unable to open the
+ *  database file" stand in for it — that error reads like a permissions or
+ *  corruption problem, when it is almost always a path resolved from somewhere
+ *  other than where you were standing. */
+function resolveDatabaseUrl(arg: string | undefined): string | null {
+  if (!arg) return null;
+  const absolute = resolve(process.cwd(), arg);
+  if (!existsSync(absolute)) {
+    throw new Error(
+      `No database file at ${absolute} (resolved from "${arg}" relative to ${process.cwd()}). ` +
+        `Pass the path to the database you actually want to check — for the live one, that is the data/bot.db in the main working directory, not a worktree's own copy.`,
+    );
+  }
+  return `file:${absolute.replace(/\\/g, "/")}`;
+}
+
 async function main(): Promise<number> {
-  const prisma = new PrismaClient();
+  const url = resolveDatabaseUrl(process.argv[2]);
+  console.log(`Checking ${url ?? `DATABASE_URL_PRISMA (${process.env.DATABASE_URL_PRISMA ?? "unset"})`}\n`);
+  const prisma = url ? new PrismaClient({ datasources: { db: { url } } }) : new PrismaClient();
   try {
     const rows = await prisma.$queryRaw<DuplicateRow[]>`
       SELECT order_id, reason, COUNT(*) AS n

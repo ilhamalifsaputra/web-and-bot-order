@@ -239,13 +239,19 @@ describe("PATCH /api/catalog/denominations/:id — deliveryType/additionalFields
 });
 
 describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSku", () => {
-  it("sets autoDeliverySource to digiflazz with a supplierSku and persists both fields", async () => {
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  it("sets autoDeliverySource to digiflazz with a supplierSku and persists both fields, alongside manual_with_info", async () => {
     const id = await seedDenomination();
     const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
       name: "1 Month",
       type: "SHARED",
       durationLabel: "1 Month",
       price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
       supplierSku: "mlbb86",
     });
@@ -262,6 +268,8 @@ describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSk
       type: "SHARED",
       durationLabel: "1 Month",
       price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
       supplierSku: "   ",
     });
@@ -271,18 +279,24 @@ describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSk
     expect(row!.supplierSku).toBeNull();
   });
 
-  it("omitting autoDeliverySource clears a previously-set supplier link", async () => {
+  it("omitting autoDeliverySource clears a previously-set supplier link while staying manual_with_info", async () => {
     const id = await seedDenomination();
     const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
       name: "1 Month",
       type: "SHARED",
       durationLabel: "1 Month",
       price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
       supplierSku: "mlbb86",
     });
     expect(setup.statusCode).toBe(200);
 
+    // deliveryType omitted here — the "touch only if provided" partial-update
+    // convention leaves it at manual_with_info (set by the setup call above),
+    // so this is purely testing that dropping autoDeliverySource from the
+    // payload clears it, independent of any deliveryType change.
     const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
       name: "1 Month",
       type: "SHARED",
@@ -291,6 +305,64 @@ describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSk
     });
     expect(res.statusCode).toBe(200);
     const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Regression test for the review finding: autoDeliverySource/supplierSku
+  // must be coupled to deliveryType === manual_with_info the same way
+  // additionalFields already is (see the deliveryType/additionalFields
+  // describe block above) — an admin can't leave a denomination with a live
+  // Digiflazz link but no buyer-submitted Game ID/Server info for it to
+  // fulfill against.
+  it("ignores autoDeliverySource/supplierSku when deliveryType is not manual_with_info (row keeps schema-default auto)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  it("clears autoDeliverySource/supplierSku when deliveryType is explicitly changed away from manual_with_info", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(setup.statusCode).toBe(200);
+    const setupRow = await prisma.denomination.findUnique({ where: { id } });
+    expect(setupRow!.autoDeliverySource).toBe("digiflazz");
+
+    // Switches deliveryType back to auto while still sending the (now stale)
+    // autoDeliverySource/supplierSku — the admin's own "changed their mind"
+    // scenario from the review finding.
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
     expect(row!.autoDeliverySource).toBeNull();
     expect(row!.supplierSku).toBeNull();
   });

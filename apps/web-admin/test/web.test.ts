@@ -1837,12 +1837,18 @@ describe("catalog JSON API — create denomination", () => {
     expect(row!.additionalFields).toBeNull();
   });
 
-  it("creates a denomination with autoDeliverySource digiflazz and a supplierSku, persisting both fields", async () => {
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  it("creates a denomination with autoDeliverySource digiflazz and a supplierSku, persisting both fields, alongside manual_with_info", async () => {
     const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
       name: "1 Month",
       type: "SHARED",
       durationLabel: "1 Month",
       price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
       supplierSku: "mlbb86",
     });
@@ -1860,6 +1866,8 @@ describe("catalog JSON API — create denomination", () => {
       type: "SHARED",
       durationLabel: "1 Month",
       price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
       supplierSku: "   ",
     });
@@ -1878,6 +1886,30 @@ describe("catalog JSON API — create denomination", () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body) as { id: number };
     const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Regression test for the review finding: autoDeliverySource/supplierSku
+  // must be coupled to deliveryType === manual_with_info the same way
+  // additionalFields already is above ("ignores a stray additionalFields
+  // payload when deliveryType is not manual_with_info") — a denomination
+  // outside Manual + Info has no buyer-submitted Game ID/Server info for a
+  // supplier to fulfill against, so it can't carry a live Digiflazz link.
+  it("ignores autoDeliverySource/supplierSku when deliveryType is not manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("auto");
     expect(row!.autoDeliverySource).toBeNull();
     expect(row!.supplierSku).toBeNull();
   });

@@ -86,7 +86,9 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info"
             ? { additionalFields: draftsToFields(additionalFields) }
             : {}),
-          ...(autoDeliverySource ? { autoDeliverySource, supplierSku: supplierSku.trim() } : {}),
+          ...(deliveryType === "manual_with_info" && autoDeliverySource
+            ? { autoDeliverySource, supplierSku: supplierSku.trim() }
+            : {}),
         },
       ),
     onMutate: () => setError(null),

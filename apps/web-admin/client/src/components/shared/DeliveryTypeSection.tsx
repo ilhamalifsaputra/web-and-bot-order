@@ -110,9 +110,25 @@ export function DeliveryTypeSection({
   // unnecessary state) — picking Manual always starts at Step 2's "No buyer
   // information required" default, same as a fresh row. `deliveryType` is
   // the single source of truth; there's nothing to restore once it's been
-  // overwritten to "auto".
+  // overwritten to "auto". Leaving Manual + buyer info required this way
+  // also hides Step 4, so its state is reset too — otherwise a value like
+  // "digiflazz" would sit unseen in the parent's state and could resurface
+  // silently if the admin flips back to buyer info required later.
   function selectMethod(next: DeliveryMethod) {
     onDeliveryTypeChange(next === "auto" ? "auto" : "manual");
+    onAutoDeliverySourceChange(null);
+    onSupplierSkuChange("");
+  }
+
+  // Same "no hidden memory" reset as selectMethod above, for the other path
+  // that can turn requiresInfo from true back to false: un-checking "Require
+  // buyer information" in Step 2 without changing the Step 1 method.
+  function selectBuyerInfo(next: "required" | "none") {
+    onDeliveryTypeChange(next === "required" ? "manual_with_info" : "manual");
+    if (next === "none") {
+      onAutoDeliverySourceChange(null);
+      onSupplierSkuChange("");
+    }
   }
 
   return (
@@ -149,7 +165,7 @@ export function DeliveryTypeSection({
           <RadioGroup
             className="mt-2"
             value={requiresInfo ? "required" : "none"}
-            onValueChange={(v) => onDeliveryTypeChange(v === "required" ? "manual_with_info" : "manual")}
+            onValueChange={(v) => selectBuyerInfo(v as "required" | "none")}
           >
             <RadioOptionCard
               id="buyer-info-none"

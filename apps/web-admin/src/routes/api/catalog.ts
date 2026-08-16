@@ -291,17 +291,24 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     // denomination to a supplier (the Import Wizard is the bulk path) — "none"
     // (client sends nothing) clears it; "digiflazz" requires a non-empty
     // supplierSku, mirroring the client-side canSubmit rule.
-    const autoDeliverySource =
-      typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
-        ? body.autoDeliverySource.trim()
-        : null;
+    let autoDeliverySource: string | null = null;
     let supplierSku: string | null = null;
-    if (autoDeliverySource === "digiflazz") {
-      supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
-      if (!supplierSku) {
-        return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+    if (deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      autoDeliverySource =
+        typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
+          ? body.autoDeliverySource.trim()
+          : null;
+      if (autoDeliverySource === "digiflazz") {
+        supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
+        if (!supplierSku) {
+          return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+        }
       }
     }
+    // deliveryType !== MANUAL_WITH_INFO: autoDeliverySource/supplierSku stay
+    // null even if the client sent something (e.g. leftover state from
+    // switching away from Manual + Info in the form) — same rule as
+    // additionalFields above, the delivery type is the source of truth.
 
     const denom = await createDenomination(prisma, {
       productId,
@@ -594,16 +601,27 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     // plain optional fields (not "touch-only-if-provided" like deliveryType):
     // an admin picking "None" in the form omits both from the request body,
     // which clears them here too. "digiflazz" requires a non-empty
-    // supplierSku, mirroring the client-side canSubmit rule.
-    const autoDeliverySource =
-      typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
-        ? body.autoDeliverySource.trim()
-        : null;
+    // supplierSku, mirroring the client-side canSubmit rule. Unlike
+    // costPrice/resellerPrice, they're gated on the delivery type the same
+    // way additionalFields is above — the *effective* delivery type is
+    // whatever this request sets it to, or the row's existing value when
+    // this request doesn't touch deliveryType at all, so a request that
+    // sends autoDeliverySource alongside (or on top of) a non-manual_with_info
+    // delivery type can't silently persist a supplier link with no
+    // buyer-submitted fields for it to fulfill against.
+    let autoDeliverySource: string | null = null;
     let supplierSku: string | null = null;
-    if (autoDeliverySource === "digiflazz") {
-      supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
-      if (!supplierSku) {
-        return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+    const effectiveDeliveryType = deliveryType ?? existing.deliveryType;
+    if (effectiveDeliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      autoDeliverySource =
+        typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
+          ? body.autoDeliverySource.trim()
+          : null;
+      if (autoDeliverySource === "digiflazz") {
+        supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
+        if (!supplierSku) {
+          return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+        }
       }
     }
 

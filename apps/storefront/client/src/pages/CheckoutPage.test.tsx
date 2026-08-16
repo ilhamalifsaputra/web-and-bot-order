@@ -867,6 +867,37 @@ describe("CheckoutPage", () => {
       expect(screen.getByRole("button", { name: /Place order/ })).not.toBeDisabled();
     });
 
+    // Regression (code review finding I-1): the PaymentMethodSelector
+    // extraction changed which payload gates wallet-credit availability —
+    // it used to be passed the live, voucher-adjusted `totals`, and got
+    // changed to the stale, pre-voucher `page` seeded once from the initial
+    // GET. A buyer whose voucher brings the total within their wallet
+    // balance never saw the row appear. Existing coverage above only tests
+    // "wallet without a voucher" and "voucher without wallet" — never the
+    // crossing case, which is exactly what silently broke.
+    it("shows the wallet-credit row once a voucher brings the (live) total within the wallet balance — was gated on the stale pre-voucher total", async () => {
+      // wallet_idr (150000) doesn't cover the fixture's 158000 total yet.
+      renderCheckout(() => ({ ...checkoutData, wallet_idr: "150000" }));
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument();
+
+      const input = screen.getByPlaceholderText("Code");
+      fireEvent.change(input, { target: { value: "save10" } });
+      (apiPost as Mock).mockResolvedValue({
+        ...checkoutData,
+        wallet_idr: "150000",
+        voucher_discount: "18000",
+        total: "140000", // now within the 150000 wallet balance
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      const walletRadio = (await screen.findByRole("radio", {
+        name: /Wallet Credit \(IDR\)/,
+      })) as HTMLInputElement;
+      fireEvent.click(walletRadio);
+      expect(walletRadio.checked).toBe(true);
+    });
+
     it("Place order stays disabled until every unit's manual_with_info fields validate, even with wallet credit selected", async () => {
       const fields: AdditionalField[] = [
         { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },

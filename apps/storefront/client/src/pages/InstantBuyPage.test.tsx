@@ -313,4 +313,186 @@ describe("InstantBuyPage", () => {
     expect(screen.queryByText("checkout-page-stub")).not.toBeInTheDocument();
     expect(document.querySelector('a[href="/cart"]')).toBeNull();
   });
+
+  // Code review findings I-2/I-3: the cart-sync effect (fired off the
+  // selected denomination's id — read cart, remove old lines, add new line)
+  // had no serialization, and a stale wallet-credit selection wasn't
+  // re-validated after a re-price. Both are fixed in the same place: the
+  // denomination grid's onChange now ignores a pick while syncCart.isPending,
+  // and the checkoutData effect clears `method` when it's no longer a valid
+  // row for the fresh totals.
+  describe("cart-sync serialization and method re-validation (I-2 / I-3)", () => {
+    it("ignores a rapid second denomination pick while the first sync is still in flight", async () => {
+      renderInstantBuy();
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 1, qty: 1 }));
+      await screen.findByText("Summary");
+
+      // Stall the cart-read the 172-Diamonds sync issues, so we have a
+      // window to click again while that sync is still pending — a second,
+      // overlapping sync must never start while the first is in flight.
+      const baseGet = (apiGet as Mock).getMockImplementation()!;
+      let cartReads = 0;
+      let releaseStalledRead: (() => void) | null = null;
+      let stalledReadStartedResolve: (() => void) | null = null;
+      const stalledReadStarted = new Promise<void>((resolve) => {
+        stalledReadStartedResolve = resolve;
+      });
+      (apiGet as Mock).mockImplementation(async (path: string) => {
+        if (path === "/api/v1/cart") {
+          cartReads += 1;
+          if (cartReads === 1) {
+            stalledReadStartedResolve!();
+            await new Promise<void>((resolve) => {
+              releaseStalledRead = resolve;
+            });
+          }
+        }
+        return baseGet(path);
+      });
+
+      fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+      await stalledReadStarted;
+      // Rapid second pick, while the 172-Diamonds sync is stalled mid-flight —
+      // must be dropped, not start a second overlapping sync sequence.
+      fireEvent.click(screen.getByRole("radio", { name: /86 Diamonds/ }));
+
+      expect((screen.getByRole("radio", { name: /172 Diamonds/ }) as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByRole("radio", { name: /86 Diamonds/ }) as HTMLInputElement).checked).toBe(false);
+
+      releaseStalledRead!();
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 2, qty: 1 }));
+      // Only the original default-pick add call for denomination 1 exists —
+      // the ignored second click never issued its own add call for it.
+      expect(
+        (apiPost as Mock).mock.calls.filter(
+          (c) => c[0] === "/api/v1/cart" && (c[1] as { denomination_id?: number })?.denomination_id === 1,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("blocks submit while the cart sync is in a failed state, and shows the error", async () => {
+      renderInstantBuy();
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      await screen.findByText("Summary");
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+
+      (apiPost as Mock).mockImplementation(async () => {
+        throw new Error("boom");
+      });
+      fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+
+      expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      // Re-fill the (reset) info fields for the newly-selected denomination —
+      // isolates the assertion below to the sync-failure gate, not the info step.
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).toBeDisabled();
+    });
+
+    it("clears a wallet-credit selection made for a cheaper denomination once switching to one the wallet no longer covers", async () => {
+      const product = productData; // id1 20000, id2 38000
+      let cart: CartPageData = { items: [], subtotal: "0" };
+      let nextKey = 1;
+
+      function checkoutFor(current: CartPageData): CheckoutData {
+        const denominationId = (current.items[0]?.denomination_id as number | undefined) ?? 1;
+        const total = denominationId === 2 ? "38000" : "20000";
+        return {
+          ...checkoutData,
+          wallet_idr: "25000", // covers 20000, not 38000
+          binance_enabled: true,
+          total,
+          items: [
+            {
+              denomination_id: denominationId,
+              delivery_type: "manual_with_info",
+              additional_fields: product.denominations[0]!.additional_fields,
+              qty: 1,
+            },
+          ],
+        };
+      }
+
+      (apiGet as Mock).mockImplementation(async (path: string) => {
+        if (path === "/api/v1/pages/context") return context;
+        if (path === `/api/v1/pages/product/${product.product.slug}`) return product;
+        if (path === "/api/v1/cart") return cart;
+        if (path === "/api/v1/checkout") return checkoutFor(cart);
+        throw new Error(`unexpected GET ${path}`);
+      });
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/cart") {
+          cart = {
+            items: [
+              {
+                key: nextKey++,
+                denomination_id: body.denomination_id as number,
+                product_slug: product.product.slug,
+                name: product.product.name,
+                image: product.product.image,
+                unit_price: "0",
+                qty: body.qty as number,
+                line_total: "0",
+                available: 0,
+                delivery_type: "manual_with_info",
+              },
+            ],
+            subtotal: "0",
+          };
+          return cart;
+        }
+        if (path === "/api/v1/cart/remove") {
+          cart = { items: cart.items.filter((i) => i.key !== body.key), subtotal: "0" };
+          return cart;
+        }
+        throw new Error(`unexpected POST ${path}`);
+      });
+
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/p/${product.product.slug}`]}>
+            <Routes>
+              <Route path="/p/:slug" element={<InstantBuyPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      await screen.findByText("Summary");
+      // Default selection is the enabled gateway, not wallet credit.
+      expect((screen.getByRole("radio", { name: /BINANCE/ }) as HTMLInputElement).checked).toBe(true);
+
+      // Buyer explicitly opts into wallet credit — sufficient for the cheap denomination.
+      const walletRadio = screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }) as HTMLInputElement;
+      fireEvent.click(walletRadio);
+      expect(walletRadio.checked).toBe(true);
+
+      // Switch to the pricier denomination — the wallet balance no longer covers it.
+      fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+      await waitFor(() => expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument());
+
+      // No PAYMENT-METHOD radio is left checked (the denomination grid has
+      // its own, separate radio group, always with exactly one checked, so
+      // it's excluded here) — `method` was cleared rather than left pointing
+      // at a row nothing renders any more.
+      const methodRadios = screen.getAllByRole("radio").filter((r) => (r as HTMLInputElement).name === "method") as HTMLInputElement[];
+      expect(methodRadios.some((r) => r.checked)).toBe(false);
+
+      // Fill the (reset) info fields for the new denomination, so the only
+      // remaining blocker is the missing method — proving the submit button
+      // is NOT left "enabled" with the stale wallet_idr selection.
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).toBeDisabled();
+
+      // Picking the still-available gateway explicitly re-enables it.
+      fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
+      expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled();
+    });
+  });
 });

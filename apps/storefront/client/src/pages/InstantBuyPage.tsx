@@ -51,6 +51,7 @@ import PaymentMethodSelector, {
   anyMethodEnabled,
   defaultMethod,
   isIdrWalletSufficient,
+  isMethodValid,
   isUsdtWalletSufficient,
 } from "../components/shop/PaymentMethodSelector";
 import OrderSummaryCard from "../components/shop/OrderSummaryCard";
@@ -137,6 +138,17 @@ export default function InstantBuyPage() {
     if (firstLoad) {
       setVoucherInput(checkoutData.voucher_code ?? "");
       setMethod(defaultMethod(checkoutData));
+    } else {
+      // I-3: a denomination switch can re-price the order enough that the
+      // previously-selected method (most often a wallet-credit row whose
+      // sufficiency is total-dependent) no longer appears in
+      // PaymentMethodSelector's rows for the new totals. Left alone,
+      // `method` would keep pointing at a row nothing renders any more —
+      // no radio shows checked, yet `anyMethod` below only asks whether
+      // SOME method is offered, so the submit button could stay enabled
+      // with a selection the page no longer offers. Clear it so the buyer
+      // is prompted to pick again instead.
+      setMethod((prev) => (prev !== null && isMethodValid(checkoutData, prev) ? prev : null));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkoutData]);
@@ -166,6 +178,10 @@ export default function InstantBuyPage() {
 
   // As soon as a denomination is selected/changes (including the initial
   // default pick), sync the server-side cart to hold exactly that one line.
+  // `selected` (and so this effect) can only change while no sync is already
+  // in flight — see the denomination grid's onChange guard below — which is
+  // what keeps two overlapping sync sequences (each: read cart, remove old
+  // lines, add new line) from ever racing on the server-side cart.
   useEffect(() => {
     if (!selected) return;
     syncCart.mutate(selected.id);
@@ -241,7 +257,14 @@ export default function InstantBuyPage() {
   const anyMethod = totals
     ? anyMethodEnabled(totals) || isIdrWalletSufficient(totals) || isUsdtWalletSufficient(totals)
     : false;
-  const submitBlocked = !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod;
+  // `cartErrorKey`: a failed sync leaves the server-side cart in a known-bad
+  // or known-uncertain state relative to what the page displays — never let
+  // the buyer submit against that. `!method`: I-3's flip side — a re-price
+  // can clear `method` back to null (see the checkoutData effect above)
+  // without touching `anyMethod`, so gate on the actual selection too, not
+  // just on whether *some* method is offered.
+  const submitBlocked =
+    !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || cartErrorKey !== null;
   const submitDisabled = submitBlocked || placeOrderMutation.isPending;
 
   return (
@@ -329,7 +352,14 @@ export default function InstantBuyPage() {
                   fx={fx}
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
-                  onChange={() => setSelectedId(d.id)}
+                  // I-2: ignored while a sync is already in flight, so
+                  // `selected` (and the effect below that fires syncCart off
+                  // it) can never change mid-sequence — a second denomination
+                  // pick can't start a new sync while the prior one's
+                  // read-cart/remove-lines/add-line sequence is still running.
+                  onChange={() => {
+                    if (!syncCart.isPending) setSelectedId(d.id);
+                  }}
                 />
               ))}
             </div>
@@ -344,9 +374,12 @@ export default function InstantBuyPage() {
             />
           )}
 
-          {/* 5. Payment method. */}
-          {page ? (
-            <PaymentMethodSelector data={page} method={method} onSelect={setMethod} />
+          {/* 5. Payment method. `totals`, not `page` — see CheckoutPage.tsx's
+              matching call site for why: `page` doesn't track a voucher
+              preview response, and wallet-credit sufficiency has to be
+              gated on the live, post-voucher total. */}
+          {page && totals ? (
+            <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
           ) : (
             <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
               <Skeleton className="h-5 w-40" />

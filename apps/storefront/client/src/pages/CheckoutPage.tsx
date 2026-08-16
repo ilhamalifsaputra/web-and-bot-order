@@ -488,7 +488,14 @@ export default function CheckoutPage() {
             <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
           )}
 
-          <PaymentMethodSelector data={page} method={method} onSelect={setMethod} />
+          {/* `totals`, not `page`: `page` is seeded once from the initial GET
+              and never updated, so gating the wallet-credit rows on it would
+              use a stale, pre-voucher total. `totals` is the live payload
+              (re-set on every voucher-preview response) and shares every
+              other field (gateway flags, wallet balances) with `page` — only
+              `total`/`total_usdt` differ, which is exactly what needs to be
+              live for wallet-sufficiency to track the applied voucher. */}
+          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
         </div>
 
         <OrderSummaryCard

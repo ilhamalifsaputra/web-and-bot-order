@@ -58,6 +58,40 @@ export function anyMethodEnabled(data: CheckoutData): boolean {
 }
 
 /**
+ * Whether `method` is still one of the rows this component would actually
+ * render for `data` — i.e. the single source of truth this file already
+ * has for "which methods are offered", reused instead of re-deriving it at
+ * each call site. Exists for InstantBuyPage.tsx's re-pricing case (Task 6
+ * review, I-3): picking a pricier denomination can re-price the order past a
+ * wallet-credit balance that covered the cheaper one, and `method` itself
+ * doesn't auto-clear just because the totals changed under it — callers use
+ * this to notice and reset the selection instead of leaving `method` pointed
+ * at a row that no longer renders.
+ */
+export function isMethodValid(data: CheckoutData, method: string | null): boolean {
+  switch (method) {
+    case "qris":
+      return data.idr_enabled;
+    case "paydisini":
+      return data.paydisini_enabled;
+    case "binance":
+      return data.binance_enabled;
+    case "bybit":
+      return data.bybit_enabled;
+    case "bybit_bsc":
+      return data.bybit_bsc_enabled;
+    case "nowpayments":
+      return data.nowpayments_enabled;
+    case "wallet_idr":
+      return isIdrWalletSufficient(data);
+    case "wallet_usdt":
+      return isUsdtWalletSufficient(data);
+    default:
+      return false;
+  }
+}
+
+/**
  * One payment-method radio row (gateway or wallet credit — they are the same
  * radio group). The row has always been a `<label>` wrapping its radio, so the
  * whole rectangle was already tappable; what it lacked was a selected state a

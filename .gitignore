@@ -20,6 +20,10 @@ data/
 .tmp/
 tmp/
 
+# The `data/` rule above targets the runtime DB dir. Skill data catalogs
+# (palettes, font pairings, stack tables) are content and must be committed.
+!.claude/skills/*/data/
+
 # --- Python (legacy stack) ---
 .venv/
 __pycache__/
@@ -55,6 +59,26 @@ apps/storefront/static/shop-app/
 # --- graphify auto-update hook scratch (lock dir + run log, see .claude/settings.json) ---
 graphify-out/.update.lock
 graphify-out/.update.log
+
+# --- skill copies the ui-ux-pro-max installer fans out to other agent/editor
+#     tools (~4.5 MB each). We use the .claude/skills/ copy; these are noise. ---
+/.agents/
+/.augment/
+/.codebuddy/
+/.codewhale/
+/.continue/
+/.cursor/
+/.factory/
+/.gemini/
+/.github/prompts/
+/.kilocode/
+/.kiro/
+/.opencode/
+/.qoder/
+/.roo/
+/.trae/
+/.warp/
+/.windsurf/
 
 # --- OS / editor ---
 .DS_Store

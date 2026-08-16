@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { adjustWallet, listWalletLedger } from "./users";
@@ -135,5 +135,80 @@ describe("adjustWallet per-currency (IDR vs USDT balances are independent)", () 
     expect(Number(u.walletBalanceUsdt)).toBeCloseTo(0);
     // No USDT ledger row written for the rejected move.
     expect(await prisma.walletTransaction.count({ where: { userId, currency: "USDT" } })).toBe(0);
+  });
+});
+
+// E5 item 2: `@@unique([orderId, reason])`. Six order-scoped reasons are each
+// already once-per-order in the code, but by six different mechanisms (an
+// atomic claim, a read-then-throw, a status transition, a terminal-status
+// guard, a UNIQUE on another table, and one-creation-path-per-order). These
+// pin the constraint that makes that structural instead, and — just as
+// importantly — pin the two things it must NOT restrict.
+describe("wallet_transactions one-movement-per-order-per-reason constraint", () => {
+  async function makeOrder(): Promise<number> {
+    const order = await prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId, subtotalAmount: "5", totalAmount: "5" },
+    });
+    return order.id;
+  }
+
+  // The beforeEach above clears users, and Order → User is onDelete: Restrict,
+  // so orders created here have to go first or the NEXT test's cleanup throws.
+  afterEach(async () => {
+    await prisma.walletTransaction.deleteMany();
+    await prisma.order.deleteMany();
+  });
+
+  it("rejects a second movement with the same order and reason", async () => {
+    const orderId = await makeOrder();
+    await adjustWallet(prisma, userId, "100", { reason: "wallet_topup", orderId });
+
+    await expect(adjustWallet(prisma, userId, "100", { reason: "wallet_topup", orderId })).rejects.toThrow();
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId } });
+    expect(rows).toHaveLength(1);
+    // The balance moved exactly once — the point of the constraint. This is
+    // asserted on a BARE call (no surrounding $transaction) on purpose: it is
+    // what pins the ledger-before-balance write order in `adjustWallet`. With
+    // the balance written first, the rejected second call would still have
+    // moved the money to 200 while leaving one ledger row behind it, and
+    // nothing outside a transaction would roll that back.
+    const u = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(Number(u.walletBalance)).toBeCloseTo(100);
+  });
+
+  it("allows the different reasons one order legitimately produces", async () => {
+    // A real sequence: the buyer spends credit at checkout, the order can't be
+    // fulfilled, the admin credits it back to their balance, and the holds are
+    // released. Three reasons, one order, all legal.
+    const orderId = await makeOrder();
+    await adjustWallet(prisma, userId, "50", { reason: "admin_adjust" });
+    await adjustWallet(prisma, userId, "-20", { reason: "order_payment", orderId });
+    await adjustWallet(prisma, userId, "20", { reason: "order_refund", orderId });
+    await adjustWallet(prisma, userId, "5", { reason: "unfulfilled_credit", orderId });
+
+    expect(await prisma.walletTransaction.count({ where: { orderId } })).toBe(3);
+  });
+
+  it("leaves order-less movements completely unconstrained", async () => {
+    // NULLs are distinct in a SQLite UNIQUE index. An admin must stay free to
+    // adjust a customer's balance as many times as they need — those movements
+    // belong to no order, and this is what would break if the constraint were
+    // ever written to treat NULL as a value.
+    await adjustWallet(prisma, userId, "10", { reason: "admin_adjust" });
+    await adjustWallet(prisma, userId, "10", { reason: "admin_adjust" });
+    await adjustWallet(prisma, userId, "10", { reason: "admin_adjust" });
+
+    expect(await prisma.walletTransaction.count({ where: { userId, orderId: null } })).toBe(3);
+  });
+
+  it("scopes the rule to one order — the same reason is fine on a different order", async () => {
+    const first = await makeOrder();
+    const second = await makeOrder();
+
+    await adjustWallet(prisma, userId, "100", { reason: "wallet_topup", orderId: first });
+    await adjustWallet(prisma, userId, "100", { reason: "wallet_topup", orderId: second });
+
+    expect(await prisma.walletTransaction.count({ where: { reason: "wallet_topup" } })).toBe(2);
   });
 });

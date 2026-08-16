@@ -88,7 +88,7 @@ model WalletTransaction {
   /// Currency of this ledger row's balance/delta. Existing rows default to IDR
   /// (the system was IDR-base); USDT rows track the USDT credit balance.
   currency     String   @default("IDR")
-  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup
+  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup | unfulfilled_credit
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
   orderId      Int?     @map("order_id")
@@ -101,6 +101,24 @@ model WalletTransaction {
   user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([userId], map: "ix_wallet_transactions_user_id")
+  /// "One wallet movement per order per reason" (Task E5 item 2). Every
+  /// order-scoped reason is already once-per-order in the code, but each by a
+  /// DIFFERENT mechanism — an atomic claim (`wallet_topup`, via
+  /// settleWalletTopup), a read-then-throw (`unfulfilled_credit`, via
+  /// creditOrderToBalance), a status transition inside the same transaction
+  /// (`underpaid_refund`, via refundUnderpaidOrder), a terminal-status guard
+  /// on all three callers (`order_refund`, via releaseOrderHolds), a UNIQUE on
+  /// another table (`referral`, via Referral.refereeId) and simply having one
+  /// creation path per order (`order_payment`). This constraint is the one
+  /// place that statement is true structurally rather than six times over by
+  /// argument, so weakening any of those six can no longer silently double a
+  /// buyer's money.
+  ///
+  /// Rows with a NULL orderId are unconstrained — NULLs are distinct in a
+  /// SQLite UNIQUE index — which is what the two `admin_adjust` sites and the
+  /// `adjust` default need: an admin may top a customer up any number of
+  /// times, and those movements belong to no order.
+  @@unique([orderId, reason], map: "ix_wallet_transactions_order_id_reason")
   @@map("wallet_transactions")
 }
 

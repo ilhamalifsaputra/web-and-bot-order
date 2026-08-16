@@ -1,0 +1,39 @@
+-- Task E5 item 2: enforce "one wallet movement per order per reason".
+--
+-- Generated with `prisma migrate diff --from-migrations ./prisma/migrations
+-- --to-schema-datamodel ./prisma/schema.prisma --script` and committed
+-- verbatim, so `pnpm run check-migration-drift` stays green (docs/MIGRATIONS.md).
+--
+-- SAFETY: additive — one CREATE UNIQUE INDEX, no ALTER, no SQLite table
+-- rebuild, no data movement, nothing dropped. Rows with a NULL order_id are
+-- unaffected: NULLs are distinct in a SQLite UNIQUE index, which is what the
+-- order-less `admin_adjust`/`adjust` movements need.
+--
+-- ⚠ UNLIKE the other migrations in this folder, this one is NOT unfalsifiable
+-- against existing data. CREATE UNIQUE INDEX fails outright if any duplicate
+-- (order_id, reason) pair already exists, and `prisma db push` will report it
+-- rather than apply anything. Every write path in the code today produces at
+-- most one row per pair (see the schema comment on the constraint for the
+-- six mechanisms), but historical rows predate some of those guards.
+--
+-- VERIFY BEFORE APPLYING, against the live database:
+--
+--   SELECT order_id, reason, COUNT(*) AS n
+--     FROM wallet_transactions
+--    WHERE order_id IS NOT NULL
+--    GROUP BY order_id, reason
+--   HAVING n > 1;
+--
+-- Zero rows means this is safe to apply. Any row is a real historical
+-- double-movement on a buyer's balance and must be understood — and decided
+-- on by a human — before the index is created. Do NOT delete ledger rows to
+-- make the index fit: wallet_transactions is an append-only financial ledger
+-- (see the onDelete: Restrict guardrails on the model).
+--
+-- DEPLOY: apply with `pnpm exec prisma db push` (this repo's actual mechanism
+-- — `migrate deploy` is NOT used, see docs/MIGRATIONS.md) and restart
+-- order-bot. This file is the audit trail for the change, not the thing that
+-- applies it.
+
+-- CreateIndex
+CREATE UNIQUE INDEX "ix_wallet_transactions_order_id_reason" ON "wallet_transactions"("order_id", "reason");

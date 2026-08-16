@@ -58,6 +58,12 @@ import OrderSummaryCard from "../components/shop/OrderSummaryCard";
 import { GuestContactCard } from "./CheckoutPage";
 import ErrorPage from "./ErrorPage";
 
+// Code review: the minimum length below a live nickname-check lookup is
+// pointless to fire — too short to be any real game account id, so the only
+// effect of checking it would be an extra KokinPay call and a flash of a
+// misleading "not found" hint while the buyer is still typing.
+const MIN_ACCOUNT_ID_LENGTH = 4;
+
 const revealProps = {
   variants: fadeUp,
   initial: "initial" as const,
@@ -198,7 +204,20 @@ export default function InstantBuyPage() {
     // showed — clear immediately rather than let a stale nickname linger
     // next to a since-edited id.
     setNicknameCheck({ pending: false, nickname: null, notFound: false });
-    if (!needsInfo || !selected || !accountId) return;
+    if (!needsInfo || !selected) return;
+    // Code review: firing on every non-empty id, with no minimum length and
+    // no regard for a not-yet-filled server/zone field, produced a
+    // premature "not found" hint on a CORRECT id for games (e.g. Mobile
+    // Legends) whose lookup requires a server value — the buyer pauses
+    // after typing their id but before the zone digits land, and gets a
+    // transient false "not found" against the feature's own trust-building
+    // intent. MIN_ACCOUNT_ID_LENGTH filters out obviously-incomplete ids;
+    // the server-field check below only applies when this denomination's
+    // own field template actually has a `server_id` field (some games have
+    // no server/zone concept at all, and must not be gated on one).
+    if (accountId.length < MIN_ACCOUNT_ID_LENGTH) return;
+    const requiresServer = selected.additional_fields.some((field) => field.key === "server_id");
+    if (requiresServer && !accountServer) return;
 
     const controller = new AbortController();
     let cancelled = false;

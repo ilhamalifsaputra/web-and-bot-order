@@ -104,6 +104,18 @@ export async function checkGameNickname(
     HTTP_TIMEOUT_MS.gatewayRead, // a live-typing UX convenience, not a checkout-blocking call — bounded, but no need for the longer checkout write budget
   );
 
+  if (typeof body.status !== "boolean") {
+    // A well-formed KokinPay response always has a boolean `status` field.
+    // Anything else — most concretely, a generic API-gateway 404/500 JSON
+    // error page returned for a WRONG endpoint path — must not be silently
+    // folded into the normal {valid:false} "not found" outcome below, or a
+    // wrong path becomes indistinguishable from a real "account not found"
+    // (see this file's top-of-file ASSUMPTION about the unverified /v1
+    // path). Throwing here is what lets testKokinpay's go-live connection
+    // check actually catch a wrong-path misconfiguration instead of
+    // reporting a false "Connected".
+    throw new Error("KokinPay check-nickname returned an unexpected response shape"); // never log init.body — it carries the API key
+  }
   if (body.status === true) {
     const data = body.data as Record<string, unknown> | undefined;
     const nickname = data && typeof data.nickname === "string" ? data.nickname : null;

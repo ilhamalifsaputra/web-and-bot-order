@@ -91,6 +91,20 @@ describe("checkGameNickname", () => {
     await expect(checkGameNickname(CREDS, { gameCode: "mobile-legends", id: "1" })).rejects.toThrow(/HTTP 502/);
   });
 
+  // Code review finding: a generic API-gateway 404/500 JSON error page
+  // returned for a WRONG endpoint path (e.g. this file's own flagged /v1
+  // path ambiguity) is valid JSON but has no `status` field at all — that
+  // must not be silently folded into the normal {valid:false} "not found"
+  // outcome, or a wrong path becomes indistinguishable from a real
+  // "account not found" (and testKokinpay's go-live check would report a
+  // false "Connected").
+  it("throws (does not silently return valid:false) when the response body is well-formed JSON but missing the status field", async () => {
+    stubFetchJson({ error: "Not Found" });
+    await expect(checkGameNickname(CREDS, { gameCode: "mobile-legends", id: "123" })).rejects.toThrow(
+      /unexpected response shape/,
+    );
+  });
+
   it("throws when the response body is unparseable", async () => {
     vi.stubGlobal(
       "fetch",

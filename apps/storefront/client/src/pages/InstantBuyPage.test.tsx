@@ -610,31 +610,31 @@ describe("InstantBuyPage", () => {
         await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
         await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
 
-        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "111" } });
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1111" } });
         vi.advanceTimersByTime(800);
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "111", server: undefined },
+            { denomination_id: 1, id: "1111", server: undefined },
             expect.any(AbortSignal),
           ),
         );
         const firstCall = (apiPost as Mock).mock.calls.find(
-          (c) => c[0] === "/api/v1/topup/check-account" && (c[1] as Record<string, unknown>).id === "111",
+          (c) => c[0] === "/api/v1/topup/check-account" && (c[1] as Record<string, unknown>).id === "1111",
         )!;
         const firstSignal = firstCall[2] as AbortSignal;
         expect(firstSignal.aborted).toBe(false);
 
         // The field changes again before the first lookup resolves — its
         // request must be cancelled (not just superseded).
-        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "222" } });
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "2222" } });
         expect(firstSignal.aborted).toBe(true);
 
         vi.advanceTimersByTime(800);
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
-            { denomination_id: 1, id: "222", server: undefined },
+            { denomination_id: 1, id: "2222", server: undefined },
             expect.any(AbortSignal),
           ),
         );
@@ -660,6 +660,57 @@ describe("InstantBuyPage", () => {
         vi.advanceTimersByTime(800);
 
         await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Code review finding: firing the lookup on any non-empty id, with no
+    // regard for a server/zone field the denomination's own template
+    // requires, produced a premature "not found" hint on a CORRECT id (e.g.
+    // Mobile Legends) while the buyer had merely not yet typed the zone.
+    it("does not fire the lookup when the account id is filled but a server_id field from this denomination's own template is still empty", async () => {
+      vi.useFakeTimers();
+      try {
+        const product: ProductPageData = {
+          ...productData,
+          denominations: [
+            {
+              ...productData.denominations[0]!,
+              additional_fields: [
+                { key: "user_id", label: { id: "ID Pengguna", en: "User ID" }, type: "text", required: true, options: [], placeholder: "123456789" },
+                { key: "server_id", label: { id: "Server", en: "Server" }, type: "text", required: false, options: [], placeholder: "1234" },
+              ],
+            },
+          ],
+        };
+        renderInstantBuy({ product });
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: false };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        // Account id only — the server/zone field is left empty.
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        vi.advanceTimersByTime(800);
+        vi.advanceTimersByTime(800);
+
+        expect((apiPost as Mock).mock.calls.some((c) => c[0] === "/api/v1/topup/check-account")).toBe(false);
+
+        // Filling the server field too now lets the (debounced) lookup fire.
+        fireEvent.change(screen.getByLabelText("Server"), { target: { value: "1111" } });
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/topup/check-account",
+            { denomination_id: 1, id: "1234567", server: "1111" },
+            expect.any(AbortSignal),
+          ),
+        );
       } finally {
         vi.useRealTimers();
       }

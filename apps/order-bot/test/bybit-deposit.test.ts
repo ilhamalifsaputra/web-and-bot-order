@@ -25,6 +25,7 @@ import {
 import type { Api } from "grammy";
 import { telegramError } from "./helpers/ctx";
 import { config } from "@app/core/config";
+import { registerOutboxNudge } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus, NotificationEvent } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
@@ -563,6 +564,43 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     prisma.$transaction((tx) =>
       createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "USDT", method: PaymentMethod.BYBIT, rate: "16000" }),
     );
+
+    // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
+  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
+  // silently revert to `nudge(); flip();` — the reported credential-before-
+  // confirmation ordering — with the whole suite still green. The outbox
+  // dispatcher's flush hook makes such a regression cosmetic in the combined
+  // server, but the standalone order-bot binary registers no flush hook at
+  // all, so there it is fully user-visible.
+  it("flips the settled bubble BEFORE nudging the outbox dispatcher", async () => {
+    const order = await makeTopupOrder("7");
+    await setOrderPaymentMessage(prisma, order.id, 555, 778);
+    const sequence: string[] = [];
+    registerOutboxNudge(() => sequence.push("nudge"));
+    const api = {
+      sendMessage: async () => {
+        sequence.push("bubble");
+        return { message_id: 1 };
+      },
+      sendDocument: async () => ({ message_id: 1 }),
+      editMessageText: async () => {
+        sequence.push("bubble");
+        return {};
+      },
+      deleteMessage: async () => {
+        sequence.push("bubble");
+        return true;
+      },
+    } as unknown as Api;
+
+    await processDeposits(api, [dep({ txId: "0xORDERING", amount: order.totalAmount })], await pending());
+
+    // Both must have happened — a pass because neither ran is worthless.
+    expect(sequence).toContain("bubble");
+    expect(sequence).toContain("nudge");
+    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    registerOutboxNudge(null);
+  });
 
   it("delivers, enqueues exactly one outbox top-up DM (never a direct Telegram DM), sends no credential file, and flips the anchored bubble to a neutral status", async () => {
     const order = await makeTopupOrder("7");

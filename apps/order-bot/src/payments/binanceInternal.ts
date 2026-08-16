@@ -50,7 +50,7 @@ import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
-import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "./telegramTimeout";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
 import {
   AMOUNT_TOLERANCE,
@@ -330,9 +330,17 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     nudgeOutboxDispatcher();
   } else {
     // Delivery is instant: skip the interim "payment verified / being prepared"
-    // notice and send the account file straight away.
+    // notice and send the account file straight away. Bounded at
+    // TELEGRAM_DOCUMENT_TIMEOUT_MS, matching both Bybit siblings — a document
+    // upload is legitimately slower than a plain text call (see
+    // telegramTimeout.ts), but this was the one rail with no bound at all, so
+    // a hung upload fell back to grammY's 500s default and stalled the whole
+    // poller for most of its cycle budget. On timeout the throw routes into
+    // the same catch a failed send does, so the buyer still gets their
+    // credentials through the outbox retry below.
     try {
-      await sendAccountFile(api, tgId, order, lang);
+      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error(
         { err },

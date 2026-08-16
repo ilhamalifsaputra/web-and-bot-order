@@ -118,6 +118,15 @@ model WalletTransaction {
   /// SQLite UNIQUE index — which is what the two `admin_adjust` sites and the
   /// `adjust` default need: an admin may top a customer up any number of
   /// times, and those movements belong to no order.
+  ///
+  /// Deliberately NOT `[orderId, reason, currency]`. Today an order settles in
+  /// exactly one currency, so adding it would constrain nothing. But the
+  /// six-mechanism argument above is currency-BLIND: if a future caller ever
+  /// lets one order spend both IDR and USDT credit — which
+  /// `applyUsdtWalletToOrder` (crud/orders.ts) explicitly anticipates in its
+  /// own doc comment — the second `order_payment` row would throw P2002 in
+  /// production, on a legitimate payment, with no test catching it first.
+  /// Widen this constraint in the same change that adds such a caller.
   @@unique([orderId, reason], map: "ix_wallet_transactions_order_id_reason")
   @@map("wallet_transactions")
 }

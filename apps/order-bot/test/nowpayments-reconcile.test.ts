@@ -17,6 +17,7 @@ import {
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency, PaymentMethod, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { registerOutboxNudge } from "@app/core/nudge";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
 import { reconcileOrder, pollOnce, MAX_ORDERS_PER_CYCLE } from "../src/payments/nowpaymentsReconcile";
@@ -249,6 +250,42 @@ describe("reconcileOrder flips the settled payment bubble (Task E3)", () => {
 
     return prisma.order.findUnique({ where: { id: created.id } });
   }
+
+  // Task E9 follow-up (I-1): the flip-before-nudge ORACLE for this rail.
+  // `nudgeOutboxDispatcher()` is otherwise unobserved here, so this rail could
+  // silently revert to `nudge(); flip();` — the reported credential-before-
+  // confirmation ordering — with the whole suite still green. The dispatcher's
+  // flush hook makes such a regression cosmetic in the combined server, but
+  // the standalone order-bot binary registers no flush hook at all, so there
+  // it is fully user-visible.
+  it("flips the bubble BEFORE nudging the outbox dispatcher", async () => {
+    const sequence: string[] = [];
+    registerOutboxNudge(() => sequence.push("nudge"));
+    const api = {
+      sendMessage: vi.fn(async () => {
+        sequence.push("bubble");
+        return { message_id: 90210 };
+      }),
+      editMessageCaption: vi.fn(async () => undefined),
+      editMessageText: vi.fn(async () => {
+        sequence.push("bubble");
+      }),
+      deleteMessage: vi.fn(async () => {
+        sequence.push("bubble");
+        return true;
+      }),
+    } as unknown as Api;
+
+    await deliverAnchored(api, "TRX-ORDERING");
+
+    // Both must have happened — a pass because neither ran is worthless.
+    expect(sequence).toContain("bubble");
+    expect(sequence).toContain("nudge");
+    // `lastIndexOf`, not the first: a photo bubble is a delete AND a send, and
+    // the DM must not be triggered while the replacement is still in flight.
+    expect(sequence.lastIndexOf("bubble")).toBeLessThan(sequence.indexOf("nudge"));
+    registerOutboxNudge(null);
+  });
 
   it("immediately flips an anchored TEXT bubble to success in place when it delivers the order", async () => {
     const api = fakeApi();

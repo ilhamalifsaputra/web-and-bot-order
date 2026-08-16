@@ -56,6 +56,18 @@ type Db = PrismaClient | Tx;
  *
  * Note the swallow is per row, not per call: a caller that loops over admins
  * gets exactly the rows whose keys were new.
+ *
+ * ⚠ SQLite-specific, and a landmine for the Postgres migration CLAUDE.md
+ * anticipates (its trigger is ≥2 concurrent writers). Catching a UNIQUE
+ * violation and CONTINUING works here because SQLite tolerates a failed
+ * statement mid-transaction — and most callers do pass a `tx`. PostgreSQL
+ * does not: a constraint violation aborts the whole transaction, and every
+ * later statement in it fails with `25P02 current transaction is aborted`,
+ * so a deduped enqueue would take its caller's settlement down with it. The
+ * payment ledgers' own `isUniqueViolation` claims share this shape, but they
+ * return immediately rather than continuing inside someone else's
+ * transaction. On Postgres this needs a SAVEPOINT, or an upsert on the
+ * dedupe key instead of catch-and-continue.
  */
 export async function enqueueNotification(
   db: Db,

@@ -29,6 +29,8 @@ import {
   recordUnmatchedBybitTx,
 } from "./bybit_deposit";
 import { createOrderDirect, cancelOrder } from "./orders";
+import { ADMIN_IDS_KEY } from "./admins";
+import { setSetting } from "./settings";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
@@ -280,10 +282,11 @@ describe("Bybit poll health — non-rate-limit failure streak (consecutiveFailur
 // covered extensively in apps/order-bot/test/bybit-deposit.test.ts (Task 24,
 // M-14); this file only had resolveBybitConfig/poll-health coverage, and
 // nowhere exercised the "processing" branch a manual-delivery SKU takes.
-// Unlike nowpayments/paydisini/binance_internal, deliverPaidBybitOrder itself
-// has no overpaid-ledger/DM logic at all (see bybit_deposit.ts) — so this
-// only pins the processing-branch shape shared with every gateway via
-// settlePaidOrder, not an overpaid interaction that doesn't exist here.
+// deliverPaidBybitOrder now carries the same overpaid-ledger/admin-alert
+// branch as nowpayments/paydisini/binance_internal, so this block pins both
+// the processing-branch shape shared with every gateway via settlePaidOrder
+// AND its interaction with that branch: an overpayment is flagged and alerted
+// regardless of delivery type, exactly like the reference rails.
 describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
   let db: TestDb;
   let prisma: PrismaClient;
@@ -341,15 +344,81 @@ describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
     const stockCount = await prisma.stockItem.count({ where: { productId: manualDenom.id } });
     expect(stockCount).toBe(0);
 
-    // Ledger claimed as matched (not overpaid — bybit_deposit.ts has no
-    // overpaid handling at all, unlike the other 4 gateway files).
+    // Paid exactly the total, so the overpayment branch must not fire.
     const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0x-processing-1" } });
     expect(ledgerRow?.outcome).toBe("matched");
+    const overpaidAlert = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(overpaidAlert).toBeNull();
 
     const processingDm = await prisma.notificationOutbox.findFirst({
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+
+  // Bybit Internal Transfer and Bybit BSC were the last two of the six rails
+  // that delivered an overpayment and told nobody: the buyer got their goods,
+  // the excess USDT sat in the merchant account with no ledger flag and no
+  // admin alert, so a later refund request had nothing to reconcile against.
+  // The other four have flagged and alerted since M-13.
+  it("overpaid: delivers, flags the ledger row overpaid, and enqueues an ADMIN_OVERPAID row with the correct excess", async () => {
+    // This file's config mock leaves env ADMIN_IDS empty, and
+    // `enqueueAdminOverpaid` fans out over `resolveAdminIds` — so give the
+    // shop an admin to alert, the same way a DB/setup-wizard-managed shop
+    // does (Infra-4).
+    await setSetting(prisma, ADMIN_IDS_KEY, "333");
+    const order = await makePendingBybitOrderFor(sample.product.id);
+    const paid = new Decimal(order.totalAmount).plus("0.5");
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "0x-overpaid-1",
+      amount: paid,
+    });
+
+    expect(result.status).toBe("delivered");
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0x-overpaid-1" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+
+    const alerts = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(alerts.length).toBeGreaterThan(0);
+    const payload = JSON.parse(alerts[0]!.payloadJson) as Record<string, string>;
+    expect(payload.order_code).toBe(order.orderCode);
+    expect(new Decimal(payload.paid!).toString()).toBe(paid.toString());
+    expect(new Decimal(payload.expected!).toString()).toBe(new Decimal(order.totalAmount).toString());
+    expect(new Decimal(payload.excess!).toString()).toBe("0.5");
+    expect(payload.currency).toBe(order.currency);
+  });
+
+  // The overpaid branch is unconditional with respect to delivery type — the
+  // reference rails (see nowpayments.test.ts's twin of this case) keep the
+  // flag and the alert firing for a hand-fulfilled SKU too, where the buyer's
+  // credentials DM is deliberately skipped. Pinning both here stops an
+  // accidental `&&` tying one to the other.
+  it("processing (manual SKU) + overpaid: the overpaid flag and admin alert still fire", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "333");
+    const manualDenom = await makeManualDenom();
+    const order = await makePendingBybitOrderFor(manualDenom.id);
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "0x-processing-overpaid-1",
+      amount: new Decimal(order.totalAmount).plus("1"),
+    });
+
+    expect(result.status).toBe("processing");
+    const ledgerRow = await prisma.processedBybitTx.findUnique({
+      where: { bybitTxId: "0x-processing-overpaid-1" },
+    });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+    const alerts = await prisma.notificationOutbox.count({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(alerts).toBeGreaterThan(0);
   });
 });
 
@@ -387,11 +456,13 @@ describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
 // filter. The row stops looking like a problem at the same moment it
 // becomes unrecoverable.
 //
-// This rail has no "overpaid" outcome (unlike Binance/TokoPay/PayDisini/
-// NOWPayments — see the module doc-comment), so its full outcome set is:
-// matched, delivery_failed, underpaid, underpaid_flag_failed, unmatched.
-// Terminal (never re-claimable): matched, underpaid, underpaid_flag_failed,
-// AND (after this fix) unmatched. Only delivery_failed is re-claimable.
+// This rail's full outcome set is: matched, overpaid, delivery_failed,
+// underpaid, underpaid_flag_failed, unmatched. Terminal (never re-claimable):
+// matched, overpaid, underpaid, underpaid_flag_failed, AND (after this fix)
+// unmatched — "overpaid" joined that list when this rail gained the
+// overpayment branch the other four rails already had, and it is terminal for
+// the same reason "matched" is: a delivery actually ran. Only delivery_failed
+// is re-claimable.
 describe("deliverPaidBybitOrder — re-claiming a bybitTxId across non-delivering outcomes", () => {
   let db: TestDb;
   let prisma: PrismaClient;

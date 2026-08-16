@@ -476,7 +476,12 @@ describe("processDeposits (poll-loop wiring)", () => {
     const overpaid = Number(order.totalAmount) + 0.5; // well beyond float-noise tolerance
     await processDeposits(api, [dep({ txId, amount: overpaid })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
-    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("matched");
+    // The buyer is delivered either way, but the excess is no longer swallowed
+    // silently: `deliverPaidBybitBscOrder` stamps the ledger row "overpaid"
+    // and enqueues an ADMIN_OVERPAID alert so a human can refund or credit it,
+    // like the other five rails. This assertion read "matched" until this rail
+    // gained that branch.
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("overpaid");
   });
 
   // Mirror of the overpay case on the short side: a deposit that's uniquely

@@ -24,6 +24,7 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+import { enqueueAdminOverpaid } from "./notifications";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
@@ -266,6 +267,39 @@ export async function deliverPaidBybitOrder(
         meta: `bybitTxId=${args.bybitTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      // Overpayment: the buyer sent more USDT than the order total. Still
+      // deliver (handled above) but flag the ledger row and alert admins so
+      // the excess can be refunded/credited manually — never auto-refunded.
+      // Identical shape to binance_internal.ts's own branch (M-13, backend
+      // audit 2026-07-31) and to the three gateway rails': this rail's match
+      // tolerance already let an overpaid deposit through to delivery, and
+      // until now it left no ledger flag and no admin alert, so the excess
+      // had no operational trail for a later refund request. Unconditional
+      // with respect to delivery type — a buyer can overpay regardless of
+      // whether the SKU auto-delivers or is fulfilled by hand.
+      //
+      // Writing "overpaid" here does not disturb this rail's re-claim
+      // behaviour: AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES holds only
+      // "delivery_failed", and "overpaid" is as terminal as the "matched" it
+      // replaces (see that constant's doc-comment in binance_internal.ts —
+      // both mean a delivery actually ran). It is already a member of
+      // TX_OUTCOMES, so the ops panel lists it with no schema change.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedBybitTx.update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: result.order.id,
+          orderCode: result.order.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `Bybit order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+        );
+      }
       if (result.kind === "delivered") {
         logger.info(`Auto-delivered Bybit order ${result.order.orderCode} for transaction ${args.bybitTxId}`);
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };

@@ -66,8 +66,12 @@ export async function enqueueAdminPasswordReset(
 /**
  * Enqueue one admin DM per resolved admin (env ADMIN_IDS ∪ the DB `admin_ids`
  * Setting — same allow-list the bot/web panel resolve at runtime via
- * `resolveAdminIds`/`adminIds()`) alerting that a payment-gateway webhook
- * delivered an order whose paid amount exceeded the total. Previously looped
+ * `resolveAdminIds`/`adminIds()`) alerting that a payment path delivered an
+ * order whose paid amount exceeded the total. All six rails call this now, not
+ * only the three gateway webhooks: the QRIS/IDR + NOWPayments webhooks
+ * (`deliverPaid{Tokopay,Paydisini,Nowpayments}Order`) and the three
+ * amount-matched deposit pollers (`deliverPaidInternalOrder`,
+ * `deliverPaidBybitOrder`, `deliverPaidBybitBscOrder`). Previously looped
  * over `config.ADMIN_IDS` alone, so a shop managed entirely through the
  * DB/setup-wizard (no env ADMIN_IDS) never got these alerts (Infra-4 fix,
  * security audit 2026-06-23). orderId is set (unlike ADMIN_PW_RESET) so the

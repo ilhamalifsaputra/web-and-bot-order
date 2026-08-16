@@ -276,9 +276,11 @@ export const zSenderType = z.nativeEnum(SenderType);
 
 export const NotificationEvent = {
   ORDER_DELIVERED: "ORDER_DELIVERED",
-  // Admin DM (not a channel post): a payment-gateway webhook (TokoPay/
-  // PayDisini/NOWPayments) delivered an order whose paid amount exceeded the
-  // order total. payload carries `chat_id` (the admin's telegram id) plus
+  // Admin DM (not a channel post): a payment path delivered an order whose
+  // paid amount exceeded the order total. Enqueued by all six rails — the
+  // gateway webhooks (TokoPay/PayDisini/NOWPayments) and the amount-matched
+  // deposit pollers (Binance Internal, Bybit Internal Transfer, Bybit BSC).
+  // payload carries `chat_id` (the admin's telegram id) plus
   // order_code/paid/expected/excess/currency so the dispatcher DMs each admin
   // directly instead of posting to PUBLIC_CHANNEL_ID.
   ADMIN_OVERPAID: "ADMIN_OVERPAID",

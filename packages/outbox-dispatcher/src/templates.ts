@@ -363,8 +363,8 @@ export function render(
     );
   }
   if (event === NotificationEvent.ADMIN_OVERPAID) {
-    // Admin DM (not a channel post): a gateway webhook delivered an order
-    // whose paid amount exceeded the total. All values are escaped even
+    // Admin DM (not a channel post): one of the six payment rails delivered
+    // an order whose paid amount exceeded the total. All values are escaped even
     // though they originate from our own Decimal math, not gateway input.
     const code = escape(String(payload.order_code ?? ""));
     const paid = escape(String(payload.paid ?? "0"));

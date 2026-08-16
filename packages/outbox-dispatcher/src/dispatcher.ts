@@ -85,7 +85,7 @@ import { renderEmail } from "./emailTemplates";
 // i.e. the main order-bot — so keep NOTIF_BOT_TOKEN unset for these to arrive.
 const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_PW_RESET,
-  NotificationEvent.ADMIN_OVERPAID, // admin DM (gateway webhook overpayment)
+  NotificationEvent.ADMIN_OVERPAID, // admin DM (overpayment on any of the six payment rails)
   NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
   NotificationEvent.ORDER_PIPELINE_FAILED, // admin DM (Bybit BSC tracking pipeline failure)
   NotificationEvent.ORDER_PROCESSING_DM, // buyer DM (manual order queued for hand-fulfilment)

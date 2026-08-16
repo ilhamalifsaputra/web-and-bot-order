@@ -48,7 +48,11 @@ diproses" (`isUniqueViolation`).
 - **Cek status (reconcile):** `GET {API_BASE}/v1/order` dengan `ref_id` yang
   sama — idempoten, dipakai poller fallback.
 - **PAID_STATES:** `paid`, `success`, `completed`, `settlement`, `lunas`,
-  `berhasil` (case-insensitive).
+  `berhasil` (case-insensitive). Satu konstanta yang sama dipakai `verifyCallback`
+  (webhook) DAN `checkTransaction` (reconcile poller), persis seperti PayDisini —
+  dulu webhook punya salinan inline lebih pendek tanpa `lunas`/`berhasil`,
+  sehingga transaksi yang dilaporkan TokoPay dalam bahasa Indonesia diterima
+  poller tapi ditolak webhook.
 
 ## PayDisini (QRIS/e-wallet, IDR)
 

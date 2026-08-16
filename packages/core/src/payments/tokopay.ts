@@ -151,7 +151,19 @@ export interface TokopayStatus {
   trxId: string | null;
 }
 
-/** Gateway payment-status strings we treat as "paid/settled". */
+/**
+ * Gateway payment-status strings we treat as "paid/settled" — compared
+ * case-insensitively (callers lowercase the gateway's value first).
+ *
+ * ONE list, shared by BOTH ways a TokoPay payment can reach us: the reconcile
+ * poller's `checkTransaction` below and the storefront webhook's
+ * `verifyCallback` further down. `verifyCallback` used to carry its own
+ * shorter inline copy without `lunas`/`berhasil`, so a transaction TokoPay
+ * reported in Indonesian was honoured by the poller and rejected by the
+ * webhook — the same payment settled or not depending purely on which path
+ * saw it first. Mirrors paydisini.ts, which has always shared one constant
+ * across both of its paths. Do not re-inline either copy.
+ */
 const PAID_STATES = ["paid", "success", "completed", "settlement", "lunas", "berhasil"];
 
 /**
@@ -208,7 +220,13 @@ export interface TokopayCallback {
   paid: boolean;
 }
 
-/** Verify a callback's signature + normalize. Returns null on bad/missing signature. */
+/**
+ * Verify a callback's signature + normalize. Returns null on bad/missing
+ * signature. `paid` is decided by the shared `PAID_STATES` list above — the
+ * same list `checkTransaction` uses — so the webhook and the reconcile poller
+ * can never disagree about whether a given gateway status string means the
+ * money arrived.
+ */
 export function verifyCallback(
   body: Record<string, unknown>,
   creds: Pick<TokopayCreds, "merchantId" | "secret">,
@@ -237,7 +255,7 @@ export function verifyCallback(
     refId,
     trxId: firstString(body.trx_id, body.reference) ?? refId,
     amount,
-    paid: ["success", "completed", "paid", "settlement"].includes(status),
+    paid: PAID_STATES.includes(status),
   };
 }
 

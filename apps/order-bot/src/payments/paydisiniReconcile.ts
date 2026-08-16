@@ -39,7 +39,7 @@ import {
 } from "@app/db";
 import { esc } from "../util/format";
 import { editPaymentBubble } from "../jobs";
-import { settledPaymentBubble } from "../util/delivery";
+import { settledPaymentBubble, bubbleOnPhotoFor } from "../util/delivery";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
@@ -68,20 +68,27 @@ type AnchoredOrder = {
  *
  * HOW that bubble becomes the message is `editPaymentBubble`'s business
  * (jobs/index.ts), not this rail's: a text bubble is edited in place, while a
- * QRIS photo bubble is DELETED and the message sent afresh. Editing a photo
- * bubble's caption instead — which is what this function used to do first —
- * succeeds at the wrong thing, because Telegram cannot turn a photo message
- * into a text one: the caption flips to "payment received" while the QR image
- * itself stays parked above it, still scannable, for an order that is already
- * paid and delivered. This rail carried its own copy of that caption-then-text
- * chain rather than calling the shared helper, and since QRIS is the rail where
- * payments are auto-confirmed most often, it was the likeliest place for a
- * buyer to end up looking at a stale QR code.
+ * QRIS photo bubble is DELETED, then either has the message sent afresh (a
+ * PRODUCT sale) or is left deleted with nothing in its place (a settled
+ * WALLET_TOPUP — its outbox WALLET_TOPUP_CREDITED_DM already told the buyer,
+ * so a replacement bubble here would only be a second copy of that news; Task
+ * E2). `bubbleOnPhotoFor` (util/delivery.ts) makes that choice from
+ * `order.kind`, the same mapping the sweeper and the buyer's own Refresh tap
+ * use. Editing a photo bubble's caption instead — which is what this function
+ * used to do first — succeeds at the wrong thing, because Telegram cannot turn
+ * a photo message into a text one: the caption flips to "payment received"
+ * while the QR image itself stays parked above it, still scannable, for an
+ * order that is already paid and delivered. This rail carried its own copy of
+ * that caption-then-text chain rather than calling the shared helper, and
+ * since QRIS is the rail where payments are auto-confirmed most often, it was
+ * the likeliest place for a buyer to end up looking at a stale QR code.
  *
- * `fallbackDm: null` opts out of the helper's other mode deliberately: a buyer
- * reached here has already been told the news through the normal delivery path
- * (the notifier's account `.txt` or top-up receipt), so a DM from here would
- * only repeat it.
+ * No fallback DM either way — `bubbleOnPhotoFor` gives a PRODUCT order
+ * `fallbackDm: null` explicitly, and a WALLET_TOPUP's `onPhoto: "delete"`
+ * never carries the option at all (`editPaymentBubble`'s own doc comment) —
+ * deliberately: a buyer reached here has already been told the news through
+ * the normal delivery path (the notifier's account `.txt` or the outbox's
+ * top-up DM), so a DM from here would only repeat it.
  *
  * The message itself is the caller's, not this function's: composing it needs
  * a database read for a wallet top-up (see `editBubbleAndClear`), and that
@@ -93,12 +100,13 @@ type AnchoredOrder = {
  * (jobs/index.ts) — dropping it here would leave the buyer staring at a stale
  * QRIS QR, for an order that is already paid and delivered, with nothing left
  * in the system that would ever retry the edit. Returns "clear_anchor" when
- * the bubble was edited or replaced, and equally when Telegram said this
- * bubble can never accept the message, so a bubble the buyer deleted
- * self-heals out of that sweep's queue instead of costing it a slot every
- * minute forever. `isPermanentBubbleEditFailure` (util/bubbleEditFailure.ts)
- * draws that line once for every call site that holds this contract, and the
- * helper is now the only place that consults it on this path.
+ * the bubble was edited, replaced, or deleted-with-nothing-in-its-place, and
+ * equally when Telegram said this bubble can never accept the message, so a
+ * bubble the buyer deleted self-heals out of that sweep's queue instead of
+ * costing it a slot every minute forever. `isPermanentBubbleEditFailure`
+ * (util/bubbleEditFailure.ts) draws that line once for every call site that
+ * holds this contract, and the helper is now the only place that consults it
+ * on this path.
  *
  * Never throws: `editPaymentBubble` catches every grammY call it makes, and
  * the mapping below adds no throwing path of its own. That is what lets the
@@ -118,7 +126,7 @@ async function editBubbleToSuccess(
     messageId: order.paymentMsgId,
     text: bubble.text,
     markup: bubble.markup,
-    fallbackDm: null,
+    ...bubbleOnPhotoFor(order.kind),
   });
   switch (result.status) {
     case "edited":
@@ -127,6 +135,12 @@ async function editBubbleToSuccess(
       // The message id the anchor holds was deleted, and the fresh message in
       // its place already IS the success message — re-anchoring on
       // `result.messageId` would only queue a bubble that needs nothing.
+      return "clear_anchor";
+    case "deleted":
+      // A settled WALLET_TOPUP's QR bubble (bubbleOnPhotoFor, util/delivery.ts):
+      // deleted with no replacement, because the outbox's
+      // WALLET_TOPUP_CREDITED_DM already told the buyer. Nothing is left to
+      // retry either way, so this clears exactly like "replaced" does.
       return "clear_anchor";
     case "dm_sent":
       // Unreachable with `fallbackDm: null`, but a real outcome of the shared

@@ -1877,6 +1877,29 @@ describe("Refresh Status button (§7)", () => {
     expect(after!.paymentMsgId).toBeNull();
   });
 
+  // Task E2: a settled wallet top-up's photo bubble is deleted with NO
+  // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
+  // them the news, so a second message here would be the exact duplicate this
+  // task removes. The session anchor can't be re-pointed at a replacement that
+  // was never sent, so it must be cleared instead of left stale.
+  it("deletes a settled wallet top-up's photo (QR) bubble, sends nothing, and clears the session anchor", async () => {
+    const order = await makeSettledAnchoredOrder({ method: PaymentMethod.TOKOPAY, kind: OrderKind.WALLET_TOPUP });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+    const staleAnchor = (await getOrder(prisma, order.id))!.paymentMsgId!;
+    ctx.session.menuMsgId = staleAnchor;
+    (ctx.api as unknown as { editMessageText: unknown }).editMessageText = vi
+      .fn()
+      .mockRejectedValue(telegramError(400, "Bad Request: there is no text in the message to edit"));
+
+    await checkout.refreshPaymentStatus(ctx, order.id);
+
+    expect(calls(sink, "deleteMessage")).toHaveLength(1);
+    expect(calls(sink, "sendMessage")).toHaveLength(0);
+    expect(ctx.session.menuMsgId).toBeUndefined();
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMsgId).toBeNull();
+  });
+
   // The counterpart: a text bubble is edited in place, nothing is deleted, and
   // the session anchor must be left exactly where it was.
   it("leaves the session anchor alone when the bubble is edited in place", async () => {

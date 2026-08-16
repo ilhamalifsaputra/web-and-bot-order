@@ -24,7 +24,7 @@
 import { describe, it, expect } from "vitest";
 import type { InlineKeyboard } from "grammy";
 import { OrderKind, OrderStatus } from "@app/core/enums";
-import { settledPaymentBubble, settledPaymentKb } from "../src/util/delivery";
+import { settledPaymentBubble, settledPaymentKb, bubbleOnPhotoFor } from "../src/util/delivery";
 
 /** Flatten an InlineKeyboard's buttons down to their callback_data, the same
  * shape every other bubble/keyboard test in this suite reads. */
@@ -132,5 +132,24 @@ describe("settledPaymentKb", () => {
     const productFlat = flatCallbacks(settledPaymentKb(OrderKind.PRODUCT, "en"));
     expect(walletFlat).toContain("v1:topup:open");
     expect(productFlat).not.toContain("v1:topup:open");
+  });
+});
+
+// Task E2: the canonical `onPhoto` choice every editPaymentBubble call site
+// (flipSettledBubble, sweepPaidOrderBubbles, both QRIS reconcile pollers'
+// editBubbleToSuccess) now derives from `order.kind` through this one
+// function, so none of them can drift apart on which order kind gets its QR
+// silently deleted vs. replaced.
+describe("bubbleOnPhotoFor", () => {
+  it("tells a settled WALLET_TOPUP's photo bubble to be deleted with no fallback DM option at all", () => {
+    const mode = bubbleOnPhotoFor(OrderKind.WALLET_TOPUP);
+    expect(mode).toEqual({ onPhoto: "delete" });
+    // No `fallbackDm` key on this branch — `editPaymentBubble`'s type makes
+    // combining "delete" with a fallback DM unrepresentable on purpose.
+    expect(mode).not.toHaveProperty("fallbackDm");
+  });
+
+  it("tells a settled PRODUCT order's photo bubble to be replaced, with no fallback DM", () => {
+    expect(bubbleOnPhotoFor(OrderKind.PRODUCT)).toEqual({ onPhoto: "replace", fallbackDm: null });
   });
 });

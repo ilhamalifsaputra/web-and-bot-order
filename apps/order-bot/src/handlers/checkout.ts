@@ -63,7 +63,7 @@ import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { anchorPaymentMessage } from "../util/paymentAnchor";
-import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble, bubbleOnPhotoFor } from "../util/delivery";
 import { editPaymentBubble } from "../jobs";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
@@ -1550,6 +1550,12 @@ const FLIPPABLE_SETTLED_STATUSES: readonly string[] = [OrderStatus.DELIVERED, Or
  * message, then drop the anchor. No-op for an order that either isn't settled
  * or has no anchor left (its own rail's fast path already flipped it).
  *
+ * `bubbleOnPhotoFor` (util/delivery.ts) picks what happens if that bubble
+ * turns out to be a QR photo, by `order.kind`: a settled WALLET_TOPUP gets
+ * `onPhoto: "delete"` (its outbox WALLET_TOPUP_CREDITED_DM already told the
+ * buyer, so a replacement bubble would only repeat it — Task E2), everything
+ * else keeps `onPhoto: "replace"`, exactly as before.
+ *
  * No fallback DM: the buyer is right here pressing the button and just got a
  * toast, and their account file / top-up notice already arrived through the
  * normal path — a DM would only repeat it. The anchor is cleared even when the
@@ -1592,7 +1598,7 @@ async function flipSettledBubble(
       messageId: order.paymentMsgId,
       text,
       markup,
-      fallbackDm: null,
+      ...bubbleOnPhotoFor(order.kind),
     }),
     editTimeoutMs,
   );
@@ -1604,13 +1610,23 @@ async function flipSettledBubble(
     logger.warn(`Refresh Status could not edit the settled payment bubble for order ${order.orderCode}, and Telegram's answer does not rule out the same edit succeeding later (flood control, a server error, or a network fault) — its anchor is left in place on purpose so the background sweep retries the edit within a minute`);
     return;
   }
-  // A QR bubble isn't edited but deleted and re-sent, so the id the session was
-  // pointing at no longer exists. Only this path can repair that: the poller
-  // and sweeper flip the same bubbles with no session in reach. Left stale it
-  // costs the buyer's next screen one doomed edit before smartEdit falls
-  // through to a fresh send (util/chat.ts) — recoverable, but only because
-  // that fallback exists, and there is no reason to lean on it here.
+  // A QR bubble isn't edited: it's deleted, and either re-sent ("replaced") or
+  // left gone with nothing in its place ("deleted" — a settled WALLET_TOPUP,
+  // whose outbox DM already told the buyer; Task E2). Either way the id the
+  // session was pointing at no longer exists. Only this path can repair that:
+  // the poller and sweeper flip the same bubbles with no session in reach.
+  //  - "replaced": re-point at the new message, exactly like before.
+  //  - "deleted": there is no replacement id to point at, so the anchor must
+  //    be cleared rather than left stale. smartEdit (util/chat.ts) tolerates a
+  //    stale menuMsgId fine on its own — a callback-triggered render edits the
+  //    tapped message directly rather than menuMsgId, and a typed-input render
+  //    falls through to a fresh `ctx.reply` and best-effort retires the old id
+  //    — but pointing session state at a message that no longer exists is
+  //    simply wrong, and this is the one place that can put it right (compare
+  //    the identical delete-then-clear pattern a few screens over when Product
+  //    Detail replaces a QR wait screen, above).
   if (outcome.status === "replaced") ctx.session.menuMsgId = outcome.messageId;
+  else if (outcome.status === "deleted") ctx.session.menuMsgId = undefined;
   await clearOrderPaymentMessage(prisma, order.id);
 }
 

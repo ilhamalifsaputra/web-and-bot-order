@@ -56,12 +56,15 @@ import { GrammyError } from "grammy";
  * is no caption in the message to edit`. Those say the edit did not fit this
  * bubble's SHAPE, not that the bubble is dead. `editPaymentBubble`
  * (jobs/index.ts) treats the first of the two as its signal that the bubble is
- * a photo (a QRIS QR code) and recovers by deleting it and sending the message
- * afresh — Telegram cannot turn a photo message into a text one, so editing
- * its caption instead would leave the useless QR image parked above a
- * "payment received" line. That recovery only happens because this list leaves
- * the answer out: calling it permanent would make a live QR bubble look dead
- * and throw away an anchor that is still perfectly fixable.
+ * a photo (a QRIS QR code) and recovers by deleting it, then — depending on
+ * the caller's `onPhoto` choice — either sending the message afresh or
+ * sending nothing at all (Task E2: a settled WALLET_TOPUP wants the latter,
+ * since its outbox DM already carries the news). Either way, Telegram cannot
+ * turn a photo message into a text one, so editing its caption instead would
+ * leave the useless QR image parked above a "payment received" line. That
+ * recovery only happens because this list leaves the answer out: calling it
+ * permanent would make a live QR bubble look dead and throw away an anchor
+ * that is still perfectly fixable.
  */
 const PERMANENT_EDIT_FAILURES = [
   "message is not modified",

@@ -370,6 +370,24 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
       expect(edit.buttons).not.toContain("v1:order:list");
     });
 
+    // Task E2: a settled wallet top-up's photo (QR) bubble is deleted with NO
+    // replacement — the buyer's outbox WALLET_TOPUP_CREDITED_DM already told
+    // them the news, so a second message here would be the exact duplicate
+    // this task removes. The anchor still clears afterwards.
+    it("deletes a settled wallet top-up's photo (QR) bubble and sends nothing in its place", async () => {
+      const topup = await makeAnchoredTopup();
+      const api = fakeApi({ editMessageText: vi.fn().mockRejectedValue(noTextToEdit()) });
+
+      await reconcilePaid(api, "TRX-TOPUP-PHOTO");
+
+      expect(api.deleteMessage).toHaveBeenCalledWith(555, 777);
+      expect(api.sendMessage).not.toHaveBeenCalled();
+
+      const after = await prisma.order.findUnique({ where: { id: topup.id } });
+      expect(after?.paymentMsgChatId).toBeNull();
+      expect(after?.paymentMsgId).toBeNull();
+    });
+
     it("still tells a delivered product sale its items are on the way, with the product keyboard", async () => {
       const created = await makeTokopayOrder();
       await setOrderPaymentMessage(prisma, created!.id, 555, 778);

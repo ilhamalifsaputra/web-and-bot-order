@@ -9,9 +9,13 @@
  * `sendMessage` path did.
  *
  * Also owns `settledPaymentBubble`, the canonical text/keyboard mapping for
- * an already-settled order's payment bubble — shared by the Refresh button's
- * on-the-spot flip (handlers/checkout.ts) and the background sweeper
- * (jobs/index.ts) so both show the buyer the identical ending.
+ * an already-settled order's payment bubble, and `bubbleOnPhotoFor`, the
+ * canonical mapping for what `editPaymentBubble` should do when that bubble
+ * turns out to be a photo — shared by the Refresh button's on-the-spot flip
+ * (handlers/checkout.ts), the background sweeper (jobs/index.ts) and both
+ * QRIS reconcile pollers (payments/tokopayReconcile.ts,
+ * payments/paydisiniReconcile.ts) so all four show the buyer the identical
+ * ending.
  */
 import { InputFile, type Api, type InlineKeyboard } from "grammy";
 import { OrderKind, OrderStatus, langCode } from "@app/core/enums";
@@ -121,6 +125,39 @@ export function settledPaymentBubble(order: SettledBubbleOrder): { text: string;
   }
   const key = order.status === OrderStatus.PROCESSING ? "checkout.payment_received_processing" : "checkout.payment_received";
   return { text: coreT(key, lang, { code: order.orderCode }), markup: settledPaymentKb(order.kind, lang) };
+}
+
+/**
+ * The `onPhoto` mode every settled-bubble flip passes to `editPaymentBubble`
+ * (jobs/index.ts), by what the order was for — the same `kind` switch
+ * `settledPaymentBubble` and `settledPaymentKb` above already make, kept in
+ * one place for the same reason: `flipSettledBubble` (handlers/checkout.ts),
+ * `sweepPaidOrderBubbles` (jobs/index.ts) and both QRIS reconcile pollers'
+ * `editBubbleToSuccess` (payments/tokopayReconcile.ts,
+ * payments/paydisiniReconcile.ts) all flip the same bubbles and must not be
+ * able to drift apart on which one gets its QR silently deleted.
+ *
+ * A WALLET_TOPUP whose bubble turns out to be a QR photo gets `"delete"`: the
+ * buyer's outbox WALLET_TOPUP_CREDITED_DM (enqueued once inside
+ * `settleWalletTopup`, packages/db/src/crud/wallet_topup.ts) is already the
+ * authoritative "top-up successful" message, so a replacement bubble here
+ * would be a second, unwanted message next to it — the exact duplicate this
+ * task (E2) removes. Every other order kind keeps `"replace"`: "Payment
+ * received" is the only UI confirmation a product buyer gets before their
+ * account file arrives, so that bubble must still reappear as a fresh
+ * message when the QR it replaces can't be edited into it.
+ *
+ * `fallbackDm: null` on the `"replace"` branch, not omitted, because none of
+ * these four callers want a fallback DM either way — the buyer already got
+ * the news through the normal delivery/top-up path (see each call site's own
+ * comment for why), so a DM here would only repeat it. `"delete"` carries no
+ * `fallbackDm` at all: `editPaymentBubble`'s type makes that combination
+ * unrepresentable on purpose (see its own doc comment), because a caller
+ * asking for total silence on success cannot also ask for a DM on failure
+ * without contradicting itself.
+ */
+export function bubbleOnPhotoFor(kind: string): { onPhoto: "delete" } | { onPhoto: "replace"; fallbackDm: null } {
+  return kind === OrderKind.WALLET_TOPUP ? { onPhoto: "delete" } : { onPhoto: "replace", fallbackDm: null };
 }
 
 /** Send the buyer their account file (caption + `.txt`). Throws on failure. */

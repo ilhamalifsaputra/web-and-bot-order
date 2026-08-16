@@ -63,7 +63,7 @@ import {
 } from "@app/core/payments/reconcileCycleBudget";
 import { withTimeout } from "../payments/telegramTimeout";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
-import { settledPaymentBubble } from "../util/delivery";
+import { settledPaymentBubble, bubbleOnPhotoFor } from "../util/delivery";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
@@ -77,34 +77,48 @@ import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastP
  *                    already discriminates on it keeps compiling, and so a
  *                    future second edit method has somewhere to go.
  *  - "replaced"   — the bubble could not carry this text (it is a photo/QR
- *                    message), so it was DELETED and the text sent as a fresh
- *                    message. `messageId` is that new message's id: a caller
- *                    holding an anchor must re-point it there or drop it,
- *                    because the id it was holding no longer exists.
+ *                    message) and the caller passed `onPhoto: "replace"`, so
+ *                    it was DELETED and the text sent as a fresh message.
+ *                    `messageId` is that new message's id: a caller holding
+ *                    an anchor must re-point it there or drop it, because the
+ *                    id it was holding no longer exists.
+ *  - "deleted"    — the bubble could not carry this text and the caller
+ *                    passed `onPhoto: "delete"`, so it was DELETED and
+ *                    nothing was sent in its place (Task E2: a settled
+ *                    WALLET_TOPUP's QR bubble carries no news the buyer
+ *                    hasn't already had from the outbox's
+ *                    WALLET_TOPUP_CREDITED_DM, so a replacement message here
+ *                    would only be a second copy of it). No id to re-point
+ *                    an anchor to: a caller holding one must clear it instead.
  *  - "dm_sent"    — the bubble could not be edited, but the fallback DM
  *                    (when the caller opted in) was sent instead.
  *  - "not_edited" — the bubble could not be edited and no fallback DM was
  *                    sent, either because the caller opted out (`fallbackDm:
- *                    null`) or because the DM itself failed too — `error`
- *                    carries that DM failure (unset in the opted-out case)
- *                    so a caller that needs the original propagated (like
- *                    `notifyAutoCancelled` below, preserving its pre-refactor
- *                    behavior) doesn't have to re-attempt the send just to
- *                    get it. `permanent` describes the BUBBLE EDIT failure
- *                    (never the fallback DM's): true only when Telegram said
- *                    this bubble can never accept this edit, which is what
- *                    tells an anchor-owning caller it is safe to stop
- *                    retrying — see util/bubbleEditFailure.ts. */
+ *                    null`), because `onPhoto: "delete"` means there is no
+ *                    fallback DM to opt into at all (see the doc comment on
+ *                    `editPaymentBubble`'s `args` below), or because the DM
+ *                    itself failed too — `error` carries that DM failure
+ *                    (unset in the first two cases) so a caller that needs
+ *                    the original propagated (like `notifyAutoCancelled`
+ *                    below, preserving its pre-refactor behavior) doesn't
+ *                    have to re-attempt the send just to get it. `permanent`
+ *                    describes the BUBBLE EDIT failure (never the fallback
+ *                    DM's): true only when Telegram said this bubble can
+ *                    never accept this edit, which is what tells an
+ *                    anchor-owning caller it is safe to stop retrying — see
+ *                    util/bubbleEditFailure.ts. */
 export type BubbleEditResult =
   | { status: "edited"; via: "text" }
   | { status: "replaced"; messageId: number }
+  | { status: "deleted" }
   | { status: "dm_sent" }
   | { status: "not_edited"; permanent: boolean; error?: unknown };
 
 /**
  * Turn an anchored payment/notification bubble into `text`, whatever shape that
- * bubble has: edit it in place when it is a text message, and DELETE-then-send
- * when it is a photo (a QRIS QR code).
+ * bubble has: edit it in place when it is a text message, and DELETE it when it
+ * is a photo (a QRIS QR code) — then, depending on `args.onPhoto`, either send
+ * `text` afresh in its place or send nothing at all.
  *
  * Why not simply edit the caption of a photo bubble, which is what this used to
  * do (Task T2-C)? Because that edit SUCCEEDS, and succeeds at the wrong thing:
@@ -133,12 +147,29 @@ export type BubbleEditResult =
  *    dead socket) lands here too, and that is safe: the delete it triggers
  *    fails for the same reason, and nothing is sent.
  *
- * `fallbackDm` makes the two calling modes explicit at the call site instead
- * of being an implicit side effect: `notifyAutoCancelled` below passes a
- * target so a buyer whose bubble is gone still gets the news as a DM (its
- * existing, unchanged behavior); the sweeper's bubble-flip pass passes
- * `null` — those buyers already received the account/top-up DM through
- * the normal delivery path, so a second DM here would only be noise.
+ * `onPhoto` is required at every call site, not defaulted (Task E2): the five
+ * callers' intents genuinely differ (a settled WALLET_TOPUP wants silence, a
+ * settled PRODUCT sale and the auto-cancel notice both want the replacement),
+ * and a default is exactly how the wrong one gets silently inherited by a
+ * future call site that never stops to think about it. `"replace"` is today's
+ * original behavior, unchanged. `"delete"` (new) is for a caller who knows
+ * `text` carries no news the buyer doesn't already have through another
+ * channel (a settled WALLET_TOPUP's outbox WALLET_TOPUP_CREDITED_DM) — the
+ * photo is removed and nothing takes its place, so the buyer's chat shows one
+ * fewer stale message instead of one duplicate one.
+ *
+ * `fallbackDm` exists only on the `"replace"` branch of `args`, not merely
+ * defaulted to `null` on `"delete"` — deliberately unrepresentable rather than
+ * resolved at runtime (Task E2 ambiguity #2). Asking for `onPhoto: "delete"`
+ * (nothing sent on success) and a `fallbackDm` target (something sent on
+ * failure) in the same call is contradictory: a caller that wants total
+ * silence when the bubble edit works cannot also want a DM when it doesn't.
+ * No caller combines them today — every real `"delete"` call site
+ * (`flipSettledBubble`, `sweepPaidOrderBubbles`, both QRIS reconcile pollers'
+ * `editBubbleToSuccess`, all via `bubbleOnPhotoFor`, util/delivery.ts) already
+ * wanted `fallbackDm: null` regardless of `onPhoto`, so this costs none of
+ * them anything and closes off the contradictory combination for good instead
+ * of leaving it to be silently allowed later.
  *
  * Never throws: every grammY call (the edit, the delete, the replacement send
  * and the fallback DM) is caught, so a stale/uneditable bubble or a
@@ -154,19 +185,29 @@ export async function editPaymentBubble(
     messageId: number;
     text: string;
     markup: InlineKeyboard;
-    /** Telegram id to DM as a fallback when the bubble can't be edited. Pass
-     * `null` to skip the DM entirely and just report the edit failed. */
-    fallbackDm: { telegramId: number } | null;
-  },
+  } & (
+    | {
+        onPhoto: "replace";
+        /** Telegram id to DM as a fallback when the bubble can't be edited.
+         * Pass `null` to skip the DM entirely and just report the edit
+         * failed. */
+        fallbackDm: { telegramId: number } | null;
+      }
+    | { onPhoto: "delete" }
+  ),
 ): Promise<BubbleEditResult> {
   /** The shared give-up tail, reached from every point where the bubble
    * itself turned out to be untouchable. `permanent` describes THAT failure
    * (never the DM's), because it is what tells an anchor-owning caller
-   * whether retrying could ever pay off. */
+   * whether retrying could ever pay off. No fallback DM exists to send when
+   * `onPhoto: "delete"` — see this function's own doc comment for why that
+   * combination is unrepresentable — so that mode always falls straight to
+   * `not_edited` here, the same as `onPhoto: "replace", fallbackDm: null`. */
   const giveUp = async (permanent: boolean): Promise<BubbleEditResult> => {
-    if (args.fallbackDm == null) return { status: "not_edited", permanent };
+    const fallbackDm = args.onPhoto === "replace" ? args.fallbackDm : null;
+    if (fallbackDm == null) return { status: "not_edited", permanent };
     try {
-      await api.sendMessage(args.fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
+      await api.sendMessage(fallbackDm.telegramId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
       return { status: "dm_sent" };
     } catch (error) {
       return { status: "not_edited", permanent, error };
@@ -195,6 +236,11 @@ export async function editPaymentBubble(
       return giveUp(isPermanentBubbleEditFailure(deleteError));
     }
 
+    // The photo is gone. `onPhoto: "delete"` stops right here on purpose —
+    // see this function's own doc comment for why sending nothing is correct
+    // for a settled WALLET_TOPUP.
+    if (args.onPhoto === "delete") return { status: "deleted" };
+
     try {
       const replacement = await api.sendMessage(args.chatId, args.text, { parse_mode: "HTML", reply_markup: args.markup });
       return { status: "replaced", messageId: replacement.message_id };
@@ -220,7 +266,11 @@ export async function editPaymentBubble(
  * brand-new message. `editPaymentBubble` decides how: a text bubble is edited
  * in place, a QR photo bubble is deleted and replaced (the QR is worthless for
  * an order that just expired, and leaving the image sitting above a
- * "cancelled" caption is what that used to look like).
+ * "cancelled" caption is what that used to look like). Always passes
+ * `onPhoto: "replace"` (Task E2: unlike the settlement flips below, this is a
+ * CANCELLATION notice — the buyer has received no other message about it, so
+ * the replacement is the only way they find out at all, whatever the order's
+ * kind).
  */
 async function notifyAutoCancelled(
   api: Api,
@@ -234,6 +284,7 @@ async function notifyAutoCancelled(
       messageId: o.paymentMsgId,
       text,
       markup,
+      onPhoto: "replace",
       fallbackDm: { telegramId: Number(o.tgId) },
     });
     // "error" only appears once a fallback DM was actually attempted (never
@@ -277,10 +328,16 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
 
 /**
  * Flip every settled order's stale payment bubble to its success message, for
- * ALL six payment methods at once. "Flip" is `editPaymentBubble`'s job and
- * means one of two things depending on the bubble: a text bubble is edited in
- * place, while a QRIS photo bubble is deleted and its success message sent
- * afresh, since the QR image cannot be edited away.
+ * ALL six payment methods at once. "Flip" is `editPaymentBubble`'s job: a text
+ * bubble is edited in place; a QRIS photo bubble is DELETED, and then either
+ * has its success message sent afresh (a PRODUCT sale) or is left deleted with
+ * nothing in its place (a settled WALLET_TOPUP — Task E2: its outbox
+ * WALLET_TOPUP_CREDITED_DM already told the buyer, so a replacement bubble
+ * here would only be a second copy of that news). `bubbleOnPhotoFor`
+ * (util/delivery.ts) makes that choice from `order.kind`, the same mapping
+ * `flipSettledBubble` (handlers/checkout.ts) and both QRIS reconcile pollers
+ * use, so a buyer can't get a different photo-bubble outcome depending on
+ * which of the four flips got there first.
  *
  * Why this exists: both remaining settlement paths that can pay an order off
  * — a gateway webhook and an admin's manual approval — run in the web process,
@@ -304,10 +361,11 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
  * one stays in it instead of leaving the buyer on a permanently stale QR. See
  * util/bubbleEditFailure.ts for which Telegram answers count as "for good".
  *
- * No fallback DM (`fallbackDm: null`): every order in this list already
- * reached its buyer through the normal path — the account file, the
- * ORDER_PROCESSING_DM, or the wallet top-up notice — so a DM here would only
- * repeat news they already have.
+ * No fallback DM (`fallbackDm: null` on a "replace" order, and never an
+ * option at all on a "delete" one — see `editPaymentBubble`'s own doc
+ * comment): every order in this list already reached its buyer through the
+ * normal path — the account file, the ORDER_PROCESSING_DM, or the wallet
+ * top-up notice — so a DM here would only repeat news they already have.
  *
  * `opts` defaults to the shared exported constants; production never passes
  * it. It exists so the black-holed-bubble tests can drive the identical
@@ -343,7 +401,7 @@ export async function sweepPaidOrderBubbles(
         messageId: order.paymentMsgId,
         text,
         markup,
-        fallbackDm: null,
+        ...bubbleOnPhotoFor(order.kind),
       }),
       editTimeoutMs,
     );
@@ -357,12 +415,12 @@ export async function sweepPaidOrderBubbles(
       logger.debug(`The paid-order bubble sweep could not edit order ${order.orderCode}'s payment bubble, and Telegram's answer does not rule out the same edit succeeding later`);
       continue;
     }
-    // Everything else is a finished attempt, "replaced" included: the QR
-    // bubble is gone and the success message that took its place carries no
-    // Refresh/Cancel pair, so there is nothing left for a later sweep to fix
-    // and the anchor it used to point at no longer exists. Deliberately NOT
-    // re-anchored on the replacement's `messageId` — that would put a message
-    // needing no further edit back into this queue forever.
+    // Everything else is a finished attempt — "replaced" and "deleted" both
+    // included: either way the QR bubble is gone, whatever took its place (a
+    // fresh success message, or nothing) carries no Refresh/Cancel pair, and
+    // there is nothing left for a later sweep to fix. Deliberately NOT
+    // re-anchored on a "replaced" outcome's `messageId` — that would put a
+    // message needing no further edit back into this queue forever.
     await clearOrderPaymentMessage(prisma, order.id);
   }
   if (keptForRetry > 0) {

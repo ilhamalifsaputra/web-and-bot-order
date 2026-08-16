@@ -185,6 +185,53 @@ describe("DenominationEditPage", () => {
     );
   });
 
+  it("switching Delivery Type away from 'Manual + buyer info required' drops autoDeliverySource/supplierSku from the submitted payload", async () => {
+    // Regression coverage for the client half of the fix in 024fec6: the
+    // backend routes independently re-derive/strip autoDeliverySource and
+    // supplierSku when deliveryType isn't manual_with_info, so this isn't a
+    // live data-integrity bug — but DeliveryTypeSection's selectMethod
+    // handler is what's supposed to reset this state on the client, and
+    // nothing exercised it before this test.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        name: "Netflix Premium",
+        denominations: [
+          {
+            ...PRODUCT_DETAIL.product.denominations[0],
+            deliveryType: "manual_with_info",
+            additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS),
+            autoDeliverySource: "digiflazz",
+            supplierSku: "mlbb86",
+          },
+        ],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    // Sanity check the fixture actually prefilled Step 4 with Digiflazz.
+    expect(screen.getByRole("radio", { name: /^digiflazz/i })).toBeChecked();
+    expect(screen.getByDisplayValue("mlbb86")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
+    // Step 4 (and Steps 2/3) are gone now that deliveryType is back to "auto".
+    expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledTimes(1));
+    const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
+    expect(sentBody).not.toHaveProperty("autoDeliverySource");
+    expect(sentBody).not.toHaveProperty("supplierSku");
+    expect(sentBody).not.toHaveProperty("additionalFields");
+    expect(sentBody.deliveryType).toBe("auto");
+  });
+
   it("changing Delivery Type to Manual -> Require buyer information requires at least one field before saving", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);

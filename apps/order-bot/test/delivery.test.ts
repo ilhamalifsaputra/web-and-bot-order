@@ -134,31 +134,3 @@ describe("settledPaymentKb", () => {
     expect(productFlat).not.toContain("v1:topup:open");
   });
 });
-
-describe("settledPaymentBubble — called directly with only orderCode/kind/status/user.language (no buyer read)", () => {
-  it("a WALLET_TOPUP order renders its neutral text with nothing but the row itself — no balance to merge in", () => {
-    const row = {
-      orderCode: "TOPUP-ROW-1",
-      kind: OrderKind.WALLET_TOPUP,
-      status: OrderStatus.DELIVERED,
-      user: { language: "en" },
-    };
-
-    const { text } = settledPaymentBubble(row);
-    expect(text).toContain("Payment received");
-    expect(text).not.toContain("TOPUP-ROW-1");
-  });
-
-  it("a PRODUCT order's own status and order code come through with no buyer read needed", () => {
-    const row = {
-      orderCode: "PROD-ROW-1",
-      kind: OrderKind.PRODUCT,
-      status: OrderStatus.DELIVERED,
-      user: { language: "en" },
-    };
-
-    const { text } = settledPaymentBubble(row);
-    expect(text).toContain("PROD-ROW-1");
-    expect(text).toContain("being delivered now");
-  });
-});

@@ -325,7 +325,8 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   // on a later attempt. editAnchoredBubble never throws (it catches and
   // classifies the rejection itself), so `outcome` here is its own
   // clear/keep verdict or "timeout", the one case it cannot see. Bounded at
-  // TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
+  // TELEGRAM_MESSAGE_TIMEOUT_MS so a stuck edit call can't stall the poller
+  // past its own tick.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     const outcome = await withTimeout(
       editAnchoredBubble(
@@ -337,8 +338,11 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         // Keyboard by order kind through the shared picker, so a top-up bubble
         // this rail flips carries the wallet keyboard — the same one
         // `settledPaymentBubble` gives it when the Refresh button or the
-        // sweeper gets there first (util/delivery.ts). Only the keyboard is
-        // shared; the text above stays this rail's own.
+        // sweeper gets there first (util/delivery.ts). For a WALLET_TOPUP,
+        // the text above is shared too — it's `settledPaymentBubble`'s own
+        // text, set as `topupBubbleText` earlier in this function. Only the
+        // PRODUCT-order fallback text (`checkout.bybit_bsc_paid`, right
+        // above) stays this rail's own.
         settledPaymentKb(order.kind, lang),
       ),
       TELEGRAM_MESSAGE_TIMEOUT_MS,

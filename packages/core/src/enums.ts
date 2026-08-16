@@ -300,15 +300,17 @@ export const NotificationEvent = {
   // dispatch time, never placed in the payload (same rule as ORDER_DELIVERED_DM).
   ORDER_MANUAL_DELIVERED_DM: "ORDER_MANUAL_DELIVERED_DM",
   // Buyer DM: a wallet top-up settled and the buyer's balance was credited.
-  // Only enqueued by the three WEBHOOK-driven top-up rails (TokoPay/
-  // PayDisini/NOWPayments — settlement can run in the web process, which must
-  // never send Telegram itself, hence the outbox). The other three top-up
-  // rails (Binance Internal, Bybit, Bybit BSC) settle exclusively inside
-  // bot-process pollers and DM the buyer directly instead (see each rail's
-  // `onDelivered` handler under apps/order-bot/src/payments/) — enqueueing
-  // this event for those too would double-notify the buyer. payload carries
-  // `chat_id` + `amount`/`currency`/`new_balance` (all money as Decimal
-  // `.toString()`), no order_code — the dispatcher needs no live DB read.
+  // Enqueued from exactly ONE place for ALL SIX top-up rails —
+  // `settleWalletTopup` (packages/db/src/crud/wallet_topup.ts), behind that
+  // function's atomic claim, so the double-settlement no-op branch can never
+  // reach it. This used to be split: the three webhook rails enqueued it
+  // per-rail while the three poller rails (Binance Internal, Bybit, Bybit BSC)
+  // DM'd the buyer directly from their own `onDelivered`. That split is what
+  // let a QRIS top-up notify the buyer twice, so the direct sends were
+  // deleted — no rail may send this itself, and no caller other than
+  // `settleWalletTopup` may enqueue it. payload carries `chat_id` +
+  // `order_code` + `amount`/`currency`/`new_balance` (all money as Decimal
+  // `.toString()`), so the dispatcher needs no live DB read.
   WALLET_TOPUP_CREDITED_DM: "WALLET_TOPUP_CREDITED_DM",
   // Admin DM (not a channel post): a Bybit BSC order's automated tracking
   // pipeline failed post-detection (tracker lookup-failure grace period

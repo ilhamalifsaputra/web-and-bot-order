@@ -338,9 +338,9 @@ export async function createWalletTopupOrder(
  * internally, so surfacing it here lets this function build the buyer DM
  * payload below without a second wallet read. On the no-op double-settlement
  * path, `newBalance` reflects the buyer's CURRENT balance (re-read fresh)
- * rather than a stale/zero figure, even though `credited` is 0 — the gate
- * on `credited.greaterThan(0)` below is what keeps that no-op path from
- * enqueueing anything.
+ * rather than a stale/zero figure, and `credited` is reported as 0 — but
+ * that path already returned above (see the double-settlement paragraph)
+ * before the buyer-notification code below ever runs.
  *
  * Also enqueues two notifications right after the `adjustWallet` credit
  * lands, and both are the ONE call site for their event across all six

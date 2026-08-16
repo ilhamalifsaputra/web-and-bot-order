@@ -15,7 +15,7 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderKind, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {

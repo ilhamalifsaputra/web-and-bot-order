@@ -78,7 +78,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.FLASH_SALE_BROADCAST, // buyer DM (flash sale went live, all customers)
   NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
   NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)
-  NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (webhook-rail top-up settled, wallet credited)
+  NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */
@@ -190,6 +190,17 @@ export async function drainBatch(bot: Bot): Promise<void> {
     try {
       text = render(row.event, payload);
     } catch (e) {
+      // Warned, not just recorded in `lastError`: this notification is now
+      // dropped for good (maxAttempts=1), so a buyer who was owed a delivery
+      // or top-up confirmation will never receive one and only an operator
+      // reaching into the outbox table would otherwise ever find out. The
+      // payload itself is deliberately kept out of the message — it is the
+      // thing that was malformed, and it may carry values from an untrusted
+      // source.
+      logger.warn(
+        { err: e, notificationId: row.id, event: row.event, orderId: row.orderId },
+        `Could not render notification ${row.id} from its stored payload, so it has been failed permanently and the recipient will never receive it — a malformed payload cannot become valid on a retry. Check the notification_outbox row's payload against what the enqueueing code should have written for this event.`,
+      );
       await markNotificationFailed(prisma, row.id, `template render failed: ${e}`, 1);
       continue;
     }

@@ -1335,15 +1335,18 @@ export function DigiflazzSyncPage() {
 
       {preview && (
         <>
-          <div className="flex items-center gap-3">
+          {/* Stacks full-width on mobile, sits side-by-side from `sm` up —
+              two fixed-width `max-w-xs` fields side by side on a narrow phone
+              viewport (~360px) leaves no room for either to be usable. */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Input
               placeholder="Filter by game name…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              className="max-w-xs"
+              className="w-full sm:max-w-xs"
             />
             <Select value={categoryId} onValueChange={setCategoryId}>
-              <SelectTrigger className="max-w-xs">
+              <SelectTrigger className="w-full sm:max-w-xs">
                 <SelectValue placeholder="Target category" />
               </SelectTrigger>
               <SelectContent>
@@ -1367,15 +1370,27 @@ export function DigiflazzSyncPage() {
                     const key = `${g.brand}::${s.buyerSkuCode}`;
                     const invalid = priceIsInvalid(key, s.suggestedPrice);
                     return (
-                      <div key={key} className="flex items-center gap-3">
-                        <Checkbox checked={checkedSkus.has(key)} onCheckedChange={() => toggleSku(key)} />
-                        <span className="flex-1 text-sm">{s.productName}</span>
-                        <span className="text-xs text-ink-soft">Cost {s.costPrice}</span>
-                        <Input
-                          className={invalid ? "max-w-32 border-rust" : "max-w-32"}
-                          value={priceFor(key, s.suggestedPrice)}
-                          onChange={(e) => setPriceEdits((p) => ({ ...p, [key]: e.target.value }))}
-                        />
+                      // Stacks vertically below `sm` (checkbox+name on one
+                      // line, cost+price input on the next, both full-width)
+                      // — the row's fixed-width pieces (checkbox, cost
+                      // label, price input) leave no room for the product
+                      // name on a ~360px phone viewport if forced onto one
+                      // line, causing exactly the "kelebihan layar" overflow
+                      // this component must never produce.
+                      <div key={key} className="flex flex-col gap-2 border-b border-line pb-2 last:border-0 last:pb-0 sm:flex-row sm:items-center sm:gap-3">
+                        <div className="flex items-center gap-3">
+                          <Checkbox checked={checkedSkus.has(key)} onCheckedChange={() => toggleSku(key)} />
+                          <span className="flex-1 text-sm sm:hidden">{s.productName}</span>
+                        </div>
+                        <span className="hidden flex-1 text-sm sm:inline">{s.productName}</span>
+                        <div className="flex items-center gap-3 pl-7 sm:pl-0">
+                          <span className="shrink-0 text-xs text-ink-soft">Cost {s.costPrice}</span>
+                          <Input
+                            className={invalid ? "w-full border-rust sm:w-32" : "w-full sm:w-32"}
+                            value={priceFor(key, s.suggestedPrice)}
+                            onChange={(e) => setPriceEdits((p) => ({ ...p, [key]: e.target.value }))}
+                          />
+                        </div>
                       </div>
                     );
                   })}
@@ -1439,6 +1454,8 @@ Run: `pnpm --filter @app/web-admin-client build`
 Expected: builds clean.
 
 Manual check: start the admin dev server, open `/catalog/digiflazz-sync`, click "Sync dari Digiflazz" against real or sandbox credentials (or confirm the error path renders cleanly if credentials aren't set — this exercises the "Digiflazz fetch/credential failure" error-handling requirement from the spec), verify brand groups render, checkboxes/price edits work, and Impor Terpilih creates catalog rows (check the Catalog page afterward).
+
+**Mobile check (required, not optional)**: with browser devtools set to a narrow phone width (~360-390px) and a tablet width (~768px), confirm the page never produces horizontal scroll/overflow at either size — the filter+category row stacks to full-width fields, and each SKU row stacks (checkbox+name on one line, cost+price input on the next) rather than squeezing a checkbox, the product name, a cost label, and a price input onto one line. Expand a brand group with several SKUs and scroll through it at the narrow width specifically to catch this.
 
 - [ ] **Step 5: Commit**
 

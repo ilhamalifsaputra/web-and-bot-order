@@ -50,6 +50,7 @@ import {
   runStorageCleanup,
   listSettledOrdersAwaitingBubbleEdit,
   clearOrderPaymentMessage,
+  resyncDigiflazzCatalog,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -1367,6 +1368,24 @@ export function scheduleFxRefresh(): Cron {
       .catch((err) => logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate"));
   void run();
   return new Cron("5 * * * *", { protect: true }, run);
+}
+
+/**
+ * Hourly Digiflazz catalog re-sync — refreshes costPrice/price/isActive on
+ * every already-imported denomination (never creates/renames anything; new
+ * SKUs only ever enter the catalog via the admin's Import Wizard). No `Api`
+ * needed, so this runs even on a web-only boot, same as scheduleFxRefresh.
+ */
+export function scheduleDigiflazzCatalogSync(): Cron {
+  const run = () =>
+    resyncDigiflazzCatalog(prisma)
+      .then((r) => {
+        if (r.updated || r.deactivated || r.reactivated) {
+          logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated, ${r.reactivated} reactivated.`);
+        }
+      })
+      .catch((err) => logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick"));
+  return new Cron("15 * * * *", { protect: true }, run);
 }
 
 export function scheduleJobs(api: Api): Cron[] {

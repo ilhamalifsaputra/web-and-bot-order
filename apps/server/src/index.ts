@@ -26,7 +26,7 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
 import { htmlDefaultsTransformer } from "@app/order-bot/util/apiDefaults";
-import { scheduleJobs, scheduleFxRefresh, flushSettledOrderBubble } from "@app/order-bot/jobs";
+import { scheduleJobs, scheduleFxRefresh, scheduleDigiflazzCatalogSync, flushSettledOrderBubble } from "@app/order-bot/jobs";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
@@ -291,7 +291,7 @@ export async function start(): Promise<void> {
     startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
   }
   // Market-rate auto-update needs no bot — runs even on a web-only boot.
-  jobs = [...jobs, scheduleFxRefresh()];
+  jobs = [...jobs, scheduleFxRefresh(), scheduleDigiflazzCatalogSync()];
   const notifierAbort = new AbortController();
   const notifierDone = startNotifier(bot, notifierAbort.signal);
 

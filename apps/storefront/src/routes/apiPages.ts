@@ -32,7 +32,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   // ---- Shop chrome context (header/footer/cart badge) ----
   app.get("/pages/context", async (req, reply) => {
     const customer = await optionalCustomer(req);
-    const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername, analyticsId, flashOn] = await Promise.all([
+    const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername, analyticsId, flashOn, waNumber] = await Promise.all([
       getUsdIdrRate(prisma),
       getSetting(prisma, "shop_name"),
       getSetting(prisma, "shop_tagline"),
@@ -46,6 +46,10 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       resolveBotUsername(),
       getSetting(prisma, "web_analytics_id"),
       hasActiveFlashSale(prisma),
+      // Footer's WhatsApp link — same setting HomePage's own contact
+      // section already reads (see pageData.ts's homePageData), surfaced
+      // here too since the footer renders on every page, not just Home.
+      getSetting(prisma, "support_whatsapp"),
     ]);
     return reply.send({
       lang: requestLang(req),
@@ -71,6 +75,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       favicon_url: favicon || "/static/favicon.svg",
       logo_url: logo || "",
       bot_username: botUsername,
+      wa_number: waNumber ?? null,
       tzname: config.TIMEZONE,
       // Whether this shop loads Google Analytics at all — the privacy page
       // only mentions tracking when there genuinely is some. The ID itself

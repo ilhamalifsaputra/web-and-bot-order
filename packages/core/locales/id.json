@@ -525,6 +525,8 @@
   "web.forgot_title": "Lupa kata sandi",
   "web.forgot_unavailable": "Reset kata sandi belum tersedia — silakan hubungi dukungan.",
   "web.footer_note": "Pengiriman instan · Bayar QRIS & USDT",
+  "web.footer_links_heading": "Tautan Cepat",
+  "web.footer_contact_heading": "Kontak",
   "web.flash_badge": "Flash sale −{percent}%",
   "web.flash_was": "Harga normal {price}",
   "web.flash_ends_in": "Berakhir dalam {remaining}",

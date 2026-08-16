@@ -30,6 +30,7 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  wa_number: null,
   tzname: "Asia/Jakarta",
 };
 
@@ -233,6 +234,49 @@ describe("Layout", () => {
       "/privacy",
       "/refund",
     ]);
+  });
+
+  it("shows the shop name, tagline and Quick Links/Contact headings in the 4-column footer", async () => {
+    renderLayout({ shop_tagline: "Serba ada, serba cepat" });
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    expect(screen.getByText("Serba ada, serba cepat")).toBeInTheDocument();
+    expect(screen.getByText("Quick Links")).toBeInTheDocument();
+    expect(screen.getByText("Contact")).toBeInTheDocument();
+    // Copyright/trust bar still renders beneath the columns.
+    expect(screen.getByText("Instant delivery · QRIS & USDT payments")).toBeInTheDocument();
+  });
+
+  it("hides the whole contact column when neither WhatsApp nor Telegram is configured", async () => {
+    renderLayout({ wa_number: null, bot_username: "" });
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    expect(screen.queryByRole("link", { name: /whatsapp/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /telegram/i })).not.toBeInTheDocument();
+  });
+
+  it("links the footer's WhatsApp entry to wa.me/<wa_number> only when it's set", async () => {
+    renderLayout({ wa_number: "6281234567890" });
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    expect(screen.getByRole("link", { name: /whatsapp/i })).toHaveAttribute(
+      "href",
+      "https://wa.me/6281234567890",
+    );
+  });
+
+  it("links the footer's Telegram entry to t.me/<bot_username> only when it's set", async () => {
+    renderLayout({ bot_username: "tokobot" });
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    expect(screen.getByRole("link", { name: /telegram/i })).toHaveAttribute(
+      "href",
+      "https://t.me/tokobot",
+    );
   });
 
   it("offers Track order in the desktop header, separate from the drawer's copy", async () => {

@@ -35,6 +35,7 @@ function context(overrides: Partial<ShopContext> = {}): ShopContext {
     favicon_url: "/static/favicon.svg",
     logo_url: "",
     bot_username: "tokobot",
+    wa_number: null,
     tzname: "Asia/Jakarta",
     ...overrides,
   };

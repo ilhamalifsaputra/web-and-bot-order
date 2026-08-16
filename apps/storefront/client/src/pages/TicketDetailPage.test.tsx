@@ -40,6 +40,7 @@ const context = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  wa_number: null,
   tzname: "Asia/Jakarta",
 };
 

@@ -18,8 +18,10 @@ import {
   LifeBuoy,
   LogIn,
   Menu,
+  MessageCircle,
   Package,
   PackageSearch,
+  Send,
   Shapes,
   ShieldCheck,
   ShoppingBag,
@@ -179,6 +181,9 @@ export default function Layout() {
   const lang = currentLang();
   const otherLang = lang === "id" ? "en" : "id";
   const shopName = ctx?.shop_name ?? "";
+  const shopTagline = ctx?.shop_tagline ?? "";
+  const waNumber = ctx?.wa_number ?? "";
+  const botUsername = ctx?.bot_username ?? "";
   const cartCount = ctx?.cart_count ?? 0;
   const backPath = location.pathname + location.search;
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -579,28 +584,76 @@ export default function Layout() {
       </main>
 
       <footer className="mt-16 border-t border-line bg-card">
-        {/* The informational pages live here and nowhere else — this row is
-            both how a visitor finds the policies and the only internal link
-            that lets a crawler reach them at all. */}
-        <nav
-          className="mx-auto max-w-6xl px-4 pt-6 lg:px-6"
-          aria-label={t("web.nav_footer")}
-        >
-          <ul className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm sm:justify-start">
-            {FOOTER_LINKS.map(({ to, key }) => (
-              <li key={to}>
-                <Link to={to} className="text-ink-soft transition-colors hover:text-pine">
-                  {t(key)}
-                </Link>
-              </li>
-            ))}
-          </ul>
-        </nav>
-        <div className="mx-auto mt-4 flex max-w-6xl flex-col items-center justify-between gap-3 border-t border-line px-4 py-6 text-sm sm:flex-row lg:px-6">
-          <span className="flex items-center gap-2 font-display font-semibold text-pine">
-            <Store className="h-5 w-5" /> {shopName}
-          </span>
-          <span className="text-ink-faint text-xs sm:text-sm">{t("web.footer_note")}</span>
+        <div className="mx-auto max-w-6xl px-4 py-10 lg:px-6">
+          <div className="grid gap-8 md:grid-cols-4">
+            {/* Columns 1-2: brand identity + tagline. No social icons — this
+                shop has no social-links Setting to drive them, and a row of
+                dead icons is worse than no row. */}
+            <div className="md:col-span-2">
+              <span className="flex items-center gap-2 font-display font-semibold text-pine">
+                <Store className="h-5 w-5" /> {shopName}
+              </span>
+              {shopTagline && <p className="mt-3 max-w-sm text-sm text-ink-soft">{shopTagline}</p>}
+            </div>
+
+            {/* Column 3: informational pages. The only internal link that
+                lets a crawler reach the policy pages at all, so this remains
+                the primary footer nav landmark. */}
+            <nav aria-label={t("web.nav_footer")}>
+              <h3 className="text-sm font-semibold text-ink">{t("web.footer_links_heading")}</h3>
+              <ul className="mt-3 flex flex-col gap-2 text-sm">
+                {FOOTER_LINKS.map(({ to, key }) => (
+                  <li key={to}>
+                    <Link to={to} className="text-ink-soft transition-colors hover:text-pine">
+                      {t(key)}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+
+            {/* Column 4: direct contact. Each link is independently
+                conditional on the shop having set that channel up — no
+                placeholder/fake contact info when both are absent. */}
+            <div>
+              <h3 className="text-sm font-semibold text-ink">{t("web.footer_contact_heading")}</h3>
+              {(waNumber || botUsername) && (
+                <ul className="mt-3 flex flex-col gap-2 text-sm">
+                  {waNumber && (
+                    <li>
+                      <a
+                        href={`https://wa.me/${waNumber}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
+                      >
+                        <MessageCircle className="h-4 w-4" /> WhatsApp
+                      </a>
+                    </li>
+                  )}
+                  {botUsername && (
+                    <li>
+                      <a
+                        href={`https://t.me/${botUsername}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-2 text-ink-soft transition-colors hover:text-pine"
+                      >
+                        <Send className="h-4 w-4" /> Telegram
+                      </a>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Separator + centered copyright bar — brand identity already lives
+            in column 1 above, so repeating the shop name/icon here would be
+            redundant; kept to just the note text. */}
+        <div className="border-t border-line px-4 py-6 text-center text-xs text-ink-faint sm:text-sm lg:px-6">
+          {t("web.footer_note")}
         </div>
       </footer>
     </>

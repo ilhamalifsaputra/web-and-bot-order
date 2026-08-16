@@ -396,6 +396,11 @@ export interface ShopContext {
   favicon_url: string;
   logo_url: string;
   bot_username: string;
+  /** WhatsApp number for the footer's contact link (`support_whatsapp`
+   * Setting), or null/empty when the shop hasn't set one — the footer hides
+   * the WhatsApp link entirely rather than show a dead one, same as
+   * HomePage's own contact section treats an absent number. */
+  wa_number: string | null;
   tzname: string;
   /** True only when `web_analytics_id` is set, i.e. this shop actually loads
    * Google Analytics. The privacy page reads it so it never claims tracking a

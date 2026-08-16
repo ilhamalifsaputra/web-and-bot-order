@@ -167,6 +167,10 @@ export async function createCatalogProduct(
     imageFileId?: string | null;
     sortOrder?: number;
     isActive?: boolean;
+    /** Set when this Product was created by the Digiflazz import wizard —
+     * the exact `brand` string Digiflazz reports, used to match a re-import
+     * of the same brand back to this Product instead of duplicating it. */
+    digiflazzBrand?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
@@ -184,6 +188,7 @@ export async function createCatalogProduct(
       imageFileId: args.imageFileId ?? null,
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
+      digiflazzBrand: args.digiflazzBrand ?? null,
     },
   });
 }
@@ -318,6 +323,10 @@ export async function createDenomination(
     isActive?: boolean;
     deliveryType?: string;
     additionalFields?: string | null;
+    /** The supplier's `buyerSkuCode` for a Digiflazz-imported denomination —
+     * lets dispatchPendingDigiflazzOrders / resyncDigiflazzCatalog match this
+     * row back to a Digiflazz price-list entry. */
+    supplierSku?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -340,6 +349,7 @@ export async function createDenomination(
       isActive: args.isActive ?? true,
       ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
+      supplierSku: args.supplierSku ?? null,
     },
   });
 }

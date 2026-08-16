@@ -18,18 +18,19 @@
  *    DELIVERED and runs the same shared side effects a manually-fulfilled
  *    order gets.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
-import { createTransaction, type DigiflazzCreds } from "@app/core/suppliers/digiflazz";
+import { createTransaction, getPriceList, type DigiflazzCreds, type DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
 import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm } from "./notifications";
 import { logAdminAction } from "./audit";
+import { createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 
 /** Setting keys — not yet wired to any admin UI (a later task adds that);
  * this module is only the read-side resolver, matching the shape every other
@@ -307,4 +308,189 @@ export async function fulfillDigiflazzOrder(
   logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed! };
+}
+
+// ---- Import wizard: brand-grouping, matching, price computation, import, re-sync ----
+
+export const DIGIFLAZZ_MARKUP_TYPE_KEY = "digiflazz_markup_type";
+export const DIGIFLAZZ_MARKUP_VALUE_KEY = "digiflazz_markup_value";
+
+/** The two-field Game ID + Server template every Digiflazz-imported
+ * denomination gets by default — the same shape the original plan's Task 4
+ * (manual admin entry) would have had the admin type by hand. Admin can still
+ * edit or delete a field afterward through the existing field-builder UI. */
+const DEFAULT_DIGIFLAZZ_FIELDS = [
+  { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  { key: "server_id", label: { id: "Server / Zone", en: "Server / Zone" }, type: "text", required: false, options: [], placeholder: "" },
+];
+
+/**
+ * Digiflazz's price list can list the same buyerSkuCode more than once, from
+ * different sellers at different prices — confirmed against Digiflazz's own
+ * docs (developer.digiflazz.com/api/buyer/daftar-harga/): the API does not
+ * pre-select a seller for the buyer. Collapse to one row per buyerSkuCode,
+ * keeping the cheapest, so a duplicate SKU never becomes two lookalike
+ * catalog rows (import) or a coin-flip cost value (re-sync). Every function
+ * below that reads a raw price list calls this first.
+ */
+export function collapseToCheapestSeller(items: DigiflazzPriceListItem[]): DigiflazzPriceListItem[] {
+  const bySku = new Map<string, DigiflazzPriceListItem>();
+  for (const item of items) {
+    const existing = bySku.get(item.buyerSkuCode);
+    if (!existing || item.price.lessThan(existing.price)) {
+      bySku.set(item.buyerSkuCode, item);
+    }
+  }
+  return [...bySku.values()];
+}
+
+export interface DigiflazzBrandGroup {
+  brand: string;
+  items: DigiflazzPriceListItem[];
+  /** Non-null when a Product with this exact digiflazzBrand already exists —
+   * the wizard renders this group read-only ("Sudah ada"; updates flow
+   * through resyncDigiflazzCatalog, not a re-import). */
+  existingProductId: number | null;
+}
+
+/**
+ * Group a raw Digiflazz price-list fetch by its `brand` field (each distinct
+ * brand string — including region variants Digiflazz already reports
+ * separately — becomes its own group), and mark which groups already have a
+ * matching Product via Product.digiflazzBrand. Collapses to the cheapest
+ * seller per buyerSkuCode first (see collapseToCheapestSeller) — a group's
+ * `items` never contains two rows for the same SKU.
+ */
+export async function groupDigiflazzPriceListByBrand(
+  db: Db,
+  rawItems: DigiflazzPriceListItem[],
+): Promise<DigiflazzBrandGroup[]> {
+  const items = collapseToCheapestSeller(rawItems);
+  const byBrand = new Map<string, DigiflazzPriceListItem[]>();
+  for (const item of items) {
+    if (!item.brand) continue;
+    const list = byBrand.get(item.brand) ?? [];
+    list.push(item);
+    byBrand.set(item.brand, list);
+  }
+  const brands = [...byBrand.keys()];
+  const existing = await db.product.findMany({
+    where: { digiflazzBrand: { in: brands } },
+    select: { id: true, digiflazzBrand: true },
+  });
+  const existingByBrand = new Map(existing.map((p) => [p.digiflazzBrand!, p.id]));
+  return brands.map((brand) => ({
+    brand,
+    items: byBrand.get(brand)!,
+    existingProductId: existingByBrand.get(brand) ?? null,
+  }));
+}
+
+/** Suggest a sell price from a Digiflazz cost using the admin's configured
+ * global markup rule. Defaults to zero markup (sell === cost) when unset —
+ * a deliberately visible "no markup configured yet" price rather than a
+ * silently wrong guess, so an admin who hasn't set a rule notices at the
+ * review screen instead of shipping a $0-margin catalog unknowingly. */
+export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal> {
+  const [type, value] = await Promise.all([
+    getSetting(db, DIGIFLAZZ_MARKUP_TYPE_KEY),
+    getSetting(db, DIGIFLAZZ_MARKUP_VALUE_KEY),
+  ]);
+  const amount = value ? new Decimal(value) : new Decimal(0);
+  if (type === "percent") return cost.plus(cost.times(amount).dividedBy(100));
+  if (type === "flat") return cost.plus(amount);
+  return cost;
+}
+
+export interface DigiflazzImportRow {
+  buyerSkuCode: string;
+  productName: string;
+  price: Decimal.Value;
+}
+
+/**
+ * Bulk-create (or add to, on a repeat call for the same brand) one Product +
+ * one Denomination per row, all inside one transaction. Imported inactive —
+ * "review before it goes live" per the design: the import itself is
+ * automatic, publishing is a separate explicit step.
+ */
+export async function importDigiflazzBrand(
+  db: PrismaClient,
+  args: { brand: string; categoryId: number; rows: DigiflazzImportRow[] },
+): Promise<{ productId: number; denominationCount: number }> {
+  return db.$transaction(async (tx) => {
+    let product = await tx.product.findFirst({ where: { digiflazzBrand: args.brand } });
+    if (!product) {
+      product = await createCatalogProduct(tx, {
+        categoryId: args.categoryId,
+        name: args.brand,
+        digiflazzBrand: args.brand,
+        isActive: false,
+      });
+    }
+    for (const row of args.rows) {
+      await createDenomination(tx, {
+        productId: product.id,
+        name: row.productName,
+        // ProductType only accepts SHARED | PRIVATE (packages/core/src/enums.ts)
+        // — Digiflazz top-ups have no such distinction, SHARED is the neutral
+        // default, same as this codebase's own sample/test data.
+        type: ProductType.SHARED,
+        durationLabel: row.productName,
+        price: row.price,
+        autoDeliverySource: "digiflazz",
+        supplierSku: row.buyerSkuCode,
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
+        isActive: false,
+      });
+    }
+    return { productId: product.id, denominationCount: args.rows.length };
+  });
+}
+
+/**
+ * The recurring re-sync: for every Denomination with a non-null supplierSku,
+ * refresh costPrice + recompute price (unless priceOverridden) from a fresh
+ * Digiflazz price list, and mirror buyerProductStatus into isActive. Never
+ * creates or renames anything — a genuinely new SKU only ever enters the
+ * catalog through importDigiflazzBrand (the wizard), reviewed by an admin
+ * first. No-op if Digiflazz isn't configured.
+ */
+export async function resyncDigiflazzCatalog(
+  db: PrismaClient,
+): Promise<{ updated: number; deactivated: number; reactivated: number }> {
+  const zero = { updated: 0, deactivated: 0, reactivated: 0 };
+  const creds = await getDigiflazzCreds(db);
+  if (!creds) return zero;
+
+  const [rawPriceList, mapped] = await Promise.all([
+    getPriceList(creds),
+    db.denomination.findMany({ where: { supplierSku: { not: null } } }),
+  ]);
+  // collapseToCheapestSeller first — a plain Map keyed by buyerSkuCode over
+  // an uncollapsed list lets whichever duplicate-seller row happens to come
+  // last in the array silently win, instead of the cheapest one.
+  const bySku = new Map(collapseToCheapestSeller(rawPriceList).map((item) => [item.buyerSkuCode, item]));
+
+  const result = { ...zero };
+  for (const denom of mapped) {
+    const item = bySku.get(denom.supplierSku!);
+    if (!item) continue; // Digiflazz no longer lists this SKU — leave it as-is, not this job's concern.
+
+    const data: Record<string, unknown> = { costPrice: item.price };
+    if (!denom.priceOverridden) {
+      data.price = await computeDigiflazzMarkupPrice(db, item.price);
+      result.updated++;
+    }
+    if (denom.isActive && !item.buyerProductStatus) {
+      data.isActive = false;
+      result.deactivated++;
+    } else if (!denom.isActive && item.buyerProductStatus) {
+      data.isActive = true;
+      result.reactivated++;
+    }
+    await updateDenomination(db, denom.id, data);
+  }
+  return result;
 }

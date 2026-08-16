@@ -10,10 +10,12 @@ import type { PrismaClient } from "@prisma/client";
 
 const digiflazzMock = vi.hoisted(() => ({
   createTransaction: vi.fn(),
+  getPriceList: vi.fn(),
 }));
 vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@app/core/suppliers/digiflazz")>()),
   createTransaction: digiflazzMock.createTransaction,
+  getPriceList: digiflazzMock.getPriceList,
 }));
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -33,8 +35,17 @@ import {
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   DIGIFLAZZ_ENABLED_KEY,
+  collapseToCheapestSeller,
+  groupDigiflazzPriceListByBrand,
+  computeDigiflazzMarkupPrice,
+  importDigiflazzBrand,
+  resyncDigiflazzCatalog,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
 import { OrderStatus, DeliveryType } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
+import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -51,6 +62,7 @@ beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
   digiflazzMock.createTransaction.mockReset();
+  digiflazzMock.getPriceList.mockReset();
   await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
   await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
 });
@@ -219,5 +231,208 @@ describe("fulfillDigiflazzOrder", () => {
     const order = await makeProcessingDigiflazzOrder();
     await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-1" });
     await expect(fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-2" })).rejects.toThrow();
+  });
+});
+
+function priceListItem(overrides: Partial<DigiflazzPriceListItem> = {}): DigiflazzPriceListItem {
+  return {
+    buyerSkuCode: "ml100",
+    productName: "Mobile Legends 100 Diamond",
+    category: "Game",
+    brand: "Mobile Legends",
+    type: "Umum",
+    price: new Decimal(15000),
+    buyerProductStatus: true,
+    sellerProductStatus: true,
+    stock: null,
+    ...overrides,
+  };
+}
+
+describe("collapseToCheapestSeller", () => {
+  it("keeps only the lowest-price row when the same buyerSkuCode appears from multiple sellers", () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(16000) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15800) }),
+      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(41000) }),
+    ];
+    const collapsed = collapseToCheapestSeller(items);
+    expect(collapsed).toHaveLength(2);
+    expect(collapsed.find((i) => i.buyerSkuCode === "ml100")!.price.toString()).toBe("15500");
+  });
+
+  it("is a no-op when every buyerSkuCode is already unique", () => {
+    const items = [priceListItem({ buyerSkuCode: "ml100" }), priceListItem({ buyerSkuCode: "ml250" })];
+    expect(collapseToCheapestSeller(items)).toHaveLength(2);
+  });
+});
+
+describe("groupDigiflazzPriceListByBrand", () => {
+  it("groups items by brand and flags brands with no existing Product as new", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends" }),
+      priceListItem({ buyerSkuCode: "ml250", brand: "Mobile Legends", productName: "Mobile Legends 250 Diamond" }),
+      priceListItem({ buyerSkuCode: "ff100", brand: "Free Fire", productName: "Free Fire 100 Diamond" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(2);
+    const ml = groups.find((g) => g.brand === "Mobile Legends")!;
+    expect(ml.items).toHaveLength(2);
+    expect(ml.existingProductId).toBeNull();
+  });
+
+  it("collapses a multi-seller SKU to its cheapest offer before grouping, so it never produces two lookalike rows", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", price: new Decimal(16000) }),
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", price: new Decimal(15500) }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.items).toHaveLength(1);
+    expect(groups[0]!.items[0]!.price.toString()).toBe("15500");
+  });
+
+  it("separates region variants that Digiflazz reports as distinct brand strings", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends" }),
+      priceListItem({ buyerSkuCode: "mlglobal100", brand: "Mobile Legends (Region Lain)" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups.map((g) => g.brand).sort()).toEqual(["Mobile Legends", "Mobile Legends (Region Lain)"]);
+  });
+
+  it("flags a brand already imported via digiflazzBrand as existing", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await prisma.product.create({
+      data: { categoryId: category.id, name: "Mobile Legends", slug: "mobile-legends-x", digiflazzBrand: "Mobile Legends" },
+    });
+    const groups = await groupDigiflazzPriceListByBrand(prisma, [priceListItem({ brand: "Mobile Legends" })]);
+    expect(groups[0]!.existingProductId).toBe(product.id);
+  });
+});
+
+describe("computeDigiflazzMarkupPrice", () => {
+  it("applies a percent markup", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const price = await computeDigiflazzMarkupPrice(prisma, new Decimal(10000));
+    expect(price.toString()).toBe("11000");
+  });
+
+  it("applies a flat markup", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "flat");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "1500");
+    const price = await computeDigiflazzMarkupPrice(prisma, new Decimal(10000));
+    expect(price.toString()).toBe("11500");
+  });
+
+  it("defaults to zero markup (equals cost) when unset", async () => {
+    const price = await computeDigiflazzMarkupPrice(prisma, new Decimal(10000));
+    expect(price.toString()).toBe("10000");
+  });
+});
+
+describe("importDigiflazzBrand", () => {
+  it("creates a Product with digiflazzBrand set and one Denomination per row", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const result = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" },
+      ],
+    });
+    expect(result.denominationCount).toBe(2);
+
+    const product = await prisma.product.findUnique({ where: { id: result.productId }, include: { denominations: true } });
+    expect(product!.digiflazzBrand).toBe("Mobile Legends");
+    expect(product!.isActive).toBe(false); // imported inactive — review-before-live
+    expect(product!.denominations).toHaveLength(2);
+    const denom = product!.denominations.find((d) => d.supplierSku === "ml100")!;
+    expect(denom.autoDeliverySource).toBe("digiflazz");
+    expect(denom.deliveryType).toBe("manual_with_info");
+    expect(JSON.parse(denom.additionalFields!)).toEqual([
+      { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      { key: "server_id", label: { id: "Server / Zone", en: "Server / Zone" }, type: "text", required: false, options: [], placeholder: "" },
+    ]);
+  });
+
+  it("reuses the existing Product on a second import for the same brand rather than duplicating it", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const first = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+    });
+    const second = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" }],
+    });
+    expect(second.productId).toBe(first.productId);
+    const count = await prisma.product.count({ where: { digiflazzBrand: "Mobile Legends" } });
+    expect(count).toBe(1);
+  });
+});
+
+describe("resyncDigiflazzCatalog", () => {
+  it("updates costPrice/price from a fresh price list and leaves priceOverridden rows untouched", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" },
+      ],
+    });
+    // Admin reviews, hand-edits ml250's price, and publishes it (imports land
+    // inactive — this is the "review before it goes live" step).
+    const ml250 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml250" } });
+    await prisma.denomination.update({
+      where: { id: ml250.id },
+      data: { price: "50000", priceOverridden: true, isActive: true },
+    });
+
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(20000), buyerProductStatus: true }),
+      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(45000), buyerProductStatus: false }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.updated).toBe(1); // only ml100 — ml250 is priceOverridden
+    expect(result.deactivated).toBe(1); // ml250's isActive still flips off from buyerProductStatus, independent of price
+
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(ml100.costPrice!.toString()).toBe("20000");
+    expect(ml100.price.toString()).toBe("22000"); // 20000 + 10%
+
+    const ml250After = await prisma.denomination.findFirstOrThrow({ where: { id: ml250.id } });
+    expect(ml250After.price.toString()).toBe("50000"); // untouched
+    expect(ml250After.isActive).toBe(false); // status still mirrors buyerProductStatus
+  });
+
+  it("is a no-op when Digiflazz isn't configured", async () => {
+    await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result).toEqual({ updated: 0, deactivated: 0, reactivated: 0 });
+  });
+
+  it("uses the cheapest seller's price when the fresh list has a duplicate buyerSkuCode", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(21000) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(19500) }), // cheaper seller, same SKU
+    ]);
+
+    await resyncDigiflazzCatalog(prisma);
+
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(ml100.costPrice!.toString()).toBe("19500");
   });
 });

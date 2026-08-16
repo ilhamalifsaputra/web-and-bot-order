@@ -287,6 +287,22 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     // client sent something (e.g. leftover state from switching away from
     // Manual + Info in the form) — the delivery type is the source of truth.
 
+    // autoDeliverySource is the manual/override path for linking a single
+    // denomination to a supplier (the Import Wizard is the bulk path) — "none"
+    // (client sends nothing) clears it; "digiflazz" requires a non-empty
+    // supplierSku, mirroring the client-side canSubmit rule.
+    const autoDeliverySource =
+      typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
+        ? body.autoDeliverySource.trim()
+        : null;
+    let supplierSku: string | null = null;
+    if (autoDeliverySource === "digiflazz") {
+      supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
+      if (!supplierSku) {
+        return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+      }
+    }
+
     const denom = await createDenomination(prisma, {
       productId,
       name,
@@ -299,6 +315,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       deliveryType,
       additionalFields,
+      autoDeliverySource,
+      supplierSku,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -572,6 +590,23 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
+    // autoDeliverySource/supplierSku, like costPrice/resellerPrice above, are
+    // plain optional fields (not "touch-only-if-provided" like deliveryType):
+    // an admin picking "None" in the form omits both from the request body,
+    // which clears them here too. "digiflazz" requires a non-empty
+    // supplierSku, mirroring the client-side canSubmit rule.
+    const autoDeliverySource =
+      typeof body.autoDeliverySource === "string" && body.autoDeliverySource.trim() !== ""
+        ? body.autoDeliverySource.trim()
+        : null;
+    let supplierSku: string | null = null;
+    if (autoDeliverySource === "digiflazz") {
+      supplierSku = typeof body.supplierSku === "string" ? body.supplierSku.trim() : "";
+      if (!supplierSku) {
+        return reply.code(400).send({ error: "Supplier SKU is required when auto delivery source is Digiflazz." });
+      }
+    }
+
     // Re-parenting (moving this denomination to a different mid-tier Product)
     // is validated and applied FIRST, before any other field, so a rejected
     // cross-category move leaves every other field untouched too.
@@ -602,6 +637,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...(deliveryType !== undefined ? { deliveryType } : {}),
       ...(additionalFields !== undefined ? { additionalFields } : {}),
+      autoDeliverySource,
+      supplierSku,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

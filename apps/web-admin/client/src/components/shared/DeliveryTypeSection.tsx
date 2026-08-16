@@ -1,13 +1,25 @@
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Input } from "@/components/ui/input";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
 import type { AdditionalFieldDraft } from "../../api/types";
-import { Zap, Hand, FileText, type LucideIcon } from "lucide-react";
+import { Zap, Hand, FileText, Ban, PlugZap, type LucideIcon } from "lucide-react";
 
 type DeliveryMethod = "auto" | "manual";
+type AutoDeliverySourceOption = "none" | "digiflazz";
 
 function methodOf(deliveryType: string): DeliveryMethod {
   return deliveryType === "auto" ? "auto" : "manual";
 }
+
+/** Pre-fill applied the first time an admin picks Digiflazz as the auto
+ * delivery source, matching what Digiflazz-delivered games (Mobile Legends,
+ * Free Fire, etc) actually need from the buyer. Only applied when
+ * `additionalFields` is still empty — see `selectAutoDeliverySource` below —
+ * so it never clobbers fields an admin already customized. */
+const AUTO_DELIVERY_FIELDS_TEMPLATE: AdditionalFieldDraft[] = [
+  { key: "user_id", labelId: "Game ID", labelEn: "Game ID", type: "text", required: true, optionsText: "", placeholder: "" },
+  { key: "server_id", labelId: "Server / Zone", labelEn: "Server / Zone", type: "text", required: false, optionsText: "", placeholder: "" },
+];
 
 function RadioOptionCard({
   id,
@@ -61,14 +73,38 @@ export function DeliveryTypeSection({
   onDeliveryTypeChange,
   additionalFields,
   onAdditionalFieldsChange,
+  autoDeliverySource,
+  onAutoDeliverySourceChange,
+  supplierSku,
+  onSupplierSkuChange,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
   additionalFields: AdditionalFieldDraft[];
   onAdditionalFieldsChange: (next: AdditionalFieldDraft[]) => void;
+  autoDeliverySource: string | null;
+  onAutoDeliverySourceChange: (next: string | null) => void;
+  supplierSku: string;
+  onSupplierSkuChange: (next: string) => void;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
+
+  // Selecting Digiflazz pre-fills the buyer-info fields with the template
+  // ONLY when the admin hasn't already added any — never overwrite fields
+  // they've customized. Picking "None" just clears the source; any
+  // already-typed Supplier SKU is left alone (it stops being submitted
+  // once autoDeliverySource is cleared — see the parent pages' payload).
+  function selectAutoDeliverySource(next: AutoDeliverySourceOption) {
+    if (next === "digiflazz") {
+      onAutoDeliverySourceChange("digiflazz");
+      if (additionalFields.length === 0) {
+        onAdditionalFieldsChange(AUTO_DELIVERY_FIELDS_TEMPLATE);
+      }
+    } else {
+      onAutoDeliverySourceChange(null);
+    }
+  }
 
   // No hidden memory across delivery methods, by design (UX principle: avoid
   // unnecessary state) — picking Manual always starts at Step 2's "No buyer
@@ -141,6 +177,55 @@ export function DeliveryTypeSection({
             The buyer fills these in before paying. At least one field is required.
           </p>
           <AdditionalFieldsEditor value={additionalFields} onChange={onAdditionalFieldsChange} />
+        </div>
+      )}
+
+      {/* Step 4 — an optional supplier hookup, only relevant once buyer info
+          is required (a supplier needs the Game ID / Server-Zone the buyer
+          submits in Step 3 to fulfill automatically). */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Auto Delivery Source</label>
+          <p className="mt-1 mb-2 text-xs text-ink-soft">
+            Set this only if a supplier fulfills this denomination automatically after payment.
+          </p>
+          <RadioGroup
+            className="mt-2"
+            value={autoDeliverySource === "digiflazz" ? "digiflazz" : "none"}
+            onValueChange={(v) => selectAutoDeliverySource(v as AutoDeliverySourceOption)}
+          >
+            <RadioOptionCard
+              id="auto-delivery-source-none"
+              value="none"
+              title="None"
+              description="No supplier is linked — delivery stays fully manual."
+              icon={Ban}
+            />
+            <RadioOptionCard
+              id="auto-delivery-source-digiflazz"
+              value="digiflazz"
+              title="Digiflazz"
+              description="Matches this denomination to a Digiflazz price-list SKU."
+              icon={PlugZap}
+            />
+          </RadioGroup>
+
+          {autoDeliverySource === "digiflazz" && (
+            <div className="mt-3">
+              <label className="text-sm font-medium text-ink">
+                Supplier SKU <span className="text-rust">*</span>
+              </label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. mlbb86"
+                value={supplierSku}
+                onChange={(e) => onSupplierSkuChange(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-ink-soft">
+                The Digiflazz buyer SKU code this denomination maps to.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

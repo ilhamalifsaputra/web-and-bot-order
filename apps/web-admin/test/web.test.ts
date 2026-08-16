@@ -1836,6 +1836,51 @@ describe("catalog JSON API — create denomination", () => {
     const row = await getDenomination(prisma, body.id);
     expect(row!.additionalFields).toBeNull();
   });
+
+  it("creates a denomination with autoDeliverySource digiflazz and a supplierSku, persisting both fields", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBe("digiflazz");
+    expect(row!.supplierSku).toBe("mlbb86");
+  });
+
+  it("rejects autoDeliverySource digiflazz with an empty supplierSku (400) and writes nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "   ",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("defaults autoDeliverySource and supplierSku to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------

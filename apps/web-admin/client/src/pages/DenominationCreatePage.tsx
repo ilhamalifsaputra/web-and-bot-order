@@ -65,6 +65,8 @@ export function DenominationCreatePage() {
   const [description, setDescription] = useState("");
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
+  const [supplierSku, setSupplierSku] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -84,6 +86,7 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info"
             ? { additionalFields: draftsToFields(additionalFields) }
             : {}),
+          ...(autoDeliverySource ? { autoDeliverySource, supplierSku: supplierSku.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -99,7 +102,8 @@ export function DenominationCreatePage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   return (
     <PageLayout title="New Denomination">
@@ -163,6 +167,10 @@ export function DenominationCreatePage() {
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}
           onAdditionalFieldsChange={setAdditionalFields}
+          autoDeliverySource={autoDeliverySource}
+          onAutoDeliverySourceChange={setAutoDeliverySource}
+          supplierSku={supplierSku}
+          onSupplierSkuChange={setSupplierSku}
         />
 
         <div>

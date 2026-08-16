@@ -238,6 +238,64 @@ describe("PATCH /api/catalog/denominations/:id — deliveryType/additionalFields
   });
 });
 
+describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSku", () => {
+  it("sets autoDeliverySource to digiflazz with a supplierSku and persists both fields", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBe("digiflazz");
+    expect(row!.supplierSku).toBe("mlbb86");
+  });
+
+  it("rejects autoDeliverySource digiflazz with an empty supplierSku (400) and leaves the row unchanged", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "   ",
+    });
+    expect(res.statusCode).toBe(400);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  it("omitting autoDeliverySource clears a previously-set supplier link", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(setup.statusCode).toBe(200);
+
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+});
+
 describe("DELETE /api/catalog/denominations/:id", () => {
   it("happy path: deletes the denomination and audits", async () => {
     const id = await seedDenomination();

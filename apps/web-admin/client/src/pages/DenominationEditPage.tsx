@@ -37,6 +37,8 @@ interface EditableDenomination {
   sortOrder: number;
   deliveryType: string;
   additionalFields: string | null;
+  autoDeliverySource: string | null;
+  supplierSku: string | null;
 }
 
 /** Parses a denomination's stored additionalFields JSON into editable
@@ -118,6 +120,8 @@ export function DenominationEditPage() {
   const [moveToProductId, setMoveToProductId] = useState<string | null>(null);
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
+  const [supplierSku, setSupplierSku] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -139,6 +143,8 @@ export function DenominationEditPage() {
     setMoveToProductId(productId ?? null);
     setDeliveryType(denomination.deliveryType || "auto");
     setAdditionalFields(parseStoredAdditionalFields(denomination.additionalFields));
+    setAutoDeliverySource(denomination.autoDeliverySource ?? null);
+    setSupplierSku(denomination.supplierSku ?? "");
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -163,6 +169,7 @@ export function DenominationEditPage() {
         ...(deliveryType === "manual_with_info"
           ? { additionalFields: draftsToFields(additionalFields) }
           : {}),
+        ...(autoDeliverySource ? { autoDeliverySource, supplierSku: supplierSku.trim() } : {}),
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -206,7 +213,8 @@ export function DenominationEditPage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
   if (!loaded) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
@@ -264,6 +272,10 @@ export function DenominationEditPage() {
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}
           onAdditionalFieldsChange={setAdditionalFields}
+          autoDeliverySource={autoDeliverySource}
+          onAutoDeliverySourceChange={setAutoDeliverySource}
+          supplierSku={supplierSku}
+          onSupplierSkuChange={setSupplierSku}
         />
 
         <div>

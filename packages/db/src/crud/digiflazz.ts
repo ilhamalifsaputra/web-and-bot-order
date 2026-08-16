@@ -19,6 +19,7 @@
  *    order gets.
  */
 import { OrderStatus } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -85,7 +86,7 @@ type DigiflazzCandidateOrder = {
   id: number;
   orderCode: string;
   customerData: string | null;
-  totalAmount: unknown;
+  totalAmount: Decimal;
   currency: string;
   items: {
     quantity: number;
@@ -138,7 +139,7 @@ async function alertDigiflazzDispatchFailed(
     orderId: order.id,
     orderCode: order.orderCode,
     items: order.items.map((item) => ({ name: item.product.name, qty: item.quantity })),
-    total: order.totalAmount as never,
+    total: order.totalAmount,
     currency: order.currency,
   });
   await logAdminAction(db, {

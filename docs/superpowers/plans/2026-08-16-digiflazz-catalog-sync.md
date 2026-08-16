@@ -464,12 +464,13 @@ git commit -m "feat(digiflazz): credentials and markup-rule settings in admin"
 **Interfaces:**
 - Consumes: `getPriceList`, `DigiflazzPriceListItem` from `@app/core/suppliers/digiflazz`; `getDigiflazzCreds`, `DIGIFLAZZ_*_KEY` from this same file (Task 1); `getSetting` from `./settings`.
 - Produces (consumed by Task 5's routes):
+  - `collapseToCheapestSeller(items: DigiflazzPriceListItem[]): DigiflazzPriceListItem[]` — Digiflazz's price list can return the same `buyerSkuCode` more than once from different sellers at different prices (confirmed against `developer.digiflazz.com/api/buyer/daftar-harga/`: the API does not pre-select for the buyer). This collapses to one row per `buyerSkuCode`, keeping the lowest `price`. Every other function below that touches a raw price list calls this first — never operate on an uncollapsed list, or a duplicate-`buyerSkuCode` pair silently becomes two lookalike catalog rows (grouping) or a coin-flip cost value (re-sync).
   - `interface DigiflazzBrandGroup { brand: string; items: DigiflazzPriceListItem[]; existingProductId: number | null }`
-  - `groupDigiflazzPriceListByBrand(db: Db, items: DigiflazzPriceListItem[]): Promise<DigiflazzBrandGroup[]>`
+  - `groupDigiflazzPriceListByBrand(db: Db, items: DigiflazzPriceListItem[]): Promise<DigiflazzBrandGroup[]>` — calls `collapseToCheapestSeller` internally before grouping.
   - `computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal>`
   - `interface DigiflazzImportRow { buyerSkuCode: string; productName: string; price: Decimal.Value }`
   - `importDigiflazzBrand(db: Db, args: { brand: string; categoryId: number; rows: DigiflazzImportRow[] }): Promise<{ productId: number; denominationCount: number }>`
-  - `resyncDigiflazzCatalog(db: PrismaClient): Promise<{ updated: number; deactivated: number; reactivated: number }>`
+  - `resyncDigiflazzCatalog(db: PrismaClient): Promise<{ updated: number; deactivated: number; reactivated: number }>` — also calls `collapseToCheapestSeller` before matching by SKU, so `costPrice` always tracks the currently-cheapest seller, not whichever duplicate row happened to be last in the response array.
 
 - [ ] **Step 1: Extend `createCatalogProduct` and `createDenomination`**
 
@@ -483,6 +484,7 @@ Append to `packages/db/src/crud/digiflazz.test.ts`:
 
 ```typescript
 import {
+  collapseToCheapestSeller,
   groupDigiflazzPriceListByBrand,
   computeDigiflazzMarkupPrice,
   importDigiflazzBrand,
@@ -508,6 +510,25 @@ function priceListItem(overrides: Partial<DigiflazzPriceListItem> = {}): Digifla
   };
 }
 
+describe("collapseToCheapestSeller", () => {
+  it("keeps only the lowest-price row when the same buyerSkuCode appears from multiple sellers", () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(16000) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15800) }),
+      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(41000) }),
+    ];
+    const collapsed = collapseToCheapestSeller(items);
+    expect(collapsed).toHaveLength(2);
+    expect(collapsed.find((i) => i.buyerSkuCode === "ml100")!.price.toString()).toBe("15500");
+  });
+
+  it("is a no-op when every buyerSkuCode is already unique", () => {
+    const items = [priceListItem({ buyerSkuCode: "ml100" }), priceListItem({ buyerSkuCode: "ml250" })];
+    expect(collapseToCheapestSeller(items)).toHaveLength(2);
+  });
+});
+
 describe("groupDigiflazzPriceListByBrand", () => {
   it("groups items by brand and flags brands with no existing Product as new", async () => {
     const items = [
@@ -520,6 +541,17 @@ describe("groupDigiflazzPriceListByBrand", () => {
     const ml = groups.find((g) => g.brand === "Mobile Legends")!;
     expect(ml.items).toHaveLength(2);
     expect(ml.existingProductId).toBeNull();
+  });
+
+  it("collapses a multi-seller SKU to its cheapest offer before grouping, so it never produces two lookalike rows", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", price: new Decimal(16000) }),
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", price: new Decimal(15500) }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.items).toHaveLength(1);
+    expect(groups[0]!.items[0]!.price.toString()).toBe("15500");
   });
 
   it("separates region variants that Digiflazz reports as distinct brand strings", async () => {
@@ -604,30 +636,9 @@ describe("importDigiflazzBrand", () => {
   });
 });
 
-describe("resyncDigiflazzCatalog", () => {
-  async function importedDenom(supplierSku: string, initialCost: string) {
-    const category = await prisma.category.findFirstOrThrow();
-    const { productId } = await importDigiflazzBrand(prisma, {
-      brand: "Mobile Legends", categoryId: category.id,
-      rows: [{ buyerSkuCode: supplierSku, productName: "Mobile Legends 100 Diamond", price: initialCost }],
-    });
-    return prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku } });
-  }
-
-  it("updates costPrice, recomputed price, and isActive from a fresh price list", async () => {
-    const denom = await importedDenom("ml100", "15000");
-    digiflazzMock.getPriceList = vi.fn();
-    vi.doMock("@app/core/suppliers/digiflazz", () => ({}));
-    // Re-mocked per-test below via direct monkeypatch on the module import at
-    // top of the file is not needed: getPriceList is already covered by the
-    // vi.mock at the top of this file (digiflazzMock.createTransaction) — add
-    // getPriceList to that same hoisted mock object instead of a second mock
-    // block here (see Step 3 note below on consolidating the two mocks).
-  });
-});
 ```
 
-**Note on the last `describe` block above:** the `vi.mock("@app/core/suppliers/digiflazz", ...)` at the top of this test file currently only stubs `createTransaction`. Before writing `resyncDigiflazzCatalog`'s tests for real, extend that single hoisted mock object (`digiflazzMock`) to also include `getPriceList: vi.fn()`, and change the `vi.mock` factory to return `getPriceList: digiflazzMock.getPriceList` alongside `createTransaction: digiflazzMock.createTransaction` — one mock block for the whole file, not two. Then write:
+**Before writing `resyncDigiflazzCatalog`'s tests:** the `vi.mock("@app/core/suppliers/digiflazz", ...)` at the top of this test file currently only stubs `createTransaction`. Extend that single hoisted mock object (`digiflazzMock`) to also include `getPriceList: vi.fn()`, and change the `vi.mock` factory to return `getPriceList: digiflazzMock.getPriceList` alongside `createTransaction: digiflazzMock.createTransaction` — one mock block for the whole file, not two. Then write:
 
 ```typescript
 describe("resyncDigiflazzCatalog", () => {
@@ -669,6 +680,23 @@ describe("resyncDigiflazzCatalog", () => {
     const result = await resyncDigiflazzCatalog(prisma);
     expect(result).toEqual({ updated: 0, deactivated: 0, reactivated: 0 });
   });
+
+  it("uses the cheapest seller's price when the fresh list has a duplicate buyerSkuCode", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(21000) }),
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(19500) }), // cheaper seller, same SKU
+    ]);
+
+    await resyncDigiflazzCatalog(prisma);
+
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(ml100.costPrice!.toString()).toBe("19500");
+  });
 });
 ```
 
@@ -698,6 +726,26 @@ const DEFAULT_DIGIFLAZZ_FIELDS = [
   { key: "server_id", label: { id: "Server / Zone", en: "Server / Zone" }, type: "text", required: false, options: [], placeholder: "" },
 ];
 
+/**
+ * Digiflazz's price list can list the same buyerSkuCode more than once, from
+ * different sellers at different prices — confirmed against Digiflazz's own
+ * docs (developer.digiflazz.com/api/buyer/daftar-harga/): the API does not
+ * pre-select a seller for the buyer. Collapse to one row per buyerSkuCode,
+ * keeping the cheapest, so a duplicate SKU never becomes two lookalike
+ * catalog rows (import) or a coin-flip cost value (re-sync). Every function
+ * below that reads a raw price list calls this first.
+ */
+export function collapseToCheapestSeller(items: DigiflazzPriceListItem[]): DigiflazzPriceListItem[] {
+  const bySku = new Map<string, DigiflazzPriceListItem>();
+  for (const item of items) {
+    const existing = bySku.get(item.buyerSkuCode);
+    if (!existing || item.price.lessThan(existing.price)) {
+      bySku.set(item.buyerSkuCode, item);
+    }
+  }
+  return [...bySku.values()];
+}
+
 export interface DigiflazzBrandGroup {
   brand: string;
   items: DigiflazzPriceListItem[];
@@ -711,12 +759,15 @@ export interface DigiflazzBrandGroup {
  * Group a raw Digiflazz price-list fetch by its `brand` field (each distinct
  * brand string — including region variants Digiflazz already reports
  * separately — becomes its own group), and mark which groups already have a
- * matching Product via Product.digiflazzBrand.
+ * matching Product via Product.digiflazzBrand. Collapses to the cheapest
+ * seller per buyerSkuCode first (see collapseToCheapestSeller) — a group's
+ * `items` never contains two rows for the same SKU.
  */
 export async function groupDigiflazzPriceListByBrand(
   db: Db,
-  items: DigiflazzPriceListItem[],
+  rawItems: DigiflazzPriceListItem[],
 ): Promise<DigiflazzBrandGroup[]> {
+  const items = collapseToCheapestSeller(rawItems);
   const byBrand = new Map<string, DigiflazzPriceListItem[]>();
   for (const item of items) {
     if (!item.brand) continue;
@@ -815,11 +866,14 @@ export async function resyncDigiflazzCatalog(
   const creds = await getDigiflazzCreds(db);
   if (!creds) return zero;
 
-  const [priceList, mapped] = await Promise.all([
+  const [rawPriceList, mapped] = await Promise.all([
     getPriceList(creds),
     db.denomination.findMany({ where: { supplierSku: { not: null } } }),
   ]);
-  const bySku = new Map(priceList.map((item) => [item.buyerSkuCode, item]));
+  // collapseToCheapestSeller first — a plain Map keyed by buyerSkuCode over
+  // an uncollapsed list lets whichever duplicate-seller row happens to come
+  // last in the array silently win, instead of the cheapest one.
+  const bySku = new Map(collapseToCheapestSeller(rawPriceList).map((item) => [item.buyerSkuCode, item]));
 
   const result = { ...zero };
   for (const denom of mapped) {
@@ -1475,3 +1529,16 @@ git commit -m "feat(digiflazz): hourly catalog re-sync cron"
 - `pnpm typecheck && pnpm test` green after every task, and once more at the end.
 - Manual end-to-end walk (after Task 6): Settings → enter Digiflazz credentials + a markup rule → Test Connection succeeds → Catalog → Sync Digiflazz → brand groups render, filtered to Game → pick a target category → check a brand's SKUs → adjust one price → Impor Terpilih → Catalog page shows the new Product (inactive) with its Denominations, each carrying the Game ID + Server template and a `supplierSku` → activate it → confirm the hourly job (trigger `resyncDigiflazzCatalog` directly in a REPL/test if waiting an hour isn't practical) updates `costPrice`/`price` and leaves a hand-edited price alone.
 - Confirm `Order.digiflazzDispatchedAt`-based dispatch (Task 1, already built) still works end-to-end against a denomination created by the wizard, not just a hand-created one — the wizard's output must be indistinguishable from manual entry to every downstream consumer.
+
+## Final review (after Task 7)
+
+Once all 7 tasks are complete and individually reviewed:
+1. Dispatch the final whole-branch code reviewer (per
+   `superpowers:subagent-driven-development`'s own process — the most
+   capable available model, given the `../requesting-code-review/code-reviewer.md`
+   template and a `scripts/review-package MERGE_BASE HEAD` diff package),
+   covering the branch's full diff against `master`/`main`. Address any
+   Critical/Important findings with one consolidated fix dispatch, then
+   re-review.
+2. After that review is clean, run `/code-review max --fix` as an
+   additional pass over the same branch.

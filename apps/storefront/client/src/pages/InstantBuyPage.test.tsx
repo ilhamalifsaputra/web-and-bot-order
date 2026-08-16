@@ -494,5 +494,66 @@ describe("InstantBuyPage", () => {
       fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
       expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled();
     });
+
+    // Re-review of I-3: the fix above only re-runs off `checkoutData`, which
+    // only changes via a denomination switch (syncCart's onSuccess). The
+    // voucher-apply path (previewMutation) calls setTotals(resp) directly and
+    // never touches checkoutData, so a voucher re-application that raises the
+    // total back past the wallet balance used to leave `method` pointed at
+    // "wallet_idr" even though PaymentMethodSelector (which renders off the
+    // live `totals`) no longer shows that row — the same stale-method bug
+    // class, just via a different trigger. Now covered by previewMutation's
+    // own onSuccess.
+    it("clears a wallet-credit selection when a voucher re-application raises the total back past the wallet balance", async () => {
+      const walletCoveredCheckout: CheckoutData = {
+        ...checkoutData, // denomination id1, total 20000
+        wallet_idr: "25000", // covers 20000, not the 30000 the voucher below re-prices to
+        binance_enabled: true,
+      };
+      renderInstantBuy({ checkout: walletCoveredCheckout });
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      await screen.findByText("Summary");
+
+      // Default selection is the enabled gateway, not wallet credit.
+      expect((screen.getByRole("radio", { name: /BINANCE/ }) as HTMLInputElement).checked).toBe(true);
+
+      // Buyer explicitly opts into wallet credit — sufficient for the current (20000) total.
+      const walletRadio = screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }) as HTMLInputElement;
+      fireEvent.click(walletRadio);
+      expect(walletRadio.checked).toBe(true);
+
+      // Apply a voucher whose preview re-prices the order back past the wallet
+      // balance (e.g. swapping in a smaller-discount code) — `checkoutData`
+      // itself is untouched here, isolating this to previewMutation's onSuccess.
+      const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/checkout/voucher/preview") {
+          return { ...walletCoveredCheckout, total: "30000", voucher_discount: "0", voucher_code: body.voucher_code as string };
+        }
+        return baseApiPost(path, body);
+      });
+
+      fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SMALLER10" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout/voucher/preview", { voucher_code: "SMALLER10" }),
+      );
+      await waitFor(() => expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument());
+
+      // No PAYMENT-METHOD radio is left checked — `method` was cleared rather
+      // than left pointing at a row nothing renders any more.
+      const methodRadios = screen.getAllByRole("radio").filter((r) => (r as HTMLInputElement).name === "method") as HTMLInputElement[];
+      expect(methodRadios.some((r) => r.checked)).toBe(false);
+
+      // Fill the account fields so the only remaining blocker is the missing method.
+      fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+      fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+      expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).toBeDisabled();
+
+      // Picking the still-available gateway explicitly re-enables it.
+      fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
+      expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled();
+    });
   });
 });

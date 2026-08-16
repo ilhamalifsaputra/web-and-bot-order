@@ -80,6 +80,18 @@ function humanError(message: string): string {
   return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
 }
 
+/** I-3, widened: shared by both re-pricing triggers this page has — a
+ * denomination switch (the checkoutData effect below) and a voucher
+ * application (previewMutation's onSuccess) can each re-price the order
+ * enough that the previously-selected method (most often a wallet-credit row
+ * whose sufficiency is total-dependent) no longer appears in
+ * PaymentMethodSelector's rows for the new totals. Both call sites reduce to
+ * this one check so `method` never rides along pointing at a row nothing
+ * renders any more. */
+function revalidatedMethod(data: CheckoutData, prev: string | null): string | null {
+  return prev !== null && isMethodValid(data, prev) ? prev : null;
+}
+
 export default function InstantBuyPage() {
   const { slug = "" } = useParams<{ slug: string }>();
   const navigate = useNavigate();
@@ -140,15 +152,15 @@ export default function InstantBuyPage() {
       setMethod(defaultMethod(checkoutData));
     } else {
       // I-3: a denomination switch can re-price the order enough that the
-      // previously-selected method (most often a wallet-credit row whose
-      // sufficiency is total-dependent) no longer appears in
+      // previously-selected method no longer appears in
       // PaymentMethodSelector's rows for the new totals. Left alone,
       // `method` would keep pointing at a row nothing renders any more —
       // no radio shows checked, yet `anyMethod` below only asks whether
       // SOME method is offered, so the submit button could stay enabled
       // with a selection the page no longer offers. Clear it so the buyer
-      // is prompted to pick again instead.
-      setMethod((prev) => (prev !== null && isMethodValid(checkoutData, prev) ? prev : null));
+      // is prompted to pick again instead. (The voucher-driven flip side of
+      // this same re-price lives in previewMutation's onSuccess below.)
+      setMethod((prev) => revalidatedMethod(checkoutData, prev));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkoutData]);
@@ -191,7 +203,16 @@ export default function InstantBuyPage() {
   const previewMutation = useMutation({
     mutationFn: (voucherCode: string) =>
       apiPost<CheckoutData>("/api/v1/checkout/voucher/preview", { voucher_code: voucherCode }),
-    onSuccess: (resp) => setTotals(resp),
+    onSuccess: (resp) => {
+      setTotals(resp);
+      // I-3, widened: a voucher application re-prices `totals` directly
+      // (never touching `checkoutData`, which is what the effect above
+      // keys on), so that effect alone can't catch a re-price triggered
+      // this way — e.g. swapping in a smaller-discount code after
+      // wallet_idr was already selected for a larger-discount total. Same
+      // check, same clear, just fired from this trigger too.
+      setMethod((prev) => revalidatedMethod(resp, prev));
+    },
   });
 
   function applyVoucher(): void {

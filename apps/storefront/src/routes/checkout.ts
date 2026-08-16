@@ -61,6 +61,9 @@ import {
   commitGatewayResult,
   releaseGatewaySlot,
   MAX_CART_ORDER_UNITS,
+  getDigiflazzCreds,
+  fulfillDigiflazzOrder,
+  alertDigiflazzDispatchFailed,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -83,6 +86,7 @@ import {
   verifyIpn,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
+import { verifyCallback as verifyDigiflazzCallback } from "@app/core/suppliers/digiflazz";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
@@ -1044,6 +1048,65 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });
     }
+  });
+
+  // ---- Digiflazz webhook (public; signature is the auth) ----
+  //
+  // Simpler trust model than the three gateways above, by design (Task 3,
+  // original pilot plan): verifyDigiflazzCallback's signature check
+  // (@app/core/suppliers/digiflazz) IS the trust boundary here — no live
+  // re-confirmation call, no amount/short-payment check, no ledger dedup
+  // table. Idempotency instead comes from fulfillDigiflazzOrder's own atomic
+  // PROCESSING -> DELIVERED claim (packages/db/src/crud/digiflazz.ts): a
+  // replayed/duplicate Sukses callback for an order the dispatch poller (or
+  // an earlier callback) already delivered throws there, caught below as an
+  // expected race rather than a real failure.
+  app.post("/pay/digiflazz/callback", async (req, reply) => {
+    // Payment-3-style hardening — see the TokoPay callback above.
+    if (webhookRateLimited("digiflazz", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
+    const creds = await getDigiflazzCreds(prisma);
+    if (!creds) return reply.code(403).send({ status: "disabled" });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    // DigiflazzCreds carries only { username, apiKey } (no separate webhook
+    // secret field exists yet) — apiKey doubles as the signing secret here,
+    // matching verifyCallback's own doc comment in @app/core/suppliers/digiflazz.
+    const cb = verifyDigiflazzCallback(creds.apiKey, body);
+    if (!cb) return reply.code(403).send({ status: "bad signature" });
+
+    const order = await getOrderByCode(prisma, cb.refId);
+    if (!order) {
+      logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
+      return reply.send({ status: "unmatched" });
+    }
+
+    if (cb.status === "Sukses") {
+      try {
+        await fulfillDigiflazzOrder(prisma, order.id, { sn: cb.sn ?? "" });
+        nudgeOutboxDispatcher(); // same as the other gateways — buyer DM was just enqueued
+      } catch (err) {
+        // fulfillDigiflazzOrder throws if the order isn't PROCESSING anymore
+        // (already delivered by the dispatch poller, or otherwise moved on)
+        // — an expected race, not a real failure; log and 200 either way so
+        // Digiflazz stops retrying.
+        logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
+      }
+    } else if (cb.status === "Gagal") {
+      // Same "needs a human" alert dispatchPendingDigiflazzOrders itself
+      // raises when Digiflazz reports Gagal synchronously — reused here
+      // rather than duplicated so the alert text/audit trail stay identical
+      // regardless of which path (poller vs. this webhook) sees the failure.
+      await alertDigiflazzDispatchFailed(
+        prisma,
+        order,
+        `Digiflazz callback reported Gagal${cb.message ? ` (${cb.message})` : ""}`,
+      );
+    }
+    // "Pending" needs no action here — the order stays PROCESSING, awaiting a
+    // future callback or the next dispatch-poller tick.
+
+    return reply.send({ status: "ok" });
   });
 };
 

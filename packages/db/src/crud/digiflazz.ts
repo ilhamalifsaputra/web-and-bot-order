@@ -130,8 +130,13 @@ const ZERO_SUMMARY: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pendi
  * fulfillManualOrder path. Also writes an AuditLog row (system actor, no
  * human admin id) so there's a forensic trail for why an order that reached
  * PROCESSING never auto-delivered.
+ *
+ * Exported (not just used internally by dispatchPendingDigiflazzOrders) so
+ * the storefront's Digiflazz webhook route (checkout.ts, POST
+ * /pay/digiflazz/callback) can raise the same alert for a "Gagal" callback
+ * without duplicating this message text or the audit-log call.
  */
-async function alertDigiflazzDispatchFailed(
+export async function alertDigiflazzDispatchFailed(
   db: Db,
   order: DigiflazzCandidateOrder,
   reason: string,

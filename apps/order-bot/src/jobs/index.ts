@@ -51,6 +51,7 @@ import {
   listSettledOrdersAwaitingBubbleEdit,
   clearOrderPaymentMessage,
   resyncDigiflazzCatalog,
+  dispatchPendingDigiflazzOrders,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -1386,6 +1387,28 @@ export function scheduleDigiflazzCatalogSync(): Cron {
       })
       .catch((err) => logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick"));
   return new Cron("15 * * * *", { protect: true }, run);
+}
+
+/**
+ * Digiflazz dispatch poller (Task 3, original pilot plan) — finds PROCESSING
+ * orders routed to Digiflazz and not yet dispatched, claims each atomically,
+ * and places the top-up order with the supplier (packages/db/src/crud/digiflazz.ts
+ * dispatchPendingDigiflazzOrders). No `Api` needed, so this runs even on a
+ * web-only boot, same as scheduleFxRefresh/scheduleDigiflazzCatalogSync above.
+ * Every 2 minutes — same cadence as binancePollWatchdog's own independent job
+ * instance below; several jobs already share this cron expression without
+ * colliding with each other.
+ */
+export function scheduleDigiflazzDispatch(): Cron {
+  const run = () =>
+    dispatchPendingDigiflazzOrders(prisma)
+      .then((r) => {
+        if (r.claimed) {
+          logger.info(`Digiflazz dispatch: claimed ${r.claimed}, delivered ${r.delivered}, pending ${r.pending}, failed ${r.failed}.`);
+        }
+      })
+      .catch((err) => logger.error({ err }, "Digiflazz dispatch poller failed — will retry on the next tick"));
+  return new Cron("*/2 * * * *", { protect: true }, run);
 }
 
 export function scheduleJobs(api: Api): Cron[] {

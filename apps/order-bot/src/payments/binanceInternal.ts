@@ -50,7 +50,7 @@ import { esc } from "../util/format";
 import { isPermanentBubbleEditFailure } from "../util/bubbleEditFailure";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
-import { sendAccountFile, settledPaymentBubbleFor, settledPaymentKb } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
 import {
   AMOUNT_TOLERANCE,
   noteMatches,
@@ -282,11 +282,16 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
     // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
-    // that DM goes out immediately instead of waiting for its next poll
-    // tick, and give the bubble the same neutral "payment received" text
-    // every other settled top-up gets.
+    // it wakes immediately instead of waiting for its next poll tick — but
+    // only when a dispatcher is registered in THIS process
+    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
+    // server (apps/server/src/index.ts) runs one, so the claim holds there,
+    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
+    // not, and nudging is then a no-op — the DM still goes out, just on the
+    // notifier process's own next poll tick. Also give the bubble the same
+    // neutral "payment received" text every other settled top-up gets.
     nudgeOutboxDispatcher();
-    topupBubbleText = settledPaymentBubbleFor(order, null).text;
+    topupBubbleText = settledPaymentBubble(order).text;
   } else {
     // Delivery is instant: skip the interim "payment verified / being prepared"
     // notice and send the account file straight away.

@@ -305,18 +305,17 @@ export function listSettledOrdersAwaitingBubbleEdit(db: Db, limit?: number) {
       id: true,
       orderCode: true,
       kind: true,
-      currency: true,
-      // `currency`/`totalAmount` here, and `user`'s two wallet columns below,
-      // are no longer interpolated into the WALLET_TOPUP bubble itself (it
-      // now renders a neutral status line — see settledPaymentBubble,
-      // apps/order-bot/src/util/delivery.ts) but are kept selected so this
-      // row shape still structurally satisfies that function's
-      // `SettledBubbleOrder` parameter without a second query.
-      totalAmount: true,
       status: true,
       paymentMsgChatId: true,
       paymentMsgId: true,
-      user: { select: { language: true, walletBalance: true, walletBalanceUsdt: true } },
+      // Just `language` — `settledPaymentBubble` (apps/order-bot/src/util/
+      // delivery.ts) interpolates no buyer balance into either branch (a
+      // WALLET_TOPUP bubble is a neutral status line; the balance-quoting
+      // sentence lives exclusively in the outbox's WALLET_TOPUP_CREDITED_DM),
+      // so `currency`/`totalAmount` and the user's two wallet columns were
+      // dropped from this projection along with `SettledBubbleOrder`'s own
+      // fields.
+      user: { select: { language: true } },
     },
     orderBy: { createdAt: "asc" },
     ...(limit != null ? { take: limit } : {}),
@@ -449,12 +448,15 @@ export async function deliverPaidInternalOrder(
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
-        // function only ever runs inside the bot process's own internal-
-        // transfer poller (never a web request), so the buyer is DM'd
-        // directly by that poller's `onDelivered` handler
-        // (apps/order-bot/src/payments/binanceInternal.ts) right after this
-        // call returns — enqueueing to the outbox here too would double-notify.
+        // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
+        // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
+        // deeper on the line above, behind its own atomic claim — that single
+        // call site is shared by all six top-up-capable rails, this one
+        // included, so nothing here may enqueue it again or DM the buyer
+        // directly. `onDelivered` (apps/order-bot/src/payments/
+        // binanceInternal.ts) no longer sends a DM for a WALLET_TOPUP order
+        // either; it only nudges the outbox dispatcher and updates the
+        // payment bubble.
         logger.info(`Auto-delivered internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

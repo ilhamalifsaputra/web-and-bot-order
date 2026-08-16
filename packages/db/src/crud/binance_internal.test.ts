@@ -782,7 +782,14 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
     expect(result.map((o) => o.id)).toEqual([older]);
   });
 
-  it("projects kind, currency and totalAmount for a WALLET_TOPUP row", async () => {
+  it("projects kind for a WALLET_TOPUP row", async () => {
+    // `currency`/`totalAmount` used to be pinned here too, but
+    // `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts) no longer
+    // reads either off its `SettledBubbleOrder` parameter — the WALLET_TOPUP
+    // bubble renders a neutral status line (Task E1) and neither field was
+    // ever added back — so this `select` (and this test) dropped them along
+    // with the rest of that review follow-up. `kind` stays pinned since the
+    // sweeper still branches on it via `settledPaymentBubble`.
     const id = await makeAnchoredOrder({ status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY });
     await prisma.order.update({
       where: { id },
@@ -791,17 +798,11 @@ describe("listSettledOrdersAwaitingBubbleEdit", () => {
 
     const result = await listSettledOrdersAwaitingBubbleEdit(prisma);
 
-    // `settledPaymentBubble` (apps/order-bot/src/util/delivery.ts) requires
-    // these fields on its `SettledBubbleOrder` parameter even though the
-    // WALLET_TOPUP bubble itself no longer interpolates them (Task E1 — it
-    // now renders a neutral status line). Pinned here rather than only
-    // through the sweeper's own matrix so dropping one from the `select`
-    // fails at the query that owns it.
     expect(result).toHaveLength(1);
     const [row] = result;
     expect(row!.kind).toBe(OrderKind.WALLET_TOPUP);
-    expect(row!.currency).toBe("IDR");
-    expect(new Decimal(row!.totalAmount).equals(new Decimal("150000"))).toBe(true);
+    expect(row).not.toHaveProperty("currency");
+    expect(row).not.toHaveProperty("totalAmount");
   });
 
   it("never includes passwordHash on the returned user (explicit select, not include)", async () => {

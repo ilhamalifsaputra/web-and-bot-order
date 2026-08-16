@@ -60,7 +60,7 @@ import { createPollLoop } from "./pollLoop";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import { bybitBscTrackingKb } from "../keyboards/customer";
 import type { InlineKeyboard } from "grammy";
-import { sendAccountFile, settledPaymentBubbleFor, settledPaymentKb } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble, settledPaymentKb } from "../util/delivery";
 
 // AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
 // no on-chain "gas deducted from the sent amount" semantics the way
@@ -287,11 +287,16 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   if (order.kind === OrderKind.WALLET_TOPUP) {
     // There is nothing to deliver here — settleWalletTopup already credited
     // the wallet and enqueued the buyer's outbox DM. Nudge the dispatcher so
-    // that DM goes out immediately instead of waiting for its next poll
-    // tick, and give the bubble the same neutral "payment received" text
-    // every other settled top-up gets.
+    // it wakes immediately instead of waiting for its next poll tick — but
+    // only when a dispatcher is registered in THIS process
+    // (`registerOutboxNudge`, packages/core/src/nudge.ts): the combined
+    // server (apps/server/src/index.ts) runs one, so the claim holds there,
+    // but the standalone order-bot binary (apps/order-bot/src/main.ts) does
+    // not, and nudging is then a no-op — the DM still goes out, just on the
+    // notifier process's own next poll tick. Also give the bubble the same
+    // neutral "payment received" text every other settled top-up gets.
     nudgeOutboxDispatcher();
-    topupBubbleText = settledPaymentBubbleFor(order, null).text;
+    topupBubbleText = settledPaymentBubble(order).text;
   } else {
     // Bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is
     // legitimately slower than a plain text call (see telegramTimeout.ts),

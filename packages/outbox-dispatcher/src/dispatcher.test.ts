@@ -818,3 +818,74 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(row!.status).toBe("SENT");
   });
 });
+
+/**
+ * Finding 4 (Task E1 review follow-up): `render()` (templates.ts) runs money
+ * fields through `formatIdr`/`formatUsdt`, which throw on a non-numeric
+ * value — unlike the old raw-passthrough template, which could never throw.
+ * Deciding that contract deliberately: `render()` itself stays a strict
+ * formatter (throwing is correct for the live checkout/settlement code that
+ * also calls those formatters), and `drainBatch` is the caller made
+ * resilient — a malformed outbox payload fails just that one row
+ * (maxAttempts=1, mirroring the pre-existing "bad payload json" isolation
+ * just above it in dispatcher.ts) instead of aborting the rest of the batch
+ * and leaving the claimed row stuck in SENDING until the stale-claim window.
+ */
+describe("drainBatch isolates a render() failure instead of aborting the batch (Finding 4)", () => {
+  it("fails a WALLET_TOPUP_CREDITED_DM row with a non-numeric amount at once, without crashing drainBatch or re-sending it", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: 600_001,
+          order_code: "TOPUP-CORRUPT-1",
+          amount: "not-a-number",
+          currency: "IDR",
+          new_balance: "100",
+        }),
+      },
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-1" } },
+      orderBy: { id: "desc" },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await expect(drainBatch(bot)).resolves.toBeUndefined(); // must not throw out of drainBatch
+
+    expect(sendMessage).not.toHaveBeenCalledWith(600_001, expect.anything(), expect.anything());
+    const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after!.status).toBe("FAILED");
+    expect(after!.attempts).toBe(1);
+    expect(after!.lastError).toContain("template render failed");
+  });
+
+  it("keeps draining the rest of the batch after a malformed row — a good row queued alongside it still sends", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: 600_002,
+          order_code: "TOPUP-CORRUPT-2",
+          amount: "also-not-a-number",
+          currency: "USDT",
+          new_balance: "5",
+        }),
+      },
+    });
+    await enqueueAdminPasswordReset(prisma, { telegramId: 600_003, code: "AFTERBAD1", ttlMinutes: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const goodCall = sendMessage.mock.calls.find((c) => c[0] === 600_003);
+    expect(goodCall).toBeDefined(); // the good row after the bad one was still sent
+
+    const badRow = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-2" } },
+    });
+    expect(badRow!.status).toBe("FAILED");
+  });
+});

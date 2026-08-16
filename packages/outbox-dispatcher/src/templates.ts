@@ -218,17 +218,24 @@ export function render(
     // buyer_language in the payload (unlike ORDER_PROCESSING_DM) — bilingual
     // EN+ID in one message, same fallback every other per-order DM template
     // here uses.
-    const code = escape(String(payload.order_code ?? ""));
+    // `order_code` is absent on a row enqueued before this event carried one
+    // and still PENDING at deploy (a pre-existing legacy row) — render the
+    // amount/balance sentence without a dangling `Order <code></code> —`
+    // prefix rather than an empty tag pair.
+    const rawCode = payload.order_code;
+    const code = typeof rawCode === "string" && rawCode ? escape(rawCode) : "";
     const currency = String(payload.currency ?? "");
     const formatMoney = currency === "IDR" ? formatIdr : formatUsdt;
     const amount = escape(formatMoney(String(payload.amount ?? "0")));
     const newBalance = escape(formatMoney(String(payload.new_balance ?? "0")));
+    const creditedEn = code ? `Order <code>${code}</code> — ${amount} has been added to your wallet.` : `${amount} has been added to your wallet.`;
+    const creditedId = code ? `Order <code>${code}</code> — ${amount} telah ditambahkan ke saldo kamu.` : `${amount} telah ditambahkan ke saldo kamu.`;
     return (
       `✅ <b>Top-up successful!</b>\n\n` +
-      `Order <code>${code}</code> — ${amount} has been added to your wallet.\n` +
+      `${creditedEn}\n` +
       `New balance: <b>${newBalance}</b>\n\n` +
       `✅ <b>Top up berhasil!</b>\n\n` +
-      `Order <code>${code}</code> — ${amount} telah ditambahkan ke saldo kamu.\n` +
+      `${creditedId}\n` +
       `Saldo baru: <b>${newBalance}</b>`
     );
   }

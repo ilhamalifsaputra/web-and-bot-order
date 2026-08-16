@@ -502,12 +502,15 @@ export async function deliverPaidBybitBscOrder(
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
-        // function only ever runs inside the bot process's own Bybit BSC
-        // deposit poller (never a web request), so the buyer is DM'd
-        // directly by that poller's `onDelivered` handler
-        // (apps/order-bot/src/payments/bybitBscDeposit.ts) right after this
-        // call returns — enqueueing to the outbox here too would double-notify.
+        // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
+        // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
+        // deeper on the line above, behind its own atomic claim — that single
+        // call site is shared by all six top-up-capable rails, this one
+        // included, so nothing here may enqueue it again or DM the buyer
+        // directly. `onDelivered` (apps/order-bot/src/payments/
+        // bybitBscDeposit.ts) no longer sends a DM for a WALLET_TOPUP order
+        // either; it only nudges the outbox dispatcher and updates the
+        // payment bubble.
         logger.info(`Auto-delivered Bybit BSC wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

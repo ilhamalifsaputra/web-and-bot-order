@@ -271,6 +271,38 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;script&gt;");
   });
 
+  it("omits the 'Order <code>' line for WALLET_TOPUP_CREDITED_DM when order_code is absent (legacy pre-Task-E1 row, Finding 5)", () => {
+    // A row enqueued before this event carried an order_code and still
+    // PENDING at deploy has none — must not render a dangling
+    // `Order <code></code> —` prefix, just the sentence without it.
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+    });
+    expect(out).not.toContain("Order <code>");
+    expect(out).not.toContain("Order <code></code>");
+    expect(out).toContain("Rp50.000 has been added to your wallet.");
+    expect(out).toContain("Rp50.000 telah ditambahkan ke saldo kamu.");
+  });
+
+  it("(deliberate contract, Finding 4) render() THROWS for WALLET_TOPUP_CREDITED_DM when amount/new_balance is non-numeric — formatIdr/formatUsdt reject it, and this template does not swallow that", () => {
+    // The old raw-passthrough template could never throw; formatIdr/formatUsdt
+    // (money formatters shared with live checkout/settlement code) throw on
+    // garbage on purpose. Rendering is not the place to silently coerce a
+    // corrupt payload into "0" — the caller (dispatcher.ts's drainBatch) is
+    // the one that decides what happens next, and is covered separately in
+    // dispatcher.test.ts.
+    expect(() =>
+      render("WALLET_TOPUP_CREDITED_DM", {
+        order_code: "TOPUP-BAD-1",
+        amount: "not-a-number",
+        currency: "IDR",
+        new_balance: "100",
+      }),
+    ).toThrow();
+  });
+
   it("HTML-escapes ORDER_PROCESSING_DM interpolated values", () => {
     const out = render("ORDER_PROCESSING_DM", {
       order_code: "<b>ORD</b>",

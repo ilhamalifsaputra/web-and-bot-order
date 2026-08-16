@@ -20,8 +20,6 @@
 import type { Api, InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { OrderKind } from "@app/core/enums";
-import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { checkTransaction, qrisChargeAmount } from "@app/core/payments/tokopay";
@@ -37,30 +35,27 @@ import {
   deliverPaidTokopayOrder,
   clearOrderPaymentMessage,
   recordPollHealth,
-  getUser,
 } from "@app/db";
 import { esc } from "../util/format";
 import { editPaymentBubble } from "../jobs";
-import { settledPaymentBubbleFor } from "../util/delivery";
+import { settledPaymentBubble } from "../util/delivery";
 import { createPollLoop } from "./pollLoop";
 import { createRotatingCursor } from "./rotatingCursor";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingTokopayOrders>>[number];
 
-/** What `editBubbleAndClear` needs off a settled order: the anchor to edit, the
- * row it clears afterwards, and everything `settledPaymentBubbleFor` reads to
- * decide WHICH success message this order gets (`util/delivery.ts`) — plus
- * `userId`, so a wallet top-up's post-credit balance can be read fresh.
- * `deliverPaidTokopayOrder` returns a full `getOrder` row, so every field here
- * is already on it; nothing in packages/db needed widening. */
+/** What `editBubbleAndClear` needs off a settled order: the anchor to edit,
+ * the row it clears afterwards, and everything `settledPaymentBubble`
+ * (`util/delivery.ts`) reads to decide WHICH success message this order gets.
+ * No buyer read is needed — `settledPaymentBubble` interpolates no balance
+ * into either branch — so this carries no `userId`/`currency`/`totalAmount`.
+ * `deliverPaidTokopayOrder` returns a full `getOrder` row, so every field
+ * here is already on it; nothing in packages/db needed widening. */
 type AnchoredOrder = {
   id: number;
-  userId: number;
   orderCode: string;
   kind: string;
   status: string;
-  currency: string | null;
-  totalAmount: Decimal.Value;
   paymentMsgChatId: bigint | null;
   paymentMsgId: number | null;
   user: { language: string };
@@ -213,18 +208,15 @@ export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
  * the rejection itself), so `outcome` is either its own clear/keep verdict or
  * "timeout", the one case it cannot see. */
 async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
-  // Which ending this bubble gets is decided by `settledPaymentBubbleFor`
+  // Which ending this bubble gets is decided by `settledPaymentBubble`
   // (util/delivery.ts) — the same mapping the background sweeper and the
   // buyer's own "🔄 Refresh Status" tap use, so a QRIS buyer can no longer be
   // told a different story than a Binance/Bybit one for the same kind of
-  // order. A wallet top-up's sentence quotes the buyer's balance, which no
-  // order row carries, so read the buyer here: the settling transaction has
-  // already committed by now, which is exactly what makes this the post-credit
-  // figure. A product sale's sentence needs no balance, so it skips the read.
-  // Deliberately OUTSIDE the `withTimeout` race below — that budget bounds the
-  // Telegram call, and a "timeout" outcome has to keep meaning only that.
-  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
-  const bubble = settledPaymentBubbleFor(order, buyer);
+  // order. No buyer read is needed: a wallet top-up's bubble is a neutral
+  // status line that quotes no balance at all (the balance-quoting sentence
+  // lives exclusively in the outbox's WALLET_TOPUP_CREDITED_DM), so the order
+  // row alone is enough here.
+  const bubble = settledPaymentBubble(order);
   const outcome = await withTimeout(editBubbleToSuccess(api, order, bubble), RECONCILE_TELEGRAM_TIMEOUT_MS);
   if (outcome === "timeout") {
     logger.warn(`TokoPay reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — anchor left in place so the next sweep retries`);

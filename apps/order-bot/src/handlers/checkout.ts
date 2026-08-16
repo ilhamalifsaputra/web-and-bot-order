@@ -63,7 +63,7 @@ import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { anchorPaymentMessage } from "../util/paymentAnchor";
-import { sendAccountFile, settledPaymentBubbleFor } from "../util/delivery";
+import { sendAccountFile, settledPaymentBubble } from "../util/delivery";
 import { editPaymentBubble } from "../jobs";
 import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS } from "../payments/telegramTimeout";
 import { coreT, t } from "../util/i18n";
@@ -1579,13 +1579,12 @@ async function flipSettledBubble(
 ): Promise<void> {
   if (!FLIPPABLE_SETTLED_STATUSES.includes(order.status)) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
-  // A wallet top-up's bubble quotes the buyer's balance, so read it fresh —
-  // the order row doesn't carry one. Skipped entirely for a product order,
-  // whose text needs no balance at all; `settledPaymentBubbleFor`
-  // (util/delivery.ts) owns what to fall back to when the read comes back
-  // empty, so the two QRIS reconcile pollers and this handler can't drift.
-  const buyer = order.kind === OrderKind.WALLET_TOPUP ? await getUser(prisma, order.userId) : null;
-  const { text, markup } = settledPaymentBubbleFor(order, buyer);
+  // No buyer read needed: `settledPaymentBubble` (util/delivery.ts)
+  // interpolates no balance into either branch (a wallet top-up's bubble is
+  // a neutral status line — the balance-quoting sentence lives exclusively
+  // in the outbox's WALLET_TOPUP_CREDITED_DM), so the order row alone is
+  // enough for this handler and the two QRIS reconcile pollers alike.
+  const { text, markup } = settledPaymentBubble(order);
   const editTimeoutMs = opts?.editTimeoutMs ?? TELEGRAM_MESSAGE_TIMEOUT_MS;
   const outcome = await withTimeout(
     editPaymentBubble(ctx.api, {

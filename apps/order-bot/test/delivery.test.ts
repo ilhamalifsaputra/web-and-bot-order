@@ -1,8 +1,8 @@
 /**
- * settledPaymentBubble / settledPaymentBubbleFor / settledPaymentKb — the
- * shared mapping from a settled order to its payment-bubble text/keyboard
- * (apps/order-bot/src/util/delivery.ts), used by the Refresh button, the
- * background sweeper and the QRIS reconcile pollers alike.
+ * settledPaymentBubble / settledPaymentKb — the shared mapping from a settled
+ * order to its payment-bubble text/keyboard (apps/order-bot/src/util/
+ * delivery.ts), used by the Refresh button, the background sweeper, the QRIS
+ * reconcile pollers and the three crypto rails' own fast paths alike.
  *
  * Task E1: a WALLET_TOPUP bubble used to render `walletTopupSuccessText`
  * (order code + formatted amount + new balance) — the exact sentence the
@@ -12,12 +12,19 @@
  * (`checkout.topup_payment_received`); the balance-quoting sentence lives
  * exclusively in the outbox DM. Pure function over static locale JSON — no
  * DB needed.
+ *
+ * Review follow-up (same task): the wrapper this file used to also cover,
+ * `settledPaymentBubbleFor`, existed only to merge a live buyer-balance read
+ * into the bubble. Once the balance-quoting sentence moved out to the outbox
+ * DM above, nothing read that merged balance any more, so the wrapper (and
+ * its buyer-fallback tests) were deleted along with it — every caller now
+ * calls `settledPaymentBubble` directly with its order row, which is exactly
+ * what the tests below already exercise.
  */
 import { describe, it, expect } from "vitest";
 import type { InlineKeyboard } from "grammy";
-import { Decimal } from "@app/core/money";
 import { OrderKind, OrderStatus } from "@app/core/enums";
-import { settledPaymentBubble, settledPaymentBubbleFor, settledPaymentKb } from "../src/util/delivery";
+import { settledPaymentBubble, settledPaymentKb } from "../src/util/delivery";
 
 /** Flatten an InlineKeyboard's buttons down to their callback_data, the same
  * shape every other bubble/keyboard test in this suite reads. */
@@ -25,10 +32,8 @@ function flatCallbacks(markup: InlineKeyboard): (string | undefined)[] {
   return (markup.inline_keyboard as Array<Array<{ callback_data?: string }>>).flat().map((b) => b.callback_data);
 }
 
-const walletUser = (over: Partial<{ language: string; walletBalance: Decimal.Value; walletBalanceUsdt: Decimal.Value }> = {}) => ({
+const walletUser = (over: Partial<{ language: string }> = {}) => ({
   language: "en",
-  walletBalance: "0",
-  walletBalanceUsdt: "0",
   ...over,
 });
 
@@ -38,9 +43,7 @@ describe("settledPaymentBubble — WALLET_TOPUP", () => {
       orderCode: "TOPUP-IDR-1",
       kind: OrderKind.WALLET_TOPUP,
       status: OrderStatus.DELIVERED,
-      currency: "IDR",
-      totalAmount: new Decimal("50000"),
-      user: walletUser({ walletBalance: "125000" }),
+      user: walletUser(),
     };
 
     const { text } = settledPaymentBubble(order);
@@ -60,8 +63,6 @@ describe("settledPaymentBubble — WALLET_TOPUP", () => {
       orderCode: "TOPUP-2",
       kind: OrderKind.WALLET_TOPUP,
       status: OrderStatus.PROCESSING,
-      currency: "USDT",
-      totalAmount: new Decimal("10"),
       user: walletUser(),
     };
 
@@ -76,8 +77,6 @@ describe("settledPaymentBubble — WALLET_TOPUP", () => {
       orderCode: "TOPUP-ID-1",
       kind: OrderKind.WALLET_TOPUP,
       status: OrderStatus.DELIVERED,
-      currency: "USDT",
-      totalAmount: new Decimal("5"),
       user: walletUser({ language: "id" }),
     };
 
@@ -87,16 +86,20 @@ describe("settledPaymentBubble — WALLET_TOPUP", () => {
     expect(text).toContain("top up kamu sudah masuk");
   });
 
-  it("stays identical no matter which currency or balance the order/buyer carry — the neutral text interpolates nothing money-related", () => {
+  it("stays identical no matter which order code the top-up carries — the neutral text interpolates nothing money- or order-related", () => {
+    // `SettledBubbleOrder` (util/delivery.ts) no longer even has a
+    // `currency`/`totalAmount` field to vary — nothing has read either since
+    // Task E1 (see that type's own doc-comment) — so the strongest remaining
+    // proof that the WALLET_TOPUP branch interpolates nothing is that two
+    // orders differing only in `orderCode` render byte-identical text.
     const base = {
-      orderCode: "TOPUP-X",
       kind: OrderKind.WALLET_TOPUP,
       status: OrderStatus.DELIVERED,
       user: walletUser(),
     };
-    const idr = settledPaymentBubble({ ...base, currency: "IDR", totalAmount: new Decimal("999999") });
-    const usdt = settledPaymentBubble({ ...base, currency: "USDT", totalAmount: new Decimal("0.0001") });
-    expect(idr.text).toBe(usdt.text);
+    const first = settledPaymentBubble({ ...base, orderCode: "TOPUP-X" });
+    const second = settledPaymentBubble({ ...base, orderCode: "TOPUP-Y" });
+    expect(first.text).toBe(second.text);
   });
 });
 
@@ -105,8 +108,6 @@ describe("settledPaymentBubble — PRODUCT (regression: must not be reworded by 
     orderCode: "PROD-1",
     kind: OrderKind.PRODUCT,
     status,
-    currency: "IDR",
-    totalAmount: new Decimal("50000"),
     user: walletUser(),
   });
 
@@ -134,38 +135,29 @@ describe("settledPaymentKb", () => {
   });
 });
 
-describe("settledPaymentBubbleFor", () => {
-  it("delegates to settledPaymentBubble using the row's own kind/status/orderCode", () => {
+describe("settledPaymentBubble — called directly with only orderCode/kind/status/user.language (no buyer read)", () => {
+  it("a WALLET_TOPUP order renders its neutral text with nothing but the row itself — no balance to merge in", () => {
     const row = {
       orderCode: "TOPUP-ROW-1",
       kind: OrderKind.WALLET_TOPUP,
       status: OrderStatus.DELIVERED,
-      currency: "USDT",
-      totalAmount: new Decimal("1"),
       user: { language: "en" },
     };
 
-    const withBuyer = settledPaymentBubbleFor(row, { walletBalance: "999", walletBalanceUsdt: "999" });
-    const withoutBuyer = settledPaymentBubbleFor(row, null);
-
-    // The neutral top-up text interpolates no balance at all, so a missing
-    // buyer read (the `null` fallback path) renders identically to a
-    // successful one.
-    expect(withBuyer.text).toBe(withoutBuyer.text);
-    expect(withBuyer.text).toContain("Payment received");
+    const { text } = settledPaymentBubble(row);
+    expect(text).toContain("Payment received");
+    expect(text).not.toContain("TOPUP-ROW-1");
   });
 
-  it("still reflects a PRODUCT order's own status/order code with no buyer read needed", () => {
+  it("a PRODUCT order's own status and order code come through with no buyer read needed", () => {
     const row = {
       orderCode: "PROD-ROW-1",
       kind: OrderKind.PRODUCT,
       status: OrderStatus.DELIVERED,
-      currency: "IDR",
-      totalAmount: new Decimal("10000"),
       user: { language: "en" },
     };
 
-    const { text } = settledPaymentBubbleFor(row, null);
+    const { text } = settledPaymentBubble(row);
     expect(text).toContain("PROD-ROW-1");
     expect(text).toContain("being delivered now");
   });

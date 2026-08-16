@@ -175,7 +175,24 @@ export async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
-    const text = render(row.event, payload);
+    // `render` runs money fields through `formatIdr`/`formatUsdt`
+    // (templates.ts), which THROW on a non-numeric value — deliberately: they
+    // are also called from live checkout/settlement code, where a garbage
+    // amount is a bug worth surfacing loudly, not silently coercing to "0".
+    // A malformed outbox payload is the one place that throw must not
+    // propagate: uncaught here it would abort the rest of this batch and
+    // leave the row this claimed stuck in SENDING until the stale-claim
+    // window, only to throw again on the retry. Isolate it the same way a
+    // bad `payloadJson` is isolated above — fail this one row (maxAttempts=1;
+    // a malformed payload cannot become valid on retry) and keep draining the
+    // rest of the batch.
+    let text: string;
+    try {
+      text = render(row.event, payload);
+    } catch (e) {
+      await markNotificationFailed(prisma, row.id, `template render failed: ${e}`, 1);
+      continue;
+    }
     if (!text) {
       // Unknown event type — drop so we don't loop forever.
       await markNotificationFailed(prisma, row.id, `no template for event ${row.event}`, 1);

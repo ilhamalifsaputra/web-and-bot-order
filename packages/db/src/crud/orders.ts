@@ -1646,7 +1646,7 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
  * in both callers, so a lost race can't reach it twice (referral is itself
  * gated on "referee's first delivered order").
  */
-async function finalizeDeliverySideEffects(
+export async function finalizeDeliverySideEffects(
   db: Db,
   order: OrderWithIncludes,
   now: Date,

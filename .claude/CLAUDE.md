@@ -149,10 +149,21 @@ items before starting work. Keep exactly one item `in_progress` at a time
 `addBlockedBy` when one item genuinely can't start until another lands, and
 `TaskGet` to re-read an item's latest state before updating it. Skip the task
 list only for a single trivial one-line/config edit where it would be pure
-overhead. If the `Task*` tools aren't in the session's available tool list
-(e.g. some background-job session types don't expose them), fall back to a
-plain markdown checklist and say so — don't silently substitute one for the
-other without noting the tools weren't available.
+overhead.
+
+**The native task list is mandatory — if the tools aren't there, make them be
+there.** `Task*` is a deferred tool in most sessions here: not seeing
+`TaskCreate` in the tool list means it hasn't been loaded yet, *not* that it's
+unavailable. Load it before starting work, in one call:
+
+```
+ToolSearch: select:TaskCreate,TaskUpdate,TaskList,TaskGet
+```
+
+A plain markdown checklist is a last resort, allowed only after that
+`ToolSearch` has actually been attempted and failed — and you must say
+out loud that the tools couldn't be loaded. Never silently substitute a
+checklist for the task list.
 
 ## Money, data, audit
 - **Decimal for all money** (`@app/core/money`), never `float`. Web formats it

@@ -362,6 +362,28 @@ export function render(
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
   }
+  if (event === NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT) {
+    // Admin DM: the gateway says this order is paid, but returned no
+    // transaction id — and that id is the rail's idempotency-ledger key, so
+    // the poller refuses to deliver rather than claim the delivery under a key
+    // the webhook could never match (Task E4). Nothing recovers this on its
+    // own: if the webhook never arrives either, the order runs out its payment
+    // window and auto-cancels with the buyer already charged. The message has
+    // to tell the admin the deadline, not just the fault — this arrives once
+    // per order and there is no second reminder.
+    const code = escape(String(payload.order_code ?? ""));
+    const gateway = escape(String(payload.gateway ?? ""));
+    return (
+      `⚠️ <b>${gateway} reports order <code>${code}</code> as paid, but sent no transaction id</b>\n` +
+      `Without that id the payment cannot be confirmed automatically, so nothing has been delivered. ` +
+      `Check this order in the ${gateway} dashboard and either approve or cancel it by hand — ` +
+      `if it is left alone, the payment window will close and the order will auto-cancel even though the buyer paid.\n\n` +
+      `⚠️ <b>${gateway} melaporkan pesanan <code>${code}</code> sudah dibayar, tapi tidak mengirim id transaksi</b>\n` +
+      `Tanpa id itu pembayaran tidak bisa dikonfirmasi otomatis, jadi belum ada yang dikirim. ` +
+      `Periksa pesanan ini di dashboard ${gateway} lalu setujui atau batalkan secara manual — ` +
+      `kalau dibiarkan, jendela pembayaran akan tutup dan pesanan otomatis dibatalkan padahal pelanggan sudah membayar.`
+    );
+  }
   if (event === NotificationEvent.ADMIN_OVERPAID) {
     // Admin DM (not a channel post): one of the six payment rails delivered
     // an order whose paid amount exceeded the total. All values are escaped even

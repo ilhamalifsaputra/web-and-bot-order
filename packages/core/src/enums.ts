@@ -360,6 +360,20 @@ export const NotificationEvent = {
   // `chat_id` (the admin's telegram id) plus order_code/gateway/trx_id, same
   // fan-out-per-admin shape as ADMIN_OVERPAID.
   ADMIN_STALE_PAYMENT: "ADMIN_STALE_PAYMENT",
+  // Admin DM (not a channel post): the NOWPayments reconcile poller found an
+  // order the gateway reports `finished`, but the response carried no
+  // `payment_id` — and `payment_id` IS that rail's idempotency-ledger key, so
+  // there is nothing to claim the delivery under. Task E4 made the poller
+  // refuse to deliver in that case rather than invent a key its IPN webhook
+  // could never collide with; this alert is Task E5's mitigation for the cost
+  // of that refusal. Without it, an order whose IPN also never arrives simply
+  // runs out its payment window and auto-cancels with the buyer's money paid,
+  // and nobody is told. Carries a dedupe key per (order, admin) because the
+  // poller re-hits this branch every cycle until the order expires — see
+  // `enqueueAdminUnconfirmablePayment`. payload carries `chat_id` (the
+  // admin's telegram id) plus order_code, same fan-out-per-admin shape as
+  // ADMIN_STALE_PAYMENT above.
+  ADMIN_UNCONFIRMABLE_PAYMENT: "ADMIN_UNCONFIRMABLE_PAYMENT",
   // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner,
   // at the single `owner_email` address configured in Settings — receives
   // this when an AUTO-delivery order is paid (settlePaidOrder's AUTO branch,

@@ -15,7 +15,7 @@ import {
   getPollHealth,
 } from "@app/db";
 import type { Api } from "grammy";
-import { OrderStatus, OrderCurrency, PaymentMethod, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { telegramError } from "./helpers/ctx";
@@ -152,6 +152,48 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     // And the order is left for the IPN webhook (or a later cycle) to settle.
     const after = await prisma.order.findUnique({ where: { id: created.id } });
     expect(after?.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  // Task E5 item 4: refusing to deliver is right, but its cost is that if the
+  // IPN never arrives either, this order auto-cancels with the buyer already
+  // charged. These pin that the refusal is never silent, and that saying so
+  // repeatedly does not turn into a per-cycle DM storm.
+  it("alerts every admin once when it refuses, so a human can settle the order before it auto-cancels", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() }); // no payment_id
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId: created.id },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.order_code).toBe(created.orderCode);
+    expect(payload.gateway).toBe("NOWPayments");
+    // One row per admin, each keyed by (order, admin) — an order-only key
+    // would have let the first admin's row swallow all the others.
+    expect(new Set(rows.map((r) => r.dedupeKey)).size).toBe(rows.length);
+  });
+
+  it("does not re-alert on later cycles, however many times it re-enters that branch", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", actually_paid: pending!.totalAmount.toString() });
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    const afterFirst = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId: created.id },
+    });
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const afterThree = await prisma.notificationOutbox.count({
+      where: { event: NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, orderId: created.id },
+    });
+    expect(afterThree).toBe(afterFirst);
   });
 
   it('leaves the order pending on in-flight statuses ("waiting"/"confirming")', async () => {

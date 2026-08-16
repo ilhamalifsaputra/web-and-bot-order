@@ -36,9 +36,13 @@ type Db = PrismaClient | Tx;
  * (`isUniqueViolation`, crud/tokopay.ts) — the database, not the placement of
  * the call, is what makes the enqueue happen at most once.
  *
- * Exactly one event sets a key today: `WALLET_TOPUP_CREDITED_DM`, as
- * `topup-credited:<orderId>` — genuinely one DM per top-up order; see
- * `enqueueWalletTopupCreditedDm`.
+ * Two events set a key today:
+ *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
+ *    DM per top-up order; see `enqueueWalletTopupCreditedDm`.
+ *  - `ADMIN_UNCONFIRMABLE_PAYMENT`, as
+ *    `unconfirmable-payment:<orderId>:<adminId>` — one per admin per order,
+ *    NOT one per order, because that event fans out a row per admin; see
+ *    `enqueueAdminUnconfirmablePayment`.
  *
  * Every other event leaves it null, and NULLs are distinct in a SQLite UNIQUE
  * index, so those rows may repeat freely. `ORDER_DELIVERED_DM` in particular
@@ -240,6 +244,43 @@ export async function enqueueAdminStalePayment(
         }),
       },
     });
+  }
+}
+
+/**
+ * Tell every admin that an order's payment may have succeeded at the gateway
+ * while nothing in the system can confirm it — so a human can settle it before
+ * the payment window closes and the order auto-cancels with the buyer's money
+ * paid (Task E5 item 4).
+ *
+ * One caller today: the NOWPayments reconcile poller, on the branch where the
+ * gateway reports an order `finished` but returns no `payment_id`. That id is
+ * the rail's idempotency-ledger key, so Task E4 made the poller refuse to
+ * deliver rather than invent one the IPN webhook could never collide with.
+ * That refusal is correct and stays — this alert exists because its cost is
+ * otherwise silent.
+ *
+ * Deduped per (order, admin), not per order. The admin events fan out one row
+ * per admin (see ADMIN_DM_EVENTS, packages/outbox-dispatcher/src/dispatcher.ts),
+ * so an order-only key would let the first admin's row swallow every other
+ * admin's — they would never be told at all. Deduping matters here more than
+ * for most events because the poller re-enters this branch on EVERY cycle
+ * until the order expires: without a key, each admin would be DMed once a
+ * cycle for the whole payment window. With it, each admin is told exactly
+ * once per order, however many cycles run.
+ */
+export async function enqueueAdminUnconfirmablePayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await enqueueNotification(
+      db,
+      NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT,
+      args.orderId,
+      { chat_id: adminId, order_code: args.orderCode, gateway: args.gateway },
+      `unconfirmable-payment:${args.orderId}:${adminId}`,
+    );
   }
 }
 

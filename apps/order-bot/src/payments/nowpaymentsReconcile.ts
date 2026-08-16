@@ -52,6 +52,7 @@ import {
   getNowpaymentsCreds,
   listPendingNowpaymentsOrders,
   deliverPaidNowpaymentsOrder,
+  enqueueAdminUnconfirmablePayment,
   recordPollHealth,
 } from "@app/db";
 import { esc } from "../util/format";
@@ -238,15 +239,37 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   // is wrong — which is exactly the ⚠ ASSUMPTION flagged on
   // `getPaymentStatus` (the `/v1/invoice/{id}` vs `/v1/payment/{id}` path is
   // unverified). Warn loudly and leave the order PENDING_PAYMENT: the IPN
-  // webhook can still settle it, and the next cycle re-checks. This does mean
-  // that if the webhook never arrives either, such an order runs out its
-  // payment window and auto-cancels with the buyer's money paid — that is a
-  // real cost, accepted because the alternative is writing a ledger key the
-  // webhook can never collide with, which is the defect this replaces.
+  // webhook can still settle it, and the next cycle re-checks.
+  //
+  // The cost of that refusal is that if the webhook never arrives either, the
+  // order runs out its payment window and auto-cancels with the buyer's money
+  // paid. Task E5 item 4 stops that happening in silence: alert the admins so
+  // a human can settle the order by hand before the window closes. The alert
+  // is deduped per (order, admin) inside `enqueueAdminUnconfirmablePayment`,
+  // which is what makes it safe to call from a branch this poller re-enters
+  // every cycle — without that key each admin would be DMed once a cycle for
+  // the whole payment window.
   if (!status.trxId) {
     logger.warn(
-      `NOWPayments reports order ${order.orderCode} finished but returned no payment id, so there is no idempotency-ledger key to claim it under — refusing to deliver rather than inventing one the IPN webhook could never collide with. The order stays PENDING_PAYMENT for the webhook or a later cycle; if this repeats, the status-endpoint assumption in @app/core/payments/nowpayments is wrong and needs verifying against the live dashboard`,
+      `NOWPayments reports order ${order.orderCode} finished but returned no payment id, so there is no idempotency-ledger key to claim it under — refusing to deliver rather than inventing one the IPN webhook could never collide with. The order stays PENDING_PAYMENT for the webhook or a later cycle, and the admins have been alerted to settle it by hand; if this repeats, the status-endpoint assumption in @app/core/payments/nowpayments is wrong and needs verifying against the live dashboard`,
     );
+    try {
+      await enqueueAdminUnconfirmablePayment(prisma, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        gateway: "NOWPayments",
+      });
+      nudgeOutboxDispatcher();
+    } catch (err) {
+      // Never let the alert's own failure abort the cycle: the next cycle
+      // re-enters this branch and tries again, and the dedupe key means a
+      // retry that lands after a partial fan-out only fills in the admins who
+      // are still missing a row.
+      logger.error(
+        { err, orderId: order.id },
+        `Could not queue the admin alert for order ${order.orderCode}, whose payment NOWPayments reports as finished but cannot be confirmed — if no later cycle succeeds, this order will auto-cancel with the buyer already charged and nobody told`,
+      );
+    }
     return "ok";
   }
 

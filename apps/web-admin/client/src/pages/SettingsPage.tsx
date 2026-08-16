@@ -22,6 +22,7 @@ import {
   Users,
   Gamepad2,
   UserSearch,
+  Globe,
 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -186,6 +187,14 @@ const DIGIFLAZZ_KEYS = new Set([
 // Digiflazz above: it gets its own Card, not PAY_CRED_GROUPS/GatewayCard.
 const KOKINPAY_KEYS = new Set(["kokinpay_api_key"]);
 
+// VIP-Reseller: a second, independent region-check lookup (Region-check Task
+// A) — used only to detect a buyer's account region on Mobile Legends
+// lookups, catching a buyer who picked the wrong region variant of a game.
+// Same "not a checkout payment method" reasoning as KokinPay above: its own
+// Card, not PAY_CRED_GROUPS/GatewayCard. Two required fields (unlike
+// KokinPay's one), so the Card's Test Connection button gates on both.
+const VIPRESELLER_KEYS = new Set(["vipreseller_api_id", "vipreseller_api_key"]);
+
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
   ...TELEGRAM_KEYS,
@@ -195,6 +204,7 @@ const ALL_GROUPED_KEYS = new Set([
   ...PAY_CRED_KEYS,
   ...DIGIFLAZZ_KEYS,
   ...KOKINPAY_KEYS,
+  ...VIPRESELLER_KEYS,
 ]);
 
 // Short, muted helper description per field (Settings refinement §6) — every
@@ -262,6 +272,8 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   digiflazz_markup_type: "How the markup below is applied when pricing Digiflazz SKUs.",
   digiflazz_markup_value: "Percent (e.g. 8 for 8%) or a flat IDR amount, depending on the type above.",
   kokinpay_api_key: "Authenticates requests to KokinPay's nickname-check lookup — never shown once saved.",
+  vipreseller_api_id: "Your VIP-Reseller account's API ID.",
+  vipreseller_api_key: "Authenticates requests to VIP-Reseller's region-check lookup — never shown once saved.",
 };
 
 /** Instant client-side echo of the server's own field-specific validation
@@ -926,6 +938,7 @@ export function SettingsPage() {
   const fxFields = fieldGroup(data.fields, FX_KEYS);
   const digiflazzFields = fieldGroup(data.fields, DIGIFLAZZ_KEYS);
   const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
+  const vipresellerFields = fieldGroup(data.fields, VIPRESELLER_KEYS);
 
   const generalVisible = showGeneral && sectionVisible("General", generalFields);
   const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
@@ -935,6 +948,7 @@ export function SettingsPage() {
   const fxVisible = sectionVisible("Exchange Rates", fxFields);
   const digiflazzVisible = sectionVisible("Digiflazz (Top Up Game)", digiflazzFields);
   const kokinpayVisible = sectionVisible("KokinPay (Nickname Check)", kokinpayFields);
+  const vipresellerVisible = sectionVisible("VIP-Reseller (Region Check)", vipresellerFields);
   const securityVisible = sectionVisible("Security", []);
   const payGroupsVisible = payGroups.map((g) => ({ ...g, visible: sectionVisible(g.label, g.credFields) }));
 
@@ -950,6 +964,7 @@ export function SettingsPage() {
     { id: "settings-exchange-rates", label: "Exchange Rates", icon: navIcon(ArrowLeftRight), visible: fxVisible },
     { id: "settings-digiflazz", label: "Digiflazz (Top Up Game)", icon: navIcon(Gamepad2), visible: digiflazzVisible },
     { id: "settings-kokinpay", label: "KokinPay (Nickname Check)", icon: navIcon(UserSearch), visible: kokinpayVisible },
+    { id: "settings-vipreseller", label: "VIP-Reseller (Region Check)", icon: navIcon(Globe), visible: vipresellerVisible },
     { id: "settings-security", label: "Security", icon: navIcon(KeyRound), visible: securityVisible },
   ];
 
@@ -1385,6 +1400,53 @@ export function SettingsPage() {
                 {testResults.kokinpay && (
                   <p className={`text-xs ${testResults.kokinpay.ok ? "text-grass-dark" : "text-rust"}`}>
                     {testResults.kokinpay.detail}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* VIP-Reseller (Region Check) — Region-check Task A. A second,
+              independent lookup from KokinPay, used only to detect a buyer's
+              account region on Mobile Legends lookups; its own Card, same
+              reasoning as KokinPay above (not a checkout payment method). */}
+          {vipresellerVisible && (
+            <Card id="settings-vipreseller">
+              <CardHeader>
+                <CardTitle as="h2">VIP-Reseller (Region Check)</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {vipresellerFields.map((field) => (
+                  <FieldRow
+                    key={field.key}
+                    field={field}
+                    query={fieldQueryFor("VIP-Reseller (Region Check)")}
+                    onSaved={onSaved}
+                    onStatusChange={onStatusChange}
+                  />
+                ))}
+              </CardContent>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue ||
+                    !vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
+                  }
+                  title={
+                    vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue &&
+                    vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
+                      ? undefined
+                      : "Add credentials above to test this connection."
+                  }
+                  onClick={() => setPendingTest({ methodKey: "vipreseller", label: "VIP-Reseller" })}
+                >
+                  Test Connection
+                </Button>
+                {testResults.vipreseller && (
+                  <p className={`text-xs ${testResults.vipreseller.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.vipreseller.detail}
                   </p>
                 )}
               </CardContent>

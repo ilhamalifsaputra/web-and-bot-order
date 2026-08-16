@@ -12,6 +12,20 @@ import { getPriceList } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
+/**
+ * Parse a price string into a Decimal, or null if it isn't a valid number
+ * (mirrors routes/api/catalog.ts's parseDecimal — new Decimal(...) throws
+ * synchronously on a non-numeric string, so this must be try/catch'd rather
+ * than trusted like the rest of this row's fields).
+ */
+function parsePrice(value: string): Decimal | null {
+  try {
+    return new Decimal(value);
+  } catch {
+    return null;
+  }
+}
+
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
   // Step 1: fetch + group (dry run, no write) — same "preview then apply"
   // shape as /api/catalog/products/import, just sourced from Digiflazz's
@@ -65,7 +79,8 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       }
       for (const b of brands) {
         for (const row of b.rows) {
-          if (!row.buyerSkuCode || !row.productName || !row.price || new Decimal(row.price).lessThanOrEqualTo(0)) {
+          const price = row.price ? parsePrice(row.price) : null;
+          if (!row.buyerSkuCode || !row.productName || !price || price.lessThanOrEqualTo(0)) {
             return reply.code(400).send({ error: `Invalid price for "${row.productName || row.buyerSkuCode}".` });
           }
         }

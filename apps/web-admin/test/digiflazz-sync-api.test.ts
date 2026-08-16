@@ -98,4 +98,14 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     });
     expect(res.statusCode).toBe(400);
   });
+
+  it("rejects a non-numeric price with 400 instead of crashing", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "abc" }] }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Invalid price for "X".' });
+  });
 });

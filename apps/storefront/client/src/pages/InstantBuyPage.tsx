@@ -156,6 +156,21 @@ export default function InstantBuyPage() {
       apiPost<CheckoutData>("/api/v1/topup/preview", { denomination_id: selected!.id, qty: 1 }),
     enabled: selected != null,
     retry: false,
+    // Batch 2 review finding: this query's request body never carries the
+    // applied voucher code (that re-price goes through previewMutation
+    // below instead, which is what actually gets charged) — with React
+    // Query's default staleTime:0, an unrelated background refetch (window
+    // focus is the realistic trigger: the buyer alt-tabs to copy their
+    // in-game id) would silently re-fire this voucher-LESS request, and the
+    // effect below applies whatever it returns to `totals` unconditionally.
+    // The buyer would then see the discount vanish from the displayed total
+    // while still being charged it (voucherInput is unaffected and still
+    // sent at submit) — the exact preview-vs-charge divergence this whole
+    // feature exists to prevent. This query only needs to refetch when the
+    // selection changes (a new queryKey) or the voucher mutation below
+    // supersedes it; staleTime: Infinity stops every other automatic
+    // refetch (focus, reconnect, remount) without needing per-trigger flags.
+    staleTime: Infinity,
   });
   const checkoutData = previewQuery.data;
   // Surfaced as a banner AND as a submit blocker below: React Query keeps the

@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import InstantBuyPage from "./InstantBuyPage";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, CheckoutData, ProductPageData, ShopContext } from "../api/types";
@@ -261,6 +261,46 @@ describe("InstantBuyPage", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.any(Object)));
 
     expect(cartCalls()).toEqual([]);
+  });
+
+  // Batch 2 review finding: the preview query's own request never carries the
+  // applied voucher code (previewMutation, a separate call, owns that
+  // re-price) — with React Query's default staleTime:0, a background
+  // window-focus refetch of the SAME (voucher-less) query would silently
+  // reprice `totals` back to the undiscounted total while the order actually
+  // submitted still carries the voucher code, exactly the kind of
+  // preview-vs-charge divergence this whole feature exists to prevent.
+  // staleTime: Infinity on that query is the fix under test here.
+  it("keeps a voucher's discount on screen across a window-focus refetch", async () => {
+    renderInstantBuy({
+      // A voucher code in the body re-prices with a discount; the plain
+      // denomination preview (what a stray background refetch would send)
+      // stays full price — reproduces the bug's exact shape.
+      preview: (body) =>
+        body.voucher_code
+          ? { ...checkoutData, total: "18000", voucher_discount: "2000", voucher_code: body.voucher_code as string }
+          : checkoutData,
+    });
+    await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+    await screen.findByText("Summary");
+
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await screen.findByText("Voucher");
+    const callsAfterVoucher = (apiPost as Mock).mock.calls.length;
+
+    // Simulate the buyer alt-tabbing away (e.g. to copy their in-game id)
+    // and back — the standard way to trigger React Query's window-focus
+    // refetch machinery deterministically in a test.
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // No new request fired at all — staleTime: Infinity means the preview
+    // query is never eligible for a background refetch — so there is no
+    // voucher-less response that could have clobbered the discount.
+    expect((apiPost as Mock).mock.calls.length).toBe(callsAfterVoucher);
+    expect(screen.getByText("Voucher")).toBeInTheDocument();
   });
 
   it("routes to the pay page on a successful submit (signed-in buyer, client-side navigation)", async () => {

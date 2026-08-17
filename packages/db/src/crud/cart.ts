@@ -75,6 +75,17 @@ export function getCartItemAutoDeliverySource(db: Db, userId: number, cartItemId
     .then((row) => row?.product.autoDeliverySource ?? null);
 }
 
+/** True when `userId` already holds a cart line for `productId` (a
+ * denomination id) — lets a caller decide "merge" vs "skip" for a single
+ * denomination without pulling the whole cart. Used by the guest-cart merge
+ * on login (routes/auth.ts establishSession) to avoid pushing a
+ * Digiflazz-routed line above its single-unit invariant via addToCart's own
+ * increment-on-existing behavior. */
+export async function hasCartItem(db: Db, userId: number, productId: number): Promise<boolean> {
+  const existing = await db.cartItem.findUnique({ where: { userId_productId: { userId, productId } } });
+  return existing !== null;
+}
+
 export async function removeFromCart(db: Db, userId: number, cartItemId: number) {
   await db.cartItem.deleteMany({ where: { id: cartItemId, userId } });
 }

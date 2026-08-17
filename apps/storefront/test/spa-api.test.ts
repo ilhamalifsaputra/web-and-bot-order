@@ -739,6 +739,57 @@ describe("/api/v1/auth", () => {
     expect(cart.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
   });
 
+  // Final-review Batch 1 review finding: the guest cart cookie has no
+  // signature, so a caller can present a crafted `shop_cart_v2` cookie
+  // directly (bypassing POST /cart's own Digiflazz single-unit guard
+  // entirely) and have it merged into the account on login. Confirms
+  // routes/auth.ts's establishSession clamps a Digiflazz-routed line to
+  // qty 1 regardless of what the forged cookie claims, and skips the merge
+  // entirely (rather than incrementing) when the account already holds one.
+  it("login clamps a forged Digiflazz cart line to qty 1 instead of merging it as-is", async () => {
+    const cat = await prisma.category.create({ data: { name: "DigiflazzMergeCat", slug: `digiflazz-merge-cat-${Date.now()}`, sortOrder: 8 } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Digiflazz Merge Game" });
+    const digiDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "16500",
+    });
+    await updateDenomination(prisma, digiDenom.id, { autoDeliverySource: "digiflazz" });
+
+    await makeUser("digimergeuser", "digi-merge-pw-1", "DIGIREF");
+    const forgedCookie = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: digiDenom.id, q: 7 }] }));
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+
+    // A second login (e.g. a subsequent session) with the same forged qty:7
+    // cookie must not push the held line above 1 either — addToCart would
+    // otherwise increment an existing line.
+    const login2 = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login2.statusCode).toBe(200);
+    const sessionCookie2 = (Array.isArray(login2.headers["set-cookie"]) ? login2.headers["set-cookie"] : [String(login2.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart2 = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie2 } });
+    expect(cart2.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+  });
+
   it("register: validation errors return i18n keys; success signs in", async () => {
     const bad = await app.inject({
       method: "POST",

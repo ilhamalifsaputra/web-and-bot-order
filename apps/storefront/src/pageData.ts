@@ -193,6 +193,15 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       // parsed manual_with_info field spec ([] for auto/manual).
       delivery_type: d.deliveryType,
       additional_fields: parseAdditionalFields(d.additionalFields),
+      // Region-check Task C: admin-authored precautionary copy (Region-check
+      // Task B's `regionWarning` field) shown near the account field on
+      // InstantBuyPage.tsx, null when the admin hasn't set one. Already
+      // available on `d` via getCatalogProductBySlugWithDenominations's
+      // `include` (no narrowing `select`) — same zero-crud-change wiring as
+      // `checkout_flow` above. `expectedRegionCode` is deliberately NOT sent
+      // here — it's a server-side comparison value only, used by
+      // apiTopup.ts's check-account endpoint.
+      region_warning: d.regionWarning,
     };
   });
   // Default restock-form target (Task 10 fix): "first in-stock denomination,

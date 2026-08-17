@@ -133,6 +133,10 @@ export interface ProductDenomination {
   delivery_type: string;
   /** Parsed manual_with_info field spec — [] for auto/manual. */
   additional_fields: AdditionalField[];
+  /** Region-check Task C: admin-authored precautionary copy (Region-check
+   * Task B's `regionWarning` field), null when the admin hasn't set one.
+   * Rendered as an always-shown info Callout on InstantBuyPage.tsx. */
+  region_warning?: string | null;
 }
 
 /** A masked-author review on the product detail page — `created_at_display`

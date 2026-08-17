@@ -750,4 +750,126 @@ describe("InstantBuyPage", () => {
       }
     });
   });
+
+  // Region-check Task C: the admin-authored `region_warning` callout and the
+  // live `region_mismatch` hint, both riding InstantBuyPage's existing
+  // account-field card. Neither signal may ever block or disable submit.
+  describe("region-check (Task C)", () => {
+    it("renders the admin-authored region_warning Callout when set on the selected denomination", async () => {
+      const product: ProductPageData = {
+        ...productData,
+        denominations: [
+          { ...productData.denominations[0]!, region_warning: "Only for Indonesia-region accounts." },
+          productData.denominations[1]!,
+        ],
+      };
+      renderInstantBuy({ product });
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      expect(await screen.findByText("Only for Indonesia-region accounts.")).toBeInTheDocument();
+    });
+
+    it("renders nothing extra when region_warning is null/absent", async () => {
+      renderInstantBuy();
+      await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
+      await screen.findByLabelText("User ID");
+      expect(screen.queryByText("Only for Indonesia-region accounts.")).not.toBeInTheDocument();
+    });
+
+    it("renders the automatic mismatch hint when the check-account response signals region_mismatch: true, and never disables submit", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") {
+            return { available: true, valid: true, nickname: "ProGamer99", region_mismatch: true };
+          }
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+        vi.advanceTimersByTime(800);
+
+        await vi.waitFor(() => expect(screen.getByTestId("region-mismatch-hint")).toBeInTheDocument());
+        expect(screen.getByText(/may be registered in a different region/i)).toBeInTheDocument();
+
+        // Non-blocking: submit is still enabled once the account fields are
+        // filled, exactly as without the mismatch hint — neither this signal
+        // nor the KokinPay nickname match disables/hides the buy button.
+        await vi.waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not render the mismatch hint when region_mismatch is absent from the response", async () => {
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy();
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") return { available: true, valid: true, nickname: "ProGamer99" };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+        vi.advanceTimersByTime(800);
+
+        await vi.waitFor(() => expect(screen.getByText("✓ ProGamer99")).toBeInTheDocument());
+        expect(screen.queryByTestId("region-mismatch-hint")).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("submitting the order is never blocked by region_warning or region_mismatch being present together", async () => {
+      const product: ProductPageData = {
+        ...productData,
+        denominations: [
+          { ...productData.denominations[0]!, region_warning: "Only for Indonesia-region accounts." },
+          productData.denominations[1]!,
+        ],
+      };
+      vi.useFakeTimers();
+      try {
+        renderInstantBuy({ product });
+        const baseApiPost = (apiPost as Mock).getMockImplementation()!;
+        (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>, signal?: AbortSignal) => {
+          if (path === "/api/v1/topup/check-account") {
+            return { available: true, valid: true, nickname: "ProGamer99", region_mismatch: true };
+          }
+          if (path === "/api/v1/checkout") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
+          return baseApiPost(path, body, signal);
+        });
+
+        await vi.waitFor(() => expect(screen.getByRole("heading", { name: "Mobile Legends Diamonds" })).toBeInTheDocument());
+        await vi.waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+
+        fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+        fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+        vi.advanceTimersByTime(800);
+        await vi.waitFor(() => expect(screen.getByTestId("region-mismatch-hint")).toBeInTheDocument());
+
+        const buyButton = screen.getAllByRole("button", { name: /Buy now/ })[0]!;
+        expect(buyButton).not.toBeDisabled();
+        fireEvent.click(buyButton);
+        await vi.waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith(
+            "/api/v1/checkout",
+            expect.objectContaining({ method: "binance" }),
+          ),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

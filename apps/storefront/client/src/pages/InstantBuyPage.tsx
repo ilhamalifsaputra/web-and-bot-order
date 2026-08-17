@@ -43,6 +43,7 @@ import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
+import Callout from "../components/shop/Callout";
 import DenominationCard from "../components/shop/DenominationCard";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import Skeleton from "../components/shop/Skeleton";
@@ -189,11 +190,18 @@ export default function InstantBuyPage() {
   // never has `answers["user_id"]` populated, so no lookup fires and the
   // field behaves exactly as it does today — same silent no-op as every
   // other non-available outcome below.
+  // Region-check Task C: `regionMismatch` rides the exact same debounced
+  // request/response lifecycle as `nickname`/`notFound` above — it's read off
+  // the SAME check-account response (one HTTP call, not two), never its own
+  // effect/timer. Reset alongside the rest of `nicknameCheck` on every
+  // account-field change / denomination switch, same "stale signal next to a
+  // since-edited id" reasoning as the nickname fields.
   const [nicknameCheck, setNicknameCheck] = useState<{
     pending: boolean;
     nickname: string | null;
     notFound: boolean;
-  }>({ pending: false, nickname: null, notFound: false });
+    regionMismatch: boolean;
+  }>({ pending: false, nickname: null, notFound: false, regionMismatch: false });
 
   const accountId = (answers.user_id ?? "").trim();
   const accountServer = (answers.server_id ?? "").trim();
@@ -203,7 +211,7 @@ export default function InstantBuyPage() {
     // which resets `answers` above) invalidates whatever the last check
     // showed — clear immediately rather than let a stale nickname linger
     // next to a since-edited id.
-    setNicknameCheck({ pending: false, nickname: null, notFound: false });
+    setNicknameCheck({ pending: false, nickname: null, notFound: false, regionMismatch: false });
     if (!needsInfo || !selected) return;
     // Code review: firing on every non-empty id, with no minimum length and
     // no regard for a not-yet-filled server/zone field, produced a
@@ -223,29 +231,35 @@ export default function InstantBuyPage() {
     let cancelled = false;
     const timer = setTimeout(() => {
       setNicknameCheck((prev) => ({ ...prev, pending: true }));
-      apiPost<{ available: boolean; valid?: boolean; nickname?: string | null }>(
+      apiPost<{ available: boolean; valid?: boolean; nickname?: string | null; region_mismatch?: boolean }>(
         "/api/v1/topup/check-account",
         { denomination_id: selected.id, id: accountId, server: accountServer || undefined },
         controller.signal,
       )
         .then((res) => {
           if (cancelled) return;
+          // Region-check Task C: `region_mismatch` is read off this SAME
+          // response regardless of the nickname-check outcome below — the two
+          // signals are independent on the backend, so the UI reads them
+          // independently too, not nested inside the nickname branches.
+          const regionMismatch = res.region_mismatch === true;
           if (res.available && res.valid && res.nickname) {
-            setNicknameCheck({ pending: false, nickname: res.nickname, notFound: false });
+            setNicknameCheck({ pending: false, nickname: res.nickname, notFound: false, regionMismatch });
           } else if (res.available && res.valid === false) {
-            setNicknameCheck({ pending: false, nickname: null, notFound: true });
+            setNicknameCheck({ pending: false, nickname: null, notFound: true, regionMismatch });
           } else {
             // available: false — no check configured, no credentials, or a
             // network/HTTP failure. Never surfaced: the field looks and
-            // behaves exactly as it does today.
-            setNicknameCheck({ pending: false, nickname: null, notFound: false });
+            // behaves exactly as it does today (region_mismatch can still be
+            // true here — the two providers are independent).
+            setNicknameCheck({ pending: false, nickname: null, notFound: false, regionMismatch });
           }
         })
         .catch(() => {
           // A cancelled (AbortError) or otherwise failed request — same
           // silent no-op, never an error state shown to the buyer.
           if (cancelled) return;
-          setNicknameCheck({ pending: false, nickname: null, notFound: false });
+          setNicknameCheck({ pending: false, nickname: null, notFound: false, regionMismatch: false });
         });
     }, 800);
 
@@ -428,6 +442,14 @@ export default function InstantBuyPage() {
             <div className="card card-pad">
               <h2 className="section-title mb-1">{t("web.checkout_info_title")}</h2>
               <p className="text-xs text-ink-soft mb-3">{t("web.checkout_info_intro")}</p>
+              {/* Region-check Task C: admin-authored precautionary copy — shown
+                  whenever set, regardless of the live checks below, so the
+                  buyer reads it before typing. */}
+              {selected.region_warning && (
+                <div className="mb-3">
+                  <Callout variant="info">{selected.region_warning}</Callout>
+                </div>
+              )}
               <div className="grid gap-3 sm:grid-cols-2">
                 {selected.additional_fields.map((field) => (
                   <DeliveryFieldInput
@@ -457,6 +479,16 @@ export default function InstantBuyPage() {
                 <p className="mt-2 text-xs text-ink-soft" data-testid="nickname-check-not-found">
                   {t("web.nickname_check_not_found")}
                 </p>
+              )}
+              {/* Region-check Task C: automatic mismatch hint — only when the
+                  check-account response signalled region_mismatch: true. Never
+                  disables/hides the submit button (see submitBlocked below,
+                  which never references nicknameCheck at all) — a dismissible
+                  hint, not a blocker. */}
+              {!nicknameCheck.pending && nicknameCheck.regionMismatch && (
+                <div className="mt-2" data-testid="region-mismatch-hint">
+                  <Callout variant="warning">{t("web.region_mismatch_hint")}</Callout>
+                </div>
               )}
             </div>
           )}

@@ -176,6 +176,7 @@
   "error.cart_mixed_delivery": "This item ships differently from what's already in your cart. Please check out your current cart first, or start a new one.",
   "error.cart_too_large": "Your cart has too many items to check out in one order (max {limit} total). Please split it into smaller orders.",
   "error.customer_data_incomplete": "Some required information is missing. Please try again.",
+  "error.digiflazz_single_unit_only": "This instant top-up product can only be bought 1 unit per order.",
   "error.field_required": "This field is required.",
   "error.field_invalid_email": "Please enter a valid email address.",
   "error.field_invalid_number": "Please enter numbers only.",

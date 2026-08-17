@@ -390,6 +390,34 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "invalid_request" });
     }
     const qty = clampJsonQty(req.body?.qty);
+    const existingLines = await loadCartLines(req, customer);
+
+    // Digiflazz single-unit guard (final-review N1 fix): the supplier
+    // dispatch poller (packages/db/src/crud/digiflazz.ts,
+    // dispatchPendingDigiflazzOrders) can only ever place ONE supplier
+    // top-up per order and then marks the WHOLE order DELIVERED — this
+    // branch's own InstantBuyPage.tsx (the purpose-built flow for these
+    // SKUs) already locks qty to 1 by design. This is the OTHER path that
+    // can add a Digiflazz-routed denomination to cart (the ordinary product
+    // page's qty stepper, up to 99) — reject it outright rather than
+    // silently clamping to 1, so the buyer isn't charged for units they can
+    // never receive. Checked before the mixed-delivery guard below since
+    // it's the more specific rejection reason.
+    //
+    // Rejects on `qty !== 1` OR the denomination already having a cart line:
+    // both `addToCart` (signed-in) and the guest merge branch below
+    // INCREMENT an existing line's quantity rather than setting it
+    // absolutely, so a buyer who already holds 1 unit of a Digiflazz SKU
+    // (e.g. synced by InstantBuyPage.tsx, or a prior successful add here)
+    // and re-POSTs qty:1 for the SAME denomination would otherwise land at
+    // qty:2 even though every individual request in isolation looked like
+    // "qty 1" — checking the raw request alone would miss exactly that case.
+    if (denom.autoDeliverySource === "digiflazz") {
+      const alreadyInCart = existingLines.some((l) => l.denomination_id === denom.id);
+      if (qty !== 1 || alreadyInCart) {
+        return reply.code(400).send({ error: "error.digiflazz_single_unit_only" });
+      }
+    }
 
     // Cart guard (Task 6 design decision): a cart containing any manual /
     // manual_with_info line may contain EXACTLY that one line (any quantity)
@@ -402,7 +430,6 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // SAME denomination that's already the cart's one line (qty increment,
     // handled below by addToCart's upsert / the guest merge branch) is not a
     // new line, so it's exempt.
-    const existingLines = await loadCartLines(req, customer);
     if (existingLines.length > 0) {
       const isSameSingleLine = existingLines.length === 1 && existingLines[0]!.denomination_id === denom.id;
       const mixedDelivery =

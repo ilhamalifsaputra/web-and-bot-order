@@ -22,6 +22,10 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
   createOrderDirect,
+  createOrderFromCart,
+  addToCart,
+  createCatalogProduct,
+  createDenomination,
   setSetting,
   deleteSetting,
   getOrder,
@@ -205,6 +209,136 @@ describe("dispatchPendingDigiflazzOrders", () => {
     const summary = await dispatchPendingDigiflazzOrders(prisma);
     expect(summary).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
     expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+  });
+
+  // I6 regression (final-review batch 1): the candidate query is a
+  // `some`-filter — it never guaranteed the Digiflazz-routed item is
+  // order.items[0]. Build an order whose Digiflazz line is SECOND (a plain,
+  // non-Digiflazz auto line is added to the cart first) and confirm the
+  // poller still finds and dispatches the right one.
+  it("dispatches correctly when the Digiflazz item is not order.items[0]", async () => {
+    // Decoy line — sample.product, untouched (still plain AUTO, no
+    // autoDeliverySource) — added to the cart FIRST.
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+
+    // The actual Digiflazz-routed denomination — a separate product, added
+    // to the cart SECOND.
+    const category = await prisma.category.findFirstOrThrow();
+    const digiProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Mobile Legends" });
+    const digiDenom = await createDenomination(prisma, {
+      productId: digiProduct.id,
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ]),
+    });
+    await addToCart(prisma, sample.user.id, digiDenom.id, 1);
+
+    const order = (await createOrderFromCart(prisma, {
+      user: sample.user,
+      customerData: JSON.stringify([{ user_id: "987654321" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+
+    // Confirm the fixture actually reproduces "Digiflazz item is not
+    // items[0]" before trusting the dispatch result below — otherwise this
+    // test would pass for the wrong reason if cart ordering ever changes.
+    const beforeDispatch = await getOrder(prisma, order.id);
+    expect(beforeDispatch!.items[0]!.productId).toBe(sample.product.id);
+    expect(beforeDispatch!.items[1]!.productId).toBe(digiDenom.id);
+
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Sukses", sn: "SN-I6", message: "ok", price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ buyerSkuCode: "ml100" }),
+    );
+
+    const refreshed = await getOrder(prisma, order.id);
+    expect(refreshed!.status).toBe(OrderStatus.DELIVERED);
+    expect(refreshed!.deliveredContent).toBe("SN-I6");
+  });
+
+  // N1 defense-in-depth (final-review batch 1): the front-door cart guards
+  // (POST /cart, POST /cart/update) close off the normal way to reach this,
+  // but the poller must ALSO refuse a Digiflazz item whose quantity isn't 1
+  // — e.g. a pre-existing PROCESSING order from before those guards shipped,
+  // or an admin hand-editing an OrderItem row.
+  it("refuses to dispatch (alerts, never calls Digiflazz) when the Digiflazz item's quantity is not 1", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    await prisma.orderItem.updateMany({ where: { orderId: order.id }, data: { quantity: 2 } });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
+    // The atomic claim still commits — this is a "needs a human" outcome,
+    // not a retry-later one, same as every other alertDigiflazzDispatchFailed
+    // branch in this function.
+    expect(refreshed!.digiflazzDispatchedAt).not.toBeNull();
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
+  });
+
+  // Same invariant, the OTHER shape it can take: not one row with quantity
+  // > 1, but more than one Digiflazz-routed row in the same order (what the
+  // storefront's per-unit OrderItem creation would produce for a qty>1 cart
+  // line, before the front-door guards existed). Also refused, never
+  // partially dispatched.
+  it("refuses to dispatch when an order has more than one Digiflazz-routed line", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const fields = JSON.stringify([
+      { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+    ]);
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: "ml100",
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        additionalFields: fields,
+      },
+    });
+    const category = await prisma.category.findFirstOrThrow();
+    const product2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Free Fire" });
+    const digiDenom2 = await createDenomination(prisma, {
+      productId: product2.id,
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff100",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      additionalFields: fields,
+    });
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    await addToCart(prisma, sample.user.id, digiDenom2.id, 1);
+    const order = (await createOrderFromCart(prisma, {
+      user: sample.user,
+      customerData: JSON.stringify([{ user_id: "111" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
   });
 });
 

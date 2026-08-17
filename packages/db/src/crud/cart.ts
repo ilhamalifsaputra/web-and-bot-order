@@ -61,6 +61,20 @@ export async function updateCartItemQty(
   });
 }
 
+/** The `autoDeliverySource` of a single cart line's denomination, keyed by
+ * `cartItemId` (same `key` a signed-in buyer's POST /cart/update sends) —
+ * lets that route check the Digiflazz single-unit invariant BEFORE writing a
+ * new quantity, without pulling the whole cart. Null if the line doesn't
+ * exist (already removed, or belongs to a different user). */
+export function getCartItemAutoDeliverySource(db: Db, userId: number, cartItemId: number) {
+  return db.cartItem
+    .findFirst({
+      where: { id: cartItemId, userId },
+      select: { product: { select: { autoDeliverySource: true } } },
+    })
+    .then((row) => row?.product.autoDeliverySource ?? null);
+}
+
 export async function removeFromCart(db: Db, userId: number, cartItemId: number) {
   await db.cartItem.deleteMany({ where: { id: cartItemId, userId } });
 }

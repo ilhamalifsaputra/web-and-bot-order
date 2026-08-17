@@ -95,6 +95,7 @@ type DigiflazzCandidateOrder = {
       name: string;
       supplierSku: string | null;
       additionalFields: string | null;
+      autoDeliverySource: string | null;
     };
   }[];
 };
@@ -190,7 +191,9 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     },
     include: {
       items: {
-        include: { product: { select: { name: true, supplierSku: true, additionalFields: true } } },
+        include: {
+          product: { select: { name: true, supplierSku: true, additionalFields: true, autoDeliverySource: true } },
+        },
       },
     },
   });
@@ -209,10 +212,41 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     if (claim.count !== 1) continue;
     summary.claimed++;
 
-    const item = order.items[0];
+    // I6 fix: the candidate query's own filter is `some: { product: {
+    // autoDeliverySource: "digiflazz" } } }` — it does NOT guarantee that
+    // item is order.items[0]. Select the actual Digiflazz-routed item(s)
+    // explicitly, matching the same field the query filtered on, instead of
+    // implicitly relying on array order (an order whose Digiflazz item
+    // wasn't first used to either raise a bogus "no supplierSku" alert or
+    // dispatch the WRONG SKU to the supplier).
+    const digiflazzItems = order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
+    const item = digiflazzItems[0];
     const supplierSku = item?.product.supplierSku;
     if (!item || !supplierSku) {
       await alertDigiflazzDispatchFailed(db, order, "the SKU has no supplierSku configured");
+      summary.failed++;
+      continue;
+    }
+
+    // N1 defense-in-depth: this poller places exactly ONE supplier
+    // top-up per order and then marks the WHOLE order DELIVERED, so it must
+    // never dispatch when the order's Digiflazz allocation isn't exactly one
+    // unit — whether that shows up as a single line with quantity > 1, or as
+    // more than one Digiflazz-routed line in the same order (both are
+    // "more than 1 unit" from the supplier's point of view). The front door
+    // for this (storefront's cart-add / cart-update routes) is closed
+    // separately; this is the backstop for anything that slips past it — a
+    // pre-existing PROCESSING order from before that fix shipped, an admin
+    // manually creating/editing an order, or a future code path nobody
+    // thought to gate. Genuine multi-unit supplier dispatch (N separate
+    // createTransaction calls / SNs) is out of scope by design — this only
+    // refuses and alerts, it never attempts to dispatch more than one unit.
+    if (digiflazzItems.length !== 1 || item.quantity !== 1) {
+      const reason =
+        digiflazzItems.length === 1
+          ? `this order's Digiflazz item has quantity ${item.quantity} — auto-delivery only supports quantity 1 per order, needs manual review`
+          : `this order has ${digiflazzItems.length} Digiflazz line(s) totaling quantity ${digiflazzItems.reduce((sum, i) => sum + i.quantity, 0)} — auto-delivery only supports a single line of quantity 1 per order, needs manual review`;
+      await alertDigiflazzDispatchFailed(db, order, reason);
       summary.failed++;
       continue;
     }

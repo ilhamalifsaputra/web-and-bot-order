@@ -9,7 +9,7 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { Decimal } from "@app/core/money";
-import { prisma, updateCartItemQty, removeFromCart } from "@app/db";
+import { prisma, updateCartItemQty, removeFromCart, getCartItemAutoDeliverySource, getDenomination } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
 import { loadCartLines, csrfOk, clampQty } from "./cart";
@@ -46,6 +46,24 @@ const apiCartRoutes: FastifyPluginAsync = async (app) => {
     const key = Number(req.body?.key);
     const qty = clampQty(req.body?.qty);
     if (Number.isInteger(key)) {
+      // Digiflazz single-unit guard (final-review N1 fix), mirroring POST
+      // /cart in routes/api.ts: this route can ALSO raise an existing line's
+      // quantity (e.g. add at qty 1, then bump it here), so the same
+      // Digiflazz-routed invariant has to be enforced here too, or the
+      // api.ts guard alone can be bypassed. qty 0/omitted is a legitimate
+      // remove (this route's own "qty 0 removes" contract) and is never a
+      // violation — only reject when the caller asks a Digiflazz line to end
+      // up at a quantity other than 1. `key` is a cartItemId for a signed-in
+      // buyer, or the denomination id itself for a guest (see CartLineView's
+      // `key` doc comment in ./cart).
+      if (qty !== 0 && qty !== 1) {
+        const autoDeliverySource = customer
+          ? await getCartItemAutoDeliverySource(prisma, customer.userId, key)
+          : (await getDenomination(prisma, key))?.autoDeliverySource ?? null;
+        if (autoDeliverySource === "digiflazz") {
+          return reply.code(400).send({ error: "error.digiflazz_single_unit_only" });
+        }
+      }
       if (customer) {
         await updateCartItemQty(prisma, customer.userId, key, qty);
       } else {

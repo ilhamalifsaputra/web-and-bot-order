@@ -176,6 +176,7 @@
   "error.cart_mixed_delivery": "Produk ini pengirimannya berbeda dari yang sudah ada di keranjang. Selesaikan dulu keranjang saat ini, atau mulai keranjang baru.",
   "error.cart_too_large": "Keranjangmu terlalu banyak untuk dibayar dalam satu pesanan (maks {limit} item total). Silakan pisah menjadi beberapa pesanan lebih kecil.",
   "error.customer_data_incomplete": "Ada informasi wajib yang belum lengkap. Silakan coba lagi.",
+  "error.digiflazz_single_unit_only": "Produk top up instan ini hanya bisa dibeli 1 unit per pesanan.",
   "error.field_required": "Kolom ini wajib diisi.",
   "error.field_invalid_email": "Masukkan alamat email yang valid.",
   "error.field_invalid_number": "Masukkan angka saja.",

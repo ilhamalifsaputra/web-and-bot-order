@@ -961,6 +961,106 @@ describe("/api/v1/cart twins", () => {
   });
 });
 
+// Final-review N1 fix: POST /cart/update must enforce the same Digiflazz
+// single-unit invariant as POST /cart (api.ts) — otherwise a buyer could add
+// a Digiflazz-routed line at qty 1 (passing the api.ts guard) and then raise
+// it here, bypassing the front door entirely.
+describe("/api/v1/cart/update — Digiflazz single-unit guard", () => {
+  let digiflazzDenomId: number;
+
+  beforeAll(async () => {
+    const cat = await prisma.category.findUniqueOrThrow({ where: { slug: categorySlug } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Digiflazz Update Game ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "",
+      price: "16500",
+    });
+    digiflazzDenomId = denom.id;
+    await updateDenomination(prisma, digiflazzDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "ml100",
+    });
+  });
+
+  it("guest: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    expect(add.statusCode).toBe(200);
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 3 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    // The line itself must be untouched by the rejected request.
+    const check = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie } });
+    expect(check.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("guest: qty=0 (remove) on a Digiflazz line still works", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 0 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items).toHaveLength(0);
+  });
+
+  it("signed-in: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const uid = await makeUser("digiflazzupduser", "digiflazzupd-pw-99", "DFUPDREF");
+    const { cookie, csrf } = await loginAs("digiflazzupduser", "digiflazzupd-pw-99");
+    await addToCart(prisma, uid, digiflazzDenomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 2 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    const refreshed = await prisma.cartItem.findUnique({ where: { id: key } });
+    expect(refreshed!.quantity).toBe(1);
+  });
+
+  it("signed-in: updating a non-Digiflazz line's quantity is unaffected", async () => {
+    const uid = await makeUser("plainupduser", "plainupd-pw-99", "PLAINUPDR");
+    const { cookie, csrf } = await loginAs("plainupduser", "plainupd-pw-99");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 4 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items[0]).toMatchObject({ qty: 4 });
+  });
+});
+
 // ---------------------------------------------------------------- /checkout
 describe("/api/v1/checkout + orders", () => {
   // Guest checkout (Task 4) opened this read to anonymous visitors — it used

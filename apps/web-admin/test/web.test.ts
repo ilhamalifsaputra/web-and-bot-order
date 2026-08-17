@@ -1971,6 +1971,73 @@ describe("catalog JSON API — create denomination", () => {
     const row = await getDenomination(prisma, body.id);
     expect(row!.nicknameCheckGameCode).toBeNull();
   });
+
+  // Region-check Task B: regionWarning and expectedRegionCode are independent
+  // of autoDeliverySource/nicknameCheckGameCode/supplierSku AND of each other —
+  // a denomination can have either, both, or neither.
+  it("creates a denomination with regionWarning and expectedRegionCode, independent of each other and of nicknameCheckGameCode", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      regionWarning: "Hanya untuk akun region Indonesia",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.nicknameCheckGameCode).toBeNull();
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("creates a denomination with only regionWarning set (no expectedRegionCode)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+
+  it("creates a denomination with only expectedRegionCode set (no regionWarning)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.regionWarning).toBeNull();
+  });
+
+  it("defaults regionWarning and expectedRegionCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBeNull();
+    expect(row!.expectedRegionCode).toBeNull();
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------

@@ -333,6 +333,15 @@ export async function createDenomination(
      * the storefront's live nickname-check UX. Independent of supplierSku/
      * autoDeliverySource above. */
     nicknameCheckGameCode?: string | null;
+    /** Admin-authored short warning shown near the account field on the
+     * storefront's instant-buy page (Region-check Task B). Independent of
+     * every other field on this row. */
+    regionWarning?: string | null;
+    /** The region this SKU is FOR, compared against VIP-Reseller's live
+     * region-check result (Region-check Task B). Independent of
+     * regionWarning and of nicknameCheckGameCode/supplierSku/
+     * autoDeliverySource above. */
+    expectedRegionCode?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -357,6 +366,8 @@ export async function createDenomination(
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
       supplierSku: args.supplierSku ?? null,
       nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
+      regionWarning: args.regionWarning ?? null,
+      expectedRegionCode: args.expectedRegionCode ?? null,
     },
   });
 }

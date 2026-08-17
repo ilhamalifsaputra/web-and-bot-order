@@ -68,6 +68,8 @@ export function DenominationCreatePage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [regionWarning, setRegionWarning] = useState("");
+  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -91,6 +93,8 @@ export function DenominationCreatePage() {
             ? { autoDeliverySource, supplierSku: supplierSku.trim() }
             : {}),
           ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
+          ...(regionWarning.trim() ? { regionWarning: regionWarning.trim() } : {}),
+          ...(expectedRegionCode.trim() ? { expectedRegionCode: expectedRegionCode.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -177,6 +181,10 @@ export function DenominationCreatePage() {
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
+          regionWarning={regionWarning}
+          onRegionWarningChange={setRegionWarning}
+          expectedRegionCode={expectedRegionCode}
+          onExpectedRegionCodeChange={setExpectedRegionCode}
         />
 
         <div>

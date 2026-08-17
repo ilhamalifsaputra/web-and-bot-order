@@ -156,6 +156,10 @@ describe("DenominationEditPage", () => {
         // admin can clear a previously-set value by blanking the field, not
         // just set one. This fixture never touched the field, so it's null.
         nicknameCheckGameCode: null,
+        // Region-check Task B: regionWarning/expectedRegionCode follow the
+        // same always-sent-on-edit convention as nicknameCheckGameCode above.
+        regionWarning: null,
+        expectedRegionCode: null,
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());

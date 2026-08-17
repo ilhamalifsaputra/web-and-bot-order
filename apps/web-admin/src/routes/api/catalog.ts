@@ -327,6 +327,14 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const nicknameCheckGameCode =
       typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
 
+    // regionWarning/expectedRegionCode (Region-check Task B): plain optional
+    // strings, independent of deliveryType/autoDeliverySource and of each
+    // other — same "no cross-field validation rule" treatment as
+    // nicknameCheckGameCode above.
+    const regionWarning = typeof body.regionWarning === "string" ? body.regionWarning.trim() || null : null;
+    const expectedRegionCode =
+      typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
+
     const denom = await createDenomination(prisma, {
       productId,
       name,
@@ -342,6 +350,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,
+      regionWarning,
+      expectedRegionCode,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -667,6 +677,14 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const nicknameCheckGameCode =
       typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
 
+    // regionWarning/expectedRegionCode (Region-check Task B): plain optional
+    // strings, same always-set-from-this-request convention as
+    // nicknameCheckGameCode above — no deliveryType coupling, independent
+    // of each other.
+    const regionWarning = typeof body.regionWarning === "string" ? body.regionWarning.trim() || null : null;
+    const expectedRegionCode =
+      typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
+
     await updateDenomination(prisma, id, {
       name,
       type: type as ProductType,
@@ -682,6 +700,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,
+      regionWarning,
+      expectedRegionCode,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

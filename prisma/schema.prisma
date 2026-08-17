@@ -254,6 +254,23 @@ model Denomination {
   /// enhancement, not a fulfilment link, so it applies to any manual_with_info
   /// product regardless of who (if anyone) auto-fulfils it.
   nicknameCheckGameCode String?  @map("nickname_check_game_code")
+  /// Admin-authored short warning shown near the account field on the
+  /// storefront's instant-buy page (e.g. "Hanya untuk akun region
+  /// Indonesia") — a manual mitigation for the wrong-region-variant problem
+  /// (this SKU/Product may be a region-specific split of a game that has
+  /// multiple Digiflazz SKUs per region, and nothing else in the catalog
+  /// enforces which one a buyer picks). Independent of every other field on
+  /// this model — works even with no live nickname/region check configured.
+  regionWarning String? @map("region_warning")
+  /// The region this SKU is FOR, as an ISO-3166-alpha2-ish code (e.g. "ID"
+  /// for Indonesia) — compared against VIP-Reseller's live region-check
+  /// result (packages/core/src/suppliers/vipreseller.ts, only returns
+  /// country data for some games, e.g. Mobile Legends) to flag a mismatch on
+  /// the storefront. Null = no automatic region check for this SKU (the
+  /// live check is skipped silently, same graceful-degrade discipline as
+  /// nicknameCheckGameCode). Admin sets this to match whichever Digiflazz
+  /// SKU/region this particular Product/Denomination represents.
+  expectedRegionCode String? @map("expected_region_code")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this

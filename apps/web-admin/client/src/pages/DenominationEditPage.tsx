@@ -40,6 +40,8 @@ interface EditableDenomination {
   autoDeliverySource: string | null;
   supplierSku: string | null;
   nicknameCheckGameCode: string | null;
+  regionWarning: string | null;
+  expectedRegionCode: string | null;
 }
 
 /** Parses a denomination's stored additionalFields JSON into editable
@@ -124,6 +126,8 @@ export function DenominationEditPage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [regionWarning, setRegionWarning] = useState("");
+  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -148,6 +152,8 @@ export function DenominationEditPage() {
     setAutoDeliverySource(denomination.autoDeliverySource ?? null);
     setSupplierSku(denomination.supplierSku ?? "");
     setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
+    setRegionWarning(denomination.regionWarning ?? "");
+    setExpectedRegionCode(denomination.expectedRegionCode ?? "");
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -176,6 +182,8 @@ export function DenominationEditPage() {
           ? { autoDeliverySource, supplierSku: supplierSku.trim() }
           : {}),
         nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
+        regionWarning: regionWarning.trim() || null,
+        expectedRegionCode: expectedRegionCode.trim() || null,
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -284,6 +292,10 @@ export function DenominationEditPage() {
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
+          regionWarning={regionWarning}
+          onRegionWarningChange={setRegionWarning}
+          expectedRegionCode={expectedRegionCode}
+          onExpectedRegionCodeChange={setExpectedRegionCode}
         />
 
         <div>

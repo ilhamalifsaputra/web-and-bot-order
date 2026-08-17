@@ -79,6 +79,10 @@ export function DeliveryTypeSection({
   onSupplierSkuChange,
   nicknameCheckGameCode,
   onNicknameCheckGameCodeChange,
+  regionWarning,
+  onRegionWarningChange,
+  expectedRegionCode,
+  onExpectedRegionCodeChange,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -94,6 +98,18 @@ export function DeliveryTypeSection({
    * Digiflazz auto-delivery link. Blank = no live check for this product. */
   nicknameCheckGameCode: string;
   onNicknameCheckGameCodeChange: (next: string) => void;
+  /** Admin-authored short warning shown near the account field on the
+   * storefront's instant-buy page (Region-check Task B) — a manual mitigation
+   * for the wrong-region-variant problem. Independent of every other field,
+   * including expectedRegionCode below: works with no live check configured. */
+  regionWarning: string;
+  onRegionWarningChange: (next: string) => void;
+  /** The region this SKU is FOR (Region-check Task B), compared against a
+   * live VIP-Reseller region lookup. Independent of regionWarning above and
+   * of nicknameCheckGameCode/autoDeliverySource/supplierSku — blank = no
+   * automatic region check for this product. */
+  expectedRegionCode: string;
+  onExpectedRegionCodeChange: (next: string) => void;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
@@ -128,6 +144,8 @@ export function DeliveryTypeSection({
     onAutoDeliverySourceChange(null);
     onSupplierSkuChange("");
     onNicknameCheckGameCodeChange("");
+    onRegionWarningChange("");
+    onExpectedRegionCodeChange("");
   }
 
   // Same "no hidden memory" reset as selectMethod above, for the other path
@@ -139,6 +157,8 @@ export function DeliveryTypeSection({
       onAutoDeliverySourceChange(null);
       onSupplierSkuChange("");
       onNicknameCheckGameCodeChange("");
+      onRegionWarningChange("");
+      onExpectedRegionCodeChange("");
     }
   }
 
@@ -274,6 +294,51 @@ export function DeliveryTypeSection({
           <p className="mt-1 text-xs text-ink-soft">
             e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
             the live nickname check for this product.
+          </p>
+        </div>
+      )}
+
+      {/* Region warning (Region-check Task B) — an independent, plain-text
+          mitigation for the wrong-region-variant problem: works for ANY
+          manual_with_info product, no live API dependency, always available.
+          Shown under the same requiresInfo condition as the fields above
+          since it renders near the buyer account field they collect. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Region warning (optional)</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. Hanya untuk akun region Indonesia"
+            value={regionWarning}
+            onChange={(e) => onRegionWarningChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            Shown near the account field on the buy page — e.g. &quot;Only for Indonesia-region
+            accounts&quot;. Leave blank to skip.
+          </p>
+        </div>
+      )}
+
+      {/* Expected region code (Region-check Task B) — an independent,
+          automatic-check opt-in: only works for games where a mapped
+          game_code + this expected region exist, degrades silently
+          otherwise (same "never block the buyer" discipline as the
+          nickname check above). NOT gated on nicknameCheckGameCode or
+          autoDeliverySource — a product can have either, both, or neither. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Expected region code (optional)</label>
+          <Input
+            className="mt-1 w-32"
+            maxLength={5}
+            placeholder="e.g. ID"
+            value={expectedRegionCode}
+            onChange={(e) => onExpectedRegionCodeChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            e.g. &quot;ID&quot; for Indonesia — compared against a live account lookup via
+            VIP-Reseller (only available for some games, e.g. Mobile Legends). Leave blank to skip
+            the automatic check.
           </p>
         </div>
       )}

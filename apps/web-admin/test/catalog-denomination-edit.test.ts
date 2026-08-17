@@ -411,6 +411,82 @@ describe("PATCH /api/catalog/denominations/:id — nicknameCheckGameCode (Task 7
   });
 });
 
+describe("PATCH /api/catalog/denominations/:id — regionWarning/expectedRegionCode (Region-check Task B)", () => {
+  it("sets regionWarning independent of autoDeliverySource and of expectedRegionCode (no Digiflazz link, no live check required)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBeNull();
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("sets expectedRegionCode independent of regionWarning", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.regionWarning).toBeNull();
+  });
+
+  it("sets both fields together", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBe("ID");
+  });
+
+  it("trims both values and clears them to null when the request sends blank/omits them", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "  Hanya untuk akun region Indonesia  ",
+      expectedRegionCode: "  ID  ",
+    });
+    expect(setup.statusCode).toBe(200);
+    const seeded = await prisma.denomination.findUnique({ where: { id } });
+    expect(seeded!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(seeded!.expectedRegionCode).toBe("ID");
+
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBeNull();
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+});
+
 describe("DELETE /api/catalog/denominations/:id", () => {
   it("happy path: deletes the denomination and audits", async () => {
     const id = await seedDenomination();

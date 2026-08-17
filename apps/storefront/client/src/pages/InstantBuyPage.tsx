@@ -6,26 +6,34 @@
  * the normal Product → Cart → Checkout hop into one page: account field(s) →
  * denomination → contact → payment → order summary, one submit button.
  *
- * Reuses the existing cart/checkout backend as-is — no new endpoint. As soon
- * as a denomination is picked (including the initial default), the page
- * syncs the buyer's SERVER-SIDE cart to hold exactly that one line at qty 1
- * (`syncCart` below), because `computeTotals`/the voucher-preview endpoint
- * both price the PERSISTED cart, not an ad-hoc line — the totals/payment
- * cards below are only ever showing what checkout would actually charge.
- * `syncCart` always clears every existing line first rather than trying an
- * optimistic add-and-catch-`cart_mixed_delivery`: this flow's cart is always
- * exactly one line, and posting the SAME denomination that's already there
- * would hit the server's same-line qty-increment path (packages/db/src/crud/
- * cart.ts addToCart) instead of leaving qty at 1 — clearing first side-steps
- * that regardless of what the cart already held (leftover browsing, a
- * previous partial attempt, or a genuine cart_mixed_delivery conflict).
+ * CART-FREE BY DESIGN (final-review fix N2). This is a direct purchase: the
+ * selected denomination is priced and charged as an ad-hoc single line and
+ * never enters the cart table, so this page reads and writes NO cart state at
+ * all — no `GET /api/v1/cart`, no `POST /api/v1/cart`, no
+ * `POST /api/v1/cart/remove`. It used to write its selection into the
+ * server-side cart (clearing every line already there first) purely so the
+ * cart-based `computeTotals` could see it, which meant merely OPENING a top-up
+ * product page silently destroyed whatever the visitor had been shopping for.
+ * Two purpose-built endpoints replace that (apps/storefront/src/routes/
+ * apiTopup.ts):
+ *   - `POST /api/v1/topup/preview` — the exact same payload `GET /api/v1/checkout`
+ *     returns (so `CheckoutData`, OrderSummaryCard and PaymentMethodSelector are
+ *     unchanged), priced from `{ denomination_id, qty }` instead of a cart. Both
+ *     re-pricing triggers this page has — a denomination switch and a voucher
+ *     application — go through it, so they can never disagree.
+ *   - `POST /api/v1/topup/order` — creates the order from that same single
+ *     denomination (`createOrderDirect`, the rail the Telegram bot has always
+ *     used), returning the same `{ order_code, pay_url, csrf_token?, email_sent? }`
+ *     body as `POST /api/v1/checkout`.
+ * Nothing about a visitor's real cart is touched at any point, whether they
+ * complete the purchase or abandon it.
  *
  * `page`/`totals`/voucher/method state mirrors CheckoutPage.tsx's own split
  * (see that file's top-of-file doc comment) with one relaxation: `page`/
- * `totals` are re-seeded from every fresh sync (CheckoutPage seeds `page`
+ * `totals` are re-seeded from every fresh preview (CheckoutPage seeds `page`
  * only once), since picking a different denomination genuinely re-prices the
  * order — but the voucher input and the chosen payment method, once the buyer
- * has touched them, are never clobbered by a later resync.
+ * has touched them, are never clobbered by a later re-price.
  */
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -33,7 +41,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { AlertTriangle, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
-import type { CartPageData, CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
+import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
@@ -124,7 +132,6 @@ export default function InstantBuyPage() {
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
   const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
-  const [cartErrorKey, setCartErrorKey] = useState<string | null>(null);
   const [page, setPage] = useState<CheckoutData | null>(null);
   const [totals, setTotals] = useState<CheckoutData | null>(null);
 
@@ -137,18 +144,25 @@ export default function InstantBuyPage() {
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   const needsInfo = selected?.delivery_type === "manual_with_info" && selected.additional_fields.length > 0;
 
-  // Fetched only after a cart sync lands (see below) — the checkout payload
-  // prices whatever the persisted cart currently holds, so reading it before
-  // the sync would show stale or empty-cart totals.
-  const {
-    data: checkoutData,
-    refetch: refetchCheckout,
-  } = useQuery({
-    queryKey: ["checkout"],
-    queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
-    enabled: false,
+  // Live totals for the SELECTED denomination — an ad-hoc line priced by the
+  // server, with no cart anywhere in the loop. Keyed on the denomination id, so
+  // picking a different plan re-prices automatically (this replaces the
+  // cart-sync effect the old design fired off the same trigger), and React
+  // Query only ever surfaces the response belonging to the current key — a
+  // slow answer for an abandoned selection can't overwrite a newer one.
+  const previewQuery = useQuery({
+    queryKey: ["topup-preview", selected?.id],
+    queryFn: () =>
+      apiPost<CheckoutData>("/api/v1/topup/preview", { denomination_id: selected!.id, qty: 1 }),
+    enabled: selected != null,
     retry: false,
   });
+  const checkoutData = previewQuery.data;
+  // Surfaced as a banner AND as a submit blocker below: React Query keeps the
+  // last successful `data` when a later refetch fails, so without this the page
+  // would keep showing (and let the buyer pay against) totals for a selection
+  // the server never priced.
+  const previewErrorKey = previewQuery.error ? (previewQuery.error as Error).message : null;
 
   useEffect(() => {
     if (!checkoutData) return;
@@ -270,37 +284,16 @@ export default function InstantBuyPage() {
     };
   }, [needsInfo, selected?.id, accountId, accountServer]);
 
-  const syncCart = useMutation({
-    mutationFn: async (denominationId: number) => {
-      const cart = await apiGet<CartPageData>("/api/v1/cart");
-      for (const line of cart.items) {
-        await apiPost<CartPageData>("/api/v1/cart/remove", { key: line.key });
-      }
-      return apiPost<CartPageData>("/api/v1/cart", { denomination_id: denominationId, qty: 1 });
-    },
-    onMutate: () => setCartErrorKey(null),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["context"] });
-      void refetchCheckout();
-    },
-    onError: (err) => setCartErrorKey((err as Error).message),
-  });
-
-  // As soon as a denomination is selected/changes (including the initial
-  // default pick), sync the server-side cart to hold exactly that one line.
-  // `selected` (and so this effect) can only change while no sync is already
-  // in flight — see the denomination grid's onChange guard below — which is
-  // what keeps two overlapping sync sequences (each: read cart, remove old
-  // lines, add new line) from ever racing on the server-side cart.
-  useEffect(() => {
-    if (!selected) return;
-    syncCart.mutate(selected.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
-
+  // Applying a voucher re-prices the SAME ad-hoc line the query above prices,
+  // through the SAME endpoint — one pricing implementation, so a voucher can
+  // never be quoted against something other than the plan on screen.
   const previewMutation = useMutation({
     mutationFn: (voucherCode: string) =>
-      apiPost<CheckoutData>("/api/v1/checkout/voucher/preview", { voucher_code: voucherCode }),
+      apiPost<CheckoutData>("/api/v1/topup/preview", {
+        denomination_id: selected!.id,
+        qty: 1,
+        voucher_code: voucherCode,
+      }),
     onSuccess: (resp) => {
       setTotals(resp);
       // I-3, widened: a voucher application re-prices `totals` directly
@@ -323,13 +316,15 @@ export default function InstantBuyPage() {
     applyVoucher();
   }
 
-  // Mirrors CheckoutPage.tsx's placeOrderMutation exactly (same endpoint,
-  // same guest-mode full-reload vs. signed-in client nav, same order-code
-  // email handoff) — customer_data is always a single-unit array here, since
-  // InstantBuyPage never buys more than qty 1.
+  // Mirrors CheckoutPage.tsx's placeOrderMutation (same guest-mode full-reload
+  // vs. signed-in client nav, same order-code email handoff, identical response
+  // shape) against this flow's own cart-free endpoint — customer_data is always
+  // a single-unit array here, since InstantBuyPage never buys more than qty 1.
   const placeOrderMutation = useMutation({
     mutationFn: () =>
-      apiPost<PlaceOrderResponse>("/api/v1/checkout", {
+      apiPost<PlaceOrderResponse>("/api/v1/topup/order", {
+        denomination_id: selected!.id,
+        qty: 1,
         method,
         voucher_code: voucherInput,
         customer_data: needsInfo ? [answers] : undefined,
@@ -368,20 +363,23 @@ export default function InstantBuyPage() {
   const fx = ctx?.fx;
   if (!selected) return null;
 
-  const readyToPay = Boolean(page && totals) && !syncCart.isPending;
+  // A live preview still in flight means the totals on screen may not be the
+  // ones the order would be charged at — same "don't submit against a price
+  // we're not sure of" guard the old cart-sync pending flag provided.
+  const readyToPay = Boolean(page && totals) && !previewQuery.isFetching;
   const infoValid = !needsInfo || allFieldsValid(selected.additional_fields, [answers], 1);
   const guestEmailValid = !page?.is_guest || isValidEmail(guestEmail);
   const anyMethod = totals
     ? anyMethodEnabled(totals) || isIdrWalletSufficient(totals) || isUsdtWalletSufficient(totals)
     : false;
-  // `cartErrorKey`: a failed sync leaves the server-side cart in a known-bad
-  // or known-uncertain state relative to what the page displays — never let
-  // the buyer submit against that. `!method`: I-3's flip side — a re-price
-  // can clear `method` back to null (see the checkoutData effect above)
-  // without touching `anyMethod`, so gate on the actual selection too, not
-  // just on whether *some* method is offered.
+  // `previewErrorKey`: a failed re-price leaves the totals on screen unrelated
+  // to (or stale against) the current selection — never let the buyer submit
+  // against that. `!method`: I-3's flip side — a re-price can clear `method`
+  // back to null (see the checkoutData effect above) without touching
+  // `anyMethod`, so gate on the actual selection too, not just on whether
+  // *some* method is offered.
   const submitBlocked =
-    !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || cartErrorKey !== null;
+    !readyToPay || !purchasable(selected) || !infoValid || !guestEmailValid || !anyMethod || !method || previewErrorKey !== null;
   const submitDisabled = submitBlocked || placeOrderMutation.isPending;
 
   return (
@@ -394,9 +392,9 @@ export default function InstantBuyPage() {
         ]}
       />
 
-      {cartErrorKey && (
+      {previewErrorKey && (
         <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" /> {humanError(cartErrorKey)}
+          <AlertTriangle className="w-4 h-4 shrink-0" /> {humanError(previewErrorKey)}
         </div>
       )}
       {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
@@ -493,9 +491,14 @@ export default function InstantBuyPage() {
             </div>
           )}
 
-          {/* 3. Denomination grid — picking a plan re-syncs the server cart
-              (see the effect above) so the totals/payment cards below always
-              reflect exactly this one selection. */}
+          {/* 3. Denomination grid — picking a plan re-prices via the
+              preview query above (keyed on the selected id), so the
+              totals/payment cards below always reflect exactly this one
+              selection. No serialization guard is needed on rapid picks any
+              more: a preview is a pure read, and React Query only surfaces the
+              response for the currently-selected key, so nothing can be left
+              half-applied the way the old read-cart/remove-lines/add-line
+              sequence could. */}
           <div className="card card-pad">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
             <div className="grid gap-2.5">
@@ -506,14 +509,7 @@ export default function InstantBuyPage() {
                   fx={fx}
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
-                  // I-2: ignored while a sync is already in flight, so
-                  // `selected` (and the effect below that fires syncCart off
-                  // it) can never change mid-sequence — a second denomination
-                  // pick can't start a new sync while the prior one's
-                  // read-cart/remove-lines/add-line sequence is still running.
-                  onChange={() => {
-                    if (!syncCart.isPending) setSelectedId(d.id);
-                  }}
+                  onChange={() => setSelectedId(d.id)}
                 />
               ))}
             </div>

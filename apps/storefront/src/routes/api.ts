@@ -135,6 +135,21 @@ const MAX_EMAIL_LENGTH = 254;
 const GUEST_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * Trim + lowercase a submitted guest contact address, or null when it fails the
+ * length/shape rules above.
+ *
+ * Exported so every guest-minting path applies the SAME rule (this file's
+ * cart-based `establishGuestCustomer` below and the cart-free instant-buy one
+ * in routes/apiTopup.ts) rather than each keeping a copy of the regex and the
+ * length cap that can drift apart.
+ */
+export function normalizeGuestEmail(raw: unknown): string | null {
+  const email = (typeof raw === "string" ? raw : "").trim().toLowerCase();
+  if (!email || email.length > MAX_EMAIL_LENGTH || !GUEST_EMAIL_RE.test(email)) return null;
+  return email;
+}
+
+/**
  * Turn an anonymous POST /checkout into a real (guest) `User` + session, or
  * send the failure response and return null. Split out of the route so the
  * order in which the cheap validations run is visible in one place: EVERY
@@ -156,8 +171,8 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
   // would turn this endpoint into an account-existence oracle. A guest row
   // keeps `User.email` null and stores the address in `guestEmail`, so it can
   // never collide with the unique index on a registered account's email.
-  const email = (body?.guest_email ?? "").trim().toLowerCase();
-  if (!email || email.length > MAX_EMAIL_LENGTH || !GUEST_EMAIL_RE.test(email)) {
+  const email = normalizeGuestEmail(body?.guest_email);
+  if (!email) {
     void reply.code(400).send({ error: "web.guest_email_invalid" });
     return null;
   }
@@ -218,8 +233,12 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
  * token from login/register, so adding it there would just be a new key the
  * SPA never asked for; the checked-in test for the signed-in 201 asserts the
  * body is EXACTLY `{ order_code, pay_url }`.
+ *
+ * Exported (unchanged) so the cart-free instant-buy order route
+ * (routes/apiTopup.ts) hands the token back by the same one rule, on both its
+ * success and its error responses, instead of re-deriving when to do it.
  */
-function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
+export function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
   return isGuest ? { ...body, csrf_token: customer.csrf } : body;
 }
 
@@ -256,8 +275,13 @@ const GUEST_ORDER_EMAIL_TIMEOUT_MS = 8_000;
  * WHAT IT MAY CONTAIN: the order code and links, nothing else. Delivered
  * product content and credentials NEVER go in here — email is unencrypted and
  * sits in an inbox forever; the buyer reads what they bought on the order page.
+ *
+ * Exported so the cart-free instant-buy order route (routes/apiTopup.ts) gives
+ * its guests the same durable second copy of the order code, from the same
+ * implementation — a guest who buys a top-up has exactly the same "closed the
+ * tab, lost the cookie" problem this exists to solve.
  */
-async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCode: string): Promise<boolean> {
+export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCode: string): Promise<boolean> {
   try {
     const smtp = await getSmtpCreds(prisma);
     // SMTP isn't configured on this deployment — the feature is simply off, and

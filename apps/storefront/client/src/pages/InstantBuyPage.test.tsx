@@ -117,53 +117,57 @@ const checkoutData: CheckoutData = {
   is_guest: false,
 };
 
+/** Every cart endpoint this page must never touch again (final-review N2).
+ * Kept in one place so each assertion below checks the whole family, not just
+ * whichever call the old cart-sync design happened to make first. */
+const CART_PATHS = ["/api/v1/cart", "/api/v1/cart/remove"];
+
+/** Every recorded apiGet/apiPost path that hit the cart (or the cart-based
+ * checkout summary) — the regression assertion for N2. */
+function cartCalls(): unknown[][] {
+  return [...(apiGet as Mock).mock.calls, ...(apiPost as Mock).mock.calls].filter(
+    (c) => CART_PATHS.includes(c[0] as string) || c[0] === "/api/v1/checkout" || c[0] === "/api/v1/checkout/voucher/preview",
+  );
+}
+
 /**
- * Simulates the real cart: `/api/v1/cart` POST/remove mutate an in-memory
- * line list that the checkout GET and the next cart GET both read, same as
- * the server does. `extraPost` lets an individual test intercept a specific
- * path (typically `/api/v1/checkout` for placing the order, or the voucher
- * preview) without having to reimplement the cart simulation.
+ * Mocks the cart-free instant-buy backend: `POST /api/v1/topup/preview` prices
+ * the requested denomination (both the load/denomination-switch trigger and the
+ * voucher-apply trigger go through it), and nothing reads or writes a cart.
+ *
+ * The cart endpoints ARE still answered rather than thrown on, deliberately: a
+ * regression that starts touching the cart again has to be caught by the
+ * explicit "never called" assertions below, not masked by a thrown error that
+ * reads like an unrelated failure.
+ *
+ * `preview` lets a test price per denomination / per voucher code; `extraPost`
+ * (via a per-test mockImplementation override) still works as before for the
+ * order endpoint.
  */
-function renderInstantBuy(options: { product?: ProductPageData; checkout?: CheckoutData; slug?: string } = {}) {
+function renderInstantBuy(
+  options: {
+    product?: ProductPageData;
+    checkout?: CheckoutData;
+    slug?: string;
+    preview?: (body: Record<string, unknown>) => CheckoutData;
+  } = {},
+) {
   const product = options.product ?? productData;
   const checkout = options.checkout ?? checkoutData;
   const slug = options.slug ?? product.product.slug;
-  let cart: CartPageData = { items: [], subtotal: "0" };
-  let nextKey = 1;
+  const emptyCart: CartPageData = { items: [], subtotal: "0" };
 
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/pages/context") return context;
     if (path === `/api/v1/pages/product/${slug}`) return product;
-    if (path === "/api/v1/cart") return cart;
+    if (path === "/api/v1/cart") return emptyCart;
     if (path === "/api/v1/checkout") return checkout;
     throw new Error(`unexpected GET ${path}`);
   });
 
   (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
-    if (path === "/api/v1/cart") {
-      cart = {
-        items: [
-          {
-            key: nextKey++,
-            denomination_id: body.denomination_id as number,
-            product_slug: slug,
-            name: product.product.name,
-            image: product.product.image,
-            unit_price: "0",
-            qty: body.qty as number,
-            line_total: "0",
-            available: 0,
-            delivery_type: "manual_with_info",
-          },
-        ],
-        subtotal: "0",
-      };
-      return cart;
-    }
-    if (path === "/api/v1/cart/remove") {
-      cart = { items: cart.items.filter((i) => i.key !== body.key), subtotal: "0" };
-      return cart;
-    }
+    if (path === "/api/v1/topup/preview") return options.preview ? options.preview(body) : checkout;
+    if (CART_PATHS.includes(path)) return emptyCart;
     throw new Error(`unexpected POST ${path} — override apiPost in the test for this path`);
   });
 
@@ -194,79 +198,69 @@ describe("InstantBuyPage", () => {
     expect(screen.getByLabelText("Zone ID")).toBeInTheDocument();
   });
 
-  it("syncs the cart to the default denomination on load, then re-syncs when another is picked", async () => {
+  it("previews the default denomination on load, then re-previews when another is picked", async () => {
     renderInstantBuy();
     await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 1, qty: 1 }),
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 1, qty: 1 }),
     );
-    // The live totals card only renders once the post-sync checkout GET lands.
+    // The live totals card only renders once the preview lands.
     expect(await screen.findByText("Summary")).toBeInTheDocument();
 
     (apiPost as Mock).mockClear();
     fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 2, qty: 1 }),
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }),
     );
   });
 
-  it("clears any existing cart line before adding the selected denomination (never relies on the server's same-line qty-increment path)", async () => {
-    // Cart already holds an unrelated line from earlier browsing — the sync
-    // must remove it before (re-)adding the instant-buy denomination, so the
-    // order this page places is always exactly qty 1 of exactly one line.
-    const product = productData;
-    let cart: CartPageData = {
-      items: [
-        {
-          key: 99,
-          denomination_id: 42,
-          product_slug: "other-product",
-          name: "Other",
-          image: "",
-          unit_price: "10000",
-          qty: 3,
-          line_total: "30000",
-          available: 5,
-          delivery_type: "auto",
-        },
-      ],
-      subtotal: "30000",
-    };
-    (apiGet as Mock).mockImplementation(async (path: string) => {
-      if (path === "/api/v1/pages/context") return context;
-      if (path === `/api/v1/pages/product/${product.product.slug}`) return product;
-      if (path === "/api/v1/cart") return cart;
-      if (path === "/api/v1/checkout") return checkoutData;
-      throw new Error(`unexpected GET ${path}`);
-    });
-    (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
-      if (path === "/api/v1/cart/remove") {
-        cart = { items: cart.items.filter((i) => i.key !== body.key), subtotal: "0" };
-        return cart;
-      }
-      if (path === "/api/v1/cart") {
-        cart = { items: [{ ...cart.items[0]!, key: 100, denomination_id: body.denomination_id as number, qty: 1 }], subtotal: "0" };
-        return cart;
-      }
-      throw new Error(`unexpected POST ${path}`);
-    });
-
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[`/p/${product.product.slug}`]}>
-          <Routes>
-            <Route path="/p/:slug" element={<InstantBuyPage />} />
-          </Routes>
-        </MemoryRouter>
-      </QueryClientProvider>,
-    );
-
+  // FINAL-REVIEW N2, the whole point of the cart-free redesign: this page used
+  // to sync its selection into the server-side cart, CLEARING every existing
+  // line first — so merely opening a top-up product page destroyed whatever the
+  // visitor had been shopping for. The behaviour that test used to assert
+  // ("clears any existing cart line before adding the selected denomination")
+  // must no longer exist at all, in either direction: no read, no write, no
+  // cart-based checkout summary, under ANY interaction on this page.
+  it("never calls any cart endpoint — not on load, denomination switch, voucher apply, or submit", async () => {
+    renderInstantBuy();
     await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart/remove", { key: 99 }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 1, qty: 1 }));
+    await screen.findByText("Summary");
+    expect(cartCalls()).toEqual([]);
+
+    // Denomination switch.
+    fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", { denomination_id: 2, qty: 1 }),
+    );
+    expect(cartCalls()).toEqual([]);
+
+    // Voucher apply.
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", {
+        denomination_id: 2,
+        qty: 1,
+        voucher_code: "SAVE10",
+      }),
+    );
+    expect(cartCalls()).toEqual([]);
+
+    // Submit.
+    const basePost = (apiPost as Mock).getMockImplementation()!;
+    (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+      if (path === "/api/v1/topup/order") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
+      return basePost(path, body);
+    });
+    fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
+    fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
+    fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.any(Object)));
+
+    expect(cartCalls()).toEqual([]);
   });
 
   it("routes to the pay page on a successful submit (signed-in buyer, client-side navigation)", async () => {
@@ -278,13 +272,15 @@ describe("InstantBuyPage", () => {
     fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
 
     (apiPost as Mock).mockImplementation(async (path: string) => {
-      if (path === "/api/v1/checkout") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
-      return { items: [], subtotal: "0" };
+      if (path === "/api/v1/topup/order") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
+      return checkoutData;
     });
 
     fireEvent.click(screen.getByRole("button", { name: /Buy now/ }));
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", {
+        denomination_id: 1,
+        qty: 1,
         method: "binance",
         voucher_code: "",
         customer_data: [{ user_id: "1234567", zone_id: "1111" }],
@@ -314,64 +310,52 @@ describe("InstantBuyPage", () => {
     expect(document.querySelector('a[href="/cart"]')).toBeNull();
   });
 
-  // Code review findings I-2/I-3: the cart-sync effect (fired off the
-  // selected denomination's id — read cart, remove old lines, add new line)
-  // had no serialization, and a stale wallet-credit selection wasn't
-  // re-validated after a re-price. Both are fixed in the same place: the
-  // denomination grid's onChange now ignores a pick while syncCart.isPending,
-  // and the checkoutData effect clears `method` when it's no longer a valid
-  // row for the fresh totals.
-  describe("cart-sync serialization and method re-validation (I-2 / I-3)", () => {
-    it("ignores a rapid second denomination pick while the first sync is still in flight", async () => {
+  // Code review finding I-3 (and its widening to the voucher trigger): a
+  // re-price can leave `method` pointing at a payment row the new totals no
+  // longer offer. Both triggers now re-validate it. The sibling finding I-2
+  // (serializing the cart sync so two overlapping read/remove/add sequences
+  // could not race) has no equivalent any more and is deliberately not
+  // re-tested: the cart mutations it protected are gone, and a preview is a
+  // pure read whose response React Query only surfaces for the currently
+  // selected denomination.
+  describe("method re-validation on re-price (I-3)", () => {
+    it("lets the buyer switch denomination again while a preview is still in flight", async () => {
       renderInstantBuy();
       await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
-      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 1, qty: 1 }));
       await screen.findByText("Summary");
 
-      // Stall the cart-read the 172-Diamonds sync issues, so we have a
-      // window to click again while that sync is still pending — a second,
-      // overlapping sync must never start while the first is in flight.
-      const baseGet = (apiGet as Mock).getMockImplementation()!;
-      let cartReads = 0;
-      let releaseStalledRead: (() => void) | null = null;
-      let stalledReadStartedResolve: (() => void) | null = null;
-      const stalledReadStarted = new Promise<void>((resolve) => {
-        stalledReadStartedResolve = resolve;
+      // Stall the 172-Diamonds preview so there is a window in which a second
+      // pick lands mid-flight — it must be honoured, not dropped (the old
+      // design had to drop it to protect a multi-step cart mutation).
+      const basePost = (apiPost as Mock).getMockImplementation()!;
+      let releaseStalled: (() => void) | null = null;
+      let stalledStartedResolve: (() => void) | null = null;
+      const stalledStarted = new Promise<void>((resolve) => {
+        stalledStartedResolve = resolve;
       });
-      (apiGet as Mock).mockImplementation(async (path: string) => {
-        if (path === "/api/v1/cart") {
-          cartReads += 1;
-          if (cartReads === 1) {
-            stalledReadStartedResolve!();
-            await new Promise<void>((resolve) => {
-              releaseStalledRead = resolve;
-            });
-          }
+      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
+        if (path === "/api/v1/topup/preview" && (body as { denomination_id?: number }).denomination_id === 2) {
+          stalledStartedResolve!();
+          await new Promise<void>((resolve) => {
+            releaseStalled = resolve;
+          });
         }
-        return baseGet(path);
+        return basePost(path, body);
       });
 
       fireEvent.click(screen.getByRole("radio", { name: /172 Diamonds/ }));
-      await stalledReadStarted;
-      // Rapid second pick, while the 172-Diamonds sync is stalled mid-flight —
-      // must be dropped, not start a second overlapping sync sequence.
+      await stalledStarted;
       fireEvent.click(screen.getByRole("radio", { name: /86 Diamonds/ }));
 
-      expect((screen.getByRole("radio", { name: /172 Diamonds/ }) as HTMLInputElement).checked).toBe(true);
-      expect((screen.getByRole("radio", { name: /86 Diamonds/ }) as HTMLInputElement).checked).toBe(false);
+      expect((screen.getByRole("radio", { name: /86 Diamonds/ }) as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByRole("radio", { name: /172 Diamonds/ }) as HTMLInputElement).checked).toBe(false);
 
-      releaseStalledRead!();
-      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 2, qty: 1 }));
-      // Only the original default-pick add call for denomination 1 exists —
-      // the ignored second click never issued its own add call for it.
-      expect(
-        (apiPost as Mock).mock.calls.filter(
-          (c) => c[0] === "/api/v1/cart" && (c[1] as { denomination_id?: number })?.denomination_id === 1,
-        ),
-      ).toHaveLength(1);
+      releaseStalled!();
+      await waitFor(() => expect(screen.getByText("Summary")).toBeInTheDocument());
+      expect(cartCalls()).toEqual([]);
     });
 
-    it("blocks submit while the cart sync is in a failed state, and shows the error", async () => {
+    it("blocks submit while the live preview is in a failed state, and shows the error", async () => {
       renderInstantBuy();
       await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
       await screen.findByText("Summary");
@@ -386,81 +370,33 @@ describe("InstantBuyPage", () => {
 
       expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
       // Re-fill the (reset) info fields for the newly-selected denomination —
-      // isolates the assertion below to the sync-failure gate, not the info step.
+      // isolates the assertion below to the failed-preview gate, not the info step.
       fireEvent.change(screen.getByLabelText("User ID"), { target: { value: "1234567" } });
       fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
       expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).toBeDisabled();
     });
 
     it("clears a wallet-credit selection made for a cheaper denomination once switching to one the wallet no longer covers", async () => {
-      const product = productData; // id1 20000, id2 38000
-      let cart: CartPageData = { items: [], subtotal: "0" };
-      let nextKey = 1;
-
-      function checkoutFor(current: CartPageData): CheckoutData {
-        const denominationId = (current.items[0]?.denomination_id as number | undefined) ?? 1;
-        const total = denominationId === 2 ? "38000" : "20000";
-        return {
-          ...checkoutData,
-          wallet_idr: "25000", // covers 20000, not 38000
-          binance_enabled: true,
-          total,
-          items: [
-            {
-              denomination_id: denominationId,
-              delivery_type: "manual_with_info",
-              additional_fields: product.denominations[0]!.additional_fields,
-              qty: 1,
-            },
-          ],
-        };
-      }
-
-      (apiGet as Mock).mockImplementation(async (path: string) => {
-        if (path === "/api/v1/pages/context") return context;
-        if (path === `/api/v1/pages/product/${product.product.slug}`) return product;
-        if (path === "/api/v1/cart") return cart;
-        if (path === "/api/v1/checkout") return checkoutFor(cart);
-        throw new Error(`unexpected GET ${path}`);
-      });
-      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
-        if (path === "/api/v1/cart") {
-          cart = {
+      // id1 costs 20000, id2 costs 38000; the wallet holds 25000.
+      renderInstantBuy({
+        preview: (body) => {
+          const denominationId = (body.denomination_id as number | undefined) ?? 1;
+          return {
+            ...checkoutData,
+            wallet_idr: "25000", // covers 20000, not 38000
+            binance_enabled: true,
+            total: denominationId === 2 ? "38000" : "20000",
             items: [
               {
-                key: nextKey++,
-                denomination_id: body.denomination_id as number,
-                product_slug: product.product.slug,
-                name: product.product.name,
-                image: product.product.image,
-                unit_price: "0",
-                qty: body.qty as number,
-                line_total: "0",
-                available: 0,
+                denomination_id: denominationId,
                 delivery_type: "manual_with_info",
+                additional_fields: productData.denominations[0]!.additional_fields,
+                qty: 1,
               },
             ],
-            subtotal: "0",
           };
-          return cart;
-        }
-        if (path === "/api/v1/cart/remove") {
-          cart = { items: cart.items.filter((i) => i.key !== body.key), subtotal: "0" };
-          return cart;
-        }
-        throw new Error(`unexpected POST ${path}`);
+        },
       });
-
-      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      render(
-        <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={[`/p/${product.product.slug}`]}>
-            <Routes>
-              <Route path="/p/:slug" element={<InstantBuyPage />} />
-            </Routes>
-          </MemoryRouter>
-        </QueryClientProvider>,
-      );
 
       await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
       await screen.findByText("Summary");
@@ -495,10 +431,9 @@ describe("InstantBuyPage", () => {
       expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled();
     });
 
-    // Re-review of I-3: the fix above only re-runs off `checkoutData`, which
-    // only changes via a denomination switch (syncCart's onSuccess). The
-    // voucher-apply path (previewMutation) calls setTotals(resp) directly and
-    // never touches checkoutData, so a voucher re-application that raises the
+    // Re-review of I-3: the denomination-switch fix only re-runs off the
+    // preview query's data. The voucher-apply path (previewMutation) calls
+    // setTotals(resp) directly, so a voucher re-application that raises the
     // total back past the wallet balance used to leave `method` pointed at
     // "wallet_idr" even though PaymentMethodSelector (which renders off the
     // live `totals`) no longer shows that row — the same stale-method bug
@@ -510,7 +445,14 @@ describe("InstantBuyPage", () => {
         wallet_idr: "25000", // covers 20000, not the 30000 the voucher below re-prices to
         binance_enabled: true,
       };
-      renderInstantBuy({ checkout: walletCoveredCheckout });
+      renderInstantBuy({
+        // A voucher code in the body re-prices to 30000; the plain
+        // denomination preview stays at 20000.
+        preview: (body) =>
+          body.voucher_code
+            ? { ...walletCoveredCheckout, total: "30000", voucher_discount: "0", voucher_code: body.voucher_code as string }
+            : walletCoveredCheckout,
+      });
       await screen.findByRole("heading", { name: "Mobile Legends Diamonds" });
       await screen.findByText("Summary");
 
@@ -522,22 +464,15 @@ describe("InstantBuyPage", () => {
       fireEvent.click(walletRadio);
       expect(walletRadio.checked).toBe(true);
 
-      // Apply a voucher whose preview re-prices the order back past the wallet
-      // balance (e.g. swapping in a smaller-discount code) — `checkoutData`
-      // itself is untouched here, isolating this to previewMutation's onSuccess.
-      const baseApiPost = (apiPost as Mock).getMockImplementation()!;
-      (apiPost as Mock).mockImplementation(async (path: string, body: Record<string, unknown>) => {
-        if (path === "/api/v1/checkout/voucher/preview") {
-          return { ...walletCoveredCheckout, total: "30000", voucher_discount: "0", voucher_code: body.voucher_code as string };
-        }
-        return baseApiPost(path, body);
-      });
-
       fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SMALLER10" } });
       fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
       await waitFor(() =>
-        expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout/voucher/preview", { voucher_code: "SMALLER10" }),
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/preview", {
+          denomination_id: 1,
+          qty: 1,
+          voucher_code: "SMALLER10",
+        }),
       );
       await waitFor(() => expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument());
 
@@ -846,7 +781,7 @@ describe("InstantBuyPage", () => {
           if (path === "/api/v1/topup/check-account") {
             return { available: true, valid: true, nickname: "ProGamer99", region_mismatch: true };
           }
-          if (path === "/api/v1/checkout") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
+          if (path === "/api/v1/topup/order") return { order_code: "ORD1", pay_url: "/checkout/ORD1/pay" };
           return baseApiPost(path, body, signal);
         });
 
@@ -863,8 +798,8 @@ describe("InstantBuyPage", () => {
         fireEvent.click(buyButton);
         await vi.waitFor(() =>
           expect(apiPost).toHaveBeenCalledWith(
-            "/api/v1/checkout",
-            expect.objectContaining({ method: "binance" }),
+            "/api/v1/topup/order",
+            expect.objectContaining({ method: "binance", denomination_id: 1, qty: 1 }),
           ),
         );
       } finally {

@@ -26,11 +26,23 @@ function parsePrice(value: string): Decimal | null {
   }
 }
 
+// N5: cap the total row count across every brand in a single /sync/apply
+// request. This is a manual, human-reviewed wizard action (not a bulk data
+// pipeline) — each brand's import runs its own $transaction, and this
+// repo's shared SQLite is single-writer (see CLAUDE.md), so a very large
+// request would hold a long sequence of writes against it. 500 rows
+// comfortably covers a real bulk-import session while keeping that
+// sequence bounded.
+const MAX_APPLY_ROWS = 500;
+
 export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Promise<void> {
   // Step 1: fetch + group (dry run, no write) — same "preview then apply"
   // shape as /api/catalog/products/import, just sourced from Digiflazz's
-  // live price list instead of a pasted CSV.
-  app.post("/api/catalog/digiflazz/sync/preview", { preHandler: currentAdmin }, async (_req, reply) => {
+  // live price list instead of a pasted CSV. Uses csrfProtect (not just
+  // currentAdmin) because it makes a real paid outbound call to Digiflazz —
+  // it must never be more permissive than /sync/apply right below it, which
+  // it directly feeds into.
+  app.post("/api/catalog/digiflazz/sync/preview", { preHandler: csrfProtect }, async (_req, reply) => {
     const creds = await getDigiflazzCreds(prisma);
     if (!creds) {
       return reply.code(400).send({ error: "Digiflazz credentials are not configured. Set them in Settings first." });
@@ -76,6 +88,10 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       const brands = Array.isArray(body.brands) ? body.brands : [];
       if (brands.length === 0) {
         return reply.code(400).send({ error: "Select at least one brand to import." });
+      }
+      const totalRows = brands.reduce((sum, b) => sum + (Array.isArray(b.rows) ? b.rows.length : 0), 0);
+      if (totalRows > MAX_APPLY_ROWS) {
+        return reply.code(400).send({ error: "Too many rows in one import — narrow the filter or import in smaller batches." });
       }
       for (const b of brands) {
         for (const row of b.rows) {

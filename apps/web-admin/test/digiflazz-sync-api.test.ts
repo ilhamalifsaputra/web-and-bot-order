@@ -58,6 +58,18 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(res.statusCode).toBe(400);
   });
 
+  it("I9: rejects a request without a valid CSRF token, mirroring /sync/apply's protection", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/catalog/digiflazz/sync/preview",
+      headers: { "content-type": "application/json", "x-csrf-token": "bad" },
+      cookies: { [COOKIE]: cookie },
+      payload: JSON.stringify({}),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(digiflazzMock.getPriceList).not.toHaveBeenCalled();
+  });
+
   it("groups the Game-category price list by brand once configured", async () => {
     await setSetting(prisma, "digiflazz_username", "u");
     await setSetting(prisma, "digiflazz_api_key", "k");
@@ -107,5 +119,27 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'Invalid price for "X".' });
+  });
+
+  it("N5: rejects a request whose total row count exceeds the cap, before importing anything", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    // 501 rows across two brands — over the 500-row cap — with valid prices,
+    // so the ONLY reason this can fail is the row-count cap firing before
+    // any importDigiflazzBrand call (asserted via zero denominations created).
+    const rows = Array.from({ length: 501 }, (_, i) => ({
+      buyerSkuCode: `sku${i}`,
+      productName: `Item ${i}`,
+      price: "10000",
+    }));
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [{ brand: "Mobile Legends", rows }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({
+      error: "Too many rows in one import — narrow the filter or import in smaller batches.",
+    });
+    const denomCount = await prisma.denomination.count();
+    expect(denomCount).toBe(0);
   });
 });

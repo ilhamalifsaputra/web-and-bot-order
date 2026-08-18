@@ -97,9 +97,31 @@ export function DigiflazzSyncPage() {
     return !raw || !Number.isFinite(n) || n <= 0;
   }
 
+  // Filter-aware "new" (not yet imported) and "existing" brand-group lists —
+  // the exact set of brand cards rendered below. C1 fix: applyImport (further
+  // below) MUST reuse this same list, not build its own unfiltered one, or an
+  // admin who filters the screen down to one brand and clicks Import ends up
+  // importing every other new brand in the whole price list too.
+  const newGroups = (preview?.groups ?? []).filter(
+    (g) => !g.existingProductId && (!filter || g.brand.toLowerCase().includes(filter.toLowerCase())),
+  );
+  const existingGroups = (preview?.groups ?? []).filter(
+    (g) => g.existingProductId && (!filter || g.brand.toLowerCase().includes(filter.toLowerCase())),
+  );
+
+  // I10: block submission when a checked row that would actually be
+  // submitted (i.e. visible under the current filter) has an invalid price —
+  // the backend rejects the WHOLE multi-brand request on any single bad row,
+  // so silently dropping it instead of blocking would be more surprising.
+  const hasInvalidCheckedPrice = newGroups.some((g) =>
+    g.skus.some((s) => {
+      const key = `${g.brand}::${s.buyerSkuCode}`;
+      return checkedSkus.has(key) && priceIsInvalid(key, s.suggestedPrice);
+    }),
+  );
+
   async function applyImport() {
     if (!preview || !categoryId) return;
-    const newGroups = preview.groups.filter((g) => !g.existingProductId);
     const brands = newGroups
       .map((g) => ({
         brand: g.brand,
@@ -131,13 +153,6 @@ export function DigiflazzSyncPage() {
       setImporting(false);
     }
   }
-
-  const newGroups = (preview?.groups ?? []).filter(
-    (g) => !g.existingProductId && (!filter || g.brand.toLowerCase().includes(filter.toLowerCase())),
-  );
-  const existingGroups = (preview?.groups ?? []).filter(
-    (g) => g.existingProductId && (!filter || g.brand.toLowerCase().includes(filter.toLowerCase())),
-  );
 
   return (
     <PageLayout title="Sync Digiflazz">
@@ -180,8 +195,15 @@ export function DigiflazzSyncPage() {
           {newGroups.map((g) => (
             <Card key={g.brand}>
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="cursor-pointer" onClick={() => toggleExpanded(g.brand)}>
-                  {g.brand} <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
+                <CardTitle>
+                  <button
+                    type="button"
+                    className="w-full cursor-pointer p-0 text-left"
+                    aria-expanded={expanded.has(g.brand)}
+                    onClick={() => toggleExpanded(g.brand)}
+                  >
+                    {g.brand} <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
+                  </button>
                 </CardTitle>
               </CardHeader>
               {expanded.has(g.brand) && (
@@ -237,9 +259,14 @@ export function DigiflazzSyncPage() {
           )}
 
           {newGroups.length > 0 && (
-            <Button onClick={() => void applyImport()} disabled={importing || !categoryId}>
-              {importing ? "Importing…" : "Impor Terpilih"}
-            </Button>
+            <div className="flex flex-col items-start gap-1">
+              <Button onClick={() => void applyImport()} disabled={importing || !categoryId || hasInvalidCheckedPrice}>
+                {importing ? "Importing…" : "Impor Terpilih"}
+              </Button>
+              {hasInvalidCheckedPrice && (
+                <p className="text-sm text-rust">Fix the highlighted price(s) before importing.</p>
+              )}
+            </div>
           )}
         </div>
       )}

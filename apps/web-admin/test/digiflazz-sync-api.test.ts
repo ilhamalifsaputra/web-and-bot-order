@@ -123,9 +123,11 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
 
   it("N5: rejects a request whose total row count exceeds the cap, before importing anything", async () => {
     const category = await createCategory(prisma, "Top Up Game");
-    // 501 rows across two brands — over the 500-row cap — with valid prices,
-    // so the ONLY reason this can fail is the row-count cap firing before
-    // any importDigiflazzBrand call (asserted via zero denominations created).
+    // 501 rows on one brand — over the 500-row cap — with valid prices, so
+    // the ONLY reason this can fail is the row-count cap firing before any
+    // importDigiflazzBrand call (asserted via zero denominations created).
+    // The cap sums rows across every brand in the request regardless of
+    // brand count, so a single oversized brand exercises it just as well.
     const rows = Array.from({ length: 501 }, (_, i) => ({
       buyerSkuCode: `sku${i}`,
       productName: `Item ${i}`,

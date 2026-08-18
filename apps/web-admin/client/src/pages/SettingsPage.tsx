@@ -490,6 +490,23 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selec
                   aria-invalid={validationError ? true : undefined}
                   autoFocus
                   className="w-full max-w-sm"
+                  // Reported bug: filling in a secret field (e.g. Digiflazz
+                  // API key) here was landing in the page's own "Search
+                  // settings…" box instead. Root cause: this is a generic
+                  // setting value, not a real account credential, but
+                  // rendering it as `type="password"` with no autoComplete
+                  // hint and no <form> boundary makes Chrome's native
+                  // password manager treat it as a login field — it pairs
+                  // the field with the NEAREST PRECEDING text input on the
+                  // page as a guessed "username" (here, SettingsSearch's own
+                  // search box) and offers to autofill this admin's saved
+                  // /login credentials into both. "new-password" is the
+                  // standard signal that stops Chrome from treating a
+                  // password-shaped input as a saved-login target; plain
+                  // "off" for the non-secret case is just hygiene (a
+                  // markup-type/value field has no business being
+                  // autofilled either).
+                  autoComplete={field.secret ? "new-password" : "off"}
                 />
               )}
               {field.secret && (

@@ -504,7 +504,7 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
     { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
   ];
 
-  async function seedDigiflazzDenomination(costPrice: string) {
+  async function seedDigiflazzDenomination(costPrice: string | null) {
     const category = await createCategory(prisma, "Cat");
     const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent" });
     const denom = await createDenomination(prisma, {
@@ -571,6 +571,56 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
     expect(res.statusCode).toBe(200);
     const row = await prisma.denomination.findUnique({ where: { id } });
     expect(row!.priceOverridden).toBe(false);
+  });
+
+  // Batch 4 review finding: a Digiflazz row with no cost on record at all
+  // (nothing to compare the submitted price against) must be treated as
+  // overridden rather than left false — there's no way to confirm it
+  // matches a computed suggestion, so the safe default protects the
+  // admin's explicit price instead of risking a silent reprice on the
+  // next resync tick.
+  it("a PATCH price on a Digiflazz row with no costPrice on record sets priceOverridden true", async () => {
+    const id = await seedDigiflazzDenomination(null); // no cost yet
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "12345",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  // Batch 4 review finding: comparing against the row's STALE costPrice
+  // (from before this same request) rather than the NEW costPrice this
+  // request also submits could compute priceOverridden incorrectly — here,
+  // a price that matches the markup suggestion for the OLD cost (20000 ->
+  // 22000) but not the NEW cost this same request sets (25000 -> 27500)
+  // must compare against the new cost, so priceOverridden ends up true
+  // (22000 disagrees with 27500), not silently false.
+  it("a PATCH that changes costPrice and price together compares against the NEW cost, not the stale one", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // old suggestion: 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000", // matches the OLD cost's suggestion, not the new one
+      costPrice: "25000", // new suggestion would be 27500
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
   });
 });
 

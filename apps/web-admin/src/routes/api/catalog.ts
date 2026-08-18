@@ -657,14 +657,27 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
 
     // C2 fix: priceOverridden is always computed server-side, never trusted
     // from the client — it's what protects a hand-edited price from being
-    // silently recomputed by the next resyncDigiflazzCatalog tick. Only a
-    // Digiflazz-routed row with a known prior cost can even be "overridden"
-    // relative to the markup suggestion; every other case (not Digiflazz, or
-    // no costPrice yet to compare against) leaves it false.
+    // silently recomputed by the next resyncDigiflazzCatalog tick.
+    //
+    // Compare against the EFFECTIVE cost this same request is about to
+    // persist (the freshly-parsed `costPrice` when the request actually sent
+    // one, otherwise the row's existing value) — comparing against
+    // `existing.costPrice` alone was wrong whenever a request changed cost
+    // and price together to a still-markup-consistent pair, which could
+    // compute `false` from stale data and let the very next resync silently
+    // undo this same request's price. Review finding, batch 4 follow-up.
+    //
+    // A Digiflazz-routed row with no cost on record at all (nothing to
+    // compare the submitted price against) is treated as overridden rather
+    // than left false — there's no way to confirm it matches a computed
+    // suggestion, so the safe default is to protect the admin's explicit
+    // price rather than risk a silent reprice on the next tick.
     let priceOverridden = false;
-    if (autoDeliverySource === "digiflazz" && existing.costPrice != null) {
-      const suggestedPrice = quantizeMoney(await computeDigiflazzMarkupPrice(prisma, existing.costPrice), 4);
-      priceOverridden = !quantizeMoney(price, 4).equals(suggestedPrice);
+    if (autoDeliverySource === "digiflazz") {
+      const effectiveCostPrice = body.costPrice != null ? costPrice : existing.costPrice;
+      priceOverridden =
+        effectiveCostPrice == null ||
+        !quantizeMoney(price, 4).equals(quantizeMoney(await computeDigiflazzMarkupPrice(prisma, effectiveCostPrice), 4));
     }
 
     // Re-parenting (moving this denomination to a different mid-tier Product)

@@ -83,6 +83,33 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(body.groups).toHaveLength(1); // Pulsa filtered out — Game only, this pilot's scope
     expect(body.groups[0].brand).toBe("Mobile Legends");
   });
+
+  // I8: Digiflazz's own docs (and this branch's core-client test fixture)
+  // use the plural "Games" — the filter must not silently produce an empty
+  // preview just because production returns the plural form.
+  it("I8: still picks up items whose category is the plural \"Games\"", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "ml100", productName: "ML 100", category: "Games", brand: "Mobile Legends", type: "Umum", price: new Decimal(15000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.groups).toHaveLength(1);
+    expect(body.groups[0].brand).toBe("Mobile Legends");
+  });
+
+  it("I8: an empty match against a non-empty price list still returns 200 with no groups (diagnosable via logs, not a crash)", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "x100", productName: "XL 100k", category: "Pulsa", brand: "XL", type: "Umum", price: new Decimal(98000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(200);
+    expect(res.json().groups).toHaveLength(0);
+  });
 });
 
 describe("POST /api/catalog/digiflazz/sync/apply", () => {
@@ -93,7 +120,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       brands: [
         {
           brand: "Mobile Legends",
-          rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+          rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
         },
       ],
     });
@@ -106,7 +133,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     const category = await createCategory(prisma, "Top Up Game");
     const res = await postJson("/api/catalog/digiflazz/sync/apply", {
       categoryId: category.id,
-      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "0" }] }],
+      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "0", costPrice: "15000" }] }],
     });
     expect(res.statusCode).toBe(400);
   });
@@ -115,10 +142,20 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     const category = await createCategory(prisma, "Top Up Game");
     const res = await postJson("/api/catalog/digiflazz/sync/apply", {
       categoryId: category.id,
-      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "abc" }] }],
+      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "abc", costPrice: "15000" }] }],
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: 'Invalid price for "X".' });
+  });
+
+  it("I11: rejects an invalid cost price with 400 instead of crashing", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [{ brand: "Mobile Legends", rows: [{ buyerSkuCode: "ml100", productName: "X", price: "16500", costPrice: "abc" }] }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Invalid cost price for "X".' });
   });
 
   it("N5: rejects a request whose total row count exceeds the cap, before importing anything", async () => {
@@ -132,6 +169,7 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
       buyerSkuCode: `sku${i}`,
       productName: `Item ${i}`,
       price: "10000",
+      costPrice: "9000",
     }));
     const res = await postJson("/api/catalog/digiflazz/sync/apply", {
       categoryId: category.id,

@@ -131,6 +131,10 @@ export function DigiflazzSyncPage() {
             buyerSkuCode: s.buyerSkuCode,
             productName: s.productName,
             price: priceFor(`${g.brand}::${s.buyerSkuCode}`, s.suggestedPrice),
+            // I11 fix: forward the cost price the preview already computed —
+            // without this, a freshly-imported denomination had no costPrice
+            // at all until the first resync tick filled it in.
+            costPrice: s.costPrice,
           })),
       }))
       .filter((b) => b.rows.length > 0);

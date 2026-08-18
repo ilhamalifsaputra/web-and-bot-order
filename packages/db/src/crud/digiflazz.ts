@@ -20,6 +20,7 @@
  */
 import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -425,26 +426,50 @@ export async function groupDigiflazzPriceListByBrand(
   }));
 }
 
-/** Suggest a sell price from a Digiflazz cost using the admin's configured
- * global markup rule. Defaults to zero markup (sell === cost) when unset —
- * a deliberately visible "no markup configured yet" price rather than a
- * silently wrong guess, so an admin who hasn't set a rule notices at the
- * review screen instead of shipping a $0-margin catalog unknowingly. */
-export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal> {
+/** The admin's configured global markup rule, as read from Settings — split
+ * out of computeDigiflazzMarkupPrice (I3 fix) so a caller processing many
+ * rows/denominations in one run (resyncDigiflazzCatalog's loop, the sync
+ * preview route's per-SKU computation) reads Settings ONCE per run instead
+ * of twice per row against this repo's single-writer SQLite. */
+export async function getDigiflazzMarkupSettings(db: Db): Promise<{ type: string | null; value: string | null }> {
   const [type, value] = await Promise.all([
     getSetting(db, DIGIFLAZZ_MARKUP_TYPE_KEY),
     getSetting(db, DIGIFLAZZ_MARKUP_VALUE_KEY),
   ]);
-  const amount = value ? new Decimal(value) : new Decimal(0);
-  if (type === "percent") return cost.plus(cost.times(amount).dividedBy(100));
-  if (type === "flat") return cost.plus(amount);
+  return { type, value };
+}
+
+/** Pure price computation from an already-read markup setting — no DB
+ * access, safe to call per-row inside a loop. */
+export function applyDigiflazzMarkup(cost: Decimal, settings: { type: string | null; value: string | null }): Decimal {
+  const amount = settings.value ? new Decimal(settings.value) : new Decimal(0);
+  if (settings.type === "percent") return cost.plus(cost.times(amount).dividedBy(100));
+  if (settings.type === "flat") return cost.plus(amount);
   return cost;
+}
+
+/** Suggest a sell price from a Digiflazz cost using the admin's configured
+ * global markup rule. Defaults to zero markup (sell === cost) when unset —
+ * a deliberately visible "no markup configured yet" price rather than a
+ * silently wrong guess, so an admin who hasn't set a rule notices at the
+ * review screen instead of shipping a $0-margin catalog unknowingly.
+ *
+ * Kept working (one Settings read per call) for any single-row caller; a
+ * caller iterating many rows in one run should call
+ * getDigiflazzMarkupSettings once and applyDigiflazzMarkup per row instead. */
+export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal> {
+  return applyDigiflazzMarkup(cost, await getDigiflazzMarkupSettings(db));
 }
 
 export interface DigiflazzImportRow {
   buyerSkuCode: string;
   productName: string;
   price: Decimal.Value;
+  /** The Digiflazz cost this row was priced from (I11 fix) — without this,
+   * a freshly-imported denomination had costPrice: null until the first
+   * resync tick overwrote it; carrying it through at import time closes
+   * that gap. */
+  costPrice: Decimal.Value;
 }
 
 /**
@@ -452,6 +477,20 @@ export interface DigiflazzImportRow {
  * one Denomination per row, all inside one transaction. Imported inactive —
  * "review before it goes live" per the design: the import itself is
  * automatic, publishing is a separate explicit step.
+ *
+ * Idempotent by (product, supplierSku) (I4 fix): re-running the wizard for a
+ * brand/SKU that's already imported UPDATES the existing denomination
+ * instead of creating a duplicate — a realistic scenario (an admin re-syncs
+ * and re-imports the same brand because they missed a SKU the first time).
+ * Scoped to this brand's own Product, not a cross-catalog lookup —
+ * supplierSku has no unique DB constraint, and this matches the only
+ * realistic re-import scenario without an extra broad query.
+ *
+ * Each row's price is compared against the admin's configured markup rule
+ * (read ONCE per call, not once per row — I3 fix) to decide priceOverridden
+ * (C2 fix): a row the admin hand-edited in the wizard before submitting gets
+ * priceOverridden: true, protecting it from being silently recomputed by the
+ * very first resync tick after import.
  */
 export async function importDigiflazzBrand(
   db: PrismaClient,
@@ -467,22 +506,43 @@ export async function importDigiflazzBrand(
         isActive: false,
       });
     }
+    const markupSettings = await getDigiflazzMarkupSettings(tx);
     for (const row of args.rows) {
-      await createDenomination(tx, {
-        productId: product.id,
-        name: row.productName,
-        // ProductType only accepts SHARED | PRIVATE (packages/core/src/enums.ts)
-        // — Digiflazz top-ups have no such distinction, SHARED is the neutral
-        // default, same as this codebase's own sample/test data.
-        type: ProductType.SHARED,
-        durationLabel: row.productName,
-        price: row.price,
-        autoDeliverySource: "digiflazz",
-        supplierSku: row.buyerSkuCode,
-        deliveryType: DeliveryType.MANUAL_WITH_INFO,
-        additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
-        isActive: false,
+      const price = quantizeMoney(row.price, 4);
+      const costPrice = quantizeMoney(row.costPrice, 4);
+      const suggestedPrice = quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4);
+      const priceOverridden = !price.equals(suggestedPrice);
+
+      const existingDenom = await tx.denomination.findFirst({
+        where: { productId: product.id, supplierSku: row.buyerSkuCode },
       });
+      if (existingDenom) {
+        await updateDenomination(tx, existingDenom.id, {
+          name: row.productName,
+          durationLabel: row.productName,
+          price,
+          costPrice,
+          priceOverridden,
+        });
+      } else {
+        await createDenomination(tx, {
+          productId: product.id,
+          name: row.productName,
+          // ProductType only accepts SHARED | PRIVATE (packages/core/src/enums.ts)
+          // — Digiflazz top-ups have no such distinction, SHARED is the neutral
+          // default, same as this codebase's own sample/test data.
+          type: ProductType.SHARED,
+          durationLabel: row.productName,
+          price,
+          costPrice,
+          priceOverridden,
+          autoDeliverySource: "digiflazz",
+          supplierSku: row.buyerSkuCode,
+          deliveryType: DeliveryType.MANUAL_WITH_INFO,
+          additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
+          isActive: false,
+        });
+      }
     }
     return { productId: product.id, denominationCount: args.rows.length };
   });
@@ -491,21 +551,32 @@ export async function importDigiflazzBrand(
 /**
  * The recurring re-sync: for every Denomination with a non-null supplierSku,
  * refresh costPrice + recompute price (unless priceOverridden) from a fresh
- * Digiflazz price list, and mirror buyerProductStatus into isActive. Never
+ * Digiflazz price list, and deactivate any whose buyerProductStatus has gone
+ * false. Deactivate-ONLY (I1 fix) — this never flips isActive back to true,
+ * even when Digiflazz's buyerProductStatus reports the SKU as available
+ * again: a manually-deactivated SKU (including a freshly-imported one,
+ * which importDigiflazzBrand always creates isActive: false so an admin can
+ * review it first) must stay off until a human explicitly reactivates it
+ * through the catalog UI, never silently flipped back on by this job. Never
  * creates or renames anything — a genuinely new SKU only ever enters the
  * catalog through importDigiflazzBrand (the wizard), reviewed by an admin
  * first. No-op if Digiflazz isn't configured.
+ *
+ * Writes a single summary audit entry (adminId: null, system actor) when
+ * anything actually changed — I2 fix — not one per denomination, which
+ * would spam the audit log on a run touching hundreds of rows.
  */
 export async function resyncDigiflazzCatalog(
   db: PrismaClient,
-): Promise<{ updated: number; deactivated: number; reactivated: number }> {
-  const zero = { updated: 0, deactivated: 0, reactivated: 0 };
+): Promise<{ updated: number; deactivated: number }> {
+  const zero = { updated: 0, deactivated: 0 };
   const creds = await getDigiflazzCreds(db);
   if (!creds) return zero;
 
-  const [rawPriceList, mapped] = await Promise.all([
+  const [rawPriceList, mapped, markupSettings] = await Promise.all([
     getPriceList(creds),
     db.denomination.findMany({ where: { supplierSku: { not: null } } }),
+    getDigiflazzMarkupSettings(db), // I3 fix: read once for the whole run, not once per denomination.
   ]);
   // collapseToCheapestSeller first — a plain Map keyed by buyerSkuCode over
   // an uncollapsed list lets whichever duplicate-seller row happens to come
@@ -517,19 +588,30 @@ export async function resyncDigiflazzCatalog(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue; // Digiflazz no longer lists this SKU — leave it as-is, not this job's concern.
 
-    const data: Record<string, unknown> = { costPrice: item.price };
+    // I5 fix: quantize to the same 4-decimal precision createDenomination
+    // already uses, so a percentage markup can't drift the stored price
+    // away from import-time precision.
+    const data: Record<string, unknown> = { costPrice: quantizeMoney(item.price, 4) };
     if (!denom.priceOverridden) {
-      data.price = await computeDigiflazzMarkupPrice(db, item.price);
+      data.price = quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
       result.updated++;
     }
     if (denom.isActive && !item.buyerProductStatus) {
       data.isActive = false;
       result.deactivated++;
-    } else if (!denom.isActive && item.buyerProductStatus) {
-      data.isActive = true;
-      result.reactivated++;
     }
     await updateDenomination(db, denom.id, data);
   }
+
+  if (result.updated > 0 || result.deactivated > 0) {
+    await logAdminAction(db, {
+      adminId: null,
+      action: "digiflazz_catalog_resync",
+      targetType: "product",
+      targetId: null,
+      details: `Resynced ${result.updated} Digiflazz price(s) and deactivated ${result.deactivated} SKU(s) from the hourly catalog sync.`,
+    });
+  }
+
   return result;
 }

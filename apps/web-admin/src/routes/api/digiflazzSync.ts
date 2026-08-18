@@ -3,13 +3,15 @@ import {
   prisma,
   getDigiflazzCreds,
   groupDigiflazzPriceListByBrand,
-  computeDigiflazzMarkupPrice,
+  getDigiflazzMarkupSettings,
+  applyDigiflazzMarkup,
   importDigiflazzBrand,
   listAllCategories,
   logAdminAction,
 } from "@app/db";
 import { getPriceList } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
+import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
 /**
@@ -53,22 +55,34 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     } catch (err) {
       return reply.code(502).send({ error: err instanceof Error ? err.message : "Failed to reach Digiflazz." });
     }
-    const gameItems = items.filter((i) => i.category === "Game");
+    // I8 fix: tolerant, case-insensitive match on "game"/"games" — Digiflazz's
+    // own docs (and this branch's core-client test fixture) use the plural
+    // "Games", while the original filter only matched the exact string
+    // "Game". A mismatch here used to silently produce an empty preview with
+    // no diagnostic, indistinguishable from "nothing new to import".
+    const gameItems = items.filter((i) => (i.category ?? "").toLowerCase().startsWith("game"));
+    if (gameItems.length === 0 && items.length > 0) {
+      const categoriesSeen = [...new Set(items.map((i) => i.category ?? "(none)"))];
+      logger.warn(
+        `Digiflazz sync preview: none of the ${items.length} price-list item(s) matched the Game category filter — categories present: ${categoriesSeen.join(", ")}`,
+      );
+    }
     const groups = await groupDigiflazzPriceListByBrand(prisma, gameItems);
-    const withPrices = await Promise.all(
-      groups.map(async (g) => ({
-        brand: g.brand,
-        existingProductId: g.existingProductId,
-        skus: await Promise.all(
-          g.items.map(async (item) => ({
-            buyerSkuCode: item.buyerSkuCode,
-            productName: item.productName,
-            costPrice: item.price.toString(),
-            suggestedPrice: (await computeDigiflazzMarkupPrice(prisma, item.price)).toString(),
-          })),
-        ),
+    // I3 fix: read the markup setting ONCE for this whole preview call, not
+    // once per SKU — the old computeDigiflazzMarkupPrice-per-item shape could
+    // issue thousands of concurrent Settings reads against single-writer
+    // SQLite on one preview click.
+    const markupSettings = await getDigiflazzMarkupSettings(prisma);
+    const withPrices = groups.map((g) => ({
+      brand: g.brand,
+      existingProductId: g.existingProductId,
+      skus: g.items.map((item) => ({
+        buyerSkuCode: item.buyerSkuCode,
+        productName: item.productName,
+        costPrice: item.price.toString(),
+        suggestedPrice: applyDigiflazzMarkup(item.price, markupSettings).toString(),
       })),
-    );
+    }));
     return reply.send({ groups: withPrices });
   });
 
@@ -79,7 +93,10 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     async (req, reply) => {
       const body = (req.body ?? {}) as {
         categoryId?: number;
-        brands?: Array<{ brand: string; rows: Array<{ buyerSkuCode: string; productName: string; price: string }> }>;
+        brands?: Array<{
+          brand: string;
+          rows: Array<{ buyerSkuCode: string; productName: string; price: string; costPrice: string }>;
+        }>;
       };
       const categoryId = Number(body.categoryId);
       if (!Number.isInteger(categoryId) || categoryId <= 0) {
@@ -98,6 +115,14 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
           const price = row.price ? parsePrice(row.price) : null;
           if (!row.buyerSkuCode || !row.productName || !price || price.lessThanOrEqualTo(0)) {
             return reply.code(400).send({ error: `Invalid price for "${row.productName || row.buyerSkuCode}".` });
+          }
+          // I11 fix: costPrice is now submitted alongside price so a freshly
+          // imported denomination has a correct costPrice immediately,
+          // instead of null until the first resync tick fills it in. Same
+          // validation shape as price above.
+          const costPrice = row.costPrice ? parsePrice(row.costPrice) : null;
+          if (!costPrice || costPrice.lessThanOrEqualTo(0)) {
+            return reply.code(400).send({ error: `Invalid cost price for "${row.productName || row.buyerSkuCode}".` });
           }
         }
       }

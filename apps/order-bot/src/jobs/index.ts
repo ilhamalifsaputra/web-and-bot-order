@@ -1381,8 +1381,8 @@ export function scheduleDigiflazzCatalogSync(): Cron {
   const run = () =>
     resyncDigiflazzCatalog(prisma)
       .then((r) => {
-        if (r.updated || r.deactivated || r.reactivated) {
-          logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated, ${r.reactivated} reactivated.`);
+        if (r.updated || r.deactivated) {
+          logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated.`);
         }
       })
       .catch((err) => logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick"));

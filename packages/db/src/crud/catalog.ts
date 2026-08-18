@@ -342,6 +342,11 @@ export async function createDenomination(
      * regionWarning and of nicknameCheckGameCode/supplierSku/
      * autoDeliverySource above. */
     expectedRegionCode?: string | null;
+    /** True when `price` was set by a human rather than the Digiflazz markup
+     * suggestion (C2 fix) — protects it from being silently overwritten by
+     * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
+     * the caller server-side; never trust a client-submitted boolean here). */
+    priceOverridden?: boolean;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -368,6 +373,7 @@ export async function createDenomination(
       nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
       regionWarning: args.regionWarning ?? null,
       expectedRegionCode: args.expectedRegionCode ?? null,
+      priceOverridden: args.priceOverridden ?? false,
     },
   });
 }

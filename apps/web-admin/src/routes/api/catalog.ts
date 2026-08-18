@@ -33,8 +33,10 @@ import {
   setCatalogProductArchived,
   bulkSetCatalogProductsArchived,
   logAdminAction,
+  computeDigiflazzMarkupPrice,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -653,6 +655,18 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
+    // C2 fix: priceOverridden is always computed server-side, never trusted
+    // from the client — it's what protects a hand-edited price from being
+    // silently recomputed by the next resyncDigiflazzCatalog tick. Only a
+    // Digiflazz-routed row with a known prior cost can even be "overridden"
+    // relative to the markup suggestion; every other case (not Digiflazz, or
+    // no costPrice yet to compare against) leaves it false.
+    let priceOverridden = false;
+    if (autoDeliverySource === "digiflazz" && existing.costPrice != null) {
+      const suggestedPrice = quantizeMoney(await computeDigiflazzMarkupPrice(prisma, existing.costPrice), 4);
+      priceOverridden = !quantizeMoney(price, 4).equals(suggestedPrice);
+    }
+
     // Re-parenting (moving this denomination to a different mid-tier Product)
     // is validated and applied FIRST, before any other field, so a rejected
     // cross-category move leaves every other field untouched too.
@@ -702,6 +716,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       nicknameCheckGameCode,
       regionWarning,
       expectedRegionCode,
+      priceOverridden,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

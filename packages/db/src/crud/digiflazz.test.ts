@@ -50,6 +50,10 @@ import {
 import { OrderStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
+// I3 test: spy on getSetting itself (not just the underlying Prisma query,
+// which a 30s TTL cache can mask) to confirm the markup setting is read a
+// CONSTANT number of times per run, not once per denomination.
+import * as settingsModule from "./settings";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -474,8 +478,8 @@ describe("importDigiflazzBrand", () => {
       brand: "Mobile Legends",
       categoryId: category.id,
       rows: [
-        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" },
-        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" },
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000", costPrice: "38000" },
       ],
     });
     expect(result.denominationCount).toBe(2);
@@ -497,15 +501,86 @@ describe("importDigiflazzBrand", () => {
     const category = await prisma.category.findFirstOrThrow();
     const first = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
-      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
     });
     const second = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
-      rows: [{ buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" }],
+      rows: [{ buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000", costPrice: "38000" }],
     });
     expect(second.productId).toBe(first.productId);
     const count = await prisma.product.count({ where: { digiflazzBrand: "Mobile Legends" } });
     expect(count).toBe(1);
+  });
+
+  // I4: re-running the import wizard on an already-imported SKU (e.g. an
+  // admin re-syncs and re-imports the same brand because they missed a row
+  // the first time) must UPDATE the existing denomination, not create a
+  // second one sharing the same supplierSku.
+  it("I4: re-importing the same brand+SKU updates the existing denomination instead of duplicating it", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const first = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    const firstDenom = await prisma.denomination.findFirstOrThrow({
+      where: { productId: first.productId, supplierSku: "ml100" },
+    });
+
+    const second = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond (Updated)", price: "17000", costPrice: "15500" }],
+    });
+    expect(second.denominationCount).toBe(1);
+
+    const denoms = await prisma.denomination.findMany({ where: { productId: first.productId, supplierSku: "ml100" } });
+    expect(denoms).toHaveLength(1); // still exactly one row, not two
+    expect(denoms[0]!.id).toBe(firstDenom.id); // same row, updated in place
+    expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond (Updated)");
+    expect(denoms[0]!.price.toString()).toBe("17000");
+    expect(denoms[0]!.costPrice!.toString()).toBe("15500");
+  });
+
+  // I11: a freshly-imported denomination must have the correct costPrice
+  // immediately — no resync needed to fill it in.
+  it("I11: a freshly-imported denomination has costPrice set immediately, matching the submitted value", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(denom.costPrice).not.toBeNull();
+    expect(denom.costPrice!.toString()).toBe("15000");
+  });
+
+  // C2 (import side): the wizard lets an admin hand-edit a row's price
+  // before submitting — that edit must be flagged priceOverridden so the
+  // very first resync tick after import doesn't silently recompute it away.
+  describe("C2: priceOverridden on import", () => {
+    beforeEach(async () => {
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+      await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    });
+
+    it("a row submitted at exactly the suggested markup price is NOT flagged overridden", async () => {
+      const category = await prisma.category.findFirstOrThrow();
+      const { productId } = await importDigiflazzBrand(prisma, {
+        brand: "Mobile Legends", categoryId: category.id,
+        rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }], // 15000 * 1.10 = 16500
+      });
+      const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+      expect(denom.priceOverridden).toBe(false);
+    });
+
+    it("a row submitted with a hand-edited price different from the suggested markup IS flagged overridden", async () => {
+      const category = await prisma.category.findFirstOrThrow();
+      const { productId } = await importDigiflazzBrand(prisma, {
+        brand: "Mobile Legends", categoryId: category.id,
+        rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "18000", costPrice: "15000" }], // hand-edited above the 16500 suggestion
+      });
+      const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+      expect(denom.priceOverridden).toBe(true);
+    });
   });
 });
 
@@ -517,8 +592,8 @@ describe("resyncDigiflazzCatalog", () => {
     const { productId } = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
       rows: [
-        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" },
-        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000" },
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000", costPrice: "38000" },
       ],
     });
     // Admin reviews, hand-edits ml250's price, and publishes it (imports land
@@ -550,14 +625,14 @@ describe("resyncDigiflazzCatalog", () => {
   it("is a no-op when Digiflazz isn't configured", async () => {
     await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
     const result = await resyncDigiflazzCatalog(prisma);
-    expect(result).toEqual({ updated: 0, deactivated: 0, reactivated: 0 });
+    expect(result).toEqual({ updated: 0, deactivated: 0 });
   });
 
   it("uses the cheapest seller's price when the fresh list has a duplicate buyerSkuCode", async () => {
     const category = await prisma.category.findFirstOrThrow();
     const { productId } = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
-      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500" }],
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
     });
     digiflazzMock.getPriceList.mockResolvedValue([
       priceListItem({ buyerSkuCode: "ml100", price: new Decimal(21000) }),
@@ -568,5 +643,168 @@ describe("resyncDigiflazzCatalog", () => {
 
     const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
     expect(ml100.costPrice!.toString()).toBe("19500");
+  });
+
+  // I1: sync can only ever deactivate, never reactivate — a manually
+  // deactivated SKU (including a freshly-imported, deliberately-unreviewed
+  // one) must stay off even when Digiflazz reports it as available again.
+  it("I1: does not reactivate a manually-deactivated denomination even when buyerProductStatus is true", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    // importDigiflazzBrand always creates isActive: false — this row has
+    // never been reviewed/activated by an admin.
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    expect(denom.isActive).toBe(false);
+
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000), buyerProductStatus: true }),
+    ]);
+    await resyncDigiflazzCatalog(prisma);
+
+    const after = await prisma.denomination.findFirstOrThrow({ where: { id: denom.id } });
+    expect(after.isActive).toBe(false); // stays off — resync never flips isActive back to true
+  });
+
+  it("I1: still correctly deactivates an active denomination whose SKU goes buyerProductStatus false", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    await prisma.denomination.update({ where: { id: denom.id }, data: { isActive: true } });
+
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15000), buyerProductStatus: false }),
+    ]);
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result.deactivated).toBe(1);
+
+    const after = await prisma.denomination.findFirstOrThrow({ where: { id: denom.id } });
+    expect(after.isActive).toBe(false);
+  });
+
+  // I5: resync must quantize to the same 4-decimal precision createDenomination
+  // already uses — a percentage markup can otherwise produce a longer decimal
+  // expansion that drifts from import-time precision.
+  it("I5: quantizes price/costPrice to 4 decimals even when the markup percentage produces a longer expansion", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // price === costPrice here (no markup configured yet at import time, so
+    // computeDigiflazzMarkupPrice's zero-markup default suggests cost as-is)
+    // — keeps this row NOT priceOverridden, so the resync below actually
+    // recomputes price instead of skipping it.
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "15000", costPrice: "15000" }],
+    });
+    // Zero markup (sell === cost) so `price` mirrors `costPrice` exactly —
+    // isolates the quantization behavior from the markup math. A cost value
+    // that doesn't divide evenly (10000 / 3 -> 3333.333...) forces
+    // quantization to actually do work.
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "flat");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "0");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal("10000").dividedBy(3) }),
+    ]);
+
+    await resyncDigiflazzCatalog(prisma);
+
+    const ml100 = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
+    // decimal.js division defaults to 20 significant digits — unquantized
+    // this would be "3333.33333333333333333" or similar, not a clean 4dp value.
+    expect(ml100.costPrice!.toString()).toBe("3333.3333");
+    expect(ml100.price.toString()).toBe("3333.3333");
+    expect(ml100.costPrice!.decimalPlaces()).toBeLessThanOrEqual(4);
+    expect(ml100.price.decimalPlaces()).toBeLessThanOrEqual(4);
+  });
+
+  // I3: the markup setting must be read a CONSTANT number of times per
+  // resync run, not once per denomination touched. Compares the getSetting
+  // call count for a 1-denomination run against a 3-denomination run rather
+  // than hard-coding a literal — the old per-row computeDigiflazzMarkupPrice
+  // call would have made the 3-row run's count strictly larger; the fixed
+  // code makes both counts equal (the constant overhead of
+  // getDigiflazzCreds + getDigiflazzMarkupSettings, read once regardless of
+  // row count).
+  it("I3: reads the markup settings a constant number of times regardless of how many denominations are touched", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Mobile Legends" });
+    async function makeDigiflazzDenom(sku: string, price: string) {
+      return createDenomination(prisma, {
+        productId: product.id,
+        name: sku,
+        type: "SHARED",
+        durationLabel: sku,
+        price,
+        costPrice: price,
+        autoDeliverySource: "digiflazz",
+        supplierSku: sku,
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        isActive: true,
+      });
+    }
+
+    await makeDigiflazzDenom("ml100", "15000");
+    digiflazzMock.getPriceList.mockResolvedValue([priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) })]);
+    const spyOneRow = vi.spyOn(settingsModule, "getSetting");
+    await resyncDigiflazzCatalog(prisma);
+    const callsForOneRow = spyOneRow.mock.calls.length;
+    spyOneRow.mockRestore();
+    expect(callsForOneRow).toBeGreaterThan(0);
+
+    await makeDigiflazzDenom("ml250", "38000");
+    await makeDigiflazzDenom("ml500", "75000");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15600) }),
+      priceListItem({ buyerSkuCode: "ml250", price: new Decimal(38500) }),
+      priceListItem({ buyerSkuCode: "ml500", price: new Decimal(76000) }),
+    ]);
+    const spyThreeRows = vi.spyOn(settingsModule, "getSetting");
+    await resyncDigiflazzCatalog(prisma);
+    const callsForThreeRows = spyThreeRows.mock.calls.length;
+    spyThreeRows.mockRestore();
+
+    expect(callsForThreeRows).toBe(callsForOneRow);
+  });
+
+  // I2: resync writes exactly one summary audit entry per run that actually
+  // changed something, and none for a no-op run — never one per denomination.
+  describe("I2: audit trail", () => {
+    it("writes exactly one digiflazz_catalog_resync audit entry (adminId: null) when a run changes something", async () => {
+      const category = await prisma.category.findFirstOrThrow();
+      // price === costPrice (no markup configured at import time) so neither
+      // row is priceOverridden — the resync below must actually update both.
+      await importDigiflazzBrand(prisma, {
+        brand: "Mobile Legends", categoryId: category.id,
+        rows: [
+          { buyerSkuCode: "ml100", productName: "ML 100", price: "15000", costPrice: "15000" },
+          { buyerSkuCode: "ml250", productName: "ML 250", price: "38000", costPrice: "38000" },
+        ],
+      });
+      digiflazzMock.getPriceList.mockResolvedValue([
+        priceListItem({ buyerSkuCode: "ml100", price: new Decimal(15500) }),
+        priceListItem({ buyerSkuCode: "ml250", price: new Decimal(38500) }),
+      ]);
+
+      await resyncDigiflazzCatalog(prisma);
+
+      const entries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.adminId).toBeNull();
+    });
+
+    it("writes no audit entry for a no-op run (nothing changed)", async () => {
+      // No Digiflazz-mapped denominations at all — mapped is empty, the loop
+      // never runs, nothing changes.
+      digiflazzMock.getPriceList.mockResolvedValue([]);
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 0, deactivated: 0 });
+
+      const entries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
+      expect(entries).toHaveLength(0);
+    });
   });
 });

@@ -2,7 +2,19 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, setSetting, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect } from "@app/db";
+import {
+  prisma,
+  initDb,
+  upsertUser,
+  setSetting,
+  createCategory,
+  createCatalogProduct,
+  createDenomination,
+  bulkAddStock,
+  createOrderDirect,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
+} from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -484,6 +496,81 @@ describe("PATCH /api/catalog/denominations/:id — regionWarning/expectedRegionC
     const row = await prisma.denomination.findUnique({ where: { id } });
     expect(row!.regionWarning).toBeNull();
     expect(row!.expectedRegionCode).toBeNull();
+  });
+});
+
+describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  async function seedDigiflazzDenomination(costPrice: string) {
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent" });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000",
+      costPrice,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(DIGIFLAZZ_FIELDS),
+    });
+    return denom.id;
+  }
+
+  it("a PATCH price matching the suggested Digiflazz markup leaves priceOverridden false", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // 20000 * 1.10 = 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(false);
+  });
+
+  it("a PATCH price that differs from the suggested markup sets priceOverridden true", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // suggested would be 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "25000", // hand-edited, above the suggestion
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  it("priceOverridden stays false for a non-Digiflazz denomination regardless of price", async () => {
+    const id = await seedDenomination(); // plain, no autoDeliverySource/costPrice
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "99999",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(false);
   });
 });
 

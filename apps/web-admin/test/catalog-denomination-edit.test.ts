@@ -522,6 +522,11 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
     return denom.id;
   }
 
+  // Both tests below explicitly resend the row's costPrice unchanged,
+  // matching what the real admin client (DenominationEditPage.tsx) actually
+  // does whenever the Cost Price field has a value — it only omits the key
+  // when that field is blank (see the dedicated "omits costPrice" test
+  // further below for that other, equally real, path).
   it("a PATCH price matching the suggested Digiflazz markup leaves priceOverridden false", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
     await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
@@ -531,6 +536,7 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
       type: "SHARED",
       durationLabel: "100 Diamond",
       price: "22000",
+      costPrice: "20000",
       deliveryType: "manual_with_info",
       additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
@@ -550,6 +556,7 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
       type: "SHARED",
       durationLabel: "100 Diamond",
       price: "25000", // hand-edited, above the suggestion
+      costPrice: "20000",
       deliveryType: "manual_with_info",
       additionalFields: DIGIFLAZZ_FIELDS,
       autoDeliverySource: "digiflazz",
@@ -593,6 +600,37 @@ describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
     });
     expect(res.statusCode).toBe(200);
     const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  // costPrice/resellerPrice are "always overwrite, null if omitted" fields
+  // on this route (NOT touch-only-if-provided like deliveryType) — the real
+  // admin client (DenominationEditPage.tsx) omits `costPrice` from the
+  // request body whenever that form field is blank, which nulls the row's
+  // EXISTING costPrice right here in this same request. priceOverridden
+  // must be computed against what this request actually persists (null,
+  // here), not against the row's now-stale pre-request cost — a submitted
+  // price that merely happened to match the OLD cost's suggestion must not
+  // be silently marked "not overridden" once that cost is gone.
+  it("a PATCH that omits costPrice entirely nulls out an existing cost and treats the price as overridden", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // suggestion (for the OLD cost) was 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000", // matches the OLD cost's suggestion — but that cost is about to be wiped
+      // costPrice intentionally omitted from the body entirely, matching
+      // the real client whenever the Cost Price field is blank.
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.costPrice).toBeNull();
     expect(row!.priceOverridden).toBe(true);
   });
 

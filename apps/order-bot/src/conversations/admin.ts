@@ -14,7 +14,6 @@ import type { MessageEntity } from "grammy/types";
 import { config } from "@app/core/config";
 import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
-import { quantizeMoney } from "@app/core/formatters";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -38,7 +37,7 @@ import {
   createCategory,
   updateDenomination,
   getDenomination,
-  computeDigiflazzMarkupPrice,
+  isDigiflazzPriceOverridden,
   upsertBulkPricing,
   getTicket,
   replyToTicket,
@@ -999,18 +998,13 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         // price — without marking it `priceOverridden`, the next hourly
         // resync (resyncDigiflazzCatalog) would silently recompute it back
         // to cost+markup within the hour, undoing this admin's edit with no
-        // trace. Same rule as the PATCH route: overridden when this price
-        // disagrees with what the markup formula currently suggests, or
-        // when there's no cost on record to compare against at all (can't
-        // confirm it matches a suggestion, so protect it rather than assume
-        // it doesn't need protecting).
+        // trace. isDigiflazzPriceOverridden is the single shared rule for
+        // this decision (same one the PATCH route uses) — see its doc
+        // comment in crud/digiflazz.ts.
         const denom = await getDenomination(tx, denominationId);
         const data: { price: Decimal; priceOverridden?: boolean } = { price: p };
         if (denom?.autoDeliverySource === "digiflazz") {
-          const quantizedPrice = quantizeMoney(p, 4);
-          data.priceOverridden =
-            denom.costPrice == null ||
-            !quantizedPrice.equals(quantizeMoney(await computeDigiflazzMarkupPrice(tx, denom.costPrice), 4));
+          data.priceOverridden = await isDigiflazzPriceOverridden(tx, p, denom.costPrice);
         }
         await updateDenomination(tx, denominationId, data);
         const admin = await getUserByTelegramId(tx, adminTg);

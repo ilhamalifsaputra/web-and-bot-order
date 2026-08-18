@@ -19,7 +19,7 @@
  *    order gets.
  */
 import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
-import { Decimal } from "@app/core/money";
+import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
@@ -459,6 +459,38 @@ export function applyDigiflazzMarkup(cost: Decimal, settings: { type: string | n
  * getDigiflazzMarkupSettings once and applyDigiflazzMarkup per row instead. */
 export async function computeDigiflazzMarkupPrice(db: Db, cost: Decimal): Promise<Decimal> {
   return applyDigiflazzMarkup(cost, await getDigiflazzMarkupSettings(db));
+}
+
+/**
+ * Whether a Digiflazz-routed denomination's price counts as admin-
+ * overridden — protected from the next resyncDigiflazzCatalog tick, which
+ * only ever recomputes `price` when this is false (see resyncDigiflazzCatalog
+ * below). True when there's no cost on record to compare the price against
+ * (can't confirm it matches a suggestion, so protect it rather than assume
+ * it doesn't need protecting), or when the price disagrees with what the
+ * current markup rule suggests for that cost.
+ *
+ * Single source of truth for this decision for single-row callers (batch 4
+ * fix) — the web admin PATCH route and the order-bot's product-edit
+ * conversation both call this now, closing the gap where their two
+ * hand-rolled copies of this exact check had already drifted out of sync
+ * once across review rounds. Callers pass the cost value THEIR OWN request
+ * is actually about to persist (never a stale pre-request row value) — this
+ * function only compares what it's given.
+ *
+ * importDigiflazzBrand below intentionally does NOT call this: looping many
+ * rows per call, it needs applyDigiflazzMarkup with a markup-settings read
+ * done ONCE for the whole run (I3 fix) rather than the per-call Settings
+ * read computeDigiflazzMarkupPrice (and so this function) does — but it
+ * must stay logically equivalent to the rule here if either ever changes.
+ */
+export async function isDigiflazzPriceOverridden(
+  db: Db,
+  price: Decimal,
+  costPrice: Decimal | null,
+): Promise<boolean> {
+  if (costPrice == null) return true;
+  return !moneyEq(price, await computeDigiflazzMarkupPrice(db, costPrice));
 }
 
 export interface DigiflazzImportRow {

@@ -33,10 +33,9 @@ import {
   setCatalogProductArchived,
   bulkSetCatalogProductsArchived,
   logAdminAction,
-  computeDigiflazzMarkupPrice,
+  isDigiflazzPriceOverridden,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -655,29 +654,24 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
-    // C2 fix: priceOverridden is always computed server-side, never trusted
-    // from the client — it's what protects a hand-edited price from being
-    // silently recomputed by the next resyncDigiflazzCatalog tick.
-    //
-    // Compare against the EFFECTIVE cost this same request is about to
-    // persist (the freshly-parsed `costPrice` when the request actually sent
-    // one, otherwise the row's existing value) — comparing against
-    // `existing.costPrice` alone was wrong whenever a request changed cost
-    // and price together to a still-markup-consistent pair, which could
-    // compute `false` from stale data and let the very next resync silently
-    // undo this same request's price. Review finding, batch 4 follow-up.
-    //
-    // A Digiflazz-routed row with no cost on record at all (nothing to
-    // compare the submitted price against) is treated as overridden rather
-    // than left false — there's no way to confirm it matches a computed
-    // suggestion, so the safe default is to protect the admin's explicit
-    // price rather than risk a silent reprice on the next tick.
+    // priceOverridden is always computed server-side, never trusted from the
+    // client — it's what protects a hand-edited price from being silently
+    // recomputed by the next resyncDigiflazzCatalog tick. isDigiflazzPriceOverridden
+    // is the single shared rule for this (see its doc comment in
+    // crud/digiflazz.ts for why this used to be hand-rolled per call site,
+    // and why that drifted out of sync across review rounds) — pass it
+    // `costPrice`, the SAME local variable this same request is about to
+    // persist a few lines below, never `existing.costPrice`: costPrice is an
+    // "always overwrite, null if omitted" field on this route (same category
+    // as autoDeliverySource/supplierSku, see the comment on those above),
+    // NOT touch-only-if-provided like deliveryType/warrantyDays — the admin
+    // client (DenominationEditPage.tsx) omits `costPrice` from the request
+    // body whenever that form field is blank, which nulls the row's
+    // costPrice right here in this same request, so the row's pre-request
+    // value is never the right thing to compare against.
     let priceOverridden = false;
     if (autoDeliverySource === "digiflazz") {
-      const effectiveCostPrice = body.costPrice != null ? costPrice : existing.costPrice;
-      priceOverridden =
-        effectiveCostPrice == null ||
-        !quantizeMoney(price, 4).equals(quantizeMoney(await computeDigiflazzMarkupPrice(prisma, effectiveCostPrice), 4));
+      priceOverridden = await isDigiflazzPriceOverridden(prisma, price, costPrice);
     }
 
     // Re-parenting (moving this denomination to a different mid-tier Product)

@@ -42,6 +42,7 @@ import {
   collapseToCheapestSeller,
   groupDigiflazzPriceListByBrand,
   computeDigiflazzMarkupPrice,
+  isDigiflazzPriceOverridden,
   importDigiflazzBrand,
   resyncDigiflazzCatalog,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
@@ -468,6 +469,30 @@ describe("computeDigiflazzMarkupPrice", () => {
   it("defaults to zero markup (equals cost) when unset", async () => {
     const price = await computeDigiflazzMarkupPrice(prisma, new Decimal(10000));
     expect(price.toString()).toBe("10000");
+  });
+});
+
+describe("isDigiflazzPriceOverridden", () => {
+  it("is false when the price matches the markup suggestion for the given cost", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(11000), new Decimal(10000));
+    expect(overridden).toBe(false);
+  });
+
+  it("is true when the price disagrees with the markup suggestion for the given cost", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12000), new Decimal(10000));
+    expect(overridden).toBe(true);
+  });
+
+  // The safe default: with no cost to compare against, there's no way to
+  // confirm the price matches a computed suggestion, so it's protected
+  // rather than assumed to need no protecting.
+  it("is true when costPrice is null, regardless of price", async () => {
+    const overridden = await isDigiflazzPriceOverridden(prisma, new Decimal(12345), null);
+    expect(overridden).toBe(true);
   });
 });
 

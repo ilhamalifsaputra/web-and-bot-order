@@ -943,19 +943,24 @@ export async function splitMixedDigiflazzProducts(
       // for denominations that were never actually moved.
       const movedThisProduct = await db.$transaction(async (tx) => {
         // Rename the ORIGINAL row in place. Finding 1 fix, hardened per the
-        // re-review (Finding C): compare SLUGS, not names, to decide whether
-        // the product is genuinely being renamed. Comparing displayName
-        // against plan.originalName (the old check) could mis-fire true when
-        // the two differ only in ways that slugify identically (case,
-        // punctuation, trailing whitespace) — e.g. a product whose `name`
-        // drifted from its `digiflazzBrand` cosmetically — needlessly calling
-        // ensureUniqueSlug, which has no "exclude this row" clause and would
-        // see the product's OWN existing slug as "already taken" and silently
-        // append "-2" to it, breaking a live storefront URL for zero reason.
-        // Comparing slugify(displayName) against the row's actual current
-        // slug is the strictly correct version of the same check: skip
-        // regeneration whenever the resulting slug wouldn't change at all.
+        // Finding C re-review, then re-hardened again per the third-round
+        // review (Finding 1): skip slug regeneration when EITHER guard says
+        // "not actually changing" — the name is unchanged (the original I1
+        // guard) OR the slugified name matches the current slug (the Finding
+        // C guard). Neither guard alone is sufficient: product slugs are
+        // frozen at creation and ensureUniqueSlug appends "-2", "-3", ... on
+        // a name collision at creation time, so a product can legitimately
+        // have name "Valorant" but slug "valorant-2" (another product already
+        // held "valorant" when this one was created). Comparing only the slug
+        // would then see slugify("Valorant") === "valorant" !== "valorant-2"
+        // and wrongly call ensureUniqueSlug even though the name never
+        // changed — which finds "valorant"/"valorant-2" both taken and
+        // returns "valorant-3", corrupting a live storefront URL for a
+        // product that isn't actually being renamed. Comparing only the name
+        // has the Finding C failure mode (case/punctuation differences that
+        // slugify identically). Combining both closes each other's gap.
         const winningSlug =
+          winningGroup!.displayName === plan.originalName ||
           slugify(winningGroup!.displayName) === plan.originalSlug
             ? plan.originalSlug
             : await ensureUniqueSlug(tx, "product", winningGroup!.displayName);

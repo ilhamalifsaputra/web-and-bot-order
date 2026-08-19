@@ -1385,33 +1385,44 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
         return (originalTransaction as (...a: unknown[]) => unknown)(...args);
       }) as typeof prisma.$transaction);
 
-      const result = await splitMixedDigiflazzProducts(prisma);
-      spy.mockRestore();
+      // Minor fix (third-round review, Finding 2): restore the spy in a
+      // `finally` block, not as a plain statement after the awaited call.
+      // `prisma` is a file-scoped singleton with no global
+      // afterEach(vi.restoreAllMocks) — if splitMixedDigiflazzProducts ever
+      // threw unexpectedly (exactly the regression this test exists to
+      // catch), the plain-statement mockRestore() would never run and the
+      // mocked $transaction would leak into every later test in this file,
+      // turning one clear failure into a confusing cascade.
+      try {
+        const result = await splitMixedDigiflazzProducts(prisma);
 
-      // Exactly one product failed and one succeeded — the run did not throw
-      // and did not lose track of either outcome.
-      expect(result.failures).toHaveLength(1);
-      expect(result.productsSplit).toBe(1);
-      expect(result.failures[0]!.error).toContain("Simulated transient DB failure");
-      const failedName = result.failures[0]!.productName;
-      expect(["Mobile Legends", "Free Fire"]).toContain(failedName);
+        // Exactly one product failed and one succeeded — the run did not
+        // throw and did not lose track of either outcome.
+        expect(result.failures).toHaveLength(1);
+        expect(result.productsSplit).toBe(1);
+        expect(result.failures[0]!.error).toContain("Simulated transient DB failure");
+        const failedName = result.failures[0]!.productName;
+        expect(["Mobile Legends", "Free Fire"]).toContain(failedName);
 
-      if (failedName === "Free Fire") {
-        expect(result.productsCreated).toBe(3); // Mobile Legends' 3 non-winning regions
-        const ml = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Mobile Legends" } } });
-        expect(ml).toHaveLength(4); // fully split and committed
-        const ffAfter = await prisma.product.findUniqueOrThrow({ where: { id: productB.id } });
-        expect(ffAfter.name).toBe("Free Fire"); // untouched — its transaction rolled back
-        const ffDenoms = await prisma.denomination.findMany({ where: { productId: productB.id } });
-        expect(ffDenoms).toHaveLength(2); // neither moved nor stripped
-        expect(ffDenoms.some((d) => d.name.includes("Malaysia"))).toBe(true);
-      } else {
-        expect(result.productsCreated).toBe(1); // Free Fire's 1 non-winning region
-        const ff = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Free Fire" } } });
-        expect(ff).toHaveLength(2); // fully split and committed
-        const mlAfter = await prisma.product.findFirstOrThrow({ where: { name: "Mobile Legends" } });
-        const mlDenoms = await prisma.denomination.findMany({ where: { productId: mlAfter.id } });
-        expect(mlDenoms).toHaveLength(10); // untouched — its transaction rolled back
+        if (failedName === "Free Fire") {
+          expect(result.productsCreated).toBe(3); // Mobile Legends' 3 non-winning regions
+          const ml = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Mobile Legends" } } });
+          expect(ml).toHaveLength(4); // fully split and committed
+          const ffAfter = await prisma.product.findUniqueOrThrow({ where: { id: productB.id } });
+          expect(ffAfter.name).toBe("Free Fire"); // untouched — its transaction rolled back
+          const ffDenoms = await prisma.denomination.findMany({ where: { productId: productB.id } });
+          expect(ffDenoms).toHaveLength(2); // neither moved nor stripped
+          expect(ffDenoms.some((d) => d.name.includes("Malaysia"))).toBe(true);
+        } else {
+          expect(result.productsCreated).toBe(1); // Free Fire's 1 non-winning region
+          const ff = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Free Fire" } } });
+          expect(ff).toHaveLength(2); // fully split and committed
+          const mlAfter = await prisma.product.findFirstOrThrow({ where: { name: "Mobile Legends" } });
+          const mlDenoms = await prisma.denomination.findMany({ where: { productId: mlAfter.id } });
+          expect(mlDenoms).toHaveLength(10); // untouched — its transaction rolled back
+        }
+      } finally {
+        spy.mockRestore();
       }
     });
   });
@@ -1456,5 +1467,63 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
     expect(winner.name).toBe("FREE FIRE"); // renamed to the digiflazzBrand casing
     expect(winner.slug).toBe(originalSlug); // slug untouched — no spurious "-2"
+  });
+
+  // Third-round review, Finding 1 (Important): the slug-skip guard had
+  // regressed to comparing ONLY slugs, dropping the earlier name-based
+  // guard entirely instead of combining the two. Product slugs are frozen at
+  // creation and ensureUniqueSlug appends "-2", "-3", ... on a name
+  // collision — so a product can legitimately have name "Valorant" but slug
+  // "valorant-2" because a DIFFERENT, unrelated product already held the
+  // plain "valorant" slug when this one was created. Seed exactly that via
+  // createCatalogProduct's real slug-dedup path (not a hand-written "-2"
+  // suffix), so the winning bucket's displayName equals plan.originalName
+  // (the product is NOT being renamed) while slugify(displayName) !==
+  // plan.originalSlug (because the slug carries the "-2" from the earlier
+  // collision) — exactly the case the slug-only check got wrong.
+  it("Finding 1: does not cascade a product's deduped '-2' slug into '-3' when its name isn't actually changing", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+
+    // An unrelated, earlier product that claims the plain "valorant" slug —
+    // NOT part of the Digiflazz split candidate set (no digiflazzBrand).
+    await createCatalogProduct(prisma, { categoryId: category.id, name: "Valorant" });
+
+    // The actual Digiflazz-backed product: same name, so createCatalogProduct's
+    // own ensureUniqueSlug call naturally dedupes it to "valorant-2".
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Valorant",
+      digiflazzBrand: "Valorant",
+    });
+    expect(product.slug).toBe("valorant-2");
+
+    // Unspecified (2) beats Malaysia (1) — the null bucket wins, and its
+    // displayName is exactly the raw digiflazzBrand/name "Valorant", i.e.
+    // the product is genuinely not being renamed.
+    await createDenomination(prisma, {
+      productId: product.id, name: "100 Points", type: "SHARED", durationLabel: "100 Points",
+      price: "16500", autoDeliverySource: "digiflazz", supplierSku: "vp-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id, name: "200 Points", type: "SHARED", durationLabel: "200 Points",
+      price: "31000", autoDeliverySource: "digiflazz", supplierSku: "vp-2",
+    });
+    await createDenomination(prisma, {
+      productId: product.id, name: "100 Points (Malaysia)", type: "SHARED", durationLabel: "100 Points (Malaysia)",
+      price: "16500", autoDeliverySource: "digiflazz", supplierSku: "vp-my",
+    });
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result.productsSplit).toBe(1);
+    expect(result.failures).toEqual([]);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Valorant");
+    // The bug: the slug-only guard would see slugify("Valorant") ===
+    // "valorant" !== "valorant-2" and call ensureUniqueSlug, which finds
+    // both "valorant" and "valorant-2" taken and returns "valorant-3" —
+    // silently rewriting a live storefront URL for a product whose name
+    // never changed. The fix keeps it at "valorant-2".
+    expect(winner.slug).toBe("valorant-2");
   });
 });

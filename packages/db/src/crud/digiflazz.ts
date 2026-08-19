@@ -24,7 +24,14 @@ import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
-import { createTransaction, getPriceList, type DigiflazzCreds, type DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
+import {
+  createTransaction,
+  getPriceList,
+  digiflazzGroupKey,
+  stripRegionSuffix,
+  type DigiflazzCreds,
+  type DigiflazzPriceListItem,
+} from "@app/core/suppliers/digiflazz";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
@@ -385,7 +392,19 @@ export function collapseToCheapestSeller(items: DigiflazzPriceListItem[]): Digif
 }
 
 export interface DigiflazzBrandGroup {
+  /** Composite display name — `` `${rawBrand} (${region})` `` when a region
+   * suffix was found on any row's productName, otherwise identical to
+   * rawBrand (see digiflazzGroupKey). This is the value used as both
+   * Product.name and Product.digiflazzBrand — i.e. the exact-match key
+   * importDigiflazzBrand's upsert lookup uses. */
   brand: string;
+  /** The original Digiflazz brand string this group's items were reported
+   * under, before region-suffix splitting — for UI grouping/headers so a
+   * multi-region brand can still be shown under one heading. */
+  rawBrand: string;
+  /** The region parsed from this group's rows' productName (parseProductRegion),
+   * or null when no row had a (non-denylisted) region suffix. */
+  region: string | null;
   items: DigiflazzPriceListItem[];
   /** Non-null when a Product with this exact digiflazzBrand already exists —
    * the wizard renders this group read-only ("Sudah ada"; updates flow
@@ -394,24 +413,36 @@ export interface DigiflazzBrandGroup {
 }
 
 /**
- * Group a raw Digiflazz price-list fetch by its `brand` field (each distinct
- * brand string — including region variants Digiflazz already reports
- * separately — becomes its own group), and mark which groups already have a
- * matching Product via Product.digiflazzBrand. Collapses to the cheapest
- * seller per buyerSkuCode first (see collapseToCheapestSeller) — a group's
- * `items` never contains two rows for the same SKU.
+ * Group a raw Digiflazz price-list fetch by a composite key of its `brand`
+ * field plus any region suffix parsed out of `productName`
+ * (digiflazzGroupKey) — Digiflazz encodes a SKU's region as a trailing
+ * `(Region)` parenthetical on productName rather than as a distinct `brand`
+ * string, so grouping by `brand` alone previously mixed every region's
+ * denominations (Indonesia, Filipina, Russia, Brazil, ...) into one product.
+ * Also marks which groups already have a matching Product via
+ * Product.digiflazzBrand. Collapses to the cheapest seller per buyerSkuCode
+ * first (see collapseToCheapestSeller) — a group's `items` never contains two
+ * rows for the same SKU.
+ *
+ * Non-regression: for a brand where no row's productName has a
+ * (non-denylisted) region suffix, digiflazzGroupKey's displayName equals the
+ * raw brand string, so the composite key is byte-identical to today's plain
+ * `item.brand` — every brand already imported into the DB continues to match
+ * on the next sync (see digiflazzGroupKey/parseProductRegion's denylist in
+ * @app/core/suppliers/digiflazz).
  */
 export async function groupDigiflazzPriceListByBrand(
   db: Db,
   rawItems: DigiflazzPriceListItem[],
 ): Promise<DigiflazzBrandGroup[]> {
   const items = collapseToCheapestSeller(rawItems);
-  const byBrand = new Map<string, DigiflazzPriceListItem[]>();
+  const byBrand = new Map<string, { rawBrand: string; region: string | null; items: DigiflazzPriceListItem[] }>();
   for (const item of items) {
     if (!item.brand) continue;
-    const list = byBrand.get(item.brand) ?? [];
-    list.push(item);
-    byBrand.set(item.brand, list);
+    const { displayName, region } = digiflazzGroupKey(item.brand, item.productName);
+    const group = byBrand.get(displayName) ?? { rawBrand: item.brand, region, items: [] };
+    group.items.push(item);
+    byBrand.set(displayName, group);
   }
   const brands = [...byBrand.keys()];
   const existing = await db.product.findMany({
@@ -419,11 +450,16 @@ export async function groupDigiflazzPriceListByBrand(
     select: { id: true, digiflazzBrand: true },
   });
   const existingByBrand = new Map(existing.map((p) => [p.digiflazzBrand!, p.id]));
-  return brands.map((brand) => ({
-    brand,
-    items: byBrand.get(brand)!,
-    existingProductId: existingByBrand.get(brand) ?? null,
-  }));
+  return brands.map((brand) => {
+    const group = byBrand.get(brand)!;
+    return {
+      brand,
+      rawBrand: group.rawBrand,
+      region: group.region,
+      items: group.items,
+      existingProductId: existingByBrand.get(brand) ?? null,
+    };
+  });
 }
 
 /** The admin's configured global markup rule, as read from Settings — split
@@ -545,13 +581,21 @@ export async function importDigiflazzBrand(
       const suggestedPrice = quantizeMoney(applyDigiflazzMarkup(costPrice, markupSettings), 4);
       const priceOverridden = !price.equals(suggestedPrice);
 
+      // The Product itself is already region-scoped (args.brand is the
+      // composite display name, e.g. "Mobile Legends (Indonesia)") once
+      // groupDigiflazzPriceListByBrand has split by region — repeating the
+      // region suffix on every denomination name/durationLabel would be
+      // redundant, so strip it here. Purely cosmetic: supplierSku (the
+      // resync matching key) stays row.buyerSkuCode, untouched.
+      const denomName = stripRegionSuffix(row.productName);
+
       const existingDenom = await tx.denomination.findFirst({
         where: { productId: product.id, supplierSku: row.buyerSkuCode },
       });
       if (existingDenom) {
         await updateDenomination(tx, existingDenom.id, {
-          name: row.productName,
-          durationLabel: row.productName,
+          name: denomName,
+          durationLabel: denomName,
           price,
           costPrice,
           priceOverridden,
@@ -559,12 +603,12 @@ export async function importDigiflazzBrand(
       } else {
         await createDenomination(tx, {
           productId: product.id,
-          name: row.productName,
+          name: denomName,
           // ProductType only accepts SHARED | PRIVATE (packages/core/src/enums.ts)
           // — Digiflazz top-ups have no such distinction, SHARED is the neutral
           // default, same as this codebase's own sample/test data.
           type: ProductType.SHARED,
-          durationLabel: row.productName,
+          durationLabel: denomName,
           price,
           costPrice,
           priceOverridden,

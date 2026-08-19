@@ -449,6 +449,83 @@ describe("groupDigiflazzPriceListByBrand", () => {
     const groups = await groupDigiflazzPriceListByBrand(prisma, [priceListItem({ brand: "Mobile Legends" })]);
     expect(groups[0]!.existingProductId).toBe(product.id);
   });
+
+  // Region-suffix splitting (task 2): Digiflazz encodes a SKU's region as a
+  // trailing "(Region)" parenthetical on productName, not as a distinct
+  // brand string — a raw brand with a mix of region-suffixed and
+  // non-suffixed rows must split into separate groups, one per
+  // digiflazzGroupKey displayName.
+  it("splits a raw brand's rows into separate groups by region suffix parsed from productName", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", productName: "Mobile Legends 100 Diamond" }),
+      priceListItem({
+        buyerSkuCode: "ml100id",
+        brand: "Mobile Legends",
+        productName: "Mobile Legends 100 Diamond (Indonesia)",
+      }),
+      priceListItem({
+        buyerSkuCode: "ml100ph",
+        brand: "Mobile Legends",
+        productName: "Mobile Legends 100 Diamond (Filipina)",
+      }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(3);
+
+    const plain = groups.find((g) => g.brand === "Mobile Legends")!;
+    expect(plain.items).toHaveLength(1);
+    expect(plain.rawBrand).toBe("Mobile Legends");
+    expect(plain.region).toBeNull();
+
+    const indonesia = groups.find((g) => g.brand === "Mobile Legends (Indonesia)")!;
+    expect(indonesia.items).toHaveLength(1);
+    expect(indonesia.rawBrand).toBe("Mobile Legends");
+    expect(indonesia.region).toBe("Indonesia");
+
+    const filipina = groups.find((g) => g.brand === "Mobile Legends (Filipina)")!;
+    expect(filipina.items).toHaveLength(1);
+    expect(filipina.region).toBe("Filipina");
+  });
+
+  // Regression guard: a trailing parenthetical that's on parseProductRegion's
+  // denylist (e.g. "(Instant)") must NOT be treated as a region — every row
+  // stays in one group keyed by the plain brand.
+  it("keeps a single group keyed by the plain brand when every row's trailing paren is denylisted", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "pulsa10", brand: "Pulsa Telkomsel", productName: "Pulsa Telkomsel 10.000 (Instant)" }),
+      priceListItem({ buyerSkuCode: "pulsa25", brand: "Pulsa Telkomsel", productName: "Pulsa Telkomsel 25.000 (Instant)" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.brand).toBe("Pulsa Telkomsel");
+    expect(groups[0]!.region).toBeNull();
+    expect(groups[0]!.items).toHaveLength(2);
+  });
+
+  it("matches an existing Product against a composite region key, not just the raw brand", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await prisma.product.create({
+      data: {
+        categoryId: category.id,
+        name: "Mobile Legends (Indonesia)",
+        slug: "mobile-legends-indonesia",
+        digiflazzBrand: "Mobile Legends (Indonesia)",
+      },
+    });
+    const items = [
+      priceListItem({
+        buyerSkuCode: "ml100id",
+        brand: "Mobile Legends",
+        productName: "Mobile Legends 100 Diamond (Indonesia)",
+      }),
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends", productName: "Mobile Legends 100 Diamond" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    const indonesia = groups.find((g) => g.brand === "Mobile Legends (Indonesia)")!;
+    expect(indonesia.existingProductId).toBe(product.id);
+    const plain = groups.find((g) => g.brand === "Mobile Legends")!;
+    expect(plain.existingProductId).toBeNull();
+  });
 });
 
 describe("computeDigiflazzMarkupPrice", () => {
@@ -553,14 +630,16 @@ describe("importDigiflazzBrand", () => {
 
     const second = await importDigiflazzBrand(prisma, {
       brand: "Mobile Legends", categoryId: category.id,
-      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond (Updated)", price: "17000", costPrice: "15500" }],
+      // No parenthetical here (deliberately, unlike a region suffix) — this
+      // test is about the update-in-place path, not stripRegionSuffix.
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond Updated", price: "17000", costPrice: "15500" }],
     });
     expect(second.denominationCount).toBe(1);
 
     const denoms = await prisma.denomination.findMany({ where: { productId: first.productId, supplierSku: "ml100" } });
     expect(denoms).toHaveLength(1); // still exactly one row, not two
     expect(denoms[0]!.id).toBe(firstDenom.id); // same row, updated in place
-    expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond (Updated)");
+    expect(denoms[0]!.name).toBe("Mobile Legends 100 Diamond Updated");
     expect(denoms[0]!.price.toString()).toBe("17000");
     expect(denoms[0]!.costPrice!.toString()).toBe("15500");
   });
@@ -606,6 +685,30 @@ describe("importDigiflazzBrand", () => {
       const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100" } });
       expect(denom.priceOverridden).toBe(true);
     });
+  });
+
+  // Task 2: once grouping has split by region, the Product itself is already
+  // region-scoped (args.brand arrives as the composite display name) — so
+  // repeating the region suffix on every denomination name/durationLabel
+  // would be redundant. supplierSku must stay exactly row.buyerSkuCode,
+  // untouched by the strip.
+  it("imports with a composite brand, stores the Product under the composite name, and strips the region suffix from denomination name/durationLabel", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends (Indonesia)",
+      categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100id", productName: "Mobile Legends 100 Diamond (Indonesia)", price: "16500", costPrice: "15000" },
+      ],
+    });
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    expect(product.name).toBe("Mobile Legends (Indonesia)");
+    expect(product.digiflazzBrand).toBe("Mobile Legends (Indonesia)");
+
+    const denom = await prisma.denomination.findFirstOrThrow({ where: { productId, supplierSku: "ml100id" } });
+    expect(denom.name).toBe("Mobile Legends 100 Diamond");
+    expect(denom.durationLabel).toBe("Mobile Legends 100 Diamond");
+    expect(denom.supplierSku).toBe("ml100id"); // resync matching key — exact, untouched by the strip
   });
 });
 

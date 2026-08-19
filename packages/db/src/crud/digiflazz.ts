@@ -964,20 +964,55 @@ export async function splitMixedDigiflazzProducts(
           slugify(winningGroup!.displayName) === plan.originalSlug
             ? plan.originalSlug
             : await ensureUniqueSlug(tx, "product", winningGroup!.displayName);
+
+        // Finding 3 (final whole-branch review): detectMixedDigiflazzProducts
+        // checked for a digiflazzBrand collision once, up front, before ANY
+        // product's transaction ran. Re-check right here, transactionally
+        // (via `tx`, not the outer `db`), immediately before writing the
+        // target digiflazzBrand — closes the TOCTOU window where a
+        // concurrent wizard import could create the exact colliding product
+        // in the gap between detection and this write. Excludes this
+        // product's own id (a product's row can legitimately already carry
+        // this displayName as its digiflazzBrand when nothing is actually
+        // changing).
+        const winningCollision = await tx.product.findFirst({
+          where: { digiflazzBrand: winningGroup!.displayName, NOT: { id: plan.productId } },
+        });
+        if (winningCollision) {
+          throw new Error(
+            `digiflazzBrand collision detected inside transaction: target name "${winningGroup!.displayName}" now belongs to product id ${winningCollision.id} ("${winningCollision.name}") — a concurrent import must have created it after detection ran. Aborting this product's split; re-run the migration once the collision is resolved.`,
+          );
+        }
         await updateCatalogProduct(tx, plan.productId, {
           name: winningGroup!.displayName,
           digiflazzBrand: winningGroup!.displayName,
           slug: winningSlug,
         });
-        // Strip the region suffix on the denominations staying put too, for
-        // consistency with what fresh imports now produce (Task 2).
-        for (const denom of winningGroup!.denominations) {
-          const stripped = stripRegionSuffix(denom.name);
-          await updateDenomination(tx, denom.id, { name: stripped, durationLabel: stripped });
-        }
+        // Finding 1 (final whole-branch review, user-decided): denominations
+        // STAYING on the winning/original product are deliberately left
+        // untouched here — no write at all. OrderItem carries no name
+        // snapshot, so a historical order view (admin or buyer) renders the
+        // LIVE denomination name; stripping every stayed denomination's
+        // region suffix "for consistency with fresh imports" would silently
+        // rewrite what an already-placed order displays even though the
+        // product/denomination itself never actually moved. Only
+        // denominations that MOVE to a new product (below) get the suffix
+        // stripped — that product is now genuinely region-specific, so the
+        // suffix really is redundant there.
 
         let moved = 0;
         for (const group of otherGroups) {
+          // Finding 3 (final whole-branch review): same TOCTOU re-check as
+          // the winning rename above, right before creating this new
+          // product — a concurrent wizard import could have created a
+          // product with this exact target digiflazzBrand after detection
+          // ran but before this transaction reached it.
+          const groupCollision = await tx.product.findFirst({ where: { digiflazzBrand: group.displayName } });
+          if (groupCollision) {
+            throw new Error(
+              `digiflazzBrand collision detected inside transaction: target name "${group.displayName}" now belongs to product id ${groupCollision.id} ("${groupCollision.name}") — a concurrent import must have created it after detection ran. Aborting this product's split; re-run the migration once the collision is resolved.`,
+            );
+          }
           const newProduct = await createCatalogProduct(tx, {
             categoryId: plan.categoryId,
             name: group.displayName,

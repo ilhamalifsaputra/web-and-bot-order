@@ -331,6 +331,16 @@ describe("stripRegionSuffix", () => {
     expect(stripRegionSuffix("Foo(Indonesia)")).toBe("Foo");
     expect(stripRegionSuffix("Foo (Indonesia)   ")).toBe("Foo");
   });
+
+  // Finding 5 (final whole-branch review): a productName that is ENTIRELY a
+  // parenthetical strips down to an empty string, which would then become an
+  // empty name/durationLabel and an empty ensureUniqueSlug base — must return
+  // the original, unstripped string instead of "".
+  it("returns the original string, not an empty string, when the whole name is a parenthetical", () => {
+    expect(stripRegionSuffix("(Indonesia)")).toBe("(Indonesia)");
+    expect(stripRegionSuffix("   (Indonesia)   ")).toBe("   (Indonesia)   ");
+    expect(stripRegionSuffix("(Filipina)")).toBe("(Filipina)");
+  });
 });
 
 describe("digiflazzGroupKey", () => {

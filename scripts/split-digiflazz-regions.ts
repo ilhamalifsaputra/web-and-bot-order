@@ -9,6 +9,19 @@
  * stopping services — but take a fresh backup of data/bot.db (+ -wal/-shm)
  * before running with --apply, same as any DB-mutating script.
  *
+ * ⚠ RUN ORDER MATTERS (Finding 2, final whole-branch review): run this script
+ *   (and resolve any reported `conflicts`) BEFORE an admin opens the
+ *   Digiflazz sync wizard on this new code. After deploy but before this
+ *   migration runs, an old mixed Product (e.g. "Mobile Legends") still holds
+ *   its OLD digiflazzBrand. If the wizard's new region-aware grouping is used
+ *   first and imports one of that brand's region groups (e.g. "Mobile
+ *   Legends (Indonesia)"), it creates a SECOND product with duplicate
+ *   supplierSku values already present on the old mixed product. This
+ *   migration's collision guard then correctly refuses to touch that mixed
+ *   product (reports it under `conflicts`, writes nothing to it) — but it's
+ *   then stuck unsplit until a human manually resolves the duplicate. Run
+ *   this migration first, every time, on a freshly-deployed environment.
+ *
  *   pnpm split-digiflazz-regions            # dry run (default) — prints the plan, writes nothing
  *   pnpm split-digiflazz-regions --apply    # performs the split
  *
@@ -37,6 +50,10 @@ Options:
   --help, -h    Show this help.
 
 Take a fresh backup of data/bot.db (+ -wal/-shm) before running with --apply.
+
+Run this BEFORE using the Digiflazz sync wizard on this code — importing a
+region group first creates duplicate SKUs and blocks the split for that
+product until a human resolves the collision.
 `;
 
 async function main(): Promise<void> {
@@ -144,7 +161,11 @@ async function main(): Promise<void> {
   }
 
   await prisma.$disconnect();
-  if (result.failures.length > 0) {
+  // Finding 4 (final whole-branch review): unresolved conflicts are also an
+  // incomplete migration, not just failures — exit non-zero for both so a
+  // deploy script or CI wrapper checking the exit status can detect it
+  // instead of silently seeing exit 0.
+  if (result.failures.length > 0 || result.conflicts.length > 0) {
     process.exit(1);
   }
 }

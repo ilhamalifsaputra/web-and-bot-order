@@ -181,6 +181,12 @@ export function parseProductRegion(productName: string): string | null {
  *
  * Input with no region suffix passes through completely unchanged (same
  * string, same whitespace).
+ *
+ * Never returns an empty (or whitespace-only) string: a productName that is
+ * ENTIRELY a parenthetical (e.g. `"(Indonesia)"`, nothing before it) strips
+ * down to `""`, which would otherwise become an empty `name`/`durationLabel`
+ * and an empty base for `ensureUniqueSlug` — treat that case as "not safely
+ * strippable" and return the original, unstripped string instead.
  */
 export function stripRegionSuffix(productName: string): string {
   if (parseProductRegion(productName) === null) {
@@ -188,7 +194,11 @@ export function stripRegionSuffix(productName: string): string {
   }
   // Strip the trailing parenthetical: match and remove everything from the last
   // non-whitespace char of the opening paren onwards, plus any trailing whitespace
-  return productName.replace(/\s*\([^)]+\)\s*$/, "");
+  const stripped = productName.replace(/\s*\([^)]+\)\s*$/, "");
+  if (stripped.trim() === "") {
+    return productName;
+  }
+  return stripped;
 }
 
 /**

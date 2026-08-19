@@ -962,32 +962,33 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
       ["Russia", 2],
       ["Brazil", 1],
     ];
-    const denomIdsByRegion = new Map<string, number[]>();
+    const denomsByRegion = new Map<string, { id: number; name: string }[]>();
     let sku = 0;
     for (const [region, count] of regionCounts) {
-      const ids: number[] = [];
+      const records: { id: number; name: string }[] = [];
       for (let i = 0; i < count; i++) {
         sku++;
+        const name = `Mobile Legends ${100 * (i + 1)} Diamond (${region})`;
         const denom = await createDenomination(prisma, {
           productId: product.id,
-          name: `Mobile Legends ${100 * (i + 1)} Diamond (${region})`,
+          name,
           type: "SHARED",
-          durationLabel: `Mobile Legends ${100 * (i + 1)} Diamond (${region})`,
+          durationLabel: name,
           price: "16500",
           autoDeliverySource: "digiflazz",
           supplierSku: `ml-${region}-${sku}`,
         });
-        ids.push(denom.id);
+        records.push({ id: denom.id, name });
       }
-      denomIdsByRegion.set(region, ids);
+      denomsByRegion.set(region, records);
     }
-    return { product, denomIdsByRegion };
+    return { product, denomsByRegion };
   }
 
-  it("splits a 4-region mixed product into 4 Products; the winner (largest bucket) keeps the original id, denomination ids are unchanged, and names are stripped", async () => {
+  it("splits a 4-region mixed product into 4 Products; the winner (largest bucket) keeps the original id and its denominations' original names, denomination ids are unchanged, and only MOVED denominations are stripped", async () => {
     const category = await prisma.category.findFirstOrThrow();
-    const { product, denomIdsByRegion } = await seedMixedProduct(category.id);
-    const allDenomIdsBefore = [...denomIdsByRegion.values()].flat().sort();
+    const { product, denomsByRegion } = await seedMixedProduct(category.id);
+    const allDenomIdsBefore = [...denomsByRegion.values()].flatMap((records) => records.map((r) => r.id)).sort();
 
     const result = await splitMixedDigiflazzProducts(prisma);
     expect(result).toEqual({
@@ -1028,9 +1029,22 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     const allDenomIdsAfter = allProducts.flatMap((p) => p.denominations.map((d) => d.id)).sort();
     expect(allDenomIdsAfter).toEqual(allDenomIdsBefore);
 
-    // name/durationLabel had the region suffix stripped on every moved AND
-    // stayed denomination.
-    for (const p of allProducts) {
+    // Finding 1 (final whole-branch review, user-decided): only
+    // denominations that MOVED to a new product get the region suffix
+    // stripped from name/durationLabel. Denominations that STAYED on the
+    // winning/original product (Indonesia) keep their exact original
+    // suffixed name, byte-identical to before the migration — OrderItem has
+    // no name snapshot, so a historical order view renders the live
+    // denomination name, and stripping a stayed denomination's name would
+    // silently rewrite what an old order displays even though the product
+    // never actually changed.
+    const indonesiaBefore = new Map(denomsByRegion.get("Indonesia")!.map((r) => [r.id, r.name]));
+    for (const denom of indonesia.denominations) {
+      expect(denom.name).toBe(indonesiaBefore.get(denom.id));
+      expect(denom.durationLabel).toBe(indonesiaBefore.get(denom.id));
+      expect(denom.name).toContain("(Indonesia)");
+    }
+    for (const p of [filipina, russia, brazil]) {
       for (const denom of p.denominations) {
         expect(denom.name).not.toContain("(");
         expect(denom.durationLabel).not.toContain("(");
@@ -1319,6 +1333,65 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     const detection = await detectMixedDigiflazzProducts(prisma);
     expect(detection.mixed).toHaveLength(0);
     expect(detection.conflicts).toHaveLength(1);
+  });
+
+  // Finding 3 (final whole-branch review): detectMixedDigiflazzProducts only
+  // checks for a digiflazzBrand collision ONCE, up front, before any
+  // product's write transaction runs. Simulate a concurrent wizard import
+  // landing in the TOCTOU gap between that detection and this product's own
+  // transaction — the in-transaction re-check must catch it and fail that
+  // product's split safely (caught by the existing per-product try/catch,
+  // recorded in `failures`) rather than writing a second product sharing the
+  // colliding digiflazzBrand.
+  it("Finding 3 (TOCTOU): re-checks for a digiflazzBrand collision inside the transaction and fails that product's split if one appeared after detection", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product } = await seedMixedProduct(category.id); // winner is "Mobile Legends (Indonesia)" (largest bucket)
+
+    const originalTransaction = prisma.$transaction.bind(prisma);
+    const spy = vi.spyOn(prisma, "$transaction").mockImplementation((async (...args: unknown[]) => {
+      // Simulate a concurrent Digiflazz wizard import creating the exact
+      // target product AFTER detectMixedDigiflazzProducts already reported
+      // "no conflict", but before this product's own transaction starts.
+      await prisma.product.create({
+        data: {
+          categoryId: category.id,
+          name: "Mobile Legends (Indonesia)",
+          slug: "mobile-legends-indonesia-concurrent",
+          digiflazzBrand: "Mobile Legends (Indonesia)",
+        },
+      });
+      return (originalTransaction as (...a: unknown[]) => unknown)(...args);
+    }) as typeof prisma.$transaction);
+
+    try {
+      const result = await splitMixedDigiflazzProducts(prisma);
+
+      expect(result.productsSplit).toBe(0);
+      expect(result.productsCreated).toBe(0);
+      expect(result.denominationsMoved).toBe(0);
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]!.productName).toBe("Mobile Legends");
+      expect(result.failures[0]!.error).toContain("collision detected inside transaction");
+      expect(result.failures[0]!.error).toContain("Mobile Legends (Indonesia)");
+
+      // The original mixed product's transaction rolled back — left
+      // completely untouched, same as a detection-time conflict.
+      const original = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+      expect(original.name).toBe("Mobile Legends");
+      expect(original.digiflazzBrand).toBe("Mobile Legends");
+      const denoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+      expect(denoms).toHaveLength(10);
+      for (const d of denoms) {
+        expect(d.name).toContain("("); // never stripped
+      }
+
+      // No duplicate digiflazzBrand — still exactly the one concurrently-
+      // created product holding "Mobile Legends (Indonesia)".
+      const dupes = await prisma.product.findMany({ where: { digiflazzBrand: "Mobile Legends (Indonesia)" } });
+      expect(dupes).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   // Re-review Finding A: the CLI's dry-run print needs each region bucket's

@@ -140,7 +140,7 @@ function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem {
  * parens for delivery-speed annotations like `"(Instant)"`, `"(1-3 Menit)"`, or
  * `"(Proses Cepat)"`. The denylist is case-insensitive and includes:
  * - `INSTANT`
- * - `/^\d+-\d+\s*(menit|jam|hari)$/i` (duration patterns like "1-3 Menit", "2 Jam")
+ * - `/^\d+-\d+\s*(menit|jam|hari)$/i` (duration range patterns like "1-3 Menit", "2-5 Jam", "1-2 Hari")
  * - `PROSES CEPAT`
  *
  * A denylisted match always returns `null`, never a false split.
@@ -163,7 +163,7 @@ export function parseProductRegion(productName: string): string | null {
     return null;
   }
 
-  // Duration pattern: e.g., "1-3 Menit", "2 Jam", "30 Hari"
+  // Duration range pattern: e.g., "1-3 Menit", "2-5 Jam", "1-2 Hari" (single-count durations like "2 Jam" do not match)
   if (/^\d+-\d+\s*(menit|jam|hari)$/i.test(captured)) {
     return null;
   }

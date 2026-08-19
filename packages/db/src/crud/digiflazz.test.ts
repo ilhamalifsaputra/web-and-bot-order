@@ -996,6 +996,7 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
       denominationsMoved: 3 + 2 + 1,
       skipped: [],
       conflicts: [],
+      failures: [],
     });
 
     const allProducts = await prisma.product.findMany({
@@ -1238,6 +1239,7 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
       denominationsMoved: 3 + 2,
       skipped: [],
       conflicts: [],
+      failures: [],
     });
 
     // The winner (null/unspecified bucket) keeps the original product's id,
@@ -1317,5 +1319,142 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     const detection = await detectMixedDigiflazzProducts(prisma);
     expect(detection.mixed).toHaveLength(0);
     expect(detection.conflicts).toHaveLength(1);
+  });
+
+  // Re-review Finding A: the CLI's dry-run print needs each region bucket's
+  // denomination NAMES (not just a count) so an operator can visually spot a
+  // false-positive split — e.g. a legitimately-named denomination like
+  // "Weekly Diamond Pass (Promo)" that parseProductRegion mis-parses as its
+  // own 1-row "region". This only asserts the underlying data plumbing
+  // (DigiflazzRegionGroup.denominations carries real names) is present and
+  // correct; the script's console output itself isn't unit-tested here.
+  it("Finding A: each region group's denominations carry their original names, giving the dry-run print something to show besides a bare count", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product } = await seedMixedProduct(category.id);
+
+    const detection = await detectMixedDigiflazzProducts(prisma);
+    const plan = detection.mixed.find((p) => p.productId === product.id)!;
+    expect(plan.groups.length).toBeGreaterThan(0);
+    for (const group of plan.groups) {
+      expect(group.denominations.length).toBeGreaterThan(0);
+      for (const denom of group.denominations) {
+        expect(typeof denom.name).toBe("string");
+        expect(denom.name.length).toBeGreaterThan(0);
+      }
+    }
+    // Brazil is the single-row bucket in this fixture — exactly the shape a
+    // false-positive "(Promo)" bucket would have, which is why the operator
+    // needs to see the name, not just "1 denomination(s)".
+    const brazil = plan.groups.find((g) => g.region === "Brazil")!;
+    expect(brazil.denominations.map((d) => d.name)).toEqual(["Mobile Legends 100 Diamond (Brazil)"]);
+  });
+
+  // Re-review Finding B: a per-product transaction failure must not abort
+  // the whole run — earlier/other products already committed by that point
+  // must be reported, not silently thrown away past the caller.
+  describe("Finding B: per-product failure isolation", () => {
+    it("continues splitting the other product when one product's transaction throws, and reports the failure without losing the other's result", async () => {
+      const category = await prisma.category.findFirstOrThrow();
+      await seedMixedProduct(category.id); // "Mobile Legends" -> 4 regions, 10 denominations total
+
+      const productB = await createCatalogProduct(prisma, {
+        categoryId: category.id,
+        name: "Free Fire",
+        digiflazzBrand: "Free Fire",
+      });
+      await createDenomination(prisma, {
+        productId: productB.id, name: "100 Diamond", type: "SHARED", durationLabel: "100 Diamond",
+        price: "10000", autoDeliverySource: "digiflazz", supplierSku: "ff-none",
+      });
+      await createDenomination(prisma, {
+        productId: productB.id, name: "100 Diamond (Malaysia)", type: "SHARED", durationLabel: "100 Diamond (Malaysia)",
+        price: "10000", autoDeliverySource: "digiflazz", supplierSku: "ff-my",
+      });
+
+      // Force exactly ONE of the two products' $transaction calls to reject
+      // (simulating a transient DB error mid-run) while the other runs for
+      // real — proves the failure of one product's transaction doesn't touch
+      // the other's already-committed (or about-to-commit) result.
+      const originalTransaction = prisma.$transaction.bind(prisma);
+      let callIndex = 0;
+      const spy = vi.spyOn(prisma, "$transaction").mockImplementation((async (...args: unknown[]) => {
+        callIndex++;
+        if (callIndex === 2) {
+          throw new Error("Simulated transient DB failure");
+        }
+        return (originalTransaction as (...a: unknown[]) => unknown)(...args);
+      }) as typeof prisma.$transaction);
+
+      const result = await splitMixedDigiflazzProducts(prisma);
+      spy.mockRestore();
+
+      // Exactly one product failed and one succeeded — the run did not throw
+      // and did not lose track of either outcome.
+      expect(result.failures).toHaveLength(1);
+      expect(result.productsSplit).toBe(1);
+      expect(result.failures[0]!.error).toContain("Simulated transient DB failure");
+      const failedName = result.failures[0]!.productName;
+      expect(["Mobile Legends", "Free Fire"]).toContain(failedName);
+
+      if (failedName === "Free Fire") {
+        expect(result.productsCreated).toBe(3); // Mobile Legends' 3 non-winning regions
+        const ml = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Mobile Legends" } } });
+        expect(ml).toHaveLength(4); // fully split and committed
+        const ffAfter = await prisma.product.findUniqueOrThrow({ where: { id: productB.id } });
+        expect(ffAfter.name).toBe("Free Fire"); // untouched — its transaction rolled back
+        const ffDenoms = await prisma.denomination.findMany({ where: { productId: productB.id } });
+        expect(ffDenoms).toHaveLength(2); // neither moved nor stripped
+        expect(ffDenoms.some((d) => d.name.includes("Malaysia"))).toBe(true);
+      } else {
+        expect(result.productsCreated).toBe(1); // Free Fire's 1 non-winning region
+        const ff = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Free Fire" } } });
+        expect(ff).toHaveLength(2); // fully split and committed
+        const mlAfter = await prisma.product.findFirstOrThrow({ where: { name: "Mobile Legends" } });
+        const mlDenoms = await prisma.denomination.findMany({ where: { productId: mlAfter.id } });
+        expect(mlDenoms).toHaveLength(10); // untouched — its transaction rolled back
+      }
+    });
+  });
+
+  // Re-review Finding C: the slug-skip decision must compare SLUGS, not
+  // names — comparing names could mis-fire "changed" when a product's `name`
+  // differs from its `digiflazzBrand`-derived displayName only in ways that
+  // slugify identically (case here), needlessly calling ensureUniqueSlug and
+  // corrupting a live storefront URL that isn't actually changing.
+  it("Finding C: does not regenerate the slug when the winning bucket's displayName differs from the current name only in ways that slugify identically", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // name and digiflazzBrand deliberately differ only in case — both
+    // slugify to "free-fire", so the slug must NOT be regenerated even
+    // though the old name !== displayName check would have said it changed.
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Free Fire",
+      digiflazzBrand: "FREE FIRE",
+    });
+    const originalSlug = product.slug;
+    expect(originalSlug).toBe("free-fire");
+
+    // Unspecified (2) beats Malaysia (1) — the null bucket wins and its
+    // displayName is the raw digiflazzBrand ("FREE FIRE"), unstripped.
+    await createDenomination(prisma, {
+      productId: product.id, name: "100 Diamond", type: "SHARED", durationLabel: "100 Diamond",
+      price: "10000", autoDeliverySource: "digiflazz", supplierSku: "ff-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id, name: "200 Diamond", type: "SHARED", durationLabel: "200 Diamond",
+      price: "19000", autoDeliverySource: "digiflazz", supplierSku: "ff-2",
+    });
+    await createDenomination(prisma, {
+      productId: product.id, name: "100 Diamond (Malaysia)", type: "SHARED", durationLabel: "100 Diamond (Malaysia)",
+      price: "10000", autoDeliverySource: "digiflazz", supplierSku: "ff-my",
+    });
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result.productsSplit).toBe(1);
+    expect(result.failures).toEqual([]);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("FREE FIRE"); // renamed to the digiflazzBrand casing
+    expect(winner.slug).toBe(originalSlug); // slug untouched — no spurious "-2"
   });
 });

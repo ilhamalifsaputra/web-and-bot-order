@@ -73,6 +73,21 @@ async function main(): Promise<void> {
             `    ${label}: ${group.denominations.length} denomination(s) -> "${group.displayName}"` +
               (isWinner ? " [keeps original id]" : " [new product]"),
           );
+          // Print the actual denomination names (capped at 5) so an operator
+          // can visually confirm a bucket really is a distinct region variant
+          // of the product, not a false-positive split caused by
+          // parseProductRegion mis-parsing a legitimate trailing parenthetical
+          // (e.g. "Weekly Diamond Pass (Promo)") as a region — a 1-row bucket
+          // otherwise looks identical whether it's a genuine small region or a
+          // mis-parse, and there'd be nothing here to catch the difference.
+          const shown = group.denominations.slice(0, 5);
+          const more = group.denominations.length - shown.length;
+          for (const denom of shown) {
+            console.log(`        - ${denom.name}`);
+          }
+          if (more > 0) {
+            console.log(`        ... (+${more} more)`);
+          }
         }
       }
       console.log(
@@ -118,8 +133,20 @@ async function main(): Promise<void> {
     }
     console.log("\n  Resolve these manually (e.g. delete/merge the stray duplicate) and re-run --apply.");
   }
+  if (result.failures.length > 0) {
+    console.log(
+      `\n!! ${result.failures.length} product(s) FAILED to split due to an unexpected error — left untouched (each product's transaction rolled back on its own error, so products split successfully before the failure are unaffected):\n`,
+    );
+    for (const failure of result.failures) {
+      console.log(`    ! "${failure.productName}": ${failure.error}`);
+    }
+    console.log("\n  Investigate the error and re-run --apply — the migration is idempotent, so already-split products are skipped and only these will be retried.");
+  }
 
   await prisma.$disconnect();
+  if (result.failures.length > 0) {
+    process.exit(1);
+  }
 }
 
 main().catch(async (e) => {

@@ -45,6 +45,7 @@ import {
   updateDenomination,
   updateCatalogProduct,
   ensureUniqueSlug,
+  slugify,
 } from "./catalog";
 
 /** Setting keys — not yet wired to any admin UI (a later task adds that);
@@ -900,6 +901,18 @@ export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMix
  * because a target region name already belongs to a different existing
  * product's digiflazzBrand — those products are left completely untouched
  * (not partially split); see detectMixedDigiflazzProducts's doc comment.
+ *
+ * Each product's transaction is individually try/caught (re-review Finding
+ * B): if one product's transaction throws an unexpected error (e.g. a
+ * transient DB error), that product is recorded in `failures` and the loop
+ * continues to the next product — it does NOT abort the whole run. Earlier
+ * products in the same call have already committed (each is its own
+ * transaction) regardless of a later one failing, so `failures` is what
+ * gives the operator visibility into that instead of the run throwing past
+ * the caller with no summary of what already landed. This only covers
+ * genuinely unexpected errors — the business-logic exclusions (not-mixed,
+ * digiflazzBrand conflicts) are decided up front by detectMixedDigiflazzProducts
+ * and never reach this try/catch at all.
  */
 export async function splitMixedDigiflazzProducts(
   db: PrismaClient,
@@ -909,76 +922,98 @@ export async function splitMixedDigiflazzProducts(
   denominationsMoved: number;
   skipped: string[];
   conflicts: string[];
+  failures: { productName: string; error: string }[];
 }> {
   const { mixed, skipped, conflicts } = await detectMixedDigiflazzProducts(db);
 
   let productsSplit = 0;
   let productsCreated = 0;
   let denominationsMoved = 0;
+  const failures: { productName: string; error: string }[] = [];
 
   for (const plan of mixed) {
     const [winningGroup, ...otherGroups] = plan.groups;
     const allNewNames = plan.groups.map((g) => g.displayName);
 
-    await db.$transaction(async (tx) => {
-      // Rename the ORIGINAL row in place. Finding 1 fix: only regenerate the
-      // slug when the winning bucket's displayName actually differs from the
-      // product's current name — e.g. the "(unspecified)"/null-region bucket
-      // (which sorts first on ties) always has displayName === rawBrand ===
-      // the product's current name, so the product isn't really being
-      // renamed at all. ensureUniqueSlug has no "exclude this row" clause,
-      // so calling it unconditionally would see the product's OWN existing
-      // slug as "already taken" and silently append "-2" to it, breaking a
-      // live storefront URL for zero reason. Only regenerate (and only then
-      // risk a real collision, which is fine to resolve against this row's
-      // about-to-change slug) when the name is genuinely changing.
-      const nameChanged = winningGroup!.displayName !== plan.originalName;
-      const winningSlug = nameChanged
-        ? await ensureUniqueSlug(tx, "product", winningGroup!.displayName)
-        : plan.originalSlug;
-      await updateCatalogProduct(tx, plan.productId, {
-        name: winningGroup!.displayName,
-        digiflazzBrand: winningGroup!.displayName,
-        slug: winningSlug,
-      });
-      // Strip the region suffix on the denominations staying put too, for
-      // consistency with what fresh imports now produce (Task 2).
-      for (const denom of winningGroup!.denominations) {
-        const stripped = stripRegionSuffix(denom.name);
-        await updateDenomination(tx, denom.id, { name: stripped, durationLabel: stripped });
-      }
-
-      for (const group of otherGroups) {
-        const newProduct = await createCatalogProduct(tx, {
-          categoryId: plan.categoryId,
-          name: group.displayName,
-          digiflazzBrand: group.displayName,
-          isActive: plan.isActive,
+    try {
+      // Counted inside the transaction closure but only folded into the
+      // running totals below once the transaction has actually committed —
+      // if it throws partway through, this local count is discarded along
+      // with the rolled-back writes instead of inflating denominationsMoved
+      // for denominations that were never actually moved.
+      const movedThisProduct = await db.$transaction(async (tx) => {
+        // Rename the ORIGINAL row in place. Finding 1 fix, hardened per the
+        // re-review (Finding C): compare SLUGS, not names, to decide whether
+        // the product is genuinely being renamed. Comparing displayName
+        // against plan.originalName (the old check) could mis-fire true when
+        // the two differ only in ways that slugify identically (case,
+        // punctuation, trailing whitespace) — e.g. a product whose `name`
+        // drifted from its `digiflazzBrand` cosmetically — needlessly calling
+        // ensureUniqueSlug, which has no "exclude this row" clause and would
+        // see the product's OWN existing slug as "already taken" and silently
+        // append "-2" to it, breaking a live storefront URL for zero reason.
+        // Comparing slugify(displayName) against the row's actual current
+        // slug is the strictly correct version of the same check: skip
+        // regeneration whenever the resulting slug wouldn't change at all.
+        const winningSlug =
+          slugify(winningGroup!.displayName) === plan.originalSlug
+            ? plan.originalSlug
+            : await ensureUniqueSlug(tx, "product", winningGroup!.displayName);
+        await updateCatalogProduct(tx, plan.productId, {
+          name: winningGroup!.displayName,
+          digiflazzBrand: winningGroup!.displayName,
+          slug: winningSlug,
         });
-        for (const denom of group.denominations) {
+        // Strip the region suffix on the denominations staying put too, for
+        // consistency with what fresh imports now produce (Task 2).
+        for (const denom of winningGroup!.denominations) {
           const stripped = stripRegionSuffix(denom.name);
-          // denom.id is never touched — only productId/name/durationLabel.
-          await updateDenomination(tx, denom.id, {
-            productId: newProduct.id,
-            name: stripped,
-            durationLabel: stripped,
-          });
-          denominationsMoved++;
+          await updateDenomination(tx, denom.id, { name: stripped, durationLabel: stripped });
         }
-      }
 
-      await logAdminAction(tx, {
-        adminId: null,
-        action: "digiflazz_catalog_region_split",
-        targetType: "product",
-        targetId: plan.productId,
-        details: `Split mixed-region product "${plan.originalName}" into ${plan.groups.length} region products: ${allNewNames.join(", ")}.`,
+        let moved = 0;
+        for (const group of otherGroups) {
+          const newProduct = await createCatalogProduct(tx, {
+            categoryId: plan.categoryId,
+            name: group.displayName,
+            digiflazzBrand: group.displayName,
+            isActive: plan.isActive,
+          });
+          for (const denom of group.denominations) {
+            const stripped = stripRegionSuffix(denom.name);
+            // denom.id is never touched — only productId/name/durationLabel.
+            await updateDenomination(tx, denom.id, {
+              productId: newProduct.id,
+              name: stripped,
+              durationLabel: stripped,
+            });
+            moved++;
+          }
+        }
+
+        await logAdminAction(tx, {
+          adminId: null,
+          action: "digiflazz_catalog_region_split",
+          targetType: "product",
+          targetId: plan.productId,
+          details: `Split mixed-region product "${plan.originalName}" into ${plan.groups.length} region products: ${allNewNames.join(", ")}.`,
+        });
+
+        return moved;
       });
-    });
 
-    productsSplit++;
-    productsCreated += otherGroups.length;
+      productsSplit++;
+      productsCreated += otherGroups.length;
+      denominationsMoved += movedThisProduct;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push({ productName: plan.originalName, error: message });
+      logger.warn(
+        `Digiflazz region-split failed for product "${plan.originalName}" (product id ${plan.productId}): ${message}. ` +
+          "This product's transaction rolled back and was left untouched — earlier products already split in this run are unaffected, and the migration is idempotent, so re-running --apply will retry this one.",
+      );
+    }
   }
 
-  return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts };
+  return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts, failures };
 }

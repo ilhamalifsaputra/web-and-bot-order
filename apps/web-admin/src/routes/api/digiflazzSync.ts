@@ -75,6 +75,8 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
     const markupSettings = await getDigiflazzMarkupSettings(prisma);
     const withPrices = groups.map((g) => ({
       brand: g.brand,
+      rawBrand: g.rawBrand,
+      region: g.region,
       existingProductId: g.existingProductId,
       skus: g.items.map((item) => ({
         buyerSkuCode: item.buyerSkuCode,

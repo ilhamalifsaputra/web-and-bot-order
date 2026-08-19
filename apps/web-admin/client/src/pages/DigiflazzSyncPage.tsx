@@ -20,6 +20,8 @@ interface SkuRow {
 }
 interface BrandGroup {
   brand: string;
+  rawBrand: string;
+  region: string | null;
   existingProductId: number | null;
   skus: SkuRow[];
 }
@@ -206,7 +208,8 @@ export function DigiflazzSyncPage() {
                     aria-expanded={expanded.has(g.brand)}
                     onClick={() => toggleExpanded(g.brand)}
                   >
-                    {g.brand} <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
+                    {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}{" "}
+                    <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
                   </button>
                 </CardTitle>
               </CardHeader>
@@ -255,7 +258,9 @@ export function DigiflazzSyncPage() {
                 </p>
                 <ul className="mt-2 text-sm">
                   {existingGroups.map((g) => (
-                    <li key={g.brand}>{g.brand} — {g.skus.length} SKU(s)</li>
+                    <li key={g.brand}>
+                      {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null} — {g.skus.length} SKU(s)
+                    </li>
                   ))}
                 </ul>
               </CardContent>

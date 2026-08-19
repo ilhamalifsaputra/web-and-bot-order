@@ -82,6 +82,34 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     const body = res.json();
     expect(body.groups).toHaveLength(1); // Pulsa filtered out — Game only, this pilot's scope
     expect(body.groups[0].brand).toBe("Mobile Legends");
+    // Task 4: rawBrand/region are threaded through from groupDigiflazzPriceListByBrand
+    // so the wizard UI can distinguish region-split groups.
+    expect(body.groups[0].rawBrand).toBe("Mobile Legends");
+    expect(body.groups[0].region).toBeNull();
+  });
+
+  it("splits a region-suffixed brand into its own group with rawBrand/region set", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "ml100id", productName: "ML 100 Diamond (Indonesia)", category: "Game", brand: "Mobile Legends", type: "Umum", price: new Decimal(15000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+      { buyerSkuCode: "ml100ph", productName: "ML 100 Diamond (Filipina)", category: "Game", brand: "Mobile Legends", type: "Umum", price: new Decimal(16000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.groups).toHaveLength(2);
+    const brands = body.groups.map((g: { brand: string; rawBrand: string; region: string | null }) => ({
+      brand: g.brand,
+      rawBrand: g.rawBrand,
+      region: g.region,
+    }));
+    expect(brands).toEqual(
+      expect.arrayContaining([
+        { brand: "Mobile Legends (Indonesia)", rawBrand: "Mobile Legends", region: "Indonesia" },
+        { brand: "Mobile Legends (Filipina)", rawBrand: "Mobile Legends", region: "Filipina" },
+      ]),
+    );
   });
 
   // I8: Digiflazz's own docs (and this branch's core-client test fixture)

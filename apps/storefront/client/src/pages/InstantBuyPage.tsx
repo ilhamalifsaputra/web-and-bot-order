@@ -539,20 +539,6 @@ export default function InstantBuyPage() {
             />
           )}
 
-          {/* 5. Payment method. `totals`, not `page` — see CheckoutPage.tsx's
-              matching call site for why: `page` doesn't track a voucher
-              preview response, and wallet-credit sufficiency has to be
-              gated on the live, post-voucher total. */}
-          {page && totals ? (
-            <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
-          ) : (
-            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
-              <Skeleton className="h-5 w-40" />
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-14 w-full rounded-xl" />
-              ))}
-            </div>
-          )}
         </div>
 
         {/* 6. Order summary — voucher + live totals + the single submit
@@ -583,6 +569,29 @@ export default function InstantBuyPage() {
             <Skeleton className="h-10 w-full" />
           </div>
         )}
+
+        {/* 5. Payment method — full-width row below both columns (Task 5):
+            with grid-cols-3 and the left column (col-span-2) plus
+            OrderSummaryCard (1 implicit column) already filling row 1, a
+            col-span-3 item can't fit there and auto-placement wraps it to
+            its own full-width row 2. Must stay in DOM order AFTER
+            OrderSummaryCard — placed before it would instead push
+            OrderSummaryCard itself down to row 2. `totals`, not `page` —
+            see CheckoutPage.tsx's matching call site for why: `page`
+            doesn't track a voucher preview response, and wallet-credit
+            sufficiency has to be gated on the live, post-voucher total. */}
+        <div className="lg:col-span-3">
+          {page && totals ? (
+            <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+          ) : (
+            <div className="card card-pad space-y-3" aria-busy="true" aria-label={t("web.loading")}>
+              <Skeleton className="h-5 w-40" />
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-14 w-full rounded-xl" />
+              ))}
+            </div>
+          )}
+        </div>
       </form>
 
       {/* Description/trust section — ProductPage.tsx's own three optional

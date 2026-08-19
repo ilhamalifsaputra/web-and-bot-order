@@ -487,15 +487,6 @@ export default function CheckoutPage() {
           {infoItem && (
             <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
           )}
-
-          {/* `totals`, not `page`: `page` is seeded once from the initial GET
-              and never updated, so gating the wallet-credit rows on it would
-              use a stale, pre-voucher total. `totals` is the live payload
-              (re-set on every voucher-preview response) and shares every
-              other field (gateway flags, wallet balances) with `page` — only
-              `total`/`total_usdt` differ, which is exactly what needs to be
-              live for wallet-sufficiency to track the applied voucher. */}
-          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
         </div>
 
         <OrderSummaryCard
@@ -515,6 +506,20 @@ export default function CheckoutPage() {
           submitPending={placeOrderMutation.isPending}
           backTo={{ label: t("web.back_to_cart"), to: "/cart" }}
         />
+
+        {/* Payment method — full-width row below both columns (Task 5): see
+            InstantBuyPage.tsx's matching call site for the grid-auto-placement
+            reasoning on why this must stay in DOM order AFTER OrderSummaryCard.
+            `totals`, not `page` — `page` is seeded once from the initial GET
+            and never updated, so gating the wallet-credit rows on it would use
+            a stale, pre-voucher total; `totals` is the live payload (re-set on
+            every voucher-preview response) and shares every other field
+            (gateway flags, wallet balances) with `page` — only
+            `total`/`total_usdt` differ, which is exactly what needs to be live
+            for wallet-sufficiency to track the applied voucher. */}
+        <div className="lg:col-span-3">
+          <PaymentMethodSelector data={totals} method={method} onSelect={setMethod} />
+        </div>
       </form>
 
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method

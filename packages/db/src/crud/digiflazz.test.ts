@@ -990,7 +990,13 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     const allDenomIdsBefore = [...denomIdsByRegion.values()].flat().sort();
 
     const result = await splitMixedDigiflazzProducts(prisma);
-    expect(result).toEqual({ productsSplit: 1, productsCreated: 3, denominationsMoved: 3 + 2 + 1, skipped: [] });
+    expect(result).toEqual({
+      productsSplit: 1,
+      productsCreated: 3,
+      denominationsMoved: 3 + 2 + 1,
+      skipped: [],
+      conflicts: [],
+    });
 
     const allProducts = await prisma.product.findMany({
       where: { digiflazzBrand: { in: ["Mobile Legends (Indonesia)", "Mobile Legends (Filipina)", "Mobile Legends (Russia)", "Mobile Legends (Brazil)"] } },
@@ -1163,5 +1169,153 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     expect(unchanged.name).toBe("Mobile Legends");
     const denoms = await prisma.denomination.findMany({ where: { productId: product.id } });
     expect(denoms.every((d) => d.name.includes("("))).toBe(true);
+  });
+
+  // Finding 3 (regression test for Finding 1): exercise the null/
+  // "(unspecified)" region bucket, which is exactly the scenario that
+  // triggers the slug-corruption bug — its displayName always equals the
+  // product's current name (digiflazzGroupKey leaves displayName === brand
+  // when region is null), and the tie-break rule (region ?? "" sorts before
+  // any named region) makes it likely to win. Mirrors this worktree's own
+  // real "Valorant" data noted in the task-3 review.
+  it("Finding 1: when the null/unspecified bucket wins, the product's name AND slug stay unchanged (no slug corruption)", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Valorant",
+      digiflazzBrand: "Valorant",
+    });
+    const originalSlug = product.slug;
+
+    // Unspecified (3, no suffix) ties with Malaysia (3) — "" sorts before
+    // "Malaysia" alphabetically, so unspecified wins. Singapore (2) is
+    // strictly smaller and never in contention, just there to prove a
+    // 3-way split still works correctly alongside the Finding 1 fix.
+    const unspecifiedIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const d = await createDenomination(prisma, {
+        productId: product.id,
+        name: `Valorant ${100 * (i + 1)} Points`,
+        type: "SHARED",
+        durationLabel: `Valorant ${100 * (i + 1)} Points`,
+        price: "16500",
+        autoDeliverySource: "digiflazz",
+        supplierSku: `vp-none-${i}`,
+      });
+      unspecifiedIds.push(d.id);
+    }
+    const malaysiaIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const d = await createDenomination(prisma, {
+        productId: product.id,
+        name: `Valorant ${100 * (i + 1)} Points (Malaysia)`,
+        type: "SHARED",
+        durationLabel: `Valorant ${100 * (i + 1)} Points (Malaysia)`,
+        price: "16500",
+        autoDeliverySource: "digiflazz",
+        supplierSku: `vp-my-${i}`,
+      });
+      malaysiaIds.push(d.id);
+    }
+    const singaporeIds: number[] = [];
+    for (let i = 0; i < 2; i++) {
+      const d = await createDenomination(prisma, {
+        productId: product.id,
+        name: `Valorant ${100 * (i + 1)} Points (Singapore)`,
+        type: "SHARED",
+        durationLabel: `Valorant ${100 * (i + 1)} Points (Singapore)`,
+        price: "16500",
+        autoDeliverySource: "digiflazz",
+        supplierSku: `vp-sg-${i}`,
+      });
+      singaporeIds.push(d.id);
+    }
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result).toEqual({
+      productsSplit: 1,
+      productsCreated: 2,
+      denominationsMoved: 3 + 2,
+      skipped: [],
+      conflicts: [],
+    });
+
+    // The winner (null/unspecified bucket) keeps the original product's id,
+    // NAME, and SLUG completely unchanged — this is the Finding 1 assertion.
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Valorant");
+    expect(winner.slug).toBe(originalSlug);
+    expect(winner.digiflazzBrand).toBe("Valorant");
+    const winnerDenoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(winnerDenoms.map((d) => d.id).sort()).toEqual(unspecifiedIds.sort());
+    for (const d of winnerDenoms) {
+      expect(d.name).not.toContain("(");
+    }
+
+    // Malaysia and Singapore each got their own new product.
+    const malaysia = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Valorant (Malaysia)" } });
+    expect(malaysia.id).not.toBe(product.id);
+    const malaysiaDenoms = await prisma.denomination.findMany({ where: { productId: malaysia.id } });
+    expect(malaysiaDenoms.map((d) => d.id).sort()).toEqual(malaysiaIds.sort());
+
+    const singapore = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Valorant (Singapore)" } });
+    expect(singapore.id).not.toBe(product.id);
+    const singaporeDenoms = await prisma.denomination.findMany({ where: { productId: singapore.id } });
+    expect(singaporeDenoms.map((d) => d.id).sort()).toEqual(singaporeIds.sort());
+  });
+
+  // Finding 2: the collision guard. Neither Product.name nor
+  // Product.digiflazzBrand is unique, so a fresh region-aware import could
+  // have already created a separate product for one of this mixed product's
+  // target region names before this migration runs.
+  it("Finding 2: skips the whole product (untouched) and reports a conflict when a target region name already belongs to a different existing product's digiflazzBrand", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product } = await seedMixedProduct(category.id);
+    const denomsBefore = await prisma.denomination.findMany({ where: { productId: product.id } });
+
+    // Simulate: a fresh Digiflazz import (using the new region-aware
+    // grouping) already created a separate product for the Filipina region
+    // before this migration ran on the old mixed data.
+    const preExisting = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Mobile Legends (Filipina)",
+      digiflazzBrand: "Mobile Legends (Filipina)",
+    });
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result.productsSplit).toBe(0);
+    expect(result.productsCreated).toBe(0);
+    expect(result.denominationsMoved).toBe(0);
+    // The pre-existing conflicting product itself has no denominations, so
+    // it's a "skipped" (nothing-to-split) candidate in its own right —
+    // that's unrelated to the conflict this test is about.
+    expect(result.skipped).toEqual(["Mobile Legends (Filipina)"]);
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0]).toContain("Mobile Legends (Filipina)");
+    expect(result.conflicts[0]).toContain(String(preExisting.id));
+    expect(result.conflicts[0]).toContain(String(product.id));
+
+    // The original mixed product is left COMPLETELY untouched — not
+    // partially split.
+    const original = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(original.name).toBe("Mobile Legends");
+    expect(original.digiflazzBrand).toBe("Mobile Legends");
+    const denomsAfter = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(denomsAfter.map((d) => d.id).sort()).toEqual(denomsBefore.map((d) => d.id).sort());
+    for (const d of denomsAfter) {
+      expect(d.name).toContain("("); // never stripped
+    }
+
+    // No duplicate was created for the colliding brand — still exactly one
+    // product with that digiflazzBrand, and it's the pre-existing one.
+    const dupes = await prisma.product.findMany({ where: { digiflazzBrand: "Mobile Legends (Filipina)" } });
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]!.id).toBe(preExisting.id);
+    expect(dupes[0]!.name).toBe("Mobile Legends (Filipina)");
+
+    // detectMixedDigiflazzProducts (the dry-run script's read side) agrees.
+    const detection = await detectMixedDigiflazzProducts(prisma);
+    expect(detection.mixed).toHaveLength(0);
+    expect(detection.conflicts).toHaveLength(1);
   });
 });

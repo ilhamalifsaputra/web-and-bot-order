@@ -56,9 +56,11 @@ async function main(): Promise<void> {
   await initDb(); // WAL + busy_timeout PRAGMAs, same as the app
 
   if (!apply) {
-    const { mixed, skipped } = await detectMixedDigiflazzProducts(prisma);
-    if (mixed.length === 0) {
+    const { mixed, skipped, conflicts } = await detectMixedDigiflazzProducts(prisma);
+    if (mixed.length === 0 && conflicts.length === 0) {
       console.log("0 mixed products found.");
+    } else if (mixed.length === 0) {
+      console.log("0 splittable mixed products found.");
     } else {
       console.log(`${mixed.length} mixed product(s) found (dry run — nothing written):\n`);
       for (const plan of mixed) {
@@ -83,6 +85,15 @@ async function main(): Promise<void> {
     if (skipped.length > 0) {
       console.log(`\n${skipped.length} Digiflazz product(s) are already single-region and will be left untouched.`);
     }
+    if (conflicts.length > 0) {
+      console.log(
+        `\n!! ${conflicts.length} mixed product(s) CANNOT be split due to a digiflazzBrand conflict with an existing product — will be left completely untouched:\n`,
+      );
+      for (const conflict of conflicts) {
+        console.log(`    ! ${conflict}`);
+      }
+      console.log("\n  Resolve these manually (e.g. delete/merge the stray duplicate) before re-running --apply.");
+    }
     console.log("\nRun again with --apply to perform the split.");
     await prisma.$disconnect();
     return;
@@ -97,6 +108,15 @@ async function main(): Promise<void> {
       "\nNote: the newly-created region products have no webImageUrl/description/whatYouGet/terms/warrantyNote — " +
         "fill those in from the catalog admin UI.",
     );
+  }
+  if (result.conflicts.length > 0) {
+    console.log(
+      `\n!! ${result.conflicts.length} mixed product(s) were SKIPPED (left completely untouched) due to a digiflazzBrand conflict with an existing product:\n`,
+    );
+    for (const conflict of result.conflicts) {
+      console.log(`    ! ${conflict}`);
+    }
+    console.log("\n  Resolve these manually (e.g. delete/merge the stray duplicate) and re-run --apply.");
   }
 
   await prisma.$disconnect();

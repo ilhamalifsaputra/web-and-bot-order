@@ -726,18 +726,39 @@ interface DigiflazzRegionGroup {
 export interface DigiflazzMixedProductPlan {
   productId: number;
   originalName: string;
+  /** The product's current slug, before any split — carried through so the
+   * writer can reuse it when the winning bucket's displayName turns out to
+   * equal `originalName` (see the conflict-avoidance note on `conflicts`
+   * below and Finding 1 of the b710f44 review: regenerating the slug in
+   * that case corrupts a live storefront URL for a product that isn't
+   * actually being renamed). */
+  originalSlug: string;
   categoryId: number;
   isActive: boolean;
   groups: DigiflazzRegionGroup[];
 }
 
 export interface DigiflazzMixedProductDetection {
-  /** Products found with 2+ distinct region buckets — need splitting. */
+  /** Products found with 2+ distinct region buckets — need splitting. Never
+   * includes a plan that has a digiflazzBrand collision; see `conflicts`. */
   mixed: DigiflazzMixedProductPlan[];
   /** Names of candidate Digiflazz products that are NOT mixed (a single
    * region bucket — including "every denomination unsuffixed") and are left
    * untouched. */
   skipped: string[];
+  /** Human-readable descriptions of mixed products that were found but
+   * CANNOT be split because one of their target region names (a group's
+   * `displayName`) already matches a DIFFERENT existing product's
+   * `digiflazzBrand` — e.g. a fresh region-aware import already created
+   * "Mobile Legends (Indonesia)" before this migration ran on old mixed
+   * "Mobile Legends" data. Splitting anyway would silently create a second
+   * product with the same digiflazzBrand, which downstream code
+   * (importDigiflazzBrand's findFirst, groupDigiflazzPriceListByBrand's
+   * brand map) would then resolve to one of the two duplicates arbitrarily.
+   * These products are entirely excluded from `mixed` (not partially
+   * split) — a human must resolve the collision (e.g. delete/merge the
+   * stray duplicate) and re-run. */
+  conflicts: string[];
 }
 
 /**
@@ -758,7 +779,7 @@ export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMix
     include: { denominations: true },
   });
 
-  const mixed: DigiflazzMixedProductPlan[] = [];
+  const mixedCandidates: DigiflazzMixedProductPlan[] = [];
   const skipped: string[] = [];
 
   for (const product of candidates) {
@@ -799,16 +820,52 @@ export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMix
       return (a.region ?? "").localeCompare(b.region ?? "");
     });
 
-    mixed.push({
+    mixedCandidates.push({
       productId: product.id,
       originalName: product.name,
+      originalSlug: product.slug,
       categoryId: product.categoryId,
       isActive: product.isActive,
       groups,
     });
   }
 
-  return { mixed, skipped };
+  // Finding 2 fix: neither Product.name nor Product.digiflazzBrand is
+  // unique in the schema, so splitting could otherwise create a second
+  // product sharing a digiflazzBrand with one that already exists (e.g. a
+  // fresh region-aware import ran for one of this brand's regions before
+  // this one-time migration processed the old mixed product). Check every
+  // candidate's target displayNames against the WHOLE catalog (not just the
+  // mixed candidates) in one query, then exclude any plan with a collision
+  // from `mixed` entirely rather than partially splitting it.
+  const allTargetNames = [...new Set(mixedCandidates.flatMap((plan) => plan.groups.map((g) => g.displayName)))];
+  const existingByTargetName =
+    allTargetNames.length === 0
+      ? []
+      : await db.product.findMany({
+          where: { digiflazzBrand: { in: allTargetNames } },
+          select: { id: true, name: true, digiflazzBrand: true },
+        });
+  const existingByBrand = new Map(existingByTargetName.map((p) => [p.digiflazzBrand!, p]));
+
+  const mixed: DigiflazzMixedProductPlan[] = [];
+  const conflicts: string[] = [];
+  for (const plan of mixedCandidates) {
+    const collidingGroup = plan.groups.find((g) => {
+      const existing = existingByBrand.get(g.displayName);
+      return existing != null && existing.id !== plan.productId;
+    });
+    if (collidingGroup) {
+      const existing = existingByBrand.get(collidingGroup.displayName)!;
+      conflicts.push(
+        `"${plan.originalName}" (product id ${plan.productId}) cannot be split: target name "${collidingGroup.displayName}" already belongs to a different existing product, "${existing.name}" (product id ${existing.id}). Resolve manually (e.g. delete or merge the stray duplicate) and re-run.`,
+      );
+      continue;
+    }
+    mixed.push(plan);
+  }
+
+  return { mixed, skipped, conflicts };
 }
 
 /**
@@ -837,11 +894,23 @@ export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMix
  * Idempotent: a second run finds zero mixed products (every split product's
  * denominations are now single-region, having had their suffix stripped by
  * the first run) and returns `skipped` with everything, all counts zero.
+ *
+ * `conflicts` (Finding 2 of the b710f44 review) carries forward any mixed
+ * products detectMixedDigiflazzProducts found but excluded from splitting
+ * because a target region name already belongs to a different existing
+ * product's digiflazzBrand — those products are left completely untouched
+ * (not partially split); see detectMixedDigiflazzProducts's doc comment.
  */
 export async function splitMixedDigiflazzProducts(
   db: PrismaClient,
-): Promise<{ productsSplit: number; productsCreated: number; denominationsMoved: number; skipped: string[] }> {
-  const { mixed, skipped } = await detectMixedDigiflazzProducts(db);
+): Promise<{
+  productsSplit: number;
+  productsCreated: number;
+  denominationsMoved: number;
+  skipped: string[];
+  conflicts: string[];
+}> {
+  const { mixed, skipped, conflicts } = await detectMixedDigiflazzProducts(db);
 
   let productsSplit = 0;
   let productsCreated = 0;
@@ -852,12 +921,21 @@ export async function splitMixedDigiflazzProducts(
     const allNewNames = plan.groups.map((g) => g.displayName);
 
     await db.$transaction(async (tx) => {
-      // Rename the ORIGINAL row in place. ensureUniqueSlug has no
-      // "exclude this row" clause, so regenerate the slug BEFORE the update,
-      // using the NEW name — safe since the composite name's slug will
-      // essentially never collide with the product's own current (about to
-      // be replaced) slug.
-      const winningSlug = await ensureUniqueSlug(tx, "product", winningGroup!.displayName);
+      // Rename the ORIGINAL row in place. Finding 1 fix: only regenerate the
+      // slug when the winning bucket's displayName actually differs from the
+      // product's current name — e.g. the "(unspecified)"/null-region bucket
+      // (which sorts first on ties) always has displayName === rawBrand ===
+      // the product's current name, so the product isn't really being
+      // renamed at all. ensureUniqueSlug has no "exclude this row" clause,
+      // so calling it unconditionally would see the product's OWN existing
+      // slug as "already taken" and silently append "-2" to it, breaking a
+      // live storefront URL for zero reason. Only regenerate (and only then
+      // risk a real collision, which is fine to resolve against this row's
+      // about-to-change slug) when the name is genuinely changing.
+      const nameChanged = winningGroup!.displayName !== plan.originalName;
+      const winningSlug = nameChanged
+        ? await ensureUniqueSlug(tx, "product", winningGroup!.displayName)
+        : plan.originalSlug;
       await updateCatalogProduct(tx, plan.productId, {
         name: winningGroup!.displayName,
         digiflazzBrand: winningGroup!.displayName,
@@ -902,5 +980,5 @@ export async function splitMixedDigiflazzProducts(
     productsCreated += otherGroups.length;
   }
 
-  return { productsSplit, productsCreated, denominationsMoved, skipped };
+  return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts };
 }

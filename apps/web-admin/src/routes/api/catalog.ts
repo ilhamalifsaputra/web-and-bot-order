@@ -551,6 +551,29 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ id, isActive: active });
   });
 
+  // Bulk twin of the single-row toggle above — same "active must be a
+  // boolean" validation, same bulkSetDenominationsActive helper (already
+  // accepted an id array; only the single-id route existed before this).
+  // Mirrors POST /api/catalog/products/bulk-active's shape exactly, one
+  // summary audit entry rather than one per denomination (matching that
+  // route's own "no targetId on a multi-row action" convention).
+  app.post("/api/catalog/denominations/bulk-active", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n)) : [];
+    if (ids.length === 0) return reply.code(400).send({ error: "At least one denomination id is required." });
+    if (typeof body.active !== "boolean") return reply.code(400).send({ error: "active must be a boolean." });
+    const active = body.active;
+
+    const count = await bulkSetDenominationsActive(prisma, ids, active);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "denomination_bulk_active",
+      targetType: "denomination",
+      details: `${active ? "Activated" : "Deactivated"} ${count} denomination${count === 1 ? "" : "s"}.`,
+    });
+    return reply.send({ ok: true, count });
+  });
+
   app.patch("/api/catalog/denominations/:id", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });

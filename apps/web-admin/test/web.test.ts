@@ -2455,6 +2455,54 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     });
   });
 
+  describe("POST /api/catalog/denominations/bulk-active", () => {
+    it("happy path: activates multiple denominations and audits with a count", async () => {
+      await prisma.denomination.update({ where: { id: seed.productId }, data: { isActive: false } });
+      const other = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: "Other Denom",
+        type: ProductType.SHARED,
+        durationLabel: "3 Months",
+        price: "15.00",
+        isActive: false,
+      });
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId, other.id],
+        active: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getDenomination(prisma, seed.productId))!.isActive).toBe(true);
+      expect((await getDenomination(prisma, other.id))!.isActive).toBe(true);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "denomination_bulk_active" } });
+      expect(audit?.details).toBe("Activated 2 denominations.");
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, { ids: [], active: false });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId],
+        active: "yes",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, null, "x", { ids: [seed.productId], active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, "bad-token", { ids: [seed.productId], active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("PATCH /api/catalog/products/:id", () => {
     it("happy path: updates name without changing category", async () => {
       const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {

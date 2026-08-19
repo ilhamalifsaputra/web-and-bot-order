@@ -75,6 +75,22 @@ const REGION_PREVIEW_RESPONSE = {
   ],
 };
 
+// An existing group (already imported) with region: null — verifies no visual
+// regression in the "Sudah ada" list for non-region-split brands.
+const EXISTING_NO_REGION_RESPONSE = {
+  groups: [
+    {
+      brand: "Mobile Legends",
+      rawBrand: "Mobile Legends",
+      region: null,
+      existingProductId: 42,
+      skus: [
+        { buyerSkuCode: "ml100", productName: "ML 100 Diamond", costPrice: "15000", suggestedPrice: "16500" },
+      ],
+    },
+  ],
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(apiGet).mockResolvedValue({ categories: [{ id: 1, name: "Top Up Game" }] });
@@ -229,5 +245,19 @@ describe("DigiflazzSyncPage", () => {
     await waitFor(() => screen.getByText(/sudah ada/i));
     const item = screen.getByText((_, el) => el?.tagName === "LI" && /mobile legends \(filipina\)/i.test(el.textContent ?? ""));
     expect(item).toHaveTextContent("Mobile Legends (Filipina) — 1 SKU(s)");
+  });
+
+  it("Task 4: renders exactly as before (no region badge) when an existing group has no region", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce(EXISTING_NO_REGION_RESPONSE);
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+    // An existing group with region: null renders in the read-only "Sudah ada"
+    // list with no region badge, just like the new-groups card test above.
+    await waitFor(() => screen.getByText(/sudah ada/i));
+    const item = screen.getByText((_, el) => el?.tagName === "LI" && /mobile legends/i.test(el.textContent ?? ""));
+    expect(item).toHaveTextContent("Mobile Legends — 1 SKU(s)");
+    expect(item).not.toHaveTextContent(/mobile legends\s*\(/i);
   });
 });

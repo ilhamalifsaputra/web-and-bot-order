@@ -27,6 +27,7 @@ import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFiel
 import {
   createTransaction,
   getPriceList,
+  parseProductRegion,
   digiflazzGroupKey,
   stripRegionSuffix,
   type DigiflazzCreds,
@@ -38,7 +39,13 @@ import { getSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
 import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm } from "./notifications";
 import { logAdminAction } from "./audit";
-import { createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
+import {
+  createCatalogProduct,
+  createDenomination,
+  updateDenomination,
+  updateCatalogProduct,
+  ensureUniqueSlug,
+} from "./catalog";
 
 /** Setting keys — not yet wired to any admin UI (a later task adds that);
  * this module is only the read-side resolver, matching the shape every other
@@ -690,4 +697,210 @@ export async function resyncDigiflazzCatalog(
   }
 
   return result;
+}
+
+// ---- One-time migration: split already-mixed-region Digiflazz products ----
+//
+// groupDigiflazzPriceListByBrand/importDigiflazzBrand (above) only fix NEW
+// imports going forward. A live catalog can already hold Products imported
+// BEFORE that fix, whose denominations mix several regions' SKUs together
+// under one brand (e.g. a single "Mobile Legends" Product with
+// Indonesia/Filipina/Russia/Brazil pricing all in one place). This section is
+// the one-time fix-up for those pre-existing rows; scripts/split-digiflazz-
+// regions.ts is its CLI entry point.
+
+/** One region bucket found on a mixed Product's denominations. `region: null`
+ * is the "(unspecified)" bucket — denominations whose `name` never carried a
+ * region suffix. `displayName` is the composite name/digiflazzBrand this
+ * bucket's Product will end up with (digiflazzGroupKey, same rule
+ * groupDigiflazzPriceListByBrand uses for fresh imports). */
+interface DigiflazzRegionGroup {
+  region: string | null;
+  displayName: string;
+  denominations: { id: number; name: string }[];
+}
+
+/** One mixed Product's split plan — read-only, no DB writes implied.
+ * `groups` is sorted winning-bucket-first (see detectMixedDigiflazzProducts),
+ * so `groups[0]` is always the bucket that keeps `productId`. */
+export interface DigiflazzMixedProductPlan {
+  productId: number;
+  originalName: string;
+  categoryId: number;
+  isActive: boolean;
+  groups: DigiflazzRegionGroup[];
+}
+
+export interface DigiflazzMixedProductDetection {
+  /** Products found with 2+ distinct region buckets — need splitting. */
+  mixed: DigiflazzMixedProductPlan[];
+  /** Names of candidate Digiflazz products that are NOT mixed (a single
+   * region bucket — including "every denomination unsuffixed") and are left
+   * untouched. */
+  skipped: string[];
+}
+
+/**
+ * Read-only detection: find every non-archived, Digiflazz-backed Product and
+ * group its denominations by `parseProductRegion(denomination.name)` (using
+ * `name`, not `durationLabel` — pre-migration rows carry the raw suffixed
+ * Digiflazz productName in `name`, which is what's needed to recover the
+ * region; see the module doc comment above).
+ *
+ * Pure/no-write — this is the single place the region-grouping and
+ * winner-selection logic lives. Both `splitMixedDigiflazzProducts` (the
+ * writer) and the migration script's `--dry-run`-by-default plan output call
+ * this, so the two can never drift out of sync with each other.
+ */
+export async function detectMixedDigiflazzProducts(db: Db): Promise<DigiflazzMixedProductDetection> {
+  const candidates = await db.product.findMany({
+    where: { digiflazzBrand: { not: null }, isArchived: false },
+    include: { denominations: true },
+  });
+
+  const mixed: DigiflazzMixedProductPlan[] = [];
+  const skipped: string[] = [];
+
+  for (const product of candidates) {
+    const byRegion = new Map<string | null, { id: number; name: string }[]>();
+    for (const denom of product.denominations) {
+      const region = parseProductRegion(denom.name);
+      const bucket = byRegion.get(region);
+      if (bucket) bucket.push({ id: denom.id, name: denom.name });
+      else byRegion.set(region, [{ id: denom.id, name: denom.name }]);
+    }
+
+    // Every denomination maps to the same region (including "all null" —
+    // never region-suffixed), or the product has no denominations at all:
+    // nothing to split. Recording it here (rather than only in the writer)
+    // is what makes a second run a true no-op end to end.
+    if (byRegion.size <= 1) {
+      skipped.push(product.name);
+      continue;
+    }
+
+    const rawBrand = product.digiflazzBrand!; // guaranteed by the findMany's where clause
+    const groups: DigiflazzRegionGroup[] = [...byRegion.entries()].map(([region, denominations]) => {
+      // Any one denomination's raw name is enough to derive this bucket's
+      // displayName — they all parse to the same region by construction.
+      const { displayName } = digiflazzGroupKey(rawBrand, denominations[0]!.name);
+      return { region, displayName, denominations };
+    });
+
+    // Winning bucket (keeps the original Product id): largest denomination
+    // count; ties broken alphabetically by region name, with the
+    // "(unspecified)" bucket sorting first (region ?? "" — an empty string
+    // sorts before any named region) — deterministic across repeated runs on
+    // the same data, which is what makes dry-run output reproducible.
+    groups.sort((a, b) => {
+      if (b.denominations.length !== a.denominations.length) {
+        return b.denominations.length - a.denominations.length;
+      }
+      return (a.region ?? "").localeCompare(b.region ?? "");
+    });
+
+    mixed.push({
+      productId: product.id,
+      originalName: product.name,
+      categoryId: product.categoryId,
+      isActive: product.isActive,
+      groups,
+    });
+  }
+
+  return { mixed, skipped };
+}
+
+/**
+ * The one-time write: split every already-mixed-region Digiflazz Product
+ * `detectMixedDigiflazzProducts` finds into one Product per region.
+ *
+ * Repurposes the original mixed Product as the winning region's Product
+ * (rename in place, keep its id) rather than archive-and-recreate — OrderItem
+ * never references Product.id (only Denomination.id, whose ids this function
+ * never changes), so this is a URL/id-continuity choice, not a
+ * data-integrity one. It also avoids leaving a permanently archived,
+ * denomination-less Product cluttering the catalog (hard-delete is refused
+ * once a Product ever had denominations), and keeps each product's split as
+ * one small transaction.
+ *
+ * One `db.$transaction` per mixed Product, not one catalog-wide transaction:
+ * a bad brand can't block every other brand's split, and this doesn't hold
+ * SQLite's single-writer lock across a full-catalog scan.
+ *
+ * Deliberately does NOT copy webImageUrl/description/whatYouGet/terms/
+ * warrantyNote onto the newly-created region Products — that copy was
+ * written for the generic mixed brand and may say something region-
+ * inaccurate (e.g. IDR-specific copy on a Brazil product); left empty for an
+ * admin to fill in (the migration script's printed summary calls this out).
+ *
+ * Idempotent: a second run finds zero mixed products (every split product's
+ * denominations are now single-region, having had their suffix stripped by
+ * the first run) and returns `skipped` with everything, all counts zero.
+ */
+export async function splitMixedDigiflazzProducts(
+  db: PrismaClient,
+): Promise<{ productsSplit: number; productsCreated: number; denominationsMoved: number; skipped: string[] }> {
+  const { mixed, skipped } = await detectMixedDigiflazzProducts(db);
+
+  let productsSplit = 0;
+  let productsCreated = 0;
+  let denominationsMoved = 0;
+
+  for (const plan of mixed) {
+    const [winningGroup, ...otherGroups] = plan.groups;
+    const allNewNames = plan.groups.map((g) => g.displayName);
+
+    await db.$transaction(async (tx) => {
+      // Rename the ORIGINAL row in place. ensureUniqueSlug has no
+      // "exclude this row" clause, so regenerate the slug BEFORE the update,
+      // using the NEW name — safe since the composite name's slug will
+      // essentially never collide with the product's own current (about to
+      // be replaced) slug.
+      const winningSlug = await ensureUniqueSlug(tx, "product", winningGroup!.displayName);
+      await updateCatalogProduct(tx, plan.productId, {
+        name: winningGroup!.displayName,
+        digiflazzBrand: winningGroup!.displayName,
+        slug: winningSlug,
+      });
+      // Strip the region suffix on the denominations staying put too, for
+      // consistency with what fresh imports now produce (Task 2).
+      for (const denom of winningGroup!.denominations) {
+        const stripped = stripRegionSuffix(denom.name);
+        await updateDenomination(tx, denom.id, { name: stripped, durationLabel: stripped });
+      }
+
+      for (const group of otherGroups) {
+        const newProduct = await createCatalogProduct(tx, {
+          categoryId: plan.categoryId,
+          name: group.displayName,
+          digiflazzBrand: group.displayName,
+          isActive: plan.isActive,
+        });
+        for (const denom of group.denominations) {
+          const stripped = stripRegionSuffix(denom.name);
+          // denom.id is never touched — only productId/name/durationLabel.
+          await updateDenomination(tx, denom.id, {
+            productId: newProduct.id,
+            name: stripped,
+            durationLabel: stripped,
+          });
+          denominationsMoved++;
+        }
+      }
+
+      await logAdminAction(tx, {
+        adminId: null,
+        action: "digiflazz_catalog_region_split",
+        targetType: "product",
+        targetId: plan.productId,
+        details: `Split mixed-region product "${plan.originalName}" into ${plan.groups.length} region products: ${allNewNames.join(", ")}.`,
+      });
+    });
+
+    productsSplit++;
+    productsCreated += otherGroups.length;
+  }
+
+  return { productsSplit, productsCreated, denominationsMoved, skipped };
 }

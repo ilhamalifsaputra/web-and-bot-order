@@ -45,6 +45,8 @@ import {
   isDigiflazzPriceOverridden,
   importDigiflazzBrand,
   resyncDigiflazzCatalog,
+  detectMixedDigiflazzProducts,
+  splitMixedDigiflazzProducts,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
@@ -934,5 +936,232 @@ describe("resyncDigiflazzCatalog", () => {
       const entries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
       expect(entries).toHaveLength(0);
     });
+  });
+});
+
+// Task 3: migration for products imported BEFORE Task 2's region-aware
+// grouping/stripping fix — a single Product whose denominations mix several
+// regions' pricing together (the real "Mobile Legends" bug: Indonesia/
+// Filipina/Russia/Brazil all under one brand).
+describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
+  /** Seed one Digiflazz Product with denominations spread across 4 regions
+   * with UNEVEN counts (Indonesia 4 > Filipina 3 > Russia 2 > Brazil 1) so
+   * there's an unambiguous largest-bucket winner — mirrors the real bug:
+   * pre-migration rows carry the raw, still-suffixed Digiflazz productName in
+   * `name` (created directly here, not via importDigiflazzBrand, which would
+   * already strip it). */
+  async function seedMixedProduct(categoryId: number) {
+    const product = await createCatalogProduct(prisma, {
+      categoryId,
+      name: "Mobile Legends",
+      digiflazzBrand: "Mobile Legends",
+    });
+    const regionCounts: [string, number][] = [
+      ["Indonesia", 4],
+      ["Filipina", 3],
+      ["Russia", 2],
+      ["Brazil", 1],
+    ];
+    const denomIdsByRegion = new Map<string, number[]>();
+    let sku = 0;
+    for (const [region, count] of regionCounts) {
+      const ids: number[] = [];
+      for (let i = 0; i < count; i++) {
+        sku++;
+        const denom = await createDenomination(prisma, {
+          productId: product.id,
+          name: `Mobile Legends ${100 * (i + 1)} Diamond (${region})`,
+          type: "SHARED",
+          durationLabel: `Mobile Legends ${100 * (i + 1)} Diamond (${region})`,
+          price: "16500",
+          autoDeliverySource: "digiflazz",
+          supplierSku: `ml-${region}-${sku}`,
+        });
+        ids.push(denom.id);
+      }
+      denomIdsByRegion.set(region, ids);
+    }
+    return { product, denomIdsByRegion };
+  }
+
+  it("splits a 4-region mixed product into 4 Products; the winner (largest bucket) keeps the original id, denomination ids are unchanged, and names are stripped", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product, denomIdsByRegion } = await seedMixedProduct(category.id);
+    const allDenomIdsBefore = [...denomIdsByRegion.values()].flat().sort();
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result).toEqual({ productsSplit: 1, productsCreated: 3, denominationsMoved: 3 + 2 + 1, skipped: [] });
+
+    const allProducts = await prisma.product.findMany({
+      where: { digiflazzBrand: { in: ["Mobile Legends (Indonesia)", "Mobile Legends (Filipina)", "Mobile Legends (Russia)", "Mobile Legends (Brazil)"] } },
+      include: { denominations: true },
+    });
+    expect(allProducts).toHaveLength(4);
+
+    // Indonesia has the largest bucket (4) — it wins and keeps the original
+    // product id.
+    const indonesia = allProducts.find((p) => p.name === "Mobile Legends (Indonesia)")!;
+    expect(indonesia.id).toBe(product.id);
+    expect(indonesia.slug).not.toBe("mobile-legends"); // slug regenerated for the new composite name
+    expect(indonesia.denominations).toHaveLength(4);
+
+    const filipina = allProducts.find((p) => p.name === "Mobile Legends (Filipina)")!;
+    expect(filipina.id).not.toBe(product.id);
+    expect(filipina.denominations).toHaveLength(3);
+
+    const russia = allProducts.find((p) => p.name === "Mobile Legends (Russia)")!;
+    expect(russia.denominations).toHaveLength(2);
+
+    const brazil = allProducts.find((p) => p.name === "Mobile Legends (Brazil)")!;
+    expect(brazil.denominations).toHaveLength(1);
+
+    // Denomination ids are never touched by the split — only
+    // productId/name/durationLabel change. Compare the full id set before
+    // and after.
+    const allDenomIdsAfter = allProducts.flatMap((p) => p.denominations.map((d) => d.id)).sort();
+    expect(allDenomIdsAfter).toEqual(allDenomIdsBefore);
+
+    // name/durationLabel had the region suffix stripped on every moved AND
+    // stayed denomination.
+    for (const p of allProducts) {
+      for (const denom of p.denominations) {
+        expect(denom.name).not.toContain("(");
+        expect(denom.durationLabel).not.toContain("(");
+      }
+    }
+  });
+
+  it("is a full no-op on a second run over the same (now-split) data", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await seedMixedProduct(category.id);
+    await splitMixedDigiflazzProducts(prisma);
+
+    const second = await splitMixedDigiflazzProducts(prisma);
+    expect(second.productsSplit).toBe(0);
+    expect(second.productsCreated).toBe(0);
+    expect(second.denominationsMoved).toBe(0);
+    expect(second.skipped.sort()).toEqual(
+      ["Mobile Legends (Indonesia)", "Mobile Legends (Filipina)", "Mobile Legends (Russia)", "Mobile Legends (Brazil)"].sort(),
+    );
+
+    // detectMixedDigiflazzProducts (the read-only side the dry-run script
+    // uses) agrees: nothing mixed remains.
+    const detection = await detectMixedDigiflazzProducts(prisma);
+    expect(detection.mixed).toHaveLength(0);
+  });
+
+  it("leaves an unrelated non-mixed Digiflazz product untouched and reports it in skipped", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await seedMixedProduct(category.id);
+
+    // Single-region product (every row's name maps to the same region).
+    const singleRegionProduct = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Free Fire (Indonesia)",
+      digiflazzBrand: "Free Fire (Indonesia)",
+    });
+    const ffDenom = await createDenomination(prisma, {
+      productId: singleRegionProduct.id,
+      name: "100 Diamond (Indonesia)",
+      type: "SHARED",
+      durationLabel: "100 Diamond (Indonesia)",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-id-100",
+    });
+
+    // No-region-at-all product (every row unsuffixed).
+    const noRegionProduct = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Pulsa Telkomsel",
+      digiflazzBrand: "Pulsa Telkomsel",
+    });
+    await createDenomination(prisma, {
+      productId: noRegionProduct.id,
+      name: "Pulsa 10.000",
+      type: "SHARED",
+      durationLabel: "Pulsa 10.000",
+      price: "10500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "pulsa-10k",
+    });
+
+    const result = await splitMixedDigiflazzProducts(prisma);
+    expect(result.skipped.sort()).toEqual(["Free Fire (Indonesia)", "Pulsa Telkomsel"].sort());
+    expect(result.productsSplit).toBe(1); // only the seeded mixed product
+
+    // Untouched: same id, same denomination, same name — nothing rewritten.
+    const ffAfter = await prisma.product.findUniqueOrThrow({ where: { id: singleRegionProduct.id } });
+    expect(ffAfter.name).toBe("Free Fire (Indonesia)");
+    const ffDenomAfter = await prisma.denomination.findUniqueOrThrow({ where: { id: ffDenom.id } });
+    expect(ffDenomAfter.name).toBe("100 Diamond (Indonesia)"); // NOT stripped — this product was never mixed
+  });
+
+  it("calls logAdminAction exactly once per split product, with adminId: null", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product } = await seedMixedProduct(category.id);
+
+    await splitMixedDigiflazzProducts(prisma);
+
+    const entries = await prisma.auditLog.findMany({
+      where: { action: "digiflazz_catalog_region_split", targetId: product.id },
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.adminId).toBeNull();
+    expect(entries[0]!.details).toContain("Mobile Legends");
+    expect(entries[0]!.details).toContain("4 region products");
+  });
+
+  it("tie-breaks the winning region alphabetically when two buckets have equal counts", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Free Fire",
+      digiflazzBrand: "Free Fire",
+    });
+    // Zulu and Alpha tie at 1 denomination each — "Alpha" sorts first.
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamond (Zulu)",
+      type: "SHARED",
+      durationLabel: "100 Diamond (Zulu)",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-zulu",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamond (Alpha)",
+      type: "SHARED",
+      durationLabel: "100 Diamond (Alpha)",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-alpha",
+    });
+
+    await splitMixedDigiflazzProducts(prisma);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Free Fire (Alpha)");
+  });
+
+  it("detectMixedDigiflazzProducts is read-only — computes the same plan without writing anything", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product } = await seedMixedProduct(category.id);
+
+    const detection = await detectMixedDigiflazzProducts(prisma);
+    expect(detection.mixed).toHaveLength(1);
+    expect(detection.mixed[0]!.productId).toBe(product.id);
+    expect(detection.mixed[0]!.groups.map((g) => g.region).sort()).toEqual(
+      ["Brazil", "Filipina", "Indonesia", "Russia"].sort(),
+    );
+    // Winning bucket (largest count) is first.
+    expect(detection.mixed[0]!.groups[0]!.region).toBe("Indonesia");
+
+    // Nothing was written — same name/id, same denomination names.
+    const unchanged = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(unchanged.name).toBe("Mobile Legends");
+    const denoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(denoms.every((d) => d.name.includes("("))).toBe(true);
   });
 });

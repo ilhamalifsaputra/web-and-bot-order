@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { getPriceList, createTransaction, verifyCallback } from "./digiflazz";
+import {
+  getPriceList,
+  createTransaction,
+  verifyCallback,
+  parseProductRegion,
+  stripRegionSuffix,
+  digiflazzGroupKey,
+} from "./digiflazz";
 
 const CREDS = { username: "shop01", apiKey: "s3cr3t-key" };
 const WEBHOOK_SECRET = "wh-s3cr3t";
@@ -239,5 +246,128 @@ describe("verifyCallback", () => {
     expect(result?.status).toBe("Gagal");
     expect(result?.message).toBe("Stok kosong");
     expect(result?.sn).toBeNull();
+  });
+});
+
+describe("parseProductRegion", () => {
+  it("returns null when there are no parens at all", () => {
+    expect(parseProductRegion("Mobile Legends 86 Diamonds")).toBeNull();
+    expect(parseProductRegion("Foo Bar")).toBeNull();
+    expect(parseProductRegion("")).toBeNull();
+  });
+
+  it("extracts a real region suffix like (Filipina)", () => {
+    expect(parseProductRegion("Mobile Legends 22 Diamonds (Filipina)")).toBe("Filipina");
+    expect(parseProductRegion("Foo (Indonesia)")).toBe("Indonesia");
+    expect(parseProductRegion("Product (Brazil)")).toBe("Brazil");
+  });
+
+  it("returns null for denylisted annotations (case-insensitive)", () => {
+    expect(parseProductRegion("Foo (Instant)")).toBeNull();
+    expect(parseProductRegion("Foo (INSTANT)")).toBeNull();
+    expect(parseProductRegion("Foo (instant)")).toBeNull();
+    expect(parseProductRegion("Foo (Proses Cepat)")).toBeNull();
+    expect(parseProductRegion("Foo (PROSES CEPAT)")).toBeNull();
+    expect(parseProductRegion("Foo (proses cepat)")).toBeNull();
+  });
+
+  it("returns null for duration patterns like (1-3 Menit)", () => {
+    expect(parseProductRegion("Foo (1-3 Menit)")).toBeNull();
+    expect(parseProductRegion("Foo (2-4 Menit)")).toBeNull();
+    expect(parseProductRegion("Foo (1-2 Jam)")).toBeNull();
+    expect(parseProductRegion("Foo (1-7 Hari)")).toBeNull();
+    expect(parseProductRegion("Foo (1-3 menit)")).toBeNull();
+    expect(parseProductRegion("Foo (1-3 JAM)")).toBeNull();
+  });
+
+  it("considers only the trailing parenthetical in a multi-paren string", () => {
+    expect(parseProductRegion("Foo (Bar) (Indonesia)")).toBe("Indonesia");
+    expect(parseProductRegion("A (B) (C) (Filipina)")).toBe("Filipina");
+  });
+
+  it("handles whitespace edge cases correctly", () => {
+    expect(parseProductRegion("Foo   (Indonesia)")).toBe("Indonesia");
+    expect(parseProductRegion("Foo(Indonesia)")).toBe("Indonesia");
+    expect(parseProductRegion("Foo (Indonesia)   ")).toBe("Indonesia");
+    expect(parseProductRegion("Foo   (Indonesia)   ")).toBe("Indonesia");
+  });
+
+  it("trims whitespace from the captured region", () => {
+    expect(parseProductRegion("Foo ( Indonesia )")).toBe("Indonesia");
+    expect(parseProductRegion("Foo (  Filipina  )")).toBe("Filipina");
+  });
+});
+
+describe("stripRegionSuffix", () => {
+  it("returns the input unchanged when there are no parens", () => {
+    expect(stripRegionSuffix("Mobile Legends 86 Diamonds")).toBe("Mobile Legends 86 Diamonds");
+    expect(stripRegionSuffix("Foo Bar")).toBe("Foo Bar");
+  });
+
+  it("strips a real region suffix", () => {
+    expect(stripRegionSuffix("Mobile Legends 22 Diamonds (Filipina)")).toBe("Mobile Legends 22 Diamonds");
+    expect(stripRegionSuffix("Foo (Indonesia)")).toBe("Foo");
+  });
+
+  it("returns the input unchanged for denylisted annotations", () => {
+    expect(stripRegionSuffix("Foo (Instant)")).toBe("Foo (Instant)");
+    expect(stripRegionSuffix("Foo (INSTANT)")).toBe("Foo (INSTANT)");
+    expect(stripRegionSuffix("Foo (1-3 Menit)")).toBe("Foo (1-3 Menit)");
+    expect(stripRegionSuffix("Foo (Proses Cepat)")).toBe("Foo (Proses Cepat)");
+  });
+
+  it("only strips the trailing group in multi-paren strings", () => {
+    expect(stripRegionSuffix("Foo (Bar) (Indonesia)")).toBe("Foo (Bar)");
+    expect(stripRegionSuffix("A (B) (C) (Filipina)")).toBe("A (B) (C)");
+  });
+
+  it("preserves whitespace when not stripping", () => {
+    expect(stripRegionSuffix("Foo   (Instant)")).toBe("Foo   (Instant)");
+    expect(stripRegionSuffix("Foo   (1-3 Menit)")).toBe("Foo   (1-3 Menit)");
+  });
+
+  it("handles whitespace edge cases when stripping", () => {
+    expect(stripRegionSuffix("Foo   (Indonesia)")).toBe("Foo");
+    expect(stripRegionSuffix("Foo(Indonesia)")).toBe("Foo");
+    expect(stripRegionSuffix("Foo (Indonesia)   ")).toBe("Foo");
+  });
+});
+
+describe("digiflazzGroupKey", () => {
+  it("returns region: null and displayName === brand when no parens are present", () => {
+    const result = digiflazzGroupKey("Mobile Legends", "Mobile Legends 86 Diamonds");
+    expect(result.brand).toBe("Mobile Legends");
+    expect(result.region).toBeNull();
+    expect(result.displayName).toBe("Mobile Legends");
+  });
+
+  it("extracts region and builds displayName from a real region suffix", () => {
+    const result = digiflazzGroupKey("Mobile Legends", "Mobile Legends 22 Diamonds (Filipina)");
+    expect(result.brand).toBe("Mobile Legends");
+    expect(result.region).toBe("Filipina");
+    expect(result.displayName).toBe("Mobile Legends (Filipina)");
+  });
+
+  it("returns region: null for denylisted annotations", () => {
+    const result1 = digiflazzGroupKey("Foo", "Foo (Instant)");
+    expect(result1.region).toBeNull();
+    expect(result1.displayName).toBe("Foo");
+
+    const result2 = digiflazzGroupKey("Bar", "Bar (1-3 Menit)");
+    expect(result2.region).toBeNull();
+    expect(result2.displayName).toBe("Bar");
+  });
+
+  it("uses only the trailing group in multi-paren strings", () => {
+    const result = digiflazzGroupKey("Product", "Product (Bar) (Indonesia)");
+    expect(result.region).toBe("Indonesia");
+    expect(result.displayName).toBe("Product (Indonesia)");
+  });
+
+  it("is deterministic across the same inputs", () => {
+    const input1 = digiflazzGroupKey("ML", "Mobile Legends (Filipina)");
+    const input2 = digiflazzGroupKey("ML", "Mobile Legends (Filipina)");
+    expect(input1.region).toBe(input2.region);
+    expect(input1.displayName).toBe(input2.displayName);
   });
 });

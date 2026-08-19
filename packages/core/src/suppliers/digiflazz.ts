@@ -130,6 +130,91 @@ function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem {
   };
 }
 
+/**
+ * Extract a region code from the trailing parenthetical of a Digiflazz product name.
+ *
+ * Applies the regex `/\s*\(([^)]+)\)\s*$/` to match a trailing parenthetical suffix,
+ * trimming and returning the captured text, or `null` if no match or the match is denylisted.
+ *
+ * **Denylist guard**: Not every trailing parenthetical is a region — Digiflazz also uses
+ * parens for delivery-speed annotations like `"(Instant)"`, `"(1-3 Menit)"`, or
+ * `"(Proses Cepat)"`. The denylist is case-insensitive and includes:
+ * - `INSTANT`
+ * - `/^\d+-\d+\s*(menit|jam|hari)$/i` (duration patterns like "1-3 Menit", "2 Jam")
+ * - `PROSES CEPAT`
+ *
+ * A denylisted match always returns `null`, never a false split.
+ *
+ * **Note**: This denylist should be extended (verified against the admin's `/sync/preview`
+ * screen) if a future non-region annotation starts incorrectly splitting a brand.
+ * This is the highest-risk part of catalog sync; test coverage is critical.
+ */
+export function parseProductRegion(productName: string): string | null {
+  const match = productName.match(/\s*\(([^)]+)\)\s*$/);
+  if (!match) return null;
+
+  const captured = match[1]!.trim();
+
+  // Check denylist (case-insensitive)
+  const upper = captured.toUpperCase();
+
+  // Exact matches
+  if (upper === "INSTANT" || upper === "PROSES CEPAT") {
+    return null;
+  }
+
+  // Duration pattern: e.g., "1-3 Menit", "2 Jam", "30 Hari"
+  if (/^\d+-\d+\s*(menit|jam|hari)$/i.test(captured)) {
+    return null;
+  }
+
+  return captured;
+}
+
+/**
+ * Strip a region suffix from a Digiflazz product name if present.
+ *
+ * Uses `parseProductRegion` internally to determine whether the trailing
+ * parenthetical is a region. Only strips if `parseProductRegion` returns
+ * non-null, ensuring the two functions never disagree about what counts
+ * as a region.
+ *
+ * Input with no region suffix passes through completely unchanged (same
+ * string, same whitespace).
+ */
+export function stripRegionSuffix(productName: string): string {
+  if (parseProductRegion(productName) === null) {
+    return productName;
+  }
+  // Strip the trailing parenthetical: match and remove everything from the last
+  // non-whitespace char of the opening paren onwards, plus any trailing whitespace
+  return productName.replace(/\s*\([^)]+\)\s*$/, "");
+}
+
+/**
+ * Generate a grouping key from a Digiflazz brand and product name.
+ *
+ * Returns an object with:
+ * - `brand`: the input brand unchanged
+ * - `region`: the result of `parseProductRegion(productName)` (null if no region)
+ * - `displayName`: if a region is present, `"${brand} (${region})"`, otherwise just `brand`
+ *
+ * The `displayName` is the value later used as both `Product.name` and
+ * `Product.digiflazzBrand` during catalog sync. This function must be deterministic
+ * and is depended on by downstream grouping and migration logic.
+ */
+export function digiflazzGroupKey(
+  brand: string,
+  productName: string,
+): { brand: string; region: string | null; displayName: string } {
+  const region = parseProductRegion(productName);
+  return {
+    brand,
+    region,
+    displayName: region ? `${brand} (${region})` : brand,
+  };
+}
+
 export interface DigiflazzTransactionResult {
   refId: string;
   status: DigiflazzStatus;

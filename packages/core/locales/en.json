@@ -197,6 +197,7 @@
   "error.order_already_delivered": "This order has already been delivered.",
   "error.order_not_found": "Order not found.",
   "error.order_not_processing": "This order is no longer awaiting fulfilment — it may have already been processed.",
+  "error.order_not_digiflazz": "This order isn't a single-item Digiflazz-routed order, so it can't be auto-fulfilled this way.",
   "error.order_paid_needs_credit": "This order was already paid — credit it to the buyer's balance instead of rejecting/cancelling it, so the payment isn't lost.",
   "error.order_terminal": "This order is already closed and can't be credited.",
   "error.order_not_pending": "This order can no longer be paid.",

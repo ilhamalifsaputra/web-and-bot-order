@@ -1,10 +1,14 @@
 // Digiflazz webhook (POST /pay/digiflazz/callback) — Task 3 (original pilot
-// plan). Deliberately simpler trust model than the TokoPay/PayDisini/
-// NOWPayments callbacks in this directory: verifyCallback's signature check
-// (@app/core/suppliers/digiflazz) IS the trust boundary — no live
-// re-confirmation call, no amount/short-payment check, no ledger dedup table.
-// Idempotency instead comes from fulfillDigiflazzOrder's own atomic
-// PROCESSING -> DELIVERED claim (packages/db/src/crud/digiflazz.ts). Pattern:
+// plan), hardened by Task 12 (backend audit 2026-08-21, I-1/I-4): the
+// callback's signature (verifyCallback, @app/core/suppliers/digiflazz) only
+// authenticates that SOME signed request named this refId — it does NOT bind
+// `status`, so it is no longer trusted to decide what happens. Every callback
+// that names a single-item Digiflazz order triggers a fresh
+// createTransaction(refId) call (idempotent by refId per this client's own
+// doc comment) and the handler acts on THAT live result, never on cb.status.
+// Idempotency against a duplicate/replayed live-Sukses report still comes
+// from fulfillDigiflazzOrder's own atomic PROCESSING -> DELIVERED claim
+// (packages/db/src/crud/digiflazz.ts). Pattern:
 // apps/storefront/test/tokopay-webhook.test.ts.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { createHash } from "node:crypto";
@@ -23,6 +27,18 @@ vi.mock("@app/db", async (orig) => {
     alertDigiflazzDispatchFailed: vi.fn(actual.alertDigiflazzDispatchFailed),
   };
 });
+// Task 12: the webhook now calls createTransaction as a live re-verification
+// step — mock it (this file never makes a real HTTP call), same
+// vi.hoisted + importOriginal pattern packages/db/src/crud/digiflazz.test.ts
+// already uses, so verifyCallback/parseProductRegion/etc. stay real and only
+// createTransaction is stubbed.
+const digiflazzSupplierMock = vi.hoisted(() => ({
+  createTransaction: vi.fn(),
+}));
+vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@app/core/suppliers/digiflazz")>()),
+  createTransaction: digiflazzSupplierMock.createTransaction,
+}));
 
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
@@ -70,6 +86,7 @@ function signedPayload(args: { refId: string; status?: string; sn?: string; mess
 let app: FastifyInstance;
 let userId: number;
 let denomId: number;
+let plainDenomId: number;
 
 beforeAll(async () => {
   await initDb();
@@ -94,6 +111,20 @@ beforeAll(async () => {
   });
   denomId = denom.id;
 
+  // Task 12 (I-4): a plain, NOT Digiflazz-routed denomination (no
+  // autoDeliverySource) — for the "callback names an order that isn't
+  // Digiflazz-routed" test below.
+  const plainProduct = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Manual Webhook Test Product" });
+  const plainDenom = await createDenomination(prisma, {
+    productId: plainProduct.id,
+    name: "Manual Webhook Test Product",
+    type: "SHARED",
+    durationLabel: "1x",
+    price: "5000",
+    deliveryType: "manual",
+  });
+  plainDenomId = plainDenom.id;
+
   // Real telegramId (not null, unlike the guest-buyer pattern the other
   // callback tests use) — fulfillDigiflazzOrder's buyer receipt DM
   // (enqueueManualDeliveredDm, packages/db/src/crud/notifications.ts) is a
@@ -115,6 +146,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await enableDigiflazz();
+  digiflazzSupplierMock.createTransaction.mockReset();
 });
 
 /** Create a PROCESSING order directly (bypassing checkout/cart/the dispatch
@@ -133,6 +165,25 @@ async function createProcessingDigiflazzOrder(orderCode: string, totalAmount = "
       customerData: JSON.stringify([{ user_id: "123456789" }]),
       items: {
         create: [{ productId: denomId, quantity: 1, unitPrice: totalAmount, warrantyDaysSnapshot: 0 }],
+      },
+    },
+  });
+}
+
+/** Same shape, but routed to the plain (non-Digiflazz) denomination — for
+ * the "callback names an order that isn't Digiflazz-routed" test. */
+async function createProcessingPlainOrder(orderCode: string, totalAmount = "5000") {
+  return prisma.order.create({
+    data: {
+      orderCode,
+      userId,
+      subtotalAmount: totalAmount,
+      totalAmount,
+      status: "PROCESSING",
+      currency: "IDR",
+      paymentMethod: "TOKOPAY",
+      items: {
+        create: [{ productId: plainDenomId, quantity: 1, unitPrice: totalAmount, warrantyDaysSnapshot: 0 }],
       },
     },
   });
@@ -164,9 +215,21 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(res.json()).toEqual({ status: "unmatched" });
   });
 
-  it("happy path: a Sukses callback delivers the order and enqueues the buyer's receipt DM", async () => {
+  // Task 12 (I-1) regression guard: the callback's OWN status/sn must no
+  // longer be trusted — the handler re-verifies live via createTransaction
+  // before acting. Here the callback says Sukses/SN-STALE, but the mocked
+  // live re-check reports the real (matching) Sukses/SN-12345 — the order
+  // still delivers, using the FRESH sn, not cb.sn.
+  it("happy path: a Sukses callback whose live re-check also reports Sukses delivers the order and enqueues the buyer's receipt DM", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFHAPPY");
-    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-12345" });
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Sukses",
+      sn: "SN-12345",
+      message: "ok",
+      price: null,
+    });
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-STALE" });
 
     const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
     expect(res.statusCode).toBe(200);
@@ -174,16 +237,28 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("DELIVERED");
-    expect(updated!.deliveredContent).toBe("SN-12345");
+    expect(updated!.deliveredContent).toBe("SN-12345"); // the live re-check's sn, not cb.sn
 
     const dmRows = await prisma.notificationOutbox.findMany({
       where: { orderId: order.id, event: "ORDER_MANUAL_DELIVERED_DM" },
     });
     expect(dmRows.length).toBeGreaterThan(0);
+
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ refId: order.orderCode, buyerSkuCode: "ml100" }),
+    );
   });
 
   it("is idempotent: a replayed/duplicate Sukses callback for an already-delivered order still 200s without re-delivering", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFREPLAY");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Sukses",
+      sn: "SN-1",
+      message: "ok",
+      price: null,
+    });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
     const first = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
@@ -198,9 +273,41 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.deliveredContent).toBe("SN-1"); // unchanged by the replay
   });
 
+  // Task 12 (I-1) core proof: a captured/replayed Sukses callback whose live
+  // re-check no longer confirms Sukses (simulating a callback that's stale,
+  // forged, or replayed after Digiflazz's real status moved on) must NOT
+  // deliver — this is the actual vulnerability the task fixes.
+  it("a Sukses callback whose live re-check returns Pending does not deliver the order (stale/replayed callback guard)", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFSTALE");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Pending",
+      sn: null,
+      message: null,
+      price: null,
+    });
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-FORGED" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+    expect(updated!.deliveredContent).toBeNull();
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
   it("a Gagal callback enqueues an admin alert and leaves the order PROCESSING", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await createProcessingDigiflazzOrder("ORD-DFGAGAL");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Gagal",
+      sn: null,
+      message: "Saldo tidak cukup",
+      price: null,
+    });
     const payload = signedPayload({ refId: order.orderCode, status: "Gagal", message: "Saldo tidak cukup" });
 
     const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
@@ -222,6 +329,13 @@ describe("POST /pay/digiflazz/callback", () => {
   it("a Gagal callback whose admin alert throws still 200s instead of 500ing", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await createProcessingDigiflazzOrder("ORD-DFGAGALTHROWS");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Gagal",
+      sn: null,
+      message: "Saldo tidak cukup",
+      price: null,
+    });
     const payload = signedPayload({ refId: order.orderCode, status: "Gagal", message: "Saldo tidak cukup" });
 
     vi.mocked(alertDigiflazzDispatchFailed).mockImplementationOnce(() => {
@@ -238,6 +352,13 @@ describe("POST /pay/digiflazz/callback", () => {
 
   it("a Pending callback takes no action and leaves the order PROCESSING", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFPENDING");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Pending",
+      sn: null,
+      message: null,
+      price: null,
+    });
     const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
 
     const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
@@ -246,5 +367,41 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
+  });
+
+  // Task 12 (I-4): a validly-signed callback naming an order that isn't
+  // actually Digiflazz-routed (e.g. a plain manual order) must be refused
+  // before any live re-check is attempted — resolveSingleDigiflazzItem's
+  // guard, not a bare "order found" check.
+  it("returns unmatched for a validly-signed callback naming an order that isn't Digiflazz-routed, without calling the live re-check", async () => {
+    const order = await createProcessingPlainOrder("ORD-DFNOTDIGI");
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "unmatched" });
+
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+  });
+
+  // Task 12 (I-1): the live re-check itself can fail (network error, timeout,
+  // malformed response — same failure modes dispatchPendingDigiflazzOrders's
+  // own try/catch already handles). Must not take any delivery action and
+  // must still 200 (so Digiflazz doesn't retry-storm the endpoint) — leaving
+  // the order PROCESSING for a future callback or the next poller tick.
+  it("leaves the order PROCESSING and still 200s when the live re-check itself throws", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFLIVEFAIL");
+    digiflazzSupplierMock.createTransaction.mockRejectedValue(new Error("Digiflazz transaction failed: request timed out"));
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+    expect(updated!.deliveredContent).toBeNull();
   });
 });

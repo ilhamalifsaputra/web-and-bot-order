@@ -67,6 +67,8 @@ import {
   getDigiflazzCreds,
   fulfillDigiflazzOrder,
   alertDigiflazzDispatchFailed,
+  resolveSingleDigiflazzItem,
+  buildDigiflazzCustomerNo,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -89,7 +91,10 @@ import {
   verifyIpn,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
-import { verifyCallback as verifyDigiflazzCallback } from "@app/core/suppliers/digiflazz";
+import {
+  verifyCallback as verifyDigiflazzCallback,
+  createTransaction as createDigiflazzTransaction,
+} from "@app/core/suppliers/digiflazz";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
@@ -1260,15 +1265,27 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Digiflazz webhook (public; signature is the auth) ----
   //
-  // Simpler trust model than the three gateways above, by design (Task 3,
-  // original pilot plan): verifyDigiflazzCallback's signature check
-  // (@app/core/suppliers/digiflazz) IS the trust boundary here — no live
-  // re-confirmation call, no amount/short-payment check, no ledger dedup
-  // table. Idempotency instead comes from fulfillDigiflazzOrder's own atomic
-  // PROCESSING -> DELIVERED claim (packages/db/src/crud/digiflazz.ts): a
-  // replayed/duplicate Sukses callback for an order the dispatch poller (or
-  // an earlier callback) already delivered throws there, caught below as an
-  // expected race rather than a real failure.
+  // Task 12 fix (backend audit 2026-08-21, I-1/I-4): verifyDigiflazzCallback's
+  // signature (@app/core/suppliers/digiflazz) does NOT bind `status` —
+  // md5(refId + ":" + secretKey) is a function of refId alone — so a captured
+  // callback (logging proxy, TLS-inspecting appliance, leaked access log) is
+  // a forgeable, non-expiring token: replaying it with status: "Sukses" and
+  // any sn would previously have auto-delivered the order. `cb` is now used
+  // ONLY to authenticate that some signed request named this refId and to
+  // look up the order — never again to decide what to actually do. What
+  // actually happens is decided by a FRESH createTransaction(refId) call:
+  // this client's own createTransaction is documented as idempotent by refId
+  // (a repeat call with the same refId returns the existing transaction
+  // rather than creating a new one — packages/core/src/suppliers/digiflazz.ts),
+  // so calling it again here IS a live status re-check, built entirely from a
+  // function this codebase already calls elsewhere (dispatchPendingDigiflazzOrders)
+  // for exactly this SKU/order — no new supplier API surface.
+  //
+  // Idempotency against a duplicate/replayed live-Sukses report still comes
+  // from fulfillDigiflazzOrder's own atomic PROCESSING -> DELIVERED claim
+  // (packages/db/src/crud/digiflazz.ts): a replayed callback for an order the
+  // dispatch poller (or an earlier callback) already delivered throws there,
+  // caught below as an expected race rather than a real failure.
   app.post("/pay/digiflazz/callback", async (req, reply) => {
     // Payment-3-style hardening — see the TokoPay callback above.
     if (webhookRateLimited("digiflazz", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
@@ -1289,9 +1306,47 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
-    if (cb.status === "Sukses") {
+    // I-4: confirm this order is actually a single-item Digiflazz-routed
+    // order before doing anything else — a callback naming a manually-
+    // fulfilled (or otherwise non-Digiflazz) order that happens to be
+    // PROCESSING must never reach fulfillDigiflazzOrder. This branch means
+    // the callback itself is suspect/mismatched, not that a legitimate
+    // dispatch failed, so no alert is raised here.
+    const resolution = resolveSingleDigiflazzItem(order);
+    if (!resolution.ok) {
+      logger.warn(
+        `Digiflazz callback for order ${order.orderCode} but it isn't a single-item Digiflazz order (${resolution.reason}) — ignoring`,
+      );
+      return reply.send({ status: "unmatched" });
+    }
+
+    const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
+
+    let result;
+    try {
+      result = await createDigiflazzTransaction(creds, {
+        refId: cb.refId,
+        buyerSkuCode: resolution.supplierSku,
+        customerNo,
+      });
+    } catch (err) {
+      // The live re-check's HTTP call itself failed (network error, timeout,
+      // malformed response — same failure modes dispatchPendingDigiflazzOrders's
+      // own try/catch already handles). err's message is already
+      // credential-free (fetchDigiflazzJson's own guarantee) — never log err
+      // itself. Take no delivery action; leave the order PROCESSING for a
+      // future callback or the next poller tick, matching this client's
+      // "unrecognised status treated as Pending" philosophy elsewhere.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
+      return reply.send({ status: "ok" });
+    }
+
+    // Branch on the FRESH result.status from the live re-check — NOT
+    // cb.status — this is the actual trust-model fix.
+    if (result.status === "Sukses") {
       try {
-        await fulfillDigiflazzOrder(prisma, order.id, { sn: cb.sn ?? "" });
+        await fulfillDigiflazzOrder(prisma, order.id, { sn: result.sn ?? "" });
         nudgeOutboxDispatcher(); // same as the other gateways — buyer DM was just enqueued
       } catch (err) {
         // fulfillDigiflazzOrder throws if the order isn't PROCESSING anymore
@@ -1300,7 +1355,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         // Digiflazz stops retrying.
         logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
       }
-    } else if (cb.status === "Gagal") {
+    } else if (result.status === "Gagal") {
       // Same "needs a human" alert dispatchPendingDigiflazzOrders itself
       // raises when Digiflazz reports Gagal synchronously — reused here
       // rather than duplicated so the alert text/audit trail stay identical
@@ -1309,7 +1364,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         await alertDigiflazzDispatchFailed(
           prisma,
           order,
-          `Digiflazz callback reported Gagal${cb.message ? ` (${cb.message})` : ""}`,
+          `Digiflazz callback reported Gagal${result.message ? ` (${result.message})` : ""}`,
         );
       } catch (err) {
         // Same guarantee as the Sukses branch above: a transient failure here

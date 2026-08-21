@@ -36,6 +36,7 @@ import {
   buildDigiflazzCustomerNo,
   dispatchPendingDigiflazzOrders,
   fulfillDigiflazzOrder,
+  resolveSingleDigiflazzItem,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   DIGIFLAZZ_ENABLED_KEY,
@@ -140,6 +141,44 @@ describe("buildDigiflazzCustomerNo", () => {
     };
     const customerData = JSON.stringify([{ user_id: "123456789", server_id: "" }]);
     expect(buildDigiflazzCustomerNo(product, customerData)).toBe("123456789");
+  });
+});
+
+describe("resolveSingleDigiflazzItem", () => {
+  function line(overrides: {
+    quantity?: number;
+    supplierSku?: string | null;
+    autoDeliverySource?: string | null;
+    additionalFields?: string | null;
+  } = {}) {
+    return {
+      quantity: overrides.quantity ?? 1,
+      product: {
+        supplierSku: "supplierSku" in overrides ? overrides.supplierSku! : "ml100",
+        additionalFields: overrides.additionalFields ?? null,
+        autoDeliverySource: "autoDeliverySource" in overrides ? overrides.autoDeliverySource! : "digiflazz",
+      },
+    };
+  }
+
+  it("resolves ok:true for exactly one Digiflazz-routed item at quantity 1", () => {
+    const result = resolveSingleDigiflazzItem({ items: [line()] });
+    expect(result).toEqual({ ok: true, supplierSku: "ml100", product: { additionalFields: null } });
+  });
+
+  it("resolves ok:false when the order has no Digiflazz-routed item", () => {
+    const result = resolveSingleDigiflazzItem({ items: [line({ autoDeliverySource: null })] });
+    expect(result.ok).toBe(false);
+  });
+
+  it("resolves ok:false when the single Digiflazz item's quantity is more than 1", () => {
+    const result = resolveSingleDigiflazzItem({ items: [line({ quantity: 2 })] });
+    expect(result.ok).toBe(false);
+  });
+
+  it("resolves ok:false when the order has more than one Digiflazz-routed line", () => {
+    const result = resolveSingleDigiflazzItem({ items: [line(), line({ supplierSku: "ff100" })] });
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -372,6 +411,26 @@ describe("fulfillDigiflazzOrder", () => {
     const order = await makeProcessingDigiflazzOrder();
     await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-1" });
     await expect(fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-2" })).rejects.toThrow();
+  });
+
+  // I-4 fix (backend audit 2026-08-21): fulfillDigiflazzOrder must refuse to
+  // deliver an order whose item isn't actually Digiflazz-routed, regardless
+  // of caller — sample.product here is a plain denomination (no
+  // autoDeliverySource set), so this order never should have reached this
+  // function in the first place.
+  it("throws and leaves the order untouched when the order's item isn't Digiflazz-routed", async () => {
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+
+    await expect(fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-1" })).rejects.toThrow();
+
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
+    expect(refreshed!.deliveredContent).toBeNull();
   });
 });
 

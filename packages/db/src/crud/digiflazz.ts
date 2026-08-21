@@ -96,6 +96,50 @@ export function buildDigiflazzCustomerNo(
     .join(" ");
 }
 
+/**
+ * The single "is this order a valid one-unit Digiflazz dispatch?" rule,
+ * shared by dispatchPendingDigiflazzOrders (the poller) and
+ * fulfillDigiflazzOrder's order-kind guard, and by the storefront webhook's
+ * live re-verification flow (checkout.ts POST /pay/digiflazz/callback).
+ * Refuses (never throws) unless there is EXACTLY ONE Digiflazz-routed item at
+ * quantity 1 — see the N1 defense-in-depth note this was extracted from,
+ * below in dispatchPendingDigiflazzOrders' history.
+ */
+export type DigiflazzItemResolution =
+  | { ok: true; supplierSku: string; product: { additionalFields: string | null } }
+  | { ok: false; reason: string };
+
+export function resolveSingleDigiflazzItem(order: {
+  items: {
+    quantity: number;
+    product: { supplierSku: string | null; additionalFields: string | null; autoDeliverySource: string | null };
+  }[];
+}): DigiflazzItemResolution {
+  // I6 fix: don't assume the Digiflazz-routed item is order.items[0] — an
+  // order can carry other, non-Digiflazz lines alongside it (or none at all,
+  // for an order that isn't Digiflazz-routed in the first place).
+  const digiflazzItems = order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
+  const item = digiflazzItems[0];
+  const supplierSku = item?.product.supplierSku;
+  if (!item || !supplierSku) {
+    return { ok: false, reason: "the SKU has no supplierSku configured" };
+  }
+
+  // N1 defense-in-depth: exactly ONE Digiflazz unit per order — either a
+  // single line with quantity > 1, or more than one Digiflazz-routed line in
+  // the same order, both count as "more than 1 unit" from the supplier's
+  // point of view and must be refused rather than partially dispatched.
+  if (digiflazzItems.length !== 1 || item.quantity !== 1) {
+    const reason =
+      digiflazzItems.length === 1
+        ? `this order's Digiflazz item has quantity ${item.quantity} — auto-delivery only supports quantity 1 per order, needs manual review`
+        : `this order has ${digiflazzItems.length} Digiflazz line(s) totaling quantity ${digiflazzItems.reduce((sum, i) => sum + i.quantity, 0)} — auto-delivery only supports a single line of quantity 1 per order, needs manual review`;
+    return { ok: false, reason };
+  }
+
+  return { ok: true, supplierSku, product: { additionalFields: item.product.additionalFields } };
+}
+
 /** Minimal shape dispatchPendingDigiflazzOrders needs per candidate order —
  * a narrower include than orders.ts's full getOrder, since the poller only
  * needs enough to place the supplier order and, on failure, alert admins. */
@@ -228,46 +272,20 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     if (claim.count !== 1) continue;
     summary.claimed++;
 
-    // I6 fix: the candidate query's own filter is `some: { product: {
-    // autoDeliverySource: "digiflazz" } } }` — it does NOT guarantee that
-    // item is order.items[0]. Select the actual Digiflazz-routed item(s)
-    // explicitly, matching the same field the query filtered on, instead of
-    // implicitly relying on array order (an order whose Digiflazz item
-    // wasn't first used to either raise a bogus "no supplierSku" alert or
-    // dispatch the WRONG SKU to the supplier).
-    const digiflazzItems = order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
-    const item = digiflazzItems[0];
-    const supplierSku = item?.product.supplierSku;
-    if (!item || !supplierSku) {
-      await alertDigiflazzDispatchFailed(db, order, "the SKU has no supplierSku configured");
+    // I6/N1 fixes: resolveSingleDigiflazzItem is the single shared rule for
+    // "find the order's Digiflazz-routed item(s) and refuse unless there is
+    // exactly one at quantity 1" — see its doc comment above for the two
+    // failure shapes (no/unconfigured item vs. more than one unit) it
+    // distinguishes.
+    const resolution = resolveSingleDigiflazzItem(order);
+    if (!resolution.ok) {
+      await alertDigiflazzDispatchFailed(db, order, resolution.reason);
       summary.failed++;
       continue;
     }
+    const { supplierSku } = resolution;
 
-    // N1 defense-in-depth: this poller places exactly ONE supplier
-    // top-up per order and then marks the WHOLE order DELIVERED, so it must
-    // never dispatch when the order's Digiflazz allocation isn't exactly one
-    // unit — whether that shows up as a single line with quantity > 1, or as
-    // more than one Digiflazz-routed line in the same order (both are
-    // "more than 1 unit" from the supplier's point of view). The front door
-    // for this (storefront's cart-add / cart-update routes) is closed
-    // separately; this is the backstop for anything that slips past it — a
-    // pre-existing PROCESSING order from before that fix shipped, an admin
-    // manually creating/editing an order, or a future code path nobody
-    // thought to gate. Genuine multi-unit supplier dispatch (N separate
-    // createTransaction calls / SNs) is out of scope by design — this only
-    // refuses and alerts, it never attempts to dispatch more than one unit.
-    if (digiflazzItems.length !== 1 || item.quantity !== 1) {
-      const reason =
-        digiflazzItems.length === 1
-          ? `this order's Digiflazz item has quantity ${item.quantity} — auto-delivery only supports quantity 1 per order, needs manual review`
-          : `this order has ${digiflazzItems.length} Digiflazz line(s) totaling quantity ${digiflazzItems.reduce((sum, i) => sum + i.quantity, 0)} — auto-delivery only supports a single line of quantity 1 per order, needs manual review`;
-      await alertDigiflazzDispatchFailed(db, order, reason);
-      summary.failed++;
-      continue;
-    }
-
-    const customerNo = buildDigiflazzCustomerNo(item.product, order.customerData);
+    const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
 
     try {
       const result = await createTransaction(creds, {
@@ -332,6 +350,16 @@ export async function fulfillDigiflazzOrder(
 ) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
+
+  // I-4 fix (backend audit 2026-08-21): refuse to deliver an order that
+  // isn't actually a single-unit Digiflazz-routed order, regardless of
+  // caller — the single choke-point this function's every current AND
+  // future caller (the poller, the webhook's live re-check, any later
+  // caller) is forced through, rather than trusting each call site to have
+  // already checked.
+  if (!resolveSingleDigiflazzItem(order).ok) {
+    throw new ValidationError("error.order_not_digiflazz");
+  }
 
   const now = new Date();
   const claim = await db.order.updateMany({

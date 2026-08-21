@@ -246,11 +246,11 @@ describe("POST /pay/digiflazz/callback", () => {
 
     expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ refId: order.orderCode, buyerSkuCode: "ml100" }),
+      expect.objectContaining({ refId: order.orderCode, buyerSkuCode: "ml100", customerNo: "123456789" }),
     );
   });
 
-  it("is idempotent: a replayed/duplicate Sukses callback for an already-delivered order still 200s without re-delivering", async () => {
+  it("is idempotent: a replayed/duplicate Sukses callback for an already-delivered order still 200s without re-delivering or re-checking live", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFREPLAY");
     digiflazzSupplierMock.createTransaction.mockResolvedValue({
       refId: order.orderCode,
@@ -264,9 +264,15 @@ describe("POST /pay/digiflazz/callback", () => {
     const first = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
     expect(first.json()).toEqual({ status: "ok" });
 
+    // The order is DELIVERED after the first call, so the second replay is
+    // now refused by the order.status !== PROCESSING guard before it ever
+    // reaches the live re-check (review fix, post-Task-12) — a strictly
+    // better outcome than the previous "call createTransaction again, then
+    // rely on fulfillDigiflazzOrder's atomic claim to catch the race".
     const second = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
     expect(second.statusCode).toBe(200);
-    expect(second.json()).toEqual({ status: "ok" }); // fulfillDigiflazzOrder's race is caught, not surfaced as an error
+    expect(second.json()).toEqual({ status: "unmatched" });
+    expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1); // not called again on replay
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("DELIVERED");
@@ -296,6 +302,36 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.status).toBe("PROCESSING");
     expect(updated!.deliveredContent).toBeNull();
     expect(digiflazzSupplierMock.createTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  // Review fix (Minor #6): unlike the other Gagal/Pending tests above (which
+  // mock the live re-check to MATCH the callback's own status, so they'd
+  // still pass even if the handler regressed to trusting cb.status
+  // directly), this one deliberately MISMATCHES them — callback says Sukses,
+  // live re-check says Gagal — so it actually catches a regression back to
+  // reading cb.status instead of result.status.
+  it("takes the Gagal path (not Sukses) when the callback claims Sukses but the live re-check disagrees", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await createProcessingDigiflazzOrder("ORD-DFMISMATCH");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Gagal",
+      sn: null,
+      message: "Saldo tidak cukup",
+      price: null,
+    });
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-FORGED" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING"); // NOT delivered
+    expect(updated!.deliveredContent).toBeNull();
+
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull(); // Gagal path was taken, same alert as the other Gagal tests
   });
 
   it("a Gagal callback enqueues an admin alert and leaves the order PROCESSING", async () => {
@@ -367,6 +403,32 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
+  });
+
+  // Review fix (Important, post-Task-12): a validly-signed replay for an
+  // order that has already left PROCESSING (delivered, cancelled, refunded,
+  // ...) must never reach the live re-check — otherwise every replay of a
+  // valid signature turns into real supplier traffic (a live POST
+  // /transaction to Digiflazz), relying solely on Digiflazz's own unverified
+  // refId-dedup assumption to avoid a second real top-up. The guard runs
+  // BEFORE resolveSingleDigiflazzItem/createTransaction, so it also covers
+  // this order being a genuine single-item Digiflazz order.
+  it("returns unmatched for a validly-signed Sukses callback naming an order that is already DELIVERED, without calling the live re-check", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFDELIVERED");
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { status: "DELIVERED", deliveredContent: "SN-ALREADY", deliveredAt: new Date() },
+    });
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-REPLAY" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "unmatched" });
+
+    expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("DELIVERED");
+    expect(updated!.deliveredContent).toBe("SN-ALREADY"); // unchanged by the replay
   });
 
   // Task 12 (I-4): a validly-signed callback naming an order that isn't

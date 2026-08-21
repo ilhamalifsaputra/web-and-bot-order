@@ -96,19 +96,18 @@ export function buildDigiflazzCustomerNo(
     .join(" ");
 }
 
+export type DigiflazzItemResolution =
+  | { ok: true; supplierSku: string; product: { additionalFields: string | null } }
+  | { ok: false; reason: string };
+
 /**
  * The single "is this order a valid one-unit Digiflazz dispatch?" rule,
  * shared by dispatchPendingDigiflazzOrders (the poller) and
  * fulfillDigiflazzOrder's order-kind guard, and by the storefront webhook's
  * live re-verification flow (checkout.ts POST /pay/digiflazz/callback).
  * Refuses (never throws) unless there is EXACTLY ONE Digiflazz-routed item at
- * quantity 1 — see the N1 defense-in-depth note this was extracted from,
- * below in dispatchPendingDigiflazzOrders' history.
+ * quantity 1.
  */
-export type DigiflazzItemResolution =
-  | { ok: true; supplierSku: string; product: { additionalFields: string | null } }
-  | { ok: false; reason: string };
-
 export function resolveSingleDigiflazzItem(order: {
   items: {
     quantity: number;
@@ -120,8 +119,15 @@ export function resolveSingleDigiflazzItem(order: {
   // for an order that isn't Digiflazz-routed in the first place).
   const digiflazzItems = order.items.filter((i) => i.product.autoDeliverySource === "digiflazz");
   const item = digiflazzItems[0];
-  const supplierSku = item?.product.supplierSku;
-  if (!item || !supplierSku) {
+  if (!item) {
+    // Hit by a plain (non-Digiflazz) order, e.g. the storefront webhook
+    // looking up an order that isn't Digiflazz-routed at all — distinct from
+    // the "item exists but is misconfigured" case below so the message
+    // doesn't imply a Digiflazz item exists when there simply isn't one.
+    return { ok: false, reason: "this order has no Digiflazz-routed item" };
+  }
+  const supplierSku = item.product.supplierSku;
+  if (!supplierSku) {
     return { ok: false, reason: "the SKU has no supplierSku configured" };
   }
 

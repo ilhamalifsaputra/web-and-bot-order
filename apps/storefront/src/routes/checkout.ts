@@ -94,6 +94,7 @@ import {
 import {
   verifyCallback as verifyDigiflazzCallback,
   createTransaction as createDigiflazzTransaction,
+  type DigiflazzTransactionResult,
 } from "@app/core/suppliers/digiflazz";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
@@ -1306,6 +1307,24 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
+    // Review fix (Important, post-Task-12): only an order still PROCESSING
+    // can legitimately need a live re-check — a legitimate callback for an
+    // in-flight order always finds it PROCESSING (fulfillDigiflazzOrder's own
+    // atomic claim downstream requires exactly that). Refusing here for any
+    // other status (DELIVERED, CANCELLED, REFUNDED, ...) is a pure narrowing
+    // with no behavior change for the legitimate path, and closes off an
+    // otherwise-valid replayed callback from turning into a real
+    // POST /transaction to Digiflazz for an order that's already settled —
+    // defense-in-depth on top of createTransaction's documented (but
+    // unverified — see its ⚠ ASSUMPTION note, @app/core/suppliers/digiflazz)
+    // refId-dedup behavior, not a replacement for it.
+    if (order.status !== OrderStatus.PROCESSING) {
+      logger.warn(
+        `Digiflazz callback for order ${order.orderCode} but it is no longer PROCESSING (status: ${order.status}) — ignoring without a live re-check`,
+      );
+      return reply.send({ status: "unmatched" });
+    }
+
     // I-4: confirm this order is actually a single-item Digiflazz-routed
     // order before doing anything else — a callback naming a manually-
     // fulfilled (or otherwise non-Digiflazz) order that happens to be
@@ -1322,7 +1341,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
 
-    let result;
+    let result: DigiflazzTransactionResult;
     try {
       result = await createDigiflazzTransaction(creds, {
         refId: cb.refId,
@@ -1364,7 +1383,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         await alertDigiflazzDispatchFailed(
           prisma,
           order,
-          `Digiflazz callback reported Gagal${result.message ? ` (${result.message})` : ""}`,
+          `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}`,
         );
       } catch (err) {
         // Same guarantee as the Sukses branch above: a transient failure here

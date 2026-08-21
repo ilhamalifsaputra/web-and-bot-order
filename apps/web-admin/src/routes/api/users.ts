@@ -21,7 +21,7 @@ import {
   type UserFilter,
   type UserSort,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 
 const ROLES = [UserRole.CUSTOMER, UserRole.RESELLER] as string[];
@@ -149,8 +149,9 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
 
   // Exports the full filtered result set (not just the current page) as a CSV
   // download — listUsers defaults to take: 20, so this must pass an explicit
-  // override or the export would silently truncate.
-  app.get("/api/users/export", { preHandler: currentAdmin }, async (req, reply) => {
+  // override or the export would silently truncate. Gated to non-readonly
+  // roles (C-1, security audit 2026-08-21).
+  app.get("/api/users/export", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const filter = buildUserFilter(q);
     const users = await listUsers(prisma, { ...filter, sort: "newest", limit: 100000 });

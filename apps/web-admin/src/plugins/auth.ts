@@ -123,6 +123,23 @@ export const requireSuper: preHandlerHookHandler[] = [
   },
 ];
 
+/**
+ * Guard a read route that exposes account credentials or a bulk export:
+ * `readonly` is refused, `support` and `super` keep today's full access.
+ * Reads were previously open to every authenticated admin (see the RBAC
+ * note above `canMutate`); this narrows exactly the five credential/export
+ * routes named in the C-1 finding (security audit 2026-08-21), rather than
+ * changing what any read route or role can do more broadly.
+ */
+export const blockReadonlyReads: preHandlerHookHandler[] = [
+  currentAdmin,
+  async (req, reply) => {
+    if (req.admin?.role === "readonly") {
+      return reply.code(403).type("text/plain").send("This view isn't available to your role.");
+    }
+  },
+];
+
 const authPlugin: FastifyPluginAsync = async (app) => {
   app.decorateRequest("admin", null);
 };

@@ -28,7 +28,7 @@ import {
   customerLabel,
   type OrderFilter,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
 import { displayDate, displayDateTime } from "../../dateDisplay";
 
@@ -156,8 +156,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
 
   // Exports the full filtered result set (not just the current page) as a CSV
   // download — `listOrders` defaults to `take: 50`, so this must pass an
-  // explicit override or the export would silently truncate.
-  app.get("/api/orders/export", { preHandler: currentAdmin }, async (req, reply) => {
+  // explicit override or the export would silently truncate. Gated to
+  // non-readonly roles (C-1, security audit 2026-08-21).
+  app.get("/api/orders/export", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const filter = buildOrderFilter(q);
     const orders = await listOrders(prisma, { ...filter, limit: 100000 });

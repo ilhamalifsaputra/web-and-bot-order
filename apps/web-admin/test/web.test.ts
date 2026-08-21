@@ -5774,6 +5774,105 @@ describe("rbac", () => {
   });
 });
 
+// ---- Read-side role gate on credential/export routes (C-1, backend audit
+// 2026-08-21) — `roleGate`/`canMutate` above only ever ran on mutations;
+// these five GET routes returned account credentials or full CSV/JSON
+// exports to every authenticated admin, including `readonly` (the default
+// role for every newly-created admin). Fix: `blockReadonlyReads` in
+// src/plugins/auth.ts, applied only to these five routes. -----------------
+
+describe("read-side role gate — credential/export routes (C-1)", () => {
+  const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
+
+  it("GET /api/stock/:productId (credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("items");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("items");
+  });
+
+  it("GET /api/stock/:productId/download (plaintext credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/plain");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("GET /api/orders/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/orders/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/orders/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/csv");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/orders/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/csv");
+  });
+
+  it("GET /api/users/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/users/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/users/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toBe("text/csv; charset=utf-8");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/users/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toBe("text/csv; charset=utf-8");
+  });
+
+  it("GET /api/settings/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/settings/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/settings/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("fields");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/settings/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("fields");
+  });
+
+  // Explicitly out of scope (brief, C-1): the aggregate stock-health CSV
+  // carries no credentials and must stay open to readonly.
+  it("GET /api/stock/export stays open to readonly (out of scope for C-1)", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const res = await get("/api/stock/export", seed.cookie);
+    expect(res.statusCode).toBe(200);
+  });
+});
+
 // ---- 2FA (TOTP) + session management (Tier 3 §10) -------------------------
 
 describe("2fa", () => {

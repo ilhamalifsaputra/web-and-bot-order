@@ -35,7 +35,7 @@ import {
   otpauthUri,
 } from "../../auth";
 import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { getTokenValidator, getChannelValidator, getBotAdminValidator, getJoinUrlResolver, matchesExpectedType } from "../../lib/telegramCheck";
 import { CONNECTION_TESTS } from "../../lib/connectionTest";
 
@@ -408,8 +408,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   // included: export omits every SECRET_KEYS field entirely (not redacted —
   // structurally absent), and import defensively skips any secret key present
   // in an uploaded file even though a file produced by this same export could
-  // never contain one.
-  app.get("/api/settings/export", { preHandler: currentAdmin }, async (req, reply) => {
+  // never contain one. Gated to non-readonly roles (C-1, security audit
+  // 2026-08-21).
+  app.get("/api/settings/export", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const rows = await listAllSettings(prisma);
     const currentValues: Record<string, string> = {};
     for (const r of rows) currentValues[r.key] = r.value;

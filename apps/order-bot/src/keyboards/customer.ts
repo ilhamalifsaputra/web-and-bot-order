@@ -10,6 +10,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
+import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
@@ -49,6 +50,13 @@ interface ProductLike {
   id: number;
   name: string;
   price: Decimal.Value;
+  /** Gates purchasability in denominationDetailKb — only AUTO SKUs ever carry
+   * StockItem rows, so non-AUTO SKUs must never be gated on stock count.
+   * Typed as `string` (not the `DeliveryType` union) because it's populated
+   * straight from Prisma's generated Denomination row, which types the
+   * `delivery_type` column as a plain string — same as OrderLike.status
+   * above and how checkout.ts's `product.deliveryType` is typed. */
+  deliveryType: string;
 }
 interface OrderLike {
   id: number;
@@ -250,8 +258,18 @@ export function denominationDetailKb(
   parentProductId: number | null = null,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
-  if (availableStock > 0) {
-    qty = Math.max(1, Math.min(qty, availableStock));
+  // Stock rows only ever exist for AUTO SKUs (manual/manual_with_info skip
+  // reservation entirely) — gating purchasability on availableStock for a
+  // non-AUTO SKU would always see 0 and permanently show "Notify me when back
+  // in stock" instead of "Buy Now", including for the entire Digiflazz
+  // catalog (every imported SKU is manual_with_info).
+  const purchasable = denom.deliveryType !== DeliveryType.AUTO || availableStock > 0;
+  if (purchasable) {
+    // Non-AUTO SKUs never have stock rows, so the qty-stepper bounds can't use
+    // availableStock (always 0) — cap against MAX_CART_ORDER_UNITS instead,
+    // the same limit the storefront's cart checkout applies to manual items.
+    const maxQty = denom.deliveryType === DeliveryType.AUTO ? availableStock : MAX_CART_ORDER_UNITS;
+    qty = Math.max(1, Math.min(qty, maxQty));
     const dec5: Btn =
       qty > 1
         ? { text: "−5", data: cb("qty", denom.id, qty, "dec5") }
@@ -261,11 +279,11 @@ export function denominationDetailKb(
         ? { text: "−", data: cb("qty", denom.id, qty, "dec") }
         : { text: "−", data: cb("noop") };
     const inc: Btn =
-      qty < availableStock
+      qty < maxQty
         ? { text: "+", data: cb("qty", denom.id, qty, "inc") }
         : { text: "+", data: cb("noop") };
     const inc5: Btn =
-      qty < availableStock
+      qty < maxQty
         ? { text: "+5", data: cb("qty", denom.id, qty, "inc5") }
         : { text: "+5", data: cb("noop") };
     rows.push([dec5, dec, { text: String(qty), data: cb("noop") }, inc, inc5]);

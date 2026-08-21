@@ -23,7 +23,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -1061,7 +1061,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb emits an active dec5/inc5 stepper row for a mid-range qty", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       10,
@@ -1076,7 +1076,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops dec/dec5 at qty=1", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       1,
@@ -1093,7 +1093,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops inc/inc5 at qty=stock", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       5,
       "en",
       5,
@@ -1136,7 +1136,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb includes a Refresh button above Back for in-stock and out-of-stock cases", () => {
     const inStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       1,
@@ -1145,7 +1145,7 @@ describe("product detail: sold count + refresh", () => {
     expect(inStockFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
 
     const outOfStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       0,
       "en",
       1,
@@ -1154,11 +1154,82 @@ describe("product detail: sold count + refresh", () => {
     expect(outFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
   });
 
+  it("denominationDetailKb shows Buy Now (never Restock) for a non-AUTO SKU with zero stock rows", () => {
+    // Manual/manual_with_info SKUs (every Digiflazz-imported denomination
+    // included) never have StockItem rows by design — availableStock is
+    // always 0 for them, but that must never gate purchasability.
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      0,
+      "en",
+      1,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:buy:${sample.product.id}:1`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:restock:sub:${sample.product.id}`)).toBe(false);
+  });
+
+  it("denominationDetailKb caps the qty stepper at MAX_CART_ORDER_UNITS (not availableStock=0) for a non-AUTO SKU", () => {
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      0,
+      "en",
+      MAX_CART_ORDER_UNITS,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    // At qty === MAX_CART_ORDER_UNITS, +/+5 must no-op (capped), not because
+    // availableStock (0) was mistakenly used as the ceiling.
+    const inc = flat.find((b) => b.text === "+")!;
+    const inc5 = flat.find((b) => b.text === "+5")!;
+    expect(inc.callback_data).toBe("v1:noop");
+    expect(inc5.callback_data).toBe("v1:noop");
+    expect(flat.some((b) => b.callback_data === `v1:buy:${sample.product.id}:${MAX_CART_ORDER_UNITS}`)).toBe(true);
+  });
+
   it("routes v1:browse:refresh through routeCallback and re-renders the detail bubble", async () => {
     const { ctx, sink } = customerCtx({ callbackData: `v1:browse:refresh:${sample.product.id}:1` });
     await routeCallback(ctx);
     expect(sentIncludes(sink, sample.product.name)).toBe(true);
     expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+  });
+});
+
+// ===========================================================================
+// Audit fix (Task 8, Critical): every manual/Digiflazz SKU was unbuyable —
+// denominationDetailKb gated "Buy Now" on availableStock > 0, and manual/
+// manual_with_info SKUs (which include every Digiflazz-imported denomination)
+// never have StockItem rows by design, so the customer only ever saw "Notify
+// me when back in stock". A browse-path test is required here (not one that
+// calls showOrderConfirmation directly, like the pre-existing regression test
+// in customer-info.test.ts) because the buyer could never actually reach
+// showOrderConfirmation through the keyboard — this drives the real
+// browseDenomination handler that renders the keyboard the buyer taps.
+// ===========================================================================
+
+describe("browseDenomination — manual/manual_with_info SKUs are buyable (Task 8 audit fix)", () => {
+  async function makeManualWithInfoDenom() {
+    const category = await createCategory(prisma, `manual-info-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Info ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual Info Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+    });
+    await updateDenomination(prisma, denom.id, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    return denom;
+  }
+
+  it("browseDenomination renders a v1:buy: button for a MANUAL_WITH_INFO denomination with zero stock rows", async () => {
+    const denom = await makeManualWithInfoDenom();
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(0);
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, denom.id);
+
+    expect(sentIncludes(sink, `v1:buy:${denom.id}:1`)).toBe(true);
+    expect(sentIncludes(sink, `v1:restock:sub:${denom.id}`)).toBe(false);
   });
 });
 

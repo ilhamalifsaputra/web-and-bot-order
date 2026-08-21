@@ -113,17 +113,35 @@ export async function getPriceList(creds: DigiflazzCreds): Promise<DigiflazzPric
     HTTP_TIMEOUT_MS.gatewayRead, // catalog sync poll — the next tick retries if this is slow
   )) as { data?: unknown };
   const rows = Array.isArray(body.data) ? body.data : [];
-  return rows.map((raw) => toPriceListItem(raw as Record<string, unknown>));
+  const items: DigiflazzPriceListItem[] = [];
+  let skipped = 0;
+  for (const raw of rows) {
+    const item = toPriceListItem(raw as Record<string, unknown>);
+    if (item === null) {
+      skipped++;
+      continue;
+    }
+    items.push(item);
+  }
+  if (skipped > 0) {
+    logger.warn(`Digiflazz price list: skipped ${skipped} row(s) with an invalid or non-positive price`);
+  }
+  return items;
 }
 
-function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem {
+/** Returns null (row skipped by the caller) when the supplier's price for
+ * this row is missing, unparseable, non-finite, or not strictly positive —
+ * see `toDecimalOrNull`. Never returns an item with a placeholder price. */
+function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem | null {
+  const price = toDecimalOrNull(d.price);
+  if (price === null) return null;
   return {
     buyerSkuCode: str(d.buyer_sku_code) ?? "",
     productName: str(d.product_name) ?? "",
     category: str(d.category),
     brand: str(d.brand),
     type: str(d.type),
-    price: toDecimalOrZero(d.price),
+    price,
     buyerProductStatus: d.buyer_product_status === true,
     sellerProductStatus: d.seller_product_status === true,
     stock: typeof d.stock === "number" && Number.isFinite(d.stock) ? d.stock : null,
@@ -329,14 +347,18 @@ function firstString(...vals: unknown[]): string | null {
   return null;
 }
 
-function toDecimalOrZero(v: unknown): Decimal {
-  return toDecimalOrNull(v) ?? new Decimal(0);
-}
-
+/** Parses a supplier-supplied price. Returns null — not a placeholder
+ * Decimal — when the value is missing, unparseable, non-finite (NaN or
+ * ±Infinity; decimal.js accepts both as valid `Decimal`s by default, so this
+ * must be checked explicitly via `isFinite()`), or not strictly positive: a
+ * supplier cost of zero or negative is never legitimate for this shop's
+ * catalog. */
 function toDecimalOrNull(v: unknown): Decimal | null {
   if (v == null) return null;
   try {
-    return new Decimal(String(v));
+    const d = new Decimal(String(v));
+    if (!d.isFinite() || d.lessThanOrEqualTo(0)) return null;
+    return d;
   } catch {
     return null;
   }

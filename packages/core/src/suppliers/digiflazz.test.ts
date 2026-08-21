@@ -8,6 +8,7 @@ import {
   stripRegionSuffix,
   digiflazzGroupKey,
 } from "./digiflazz";
+import { logger } from "../logger";
 
 const CREDS = { username: "shop01", apiKey: "s3cr3t-key" };
 const WEBHOOK_SECRET = "wh-s3cr3t";
@@ -202,6 +203,66 @@ describe("getPriceList", () => {
     expect(sentBody.sign).toBe(
       createHash("md5").update(`${CREDS.username}${CREDS.apiKey}pricelist`).digest("hex"),
     );
+  });
+
+  const VALID_ROW = {
+    product_name: "Mobile Legends 86 Diamonds",
+    category: "Games",
+    brand: "Mobile Legends",
+    type: "Umum",
+    buyer_sku_code: "ML86",
+    price: 15750,
+    buyer_product_status: true,
+    seller_product_status: true,
+    stock: 999,
+  };
+
+  it("skips a row with a non-finite (NaN) price but keeps the valid row alongside it", async () => {
+    stubFetchJson({
+      data: [VALID_ROW, { ...VALID_ROW, buyer_sku_code: "ML999", price: "NaN" }],
+    });
+    const list = await getPriceList(CREDS);
+    expect(list).toHaveLength(1);
+    expect(list[0]?.buyerSkuCode).toBe("ML86");
+  });
+
+  it("skips a row with price 0", async () => {
+    stubFetchJson({
+      data: [{ ...VALID_ROW, buyer_sku_code: "ML0", price: 0 }],
+    });
+    const list = await getPriceList(CREDS);
+    expect(list).toEqual([]);
+  });
+
+  it("skips a row with a negative price", async () => {
+    stubFetchJson({
+      data: [{ ...VALID_ROW, buyer_sku_code: "MLNEG", price: -500 }],
+    });
+    const list = await getPriceList(CREDS);
+    expect(list).toEqual([]);
+  });
+
+  it("skips a row with an Infinity price", async () => {
+    stubFetchJson({
+      data: [{ ...VALID_ROW, buyer_sku_code: "MLINF", price: "Infinity" }],
+    });
+    const list = await getPriceList(CREDS);
+    expect(list).toEqual([]);
+  });
+
+  it("logs one warning naming the count of skipped rows, not one per row", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    stubFetchJson({
+      data: [
+        VALID_ROW,
+        { ...VALID_ROW, buyer_sku_code: "ML0", price: 0 },
+        { ...VALID_ROW, buyer_sku_code: "MLNEG", price: -500 },
+      ],
+    });
+    await getPriceList(CREDS);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("2"));
+    warnSpy.mockRestore();
   });
 });
 

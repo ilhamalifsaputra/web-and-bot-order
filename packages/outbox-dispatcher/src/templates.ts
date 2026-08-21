@@ -190,6 +190,11 @@ interface WalletTopupCreditedPayload {
   new_balance?: unknown;
 }
 
+interface AdminDigiflazzResyncAbortedPayload {
+  sharp_changes?: unknown;
+  considered_rows?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -203,7 +208,8 @@ export function render(
     ManualOrderQueuedPayload &
     BulkPurchaseBroadcastPayload &
     AdminStalePaymentPayload &
-    WalletTopupCreditedPayload,
+    WalletTopupCreditedPayload &
+    AdminDigiflazzResyncAbortedPayload,
 ): string {
   if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
     // Buyer DM: the single producer for a wallet top-up's success message
@@ -360,6 +366,23 @@ export function render(
       `⚠️ <b>${gateway} mengonfirmasi pembayaran untuk pesanan <code>${code}</code>, tapi pesanan ini sudah tidak lagi menunggu pembayaran</b>\n` +
       `Transaksi: <code>${trxId}</code>\n` +
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
+    );
+  }
+  if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
+    // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker
+    // tripped and wrote nothing — too many denominations would have
+    // repriced sharply in one run, which usually means the supplier's
+    // response is malformed rather than a genuine price change. Payload
+    // carries only plain counts, no SKU/price detail.
+    const sharpChanges = escape(String(payload.sharp_changes ?? "0"));
+    const consideredRows = escape(String(payload.considered_rows ?? "0"));
+    return (
+      `⚠️ <b>Digiflazz catalog sync aborted — nothing was updated</b>\n` +
+      `${sharpChanges} of ${consideredRows} prices would have moved by more than 50% in this run.\n` +
+      `This usually means the supplier's response is malformed, not a real price change — please check the Digiflazz connection before the next hourly sync.\n\n` +
+      `⚠️ <b>Sinkronisasi katalog Digiflazz dibatalkan — tidak ada yang diperbarui</b>\n` +
+      `${sharpChanges} dari ${consideredRows} harga akan berubah lebih dari 50% pada proses ini.\n` +
+      `Ini biasanya berarti respons dari supplier tidak valid, bukan perubahan harga asli — mohon periksa koneksi Digiflazz sebelum sinkronisasi berikutnya.`
     );
   }
   if (event === NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT) {

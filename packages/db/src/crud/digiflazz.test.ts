@@ -50,7 +50,7 @@ import {
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
-import { OrderStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 // I3 test: spy on getSetting itself (not just the underlying Prisma query,
@@ -935,6 +935,129 @@ describe("resyncDigiflazzCatalog", () => {
 
       const entries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
       expect(entries).toHaveLength(0);
+    });
+  });
+
+  // Task 10 (backend audit 2026-08-21, C-1 second half): Task 9 already
+  // rejects an individually invalid/non-finite/non-positive supplier price,
+  // but a genuinely malformed *response* (a field rename, a partial outage,
+  // the wrong endpoint) can still hand back prices that are each
+  // individually "valid" yet collectively wrong for a large swath of the
+  // catalog. This breaker compares each would-reprice row's new price
+  // against its current price and aborts the whole run — writing nothing —
+  // when too many of them moved too sharply at once.
+  describe("Task 10: blast-radius circuit breaker", () => {
+    /** N digiflazz-mapped, not-priceOverridden denominations sharing one
+     * product, each named/skinned by index — the shape the breaker's
+     * would-reprice set walks. */
+    async function makeDigiflazzDenoms(
+      count: number,
+      price: string,
+      overrides: { priceOverridden?: boolean } = {},
+    ) {
+      const category = await prisma.category.findFirstOrThrow();
+      const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Breaker Test Product" });
+      const denoms = [];
+      for (let i = 0; i < count; i++) {
+        const sku = `bt${i}`;
+        denoms.push(
+          await createDenomination(prisma, {
+            productId: product.id,
+            name: sku,
+            type: "SHARED",
+            durationLabel: sku,
+            price,
+            costPrice: price,
+            autoDeliverySource: "digiflazz",
+            supplierSku: sku,
+            deliveryType: DeliveryType.MANUAL_WITH_INFO,
+            isActive: true,
+            priceOverridden: overrides.priceOverridden ?? false,
+          }),
+        );
+      }
+      return denoms;
+    }
+
+    it("trips when every mapped denomination's price would move sharply: writes nothing, logs an aborted audit entry, and alerts every admin", async () => {
+      await setSetting(prisma, ADMIN_IDS_KEY, "700,701");
+      const denoms = await makeDigiflazzDenoms(6, "15000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        denoms.map((d) => priceListItem({ buyerSkuCode: d.supplierSku!, price: new Decimal(10) })), // markup-implied new price collapses toward zero — same failure shape C-1 originally described
+      );
+
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 0, deactivated: 0 });
+
+      // No Denomination.price/costPrice/isActive write happened for any row.
+      for (const d of denoms) {
+        const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
+        expect(after.price.toString()).toBe("15000");
+        expect(after.costPrice!.toString()).toBe("15000");
+        expect(after.isActive).toBe(true);
+      }
+
+      const abortedEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync_aborted" } });
+      expect(abortedEntries).toHaveLength(1);
+      expect(abortedEntries[0]!.adminId).toBeNull();
+      const successEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
+      expect(successEntries).toHaveLength(0);
+
+      const alertRows = await prisma.notificationOutbox.findMany({
+        where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      });
+      expect(alertRows).toHaveLength(2); // one per configured admin (700, 701)
+      const chatIds = alertRows
+        .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
+        .sort((a, b) => a - b);
+      expect(chatIds).toEqual([700, 701]);
+      const payload = JSON.parse(alertRows[0]!.payloadJson) as { sharp_changes: number; considered_rows: number };
+      expect(payload.sharp_changes).toBe(6);
+      expect(payload.considered_rows).toBe(6);
+    });
+
+    it("does not trip when fewer than 5 rows would be repriced, even though every one of them individually exceeds the 50% band", async () => {
+      const denoms = await makeDigiflazzDenoms(3, "15000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        denoms.map((d) => priceListItem({ buyerSkuCode: d.supplierSku!, price: new Decimal(10) })),
+      );
+
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 3, deactivated: 0 }); // proceeds exactly as before the breaker existed
+
+      for (const d of denoms) {
+        const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
+        expect(after.price.toString()).toBe("10");
+      }
+
+      const abortedEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync_aborted" } });
+      expect(abortedEntries).toHaveLength(0);
+      const alertRows = await prisma.notificationOutbox.findMany({
+        where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      });
+      expect(alertRows).toHaveLength(0);
+    });
+
+    it("does not trip when every would-be-repriced row is priceOverridden (nothing to compare)", async () => {
+      const denoms = await makeDigiflazzDenoms(6, "15000", { priceOverridden: true });
+      digiflazzMock.getPriceList.mockResolvedValue(
+        denoms.map((d) => priceListItem({ buyerSkuCode: d.supplierSku!, price: new Decimal(10) })),
+      );
+
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 0, deactivated: 0 }); // every row skipped — priceOverridden protects it
+
+      for (const d of denoms) {
+        const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
+        expect(after.price.toString()).toBe("15000");
+      }
+
+      const abortedEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync_aborted" } });
+      expect(abortedEntries).toHaveLength(0);
+      const alertRows = await prisma.notificationOutbox.findMany({
+        where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      });
+      expect(alertRows).toHaveLength(0);
     });
   });
 });

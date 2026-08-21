@@ -37,7 +37,7 @@ import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
-import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm } from "./notifications";
+import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
 import {
   createCatalogProduct,
@@ -649,6 +649,15 @@ export async function importDigiflazzBrand(
  * Writes a single summary audit entry (adminId: null, system actor) when
  * anything actually changed — I2 fix — not one per denomination, which
  * would spam the audit log on a run touching hundreds of rows.
+ *
+ * Task 10 blast-radius circuit breaker: before writing anything, compares
+ * every would-reprice row's new price against its current price and aborts
+ * the entire run — no writes, a `digiflazz_catalog_resync_aborted` audit
+ * entry, an alert to every admin — when more than 20% of at least 5
+ * considered rows would move by more than 50% in either direction. Guards
+ * against a malformed price-list *response* (not just an individually bad
+ * row, which getPriceList itself already rejects) silently repricing a large
+ * swath of the catalog.
  */
 export async function resyncDigiflazzCatalog(
   db: PrismaClient,
@@ -666,6 +675,55 @@ export async function resyncDigiflazzCatalog(
   // an uncollapsed list lets whichever duplicate-seller row happens to come
   // last in the array silently win, instead of the cheapest one.
   const bySku = new Map(collapseToCheapestSeller(rawPriceList).map((item) => [item.buyerSkuCode, item]));
+
+  // Task 10 (backend audit 2026-08-21 C-1, second half) blast-radius circuit
+  // breaker. Task 9 already rejects an individually invalid/non-finite/
+  // non-positive supplier price, but a genuinely malformed *response* (a
+  // field rename, a partial outage, the wrong endpoint) can still hand back
+  // prices that are each individually "valid" yet collectively wrong for a
+  // large swath of the catalog. Before writing anything, walk the same
+  // would-reprice set the loop below touches (`!priceOverridden` rows with a
+  // matching price-list item) and count how many would move by more than
+  // 50% in either direction. Only trips for a shop with a real catalog
+  // (>=5 rows considered) — a shop with only a handful of Digiflazz
+  // denominations would otherwise see one legitimate supplier price swing
+  // look like ">20% of the whole set" on every single run.
+  let consideredRows = 0;
+  let sharpChanges = 0;
+  for (const denom of mapped) {
+    if (denom.priceOverridden) continue;
+    const item = bySku.get(denom.supplierSku!);
+    if (!item) continue;
+    consideredRows++;
+    const newPrice = quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
+    const oldPrice = denom.price;
+    // oldPrice.isZero() guards the ratio check below from dividing by zero:
+    // any nonzero new price on a zero old price counts as a sharp change on
+    // its own.
+    const sharp = oldPrice.isZero()
+      ? !newPrice.isZero()
+      : newPrice.lessThan(oldPrice.times(0.5)) || newPrice.greaterThan(oldPrice.times(1.5));
+    if (sharp) sharpChanges++;
+  }
+  // Integer comparison (sharpChanges * 5 > consideredRows) instead of a
+  // floating-point ratio — both sides are plain row counts, and this avoids
+  // any doubt about a >20% boundary landing exactly on a float rounding
+  // error.
+  if (consideredRows >= 5 && sharpChanges * 5 > consideredRows) {
+    logger.error(
+      { sharpChanges, consideredRows },
+      "Aborted the hourly Digiflazz catalog resync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+    );
+    await logAdminAction(db, {
+      adminId: null,
+      action: "digiflazz_catalog_resync_aborted",
+      targetType: "product",
+      targetId: null,
+      details: `Aborted the hourly Digiflazz catalog sync: ${sharpChanges} of ${consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
+    });
+    await enqueueAdminDigiflazzResyncAborted(db, { sharpChanges, consideredRows });
+    return zero;
+  }
 
   const result = { ...zero };
   for (const denom of mapped) {

@@ -27,6 +27,7 @@ import {
   prisma,
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
+  enqueueAdminDigiflazzResyncAborted,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
@@ -281,6 +282,41 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
     });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Task 10: ADMIN_DIGIFLAZZ_RESYNC_ABORTED must be routed as an admin DM
+ * (payload.chat_id), not a post to PUBLIC_CHANNEL_ID — same M-10-shaped risk
+ * as ADMIN_STALE_PAYMENT above (an event left out of ADMIN_DM_EVENTS either
+ * gets silently dropped forever with no channel configured, or leaks the
+ * catalog-resync alert to the public channel when one is configured). This
+ * event is not order-scoped (orderId: null), unlike ADMIN_STALE_PAYMENT.
+ */
+describe("drainBatch routes ADMIN_DIGIFLAZZ_RESYNC_ABORTED as an admin DM, never a public post (Task 10)", () => {
+  afterEach(() => resetBotIdentity());
+
+  it("sends to the admin's chat_id even when a public channel IS configured, with orderId null", async () => {
+    await addAdminIdToDb(prisma, 900_200_001);
+    setBotIdentity({ publicChannelId: -1009876543211 });
+    await enqueueAdminDigiflazzResyncAborted(prisma, { sharpChanges: 7, consideredRows: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 900_200_001);
+    expect(call).toBeDefined();
+    const [chatId, text] = call! as [number, string];
+    expect(chatId).not.toBe(-1009876543211); // never the public channel
+    expect(text).toContain("7");
+    expect(text).toContain("10");
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, orderId: null },
+    });
+    const row = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 900_200_001);
+    expect(row).toBeDefined();
     expect(row!.status).toBe("SENT");
   });
 });

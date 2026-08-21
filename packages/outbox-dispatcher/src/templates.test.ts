@@ -209,6 +209,27 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
   });
 
+  it("renders ADMIN_DIGIFLAZZ_RESYNC_ABORTED as a bilingual admin DM with the sharp-change and considered-row counts", () => {
+    const out = render("ADMIN_DIGIFLAZZ_RESYNC_ABORTED", {
+      sharp_changes: 7,
+      considered_rows: 10,
+    });
+    expect(out).toContain("7");
+    expect(out).toContain("10");
+    expect(out).toMatch(/aborted/i);
+    expect(out).toMatch(/dibatalkan/i); // Indonesian line
+  });
+
+  it("HTML-escapes ADMIN_DIGIFLAZZ_RESYNC_ABORTED interpolated values", () => {
+    const out = render("ADMIN_DIGIFLAZZ_RESYNC_ABORTED", {
+      sharp_changes: "<script>alert(1)</script>",
+      considered_rows: "<b>10</b>",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>10</b>");
+    expect(out).toContain("&lt;b&gt;10&lt;/b&gt;");
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

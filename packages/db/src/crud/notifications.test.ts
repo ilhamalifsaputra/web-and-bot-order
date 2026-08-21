@@ -14,6 +14,7 @@ import {
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
+  enqueueAdminDigiflazzResyncAborted,
   enqueueAdminPasswordReset,
   enqueueWalletTopupCreditedDm,
   enqueueRestockBroadcast,
@@ -459,6 +460,28 @@ describe("enqueueAdminStalePayment", () => {
     expect(payload.order_code).toBe("ORD-STALETEST");
     expect(payload.gateway).toBe("TokoPay");
     expect(payload.trx_id).toBe("TRX-STALE-1");
+  });
+});
+
+// Task 10: enqueueAdminDigiflazzResyncAborted shares enqueueAdminStalePayment's
+// exact per-admin fan-out shape, just orderId: null (catalog-wide, not
+// order-scoped) — this block only asserts this function's own event/payload
+// shape. Runs after the earlier blocks, so 4001/4002/4501/4502 are already
+// persisted in the shared `admin_ids` Setting.
+describe("enqueueAdminDigiflazzResyncAborted", () => {
+  it("enqueues one ADMIN_DIGIFLAZZ_RESYNC_ABORTED DM per resolved admin, with orderId null and chat_id/sharp_changes/considered_rows", async () => {
+    await enqueueAdminDigiflazzResyncAborted(prisma, { sharpChanges: 7, consideredRows: 10 });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.orderId === null)).toBe(true);
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as { sharp_changes: number; considered_rows: number };
+    expect(payload.sharp_changes).toBe(7);
+    expect(payload.considered_rows).toBe(10);
   });
 });
 

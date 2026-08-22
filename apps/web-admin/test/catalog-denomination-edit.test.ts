@@ -2,7 +2,19 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, setSetting, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect } from "@app/db";
+import {
+  prisma,
+  initDb,
+  upsertUser,
+  setSetting,
+  createCategory,
+  createCatalogProduct,
+  createDenomination,
+  bulkAddStock,
+  createOrderDirect,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
+} from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -235,6 +247,418 @@ describe("PATCH /api/catalog/denominations/:id — deliveryType/additionalFields
     expect(row!.sortOrder).toBe(3);
     expect(row!.deliveryType).toBe("manual_with_info");
     expect(JSON.parse(row!.additionalFields!)).toEqual(fields);
+  });
+});
+
+describe("PATCH /api/catalog/denominations/:id — autoDeliverySource/supplierSku", () => {
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  it("sets autoDeliverySource to digiflazz with a supplierSku and persists both fields, alongside manual_with_info", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBe("digiflazz");
+    expect(row!.supplierSku).toBe("mlbb86");
+  });
+
+  it("rejects autoDeliverySource digiflazz with an empty supplierSku (400) and leaves the row unchanged", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "   ",
+    });
+    expect(res.statusCode).toBe(400);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  it("omitting autoDeliverySource clears a previously-set supplier link while staying manual_with_info", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(setup.statusCode).toBe(200);
+
+    // deliveryType omitted here — the "touch only if provided" partial-update
+    // convention leaves it at manual_with_info (set by the setup call above),
+    // so this is purely testing that dropping autoDeliverySource from the
+    // payload clears it, independent of any deliveryType change.
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Regression test for the review finding: autoDeliverySource/supplierSku
+  // must be coupled to deliveryType === manual_with_info the same way
+  // additionalFields already is (see the deliveryType/additionalFields
+  // describe block above) — an admin can't leave a denomination with a live
+  // Digiflazz link but no buyer-submitted Game ID/Server info for it to
+  // fulfill against.
+  it("ignores autoDeliverySource/supplierSku when deliveryType is not manual_with_info (row keeps schema-default auto)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  it("clears autoDeliverySource/supplierSku when deliveryType is explicitly changed away from manual_with_info", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(setup.statusCode).toBe(200);
+    const setupRow = await prisma.denomination.findUnique({ where: { id } });
+    expect(setupRow!.autoDeliverySource).toBe("digiflazz");
+
+    // Switches deliveryType back to auto while still sending the (now stale)
+    // autoDeliverySource/supplierSku — the admin's own "changed their mind"
+    // scenario from the review finding.
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+});
+
+describe("PATCH /api/catalog/denominations/:id — nicknameCheckGameCode (Task 7)", () => {
+  it("sets nicknameCheckGameCode independent of autoDeliverySource (no Digiflazz link required)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: [
+        { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ],
+      nicknameCheckGameCode: "mobile-legends",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.nicknameCheckGameCode).toBe("mobile-legends");
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("trims the value and clears it to null when the request sends blank/omits it", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      nicknameCheckGameCode: "  free-fire  ",
+    });
+    expect(setup.statusCode).toBe(200);
+    expect((await prisma.denomination.findUnique({ where: { id } }))!.nicknameCheckGameCode).toBe("free-fire");
+
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect((await prisma.denomination.findUnique({ where: { id } }))!.nicknameCheckGameCode).toBeNull();
+  });
+});
+
+describe("PATCH /api/catalog/denominations/:id — regionWarning/expectedRegionCode (Region-check Task B)", () => {
+  it("sets regionWarning independent of autoDeliverySource and of expectedRegionCode (no Digiflazz link, no live check required)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBeNull();
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("sets expectedRegionCode independent of regionWarning", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.regionWarning).toBeNull();
+  });
+
+  it("sets both fields together", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBe("ID");
+  });
+
+  it("trims both values and clears them to null when the request sends blank/omits them", async () => {
+    const id = await seedDenomination();
+    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      regionWarning: "  Hanya untuk akun region Indonesia  ",
+      expectedRegionCode: "  ID  ",
+    });
+    expect(setup.statusCode).toBe(200);
+    const seeded = await prisma.denomination.findUnique({ where: { id } });
+    expect(seeded!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(seeded!.expectedRegionCode).toBe("ID");
+
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.regionWarning).toBeNull();
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+});
+
+describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  async function seedDigiflazzDenomination(costPrice: string | null) {
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent" });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000",
+      costPrice,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(DIGIFLAZZ_FIELDS),
+    });
+    return denom.id;
+  }
+
+  // Both tests below explicitly resend the row's costPrice unchanged,
+  // matching what the real admin client (DenominationEditPage.tsx) actually
+  // does whenever the Cost Price field has a value — it only omits the key
+  // when that field is blank (see the dedicated "omits costPrice" test
+  // further below for that other, equally real, path).
+  it("a PATCH price matching the suggested Digiflazz markup leaves priceOverridden false", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // 20000 * 1.10 = 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000",
+      costPrice: "20000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(false);
+  });
+
+  it("a PATCH price that differs from the suggested markup sets priceOverridden true", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // suggested would be 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "25000", // hand-edited, above the suggestion
+      costPrice: "20000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  it("priceOverridden stays false for a non-Digiflazz denomination regardless of price", async () => {
+    const id = await seedDenomination(); // plain, no autoDeliverySource/costPrice
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "99999",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(false);
+  });
+
+  // Batch 4 review finding: a Digiflazz row with no cost on record at all
+  // (nothing to compare the submitted price against) must be treated as
+  // overridden rather than left false — there's no way to confirm it
+  // matches a computed suggestion, so the safe default protects the
+  // admin's explicit price instead of risking a silent reprice on the
+  // next resync tick.
+  it("a PATCH price on a Digiflazz row with no costPrice on record sets priceOverridden true", async () => {
+    const id = await seedDigiflazzDenomination(null); // no cost yet
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "12345",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  // costPrice/resellerPrice are "always overwrite, null if omitted" fields
+  // on this route (NOT touch-only-if-provided like deliveryType) — the real
+  // admin client (DenominationEditPage.tsx) omits `costPrice` from the
+  // request body whenever that form field is blank, which nulls the row's
+  // EXISTING costPrice right here in this same request. priceOverridden
+  // must be computed against what this request actually persists (null,
+  // here), not against the row's now-stale pre-request cost — a submitted
+  // price that merely happened to match the OLD cost's suggestion must not
+  // be silently marked "not overridden" once that cost is gone.
+  it("a PATCH that omits costPrice entirely nulls out an existing cost and treats the price as overridden", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // suggestion (for the OLD cost) was 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000", // matches the OLD cost's suggestion — but that cost is about to be wiped
+      // costPrice intentionally omitted from the body entirely, matching
+      // the real client whenever the Cost Price field is blank.
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.costPrice).toBeNull();
+    expect(row!.priceOverridden).toBe(true);
+  });
+
+  // Batch 4 review finding: comparing against the row's STALE costPrice
+  // (from before this same request) rather than the NEW costPrice this
+  // request also submits could compute priceOverridden incorrectly — here,
+  // a price that matches the markup suggestion for the OLD cost (20000 ->
+  // 22000) but not the NEW cost this same request sets (25000 -> 27500)
+  // must compare against the new cost, so priceOverridden ends up true
+  // (22000 disagrees with 27500), not silently false.
+  it("a PATCH that changes costPrice and price together compares against the NEW cost, not the stale one", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    const id = await seedDigiflazzDenomination("20000"); // old suggestion: 22000
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "100 Diamond",
+      type: "SHARED",
+      durationLabel: "100 Diamond",
+      price: "22000", // matches the OLD cost's suggestion, not the new one
+      costPrice: "25000", // new suggestion would be 27500
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml100",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.priceOverridden).toBe(true);
   });
 });
 

@@ -2,6 +2,7 @@ import { Routes, Route } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CatalogPage } from "./pages/CatalogPage";
+import { DigiflazzSyncPage } from "./pages/DigiflazzSyncPage";
 import { CategoriesPage } from "./pages/CategoriesPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductCreatePage } from "./pages/ProductCreatePage";
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />
         <Route path="/catalog" element={<CatalogPage />} />
+        <Route path="/catalog/digiflazz-sync" element={<DigiflazzSyncPage />} />
         <Route path="/catalog/new" element={<ProductCreatePage />} />
         <Route path="/catalog/:productId/denominations/new" element={<DenominationCreatePage />} />
         <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditPage />} />

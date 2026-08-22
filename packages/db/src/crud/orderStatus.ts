@@ -16,6 +16,8 @@
  */
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { Decimal } from "@app/core/money";
+import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 
 export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
@@ -143,4 +145,50 @@ export async function tryTransitionOrderStatus(
     if (e instanceof ValidationError && e.key === "error.illegal_status_transition") return false;
     throw e;
   }
+}
+
+/**
+ * Flag a QRIS/IDR order UNDERPAID (idempotent) — the shared counterpart of
+ * the three crypto rails' own `markUnderpaid`/`markUnderpaidBybit`/
+ * `markUnderpaidBybitBsc` (packages/db/src/crud/binance_internal.ts and its
+ * Bybit siblings), used by tokopayReconcile.ts, paydisiniReconcile.ts, and
+ * nowpaymentsReconcile.ts.
+ *
+ * Unlike the crypto rails, which scan a blockchain and need a separate
+ * per-gateway ledger table (`processed_binance_tx` etc.) to dedupe deposits
+ * with no natural "already handled" marker, each of these three pollers
+ * re-checks the SAME `order.id` every cycle via its gateway's
+ * `checkTransaction`-equivalent — so the order's own status IS the natural
+ * idempotency guard, and no new ledger table is needed here. The
+ * `tryTransitionOrderStatus` call below IS that guard: once the order has
+ * left PENDING_PAYMENT (this call already flagged it, or a webhook/another
+ * poller settled it first), it returns false and this function is a no-op —
+ * exactly how the crypto rails already treat their own idempotent-`false`
+ * case.
+ *
+ * The transition and the `adminNote` write run as one `$transaction` so a
+ * crash or thrown error between them can never leave a torn state, mirroring
+ * `markUnderpaid`'s own transaction shape.
+ */
+export async function markOrderUnderpaid(
+  db: PrismaClient,
+  args: { orderId: number; gateway: string; receivedAmount: Decimal.Value; expectedAmount: Decimal.Value },
+): Promise<boolean> {
+  return db.$transaction(async (tx: Tx) => {
+    const applied = await tryTransitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.PENDING_PAYMENT,
+      to: OrderStatus.UNDERPAID,
+      meta: `gateway=${args.gateway}`,
+    });
+    if (!applied) return false;
+
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        adminNote: `[underpaid] received ${new Decimal(args.receivedAmount).toString()} via ${args.gateway}, expected ${new Decimal(args.expectedAmount).toString()}`,
+      },
+    });
+    return true;
+  }, { timeout: 15000 });
 }

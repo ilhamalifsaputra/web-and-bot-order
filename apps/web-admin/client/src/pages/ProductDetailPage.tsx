@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical } from "lucide-react";
+import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical, Check } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -32,6 +33,7 @@ import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface DenominationRow {
   id: number;
@@ -98,6 +100,16 @@ export function ProductDetailPage() {
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
   const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
+  const [selectedDenoms, setSelectedDenoms] = useState<Set<number>>(new Set());
+  const [bulkActing, setBulkActing] = useState(false);
+
+  // Clear the selection when navigating to a different product's detail
+  // page — a stale selection surviving a productId change would let a bulk
+  // action apply to another product's denominations, matching CatalogPage's
+  // own filter-change clear.
+  useEffect(() => {
+    setSelectedDenoms(new Set());
+  }, [productId]);
 
   async function saveProduct() {
     setSavingProduct(true);
@@ -161,6 +173,32 @@ export function ProductDetailPage() {
     }
   }
 
+  function toggleDenomSelected(id: number) {
+    setSelectedDenoms((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  // Takes an explicit `ids` argument rather than reading the derived selection
+  // from closure, matching CatalogPage's own bulk handlers — the derived
+  // binding is declared past this point, below the early returns.
+  async function bulkSetDenomActive(active: boolean, ids: number[]) {
+    const count = ids.length;
+    setBulkActing(true);
+    try {
+      await apiPost("/api/catalog/denominations/bulk-active", { ids, active });
+      setSelectedDenoms(new Set());
+      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+      toast.success(`${count} denomination(s) ${active ? "activated" : "deactivated"}.`);
+    } catch (e) {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to update denominations."));
+    } finally {
+      setBulkActing(false);
+    }
+  }
+
   if (isError) {
     return (
       <PageLayout title="Product Detail">
@@ -185,6 +223,21 @@ export function ProductDetailPage() {
   }
 
   const { product, statsByDenom } = data;
+
+  // No client-side filtering of this list, so select-all always spans every
+  // denomination on screen — same reasoning as CatalogPage's own comment on
+  // its unpaginated list.
+  const allDenomsSelected =
+    product.denominations.length > 0 && product.denominations.every((d) => selectedDenoms.has(d.id));
+  const visibleSelectedDenoms = visibleSelection(selectedDenoms, product.denominations, (d) => d.id);
+  function toggleSelectAllDenoms() {
+    setSelectedDenoms((prev) => {
+      if (allDenomsSelected) return new Set();
+      const next = new Set(prev);
+      product.denominations.forEach((d) => next.add(d.id));
+      return next;
+    });
+  }
 
   return (
     <PageLayout title={product.name}>
@@ -336,8 +389,56 @@ export function ProductDetailPage() {
           Add Denomination
         </Button>
       </div>
+
+      {visibleSelectedDenoms.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
+          <span className="text-ink-soft">{visibleSelectedDenoms.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkActing}
+            onClick={() => void bulkSetDenomActive(true, Array.from(visibleSelectedDenoms))}
+          >
+            <Check className="h-4 w-4" />
+            Activate
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkActing}
+            onClick={() => void bulkSetDenomActive(false, Array.from(visibleSelectedDenoms))}
+          >
+            <X className="h-4 w-4" />
+            Deactivate
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelectedDenoms(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       <DataTable
         columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allDenomsSelected}
+                onCheckedChange={toggleSelectAllDenoms}
+                disabled={product.denominations.length === 0}
+                aria-label="Select all denominations"
+              />
+            ),
+            render: d => (
+              <Checkbox
+                checked={selectedDenoms.has(d.id)}
+                onCheckedChange={() => toggleDenomSelected(d.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${d.name}`}
+              />
+            ),
+          },
           {
             key: "name",
             header: "Name",

@@ -11,6 +11,40 @@ vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * Lets a single test (Task 15 / I-3, the outbox dispatcher heartbeat) force
+ * `fetchPendingNotifications` to reject, so `runDispatcher`'s catch path can
+ * be exercised without any other test in this file losing the real DB
+ * behavior — mirrors the identical `dbMockState` pattern in
+ * apps/order-bot/test/jobs.test.ts (that file forces `updateBroadcastProgress`
+ * to fail the same way). `vi.hoisted` is needed because the `vi.mock` factory
+ * below runs before ordinary module-level `let`s are initialised.
+ *
+ * `recordPollHealthError` (final whole-branch review, Important #1): lets a
+ * test force `recordPollHealth` itself to reject, proving `runDispatcher`'s
+ * `.catch(() => undefined)` guard on both call sites keeps the loop alive
+ * even when the heartbeat write is the thing that fails — not just the tick
+ * it's recording the outcome of.
+ */
+const dbMockState = vi.hoisted(() => ({
+  fetchPendingError: null as Error | null,
+  recordPollHealthError: null as Error | null,
+}));
+vi.mock("@app/db", async () => {
+  const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+  return {
+    ...actual,
+    fetchPendingNotifications: async (...args: Parameters<typeof actual.fetchPendingNotifications>) => {
+      if (dbMockState.fetchPendingError) throw dbMockState.fetchPendingError;
+      return actual.fetchPendingNotifications(...args);
+    },
+    recordPollHealth: async (...args: Parameters<typeof actual.recordPollHealth>) => {
+      if (dbMockState.recordPollHealthError) throw dbMockState.recordPollHealthError;
+      return actual.recordPollHealth(...args);
+    },
+  };
+});
+
 // dispatcher.test-setup MUST be first — temp DB + push before any @app import.
 import { cleanupTestDb } from "./dispatcher.test-setup";
 
@@ -27,6 +61,7 @@ import {
   prisma,
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
+  enqueueAdminDigiflazzResyncAborted,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
@@ -48,6 +83,7 @@ import {
   SMTP_HOST_KEY,
   SMTP_FROM_KEY,
   createTicket,
+  getPollHealth,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -56,7 +92,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
-import { drainBatch } from "./dispatcher";
+import { drainBatch, runDispatcher } from "./dispatcher";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -281,6 +317,41 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
     });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Task 10: ADMIN_DIGIFLAZZ_RESYNC_ABORTED must be routed as an admin DM
+ * (payload.chat_id), not a post to PUBLIC_CHANNEL_ID — same M-10-shaped risk
+ * as ADMIN_STALE_PAYMENT above (an event left out of ADMIN_DM_EVENTS either
+ * gets silently dropped forever with no channel configured, or leaks the
+ * catalog-resync alert to the public channel when one is configured). This
+ * event is not order-scoped (orderId: null), unlike ADMIN_STALE_PAYMENT.
+ */
+describe("drainBatch routes ADMIN_DIGIFLAZZ_RESYNC_ABORTED as an admin DM, never a public post (Task 10)", () => {
+  afterEach(() => resetBotIdentity());
+
+  it("sends to the admin's chat_id even when a public channel IS configured, with orderId null", async () => {
+    await addAdminIdToDb(prisma, 900_200_001);
+    setBotIdentity({ publicChannelId: -1009876543211 });
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "sharp_change", sharpChanges: 7, consideredRows: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 900_200_001);
+    expect(call).toBeDefined();
+    const [chatId, text] = call! as [number, string];
+    expect(chatId).not.toBe(-1009876543211); // never the public channel
+    expect(text).toContain("7");
+    expect(text).toContain("10");
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, orderId: null },
+    });
+    const row = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 900_200_001);
+    expect(row).toBeDefined();
     expect(row!.status).toBe("SENT");
   });
 });
@@ -1100,7 +1171,11 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
     });
 
     const { bot, sendMessage } = fakeBot();
-    await expect(drainBatch(bot)).resolves.toBeUndefined(); // must not throw out of drainBatch
+    // Task 15 (I-3): drainBatch now returns the number of rows it saw this
+    // cycle (pending.length) instead of void — this row is the only one
+    // pending at this point in the shared-DB test run, so the count is 1.
+    // The assertion's real point (unchanged): must not throw out of drainBatch.
+    await expect(drainBatch(bot)).resolves.toBe(1);
 
     expect(sendMessage).not.toHaveBeenCalledWith(600_001, expect.anything(), expect.anything());
     const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
@@ -1135,5 +1210,79 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-2" } },
     });
     expect(badRow!.status).toBe("FAILED");
+  });
+});
+
+/**
+ * Task 15 (I-3, fresh backend audit 2026-08-21): the outbox dispatcher is the
+ * sole delivery path for every buyer credential DM and every admin alert this
+ * codebase enqueues, but unlike the six payment reconcile pollers it never
+ * wrote a heartbeat — a bad notifier token or an unhandled exception class
+ * silently stopped all Telegram delivery with nothing but one log line, no
+ * admin ever told. `runDispatcher` now records a `recordPollHealth(prisma,
+ * "outbox", ...)` heartbeat after every tick, success or failure, so
+ * `outboxDispatcherPollWatchdog` (apps/order-bot/src/jobs/index.ts) has
+ * something to read. These two tests drive `runDispatcher` for exactly one
+ * tick (abort the signal synchronously right after calling it, before the
+ * first `await` inside `drainBatch` resolves — the loop's own
+ * `if (signal?.aborted) break;` then stops it right after that one tick,
+ * without waiting out the real NOTIF_POLL_INTERVAL_SECONDS sleep).
+ */
+describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
+  afterEach(() => {
+    dbMockState.fetchPendingError = null;
+    dbMockState.recordPollHealthError = null;
+  });
+
+  it("records a successful heartbeat after a normal batch cycle", async () => {
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await done;
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastSuccessAt).toBe(health.lastRun);
+    expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it("records a failed heartbeat (truncated error, loop does not crash) when a cycle throws", async () => {
+    dbMockState.fetchPendingError = new Error(`simulated DB failure ${"x".repeat(400)}`); // forces fetchPendingNotifications to reject
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastError).toContain("simulated DB failure");
+    // Matches this repo's own documented 300-char truncation convention
+    // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
+    // comment) — the poller-side truncation the display logic already expects.
+    expect(health.lastError!.length).toBeLessThanOrEqual(300);
+  });
+
+  /**
+   * Final whole-branch review, Important #1: before this fix, both
+   * `recordPollHealth` calls in `runDispatcher` were unguarded — if the
+   * heartbeat write itself threw (e.g. the shared SQLite DB is busy/locked,
+   * plausibly correlated with why the tick just failed), the exception
+   * escaped `runDispatcher` entirely. `startNotifier`
+   * (apps/server/src/index.ts) treats that outer throw as fatal and stops
+   * restarting the loop, permanently killing all Telegram delivery until a
+   * manual process restart — from a single transient heartbeat-write error.
+   * This drives a normal (successful) tick but makes `recordPollHealth`
+   * itself reject, and asserts `runDispatcher` still resolves cleanly
+   * instead of propagating that rejection.
+   */
+  it("survives a recordPollHealth rejection on the success path without crashing the loop", async () => {
+    dbMockState.recordPollHealthError = new Error("simulated DB busy/locked error writing the heartbeat");
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
   });
 });

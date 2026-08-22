@@ -27,6 +27,7 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  wa_number: null,
   tzname: "Asia/Jakarta",
   analytics_enabled: false,
   flash_active: false,

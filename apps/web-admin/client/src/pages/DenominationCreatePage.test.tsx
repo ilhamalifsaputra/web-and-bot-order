@@ -248,6 +248,44 @@ describe("DenominationCreatePage", () => {
     });
   });
 
+  it("switching away from 'Require buyer information' after picking Digiflazz drops autoDeliverySource/supplierSku from the submitted payload", async () => {
+    // Regression coverage for the client half of the fix in 024fec6:
+    // DeliveryTypeSection's selectBuyerInfo handler is supposed to reset
+    // Step 4's Digiflazz choice when the admin backs out of "Require buyer
+    // information" — not just hide it. Not a live data-integrity bug (the
+    // backend independently strips these fields when deliveryType isn't
+    // manual_with_info), but nothing exercised the client-side reset before.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 9, name: "1 Month Plan", slug: "1-month-plan" });
+
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await fillBaseFields(user);
+
+    await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
+    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
+    await user.click(screen.getByRole("button", { name: /add field/i }));
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. id game/i), { target: { value: "IGN" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. game id/i), { target: { value: "IGN" } });
+    await user.click(screen.getByRole("radio", { name: /^digiflazz/i }));
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. mlbb86/i), { target: { value: "mlbb86" } });
+
+    // Back out of "Require buyer information" without changing the method —
+    // Step 4 should disappear along with its Digiflazz/Supplier SKU state.
+    await user.click(screen.getByRole("radio", { name: /^no buyer information required/i }));
+    expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(1));
+    const [, sentBody] = vi.mocked(apiPost).mock.calls[0] as [string, Record<string, unknown>];
+    expect(sentBody).not.toHaveProperty("autoDeliverySource");
+    expect(sentBody).not.toHaveProperty("supplierSku");
+    expect(sentBody).not.toHaveProperty("additionalFields");
+    expect(sentBody.deliveryType).toBe("manual");
+  });
+
   it("shows an error message when create fails", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiPost).mockRejectedValueOnce(new Error("A valid type is required."));

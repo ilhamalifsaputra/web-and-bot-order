@@ -442,6 +442,20 @@ export const NotificationEvent = {
   // an inbox forever, and the payload itself is visible in the admin /outbox
   // panel. The buyer reads what they bought on the order page.
   BUYER_EMAIL_ORDER_READY: "BUYER_EMAIL_ORDER_READY",
+  // Admin DM (not a channel post): the hourly Digiflazz catalog resync
+  // (resyncDigiflazzCatalog) tripped its own blast-radius circuit breaker
+  // and wrote nothing — more than 20% of the denominations it would have
+  // repriced (out of at least 5 considered) would have moved by more than
+  // 50% in one direction. That usually means the supplier's price-list
+  // response is malformed (a field rename, a partial outage, the wrong
+  // endpoint) rather than a genuine market-wide price swing (Task 10,
+  // backend audit 2026-08-21 C-1, second half — closes the blast-radius gap
+  // left after Task 9's per-row rejection). Nothing else catches this: the
+  // next hourly tick would otherwise silently retry the same malformed data.
+  // payload carries `chat_id` (the admin's telegram id) plus
+  // sharp_changes/considered_rows (plain counts only, never a SKU/price
+  // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
+  ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

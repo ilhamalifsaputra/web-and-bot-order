@@ -135,6 +135,21 @@ const MAX_EMAIL_LENGTH = 254;
 const GUEST_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
+ * Trim + lowercase a submitted guest contact address, or null when it fails the
+ * length/shape rules above.
+ *
+ * Exported so every guest-minting path applies the SAME rule (this file's
+ * cart-based `establishGuestCustomer` below and the cart-free instant-buy one
+ * in routes/apiTopup.ts) rather than each keeping a copy of the regex and the
+ * length cap that can drift apart.
+ */
+export function normalizeGuestEmail(raw: unknown): string | null {
+  const email = (typeof raw === "string" ? raw : "").trim().toLowerCase();
+  if (!email || email.length > MAX_EMAIL_LENGTH || !GUEST_EMAIL_RE.test(email)) return null;
+  return email;
+}
+
+/**
  * Turn an anonymous POST /checkout into a real (guest) `User` + session, or
  * send the failure response and return null. Split out of the route so the
  * order in which the cheap validations run is visible in one place: EVERY
@@ -156,8 +171,8 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
   // would turn this endpoint into an account-existence oracle. A guest row
   // keeps `User.email` null and stores the address in `guestEmail`, so it can
   // never collide with the unique index on a registered account's email.
-  const email = (body?.guest_email ?? "").trim().toLowerCase();
-  if (!email || email.length > MAX_EMAIL_LENGTH || !GUEST_EMAIL_RE.test(email)) {
+  const email = normalizeGuestEmail(body?.guest_email);
+  if (!email) {
     void reply.code(400).send({ error: "web.guest_email_invalid" });
     return null;
   }
@@ -218,8 +233,12 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
  * token from login/register, so adding it there would just be a new key the
  * SPA never asked for; the checked-in test for the signed-in 201 asserts the
  * body is EXACTLY `{ order_code, pay_url }`.
+ *
+ * Exported (unchanged) so the cart-free instant-buy order route
+ * (routes/apiTopup.ts) hands the token back by the same one rule, on both its
+ * success and its error responses, instead of re-deriving when to do it.
  */
-function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
+export function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
   return isGuest ? { ...body, csrf_token: customer.csrf } : body;
 }
 
@@ -256,8 +275,13 @@ const GUEST_ORDER_EMAIL_TIMEOUT_MS = 8_000;
  * WHAT IT MAY CONTAIN: the order code and links, nothing else. Delivered
  * product content and credentials NEVER go in here — email is unencrypted and
  * sits in an inbox forever; the buyer reads what they bought on the order page.
+ *
+ * Exported so the cart-free instant-buy order route (routes/apiTopup.ts) gives
+ * its guests the same durable second copy of the order code, from the same
+ * implementation — a guest who buys a top-up has exactly the same "closed the
+ * tab, lost the cookie" problem this exists to solve.
  */
-async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCode: string): Promise<boolean> {
+export async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCode: string): Promise<boolean> {
   try {
     const smtp = await getSmtpCreds(prisma);
     // SMTP isn't configured on this deployment — the feature is simply off, and
@@ -390,6 +414,34 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "invalid_request" });
     }
     const qty = clampJsonQty(req.body?.qty);
+    const existingLines = await loadCartLines(req, customer);
+
+    // Digiflazz single-unit guard (final-review N1 fix): the supplier
+    // dispatch poller (packages/db/src/crud/digiflazz.ts,
+    // dispatchPendingDigiflazzOrders) can only ever place ONE supplier
+    // top-up per order and then marks the WHOLE order DELIVERED — this
+    // branch's own InstantBuyPage.tsx (the purpose-built flow for these
+    // SKUs) already locks qty to 1 by design. This is the OTHER path that
+    // can add a Digiflazz-routed denomination to cart (the ordinary product
+    // page's qty stepper, up to 99) — reject it outright rather than
+    // silently clamping to 1, so the buyer isn't charged for units they can
+    // never receive. Checked before the mixed-delivery guard below since
+    // it's the more specific rejection reason.
+    //
+    // Rejects on `qty !== 1` OR the denomination already having a cart line:
+    // both `addToCart` (signed-in) and the guest merge branch below
+    // INCREMENT an existing line's quantity rather than setting it
+    // absolutely, so a buyer who already holds 1 unit of a Digiflazz SKU
+    // (e.g. synced by InstantBuyPage.tsx, or a prior successful add here)
+    // and re-POSTs qty:1 for the SAME denomination would otherwise land at
+    // qty:2 even though every individual request in isolation looked like
+    // "qty 1" — checking the raw request alone would miss exactly that case.
+    if (denom.autoDeliverySource === "digiflazz") {
+      const alreadyInCart = existingLines.some((l) => l.denomination_id === denom.id);
+      if (qty !== 1 || alreadyInCart) {
+        return reply.code(400).send({ error: "error.digiflazz_single_unit_only" });
+      }
+    }
 
     // Cart guard (Task 6 design decision): a cart containing any manual /
     // manual_with_info line may contain EXACTLY that one line (any quantity)
@@ -402,7 +454,6 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // SAME denomination that's already the cart's one line (qty increment,
     // handled below by addToCart's upsert / the guest merge branch) is not a
     // new line, so it's exempt.
-    const existingLines = await loadCartLines(req, customer);
     if (existingLines.length > 0) {
       const isSameSingleLine = existingLines.length === 1 && existingLines[0]!.denomination_id === denom.id;
       const mixedDelivery =

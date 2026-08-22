@@ -65,6 +65,11 @@ export function DenominationCreatePage() {
   const [description, setDescription] = useState("");
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
+  const [supplierSku, setSupplierSku] = useState("");
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [regionWarning, setRegionWarning] = useState("");
+  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -84,6 +89,12 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info"
             ? { additionalFields: draftsToFields(additionalFields) }
             : {}),
+          ...(deliveryType === "manual_with_info" && autoDeliverySource
+            ? { autoDeliverySource, supplierSku: supplierSku.trim() }
+            : {}),
+          ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
+          ...(regionWarning.trim() ? { regionWarning: regionWarning.trim() } : {}),
+          ...(expectedRegionCode.trim() ? { expectedRegionCode: expectedRegionCode.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -99,7 +110,8 @@ export function DenominationCreatePage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   return (
     <PageLayout title="New Denomination">
@@ -163,6 +175,16 @@ export function DenominationCreatePage() {
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}
           onAdditionalFieldsChange={setAdditionalFields}
+          autoDeliverySource={autoDeliverySource}
+          onAutoDeliverySourceChange={setAutoDeliverySource}
+          supplierSku={supplierSku}
+          onSupplierSkuChange={setSupplierSku}
+          nicknameCheckGameCode={nicknameCheckGameCode}
+          onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
+          regionWarning={regionWarning}
+          onRegionWarningChange={setRegionWarning}
+          expectedRegionCode={expectedRegionCode}
+          onExpectedRegionCodeChange={setExpectedRegionCode}
         />
 
         <div>

@@ -243,6 +243,89 @@ describe("ProductDetailPage", () => {
     expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ categoryId: 5 });
   });
 
+  it("select-all checks every denomination, and the bulk bar activates/deactivates them", async () => {
+    const user = userEvent.setup();
+    const TWO_DENOMS = {
+      ...PRODUCT_DETAIL,
+      product: {
+        ...PRODUCT_DETAIL.product,
+        denominations: [
+          { id: 10, name: "1 Month", price: "50000", costPrice: null, isActive: true, type: "PRIVATE", durationLabel: "Monthly" },
+          { id: 11, name: "3 Months", price: "120000", costPrice: null, isActive: false, type: "PRIVATE", durationLabel: "Quarterly" },
+        ],
+      },
+      statsByDenom: {
+        "10": { id: 10, available: 5, waiting: 0, rule: null },
+        "11": { id: 11, available: 5, waiting: 0, rule: null },
+      },
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(TWO_DENOMS), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
+    expect(screen.getByText("3 Months")).toBeInTheDocument();
+
+    // No bulk bar until something is selected.
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("checkbox", { name: "Select all denominations" }));
+
+    expect(screen.getByRole("checkbox", { name: "Select 1 Month" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Select 3 Months" })).toBeChecked();
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, count: 2 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(TWO_DENOMS), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await user.click(screen.getByRole("button", { name: "Activate" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/catalog/denominations/bulk-active",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    const call = fetchSpy.mock.calls.find(
+      ([url, init]) => url === "/api/catalog/denominations/bulk-active" && (init as RequestInit)?.method === "POST",
+    )!;
+    expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({ ids: [10, 11], active: true });
+
+    // Selection clears and the bulk bar disappears after a successful bulk action.
+    await waitFor(() => expect(screen.queryByText(/selected/)).not.toBeInTheDocument());
+  });
+
+  it("toggling select-all off clears the selection", async () => {
+    const user = userEvent.setup();
+    const TWO_DENOMS = {
+      ...PRODUCT_DETAIL,
+      product: {
+        ...PRODUCT_DETAIL.product,
+        denominations: [
+          { id: 10, name: "1 Month", price: "50000", costPrice: null, isActive: true, type: "PRIVATE", durationLabel: "Monthly" },
+          { id: 11, name: "3 Months", price: "120000", costPrice: null, isActive: false, type: "PRIVATE", durationLabel: "Quarterly" },
+        ],
+      },
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(TWO_DENOMS), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
+
+    const selectAll = screen.getByRole("checkbox", { name: "Select all denominations" });
+    await user.click(selectAll);
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(selectAll);
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select 1 Month" })).not.toBeChecked();
+  });
+
   it("links the category to that category's products", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify(PRODUCT_DETAIL), {

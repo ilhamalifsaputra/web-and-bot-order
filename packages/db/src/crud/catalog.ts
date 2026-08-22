@@ -71,6 +71,7 @@ export async function createCategory(
         description?: string | null;
         image?: string | null;
         sortOrder?: number;
+        checkoutFlow?: string;
       },
   emojiLegacy: string | null = null,
   sortOrderLegacy = 0,
@@ -88,6 +89,7 @@ export async function createCategory(
       description: ("description" in a ? a.description : null) ?? null,
       image: ("image" in a ? a.image : null) ?? null,
       sortOrder: a.sortOrder ?? 0,
+      checkoutFlow: ("checkoutFlow" in a ? a.checkoutFlow : null) ?? "catalog",
     },
   });
 }
@@ -167,6 +169,10 @@ export async function createCatalogProduct(
     imageFileId?: string | null;
     sortOrder?: number;
     isActive?: boolean;
+    /** Set when this Product was created by the Digiflazz import wizard —
+     * the exact `brand` string Digiflazz reports, used to match a re-import
+     * of the same brand back to this Product instead of duplicating it. */
+    digiflazzBrand?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
@@ -184,6 +190,7 @@ export async function createCatalogProduct(
       imageFileId: args.imageFileId ?? null,
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
+      digiflazzBrand: args.digiflazzBrand ?? null,
     },
   });
 }
@@ -318,6 +325,28 @@ export async function createDenomination(
     isActive?: boolean;
     deliveryType?: string;
     additionalFields?: string | null;
+    /** The supplier's `buyerSkuCode` for a Digiflazz-imported denomination —
+     * lets dispatchPendingDigiflazzOrders / resyncDigiflazzCatalog match this
+     * row back to a Digiflazz price-list entry. */
+    supplierSku?: string | null;
+    /** KokinPay's game_code for this denomination's title (Task 7) — offers
+     * the storefront's live nickname-check UX. Independent of supplierSku/
+     * autoDeliverySource above. */
+    nicknameCheckGameCode?: string | null;
+    /** Admin-authored short warning shown near the account field on the
+     * storefront's instant-buy page (Region-check Task B). Independent of
+     * every other field on this row. */
+    regionWarning?: string | null;
+    /** The region this SKU is FOR, compared against VIP-Reseller's live
+     * region-check result (Region-check Task B). Independent of
+     * regionWarning and of nicknameCheckGameCode/supplierSku/
+     * autoDeliverySource above. */
+    expectedRegionCode?: string | null;
+    /** True when `price` was set by a human rather than the Digiflazz markup
+     * suggestion (C2 fix) — protects it from being silently overwritten by
+     * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
+     * the caller server-side; never trust a client-submitted boolean here). */
+    priceOverridden?: boolean;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -340,6 +369,11 @@ export async function createDenomination(
       isActive: args.isActive ?? true,
       ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
+      supplierSku: args.supplierSku ?? null,
+      nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
+      regionWarning: args.regionWarning ?? null,
+      expectedRegionCode: args.expectedRegionCode ?? null,
+      priceOverridden: args.priceOverridden ?? false,
     },
   });
 }

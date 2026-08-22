@@ -20,7 +20,7 @@ import {
   enqueueRestockBroadcast,
   updateDenomination,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
 /** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
@@ -58,8 +58,10 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   // Full, unfiltered inventory export — mirrors GET /api/stock's own data
-  // source exactly, formatted as CSV. Read-only, so currentAdmin (not
-  // csrfProtect), same as /download below.
+  // source exactly, formatted as CSV. Read-only, so no CSRF check. Carries no
+  // credentials (aggregate counts only), so it stays open to every
+  // authenticated admin including readonly — explicitly out of scope for the
+  // C-1 fix that gates /:productId and /:productId/download below.
   app.get("/api/stock/export", { preHandler: currentAdmin }, async (req, reply) => {
     const [denominations, counts, waiting] = await Promise.all([
       listAllDenominations(prisma),
@@ -90,7 +92,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send(csv);
   });
 
-  app.get("/api/stock/:productId", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get("/api/stock/:productId", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
@@ -275,9 +277,10 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   // Download remaining (AVAILABLE) credentials as a plain-text file, one login
-  // per line. Read-only, so currentAdmin (not csrfProtect); still audited by
-  // count. The credentials themselves are never logged.
-  app.get("/api/stock/:productId/download", { preHandler: currentAdmin }, async (req, reply) => {
+  // per line. Read-only, so no CSRF check; still audited by count. The
+  // credentials themselves are never logged. Gated to non-readonly roles
+  // (C-1, security audit 2026-08-21) since this dumps plaintext credentials.
+  app.get("/api/stock/:productId/download", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });

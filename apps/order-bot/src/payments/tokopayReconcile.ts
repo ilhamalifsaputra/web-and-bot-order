@@ -34,6 +34,7 @@ import {
   getTokopayCreds,
   listPendingTokopayOrders,
   deliverPaidTokopayOrder,
+  markOrderUnderpaid,
   recordPollHealth,
 } from "@app/db";
 import { esc } from "../util/format";
@@ -186,9 +187,21 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   }
   if (!status.paid) return "ok";
 
-  // Paid but short — never deliver on an underpayment; leave for manual review.
+  // Paid but short — never deliver on an underpayment; flag UNDERPAID and
+  // alert admins instead of leaving it silently PENDING (I-5). The order's
+  // own status is the idempotency guard — a second cycle re-checking an
+  // already-UNDERPAID order is a no-op (markOrderUnderpaid returns false).
   if (status.amount.lessThan(expectedCharge)) {
-    logger.warn(`Order ${order.orderCode} underpaid — TokoPay reports ${status.amount}, expected ${expectedCharge}, left PENDING for manual review`);
+    if (await markOrderUnderpaid(prisma, { orderId: order.id, gateway: "TokoPay", receivedAmount: status.amount, expectedAmount: expectedCharge })) {
+      logger.warn(`Order ${order.orderCode} underpaid — TokoPay reports ${status.amount}, expected ${expectedCharge}, left PENDING for manual review`);
+      const alertOutcome = await withTimeout(
+        alertAdmins(api, `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${status.amount.toString()}</b>, expected <b>${expectedCharge.toString()}</b> (TokoPay).`),
+        RECONCILE_TELEGRAM_TIMEOUT_MS,
+      );
+      if (alertOutcome === "timeout") {
+        logger.warn(`TokoPay reconcile gave up waiting on the underpaid-order admin alert for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — some admins may not have been notified`);
+      }
+    }
     return "ok";
   }
 

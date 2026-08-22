@@ -239,3 +239,39 @@ export function trackLookupRateLimited(ip: string): boolean {
     TRACK_LOOKUP_RATE_LIMIT_MAX,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Nickname-check rate limit (per IP, in-process) — Task 7, the KokinPay
+// live-typing lookup on InstantBuyPage's account field. Fired on every
+// debounced (~800ms) keystroke, so it's a "live-typing lookup" endpoint in
+// the same sense as checkoutPreviewRateLimited above, but even chattier —
+// unlike that endpoint it's called continuously while the buyer is still
+// typing their account id, not once per page load/voucher attempt.
+//
+// Code review: this was previously a generous 40 req/min on the reasoning
+// that the endpoint isn't security-sensitive (no secret/oracle exposed) and
+// only needs to bound outbound call volume loosely. That undercounts the
+// real cost — KokinPay is a PAID, prepaid-balance-metered API, so every
+// outbound call (even a "not found" one) spends real money from the shop's
+// account, regardless of how the storefront response degrades. An
+// unauthenticated, distributed caller could otherwise drain that balance at
+// up to 40 req/min per IP with no meaningful friction. 10 req/60s matches
+// the spirit of the order-tracking lookup limiter (trackLookupRateLimited)
+// above and comfortably covers a real buyer debouncing at 800ms/keystroke on
+// a short account-id field — well under 10 requests/minute even typing
+// continuously.
+// ---------------------------------------------------------------------------
+
+const nicknameCheckHits = new Map<string, number[]>();
+export const NICKNAME_CHECK_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const NICKNAME_CHECK_RATE_LIMIT_MAX = 10;
+
+/** True if `ip` has exceeded its nickname-check quota within the window. */
+export function nicknameCheckRateLimited(ip: string): boolean {
+  return slidingWindowLimited(
+    nicknameCheckHits,
+    ip,
+    NICKNAME_CHECK_RATE_LIMIT_WINDOW_SECONDS,
+    NICKNAME_CHECK_RATE_LIMIT_MAX,
+  );
+}

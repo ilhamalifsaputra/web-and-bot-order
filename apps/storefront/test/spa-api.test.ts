@@ -739,6 +739,57 @@ describe("/api/v1/auth", () => {
     expect(cart.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
   });
 
+  // Final-review Batch 1 review finding: the guest cart cookie has no
+  // signature, so a caller can present a crafted `shop_cart_v2` cookie
+  // directly (bypassing POST /cart's own Digiflazz single-unit guard
+  // entirely) and have it merged into the account on login. Confirms
+  // routes/auth.ts's establishSession clamps a Digiflazz-routed line to
+  // qty 1 regardless of what the forged cookie claims, and skips the merge
+  // entirely (rather than incrementing) when the account already holds one.
+  it("login clamps a forged Digiflazz cart line to qty 1 instead of merging it as-is", async () => {
+    const cat = await prisma.category.create({ data: { name: "DigiflazzMergeCat", slug: `digiflazz-merge-cat-${Date.now()}`, sortOrder: 8 } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Digiflazz Merge Game" });
+    const digiDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "16500",
+    });
+    await updateDenomination(prisma, digiDenom.id, { autoDeliverySource: "digiflazz" });
+
+    await makeUser("digimergeuser", "digi-merge-pw-1", "DIGIREF");
+    const forgedCookie = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: digiDenom.id, q: 7 }] }));
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+
+    // A second login (e.g. a subsequent session) with the same forged qty:7
+    // cookie must not push the held line above 1 either — addToCart would
+    // otherwise increment an existing line.
+    const login2 = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login2.statusCode).toBe(200);
+    const sessionCookie2 = (Array.isArray(login2.headers["set-cookie"]) ? login2.headers["set-cookie"] : [String(login2.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart2 = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie2 } });
+    expect(cart2.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+  });
+
   it("register: validation errors return i18n keys; success signs in", async () => {
     const bad = await app.inject({
       method: "POST",
@@ -958,6 +1009,106 @@ describe("/api/v1/cart twins", () => {
     });
     expect(badToken.statusCode).toBe(403);
     expect(badToken.json()).toEqual({ error: "csrf_failed" });
+  });
+});
+
+// Final-review N1 fix: POST /cart/update must enforce the same Digiflazz
+// single-unit invariant as POST /cart (api.ts) — otherwise a buyer could add
+// a Digiflazz-routed line at qty 1 (passing the api.ts guard) and then raise
+// it here, bypassing the front door entirely.
+describe("/api/v1/cart/update — Digiflazz single-unit guard", () => {
+  let digiflazzDenomId: number;
+
+  beforeAll(async () => {
+    const cat = await prisma.category.findUniqueOrThrow({ where: { slug: categorySlug } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Digiflazz Update Game ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "",
+      price: "16500",
+    });
+    digiflazzDenomId = denom.id;
+    await updateDenomination(prisma, digiflazzDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "ml100",
+    });
+  });
+
+  it("guest: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    expect(add.statusCode).toBe(200);
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 3 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    // The line itself must be untouched by the rejected request.
+    const check = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie } });
+    expect(check.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("guest: qty=0 (remove) on a Digiflazz line still works", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 0 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items).toHaveLength(0);
+  });
+
+  it("signed-in: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const uid = await makeUser("digiflazzupduser", "digiflazzupd-pw-99", "DFUPDREF");
+    const { cookie, csrf } = await loginAs("digiflazzupduser", "digiflazzupd-pw-99");
+    await addToCart(prisma, uid, digiflazzDenomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 2 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    const refreshed = await prisma.cartItem.findUnique({ where: { id: key } });
+    expect(refreshed!.quantity).toBe(1);
+  });
+
+  it("signed-in: updating a non-Digiflazz line's quantity is unaffected", async () => {
+    const uid = await makeUser("plainupduser", "plainupd-pw-99", "PLAINUPDR");
+    const { cookie, csrf } = await loginAs("plainupduser", "plainupd-pw-99");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 4 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items[0]).toMatchObject({ qty: 4 });
   });
 });
 

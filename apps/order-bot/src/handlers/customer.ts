@@ -25,6 +25,7 @@ import {
   getDenomination,
   getDenominationWithProduct,
   countAvailableStock,
+  MAX_CART_ORDER_UNITS,
   getBulkPricingForDenomination,
   countUserOrders,
   listUserOrders,
@@ -463,6 +464,10 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
       const stock = await countAvailableStock(prisma, d.id);
+      // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
+      // plan has none by design, so showing a literal "0" here would read as
+      // sold out right next to a (correctly) purchasable Buy button.
+      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
       // A flash sale shows as the old price struck through next to the new one,
       // but only when this buyer is actually paying the sale price — a reseller
       // whose standing price still wins sees the plain line.
@@ -477,7 +482,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       return t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
-        stock,
+        stock: stockDisplay,
       });
     }),
   );
@@ -558,6 +563,13 @@ export async function browseDenomination(
   const sale = flashPrice(d);
   const onSale = sale !== null && unit.equals(sale);
 
+  // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info SKU
+  // has none by design, so this screen's own "In stock" line would otherwise
+  // read as sold out directly beside the (correctly) purchasable Buy button
+  // below. `stock` itself stays the raw count for denominationDetailKb's
+  // gating/stepper-bound logic further down; only the displayed text changes.
+  const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
+
   let text = t(ctx, "browse.denomination_detail", {
     product: esc(d.product.name),
     plan: esc(d.name),
@@ -567,7 +579,7 @@ export async function browseDenomination(
     duration: esc(d.durationLabel),
     type: d.type.toLowerCase(),
     warranty: d.warrantyDays,
-    stock,
+    stock: stockDisplay,
     sold,
     rating: ratingStr,
     updated: localize(new Date(), "HH:mm:ss"),
@@ -629,12 +641,22 @@ export async function qtyInputStart(ctx: MyContext, denominationId: number): Pro
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const stock = await countAvailableStock(prisma, d.id);
-  if (stock <= 0) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "browse.out_of_stock"), show_alert: true });
-    return;
+  // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
+  // entirely for manual/manual_with_info) — running this check for a
+  // non-auto product would always see 0 available and falsely reject every
+  // manual-delivery purchase before the qty prompt even opens. Cap the
+  // effective max at MAX_CART_ORDER_UNITS instead, the same limit the
+  // storefront's cart checkout applies to manual items.
+  let effectiveMax = MAX_CART_ORDER_UNITS;
+  if (d.deliveryType === DeliveryType.AUTO) {
+    const stock = await countAvailableStock(prisma, d.id);
+    if (stock <= 0) {
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "browse.out_of_stock"), show_alert: true });
+      return;
+    }
+    effectiveMax = stock;
   }
-  await smartEdit(ctx, t(ctx, "browse.qty_input_prompt", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
+  await smartEdit(ctx, t(ctx, "browse.qty_input_prompt", { max: effectiveMax }), ckb.qtyInputCancelKb(denominationId, lang));
   ctx.session.awaitingQtyDenomId = denominationId;
 }
 
@@ -652,11 +674,15 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
     await menuAnchor(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const stock = await countAvailableStock(prisma, d.id);
+  // Stock rows only ever exist for AUTO SKUs — see the comment in
+  // qtyInputStart. Non-AUTO SKUs are capped at MAX_CART_ORDER_UNITS instead
+  // of the always-zero stock count.
+  const effectiveMax =
+    d.deliveryType === DeliveryType.AUTO ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
 
   const isValid = /^\d+$/.test(rawText) && parseInt(rawText, 10) >= 1;
-  if (!isValid || parseInt(rawText, 10) > stock) {
-    await menuAnchor(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
+  if (!isValid || parseInt(rawText, 10) > effectiveMax) {
+    await menuAnchor(ctx, t(ctx, "browse.qty_input_invalid", { max: effectiveMax }), ckb.qtyInputCancelKb(denominationId, lang));
     ctx.session.awaitingQtyDenomId = denominationId;
     return;
   }
@@ -676,10 +702,15 @@ export async function qtyChange(
     if (ctx.callbackQuery) await ctx.answerCallbackQuery();
     return;
   }
-  const stock = await countAvailableStock(prisma, d.id);
+  // Stock rows only ever exist for AUTO SKUs — see the comment in
+  // qtyInputStart. Non-AUTO SKUs are clamped against MAX_CART_ORDER_UNITS
+  // instead of the always-zero stock count, which would otherwise floor
+  // every manual-SKU qty change back down to 1.
+  const effectiveMax =
+    d.deliveryType === DeliveryType.AUTO ? await countAvailableStock(prisma, d.id) : MAX_CART_ORDER_UNITS;
   const delta =
     action === "inc" ? 1 : action === "dec" ? -1 : action === "inc5" ? 5 : action === "dec5" ? -5 : 0;
-  const newQty = Math.max(1, Math.min(qty + delta, stock));
+  const newQty = Math.max(1, Math.min(qty + delta, effectiveMax));
   await browseDenomination(ctx, denominationId, newQty);
 }
 

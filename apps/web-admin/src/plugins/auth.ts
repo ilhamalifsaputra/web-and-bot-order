@@ -50,7 +50,12 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 }
 
 // ---- RBAC: which roles may MUTATE which areas ------------------------------
-// Reads (GET) are open to every authenticated admin; only mutations are gated.
+// Reads (GET) are open to every authenticated admin by default; only
+// mutations are gated by `canMutate` below. `blockReadonlyReads` (further
+// down this file) is the documented exception: a small, explicitly-listed
+// set of GET routes that return credentials or full CSV/JSON exports (order
+// detail, stock credentials, orders/users/settings exports) is gated even
+// for reads, refusing the `readonly` role specifically.
 
 // Structural / money / account / high-impact routes — super only. All
 // mutations now arrive at the JSON /api/* surface (the legacy form routes
@@ -119,6 +124,23 @@ export const requireSuper: preHandlerHookHandler[] = [
   async (req, reply) => {
     if (req.admin?.role !== "super") {
       return reply.code(403).type("text/plain").send("Super-admin only.");
+    }
+  },
+];
+
+/**
+ * Guard a read route that exposes account credentials or a bulk export:
+ * `readonly` is refused, `support` and `super` keep today's full access.
+ * Reads were previously open to every authenticated admin (see the RBAC
+ * note above `canMutate`); this narrows exactly the five credential/export
+ * routes named in the C-1 finding (security audit 2026-08-21), rather than
+ * changing what any read route or role can do more broadly.
+ */
+export const blockReadonlyReads: preHandlerHookHandler[] = [
+  currentAdmin,
+  async (req, reply) => {
+    if (req.admin?.role === "readonly") {
+      return reply.code(403).type("text/plain").send("This view isn't available to your role.");
     }
   },
 ];

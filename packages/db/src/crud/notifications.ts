@@ -280,6 +280,54 @@ export async function enqueueAdminStalePayment(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that the hourly Digiflazz
+ * catalog resync (`resyncDigiflazzCatalog`) tripped its own blast-radius
+ * circuit breaker and wrote nothing (Task 10, backend audit 2026-08-21 C-1,
+ * second half). Two distinct trip reasons, mirroring `resyncDigiflazzCatalog`'s
+ * own local `AbortReason` union — kept as an equivalent inline union here
+ * rather than importing it, matching this file's existing plain-object-args
+ * style for `enqueueAdmin*` functions:
+ *   - `"sharp_change"`: more than 20% of the denominations it would have
+ *     repriced (out of at least 5 considered) moved by more than 50% in one
+ *     direction.
+ *   - `"no_usable_rows"`: the supplier's price-list fetch returned no usable
+ *     rows at all, even though this shop has Digiflazz-routed denominations
+ *     to check against it — the most total form of the same "malformed
+ *     response" scenario.
+ * Both usually mean the supplier's price-list response is malformed (a field
+ * rename, a partial outage, the wrong endpoint) rather than a genuine
+ * market-wide price swing or a legitimately empty catalog. Nothing else
+ * surfaces this — the next hourly tick would otherwise silently retry the
+ * same malformed data, over and over, with only a routine-looking audit
+ * entry to notice by. Not order-scoped (`orderId: null`) — this is a
+ * catalog-wide event, not tied to any single order. Same fan-out-per-admin
+ * shape as `enqueueAdminStalePayment`. No-op if no admin is resolved.
+ */
+export async function enqueueAdminDigiflazzResyncAborted(
+  db: Db,
+  args: { kind: "sharp_change"; sharpChanges: number; consideredRows: number } | { kind: "no_usable_rows" },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          kind: args.kind,
+          // sharp_changes/considered_rows are only meaningful for the
+          // sharp_change kind — omitted (not 0) for no_usable_rows so the
+          // template can tell "not applicable" apart from "zero of zero".
+          ...(args.kind === "sharp_change"
+            ? { sharp_changes: args.sharpChanges, considered_rows: args.consideredRows }
+            : {}),
+        }),
+      },
+    });
+  }
+}
+
+/**
  * Tell every admin that an order's payment may have succeeded at the gateway
  * while nothing in the system can confirm it — so a human can settle it before
  * the payment window closes and the order auto-cancels with the buyer's money

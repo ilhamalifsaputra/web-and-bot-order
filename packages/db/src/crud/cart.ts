@@ -61,6 +61,31 @@ export async function updateCartItemQty(
   });
 }
 
+/** The `autoDeliverySource` of a single cart line's denomination, keyed by
+ * `cartItemId` (same `key` a signed-in buyer's POST /cart/update sends) —
+ * lets that route check the Digiflazz single-unit invariant BEFORE writing a
+ * new quantity, without pulling the whole cart. Null if the line doesn't
+ * exist (already removed, or belongs to a different user). */
+export function getCartItemAutoDeliverySource(db: Db, userId: number, cartItemId: number) {
+  return db.cartItem
+    .findFirst({
+      where: { id: cartItemId, userId },
+      select: { product: { select: { autoDeliverySource: true } } },
+    })
+    .then((row) => row?.product.autoDeliverySource ?? null);
+}
+
+/** True when `userId` already holds a cart line for `productId` (a
+ * denomination id) — lets a caller decide "merge" vs "skip" for a single
+ * denomination without pulling the whole cart. Used by the guest-cart merge
+ * on login (routes/auth.ts establishSession) to avoid pushing a
+ * Digiflazz-routed line above its single-unit invariant via addToCart's own
+ * increment-on-existing behavior. */
+export async function hasCartItem(db: Db, userId: number, productId: number): Promise<boolean> {
+  const existing = await db.cartItem.findUnique({ where: { userId_productId: { userId, productId } } });
+  return existing !== null;
+}
+
 export async function removeFromCart(db: Db, userId: number, cartItemId: number) {
   await db.cartItem.deleteMany({ where: { id: cartItemId, userId } });
 }

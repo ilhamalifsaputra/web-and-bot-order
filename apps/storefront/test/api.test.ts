@@ -431,6 +431,132 @@ describe("POST /api/v1/cart — cart guard (single-SKU-per-non-auto-cart)", () =
   });
 });
 
+// Final-review N1 fix: a Digiflazz-routed denomination (autoDeliverySource
+// "digiflazz") may only ever be added/held at quantity 1 — the supplier
+// dispatch poller (packages/db/src/crud/digiflazz.ts) places exactly one
+// top-up per order and marks the whole order DELIVERED, so a qty>1 line for
+// one would leave the buyer paid for N and delivered 1.
+describe("POST /api/v1/cart — Digiflazz single-unit guard", () => {
+  let digiflazzDenomId: number;
+  let manualWithInfoDenomId: number;
+
+  beforeAll(async () => {
+    const { members } = await seedProduct(categoryId, "Digiflazz Game", [{ name: "100 Diamonds", price: "16500" }]);
+    digiflazzDenomId = members[0]!.id;
+    await updateDenomination(prisma, digiflazzDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "ml100",
+    });
+
+    // A non-Digiflazz manual_with_info denomination — same delivery type,
+    // no autoDeliverySource — to prove the new guard is keyed on
+    // autoDeliverySource specifically, not deliveryType.
+    const { members: members2 } = await seedProduct(categoryId, "Ordinary Manual Game", [
+      { name: "Info Denom", price: "12000" },
+    ]);
+    manualWithInfoDenomId = members2[0]!.id;
+    await updateDenomination(prisma, manualWithInfoDenomId, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+  });
+
+  it("rejects qty=2 for a Digiflazz-routed denomination", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+  });
+
+  it("accepts qty=1 for the same Digiflazz-routed denomination", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("leaves qty=2 for a non-Digiflazz manual_with_info denomination unaffected", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: manualWithInfoDenomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: manualWithInfoDenomId, qty: 2 });
+  });
+
+  it("leaves qty=2 for a plain auto denomination unaffected", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: denomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
+  });
+
+  // addToCart (signed-in) / the guest merge branch both INCREMENT an
+  // existing line rather than setting it absolutely — re-POSTing qty:1 for a
+  // Digiflazz denomination that's ALREADY in the cart would otherwise land at
+  // qty:2 even though this one request looks like "qty 1" in isolation.
+  it("rejects re-adding a Digiflazz-routed denomination that's already in the cart, even at qty=1", async () => {
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(first.statusCode).toBe(200);
+    const cookie = (Array.isArray(first.headers["set-cookie"]) ? first.headers["set-cookie"] : [String(first.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    const check = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie } });
+    expect(check.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("signed-in: rejects re-adding a Digiflazz-routed denomination that's already in the cart, even at qty=1", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "digiflazzreadduser",
+        email: "digiflazzreadd@u.test",
+        passwordHash: hashPassword("digiflazzreadd-pw-99"),
+        referralCode: "DFREADD",
+      },
+    });
+    const session = await loginAs("digiflazzreadduser", "digiflazzreadd-pw-99");
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+  });
+});
+
 describe("POST /api/v1/checkout", () => {
   // Guest checkout (Task 4) replaced the blanket 401 with a validated guest
   // branch: no session is required, but a contact email is, and it is checked

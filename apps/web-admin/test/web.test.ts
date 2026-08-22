@@ -1567,6 +1567,30 @@ describe("catalog JSON API — create category", () => {
     expect(cat!.sortOrder).toBe(3);
   });
 
+  it("defaults checkoutFlow to \"catalog\" when omitted", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
+  it("persists checkoutFlow \"instant\" when given", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Top-ups", checkoutFlow: "instant" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("instant");
+  });
+
+  it("silently falls back to \"catalog\" for an invalid checkoutFlow instead of rejecting the request", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Flow", checkoutFlow: "bogus" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
   it("rejects empty name with 400", async () => {
     const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
     expect(res.statusCode).toBe(400);
@@ -1836,6 +1860,184 @@ describe("catalog JSON API — create denomination", () => {
     const row = await getDenomination(prisma, body.id);
     expect(row!.additionalFields).toBeNull();
   });
+
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  it("creates a denomination with autoDeliverySource digiflazz and a supplierSku, persisting both fields, alongside manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBe("digiflazz");
+    expect(row!.supplierSku).toBe("mlbb86");
+  });
+
+  it("rejects autoDeliverySource digiflazz with an empty supplierSku (400) and writes nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "   ",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("defaults autoDeliverySource and supplierSku to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Regression test for the review finding: autoDeliverySource/supplierSku
+  // must be coupled to deliveryType === manual_with_info the same way
+  // additionalFields already is above ("ignores a stray additionalFields
+  // payload when deliveryType is not manual_with_info") — a denomination
+  // outside Manual + Info has no buyer-submitted Game ID/Server info for a
+  // supplier to fulfill against, so it can't carry a live Digiflazz link.
+  it("ignores autoDeliverySource/supplierSku when deliveryType is not manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Task 7: nicknameCheckGameCode is independent of autoDeliverySource — a
+  // manual_with_info denomination with no Digiflazz link can still offer a
+  // live nickname check, so it needs none of the digiflazz-only coupling
+  // tested above.
+  it("creates a denomination with nicknameCheckGameCode, with no autoDeliverySource required", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      nicknameCheckGameCode: "mobile-legends",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBe("mobile-legends");
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("defaults nicknameCheckGameCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBeNull();
+  });
+
+  // Region-check Task B: regionWarning and expectedRegionCode are independent
+  // of autoDeliverySource/nicknameCheckGameCode/supplierSku AND of each other —
+  // a denomination can have either, both, or neither.
+  it("creates a denomination with regionWarning and expectedRegionCode, independent of each other and of nicknameCheckGameCode", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      regionWarning: "Hanya untuk akun region Indonesia",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.nicknameCheckGameCode).toBeNull();
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("creates a denomination with only regionWarning set (no expectedRegionCode)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+
+  it("creates a denomination with only expectedRegionCode set (no regionWarning)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.regionWarning).toBeNull();
+  });
+
+  it("defaults regionWarning and expectedRegionCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBeNull();
+    expect(row!.expectedRegionCode).toBeNull();
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------
@@ -2001,6 +2203,25 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     it("rejects empty name with 400", async () => {
       const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, { name: "" });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("persists checkoutFlow \"instant\"", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "instant",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.checkoutFlow).toBe("instant");
+    });
+
+    it("rejects an invalid checkoutFlow with 400 and writes nothing", async () => {
+      const before = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "bogus",
+      });
+      expect(res.statusCode).toBe(400);
+      const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(after!.checkoutFlow).toBe(before!.checkoutFlow);
     });
 
     it("rejects a non-existent category id with 404", async () => {
@@ -2230,6 +2451,54 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 
     it("rejects bad CSRF with 403", async () => {
       const res = await postJson(`/api/catalog/products/bulk-active`, seed.cookie, "bad-token", { ids: [seed.catalogProductId], active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/denominations/bulk-active", () => {
+    it("happy path: activates multiple denominations and audits with a count", async () => {
+      await prisma.denomination.update({ where: { id: seed.productId }, data: { isActive: false } });
+      const other = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: "Other Denom",
+        type: ProductType.SHARED,
+        durationLabel: "3 Months",
+        price: "15.00",
+        isActive: false,
+      });
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId, other.id],
+        active: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getDenomination(prisma, seed.productId))!.isActive).toBe(true);
+      expect((await getDenomination(prisma, other.id))!.isActive).toBe(true);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "denomination_bulk_active" } });
+      expect(audit?.details).toBe("Activated 2 denominations.");
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, { ids: [], active: false });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId],
+        active: "yes",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, null, "x", { ids: [seed.productId], active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, "bad-token", { ids: [seed.productId], active: false });
       expect(res.statusCode).toBe(403);
     });
   });
@@ -5502,6 +5771,145 @@ describe("rbac", () => {
 
     await setRole(ADMIN_TG, "support");
     expect((await get("/api/admins", seed.cookie)).statusCode).toBe(403); // non-super blocked
+  });
+});
+
+// ---- Read-side role gate on credential/export routes (C-1, backend audit
+// 2026-08-21) — `roleGate`/`canMutate` above only ever ran on mutations;
+// these five GET routes returned account credentials or full CSV/JSON
+// exports to every authenticated admin, including `readonly` (the default
+// role for every newly-created admin). Fix: `blockReadonlyReads` in
+// src/plugins/auth.ts, applied only to these five routes. -----------------
+
+describe("read-side role gate — credential/export routes (C-1)", () => {
+  const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
+
+  // Minor 6 (final whole-branch review, 2026-08-21): this block's last test
+  // ("GET /api/stock/export stays open to readonly") leaves ADMIN_TG's role
+  // set to "readonly" and never resets it, so a later describe block would
+  // implicitly run under that leftover role instead of whatever was in
+  // effect before this block ran (here, "support" — the role the preceding
+  // "admin management" describe block's last test left it as). Currently
+  // harmless because this file's global `beforeEach` (resetDb) wipes the
+  // Setting table before every single test, but that makes this block's own
+  // cleanup accidentally load-bearing on an implementation detail of a hook
+  // it doesn't own — reset explicitly instead of relying on that.
+  afterAll(async () => {
+    await setRole(ADMIN_TG, "support");
+  });
+
+  it("GET /api/stock/:productId (credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("items");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("items");
+  });
+
+  it("GET /api/stock/:productId/download (plaintext credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/plain");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("GET /api/orders/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/orders/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/orders/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/csv");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/orders/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/csv");
+  });
+
+  // Important #3 (final whole-branch review, 2026-08-21): readonly could
+  // still read one delivered order's credentials at a time via this route —
+  // it wasn't one of the five routes gated when C-1 first shipped.
+  it("GET /api/orders/:orderId (delivered order credentials): readonly is blocked, support and super keep read access", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const orderId = await makePendingOrder();
+    await setRole(ADMIN_TG, "support");
+    const approveRes = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approveRes.statusCode).toBe(200);
+
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("order");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("order");
+    resetBotIdentity();
+  });
+
+  it("GET /api/users/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/users/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/users/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toBe("text/csv; charset=utf-8");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/users/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toBe("text/csv; charset=utf-8");
+  });
+
+  it("GET /api/settings/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/settings/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/settings/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("fields");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/settings/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("fields");
+  });
+
+  // Explicitly out of scope (brief, C-1): the aggregate stock-health CSV
+  // carries no credentials and must stay open to readonly.
+  it("GET /api/stock/export stays open to readonly (out of scope for C-1)", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const res = await get("/api/stock/export", seed.cookie);
+    expect(res.statusCode).toBe(200);
   });
 });
 

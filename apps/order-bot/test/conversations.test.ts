@@ -13,6 +13,9 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
+  updateDenomination,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
 import { NotificationEvent, OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
@@ -894,6 +897,64 @@ describe("admin conversations", () => {
     const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
     expect(p!.name).toBe("Netflix Renamed");
     expect(await prisma.auditLog.count({ where: { action: "product_rename" } })).toBe(1);
+  });
+
+  // Final-review C2 fix, closed on this third write path too (besides the
+  // web admin PATCH route and the Digiflazz import wizard): editing a
+  // Digiflazz-routed denomination's price from the bot must also mark
+  // priceOverridden, or the next hourly resync would silently undo this
+  // exact edit within the hour.
+  it("productEdit: a Digiflazz price edit that disagrees with the markup suggestion sets priceOverridden", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: "20000", // suggested price would be 22000
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "25000" })]); // hand-edited, above the suggestion
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.price.toString()).toBe("25000");
+    expect(p!.priceOverridden).toBe(true);
+  });
+
+  it("productEdit: a Digiflazz price edit matching the markup suggestion leaves priceOverridden false", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: "20000",
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "22000" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(false);
+  });
+
+  it("productEdit: a Digiflazz price edit with no cost on record is treated as overridden", async () => {
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: null,
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "12345" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(true);
+  });
+
+  it("productEdit: a plain (non-Digiflazz) price edit leaves priceOverridden false", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "99999" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(false);
   });
 
   it("bulkPricing: 2 steps upsert a rule + audit", async () => {

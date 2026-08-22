@@ -112,15 +112,15 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(tx?.outcome).toBe("matched");
   });
 
-  it("never delivers when the gateway reports only the bare order total (no admin fee)", async () => {
-    await makeTokopayOrder();
+  it("never delivers when the gateway reports only the bare order total (no admin fee) — flagged UNDERPAID instead", async () => {
+    const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     stubStatus({ status: "Paid", trx_id: "TRX-NOFEE", total_bayar: pending!.totalAmount.toString() });
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
 
-    const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
-    expect(stillPending).toBeDefined();
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
   });
 
   // The poller used to claim `reconcile-<orderCode>` when TokoPay's status
@@ -177,15 +177,40 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(stillPending).toBeDefined();
   });
 
-  it("never delivers on an underpayment", async () => {
+  it("never delivers on an underpayment, flags the order UNDERPAID, and alerts admins", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    const shortAmount = pending!.totalAmount.minus(1);
+    stubStatus({ status: "Paid", trx_id: "TRX-SHORT", total_bayar: shortAmount.toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
+    // ADMIN_IDS = "999,1000" in test setup — one alert per admin.
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const [, text] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(text)).toMatch(/[Uu]nderpaid/);
+    expect(String(text)).toContain(created!.orderCode);
+    expect(String(text)).toContain("TokoPay");
+  });
+
+  // The poller re-checks the same order.id every cycle — the order's own
+  // status IS the idempotency guard (no separate ledger table needed, unlike
+  // the crypto rails). A second cycle before a human resolves the order must
+  // be a silent no-op: no double alert, no throw.
+  it("does not alert a second time when an already-UNDERPAID order is reconciled again", async () => {
     await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
-    stubStatus({ status: "Paid", trx_id: "TRX-SHORT", total_bayar: pending!.totalAmount.minus(1).toString() });
+    stubStatus({ status: "Paid", trx_id: "TRX-SHORT-2", total_bayar: pending!.totalAmount.minus(1).toString() });
+    const api = fakeApi();
 
-    await reconcileOrder(fakeApi(), CREDS, pending!);
+    await reconcileOrder(api, CREDS, pending!);
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
 
-    const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
-    expect(stillPending).toBeDefined();
+    await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // no additional alert on the second cycle
   });
 
   /** Deliver the one pending order with its bubble anchored at (555, 777), and

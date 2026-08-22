@@ -23,10 +23,16 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
+  getDigiflazzCreds,
+  getKokinpayCreds,
+  getVipResellerCreds,
 } from "@app/db";
 import { checkTransaction as tokopayCheckTransaction } from "@app/core/payments/tokopay";
 import { checkTransaction as paydisiniCheckTransaction } from "@app/core/payments/paydisini";
 import { getPaymentStatus as nowpaymentsGetStatus } from "@app/core/payments/nowpayments";
+import { getPriceList } from "@app/core/suppliers/digiflazz";
+import { checkGameNickname } from "@app/core/suppliers/kokinpay";
+import { checkGameRegion } from "@app/core/suppliers/vipreseller";
 
 export interface ConnectionTestResult {
   ok: boolean;
@@ -197,7 +203,71 @@ export async function testBinanceInternal(): Promise<ConnectionTestResult> {
   }
 }
 
-/** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS) → tester.
+/** Fetches Digiflazz's price list with the currently-saved credentials — the
+ * lightest read-only call that actually proves the username/API key pair is
+ * accepted, same "call the real endpoint, don't just check the shape"
+ * approach as Bybit/Binance above. Not gated behind a PAYMENT_METHODS entry
+ * (Digiflazz is a supplier, not a checkout payment method) — this key only
+ * needs to exist in CONNECTION_TESTS for the generic
+ * /api/settings/payments/:method/test route to dispatch it. */
+export async function testDigiflazz(): Promise<ConnectionTestResult> {
+  const creds = await getDigiflazzCreds(prisma);
+  if (!creds) return { ok: false, detail: "Digiflazz username and API key are not both set." };
+  try {
+    const items = await getPriceList(creds);
+    return { ok: true, detail: `Connected — ${items.length} SKU(s) in the price list.` };
+  } catch (err) {
+    return { ok: false, detail: `Digiflazz test failed: ${errorMessage(err)}` };
+  }
+}
+
+/** A throwaway lookup that will never match a real account — reports whether
+ * KokinPay accepted the request at all (a well-formed found-OR-not-found
+ * response), not whether this particular id happens to exist. Mirrors
+ * testDigiflazz's "call the real endpoint, don't just check the shape"
+ * approach: `id: "0"` is not a real KokinPay account id for any game, so a
+ * "not found" response here is the EXPECTED, connection-works outcome. */
+export async function testKokinpay(): Promise<ConnectionTestResult> {
+  const creds = await getKokinpayCreds(prisma);
+  if (!creds) return { ok: false, detail: "KokinPay API key is not set." };
+  try {
+    const result = await checkGameNickname(creds, { gameCode: "mobile-legends", id: "0" });
+    return {
+      ok: true,
+      detail: result.valid
+        ? `Connected — KokinPay accepted the API key and returned a nickname ("${result.nickname}").`
+        : "Connected — KokinPay accepted the API key and responded (the test id wasn't found, as expected).",
+    };
+  } catch (err) {
+    return { ok: false, detail: `KokinPay test failed: ${errorMessage(err)}` };
+  }
+}
+
+/** A throwaway Mobile Legends lookup that will never match a real account —
+ * reports whether VIP-Reseller accepted the request at all (a well-formed
+ * found-OR-not-found response), not whether this particular id happens to
+ * exist. Same "call the real endpoint, don't just check the shape" approach
+ * as testKokinpay: `id: "0"` is not a real account id, so a "not found"
+ * result (countryCode: null) here is the EXPECTED, connection-works outcome
+ * — region-check success/failure is not what this test measures. */
+export async function testVipReseller(): Promise<ConnectionTestResult> {
+  const creds = await getVipResellerCreds(prisma);
+  if (!creds) return { ok: false, detail: "VIP-Reseller API ID and API key are not both set." };
+  try {
+    const result = await checkGameRegion(creds, { gameCode: "mobile-legends", id: "0" });
+    return {
+      ok: true,
+      detail: result.countryCode
+        ? `Connected — VIP-Reseller accepted the credentials and returned a region ("${result.countryCode}").`
+        : "Connected — VIP-Reseller accepted the credentials and responded (the test id wasn't found, as expected).",
+    };
+  } catch (err) {
+    return { ok: false, detail: `VIP-Reseller test failed: ${errorMessage(err)}` };
+  }
+}
+
+/** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS, or — for
+ * Digiflazz/KokinPay/VIP-Reseller — the supplier equivalent) → tester.
  * "bybit_bsc" intentionally reuses testBybit — it shares the same account
  * credentials as "bybit", so there is nothing separate to verify here. */
 export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult>> = {
@@ -207,4 +277,7 @@ export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult
   bybit: testBybit,
   bybit_bsc: testBybit,
   binance_internal: testBinanceInternal,
+  digiflazz: testDigiflazz,
+  kokinpay: testKokinpay,
+  vipreseller: testVipReseller,
 };

@@ -39,7 +39,7 @@ import * as admin from "./handlers/admin";
 import * as walletTopup from "./handlers/walletTopup";
 import { routeCallback } from "./handlers/callbacks";
 import { matchPersistentLabel } from "./keyboards/customer";
-import { scheduleJobs, scheduleFxRefresh } from "./jobs";
+import { scheduleJobs, scheduleFxRefresh, scheduleDigiflazzCatalogSync, scheduleDigiflazzDispatch } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
 import { startPolling as startBybitBscPolling, stopPolling as stopBybitBscPolling } from "./payments/bybitBscDeposit";
@@ -266,6 +266,8 @@ export async function start(): Promise<void> {
   // instead of exiting (and crash-looping under `restart: unless-stopped`) while
   // an operator is still filling in the token via the web wizard.
   scheduleFxRefresh();
+  scheduleDigiflazzCatalogSync();
+  scheduleDigiflazzDispatch();
   // Setting wins, env is the bootstrap/recovery fallback (plan.md §16.3).
   const creds = await resolveBotCredentials(prisma);
   if (!creds.botToken) {

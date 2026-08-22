@@ -3,7 +3,7 @@
  * sections of crud.py. reconcile_finances detects drift WITHOUT mutating rows.
  * Revenue/profit/analytics-by-day computations live in ./revenue.ts.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
@@ -26,7 +26,7 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
 
   // 1. Order total integrity (non-cancelled orders).
   const orders = await db.order.findMany({
-    where: { status: { not: OrderStatus.CANCELLED } },
+    where: { status: { not: OrderStatus.CANCELLED }, kind: OrderKind.PRODUCT },
   });
 
   // Which currency each order's wallet leg was actually paid in, read from the

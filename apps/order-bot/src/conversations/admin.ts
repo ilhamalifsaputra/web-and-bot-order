@@ -36,6 +36,8 @@ import {
   listAllCategories,
   createCategory,
   updateDenomination,
+  getDenomination,
+  isDigiflazzPriceOverridden,
   upsertBulkPricing,
   getTicket,
   replyToTicket,
@@ -990,7 +992,21 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         continue;
       }
       await prisma.$transaction(async (tx) => {
-        await updateDenomination(tx, denominationId, { price: p });
+        // Final-review C2 fix, closed on this path too: this is the third
+        // place (besides the web admin's PATCH route and the Digiflazz
+        // import wizard) that can set a Digiflazz-routed denomination's
+        // price — without marking it `priceOverridden`, the next hourly
+        // resync (resyncDigiflazzCatalog) would silently recompute it back
+        // to cost+markup within the hour, undoing this admin's edit with no
+        // trace. isDigiflazzPriceOverridden is the single shared rule for
+        // this decision (same one the PATCH route uses) — see its doc
+        // comment in crud/digiflazz.ts.
+        const denom = await getDenomination(tx, denominationId);
+        const data: { price: Decimal; priceOverridden?: boolean } = { price: p };
+        if (denom?.autoDeliverySource === "digiflazz") {
+          data.priceOverridden = await isDigiflazzPriceOverridden(tx, p, denom.costPrice);
+        }
+        await updateDenomination(tx, denominationId, data);
         const admin = await getUserByTelegramId(tx, adminTg);
         await logAdminAction(tx, {
           adminId: requireAdminId(admin),

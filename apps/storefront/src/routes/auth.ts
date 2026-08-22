@@ -17,7 +17,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
-import { prisma, setSetting, addToCart, getDenomination, getUserByTelegramId } from "@app/db";
+import { prisma, setSetting, addToCart, getDenomination, getUserByTelegramId, hasCartItem } from "@app/db";
 import {
   makeCustomerSession,
   newJti,
@@ -55,7 +55,22 @@ export async function establishSession(
   const guestCart = readGuestCart(req);
   for (const line of guestCart) {
     const denom = await getDenomination(prisma, line.p);
-    if (denom?.isActive) await addToCart(prisma, user.id, line.p, line.q);
+    if (!denom?.isActive) continue;
+    // Digiflazz single-unit guard (final-review N1 fix, Batch 1 review
+    // finding): the guest cart cookie has no signature, so a crafted Cookie
+    // header can carry any {p, q} pair straight past POST /cart's own guard
+    // — this merge-on-login path is the one other place a Digiflazz-routed
+    // line reaches CartItem without going through that route. addToCart
+    // INCREMENTS an existing line rather than setting it, so even a
+    // legitimate q:1 guest line would push an account that already holds
+    // qty 1 of the same SKU to qty 2 — skip the merge entirely in that case
+    // rather than letting it land above 1. (dispatchPendingDigiflazzOrders'
+    // own defense-in-depth check remains the final backstop regardless.)
+    if (denom.autoDeliverySource === "digiflazz") {
+      if (!(await hasCartItem(prisma, user.id, line.p))) await addToCart(prisma, user.id, line.p, 1);
+      continue;
+    }
+    await addToCart(prisma, user.id, line.p, line.q);
   }
   if (guestCart.length) writeGuestCart(reply, []);
 

@@ -133,6 +133,10 @@ export interface ProductDenomination {
   delivery_type: string;
   /** Parsed manual_with_info field spec — [] for auto/manual. */
   additional_fields: AdditionalField[];
+  /** Region-check Task C: admin-authored precautionary copy (Region-check
+   * Task B's `regionWarning` field), null when the admin hasn't set one.
+   * Rendered as an always-shown info Callout on InstantBuyPage.tsx. */
+  region_warning?: string | null;
 }
 
 /** A masked-author review on the product detail page — `created_at_display`
@@ -172,6 +176,10 @@ export interface ProductPageData {
      * `reviews` below (which is limited to 10). */
     rating: number | null;
     rating_count: number;
+    /** Category.checkoutFlow (Task 6, Digiflazz instant-buy pilot): "instant"
+     * renders InstantBuyPage.tsx instead of this page's usual plan picker +
+     * Cart→Checkout hop. */
+    checkout_flow: "catalog" | "instant";
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;
@@ -396,6 +404,11 @@ export interface ShopContext {
   favicon_url: string;
   logo_url: string;
   bot_username: string;
+  /** WhatsApp number for the footer's contact link (`support_whatsapp`
+   * Setting), or null/empty when the shop hasn't set one — the footer hides
+   * the WhatsApp link entirely rather than show a dead one, same as
+   * HomePage's own contact section treats an absent number. */
+  wa_number: string | null;
   tzname: string;
   /** True only when `web_analytics_id` is set, i.e. this shop actually loads
    * Google Analytics. The privacy page reads it so it never claims tracking a

@@ -59,6 +59,8 @@ vi.mock("../src/payments/nowpaymentsReconcile", async (importOriginal) => ({
 const jobsSpies = vi.hoisted(() => ({
   scheduleJobs: vi.fn(() => []),
   scheduleFxRefresh: vi.fn(() => ({ stop: vi.fn() })),
+  scheduleDigiflazzCatalogSync: vi.fn(() => ({ stop: vi.fn() })),
+  scheduleDigiflazzDispatch: vi.fn(() => ({ stop: vi.fn() })),
 }));
 vi.mock("../src/jobs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/jobs")>()),

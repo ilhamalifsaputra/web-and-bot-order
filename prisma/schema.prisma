@@ -159,6 +159,11 @@ model Category {
   image       String?
   sortOrder   Int     @default(0) @map("sort_order")
   isActive    Boolean @default(true) @map("is_active")
+  /// How checkout behaves for every product/denomination under this category:
+  /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
+  /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
+  /// at checkout and the order auto-dispatches to the supplier on payment).
+  checkoutFlow String @default("catalog") @map("checkout_flow")
 
   products Product[]
 
@@ -191,6 +196,11 @@ model Product {
   /// storefront falls back to its curated Unsplash map (plan.md §8).
   webImageUrl String?  @map("web_image_url")
   imageFileId String?  @map("image_file_id")
+  /// The exact Digiflazz `brand` string this Product was imported from (Import
+  /// Wizard). Null for hand-created products. Re-sync matching key — chosen
+  /// over matching by name so the admin can rename the display name freely
+  /// without breaking future syncs.
+  digiflazzBrand String? @map("digiflazz_brand")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
@@ -231,6 +241,42 @@ model Denomination {
   resellerPrice        Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
   autoDeliverySource   String?   @map("auto_delivery_source")
+  /// The Digiflazz `buyer_sku_code` this denomination maps to (e.g. "ML86").
+  /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
+  /// points at the Digiflazz supplier.
+  supplierSku          String?   @map("supplier_sku")
+  /// KokinPay's game_code for this denomination's title (e.g. "mobile-legends"),
+  /// used to offer a live nickname lookup on the buyer's account field before
+  /// they pay. Null = no live check for this product — the field still works
+  /// as plain text, never blocks the buyer. Admin copies this value from
+  /// KokinPay's own game-code list (api.kokinpay.com/docs/kode-game).
+  /// Independent of autoDeliverySource/supplierSku — this is a storefront UX
+  /// enhancement, not a fulfilment link, so it applies to any manual_with_info
+  /// product regardless of who (if anyone) auto-fulfils it.
+  nicknameCheckGameCode String?  @map("nickname_check_game_code")
+  /// Admin-authored short warning shown near the account field on the
+  /// storefront's instant-buy page (e.g. "Hanya untuk akun region
+  /// Indonesia") — a manual mitigation for the wrong-region-variant problem
+  /// (this SKU/Product may be a region-specific split of a game that has
+  /// multiple Digiflazz SKUs per region, and nothing else in the catalog
+  /// enforces which one a buyer picks). Independent of every other field on
+  /// this model — works even with no live nickname/region check configured.
+  regionWarning String? @map("region_warning")
+  /// The region this SKU is FOR, as an ISO-3166-alpha2-ish code (e.g. "ID"
+  /// for Indonesia) — compared against VIP-Reseller's live region-check
+  /// result (packages/core/src/suppliers/vipreseller.ts, only returns
+  /// country data for some games, e.g. Mobile Legends) to flag a mismatch on
+  /// the storefront. Null = no automatic region check for this SKU (the
+  /// live check is skipped silently, same graceful-degrade discipline as
+  /// nicknameCheckGameCode). Admin sets this to match whichever Digiflazz
+  /// SKU/region this particular Product/Denomination represents.
+  expectedRegionCode String? @map("expected_region_code")
+  /// True once an admin has manually edited this SKU's price after import.
+  /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
+  /// resyncDigiflazzCatalog) skips price recomputation for any row where this
+  /// is true, so a deliberate manual price change is never silently
+  /// overwritten by the next sync tick.
+  priceOverridden      Boolean   @default(false) @map("price_overridden")
   warrantyDays         Int       @default(30) @map("warranty_days")
   sortOrder            Int       @default(0) @map("sort_order")
   isActive             Boolean   @default(true) @map("is_active")
@@ -411,6 +457,12 @@ model Order {
   /// can still auto-deliver it. Cleared back to null the next time an
   /// explorer lookup succeeds.
   trackingStaleAt       DateTime? @map("tracking_stale_at")
+  /// Idempotency guard for the Digiflazz dispatch poller (later task): set
+  /// atomically via an `updateMany`-with-status-guard claim (mirrors
+  /// `fulfillManualOrder`'s pattern, packages/db/src/crud/orders.ts:1657-1661)
+  /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
+  /// can never place the same top-up order twice. Null = not yet dispatched.
+  digiflazzDispatchedAt DateTime? @map("digiflazz_dispatched_at")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)

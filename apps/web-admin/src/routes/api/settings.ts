@@ -35,7 +35,7 @@ import {
   otpauthUri,
 } from "../../auth";
 import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { getTokenValidator, getChannelValidator, getBotAdminValidator, getJoinUrlResolver, matchesExpectedType } from "../../lib/telegramCheck";
 import { CONNECTION_TESTS } from "../../lib/connectionTest";
 
@@ -106,9 +106,17 @@ const EDITABLE: Record<string, string> = {
   wallet_topup_max_amount_idr: "Wallet top-up max amount (IDR)",
   wallet_topup_min_amount_usdt: "Wallet top-up min amount (USDT)",
   wallet_topup_max_amount_usdt: "Wallet top-up max amount (USDT)",
+  digiflazz_username: "Digiflazz username",
+  digiflazz_api_key: "Digiflazz API key",
+  digiflazz_enabled: "Digiflazz enabled",
+  digiflazz_markup_type: "Digiflazz markup type (percent or flat)",
+  digiflazz_markup_value: "Digiflazz markup value",
+  kokinpay_api_key: "KokinPay API key",
+  vipreseller_api_id: "VIP-Reseller API ID",
+  vipreseller_api_key: "VIP-Reseller API key",
 };
 
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass", "digiflazz_api_key", "kokinpay_api_key", "vipreseller_api_key"]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
 // Fields whose /telegram/test check reuses the getChat-based "is this chat
 // reachable" flow — the original public_channel_id plus the two join-gate
@@ -309,6 +317,16 @@ async function applyFieldEdit(
     throw new FieldEditError(400, "Template is too long — keep it under 500 characters.");
   }
 
+  if (key === "digiflazz_markup_type" && value !== "" && value !== "percent" && value !== "flat") {
+    throw new FieldEditError(400, 'Markup type must be "percent" or "flat".');
+  }
+
+  if (key === "digiflazz_markup_value" && value !== "") {
+    let valid = false;
+    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThanOrEqualTo(0); } catch { valid = false; }
+    if (!valid) throw new FieldEditError(400, "Markup value must be a non-negative number, or blank to disable.");
+  }
+
   const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);
   await setSetting(prisma, key, value);
   // Single process (apps/server): re-stamp so the bot's send layer picks the
@@ -390,8 +408,9 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   // included: export omits every SECRET_KEYS field entirely (not redacted —
   // structurally absent), and import defensively skips any secret key present
   // in an uploaded file even though a file produced by this same export could
-  // never contain one.
-  app.get("/api/settings/export", { preHandler: currentAdmin }, async (req, reply) => {
+  // never contain one. Gated to non-readonly roles (C-1, security audit
+  // 2026-08-21).
+  app.get("/api/settings/export", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const rows = await listAllSettings(prisma);
     const currentValues: Record<string, string> = {};
     for (const r of rows) currentValues[r.key] = r.value;

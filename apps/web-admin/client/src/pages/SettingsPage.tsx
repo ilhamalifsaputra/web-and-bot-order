@@ -20,6 +20,9 @@ import {
   DatabaseBackup,
   MoreVertical,
   Users,
+  Gamepad2,
+  UserSearch,
+  Globe,
 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -27,6 +30,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { StatusBadge } from "@/components/shared/StatusBadge";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { SettingsSearch, highlightMatch, matchesQuery } from "@/components/shared/SettingsSearch";
@@ -160,6 +170,31 @@ const PAY_CRED_KEYS = new Set([
   "binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled", "binance_internal_min_amount",
 ]);
 
+// Digiflazz supplier credentials + markup rule — not a checkout payment
+// method (customers never select it), so it gets its own Card rather than
+// PAY_CRED_GROUPS/GatewayCard's enable-switch-tied-to-payment-selection shape.
+const DIGIFLAZZ_KEYS = new Set([
+  "digiflazz_username",
+  "digiflazz_api_key",
+  "digiflazz_enabled",
+  "digiflazz_markup_type",
+  "digiflazz_markup_value",
+]);
+
+// KokinPay: the live nickname-check lookup (Task 7) — a separate paid
+// service from Digiflazz, so its own Card rather than folding it into
+// DIGIFLAZZ_KEYS. Same "not a checkout payment method" reasoning as
+// Digiflazz above: it gets its own Card, not PAY_CRED_GROUPS/GatewayCard.
+const KOKINPAY_KEYS = new Set(["kokinpay_api_key"]);
+
+// VIP-Reseller: a second, independent region-check lookup (Region-check Task
+// A) — used only to detect a buyer's account region on Mobile Legends
+// lookups, catching a buyer who picked the wrong region variant of a game.
+// Same "not a checkout payment method" reasoning as KokinPay above: its own
+// Card, not PAY_CRED_GROUPS/GatewayCard. Two required fields (unlike
+// KokinPay's one), so the Card's Test Connection button gates on both.
+const VIPRESELLER_KEYS = new Set(["vipreseller_api_id", "vipreseller_api_key"]);
+
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
   ...TELEGRAM_KEYS,
@@ -167,6 +202,9 @@ const ALL_GROUPED_KEYS = new Set([
   ...SMTP_KEYS,
   ...FX_KEYS,
   ...PAY_CRED_KEYS,
+  ...DIGIFLAZZ_KEYS,
+  ...KOKINPAY_KEYS,
+  ...VIPRESELLER_KEYS,
 ]);
 
 // Short, muted helper description per field (Settings refinement §6) — every
@@ -228,6 +266,14 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   bulk_purchase_broadcast_enabled: "Post a message to the public channel when a large purchase happens.",
   bulk_purchase_broadcast_threshold: "Minimum quantity in one order that triggers the broadcast.",
   bulk_purchase_broadcast_template: "Message template — supports {qty}, {product}, {denomination}.",
+  digiflazz_username: "Your Digiflazz account username.",
+  digiflazz_api_key: "Authenticates requests to Digiflazz — never shown once saved.",
+  digiflazz_enabled: 'Type "true" or "false" — turns Digiflazz auto-fulfilment off without clearing the saved credentials.',
+  digiflazz_markup_type: "How the markup below is applied when pricing Digiflazz SKUs.",
+  digiflazz_markup_value: "Percent (e.g. 8 for 8%) or a flat IDR amount, depending on the type above.",
+  kokinpay_api_key: "Authenticates requests to KokinPay's nickname-check lookup — never shown once saved.",
+  vipreseller_api_id: "Your VIP-Reseller account's API ID.",
+  vipreseller_api_key: "Authenticates requests to VIP-Reseller's region-check lookup — never shown once saved.",
 };
 
 /** Instant client-side echo of the server's own field-specific validation
@@ -257,6 +303,16 @@ function validateField(key: string, value: string): string | null {
   }
   if (key === "bulk_purchase_broadcast_template" && value.length > 500) {
     return "Keep it under 500 characters.";
+  }
+  if (key === "digiflazz_enabled" && !["true", "false"].includes(value.toLowerCase())) {
+    return 'Must be "true" or "false".';
+  }
+  if (key === "digiflazz_markup_type" && !["percent", "flat"].includes(value)) {
+    return 'Must be "percent" or "flat".';
+  }
+  if (key === "digiflazz_markup_value") {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return "Must be zero or a positive number.";
   }
   if (key === "smtp_port") {
     const n = Number(value);
@@ -313,15 +369,25 @@ interface TestResult {
   detail: string;
 }
 
+const DIGIFLAZZ_MARKUP_TYPE_OPTIONS = [
+  { value: "percent", label: "Percent" },
+  { value: "flat", label: "Flat (IDR)" },
+];
+
 interface FieldRowProps {
   field: SettingsField;
   query: string;
   onSaved: () => void;
   onStatusChange: (key: string, status: "editing" | "saving" | null) => void;
   onNeedsRestart?: () => void;
+  /** When set, the edit control is a `Select` with these options instead of
+   * a free-text `Input` — matches the "Answer Type" idiom in
+   * AdditionalFieldsEditor.tsx, for fields whose value is a fixed enum
+   * (e.g. digiflazz_markup_type) rather than free text. */
+  selectOptions?: { value: string; label: string }[];
 }
 
-function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart }: FieldRowProps) {
+function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selectOptions }: FieldRowProps) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(field.value);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -398,19 +464,51 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart }: Fie
         {editing && (
           <div className="mt-2 flex flex-col gap-1.5">
             <div className="flex flex-wrap gap-2 items-center">
-              <Input
-                type={field.secret ? "password" : "text"}
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !validationError) setConfirmOpen(true);
-                  if (e.key === "Escape") cancelEditing();
-                }}
-                aria-label={field.label}
-                aria-invalid={validationError ? true : undefined}
-                autoFocus
-                className="w-full max-w-sm"
-              />
+              {selectOptions ? (
+                <Select value={value} onValueChange={setValue}>
+                  <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
+                    <SelectValue placeholder="Select a type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {selectOptions.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  type={field.secret ? "password" : "text"}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !validationError) setConfirmOpen(true);
+                    if (e.key === "Escape") cancelEditing();
+                  }}
+                  aria-label={field.label}
+                  aria-invalid={validationError ? true : undefined}
+                  autoFocus
+                  className="w-full max-w-sm"
+                  // Reported bug: filling in a secret field (e.g. Digiflazz
+                  // API key) here was landing in the page's own "Search
+                  // settings…" box instead. Root cause: this is a generic
+                  // setting value, not a real account credential, but
+                  // rendering it as `type="password"` with no autoComplete
+                  // hint and no <form> boundary makes Chrome's native
+                  // password manager treat it as a login field — it pairs
+                  // the field with the NEAREST PRECEDING text input on the
+                  // page as a guessed "username" (here, SettingsSearch's own
+                  // search box) and offers to autofill this admin's saved
+                  // /login credentials into both. "new-password" is the
+                  // standard signal that stops Chrome from treating a
+                  // password-shaped input as a saved-login target; plain
+                  // "off" for the non-secret case is just hygiene (a
+                  // markup-type/value field has no business being
+                  // autofilled either).
+                  autoComplete={field.secret ? "new-password" : "off"}
+                />
+              )}
               {field.secret && (
                 <Button
                   size="icon-sm"
@@ -855,6 +953,9 @@ export function SettingsPage() {
   const smtpFields = fieldGroup(data.fields, SMTP_KEYS);
   const otherFields = fieldsOther(data.fields);
   const fxFields = fieldGroup(data.fields, FX_KEYS);
+  const digiflazzFields = fieldGroup(data.fields, DIGIFLAZZ_KEYS);
+  const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
+  const vipresellerFields = fieldGroup(data.fields, VIPRESELLER_KEYS);
 
   const generalVisible = showGeneral && sectionVisible("General", generalFields);
   const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
@@ -862,6 +963,9 @@ export function SettingsPage() {
   const smtpVisible = showSmtp && sectionVisible("Email (SMTP)", smtpFields);
   const otherVisible = showOther && sectionVisible("Other Settings", otherFields);
   const fxVisible = sectionVisible("Exchange Rates", fxFields);
+  const digiflazzVisible = sectionVisible("Digiflazz (Top Up Game)", digiflazzFields);
+  const kokinpayVisible = sectionVisible("KokinPay (Nickname Check)", kokinpayFields);
+  const vipresellerVisible = sectionVisible("VIP-Reseller (Region Check)", vipresellerFields);
   const securityVisible = sectionVisible("Security", []);
   const payGroupsVisible = payGroups.map((g) => ({ ...g, visible: sectionVisible(g.label, g.credFields) }));
 
@@ -875,6 +979,9 @@ export function SettingsPage() {
   const bottomLinks: SettingsNavLink[] = [
     ...(showOther ? [{ id: "settings-other", label: "Other Settings", icon: navIcon(SlidersHorizontal), visible: otherVisible }] : []),
     { id: "settings-exchange-rates", label: "Exchange Rates", icon: navIcon(ArrowLeftRight), visible: fxVisible },
+    { id: "settings-digiflazz", label: "Digiflazz (Top Up Game)", icon: navIcon(Gamepad2), visible: digiflazzVisible },
+    { id: "settings-kokinpay", label: "KokinPay (Nickname Check)", icon: navIcon(UserSearch), visible: kokinpayVisible },
+    { id: "settings-vipreseller", label: "VIP-Reseller (Region Check)", icon: navIcon(Globe), visible: vipresellerVisible },
     { id: "settings-security", label: "Security", icon: navIcon(KeyRound), visible: securityVisible },
   ];
 
@@ -1229,6 +1336,136 @@ export function SettingsPage() {
                     onConfirm={refreshFx}
                   />
                 </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Digiflazz (Top Up Game) */}
+          {digiflazzVisible && (
+            <Card id="settings-digiflazz">
+              <CardHeader>
+                <CardTitle as="h2">Digiflazz (Top Up Game)</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {digiflazzFields.map((field) => (
+                  <FieldRow
+                    key={field.key}
+                    field={field}
+                    query={fieldQueryFor("Digiflazz (Top Up Game)")}
+                    onSaved={onSaved}
+                    onStatusChange={onStatusChange}
+                    selectOptions={field.key === "digiflazz_markup_type" ? DIGIFLAZZ_MARKUP_TYPE_OPTIONS : undefined}
+                  />
+                ))}
+              </CardContent>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue}
+                  title={
+                    digiflazzFields.find((f) => f.key === "digiflazz_api_key")?.hasValue
+                      ? undefined
+                      : "Add credentials above to test this connection."
+                  }
+                  onClick={() => setPendingTest({ methodKey: "digiflazz", label: "Digiflazz" })}
+                >
+                  Test Connection
+                </Button>
+                {testResults.digiflazz && (
+                  <p className={`text-xs ${testResults.digiflazz.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.digiflazz.detail}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* KokinPay (Nickname Check) — Task 7. Separate paid service from
+              Digiflazz, so its own Card; no markup-rule section since this is
+              a lookup-only service, not something priced/sold. */}
+          {kokinpayVisible && (
+            <Card id="settings-kokinpay">
+              <CardHeader>
+                <CardTitle as="h2">KokinPay (Nickname Check)</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {kokinpayFields.map((field) => (
+                  <FieldRow
+                    key={field.key}
+                    field={field}
+                    query={fieldQueryFor("KokinPay (Nickname Check)")}
+                    onSaved={onSaved}
+                    onStatusChange={onStatusChange}
+                  />
+                ))}
+              </CardContent>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue}
+                  title={
+                    kokinpayFields.find((f) => f.key === "kokinpay_api_key")?.hasValue
+                      ? undefined
+                      : "Add credentials above to test this connection."
+                  }
+                  onClick={() => setPendingTest({ methodKey: "kokinpay", label: "KokinPay" })}
+                >
+                  Test Connection
+                </Button>
+                {testResults.kokinpay && (
+                  <p className={`text-xs ${testResults.kokinpay.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.kokinpay.detail}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* VIP-Reseller (Region Check) — Region-check Task A. A second,
+              independent lookup from KokinPay, used only to detect a buyer's
+              account region on Mobile Legends lookups; its own Card, same
+              reasoning as KokinPay above (not a checkout payment method). */}
+          {vipresellerVisible && (
+            <Card id="settings-vipreseller">
+              <CardHeader>
+                <CardTitle as="h2">VIP-Reseller (Region Check)</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {vipresellerFields.map((field) => (
+                  <FieldRow
+                    key={field.key}
+                    field={field}
+                    query={fieldQueryFor("VIP-Reseller (Region Check)")}
+                    onSaved={onSaved}
+                    onStatusChange={onStatusChange}
+                  />
+                ))}
+              </CardContent>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue ||
+                    !vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
+                  }
+                  title={
+                    vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue &&
+                    vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
+                      ? undefined
+                      : "Add credentials above to test this connection."
+                  }
+                  onClick={() => setPendingTest({ methodKey: "vipreseller", label: "VIP-Reseller" })}
+                >
+                  Test Connection
+                </Button>
+                {testResults.vipreseller && (
+                  <p className={`text-xs ${testResults.vipreseller.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.vipreseller.detail}
+                  </p>
+                )}
               </CardContent>
             </Card>
           )}

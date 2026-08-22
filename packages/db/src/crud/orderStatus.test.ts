@@ -8,7 +8,14 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderFromCart, addToCart, transitionOrderStatus, tryTransitionOrderStatus, LEGAL_TRANSITIONS } from "@app/db";
+import {
+  createOrderFromCart,
+  addToCart,
+  transitionOrderStatus,
+  tryTransitionOrderStatus,
+  markOrderUnderpaid,
+  LEGAL_TRANSITIONS,
+} from "@app/db";
 import { OrderStatus } from "@app/core/enums";
 
 let db: TestDb;
@@ -205,5 +212,33 @@ describe("tryTransitionOrderStatus", () => {
     expect(applied).toBe(false);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.CONFIRMING);
     expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
+  });
+});
+
+describe("markOrderUnderpaid", () => {
+  it("flags the order UNDERPAID and writes an adminNote once (idempotent)", async () => {
+    const first = await markOrderUnderpaid(prisma, {
+      orderId,
+      gateway: "TokoPay",
+      receivedAmount: "9000",
+      expectedAmount: "10000",
+    });
+    expect(first).toBe(true);
+
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.status).toBe(OrderStatus.UNDERPAID);
+    expect(order.adminNote).toBe("[underpaid] received 9000 via TokoPay, expected 10000");
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.UNDERPAID } })).toBe(1);
+
+    // Second call (e.g. the poller's next cycle before a human resolves it)
+    // must be a no-op: no throw, no second history row, no adminNote overwrite.
+    const second = await markOrderUnderpaid(prisma, {
+      orderId,
+      gateway: "TokoPay",
+      receivedAmount: "9000",
+      expectedAmount: "10000",
+    });
+    expect(second).toBe(false);
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.UNDERPAID } })).toBe(1);
   });
 });

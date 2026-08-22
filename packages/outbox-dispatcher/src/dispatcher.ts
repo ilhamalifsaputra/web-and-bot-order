@@ -64,6 +64,7 @@ import {
   markNotificationFailed,
   getOrderByCodeFull,
   getSmtpCreds,
+  recordPollHealth,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { registerOutboxNudge, flushPaymentBubble } from "@app/core/nudge";
@@ -94,6 +95,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
   NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)
   NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, // admin DM (gateway says paid but sent no transaction id — needs a human before the order auto-cancels)
+  NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, // admin DM (hourly Digiflazz catalog resync tripped its own blast-radius circuit breaker and wrote nothing — needs a human to check the supplier connection)
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
 ]);
 
@@ -189,23 +191,42 @@ function sleepOrNudge(ms: number, signal?: AbortSignal): Promise<void> {
  * Drain the outbox forever. Pass an `AbortSignal` to stop the loop gracefully
  * (used by the combined single-process server on SIGTERM/SIGINT); the standalone
  * notifier omits it and loops until the process exits.
+ *
+ * Task 15 (I-3, fresh backend audit 2026-08-21): this is the sole delivery
+ * path for every buyer credential DM and every admin alert this codebase
+ * enqueues, but unlike the six payment reconcile pollers it wrote no
+ * heartbeat — a bad notifier token or an unhandled exception class silently
+ * stopped all Telegram delivery with nothing but the `logger.error` line
+ * below, no admin ever told (the one channel that would tell them is the
+ * thing that's broken). `recordPollHealth(prisma, "outbox", ...)` on both the
+ * success and failure path below gives `outboxDispatcherPollWatchdog`
+ * (apps/order-bot/src/jobs/index.ts) a heartbeat to page admins from, the
+ * same pattern already shared by `binancePollWatchdog` and its five twins.
  */
 export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<void> {
   while (!signal?.aborted) {
     try {
-      await drainBatch(bot);
+      const seen = await drainBatch(bot);
+      await recordPollHealth(prisma, "outbox", { lastTxCount: seen, success: true }).catch(() => undefined);
     } catch (e) {
       logger.error({ err: e }, "Outbox dispatcher tick failed — will retry on the next poll interval");
+      // 300-char truncation matches this repo's own documented convention
+      // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
+      // comment) — the poller-side truncation the display logic already expects.
+      await recordPollHealth(prisma, "outbox", { lastTxCount: 0, success: false, error: String(e).slice(0, 300) }).catch(() => undefined);
     }
     if (signal?.aborted) break;
     await sleepOrNudge(config.NOTIF_POLL_INTERVAL_SECONDS * 1000, signal);
   }
 }
 
-/** Exported for tests — drains exactly one batch (no polling loop). */
-export async function drainBatch(bot: Bot): Promise<void> {
+/** Exported for tests — drains exactly one batch (no polling loop). Returns
+ * the number of rows it saw this cycle (`pending.length`), regardless of how
+ * many were actually claimed/sent/failed/rate-limit-bailed — `runDispatcher`
+ * above records this as `lastTxCount` on the outbox heartbeat (Task 15 / I-3). */
+export async function drainBatch(bot: Bot): Promise<number> {
   const pending = await fetchPendingNotifications(prisma, 50);
-  if (pending.length === 0) return;
+  if (pending.length === 0) return 0;
 
   logger.debug(`Draining ${pending.length} pending notification(s)`);
 
@@ -242,7 +263,7 @@ export async function drainBatch(bot: Bot): Promise<void> {
     // doc-comment.
     if (row.event === NotificationEvent.ORDER_DELIVERED_DM) {
       await flushBubbleBeforeDm(row.orderId);
-      if ((await deliverAccountDm(bot, row, payload)) === "ratelimited") return;
+      if ((await deliverAccountDm(bot, row, payload)) === "ratelimited") return pending.length;
       continue;
     }
 
@@ -253,7 +274,7 @@ export async function drainBatch(bot: Bot): Promise<void> {
     // doc-comment.
     if (row.event === NotificationEvent.ORDER_MANUAL_DELIVERED_DM) {
       await flushBubbleBeforeDm(row.orderId);
-      if ((await deliverManualContentDm(bot, row, payload)) === "ratelimited") return;
+      if ((await deliverManualContentDm(bot, row, payload)) === "ratelimited") return pending.length;
       continue;
     }
 
@@ -329,9 +350,10 @@ export async function drainBatch(bot: Bot): Promise<void> {
     }
 
     if ((await trySend(bot, row, () => bot.api.sendMessage(chatId, text, { parse_mode: "HTML" }))) === "ratelimited") {
-      return; // remaining rows retry next tick
+      return pending.length; // remaining rows retry next tick
     }
   }
+  return pending.length;
 }
 
 /**

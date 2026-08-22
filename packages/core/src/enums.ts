@@ -237,6 +237,16 @@ export const TicketCategory = {
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 export const zTicketCategory = z.nativeEnum(TicketCategory);
 
+/** Customer-facing top-level grouping on Category.group — admin-set, null
+ * until classified. Drives the bot's "🛍 Products" entry point: exactly two
+ * buckets shown before any category/product. */
+export const CategoryGroup = {
+  GAME_TOPUP: "GAME_TOPUP",
+  PREMIUM_APPS: "PREMIUM_APPS",
+} as const;
+export type CategoryGroup = (typeof CategoryGroup)[keyof typeof CategoryGroup];
+export const zCategoryGroup = z.nativeEnum(CategoryGroup);
+
 /** Review reply-workflow state — orthogonal to `hidden` (visibility) on
  * reviews.status. PENDING_REPLY | REPLIED | CLOSED (spec §11). */
 export const ReviewStatus = {

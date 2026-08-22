@@ -159,6 +159,13 @@ model Category {
   image       String?
   sortOrder   Int     @default(0) @map("sort_order")
   isActive    Boolean @default(true) @map("is_active")
+  /// Top-level bucket for the bot's "🛍 Products" entry point — GAME_TOPUP |
+  /// PREMIUM_APPS (packages/core/src/enums.ts CategoryGroup). Admin-set, null
+  /// until classified. A category with no group is unreachable from the
+  /// customer group→category picker until an admin assigns one — it stays
+  /// reachable via search, Popular, and /start deep links, which are
+  /// intentionally group-agnostic.
+  group       String?
   /// How checkout behaves for every product/denomination under this category:
   /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
   /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server

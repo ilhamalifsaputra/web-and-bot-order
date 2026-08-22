@@ -1067,6 +1067,121 @@ describe("group and category pickers", () => {
 });
 
 // ===========================================================================
+// browseGroups / browseCategoriesInGroup / browseCategory (Task 5 — the bot
+// navigation glue that fixes the long-standing "Products" flat-cross-category
+// list bug by inserting a group -> category picker in front of it).
+// ===========================================================================
+
+describe("group/category browsing handlers", () => {
+  it("browseGroups renders the group picker and clears category/group/product scratch", async () => {
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { categoryId: 1, group: "X", productId: 2 } },
+    });
+    await customer.browseGroups(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; productId?: number };
+    expect(scratch.categoryId).toBeUndefined();
+    expect(scratch.group).toBeUndefined();
+    expect(scratch.productId).toBeUndefined();
+  });
+
+  it("browseCategoriesInGroup lists active categories in that group and records the group in scratch", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("browseCategoriesInGroup renders the empty state without dead-ending when the group has no categories", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+    expect(sentIncludes(sink, "No categories in this section yet")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("browseCategory sets categoryId/group in scratch and scopes the product list to that category", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategory(ctx, cat.id);
+
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; browseEntries?: number[] };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
+    expect(scratch.browseEntries).toEqual([p.id]);
+    expect(sentIncludes(sink, "FF Diamonds")).toBe(true);
+  });
+
+  it("browseCategory falls back to browseGroups for a missing category", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategory(ctx, 999999);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("browseCategory falls back to browseGroups for an inactive category", async () => {
+    const cat = await createCategory(prisma, { name: "Inactive Cat", group: CategoryGroup.GAME_TOPUP });
+    await prisma.category.update({ where: { id: cat.id }, data: { isActive: false } });
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategory(ctx, cat.id);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  // Key regression test: the flat "🛍 Products" list used to show every
+  // category's products mixed together. Two categories sharing a group name
+  // prefix (a realistic admin mistake) must never bleed one another's
+  // products into the scoped list.
+  it("browseCategory scopes the product list strictly to the tapped category — a sibling category's product never bleeds in", async () => {
+    const catA = await createCategory(prisma, { name: "Arena Breakout", group: CategoryGroup.GAME_TOPUP });
+    const catB = await createCategory(prisma, { name: "Arena Breakout: Infinite", group: CategoryGroup.GAME_TOPUP });
+    const prodA = await createCatalogProduct(prisma, { categoryId: catA.id, name: "AB Product" });
+    await createDenomination(prisma, { productId: prodA.id, name: "AB Plan", type: "SHARED", durationLabel: "1", price: "1000" });
+    const prodB = await createCatalogProduct(prisma, { categoryId: catB.id, name: "ABI Product" });
+    await createDenomination(prisma, { productId: prodB.id, name: "ABI Plan", type: "SHARED", durationLabel: "1", price: "1000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategory(ctx, catA.id);
+    const scratch = ctx.session.scratch as { browseEntries?: number[] };
+    expect(scratch.browseEntries).toEqual([prodA.id]);
+    expect(scratch.browseEntries).not.toContain(prodB.id);
+  });
+
+  it("the 'Products' persistent-keyboard label opens the group picker, not the flat cross-category list", async () => {
+    const { ctx, sink } = customerCtx({ text: persistentLabel("browse", "en") });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("listprodukCommand opens the group picker", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.listprodukCommand(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("Back from a category-scoped product list returns to that category's group's category picker, not Home", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
+  it("Back from a category-scoped list with no recorded group falls back to the group picker (never Home)", async () => {
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+});
+
+// ===========================================================================
 // paymentSuccessKb (§9.1 — auto-confirm payment-bubble success footer)
 // ===========================================================================
 

@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
-import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, customerStatusLabel } from "@app/core/enums";
+import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import {
@@ -20,6 +20,8 @@ import {
   botOverallStats,
   userTotalSpent,
   listCatalogProducts,
+  listActiveCategoriesByGroup,
+  getCategory,
   soldCountsByProduct,
   getCatalogProductWithDenominations,
   getDenomination,
@@ -97,6 +99,15 @@ const PENDING_PAYMENT_METHOD_LABEL_KEYS: Partial<Record<string, string>> = {
 interface BrowseScratch {
   page?: number;
   browseEntries?: number[];
+  /** The active Category scope for the flat product list (Products entry
+   * flow's third step) — set by browseCategory, read by browseProductsFlat.
+   * Undefined means no category scope (shouldn't normally happen once the
+   * group/category picker is the only path into browseProductsFlat, but a
+   * deep link or stale session could still land here). */
+  categoryId?: number;
+  /** The CategoryGroup the active/last-viewed category belongs to — lets
+   * handleBackButton return to the right category picker without a DB read. */
+  group?: string;
   productId?: number;
   variantId?: number;
   quantity?: number;
@@ -196,6 +207,17 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProductsFlat(ctx);
     return;
   }
+  // Viewing a category-scoped product list (nothing deeper in scope) → back to
+  // that category's group's category picker, or the group picker itself when
+  // the group wasn't recorded (shouldn't normally happen — defensive only).
+  if (sc(ctx).categoryId != null) {
+    if (sc(ctx).group) {
+      await browseCategoriesInGroup(ctx, sc(ctx).group!);
+    } else {
+      await browseGroups(ctx);
+    }
+    return;
+  }
   await backToHome(ctx);
 }
 
@@ -247,6 +269,76 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 // Browse — flat product list, numbered selection (type or tap)
 // ---------------------------------------------------------------------------
 
+/**
+ * First step of the "🛍 Products" entry point — the two-bucket group picker
+ * (Category.group). Clears any category/group/product scope left over from a
+ * previous browse session so a fresh entry never resumes mid-category.
+ */
+export async function browseGroups(ctx: MyContext): Promise<void> {
+  const lang = ctx.session.lang;
+  delete sc(ctx).categoryId;
+  delete sc(ctx).group;
+  delete sc(ctx).productId;
+  await smartEdit(ctx, t(ctx, "browse.group_picker_title"), ckb.groupPickerKb(lang));
+}
+
+/**
+ * Second step — one button per active Category within the tapped group.
+ * Records `group` in scratch (read back by handleBackButton) regardless of
+ * whether the group turns out to be empty, so Back from the empty-state
+ * screen still returns to the same category picker rather than the group
+ * picker.
+ */
+export async function browseCategoriesInGroup(ctx: MyContext, group: string): Promise<void> {
+  const lang = ctx.session.lang;
+  delete sc(ctx).categoryId;
+  delete sc(ctx).productId;
+  sc(ctx).group = group;
+
+  const categories = await listActiveCategoriesByGroup(prisma, group);
+  const groupLabel = t(ctx, group === CategoryGroup.GAME_TOPUP ? "browse.group_game_topup" : "browse.group_premium_apps");
+  if (!categories.length) {
+    await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang));
+    return;
+  }
+  await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }), ckb.categoryPickerKb(categories, ctx.session.lang));
+}
+
+/**
+ * Third step — a customer tapped one Category: scope the flat product list
+ * (browseProductsFlat) to it. This is the fix for the long-standing bug where
+ * "🛍 Products" showed one flat list mixing every category's products
+ * together (§3's original design mistakenly skipped category scoping).
+ *
+ * Part-1 shape only — a later task (variant/region navigation, Game Top Up
+ * categories only) renames/extends this for that flow; Premium Apps
+ * categories keep exactly this behavior forever.
+ */
+export async function browseCategory(ctx: MyContext, categoryId: number): Promise<void> {
+  const category = await getCategory(prisma, categoryId);
+  if (!category || !category.isActive) {
+    await browseGroups(ctx);
+    return;
+  }
+  sc(ctx).categoryId = categoryId;
+  sc(ctx).group = category.group ?? sc(ctx).group;
+  await browseProductsFlat(ctx, 0);
+}
+
+/**
+ * Re-enter the browse flow at whatever depth the session was last left at —
+ * the category-scoped list if one was active, else the group picker. Used by
+ * the "prods"/refresh-style re-entry points that used to always land on the
+ * flat cross-category list.
+ */
+export async function browseResume(ctx: MyContext): Promise<void> {
+  if (sc(ctx).categoryId != null) {
+    await browseProductsFlat(ctx, sc(ctx).page ?? 0);
+    return;
+  }
+  await browseGroups(ctx);
+}
+
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
 
@@ -266,9 +358,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     ctx.session.menuMsgId = undefined;
   }
 
-  // Flat list of mid-tier Products (each with ≥1 active denomination). No
-  // category browsing and no group/product collapse — every row is a Product.
-  const products = await listCatalogProducts(prisma);
+  // Flat list of mid-tier Products (each with ≥1 active denomination), scoped
+  // to the active Category (set by browseCategory) — no more mixing every
+  // category's products into one list. No group/product collapse within the
+  // category — every row is a Product.
+  const categoryId = sc(ctx).categoryId;
+  const products = await listCatalogProducts(prisma, categoryId);
   if (!products.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
@@ -366,7 +461,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     case "next":
       return void (await browseProductsFlat(ctx, (sc(ctx).page ?? 0) + 1));
     case "browse":
-      return void (await browseProductsFlat(ctx));
+      return void (await browseGroups(ctx));
     case "orders":
       return void (await listMyOrders(ctx));
     case "wallet":
@@ -502,12 +597,12 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     await renderMenu(
       ctx,
       text,
-      ckb.denominationPickerKb(active, productId, lang),
+      ckb.denominationPickerKb(active, productId, product.name, lang),
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined,
     );
   } else {
-    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, lang));
+    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, product.name, lang));
   }
 }
 
@@ -1115,7 +1210,7 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
 
 export async function listprodukCommand(ctx: MyContext): Promise<void> {
   ctx.session.awaitingQtyDenomId = undefined;
-  await browseProductsFlat(ctx, 0);
+  await browseGroups(ctx);
 }
 
 export async function languageCommand(ctx: MyContext): Promise<void> {

@@ -75,7 +75,7 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
     } else {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     }
-  } else if (action === "cat") await customer.browseCategory(ctx, parseInt(parts[3]!, 10));
+  } else if (action === "cat") await customer.browseCategoryEntry(ctx, parseInt(parts[3]!, 10));
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Browse callback used an unrecognized action "${action}" — likely a button from a stale/pre-rename bubble, showing the stale-screen toast instead`);
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });

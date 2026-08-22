@@ -21,6 +21,8 @@ import {
   userTotalSpent,
   listCatalogProducts,
   listActiveCategoriesByGroup,
+  listCategoryGameVariants,
+  listCategoryGameRegions,
   getCategory,
   soldCountsByProduct,
   getCatalogProductWithDenominations,
@@ -52,6 +54,7 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
+import { gameTopUpDenomLabel } from "../util/denominationLabel";
 import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
@@ -100,14 +103,35 @@ interface BrowseScratch {
   page?: number;
   browseEntries?: number[];
   /** The active Category scope for the flat product list (Products entry
-   * flow's third step) — set by browseCategory, read by browseProductsFlat.
-   * Undefined means no category scope (shouldn't normally happen once the
-   * group/category picker is the only path into browseProductsFlat, but a
-   * deep link or stale session could still land here). */
+   * flow's third step) — set by browseCategoryEntry, read by
+   * browseProductsFlat. Undefined means no category scope (shouldn't
+   * normally happen once the group/category picker is the only path into
+   * browseProductsFlat, but a deep link or stale session could still land
+   * here). */
   categoryId?: number;
   /** The CategoryGroup the active/last-viewed category belongs to — lets
    * handleBackButton return to the right category picker without a DB read. */
   group?: string;
+  /** Snapshot of the variant options rendered by the current variant picker
+   * (browseCategoryEntry) — pickGameVariant resolves its tapped index
+   * against this, the same numbered-snapshot pattern browseEntries uses for
+   * the flat product list. */
+  gameVariantEntries?: { label: string; emoji: string | null }[];
+  /** The Game Top Up variant (Product.gameVariant) resolved for the active
+   * browse session — null means "this category has no variant dimension" (0
+   * or 1 distinct variant, so the picker was skipped), distinct from
+   * undefined (no Game Top Up navigation has happened yet this session). */
+  resolvedGameVariant?: string | null;
+  /** The resolved variant's emoji (Product.gameVariantEmoji), carried
+   * forward from enterGameVariant so browseProduct can prefix it onto each
+   * denomination's compact button label without a redundant query. */
+  gameVariantEmoji?: string | null;
+  /** Snapshot of the region options rendered by the current region picker —
+   * pickGameRegion resolves its tapped index against this. */
+  gameRegionEntries?: string[];
+  /** The Game Top Up region resolved for the active browse session — same
+   * null-vs-undefined contract as resolvedGameVariant. */
+  resolvedGameRegion?: string | null;
   productId?: number;
   variantId?: number;
   quantity?: number;
@@ -305,23 +329,106 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
 }
 
 /**
- * Third step — a customer tapped one Category: scope the flat product list
- * (browseProductsFlat) to it. This is the fix for the long-standing bug where
- * "🛍 Products" showed one flat list mixing every category's products
- * together (§3's original design mistakenly skipped category scoping).
+ * Third step — a customer tapped one Category. This is the fix for the
+ * long-standing bug where "🛍 Products" showed one flat list mixing every
+ * category's products together (§3's original design mistakenly skipped
+ * category scoping).
  *
- * Part-1 shape only — a later task (variant/region navigation, Game Top Up
- * categories only) renames/extends this for that flow; Premium Apps
- * categories keep exactly this behavior forever.
+ * A Premium Apps category (or one with no group) goes straight to the flat
+ * product list (browseProductsFlat) — this half of the function is Part-1's
+ * original behavior, unchanged forever. A Game Top Up category instead steps
+ * through an optional variant picker then an optional region picker before
+ * landing on the (now variant/region-scoped) product list — each step is
+ * skipped when the category has 0 or 1 distinct value for that dimension, so
+ * a category with a single edition/region never shows a pointless 1-button
+ * picker.
  */
-export async function browseCategory(ctx: MyContext, categoryId: number): Promise<void> {
+export async function browseCategoryEntry(ctx: MyContext, categoryId: number): Promise<void> {
+  sc(ctx).categoryId = categoryId;
   const category = await getCategory(prisma, categoryId);
   if (!category || !category.isActive) {
     await browseGroups(ctx);
     return;
   }
-  sc(ctx).categoryId = categoryId;
   sc(ctx).group = category.group ?? sc(ctx).group;
+
+  if (category.group !== CategoryGroup.GAME_TOPUP) {
+    delete sc(ctx).resolvedGameVariant;
+    delete sc(ctx).resolvedGameRegion;
+    await browseProductsFlat(ctx, 0);
+    return;
+  }
+
+  const variants = await listCategoryGameVariants(prisma, categoryId);
+  if (variants.length > 1) {
+    sc(ctx).gameVariantEntries = variants;
+    await smartEdit(ctx, t(ctx, "browse.choose_variant"), ckb.gameVariantPickerKb(variants, categoryId, ctx.session.lang));
+    return;
+  }
+  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null);
+}
+
+/** A customer tapped one entry on the variant picker rendered by
+ * browseCategoryEntry — resolve the tapped index against the snapshot taken
+ * when that picker was rendered (mirrors handleProductNumber's
+ * browseEntries pattern), then continue into the region step. */
+export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
+  const entry = sc(ctx).gameVariantEntries?.[idx];
+  if (!entry) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji);
+}
+
+/** Shared by browseCategoryEntry's single-variant skip and pickGameVariant's
+ * explicit tap: record the resolved variant, then render the region picker
+ * or skip it the same way. */
+async function enterGameVariant(
+  ctx: MyContext,
+  categoryId: number,
+  gameVariant: string | null,
+  gameVariantEmoji: string | null,
+): Promise<void> {
+  sc(ctx).resolvedGameVariant = gameVariant;
+  sc(ctx).gameVariantEmoji = gameVariantEmoji;
+
+  const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
+  if (regions.length > 1) {
+    sc(ctx).gameRegionEntries = regions;
+    await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, ctx.session.lang));
+    return;
+  }
+  await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
+}
+
+/** A customer tapped one entry on the region picker rendered by
+ * enterGameVariant — same stale-index guard as pickGameVariant. */
+export async function pickGameRegion(ctx: MyContext, categoryId: number, idx: number): Promise<void> {
+  const region = sc(ctx).gameRegionEntries?.[idx];
+  if (region === undefined) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    return;
+  }
+  await enterGameRegion(ctx, categoryId, sc(ctx).resolvedGameVariant ?? null, region);
+}
+
+/** Shared by enterGameVariant's single-region skip and pickGameRegion's
+ * explicit tap: record the resolved region, then either collapse straight
+ * to the single matching product's detail (mirrors browseProduct's own
+ * single-denomination collapse) or fall into the scoped flat list. */
+async function enterGameRegion(
+  ctx: MyContext,
+  categoryId: number,
+  gameVariant: string | null,
+  gameRegion: string | null,
+): Promise<void> {
+  sc(ctx).resolvedGameRegion = gameRegion;
+  const products = await listCatalogProducts(prisma, categoryId, { gameVariant, gameRegion });
+  if (products.length === 1) {
+    await browseProduct(ctx, products[0]!.id);
+    return;
+  }
   await browseProductsFlat(ctx, 0);
 }
 
@@ -359,11 +466,22 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   }
 
   // Flat list of mid-tier Products (each with ≥1 active denomination), scoped
-  // to the active Category (set by browseCategory) — no more mixing every
-  // category's products into one list. No group/product collapse within the
-  // category — every row is a Product.
+  // to the active Category (set by browseCategoryEntry) — no more mixing
+  // every category's products into one list. No group/product collapse
+  // within the category — every row is a Product.
+  //
+  // A Game Top Up category additionally scopes to whatever variant/region
+  // browseCategoryEntry's picker flow resolved (undefined scratch fields
+  // read back as `?? null`, matching listCatalogProducts's "no variant/
+  // region dimension" filter value) — sc(ctx).group already carries the
+  // active category's group (set alongside categoryId by every entry point
+  // into this function), so no extra category query is needed here.
   const categoryId = sc(ctx).categoryId;
-  const products = await listCatalogProducts(prisma, categoryId);
+  const filter =
+    sc(ctx).group === CategoryGroup.GAME_TOPUP
+      ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
+      : undefined;
+  const products = await listCatalogProducts(prisma, categoryId, filter);
   if (!products.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
@@ -555,14 +673,23 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // Per-plan price + stock live in the message body now (the picker buttons
   // carry only the plan name). Reseller price wins for reseller users when set,
   // mirroring the detail screen. Stock is read per denomination in parallel.
-  const planLines = await Promise.all(
+  const planData = await Promise.all(
     active.map(async (d) => {
       const unitPrice = effectiveUnitPrice(d, isReseller);
       const stock = await countAvailableStock(prisma, d.id);
       // Stock rows only ever exist for AUTO SKUs — a manual/manual_with_info
       // plan has none by design, so showing a literal "0" here would read as
-      // sold out right next to a (correctly) purchasable Buy button.
-      const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
+      // sold out right next to a (correctly) purchasable Buy button. Within
+      // a Game Top Up category, an AUTO denomination's exact count is an
+      // internal supplier-stock detail, not something a buyer needs to see —
+      // show an "Automated" indicator instead. Premium Apps AUTO
+      // denominations keep showing the raw number, unchanged.
+      const stockDisplay =
+        d.deliveryType === DeliveryType.AUTO
+          ? product.category.group === CategoryGroup.GAME_TOPUP
+            ? t(ctx, "browse.stock_auto_value")
+            : stock
+          : "—";
       // A flash sale shows as the old price struck through next to the new one,
       // but only when this buyer is actually paying the sale price — a reseller
       // whose standing price still wins sees the plain line.
@@ -574,13 +701,25 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
               new: priceIdr(unitPrice, rate),
             })
           : priceIdr(unitPrice, rate);
-      return t(ctx, "browse.denomination_line", {
+      const line = t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
         price: priceText,
         stock: stockDisplay,
       });
+      // Compact Game Top Up button label (qty + unit + price), only when the
+      // admin has actually backfilled qtyValue/qtyUnit on this denomination —
+      // leaving buttonLabel undefined otherwise so denominationPickerKb falls
+      // through to its existing formatDenominationLabel(...) call, exactly as
+      // before this task (the hard zero-behavior-change bar for Premium Apps,
+      // and for any Game Top Up SKU an admin hasn't backfilled yet).
+      const buttonLabel =
+        d.qtyValue != null && d.qtyUnit
+          ? gameTopUpDenomLabel(d, unitPrice, sc(ctx).gameVariantEmoji ?? product.gameVariantEmoji)
+          : undefined;
+      return { line, buttonLabel };
     }),
   );
+  const planLines = planData.map((p) => p.line);
   const sold = await soldCountForProduct(prisma, productId);
 
   let text = t(ctx, "browse.choose_denomination", {
@@ -592,17 +731,18 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   if (product.description) {
     text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
   }
+  const pickerDenoms = active.map((d, i) => ({ ...d, buttonLabel: planData[i]!.buttonLabel }));
   const photoArg = productPhotoArg(product);
   if (photoArg) {
     await renderMenu(
       ctx,
       text,
-      ckb.denominationPickerKb(active, productId, product.name, lang),
+      ckb.denominationPickerKb(pickerDenoms, productId, product.name, lang),
       photoArg.photo,
       photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined,
     );
   } else {
-    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, product.name, lang));
+    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(pickerDenoms, productId, product.name, lang));
   }
 }
 
@@ -663,7 +803,15 @@ export async function browseDenomination(
   // read as sold out directly beside the (correctly) purchasable Buy button
   // below. `stock` itself stays the raw count for denominationDetailKb's
   // gating/stepper-bound logic further down; only the displayed text changes.
-  const stockDisplay = d.deliveryType === DeliveryType.AUTO ? stock : "—";
+  // Within a Game Top Up category, the exact AUTO count is an internal
+  // supplier-stock detail — show an "Automated" indicator instead. Premium
+  // Apps AUTO denominations keep showing the raw number, unchanged.
+  const stockDisplay =
+    d.deliveryType === DeliveryType.AUTO
+      ? d.product.category.group === CategoryGroup.GAME_TOPUP
+        ? t(ctx, "browse.stock_auto_value")
+        : stock
+      : "—";
 
   let text = t(ctx, "browse.denomination_detail", {
     product: esc(d.product.name),

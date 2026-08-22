@@ -849,7 +849,7 @@ describe("Home screen (persistent keyboard)", () => {
     expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
   });
 
-  it("router wires v1:browse:cat:<id> to browseCategory", async () => {
+  it("router wires v1:browse:cat:<id> to browseCategoryEntry", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
     await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
@@ -1218,7 +1218,7 @@ describe("game variant and region pickers", () => {
 });
 
 // ===========================================================================
-// browseGroups / browseCategoriesInGroup / browseCategory (Task 5 — the bot
+// browseGroups / browseCategoriesInGroup / browseCategoryEntry (Task 5 — the bot
 // navigation glue that fixes the long-standing "Products" flat-cross-category
 // list bug by inserting a group -> category picker in front of it).
 // ===========================================================================
@@ -1251,32 +1251,38 @@ describe("group/category browsing handlers", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
-  it("browseCategory sets categoryId/group in scratch and scopes the product list to that category", async () => {
-    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+  it("browseCategoryEntry sets categoryId/group in scratch and scopes the product list to that category", async () => {
+    // A Premium Apps category on purpose (not Game Top Up): this test is
+    // about category scoping in general (Task 5), not the variant/region
+    // navigation this task (12) adds on top for Game Top Up categories,
+    // which intentionally collapses a single-product category straight to
+    // browseProduct instead of rendering the flat list — see the dedicated
+    // "single distinct variant"/"single matching product" tests below.
+    const cat = await createCategory(prisma, { name: "Streaming Category", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
     await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
 
     const { ctx, sink } = customerCtx();
-    await customer.browseCategory(ctx, cat.id);
+    await customer.browseCategoryEntry(ctx, cat.id);
 
     const scratch = ctx.session.scratch as { categoryId?: number; group?: string; browseEntries?: number[] };
     expect(scratch.categoryId).toBe(cat.id);
-    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
+    expect(scratch.group).toBe(CategoryGroup.PREMIUM_APPS);
     expect(scratch.browseEntries).toEqual([p.id]);
     expect(sentIncludes(sink, "FF Diamonds")).toBe(true);
   });
 
-  it("browseCategory falls back to browseGroups for a missing category", async () => {
+  it("browseCategoryEntry falls back to browseGroups for a missing category", async () => {
     const { ctx, sink } = customerCtx();
-    await customer.browseCategory(ctx, 999999);
+    await customer.browseCategoryEntry(ctx, 999999);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
   });
 
-  it("browseCategory falls back to browseGroups for an inactive category", async () => {
+  it("browseCategoryEntry falls back to browseGroups for an inactive category", async () => {
     const cat = await createCategory(prisma, { name: "Inactive Cat", group: CategoryGroup.GAME_TOPUP });
     await prisma.category.update({ where: { id: cat.id }, data: { isActive: false } });
     const { ctx, sink } = customerCtx();
-    await customer.browseCategory(ctx, cat.id);
+    await customer.browseCategoryEntry(ctx, cat.id);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
   });
 
@@ -1284,16 +1290,17 @@ describe("group/category browsing handlers", () => {
   // category's products mixed together. Two categories sharing a group name
   // prefix (a realistic admin mistake) must never bleed one another's
   // products into the scoped list.
-  it("browseCategory scopes the product list strictly to the tapped category — a sibling category's product never bleeds in", async () => {
-    const catA = await createCategory(prisma, { name: "Arena Breakout", group: CategoryGroup.GAME_TOPUP });
-    const catB = await createCategory(prisma, { name: "Arena Breakout: Infinite", group: CategoryGroup.GAME_TOPUP });
+  it("browseCategoryEntry scopes the product list strictly to the tapped category — a sibling category's product never bleeds in", async () => {
+    // Premium Apps on purpose — see the comment on the previous test.
+    const catA = await createCategory(prisma, { name: "Arena Breakout", group: CategoryGroup.PREMIUM_APPS });
+    const catB = await createCategory(prisma, { name: "Arena Breakout: Infinite", group: CategoryGroup.PREMIUM_APPS });
     const prodA = await createCatalogProduct(prisma, { categoryId: catA.id, name: "AB Product" });
     await createDenomination(prisma, { productId: prodA.id, name: "AB Plan", type: "SHARED", durationLabel: "1", price: "1000" });
     const prodB = await createCatalogProduct(prisma, { categoryId: catB.id, name: "ABI Product" });
     await createDenomination(prisma, { productId: prodB.id, name: "ABI Plan", type: "SHARED", durationLabel: "1", price: "1000" });
 
     const { ctx } = customerCtx();
-    await customer.browseCategory(ctx, catA.id);
+    await customer.browseCategoryEntry(ctx, catA.id);
     const scratch = ctx.session.scratch as { browseEntries?: number[] };
     expect(scratch.browseEntries).toEqual([prodA.id]);
     expect(scratch.browseEntries).not.toContain(prodB.id);
@@ -1329,6 +1336,225 @@ describe("group/category browsing handlers", () => {
     });
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// browseCategoryEntry's Game Top Up variant/region navigation (Task 12) +
+// the AUTO stock-display fix. Every test in this block also doubles as a
+// Premium-Apps zero-behavior-change check where noted — the hard bar for
+// this task is that a non-GAME_TOPUP category's flow is byte-for-byte
+// unchanged from Task 5/6's original shape.
+// ===========================================================================
+
+describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO stock-display fix", () => {
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: a non-GAME_TOPUP category skips straight to the product list — no variant/region picker ever shown", async () => {
+    const cat = await createCategory(prisma, { name: "Streaming Apps", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Netflix" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, "Netflix")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null; resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("a GAME_TOPUP category with exactly 1 distinct variant skips the variant picker and resolves it directly", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Regular", gameVariantEmoji: "🎮" } });
+    await createDenomination(prisma, { productId: p.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "20000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null; gameVariantEmoji?: string | null };
+    expect(scratch.resolvedGameVariant).toBe("Regular");
+    expect(scratch.gameVariantEmoji).toBe("🎮");
+  });
+
+  it("a GAME_TOPUP category with 2 distinct variants renders the variant picker with 2 buttons", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((b) => b.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`)).length).toBe(2);
+    const scratch = ctx.session.scratch as { gameVariantEntries?: unknown[] };
+    expect(scratch.gameVariantEntries?.length).toBe(2);
+  });
+
+  it("region step mirrors the skip logic: a single resolved variant with exactly 1 distinct region skips the region picker too", async () => {
+    const cat = await createCategory(prisma, { name: "PUBG Mobile", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameRegion: "Global" } });
+    await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameRegion).toBe("Global");
+  });
+
+  it("region step mirrors the show logic: a single resolved variant with 2 distinct regions renders the region picker", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((b) => b.callback_data?.startsWith(`v1:browse:greg:${cat.id}:`)).length).toBe(2);
+  });
+
+  it("pickGameVariant with an out-of-range index shows the stale-screen toast without crashing", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:gvar:1:0", session: { ...userSession(), scratch: {} } });
+    await customer.pickGameVariant(ctx, 1, 0);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("pickGameRegion with an out-of-range index shows the stale-screen toast without crashing", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:greg:1:0", session: { ...userSession(), scratch: {} } });
+    await customer.pickGameRegion(ctx, 1, 0);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("resolving a variant+region combination with exactly one matching product jumps straight into browseProduct", async () => {
+    const cat = await createCategory(prisma, { name: "Valorant", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Points A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Points B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 1 variant (skipped) + 2 regions -> region picker shown
+    await customer.pickGameRegion(ctx, cat.id, 0); // tap "Asia" (index 0, as listed)
+
+    expect(sentIncludes(sink, "VP Points A")).toBe(true);
+    expect(sentIncludes(sink, "VP Points B")).toBe(false);
+  });
+
+  it("browseProduct shows the Automated stock indicator (not a raw number) for an AUTO denomination inside a GAME_TOPUP category", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends Diamonds", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds Stock Test" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d1.id, ["code1", "code2"]);
+    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.AUTO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, "(Stock 2)")).toBe(false);
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct keeps the raw AUTO stock number for a Premium Apps category", async () => {
+    const cat = await createCategory(prisma, { name: "Streaming Stock Test", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Disney Plus" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d1.id, ["code1", "code2", "code3"]);
+    await createDenomination(prisma, { productId: p.id, name: "3 Months", type: "SHARED", durationLabel: "3 Months", price: "50000", deliveryType: DeliveryType.AUTO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock 3)")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+  });
+
+  it("browseProduct keeps the em-dash stock placeholder for a MANUAL_WITH_INFO denomination regardless of category group", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends Manual", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Manual Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock —)")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+  });
+
+  it("browseDenomination shows the Automated stock indicator for an AUTO denomination inside a GAME_TOPUP category", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire Detail Test", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds Detail" });
+    const d = await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100 Diamonds", price: "15000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d.id, ["a", "b", "c", "d"]);
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, d.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, "<b>4</b>")).toBe(false);
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseDenomination keeps the raw AUTO stock number for a Premium Apps (ungrouped) category", async () => {
+    // sample.product is AUTO, in a category with no `group` set (the sample
+    // fixture never assigns one) — exercises the exact pre-Task-12 code path.
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, sample.product.id);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+    expect(sentIncludes(sink, "<b>5</b>")).toBe(true); // the sample fixture seeds 5 stock items
+  });
+
+  it("browseCategoryEntry cascades into browseProduct's compact buttonLabel for a Game Top Up denomination with qtyValue/qtyUnit backfilled", async () => {
+    const cat = await createCategory(prisma, { name: "PUBG Mobile UC", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameVariantEmoji: "🔫" } });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+    await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 60, qtyUnit: "UC" } });
+    await createDenomination(prisma, { productId: p.id, name: "325 UC", type: "SHARED", durationLabel: "325 UC", price: "75000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toContain("🔫");
+    expect(button.text).toContain("UC");
+    expect(button.text).toContain("Rp15K");
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
+    const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "7 day", type: "SHARED", durationLabel: "7 day", price: "10000" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "30000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toBe("7 day"); // unchanged formatDenominationLabel output — buttonLabel stays undefined
   });
 });
 

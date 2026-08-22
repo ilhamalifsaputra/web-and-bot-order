@@ -47,6 +47,10 @@ import {
   ensureUniqueSlug,
   slugify,
 } from "./catalog";
+import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
+import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
+import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
+import { recordPollHealth } from "./poll_health";
 
 /** Setting keys — not yet wired to any admin UI (a later task adds that);
  * this module is only the read-side resolver, matching the shape every other
@@ -155,6 +159,8 @@ type DigiflazzCandidateOrder = {
   customerData: string | null;
   totalAmount: Decimal;
   currency: string;
+  digiflazzDispatchedAt: Date | null;
+  digiflazzAttempts: number;
   items: {
     quantity: number;
     product: {
@@ -175,12 +181,16 @@ export interface DigiflazzDispatchSummary {
   /** Of the claimed orders, how many Digiflazz reported "Sukses" for and
    * were fulfilled (DELIVERED) in this same pass. */
   delivered: number;
-  /** Of the claimed orders, how many Digiflazz reported "Pending" for — left
-   * PROCESSING, awaiting the webhook callback (a later task) to finish them. */
+  /** Of the claimed orders, how many are still in flight — either Digiflazz
+   * reported Pending, or the HTTP call itself failed transiently, and either
+   * way a recheck is scheduled within the 24h backoff window (see
+   * digiflazzBackoff.ts). */
   pending: number;
-  /** Of the claimed orders, how many failed — either Digiflazz reported
-   * "Gagal", the SKU had no supplierSku configured, or the HTTP call itself
-   * threw. Each of these enqueued an admin alert and left the order
+  /** Of the claimed orders, how many reached a terminal failure this pass —
+   * Digiflazz explicitly reported Gagal, the order failed structural
+   * validation (missing supplierSku / wrong quantity), or a Pending/
+   * transient-error recheck exhausted its 24h backoff window without
+   * resolving. Each of these enqueued an admin alert and left the order
    * PROCESSING for a human to finish via fulfillManualOrder. */
   failed: number;
 }
@@ -227,6 +237,93 @@ export async function alertDigiflazzDispatchFailed(
   );
 }
 
+export type DigiflazzOutcome =
+  | { kind: "pending" }
+  | { kind: "transient_error"; message: string }
+  | { kind: "terminal"; reason: string };
+
+/**
+ * Single place that decides what a non-Sukses Digiflazz dispatch/recheck
+ * attempt does to an order's digiflazz* fields — shared by the poller
+ * (dispatchPendingDigiflazzOrders, below) and the storefront webhook's
+ * live re-check (checkout.ts POST /pay/digiflazz/callback, a later task)
+ * so the two entry points can never drift on what "Pending"/"Gagal"/a
+ * thrown error means for these fields. Never called for "Sukses" — that
+ * outcome goes straight to fulfillDigiflazzOrder instead.
+ *
+ * - "pending" (Digiflazz said Pending) and "transient_error" (the HTTP
+ *   call itself threw — network/timeout/malformed response) share the
+ *   SAME backoff-recheck logic: safe to retry because refId=order.orderCode
+ *   is Digiflazz's own idempotency key (see this file's module doc
+ *   comment / createTransaction's own doc comment). Computes the next
+ *   attempt via nextDigiflazzRecheckAt (digiflazzBackoff.ts); if a next
+ *   recheck time exists within the 24h window, the order stays
+ *   "pending_at_supplier" with digiflazzAttempts/digiflazzNextRecheckAt
+ *   advanced. digiflazzFailureDetail is cleared to null on a clean
+ *   "pending" (nothing is actually wrong), but set to the error message
+ *   on "transient_error" — so an admin can see WHY the last attempt
+ *   failed even while it's still being retried, not only once it goes
+ *   terminal. If the 24h window is exhausted, falls through to the same
+ *   terminal handling "terminal" gets below (same remedy either way: a
+ *   human must finish the order).
+ * - "terminal" (explicit "Gagal", or a structural resolution failure like
+ *   a missing supplierSku) never retries — the same input would fail
+ *   identically again — and immediately alerts admins via
+ *   alertDigiflazzDispatchFailed, same as today's Gagal handling.
+ *
+ * Returns "pending" or "failed" so the caller can tally its own summary
+ * counters without re-deriving this same branch logic.
+ */
+export async function recordDigiflazzOutcome(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+  outcome: DigiflazzOutcome,
+  dispatchedAt: Date,
+): Promise<"pending" | "failed"> {
+  if (outcome.kind !== "terminal") {
+    const attempt = order.digiflazzAttempts + 1;
+    const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
+    if (nextRecheckAt) {
+      await db.order.update({
+        where: { id: order.id },
+        data: {
+          digiflazzStatus: "pending_at_supplier",
+          digiflazzAttempts: attempt,
+          digiflazzNextRecheckAt: nextRecheckAt,
+          digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
+        },
+      });
+      emitDigiflazzOrderStatusChanged(order.id);
+      return "pending";
+    }
+    const reason =
+      outcome.kind === "pending"
+        ? "Digiflazz never resolved this order within 24h of dispatch — still reporting Pending"
+        : `Digiflazz dispatch kept failing transiently for 24h and gave up retrying (last error: ${outcome.message})`;
+    return terminalFailDigiflazzOrder(db, order, reason);
+  }
+  return terminalFailDigiflazzOrder(db, order, outcome.reason);
+}
+
+/** Shared terminal-failure tail for recordDigiflazzOutcome above: writes
+ * the order's digiflazz* fields to their terminal-failed shape, alerts
+ * admins via alertDigiflazzDispatchFailed (unchanged), and emits the
+ * realtime status-changed event. Not exported — recordDigiflazzOutcome is
+ * the only entry point callers (this file and, later, the webhook) use. */
+async function terminalFailDigiflazzOrder(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+  reason: string,
+): Promise<"failed"> {
+  await db.order.update({
+    where: { id: order.id },
+    data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null, digiflazzFailureDetail: reason },
+  });
+  await alertDigiflazzDispatchFailed(db, order, reason);
+  emitDigiflazzOrderStatusChanged(order.id);
+  return "failed";
+}
+
 /**
  * The Digiflazz dispatch poller. Finds PROCESSING orders whose item routes to
  * Digiflazz (denomination.autoDeliverySource === "digiflazz") and haven't been
@@ -249,11 +346,15 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
   const creds = await getDigiflazzCreds(db);
   if (!creds) return ZERO_SUMMARY;
 
+  const now = new Date();
   const candidates: DigiflazzCandidateOrder[] = await db.order.findMany({
     where: {
       status: OrderStatus.PROCESSING,
-      digiflazzDispatchedAt: null,
       items: { some: { product: { autoDeliverySource: "digiflazz" } } },
+      OR: [
+        { digiflazzDispatchedAt: null },
+        { digiflazzStatus: "pending_at_supplier", digiflazzNextRecheckAt: { lte: now } },
+      ],
     },
     include: {
       items: {
@@ -267,16 +368,38 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
   const summary: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
 
   for (const order of candidates) {
+    const isFreshDispatch = order.digiflazzDispatchedAt === null;
+    const claimNow = new Date();
     // Atomic claim: only proceed to call Digiflazz if THIS call wins the
     // race (count === 1). A concurrent tick, a restarted poller, or a retry
     // that re-fetched the same candidate list all lose here instead of
-    // double-dispatching the same order to the supplier.
-    const claim = await db.order.updateMany({
-      where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null },
-      data: { digiflazzDispatchedAt: new Date() },
-    });
+    // double-dispatching the same order to the supplier — same guard as
+    // before, now with a second shape covering the recheck branch (claims by
+    // digiflazzStatus/digiflazzNextRecheckAt instead of digiflazzDispatchedAt
+    // being null).
+    const claim = isFreshDispatch
+      ? await db.order.updateMany({
+          where: { id: order.id, status: OrderStatus.PROCESSING, digiflazzDispatchedAt: null },
+          data: { digiflazzDispatchedAt: claimNow, digiflazzStatus: "pending_at_supplier" },
+        })
+      : await db.order.updateMany({
+          where: {
+            id: order.id,
+            status: OrderStatus.PROCESSING,
+            digiflazzStatus: "pending_at_supplier",
+            digiflazzNextRecheckAt: { lte: claimNow },
+          },
+          data: { digiflazzNextRecheckAt: null },
+        });
     if (claim.count !== 1) continue;
     summary.claimed++;
+
+    // dispatchedAt anchors the 24h backoff window: for a fresh dispatch
+    // this is the claimNow just written above (this in-memory `order` row
+    // was fetched BEFORE the claim, so order.digiflazzDispatchedAt is
+    // still its pre-claim null here); for a recheck it's the already-set
+    // original dispatch time, unchanged by this claim.
+    const dispatchedAt = order.digiflazzDispatchedAt ?? claimNow;
 
     // I6/N1 fixes: resolveSingleDigiflazzItem is the single shared rule for
     // "find the order's Digiflazz-routed item(s) and refuse unless there is
@@ -285,7 +408,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     // distinguishes.
     const resolution = resolveSingleDigiflazzItem(order);
     if (!resolution.ok) {
-      await alertDigiflazzDispatchFailed(db, order, resolution.reason);
+      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: resolution.reason }, dispatchedAt);
       summary.failed++;
       continue;
     }
@@ -305,29 +428,37 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
         summary.delivered++;
         logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
       } else if (result.status === "Pending") {
-        summary.pending++;
-        logger.info(
-          `Digiflazz order ${order.orderCode} (buyerSkuCode ${supplierSku}) is Pending — left PROCESSING, awaiting the supplier's final report`,
-        );
+        const outcome = await recordDigiflazzOutcome(db, order, { kind: "pending" }, dispatchedAt);
+        if (outcome === "pending") {
+          summary.pending++;
+          logger.info(
+            `Digiflazz order ${order.orderCode} (buyerSkuCode ${supplierSku}) is Pending — scheduled for a recheck, awaiting the supplier's final report`,
+          );
+        } else {
+          summary.failed++;
+        }
       } else {
-        await alertDigiflazzDispatchFailed(
+        const outcome = await recordDigiflazzOutcome(
           db,
           order,
-          `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}`,
+          { kind: "terminal", reason: `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}` },
+          dispatchedAt,
         );
         summary.failed++;
+        void outcome; // always "failed" for kind:"terminal" — see recordDigiflazzOutcome
       }
     } catch (err) {
       // The HTTP call itself failed (network error, timeout, malformed
       // response — see @app/core/suppliers/digiflazz's fetchDigiflazzJson).
-      // The claim above already committed, so this order will never be
-      // retried by this poller — whether Digiflazz actually placed the order
-      // is now unknown, so this can only be resolved by a human, same as an
-      // explicit "Gagal". err's message is already credential-free (the
-      // client's own guarantee); never log err.cause or the request body.
+      // err's message is already credential-free (the client's own
+      // guarantee); never log err.cause or the request body. Unlike
+      // before this task, this is now RETRIED (recordDigiflazzOutcome's
+      // "transient_error" branch) rather than immediately terminal — see
+      // this file's module doc comment for why that's safe.
       const message = err instanceof Error ? err.message : String(err);
-      await alertDigiflazzDispatchFailed(db, order, `the request to Digiflazz failed (${message})`);
-      summary.failed++;
+      const outcome = await recordDigiflazzOutcome(db, order, { kind: "transient_error", message }, dispatchedAt);
+      if (outcome === "pending") summary.pending++;
+      else summary.failed++;
     }
   }
 
@@ -396,6 +527,7 @@ export async function fulfillDigiflazzOrder(
 
   logger.info(`Auto-fulfilled Digiflazz order ${order.orderCode}`);
   const refreshed = await getOrder(db, orderId);
+  emitDigiflazzOrderStatusChanged(orderId);
   return { order: refreshed! };
 }
 
@@ -811,6 +943,22 @@ export async function resyncDigiflazzCatalog(
         ? { kind: "sharp_change", sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows }
         : { kind: "no_usable_rows" },
     );
+    await recordDigiflazzSyncStatus(db, {
+      status: "aborted",
+      updated: 0,
+      deactivated: 0,
+      abortReason: abortReason.kind,
+      finishedAt: new Date().toISOString(),
+    });
+    await recordPollHealth(db, "digiflazzCatalogSync", {
+      lastTxCount: 0,
+      success: false,
+      error:
+        abortReason.kind === "sharp_change"
+          ? `${abortReason.sharpChanges}/${abortReason.consideredRows} prices moved sharply`
+          : "supplier returned no usable rows",
+    });
+    emitDigiflazzCatalogSyncChanged();
     return zero;
   }
 
@@ -844,6 +992,18 @@ export async function resyncDigiflazzCatalog(
     });
   }
 
+  await recordDigiflazzSyncStatus(db, {
+    status: "success",
+    updated: result.updated,
+    deactivated: result.deactivated,
+    abortReason: null,
+    finishedAt: new Date().toISOString(),
+  });
+  await recordPollHealth(db, "digiflazzCatalogSync", {
+    lastTxCount: result.updated + result.deactivated,
+    success: true,
+  });
+  emitDigiflazzCatalogSyncChanged();
   return result;
 }
 

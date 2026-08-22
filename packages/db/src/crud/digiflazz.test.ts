@@ -50,6 +50,7 @@ import {
   splitMixedDigiflazzProducts,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
+  getDigiflazzSyncStatus,
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -202,7 +203,15 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("never calls Digiflazz twice for the same order (double-dispatch guard)", async () => {
+  // A Pending order's next recheck is scheduled a couple of minutes out
+  // (see nextDigiflazzRecheckAt/DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] in
+  // digiflazzBackoff.ts), so calling the poller again immediately after
+  // still finds nothing due — the claim query's recheck branch
+  // (digiflazzNextRecheckAt <= now) doesn't match yet. This is no longer
+  // "this order can NEVER be retried" (it will be, once due — see the
+  // "recheck claim picks up a due Pending order on a later tick" test
+  // below), only "not due for its first recheck yet".
+  it("does not re-call Digiflazz on an immediate second tick — the recheck isn't due yet", async () => {
     const order = await makeProcessingDigiflazzOrder();
     digiflazzMock.createTransaction.mockResolvedValue({
       refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
@@ -227,6 +236,13 @@ describe("dispatchPendingDigiflazzOrders", () => {
     const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
     expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
     expect(refreshed!.digiflazzDispatchedAt).not.toBeNull();
+    expect(refreshed!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed!.digiflazzAttempts).toBe(1);
+    expect(refreshed!.digiflazzNextRecheckAt).not.toBeNull();
+    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] (digiflazzBackoff.ts)
+    const deltaMs = refreshed!.digiflazzNextRecheckAt!.getTime() - refreshed!.digiflazzDispatchedAt!.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
   });
 
   it("alerts admins and leaves PROCESSING on Gagal, without fulfilling", async () => {
@@ -247,6 +263,9 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed!.digiflazzFailureDetail).toContain("Saldo tidak cukup");
   });
 
   it("is a no-op when Digiflazz isn't configured", async () => {
@@ -385,6 +404,108 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
+  });
+
+  // Task 5 (realtime Digiflazz status): the recheck half of the OR-query and
+  // atomic claim added alongside recordDigiflazzOutcome.
+  it("recheck claim picks up a due Pending order on a later tick", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    const afterFirst = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(afterFirst.digiflazzStatus).toBe("pending_at_supplier");
+
+    // Simulate time having passed: back-date the scheduled recheck into the
+    // past so the next tick's OR-query/claim picks this order up again.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzNextRecheckAt: new Date(Date.now() - 5_000) },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Sukses", sn: "SN-RECHECK", message: "ok", price: null,
+    });
+
+    const second = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(2);
+    expect(second).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("marks failed after the backoff window is exhausted while still Pending", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    // Simulate a long-running retry sequence: first dispatch was 25h ago (past
+    // the 24h window), 20 attempts already made (past the front-loaded
+    // schedule), and a recheck that's due now.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        digiflazzDispatchedAt: new Date(Date.now() - 25 * 3_600_000),
+        digiflazzAttempts: 20,
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() - 60_000),
+      },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed.digiflazzFailureDetail).toBeTruthy();
+    expect(refreshed.digiflazzFailureDetail).toMatch(/24h|never resolved/i);
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
+  });
+
+  it("transient HTTP error is retried on the same schedule, not immediately terminal", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(new Error("network blip"));
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzNextRecheckAt).not.toBeNull();
+    const deltaMs = refreshed.digiflazzNextRecheckAt!.getTime() - refreshed.digiflazzDispatchedAt!.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    expect(refreshed.digiflazzFailureDetail).toContain("network blip");
+  });
+
+  it("explicit Gagal is terminal immediately regardless of attempt count", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    // Already mid-backoff: a third recheck is due now.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        digiflazzDispatchedAt: new Date(Date.now() - 20 * 60_000),
+        digiflazzAttempts: 3,
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() - 60_000),
+      },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: "Saldo tidak cukup", price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
   });
 });
 
@@ -1204,6 +1325,52 @@ describe("resyncDigiflazzCatalog", () => {
       });
       expect(alertRows).toHaveLength(0);
     });
+
+    // Task 5 (realtime Digiflazz status): the sync-status-store write added to
+    // resyncDigiflazzCatalog's abort branches, recording the SAME abortReason
+    // this describe block's other tests already assert on via the audit log /
+    // admin alert.
+    it("records an aborted status with the right abortReason when the circuit breaker trips", async () => {
+      await setSetting(prisma, ADMIN_IDS_KEY, "700");
+      const denoms = await makeDigiflazzDenoms(6, "15000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        denoms.map((d) => priceListItem({ buyerSkuCode: d.supplierSku!, price: new Decimal(10) })),
+      );
+
+      await resyncDigiflazzCatalog(prisma);
+      const status = await getDigiflazzSyncStatus(prisma);
+
+      expect(status).not.toBeNull();
+      expect(status!.status).toBe("aborted");
+      expect(status!.abortReason).toBe("sharp_change");
+      expect(status!.updated).toBe(0);
+      expect(status!.deactivated).toBe(0);
+    });
+  });
+
+  // Task 5 (realtime Digiflazz status): the sync-status-store write added to
+  // resyncDigiflazzCatalog's normal-completion path (recordDigiflazzSyncStatus,
+  // digiflazzSyncStatus.ts), unconditional even on a no-op tick.
+  it("records a success status after a normal run", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(20000), buyerProductStatus: true }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    const status = await getDigiflazzSyncStatus(prisma);
+
+    expect(status).not.toBeNull();
+    expect(status!.status).toBe("success");
+    expect(status!.updated).toBe(result.updated);
+    expect(status!.deactivated).toBe(result.deactivated);
+    expect(status!.abortReason).toBeNull();
+    const finishedAtMs = new Date(status!.finishedAt).getTime();
+    expect(Date.now() - finishedAtMs).toBeLessThan(5_000);
   });
 });
 

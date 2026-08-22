@@ -243,6 +243,41 @@ describe("ProductDetailPage", () => {
     expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ categoryId: 5 });
   });
 
+  // Task 14: gameVariant/gameVariantEmoji/gameRegion are always sent from
+  // the edit form's PATCH body (blank means clear to null server-side), same
+  // as description/whatYouGet above.
+  it("submits gameVariant, gameVariantEmoji and gameRegion in the PATCH body", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const withGameFields = {
+      ...PRODUCT_DETAIL,
+      product: { ...PRODUCT_DETAIL.product, gameVariant: "Diamonds", gameVariantEmoji: "💎", gameRegion: "Global" },
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body = url.startsWith("/api/catalog/1") && !init?.method ? withGameFields : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+    expect(screen.getByPlaceholderText(/e\.g\. diamonds/i)).toHaveValue("Diamonds");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "PATCH" })),
+    );
+    const patch = fetchSpy.mock.calls.find(
+      ([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH",
+    )!;
+    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    });
+  });
+
   it("select-all checks every denomination, and the bulk bar activates/deactivates them", async () => {
     const user = userEvent.setup();
     const TWO_DENOMS = {

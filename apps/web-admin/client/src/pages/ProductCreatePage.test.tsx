@@ -120,6 +120,90 @@ describe("ProductCreatePage", () => {
     );
   });
 
+  // Task 14: gameVariant/gameVariantEmoji/gameRegion — omitted from the
+  // submit body when blank (same conditional-spread pattern as emoji), sent
+  // trimmed when filled in.
+  it("includes gameVariant, gameVariantEmoji and gameRegion in the submit body only when filled in", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 42, name: "Netflix", slug: "netflix" });
+
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(CATALOG_DATA), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(CATALOG_DATA), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    await user.click(screen.getByRole("combobox"));
+    await waitFor(() => screen.getByRole("option", { name: "Apps" }));
+    await user.click(screen.getByRole("option", { name: "Apps" }));
+
+    fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "Netflix" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. diamonds/i), { target: { value: " Diamonds " } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. 💎/i), { target: { value: " 💎 " } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. global/i), { target: { value: " Global " } });
+
+    const btn = screen.getByRole("button", { name: /create product/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/catalog/products", expect.objectContaining({
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    })));
+  });
+
+  it("omits gameVariant, gameVariantEmoji and gameRegion from the submit body when left blank", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 42, name: "Netflix", slug: "netflix" });
+
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(CATALOG_DATA), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(CATALOG_DATA), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    await user.click(screen.getByRole("combobox"));
+    await waitFor(() => screen.getByRole("option", { name: "Apps" }));
+    await user.click(screen.getByRole("option", { name: "Apps" }));
+
+    fireEvent.change(screen.getByPlaceholderText(/capcut pro/i), { target: { value: "Netflix" } });
+
+    const btn = screen.getByRole("button", { name: /create product/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const body = vi.mocked(apiPost).mock.calls[0][1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty("gameVariant");
+    expect(body).not.toHaveProperty("gameVariantEmoji");
+    expect(body).not.toHaveProperty("gameRegion");
+  });
+
   it("creates a new category inline via the + New category affordance", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 

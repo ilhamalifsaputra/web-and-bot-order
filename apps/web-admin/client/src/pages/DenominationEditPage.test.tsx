@@ -160,9 +160,41 @@ describe("DenominationEditPage", () => {
         // same always-sent-on-edit convention as nicknameCheckGameCode above.
         regionWarning: null,
         expectedRegionCode: null,
+        // Task 14: qtyValue/qtyUnit follow the same always-sent-on-edit
+        // convention — this fixture never touched them, so both are null.
+        qtyValue: null,
+        qtyUnit: null,
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
+  });
+
+  // Task 14: qtyValue/qtyUnit round-trip through prefill and submit.
+  it("prefills qtyValue/qtyUnit from the loaded denomination and submits them", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        name: "Netflix Premium",
+        denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds" }],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("86")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Diamonds")).toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(apiPatch).toHaveBeenCalledWith(
+        "/api/catalog/denominations/10",
+        expect.objectContaining({ qtyValue: 86, qtyUnit: "Diamonds" }),
+      ),
+    );
   });
 
   it("submits a manual_with_info edit with the prefilled additionalFields as a raw array (not a JSON string)", async () => {

@@ -68,6 +68,21 @@ function parseDecimal(value: unknown): Decimal | null {
   }
 }
 
+/**
+ * A product's optional game-navigation classification (Task 8/14):
+ * gameVariant / gameVariantEmoji / gameRegion — read off a request body with
+ * the same "trim, blank means null" rule storefrontDetailFields uses above.
+ * Shared by product create and update so the two can't drift apart.
+ */
+function gameNavigationFields(body: Record<string, unknown>) {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() || null : null);
+  return {
+    gameVariant: text(body.gameVariant),
+    gameVariantEmoji: text(body.gameVariantEmoji),
+    gameRegion: text(body.gameRegion),
+  };
+}
+
 export default async function catalogApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/catalog", { preHandler: currentAdmin }, async (req, reply) => {
     const [categories, products] = await Promise.all([
@@ -94,6 +109,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...storefrontDetailFields(body),
+      ...gameNavigationFields(body),
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -354,6 +370,20 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const expectedRegionCode =
       typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
 
+    // qtyValue/qtyUnit (Task 8/14): the compact-button quantity shown on the
+    // bot, e.g. "86 Diamonds" — independent of every other field above.
+    // qtyValue is optional but must be a non-negative integer when present;
+    // qtyUnit is a plain optional string with no coupling to qtyValue.
+    let qtyValue: number | null = null;
+    if (body.qtyValue != null && body.qtyValue !== "") {
+      const n = Number(body.qtyValue);
+      if (!Number.isInteger(n) || n < 0) {
+        return reply.code(400).send({ error: "Quantity value must be a non-negative whole number." });
+      }
+      qtyValue = n;
+    }
+    const qtyUnit = typeof body.qtyUnit === "string" ? body.qtyUnit.trim() || null : null;
+
     const denom = await createDenomination(prisma, {
       productId,
       name,
@@ -371,6 +401,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       nicknameCheckGameCode,
       regionWarning,
       expectedRegionCode,
+      qtyValue,
+      qtyUnit,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -409,6 +441,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       name,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...storefrontDetailFields(body),
+      ...gameNavigationFields(body),
       ...(newCategory ? { categoryId: newCategory.id } : {}),
     });
 
@@ -747,6 +780,20 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const expectedRegionCode =
       typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
 
+    // qtyValue/qtyUnit (Task 8/14): same always-set-from-this-request
+    // convention as nicknameCheckGameCode/regionWarning/expectedRegionCode
+    // above — qtyValue must be a non-negative integer when present, qtyUnit
+    // is a plain optional string independent of qtyValue.
+    let qtyValue: number | null = null;
+    if (body.qtyValue != null && body.qtyValue !== "") {
+      const n = Number(body.qtyValue);
+      if (!Number.isInteger(n) || n < 0) {
+        return reply.code(400).send({ error: "Quantity value must be a non-negative whole number." });
+      }
+      qtyValue = n;
+    }
+    const qtyUnit = typeof body.qtyUnit === "string" ? body.qtyUnit.trim() || null : null;
+
     await updateDenomination(prisma, id, {
       name,
       type: type as ProductType,
@@ -765,6 +812,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       regionWarning,
       expectedRegionCode,
       priceOverridden,
+      qtyValue,
+      qtyUnit,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

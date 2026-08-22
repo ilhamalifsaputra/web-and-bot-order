@@ -182,6 +182,13 @@ export async function createCatalogProduct(
      * the exact `brand` string Digiflazz reports, used to match a re-import
      * of the same brand back to this Product instead of duplicating it. */
     digiflazzBrand?: string | null;
+    /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+     * catalog navigation and denomination labeling (Tasks 11-13) key off
+     * these three, e.g. grouping "Mobile Legends" skins by variant/region.
+     * All independent of each other and of every other field above. */
+    gameVariant?: string | null;
+    gameVariantEmoji?: string | null;
+    gameRegion?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
@@ -200,6 +207,9 @@ export async function createCatalogProduct(
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
       digiflazzBrand: args.digiflazzBrand ?? null,
+      gameVariant: args.gameVariant ?? null,
+      gameVariantEmoji: args.gameVariantEmoji ?? null,
+      gameRegion: args.gameRegion ?? null,
     },
   });
 }
@@ -356,6 +366,13 @@ export async function createDenomination(
      * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
      * the caller server-side; never trust a client-submitted boolean here). */
     priceOverridden?: boolean;
+    /** The compact-button quantity (Task 8/14), e.g. `86` for an 86-diamond
+     * top-up — paired with qtyUnit and formatted by formatDenominationLabel.
+     * Set together by the admin; independent of every other field above. */
+    qtyValue?: number | null;
+    /** The short unit word paired with qtyValue on the compact button, e.g.
+     * "Diamonds", "UC", "Bonds" (Task 8/14). */
+    qtyUnit?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -383,6 +400,8 @@ export async function createDenomination(
       regionWarning: args.regionWarning ?? null,
       expectedRegionCode: args.expectedRegionCode ?? null,
       priceOverridden: args.priceOverridden ?? false,
+      qtyValue: args.qtyValue ?? null,
+      qtyUnit: args.qtyUnit ?? null,
     },
   });
 }

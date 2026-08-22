@@ -63,6 +63,10 @@ export function DenominationCreatePage() {
   const [resellerPrice, setResellerPrice] = useState("");
   const [warrantyDays, setWarrantyDays] = useState("");
   const [description, setDescription] = useState("");
+  // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
+  // every other field on this form.
+  const [qtyValue, setQtyValue] = useState("");
+  const [qtyUnit, setQtyUnit] = useState("");
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
@@ -95,6 +99,8 @@ export function DenominationCreatePage() {
           ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
           ...(regionWarning.trim() ? { regionWarning: regionWarning.trim() } : {}),
           ...(expectedRegionCode.trim() ? { expectedRegionCode: expectedRegionCode.trim() } : {}),
+          ...(qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
+          ...(qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -146,6 +152,32 @@ export function DenominationCreatePage() {
             value={durationLabel}
             onChange={(e) => setDurationLabel(e.target.value)}
           />
+        </div>
+
+        {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
+            "86 Diamonds"-style compact denomination button label. */}
+        <div className="flex gap-3">
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Value</label>
+            <Input
+              className="mt-1 w-32"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="e.g. 86"
+              value={qtyValue}
+              onChange={(e) => setQtyValue(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Unit</label>
+            <Input
+              className="mt-1"
+              placeholder="e.g. Diamonds"
+              value={qtyUnit}
+              onChange={(e) => setQtyUnit(e.target.value)}
+            />
+          </div>
         </div>
 
         <div>

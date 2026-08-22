@@ -126,6 +126,56 @@ describe("createDenomination — deliveryType/additionalFields", () => {
   });
 });
 
+describe("createCatalogProduct — game-navigation fields (Task 14)", () => {
+  it("defaults gameVariant/gameVariantEmoji/gameRegion to null when omitted", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Defaults");
+    expect(product.gameVariant).toBeNull();
+    expect(product.gameVariantEmoji).toBeNull();
+    expect(product.gameRegion).toBeNull();
+  });
+
+  it("persists explicit gameVariant/gameVariantEmoji/gameRegion", async () => {
+    const cat = await makeCategory();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Mobile Legends",
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    });
+    expect(product.gameVariant).toBe("Diamonds");
+    expect(product.gameVariantEmoji).toBe("💎");
+    expect(product.gameRegion).toBe("Global");
+  });
+});
+
+describe("createDenomination — qtyValue/qtyUnit (Task 14)", () => {
+  it("defaults qtyValue/qtyUnit to null when omitted", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Defaults");
+    const denom = await makeDenom(product.id, "86 Diamonds", "15000");
+    expect(denom.qtyValue).toBeNull();
+    expect(denom.qtyUnit).toBeNull();
+  });
+
+  it("persists explicit qtyValue/qtyUnit", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Explicit");
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 86,
+      qtyUnit: "Diamonds",
+    });
+    expect(denom.qtyValue).toBe(86);
+    expect(denom.qtyUnit).toBe("Diamonds");
+  });
+});
+
 describe("assignDenominationToProduct", () => {
   it("moves a denomination to a product in the same category", async () => {
     const cat = await makeCategory();

@@ -207,6 +207,50 @@ describe("DenominationCreatePage", () => {
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
   });
 
+  // Task 14: qtyValue/qtyUnit — omitted from the submit body when blank
+  // (same conditional-spread pattern as costPrice/resellerPrice), sent when
+  // filled in with qtyValue coerced to a number.
+  it("includes qtyValue and qtyUnit in the submit body when filled in", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 7, name: "86 Diamonds", slug: "86-diamonds" });
+
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await fillBaseFields(user);
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. 86/i), { target: { value: "86" } });
+    fireEvent.change(screen.getByPlaceholderText(/e\.g\. diamonds/i), { target: { value: "Diamonds" } });
+
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/catalog/products/42/denominations", {
+      name: "1 Month Plan",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "auto",
+      qtyValue: 86,
+      qtyUnit: "Diamonds",
+    });
+  });
+
+  it("omits qtyValue and qtyUnit from the submit body when left blank", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 7, name: "1 Month", slug: "1-month" });
+
+    render(<DenominationCreatePage />, { wrapper: Wrapper });
+    await fillBaseFields(user);
+
+    const btn = screen.getByRole("button", { name: /create denomination/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    await user.click(btn);
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    const [, sentBody] = vi.mocked(apiPost).mock.calls[0] as [string, Record<string, unknown>];
+    expect(sentBody).not.toHaveProperty("qtyValue");
+    expect(sentBody).not.toHaveProperty("qtyUnit");
+  });
+
   it("submits a manual_with_info SKU with additionalFields as a raw array (not a JSON string)", async () => {
     // Regression test: DenominationCreatePage previously JSON.stringify()d
     // additionalFields before handing it to apiPost, which itself

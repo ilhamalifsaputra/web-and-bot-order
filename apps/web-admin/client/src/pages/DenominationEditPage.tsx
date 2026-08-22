@@ -42,6 +42,9 @@ interface EditableDenomination {
   nicknameCheckGameCode: string | null;
   regionWarning: string | null;
   expectedRegionCode: string | null;
+  /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
+  qtyValue: number | null;
+  qtyUnit: string | null;
 }
 
 /** Parses a denomination's stored additionalFields JSON into editable
@@ -128,6 +131,10 @@ export function DenominationEditPage() {
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
   const [regionWarning, setRegionWarning] = useState("");
   const [expectedRegionCode, setExpectedRegionCode] = useState("");
+  // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
+  // every other field on this form.
+  const [qtyValue, setQtyValue] = useState("");
+  const [qtyUnit, setQtyUnit] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -154,6 +161,8 @@ export function DenominationEditPage() {
     setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
     setRegionWarning(denomination.regionWarning ?? "");
     setExpectedRegionCode(denomination.expectedRegionCode ?? "");
+    setQtyValue(denomination.qtyValue != null ? String(denomination.qtyValue) : "");
+    setQtyUnit(denomination.qtyUnit ?? "");
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -184,6 +193,8 @@ export function DenominationEditPage() {
         nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
         regionWarning: regionWarning.trim() || null,
         expectedRegionCode: expectedRegionCode.trim() || null,
+        qtyValue: qtyValue.trim() ? Number(qtyValue.trim()) : null,
+        qtyUnit: qtyUnit.trim() || null,
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -259,6 +270,32 @@ export function DenominationEditPage() {
             Duration Label <span className="text-rust">*</span>
           </label>
           <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
+        </div>
+
+        {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
+            "86 Diamonds"-style compact denomination button label. */}
+        <div className="flex gap-3">
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Value</label>
+            <Input
+              className="mt-1 w-32"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="e.g. 86"
+              value={qtyValue}
+              onChange={(e) => setQtyValue(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Unit</label>
+            <Input
+              className="mt-1"
+              placeholder="e.g. Diamonds"
+              value={qtyUnit}
+              onChange={(e) => setQtyUnit(e.target.value)}
+            />
+          </div>
         </div>
 
         <div>

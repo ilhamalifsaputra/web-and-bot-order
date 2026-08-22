@@ -15,6 +15,7 @@ import {
   createCategory,
   createCatalogProduct,
   getCatalogProduct,
+  updateCatalogProduct,
   getCatalogProductWithDenominations,
   getDenomination,
   createDenomination,
@@ -1484,6 +1485,38 @@ describe("catalog JSON API — create product", () => {
     expect(audit.length).toBe(1);
   });
 
+  // Task 14: gameVariant/gameVariantEmoji/gameRegion — the admin-authored
+  // game-navigation classification Tasks 11-13's bot navigation and
+  // denomination labeling consume. Independent of every other field.
+  it("persists gameVariant, gameVariantEmoji and gameRegion", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, {
+      name: "Mobile Legends",
+      categoryId: seed.categoryId,
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const product = await getCatalogProduct(prisma, body.id);
+    expect(product!.gameVariant).toBe("Diamonds");
+    expect(product!.gameVariantEmoji).toBe("💎");
+    expect(product!.gameRegion).toBe("Global");
+  });
+
+  it("defaults gameVariant, gameVariantEmoji and gameRegion to null when omitted", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, {
+      name: "Plain Product",
+      categoryId: seed.categoryId,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const product = await getCatalogProduct(prisma, body.id);
+    expect(product!.gameVariant).toBeNull();
+    expect(product!.gameVariantEmoji).toBeNull();
+    expect(product!.gameRegion).toBeNull();
+  });
+
   it("rejects missing name with 400", async () => {
     const res = await postProductJson(seed.cookie, seed.csrf, { categoryId: seed.categoryId });
     expect(res.statusCode).toBe(400);
@@ -2062,6 +2095,67 @@ describe("catalog JSON API — create denomination", () => {
     expect(row!.regionWarning).toBeNull();
     expect(row!.expectedRegionCode).toBeNull();
   });
+
+  // Task 14: qtyValue/qtyUnit — the compact-button quantity ("86 Diamonds")
+  // Tasks 11-13's bot labeling logic consumes. Independent of every other
+  // field on the row.
+  it("creates a denomination with qtyValue and qtyUnit", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 86,
+      qtyUnit: "Diamonds",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.qtyValue).toBe(86);
+    expect(row!.qtyUnit).toBe("Diamonds");
+  });
+
+  it("defaults qtyValue and qtyUnit to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.qtyValue).toBeNull();
+    expect(row!.qtyUnit).toBeNull();
+  });
+
+  it("rejects a negative qtyValue with 400 and creates nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: -1,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("rejects a non-integer qtyValue with 400 and creates nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 4.5,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------
@@ -2594,6 +2688,40 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(audit?.details).toBe(`Updated product "${product.name}".`);
     });
 
+    // Task 14: gameVariant/gameVariantEmoji/gameRegion round-trip on update,
+    // same "trim, blank means null" rule as storefrontDetailFields.
+    it("persists gameVariant, gameVariantEmoji and gameRegion", async () => {
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+        gameVariant: "UC",
+        gameVariantEmoji: "🔫",
+        gameRegion: "Indonesia",
+      });
+      expect(res.statusCode).toBe(200);
+      const updated = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(updated!.gameVariant).toBe("UC");
+      expect(updated!.gameVariantEmoji).toBe("🔫");
+      expect(updated!.gameRegion).toBe("Indonesia");
+    });
+
+    it("clears gameVariant, gameVariantEmoji and gameRegion when omitted", async () => {
+      await updateCatalogProduct(prisma, seed.catalogProductId, {
+        gameVariant: "UC",
+        gameVariantEmoji: "🔫",
+        gameRegion: "Indonesia",
+      });
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+      });
+      expect(res.statusCode).toBe(200);
+      const updated = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(updated!.gameVariant).toBeNull();
+      expect(updated!.gameVariantEmoji).toBeNull();
+      expect(updated!.gameRegion).toBeNull();
+    });
+
     it("rejects an unknown categoryId with 400", async () => {
       const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
         name: "X",
@@ -3112,6 +3240,52 @@ describe("denominations (leaf SKU, inside product detail)", () => {
     expect(d!.costPrice).toBeNull();
     expect(d!.resellerPrice).toBeNull();
     expect(d!.description).toBeNull();
+  });
+
+  // Task 14: qtyValue/qtyUnit round-trip on update, same always-set
+  // convention as nicknameCheckGameCode/regionWarning above.
+  it("persists qtyValue and qtyUnit on update", async () => {
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+      qtyValue: "86",
+      qtyUnit: "Diamonds",
+    });
+    expect(res.statusCode).toBe(200);
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.qtyValue).toBe(86);
+    expect(d!.qtyUnit).toBe("Diamonds");
+  });
+
+  it("clears qtyValue and qtyUnit when omitted on update", async () => {
+    await updateDenomination(prisma, seed.productId, { qtyValue: 86, qtyUnit: "Diamonds" });
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+    });
+    expect(res.statusCode).toBe(200);
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.qtyValue).toBeNull();
+    expect(d!.qtyUnit).toBeNull();
+  });
+
+  it("rejects a negative qtyValue on update with 400", async () => {
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+      qtyValue: "-1",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
   });
 
   it("update denomination requires auth", async () => {

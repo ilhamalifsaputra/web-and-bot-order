@@ -26,7 +26,7 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
 import { htmlDefaultsTransformer } from "@app/order-bot/util/apiDefaults";
-import { scheduleJobs, scheduleFxRefresh, scheduleDigiflazzCatalogSync, scheduleDigiflazzDispatch, flushSettledOrderBubble } from "@app/order-bot/jobs";
+import { scheduleJobs, scheduleFxRefresh, scheduleDigiflazzCatalogSync, scheduleDigiflazzDispatch, scheduleOutboxDispatcherWatchdog, flushSettledOrderBubble } from "@app/order-bot/jobs";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
@@ -282,6 +282,20 @@ export async function start(): Promise<void> {
     // In-process workers — exactly one instance each (single process). Each
     // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);
+    // Outbox dispatcher watchdog (Task 15 / I-3): registered HERE, not inside
+    // scheduleJobs, and deliberately appended to the same `jobs` array (so it
+    // gets `.stop()`ed on shutdown below like every other job) — see
+    // scheduleOutboxDispatcherWatchdog's own doc-comment
+    // (apps/order-bot/src/jobs/index.ts) for why. Short version: scheduleJobs
+    // is also called from the standalone bot-only binary
+    // (apps/order-bot/src/main.ts), which never runs the outbox dispatcher
+    // (startNotifier below) at all — registering this watchdog there would
+    // page admins forever with a false "dispatcher never ran" alarm on that
+    // binary. This `if (bot)` block is truthy under exactly the same
+    // condition startNotifier's own `!dedicated && !mainBot` check uses to
+    // decide whether the dispatcher will actually run, so scheduling it here
+    // keeps the watchdog scoped to the one process/branch where that's true.
+    jobs.push(scheduleOutboxDispatcherWatchdog(bot.api));
     startPolling(bot.api); // Binance Internal Transfer
     startBybitPolling(bot.api); // Bybit Internal Transfer (off-chain, UID-based)
     startBybitBscPolling(bot.api); // Bybit BSC on-chain (BEP20) USDT deposits

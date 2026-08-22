@@ -11,6 +11,27 @@ vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * Lets a single test (Task 15 / I-3, the outbox dispatcher heartbeat) force
+ * `fetchPendingNotifications` to reject, so `runDispatcher`'s catch path can
+ * be exercised without any other test in this file losing the real DB
+ * behavior — mirrors the identical `dbMockState` pattern in
+ * apps/order-bot/test/jobs.test.ts (that file forces `updateBroadcastProgress`
+ * to fail the same way). `vi.hoisted` is needed because the `vi.mock` factory
+ * below runs before ordinary module-level `let`s are initialised.
+ */
+const dbMockState = vi.hoisted(() => ({ fetchPendingError: null as Error | null }));
+vi.mock("@app/db", async () => {
+  const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+  return {
+    ...actual,
+    fetchPendingNotifications: async (...args: Parameters<typeof actual.fetchPendingNotifications>) => {
+      if (dbMockState.fetchPendingError) throw dbMockState.fetchPendingError;
+      return actual.fetchPendingNotifications(...args);
+    },
+  };
+});
+
 // dispatcher.test-setup MUST be first — temp DB + push before any @app import.
 import { cleanupTestDb } from "./dispatcher.test-setup";
 
@@ -49,6 +70,7 @@ import {
   SMTP_HOST_KEY,
   SMTP_FROM_KEY,
   createTicket,
+  getPollHealth,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -57,7 +79,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
-import { drainBatch } from "./dispatcher";
+import { drainBatch, runDispatcher } from "./dispatcher";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -1136,7 +1158,11 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
     });
 
     const { bot, sendMessage } = fakeBot();
-    await expect(drainBatch(bot)).resolves.toBeUndefined(); // must not throw out of drainBatch
+    // Task 15 (I-3): drainBatch now returns the number of rows it saw this
+    // cycle (pending.length) instead of void — this row is the only one
+    // pending at this point in the shared-DB test run, so the count is 1.
+    // The assertion's real point (unchanged): must not throw out of drainBatch.
+    await expect(drainBatch(bot)).resolves.toBe(1);
 
     expect(sendMessage).not.toHaveBeenCalledWith(600_001, expect.anything(), expect.anything());
     const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
@@ -1171,5 +1197,56 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-2" } },
     });
     expect(badRow!.status).toBe("FAILED");
+  });
+});
+
+/**
+ * Task 15 (I-3, fresh backend audit 2026-08-21): the outbox dispatcher is the
+ * sole delivery path for every buyer credential DM and every admin alert this
+ * codebase enqueues, but unlike the six payment reconcile pollers it never
+ * wrote a heartbeat — a bad notifier token or an unhandled exception class
+ * silently stopped all Telegram delivery with nothing but one log line, no
+ * admin ever told. `runDispatcher` now records a `recordPollHealth(prisma,
+ * "outbox", ...)` heartbeat after every tick, success or failure, so
+ * `outboxDispatcherPollWatchdog` (apps/order-bot/src/jobs/index.ts) has
+ * something to read. These two tests drive `runDispatcher` for exactly one
+ * tick (abort the signal synchronously right after calling it, before the
+ * first `await` inside `drainBatch` resolves — the loop's own
+ * `if (signal?.aborted) break;` then stops it right after that one tick,
+ * without waiting out the real NOTIF_POLL_INTERVAL_SECONDS sleep).
+ */
+describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
+  afterEach(() => {
+    dbMockState.fetchPendingError = null;
+  });
+
+  it("records a successful heartbeat after a normal batch cycle", async () => {
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await done;
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastSuccessAt).toBe(health.lastRun);
+    expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it("records a failed heartbeat (truncated error, loop does not crash) when a cycle throws", async () => {
+    dbMockState.fetchPendingError = new Error(`simulated DB failure ${"x".repeat(400)}`); // forces fetchPendingNotifications to reject
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastError).toContain("simulated DB failure");
+    // Matches this repo's own documented 300-char truncation convention
+    // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
+    // comment) — the poller-side truncation the display logic already expects.
+    expect(health.lastError!.length).toBeLessThanOrEqual(300);
   });
 });

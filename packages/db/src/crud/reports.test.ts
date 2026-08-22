@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders } from "./reports";
+import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -259,5 +259,72 @@ describe("recentOrders", () => {
     const result = await recentOrders(prisma, 10);
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     expect(result[0]!.customerLabel).toBe(`Telegram ${user.telegramId}`);
+  });
+});
+
+describe("reconcileFinances", () => {
+  it("excludes WALLET_TOPUP orders from order_drift check", async () => {
+    // Create a WALLET_TOPUP order with a mismatch that would show drift
+    // if the PRODUCT-only formula were applied
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-TOPUP-DRIFT",
+        userId,
+        subtotalAmount: "100000",
+        totalAmount: "50000",
+        currency: "IDR",
+        status: "DELIVERED",
+        kind: "WALLET_TOPUP",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    // The WALLET_TOPUP order should NOT appear in order_drift
+    expect(findings.order_drift).toHaveLength(0);
+  });
+
+  it("still detects drift in PRODUCT orders", async () => {
+    // Create a PRODUCT order with a mismatch
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-PRODUCT-DRIFT",
+        userId,
+        subtotalAmount: "100000",
+        totalAmount: "50000",
+        currency: "IDR",
+        status: "DELIVERED",
+        kind: "PRODUCT",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    // The PRODUCT order should appear in order_drift
+    expect(findings.order_drift).toHaveLength(1);
+    expect(findings.order_drift[0]).toMatchObject({
+      order_code: "ORD-PRODUCT-DRIFT",
+    });
+  });
+
+  it("leaves voucher_drift and negative_wallets unaffected by WALLET_TOPUP orders", async () => {
+    // Create a WALLET_TOPUP order
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-TOPUP",
+        userId,
+        subtotalAmount: "100000",
+        totalAmount: "100000",
+        currency: "IDR",
+        status: "DELIVERED",
+        kind: "WALLET_TOPUP",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    // voucher_drift and negative_wallets should be empty (no vouchers, no negative wallets)
+    expect(findings.voucher_drift).toHaveLength(0);
+    expect(findings.negative_wallets).toHaveLength(0);
   });
 });

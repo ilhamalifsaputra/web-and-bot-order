@@ -9,6 +9,7 @@
  */
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
+import { CategoryGroup } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -52,14 +53,29 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   // of degrading. Any `v1:browse:group:*` or pre-rename `v1:browse:prod:*` tap
   // therefore lands in the default branch below and degrades to the
   // stale-screen toast, never a crash and never a wrong product.
+  //
+  // grps/grp/cat are the live Category.group navigation tokens added on top of
+  // that (group picker -> category picker within a group -> category-scoped
+  // product list). `prods` now resumes the browse session at whatever depth it
+  // was left at (browseResume) instead of always jumping to the flat
+  // cross-category list.
   const action = parts[2];
-  if (action === "prods") await customer.browseProductsFlat(ctx);
+  if (action === "prods") await customer.browseResume(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
   else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
   else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
   else if (action === "refresh")
     await customer.browseDenomination(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4]!, 10) : 1);
   else if (action === "popular") await customer.browsePopular(ctx);
+  else if (action === "grps") await customer.browseGroups(ctx);
+  else if (action === "grp") {
+    const group = parts[3];
+    if (group && (Object.values(CategoryGroup) as string[]).includes(group)) {
+      await customer.browseCategoriesInGroup(ctx, group);
+    } else {
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    }
+  } else if (action === "cat") await customer.browseCategory(ctx, parseInt(parts[3]!, 10));
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Browse callback used an unrecognized action "${action}" — likely a button from a stale/pre-rename bubble, showing the stale-screen toast instead`);
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });

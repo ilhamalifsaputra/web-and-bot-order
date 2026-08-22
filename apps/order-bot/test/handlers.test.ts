@@ -822,6 +822,66 @@ describe("Home screen (persistent keyboard)", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
+  it("router wires v1:browse:grps to browseGroups", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:grps",
+      session: { ...userSession(), scratch: { categoryId: 1, group: "X", productId: 2 } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; productId?: number };
+    expect(scratch.categoryId).toBeUndefined();
+    expect(scratch.group).toBeUndefined();
+    expect(scratch.productId).toBeUndefined();
+  });
+
+  it(`router wires v1:browse:grp:${CategoryGroup.GAME_TOPUP} to browseCategoriesInGroup`, async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("router degrades an unrecognized v1:browse:grp:<token> to the stale-screen toast instead of misrouting", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:grp:NOT_A_REAL_GROUP" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("router wires v1:browse:cat:<id> to browseCategory", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "FF Diamonds")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("router wires v1:browse:prods to browseResume — falls back to the group picker when no category is scoped, not straight to the flat cross-category list", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:prods" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("router wires v1:browse:prods to browseResume — resumes the category-scoped list when one was active", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "ML 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:prods",
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "ML Diamonds")).toBe(true);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
   it("startCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
     await customer.startCommand(start.ctx);

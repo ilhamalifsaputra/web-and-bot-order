@@ -862,6 +862,69 @@ describe("Home screen (persistent keyboard)", () => {
     expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
   });
 
+  it("router wires v1:browse:gvars:<id> to browseCategoryEntry — the region picker's Back target re-renders the variant picker", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:gvars:${cat.id}` });
+    await routeCallback(ctx);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((btn) => btn.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`)).length).toBe(2);
+  });
+
+  it("router wires v1:browse:gvar:<id>:<idx> to pickGameVariant", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx); // renders the variant picker and stashes gameVariantEntries in scratch
+
+    ctx.callbackQuery!.data = `v1:browse:gvar:${cat.id}:0`;
+    await routeCallback(ctx);
+
+    // Index 0 resolves to "Global" (products.findMany orders by name asc, and
+    // "FF Diamonds A" sorts before "FF Diamonds B") — a single product matches
+    // that variant with no region set, so it collapses straight to browseProduct.
+    expect(sentIncludes(sink, "FF Diamonds A")).toBe(true);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null };
+    expect(scratch.resolvedGameVariant).toBe("Global");
+  });
+
+  it("router wires v1:browse:greg:<id>:<idx> to pickGameRegion", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx); // 1 variant (auto-skipped) + 2 regions -> region picker rendered, stashes gameRegionEntries
+
+    ctx.callbackQuery!.data = `v1:browse:greg:${cat.id}:0`;
+    await routeCallback(ctx);
+
+    // Index 0 resolves to "Asia" (same name-asc ordering as above) — a single
+    // product matches that region, so it collapses straight to browseProduct.
+    expect(sentIncludes(sink, "Genesis Crystals A")).toBe(true);
+    const scratch = ctx.session.scratch as { resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameRegion).toBe("Asia");
+  });
+
   it("router wires v1:browse:prods to browseResume — falls back to the group picker when no category is scoped, not straight to the flat cross-category list", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:browse:prods" });
     await routeCallback(ctx);

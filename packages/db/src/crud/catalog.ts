@@ -497,13 +497,27 @@ export type CatalogProduct = Product & {
  * Active products (with ≥1 active denomination) in a category — or the whole
  * catalog when categoryId is omitted. Each carries its active denominations
  * price-asc so a card can show the starting price. Ordered by sortOrder, name.
+ *
+ * `filter` is optional and additive: an EXISTING caller passing only
+ * `(db, categoryId)` sees no behavior change. When passed, key PRESENCE (not
+ * truthiness) decides whether that dimension is filtered — `"gameVariant" in
+ * filter` lets a caller filter on an explicit `null` (products with no
+ * variant set) as distinct from omitting the key entirely (don't filter on
+ * that dimension at all). This backs the bot's Game Top Up variant/region
+ * navigation layer once a variant+region has been resolved.
  */
-export function listCatalogProducts(db: Db, categoryId?: number): Promise<CatalogProduct[]> {
+export function listCatalogProducts(
+  db: Db,
+  categoryId?: number,
+  filter?: { gameVariant?: string | null; gameRegion?: string | null },
+): Promise<CatalogProduct[]> {
   return db.product.findMany({
     where: {
       isActive: true,
       isArchived: false,
       ...(categoryId != null ? { categoryId } : {}),
+      ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
+      ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
       denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
@@ -512,6 +526,70 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
+}
+
+export interface GameVariantOption {
+  label: string;
+  emoji: string | null;
+}
+
+/**
+ * Distinct (gameVariant, gameVariantEmoji) pairs among a category's
+ * catalog-eligible products (active, not archived, ≥1 active denomination).
+ * 0 or 1 result means "no variant picker needed for this category" — callers
+ * use `.length` to decide whether to show the Game Top Up variant step.
+ */
+export async function listCategoryGameVariants(db: Db, categoryId: number): Promise<GameVariantOption[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      isActive: true,
+      isArchived: false,
+      gameVariant: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameVariant: true, gameVariantEmoji: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Map<string, GameVariantOption>();
+  for (const p of products) {
+    if (!seen.has(p.gameVariant!)) seen.set(p.gameVariant!, { label: p.gameVariant!, emoji: p.gameVariantEmoji });
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Distinct gameRegion values among a category's catalog-eligible products,
+ * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
+ * category with no variant picker but still a region picker). Same
+ * 0-or-1-means-skip contract as `listCategoryGameVariants`.
+ */
+export async function listCategoryGameRegions(
+  db: Db,
+  categoryId: number,
+  gameVariant: string | null,
+): Promise<string[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      gameVariant,
+      isActive: true,
+      isArchived: false,
+      gameRegion: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameRegion: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of products) {
+    if (!seen.has(p.gameRegion!)) {
+      seen.add(p.gameRegion!);
+      out.push(p.gameRegion!);
+    }
+  }
+  return out;
 }
 
 /** Newest active products (by newest active denomination) for the home grid. */

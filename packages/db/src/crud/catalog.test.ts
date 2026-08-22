@@ -30,6 +30,8 @@ import {
   listActiveCategories,
   listActiveCategoriesByGroup,
   listCatalogProducts,
+  listCategoryGameVariants,
+  listCategoryGameRegions,
   listNewestCatalogProducts,
   listFlashSaleProducts,
   hasActiveFlashSale,
@@ -454,6 +456,123 @@ describe("listCatalogProducts", () => {
     await setCatalogProductArchived(prisma, p.id, true);
     const list = await listCatalogProducts(prisma, cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(false);
+  });
+
+  it("filters by gameVariant/gameRegion when the third argument is passed", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Variant A Region X");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "X", gameRegion: null } });
+    const b = await makeProduct(cat.id, "Variant A Region Y");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const c = await makeProduct(cat.id, "Variant Z");
+    await makeDenom(c.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Z", gameRegion: null } });
+
+    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X", gameRegion: null });
+    const ids = list.map((x) => x.id);
+    expect(ids).toContain(a.id);
+    expect(ids).not.toContain(b.id);
+    expect(ids).not.toContain(c.id);
+  });
+
+  it("does not filter on a key absent from the filter object", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "No Filter A");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const b = await makeProduct(cat.id, "No Filter B");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "X", gameRegion: "Z" } });
+
+    // only gameVariant is present in the filter — gameRegion should be untouched
+    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X" });
+    const ids = list.map((x) => x.id);
+    expect(ids).toContain(a.id);
+    expect(ids).toContain(b.id);
+  });
+
+  it("existing two-argument call sites are unaffected by the new optional filter param", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Unaffected");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const list = await listCatalogProducts(prisma, cat.id);
+    expect(list.some((x) => x.id === p.id)).toBe(true);
+  });
+});
+
+describe("listCategoryGameVariants", () => {
+  it("returns distinct (gameVariant, gameVariantEmoji) pairs for a category", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Variant Alpha 1");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Alpha", gameVariantEmoji: "🅰️" } });
+    const a2 = await makeProduct(cat.id, "Variant Alpha 2");
+    await makeDenom(a2.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a2.id }, data: { gameVariant: "Alpha", gameVariantEmoji: "🅰️" } });
+    const b = await makeProduct(cat.id, "Variant Beta");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Beta", gameVariantEmoji: "🅱️" } });
+
+    const variants = await listCategoryGameVariants(prisma, cat.id);
+    expect(variants).toHaveLength(2);
+    const alpha = variants.find((v) => v.label === "Alpha");
+    expect(alpha).toEqual({ label: "Alpha", emoji: "🅰️" });
+    const beta = variants.find((v) => v.label === "Beta");
+    expect(beta).toEqual({ label: "Beta", emoji: "🅱️" });
+  });
+
+  it("returns [] when no product in the category has gameVariant set", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Plain Product");
+    await makeDenom(p.id, "1 Month", "10");
+    expect(await listCategoryGameVariants(prisma, cat.id)).toEqual([]);
+  });
+
+  it("excludes a product with no active/eligible denomination", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Eligible Denom");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Solo" } });
+    expect(await listCategoryGameVariants(prisma, cat.id)).toEqual([]);
+  });
+});
+
+describe("listCategoryGameRegions", () => {
+  it("returns [] when gameVariant is set but no product has gameRegion", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Variant No Region");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Gamma", gameRegion: null } });
+
+    expect(await listCategoryGameRegions(prisma, cat.id, "Gamma")).toEqual([]);
+  });
+
+  it("returns distinct gameRegion values scoped to the given gameVariant", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Region A");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Delta", gameRegion: "Asia" } });
+    const b = await makeProduct(cat.id, "Region B");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Delta", gameRegion: "Europe" } });
+    const c = await makeProduct(cat.id, "Region C other variant");
+    await makeDenom(c.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Epsilon", gameRegion: "Asia" } });
+
+    const regions = await listCategoryGameRegions(prisma, cat.id, "Delta");
+    expect(regions.sort()).toEqual(["Asia", "Europe"]);
+  });
+
+  it("scopes to products with gameVariant null when null is passed", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Variant Dimension");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: null, gameRegion: "NA" } });
+
+    const regions = await listCategoryGameRegions(prisma, cat.id, null);
+    expect(regions).toEqual(["NA"]);
   });
 });
 

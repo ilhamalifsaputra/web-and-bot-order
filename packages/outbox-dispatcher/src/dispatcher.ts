@@ -207,13 +207,13 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
   while (!signal?.aborted) {
     try {
       const seen = await drainBatch(bot);
-      await recordPollHealth(prisma, "outbox", { lastTxCount: seen, success: true });
+      await recordPollHealth(prisma, "outbox", { lastTxCount: seen, success: true }).catch(() => undefined);
     } catch (e) {
       logger.error({ err: e }, "Outbox dispatcher tick failed — will retry on the next poll interval");
       // 300-char truncation matches this repo's own documented convention
       // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
       // comment) — the poller-side truncation the display logic already expects.
-      await recordPollHealth(prisma, "outbox", { lastTxCount: 0, success: false, error: String(e).slice(0, 300) });
+      await recordPollHealth(prisma, "outbox", { lastTxCount: 0, success: false, error: String(e).slice(0, 300) }).catch(() => undefined);
     }
     if (signal?.aborted) break;
     await sleepOrNudge(config.NOTIF_POLL_INTERVAL_SECONDS * 1000, signal);

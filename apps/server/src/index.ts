@@ -291,10 +291,14 @@ export async function start(): Promise<void> {
     // (apps/order-bot/src/main.ts), which never runs the outbox dispatcher
     // (startNotifier below) at all — registering this watchdog there would
     // page admins forever with a false "dispatcher never ran" alarm on that
-    // binary. This `if (bot)` block is truthy under exactly the same
-    // condition startNotifier's own `!dedicated && !mainBot` check uses to
-    // decide whether the dispatcher will actually run, so scheduling it here
-    // keeps the watchdog scoped to the one process/branch where that's true.
+    // binary. This `if (bot)` block's condition (a main bot token configured)
+    // is a SUBSET of — narrower than — startNotifier's own `dedicated ||
+    // mainBot` enablement check, not identical to it: with a dedicated
+    // notifier token but no main bot token, the dispatcher still runs but
+    // this watchdog is never scheduled. That's safe (no false alarm) and
+    // there's no bot token to page from in that topology anyway, so scoping
+    // it to `if (bot)` still keeps the watchdog confined to a process/branch
+    // where it could actually deliver a page.
     jobs.push(scheduleOutboxDispatcherWatchdog(bot.api));
     startPolling(bot.api); // Binance Internal Transfer
     startBybitPolling(bot.api); // Bybit Internal Transfer (off-chain, UID-based)

@@ -352,7 +352,16 @@ function firstString(...vals: unknown[]): string | null {
  * ±Infinity; decimal.js accepts both as valid `Decimal`s by default, so this
  * must be checked explicitly via `isFinite()`), or not strictly positive: a
  * supplier cost of zero or negative is never legitimate for this shop's
- * catalog. */
+ * catalog.
+ *
+ * Minor 1 (final whole-branch review, 2026-08-21): this non-positive
+ * rejection was added (Task 9) for the price-list parsing path (toPriceListItem
+ * above) but this is one shared helper used by all three call sites —
+ * `createTransaction`'s and `verifyCallback`'s `.price` fields are parsed
+ * through it too, so they now silently reject a zero/negative price the same
+ * way. Harmless today: no consumer currently reads `.price` off either of
+ * those two results — but be aware this helper's behavior is shared, not
+ * price-list-specific, before adding a new consumer of either. */
 function toDecimalOrNull(v: unknown): Decimal | null {
   if (v == null) return null;
   try {

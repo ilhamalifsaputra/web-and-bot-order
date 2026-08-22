@@ -19,8 +19,17 @@ vi.mock("@app/core/mailer", () => ({
  * apps/order-bot/test/jobs.test.ts (that file forces `updateBroadcastProgress`
  * to fail the same way). `vi.hoisted` is needed because the `vi.mock` factory
  * below runs before ordinary module-level `let`s are initialised.
+ *
+ * `recordPollHealthError` (final whole-branch review, Important #1): lets a
+ * test force `recordPollHealth` itself to reject, proving `runDispatcher`'s
+ * `.catch(() => undefined)` guard on both call sites keeps the loop alive
+ * even when the heartbeat write is the thing that fails — not just the tick
+ * it's recording the outcome of.
  */
-const dbMockState = vi.hoisted(() => ({ fetchPendingError: null as Error | null }));
+const dbMockState = vi.hoisted(() => ({
+  fetchPendingError: null as Error | null,
+  recordPollHealthError: null as Error | null,
+}));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
   return {
@@ -28,6 +37,10 @@ vi.mock("@app/db", async () => {
     fetchPendingNotifications: async (...args: Parameters<typeof actual.fetchPendingNotifications>) => {
       if (dbMockState.fetchPendingError) throw dbMockState.fetchPendingError;
       return actual.fetchPendingNotifications(...args);
+    },
+    recordPollHealth: async (...args: Parameters<typeof actual.recordPollHealth>) => {
+      if (dbMockState.recordPollHealthError) throw dbMockState.recordPollHealthError;
+      return actual.recordPollHealth(...args);
     },
   };
 });
@@ -1218,6 +1231,7 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
 describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
   afterEach(() => {
     dbMockState.fetchPendingError = null;
+    dbMockState.recordPollHealthError = null;
   });
 
   it("records a successful heartbeat after a normal batch cycle", async () => {
@@ -1248,5 +1262,27 @@ describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
     // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
     // comment) — the poller-side truncation the display logic already expects.
     expect(health.lastError!.length).toBeLessThanOrEqual(300);
+  });
+
+  /**
+   * Final whole-branch review, Important #1: before this fix, both
+   * `recordPollHealth` calls in `runDispatcher` were unguarded — if the
+   * heartbeat write itself threw (e.g. the shared SQLite DB is busy/locked,
+   * plausibly correlated with why the tick just failed), the exception
+   * escaped `runDispatcher` entirely. `startNotifier`
+   * (apps/server/src/index.ts) treats that outer throw as fatal and stops
+   * restarting the loop, permanently killing all Telegram delivery until a
+   * manual process restart — from a single transient heartbeat-write error.
+   * This drives a normal (successful) tick but makes `recordPollHealth`
+   * itself reject, and asserts `runDispatcher` still resolves cleanly
+   * instead of propagating that rejection.
+   */
+  it("survives a recordPollHealth rejection on the success path without crashing the loop", async () => {
+    dbMockState.recordPollHealthError = new Error("simulated DB busy/locked error writing the heartbeat");
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
   });
 });

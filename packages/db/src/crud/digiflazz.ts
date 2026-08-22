@@ -710,6 +710,11 @@ export async function resyncDigiflazzCatalog(
   // last in the array silently win, instead of the cheapest one.
   const bySku = new Map(collapseToCheapestSeller(rawPriceList).map((item) => [item.buyerSkuCode, item]));
 
+  // Minor 2 (final whole-branch review): the breaker's comparison loop below
+  // and the write loop further down both need "this item's cost, marked up"
+  // — extracted once so the two computations can't silently drift apart.
+  const newSellPriceFor = (item: DigiflazzPriceListItem) => quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
+
   // Task 10 (backend audit 2026-08-21 C-1, second half) blast-radius circuit
   // breaker. Task 9 already rejects an individually invalid/non-finite/
   // non-positive supplier price, but a genuinely malformed *response* (a
@@ -729,7 +734,7 @@ export async function resyncDigiflazzCatalog(
     const item = bySku.get(denom.supplierSku!);
     if (!item) continue;
     consideredRows++;
-    const newPrice = quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
+    const newPrice = newSellPriceFor(item);
     const oldPrice = denom.price;
     // oldPrice.isZero() guards the ratio check below from dividing by zero:
     // any nonzero new price on a zero old price counts as a sharp change on
@@ -739,23 +744,73 @@ export async function resyncDigiflazzCatalog(
       : newPrice.lessThan(oldPrice.times(0.5)) || newPrice.greaterThan(oldPrice.times(1.5));
     if (sharp) sharpChanges++;
   }
+
+  // Important #2 (final whole-branch review): the breaker above only ever
+  // compares rows that ARE present in the fetched price list against this
+  // shop's existing denominations. If the fetch is malformed enough that
+  // EVERY row gets rejected (Task 9's toPriceListItem returning null for
+  // each one — e.g. the supplier renamed the `price` field) or the response
+  // is simply empty, `rawPriceList` is `[]`, `bySku` is empty, and
+  // `consideredRows` stays 0 for every denomination — the loop above never
+  // finds a sharp change to count, so the >20%-of->=5 threshold above can
+  // never fire. That's the MOST total form of the exact "malformed response"
+  // scenario the breaker exists to catch, so treat it as another way the
+  // breaker can trip: the fetch came back with zero usable rows at all
+  // (`rawPriceList.length === 0`) while this shop has Digiflazz-routed
+  // denominations that would normally be checked against it (`mapped.length
+  // > 0`). Deliberately distinct from the normal, healthy case where the
+  // fetch returns plenty of valid rows that simply don't include any of this
+  // shop's configured SKUs this cycle (`rawPriceList.length > 0`) — that case
+  // is left alone by this check, same as it always has been (the existing
+  // per-denomination `if (!item) continue;` below already handles it
+  // correctly).
+  type AbortReason =
+    | { kind: "sharp_change"; sharpChanges: number; consideredRows: number }
+    | { kind: "no_usable_rows" };
+  let abortReason: AbortReason | null = null;
   // Integer comparison (sharpChanges * 5 > consideredRows) instead of a
   // floating-point ratio — both sides are plain row counts, and this avoids
   // any doubt about a >20% boundary landing exactly on a float rounding
   // error.
   if (consideredRows >= 5 && sharpChanges * 5 > consideredRows) {
-    logger.error(
-      { sharpChanges, consideredRows },
-      "Aborted the hourly Digiflazz catalog resync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+    abortReason = { kind: "sharp_change", sharpChanges, consideredRows };
+  } else if (mapped.length > 0 && rawPriceList.length === 0) {
+    abortReason = { kind: "no_usable_rows" };
+  }
+
+  if (abortReason) {
+    if (abortReason.kind === "sharp_change") {
+      logger.error(
+        { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows },
+        "Aborted the hourly Digiflazz catalog resync because too many denominations' prices would have moved by more than 50% in this run — that usually means the supplier's price-list response is malformed (a field rename, a partial outage, the wrong endpoint) rather than a genuine market-wide price change, so nothing was written.",
+      );
+      await logAdminAction(db, {
+        adminId: null,
+        action: "digiflazz_catalog_resync_aborted",
+        targetType: "product",
+        targetId: null,
+        details: `Aborted the hourly Digiflazz catalog sync: ${abortReason.sharpChanges} of ${abortReason.consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
+      });
+    } else {
+      logger.error(
+        { mappedCount: mapped.length },
+        "Aborted the hourly Digiflazz catalog resync because the supplier's price-list fetch returned no usable rows at all, even though this shop has Digiflazz-routed denominations to check against it — that usually means a field rename, a partial outage, or the wrong endpoint, not the supplier legitimately having nothing to report, so nothing was written.",
+      );
+      await logAdminAction(db, {
+        adminId: null,
+        action: "digiflazz_catalog_resync_aborted",
+        targetType: "product",
+        targetId: null,
+        details:
+          "Aborted the hourly Digiflazz catalog sync: the supplier returned no usable price data at all, even though this shop has Digiflazz-routed denominations to check. This usually means a field rename, a partial outage, or the wrong endpoint. Nothing was updated — please check the Digiflazz connection before the next run.",
+      });
+    }
+    await enqueueAdminDigiflazzResyncAborted(
+      db,
+      abortReason.kind === "sharp_change"
+        ? { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows }
+        : { sharpChanges: 0, consideredRows: 0 },
     );
-    await logAdminAction(db, {
-      adminId: null,
-      action: "digiflazz_catalog_resync_aborted",
-      targetType: "product",
-      targetId: null,
-      details: `Aborted the hourly Digiflazz catalog sync: ${sharpChanges} of ${consideredRows} prices would have moved by more than 50%, which usually means the supplier's response is malformed rather than a real price change. Nothing was updated — please check the Digiflazz connection before the next run.`,
-    });
-    await enqueueAdminDigiflazzResyncAborted(db, { sharpChanges, consideredRows });
     return zero;
   }
 
@@ -769,7 +824,7 @@ export async function resyncDigiflazzCatalog(
     // away from import-time precision.
     const data: Record<string, unknown> = { costPrice: quantizeMoney(item.price, 4) };
     if (!denom.priceOverridden) {
-      data.price = quantizeMoney(applyDigiflazzMarkup(item.price, markupSettings), 4);
+      data.price = newSellPriceFor(item);
       result.updated++;
     }
     if (denom.isActive && !item.buyerProductStatus) {

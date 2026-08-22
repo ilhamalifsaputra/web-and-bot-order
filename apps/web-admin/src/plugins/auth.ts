@@ -50,7 +50,12 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 }
 
 // ---- RBAC: which roles may MUTATE which areas ------------------------------
-// Reads (GET) are open to every authenticated admin; only mutations are gated.
+// Reads (GET) are open to every authenticated admin by default; only
+// mutations are gated by `canMutate` below. `blockReadonlyReads` (further
+// down this file) is the documented exception: a small, explicitly-listed
+// set of GET routes that return credentials or full CSV/JSON exports (order
+// detail, stock credentials, orders/users/settings exports) is gated even
+// for reads, refusing the `readonly` role specifically.
 
 // Structural / money / account / high-impact routes — super only. All
 // mutations now arrive at the JSON /api/* surface (the legacy form routes

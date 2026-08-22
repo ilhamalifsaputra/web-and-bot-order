@@ -5784,6 +5784,20 @@ describe("rbac", () => {
 describe("read-side role gate — credential/export routes (C-1)", () => {
   const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
 
+  // Minor 6 (final whole-branch review, 2026-08-21): this block's last test
+  // ("GET /api/stock/export stays open to readonly") leaves ADMIN_TG's role
+  // set to "readonly" and never resets it, so a later describe block would
+  // implicitly run under that leftover role instead of whatever was in
+  // effect before this block ran (here, "support" — the role the preceding
+  // "admin management" describe block's last test left it as). Currently
+  // harmless because this file's global `beforeEach` (resetDb) wipes the
+  // Setting table before every single test, but that makes this block's own
+  // cleanup accidentally load-bearing on an implementation detail of a hook
+  // it doesn't own — reset explicitly instead of relying on that.
+  afterAll(async () => {
+    await setRole(ADMIN_TG, "support");
+  });
+
   it("GET /api/stock/:productId (credentials): readonly is blocked, support and super keep read access", async () => {
     await setRole(ADMIN_TG, "readonly");
     const denied = await get(`/api/stock/${seed.productId}`, seed.cookie);
@@ -5830,6 +5844,32 @@ describe("read-side role gate — credential/export routes (C-1)", () => {
     const asSuper = await get("/api/orders/export", seed.cookie);
     expect(asSuper.statusCode).toBe(200);
     expect(asSuper.headers["content-type"]).toContain("text/csv");
+  });
+
+  // Important #3 (final whole-branch review, 2026-08-21): readonly could
+  // still read one delivered order's credentials at a time via this route —
+  // it wasn't one of the five routes gated when C-1 first shipped.
+  it("GET /api/orders/:orderId (delivered order credentials): readonly is blocked, support and super keep read access", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const orderId = await makePendingOrder();
+    await setRole(ADMIN_TG, "support");
+    const approveRes = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approveRes.statusCode).toBe(200);
+
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("order");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("order");
+    resetBotIdentity();
   });
 
   it("GET /api/users/export: readonly is blocked, support and super keep read access", async () => {

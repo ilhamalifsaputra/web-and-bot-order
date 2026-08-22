@@ -191,7 +191,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     return reply.send(csv);
   });
 
-  app.get("/api/orders/:orderId", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get("/api/orders/:orderId", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });

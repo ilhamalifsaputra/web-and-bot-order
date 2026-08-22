@@ -1118,6 +1118,79 @@ describe("resyncDigiflazzCatalog", () => {
       });
       expect(alertRows).toHaveLength(0);
     });
+
+    // Important #2 (final whole-branch review, 2026-08-21): the breaker above
+    // only ever compares rows present in the fetched price list — if the
+    // fetch itself is malformed enough that EVERY row is unusable (Task 9's
+    // toPriceListItem returning null for every row) or the response is
+    // simply empty, `consideredRows` stays 0 for every denomination and the
+    // sharp-change threshold above can never fire, even though this is the
+    // most total form of the exact "malformed response" scenario the breaker
+    // exists to catch.
+    it("trips when the price-list fetch returns zero usable rows at all, even though this shop has Digiflazz-routed denominations to check (Important #2)", async () => {
+      await setSetting(prisma, ADMIN_IDS_KEY, "700,701");
+      const denoms = await makeDigiflazzDenoms(6, "15000");
+      // Simulates a malformed/empty supplier response — e.g. every row's
+      // price field was renamed, so Task 9's toPriceListItem rejected every
+      // single one and getPriceList returned nothing usable at all.
+      digiflazzMock.getPriceList.mockResolvedValue([]);
+
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 0, deactivated: 0 });
+
+      // No Denomination.price/costPrice/isActive write happened for any row.
+      for (const d of denoms) {
+        const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
+        expect(after.price.toString()).toBe("15000");
+        expect(after.costPrice!.toString()).toBe("15000");
+        expect(after.isActive).toBe(true);
+      }
+
+      const abortedEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync_aborted" } });
+      expect(abortedEntries).toHaveLength(1);
+      expect(abortedEntries[0]!.adminId).toBeNull();
+      expect(abortedEntries[0]!.details).toContain("no usable price data");
+      const successEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync" } });
+      expect(successEntries).toHaveLength(0);
+
+      const alertRows = await prisma.notificationOutbox.findMany({
+        where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      });
+      expect(alertRows).toHaveLength(2); // one per configured admin (700, 701)
+      const chatIds = alertRows
+        .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
+        .sort((a, b) => a - b);
+      expect(chatIds).toEqual([700, 701]);
+    });
+
+    // Regression guard for the distinction the fix must get right: a supplier
+    // response that returns plenty of valid rows, just none that happen to
+    // match THIS shop's configured SKUs this cycle, is normal and must NOT
+    // trip anything — only `rawPriceList.length === 0` (nothing usable at
+    // all) counts as malformed.
+    it("does not trip when the supplier returns plenty of valid rows that simply don't match this shop's configured SKUs (Important #2 regression guard)", async () => {
+      const denoms = await makeDigiflazzDenoms(6, "15000");
+      // Hundreds of OTHER valid rows, none of which match any of this shop's
+      // configured supplierSkus.
+      digiflazzMock.getPriceList.mockResolvedValue(
+        Array.from({ length: 200 }, (_, i) => priceListItem({ buyerSkuCode: `other-sku-${i}`, price: new Decimal(999) })),
+      );
+
+      const result = await resyncDigiflazzCatalog(prisma);
+      expect(result).toEqual({ updated: 0, deactivated: 0 }); // nothing matched, nothing to update — not an abort
+
+      for (const d of denoms) {
+        const after = await prisma.denomination.findUniqueOrThrow({ where: { id: d.id } });
+        expect(after.price.toString()).toBe("15000"); // untouched
+      }
+
+      const abortedEntries = await prisma.auditLog.findMany({ where: { action: "digiflazz_catalog_resync_aborted" } });
+      expect(abortedEntries).toHaveLength(0);
+      const alertRows = await prisma.notificationOutbox.findMany({
+        where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      });
+      expect(alertRows).toHaveLength(0);
+    });
   });
 });
 

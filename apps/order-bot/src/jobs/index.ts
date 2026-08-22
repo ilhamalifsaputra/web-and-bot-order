@@ -1473,13 +1473,17 @@ export function scheduleDigiflazzDispatch(): Cron {
  * Exported separately instead, so apps/server/src/index.ts's start() can call
  * it directly — inside the exact same `if (bot)` block that already calls
  * scheduleJobs(bot.api), appending this Cron to the same `jobs` array so it
- * gets `.stop()`ed on shutdown like every other job. That block is truthy
- * under precisely the same condition (`bot` resolved from a configured bot
- * token) that startNotifier's own `!dedicated && !mainBot` early-return check
- * uses to decide whether runDispatcher will actually run — so scheduling this
- * watchdog there, and nowhere else, guarantees it is only ever armed in the
- * one process/branch where the dispatcher it's watching is guaranteed to
- * actually run.
+ * gets `.stop()`ed on shutdown like every other job. That block's condition
+ * (`bot` resolved from a configured main bot token) is a SUBSET of — narrower
+ * than — startNotifier's own enablement check (`dedicated || mainBot`: a
+ * dedicated notifier token OR a main bot token), not identical to it: in the
+ * specific topology "dedicated notifier token configured, no main bot token",
+ * runDispatcher still runs but this watchdog never gets scheduled (`bot` is
+ * falsy). That's safe — no false alarm — but it does mean that topology gets
+ * no watchdog coverage; there is no bot token to page an admin from in it
+ * anyway, so scheduling this watchdog only inside `if (bot)` still guarantees
+ * it is never armed in a process/branch where it couldn't deliver a page even
+ * if it fired.
  *
  * Every 2 minutes on second :21 — its own offset, clear of the six existing
  * watchdogs' seconds (implicit 0 for the crypto three; :15/:17/:19 for the

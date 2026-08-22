@@ -326,6 +326,17 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   const lang = ctx.session.lang;
   delete sc(ctx).categoryId;
   delete sc(ctx).productId;
+  // Finding I5-followup (final-review): mirrors browseGroups — a stale tap on
+  // an older group-picker bubble must not let a PREVIOUS category's variant/
+  // region navigation state (gameVariantEntries/gameRegionEntries/etc.)
+  // survive into this group, where a subsequent pickGameVariant/
+  // enterGameRegion tap could resolve against the wrong entries while
+  // browseProductsFlat's group filter now points at the NEW group.
+  delete sc(ctx).gameVariantEmoji;
+  delete sc(ctx).gameVariantEntries;
+  delete sc(ctx).gameRegionEntries;
+  delete sc(ctx).resolvedGameVariant;
+  delete sc(ctx).resolvedGameRegion;
   sc(ctx).group = group;
 
   const categories = await listActiveCategoriesByGroup(prisma, group);

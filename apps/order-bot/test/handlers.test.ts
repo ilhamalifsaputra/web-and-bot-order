@@ -1764,6 +1764,39 @@ describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence"
     expect(scratch.resolvedGameRegion).toBeUndefined();
   });
 
+  it("browseCategoriesInGroup clears every Game Top Up navigation field from scratch", async () => {
+    // Final-review re-check: the other half of the I5 desync. browseGroups
+    // (the top of the Products flow) already clears these five fields, but
+    // browseCategoriesInGroup — one level below it, reachable via a stale
+    // group-picker bubble while a DIFFERENT category's variant/region entries
+    // are still sitting in scratch — did not. Without this, a customer could
+    // land on category A's variant picker, tap an old group bubble into
+    // Premium Apps (which only synced `group`, leaving the entries behind),
+    // then tap A's variant button: enterGameRegion would resolve against the
+    // survived entries but fall through to browseProductsFlat with
+    // `group !== GAME_TOPUP`, silently dropping the variant/region filter and
+    // rendering every product in category A.
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
   it("entering a non-GAME_TOPUP category clears all five Game Top Up navigation fields, not just the two 'resolved' ones", async () => {
     const cat = await createCategory(prisma, { name: "Plain Premium Cat", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Plain Product" });
@@ -1864,6 +1897,42 @@ describe("Finding 6 (I5): sc(ctx).categoryId stays in sync through the variant/r
     expect(sentIncludes(sink, "A Variant One")).toBe(true);
     expect(sentIncludes(sink, "A Variant Two")).toBe(true);
     expect(sentIncludes(sink, "B Product")).toBe(false); // never shows category B's products
+  });
+});
+
+describe("Final-review re-check: browseCategoriesInGroup no longer lets a stale variant/region picker survive a group-tap", () => {
+  it("a stale tap through browseCategoriesInGroup degrades a later variant tap to the stale-screen toast instead of resolving an unfiltered list", async () => {
+    // Reproduces the finding's exact repro: Products -> Game Top Up ->
+    // category A (variant picker rendered, entries = A's) -> tap an OLDER
+    // group-picker bubble -> Premium Apps (only `group` used to get synced,
+    // leaving A's entries behind) -> tap A's variant button. Before the fix,
+    // pickGameVariant would resolve the stale entries against category A
+    // while sc(ctx).group now read PREMIUM_APPS, so browseProductsFlat's
+    // `group === GAME_TOPUP` gate would drop the variant/region filter and
+    // render every product in category A — the tapped variant silently
+    // ignored. After the fix, browseCategoriesInGroup clears the entries, so
+    // the same tap is correctly recognized as stale.
+    const catA = await createCategory(prisma, { name: "Stale Repro Category A", group: CategoryGroup.GAME_TOPUP });
+    const aVariant1 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Repro Variant One" });
+    await prisma.product.update({ where: { id: aVariant1.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const aVariant2 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Repro Variant Two" });
+    await prisma.product.update({ where: { id: aVariant2.id }, data: { gameVariant: "Premium" } });
+    await createDenomination(prisma, { productId: aVariant2.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, catA.id); // variant picker rendered, gameVariantEntries = A's
+
+    // Customer taps an older group-picker bubble into Premium Apps.
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+
+    // Customer now taps category A's (now stale) variant button.
+    await customer.pickGameVariant(ctx, catA.id, 0);
+
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+    // Never falls through to an unfiltered flat list of category A's products.
+    expect(sentIncludes(sink, "A Repro Variant One")).toBe(false);
+    expect(sentIncludes(sink, "A Repro Variant Two")).toBe(false);
   });
 });
 

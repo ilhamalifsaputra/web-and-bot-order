@@ -55,6 +55,13 @@ export function listActiveCategories(db: Db) {
   });
 }
 
+export function listActiveCategoriesByGroup(db: Db, group: string) {
+  return db.category.findMany({
+    where: { isActive: true, group },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
 export function listAllCategories(db: Db) {
   return db.category.findMany({
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -70,6 +77,7 @@ export async function createCategory(
         emoji?: string | null;
         description?: string | null;
         image?: string | null;
+        group?: string | null;
         sortOrder?: number;
         checkoutFlow?: string;
       },
@@ -88,6 +96,7 @@ export async function createCategory(
       emoji: a.emoji ?? null,
       description: ("description" in a ? a.description : null) ?? null,
       image: ("image" in a ? a.image : null) ?? null,
+      group: ("group" in a ? a.group : null) ?? null,
       sortOrder: a.sortOrder ?? 0,
       checkoutFlow: ("checkoutFlow" in a ? a.checkoutFlow : null) ?? "catalog",
     },

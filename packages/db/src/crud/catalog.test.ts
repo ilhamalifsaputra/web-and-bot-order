@@ -27,6 +27,8 @@ import {
   bulkSetCatalogProductsArchived,
   listProducts,
   listAllCategories,
+  listActiveCategories,
+  listActiveCategoriesByGroup,
   listCatalogProducts,
   listNewestCatalogProducts,
   listFlashSaleProducts,
@@ -1031,5 +1033,100 @@ describe("flash-sale shelves", () => {
     // Ask as of a moment after the last window ends, rather than mutating rows.
     expect(await hasActiveFlashSale(prisma, inHours(48))).toBe(false);
     expect(await listFlashSaleProducts(prisma, inHours(48))).toEqual([]);
+  });
+});
+
+describe("listActiveCategoriesByGroup", () => {
+  it("returns only active categories in the specified group, ordered by sortOrder then name", async () => {
+    // Create categories in different groups
+    const gameTopup1 = await createCategory(prisma, { name: "Game A", group: "GAME_TOPUP", sortOrder: 2 });
+    const gameTopup2 = await createCategory(prisma, { name: "Game B", group: "GAME_TOPUP", sortOrder: 1 });
+    const premiumApps1 = await createCategory(prisma, { name: "Premium A", group: "PREMIUM_APPS", sortOrder: 0 });
+
+    // Create an inactive category in GAME_TOPUP
+    const inactiveGameTopup = await prisma.category.create({
+      data: {
+        name: "Inactive Game",
+        slug: "inactive-game",
+        group: "GAME_TOPUP",
+        isActive: false,
+        sortOrder: 0,
+      },
+    });
+
+    // Test listing GAME_TOPUP categories
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    expect(gameTopupList).toHaveLength(2);
+    expect(gameTopupList.map((c) => c.id)).toEqual([gameTopup2.id, gameTopup1.id]); // sorted by sortOrder (1, 2)
+    expect(gameTopupList.map((c) => c.name)).toEqual(["Game B", "Game A"]);
+
+    // Verify inactive category is not included
+    expect(gameTopupList.some((c) => c.id === inactiveGameTopup.id)).toBe(false);
+
+    // Verify PREMIUM_APPS category is not included
+    expect(gameTopupList.some((c) => c.id === premiumApps1.id)).toBe(false);
+
+    // Test listing PREMIUM_APPS categories
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    expect(premiumAppsList).toHaveLength(1);
+    expect(premiumAppsList[0]!.id).toBe(premiumApps1.id);
+    expect(premiumAppsList[0]!.name).toBe("Premium A");
+  });
+
+  it("returns empty array when no active categories match the group", async () => {
+    // Create only inactive categories in a unique group
+    const uniqueGroup = `EMPTY_TEST_${Math.random()}`;
+    await prisma.category.create({
+      data: {
+        name: "Only Inactive",
+        slug: `only-inactive-${Math.random()}`,
+        group: uniqueGroup,
+        isActive: false,
+        sortOrder: 0,
+      },
+    });
+
+    const result = await listActiveCategoriesByGroup(prisma, uniqueGroup);
+    expect(result).toEqual([]);
+  });
+});
+
+describe("createCategory with group", () => {
+  it("persists group when provided", async () => {
+    const cat = await createCategory(prisma, { name: "Game Topup Cat", group: "GAME_TOPUP" });
+    expect(cat.group).toBe("GAME_TOPUP");
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBe("GAME_TOPUP");
+  });
+
+  it("defaults group to null when omitted", async () => {
+    const cat = await createCategory(prisma, { name: "No Group Cat" });
+    expect(cat.group).toBeNull();
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBeNull();
+  });
+
+  it("supports legacy createCategory(db, name) signature without group", async () => {
+    const cat = await createCategory(prisma, "Legacy Cat");
+    expect(cat.group).toBeNull();
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBeNull();
+  });
+
+  it("persists group along with other optional fields", async () => {
+    const cat = await createCategory(prisma, {
+      name: "Full Featured",
+      emoji: "🎮",
+      description: "Game top-ups",
+      group: "GAME_TOPUP",
+      sortOrder: 5,
+    });
+    expect(cat.group).toBe("GAME_TOPUP");
+    expect(cat.emoji).toBe("🎮");
+    expect(cat.description).toBe("Game top-ups");
+    expect(cat.sortOrder).toBe(5);
   });
 });

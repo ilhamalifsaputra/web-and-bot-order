@@ -34,6 +34,7 @@ export const POLL_HEALTH_KEYS = {
    * (packages/outbox-dispatcher/src/dispatcher.ts), read by
    * `outboxDispatcherPollWatchdog` (apps/order-bot/src/jobs/index.ts). */
   outbox: "outbox_dispatcher_poll_health",
+  digiflazzCatalogSync: "digiflazz_catalog_sync_poll_health",
 } as const;
 
 export type PollRail = keyof typeof POLL_HEALTH_KEYS;

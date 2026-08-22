@@ -17,8 +17,20 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { apiPatch, apiPost } from "../../api/client";
 import type { CategoryRow } from "../../api/catalog";
+
+// Sentinel for "no group set" — shadcn's Select rejects an empty-string item
+// value, so a real value stands in for it, matching TicketDetailPage.tsx's
+// UNCATEGORIZED convention for its own nullable category Select.
+const NO_GROUP = "_none_";
 
 export function CategoryDialog({
   category,
@@ -37,6 +49,7 @@ export function CategoryDialog({
   const [checkoutFlow, setCheckoutFlow] = useState<"catalog" | "instant">(
     category?.checkoutFlow ?? "catalog",
   );
+  const [group, setGroup] = useState<string>(category?.group ?? NO_GROUP);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -48,6 +61,7 @@ export function CategoryDialog({
       emoji: emoji.trim() || null,
       description: description.trim() || null,
       checkoutFlow,
+      group: group === NO_GROUP ? null : group,
     };
     try {
       if (editing) {
@@ -134,6 +148,19 @@ export function CategoryDialog({
                 </span>
               </label>
             </RadioGroup>
+          </div>
+          <div>
+            <Label htmlFor="cat-group">Group</Label>
+            <Select value={group} onValueChange={setGroup}>
+              <SelectTrigger id="cat-group" aria-label="Group">
+                <SelectValue placeholder="Not set" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_GROUP}>Not set</SelectItem>
+                <SelectItem value="GAME_TOPUP">🎮 Game Top Up</SelectItem>
+                <SelectItem value="PREMIUM_APPS">💎 Premium Apps</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           {editing && (
             <p className="text-sm text-ink-soft">

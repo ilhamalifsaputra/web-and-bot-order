@@ -17,6 +17,9 @@ export interface CategoryRow {
   sortOrder: number;
   isActive: boolean;
   checkoutFlow: "catalog" | "instant";
+  /** Customer-facing top-level bucket ("GAME_TOPUP" | "PREMIUM_APPS"), or
+   * null until an admin classifies it. See CategoryGroup in @app/core/enums. */
+  group: string | null;
 }
 
 export interface ProductRow {
@@ -28,6 +31,12 @@ export interface ProductRow {
   createdAt: string;
   category: { id: number; name: string; emoji: string | null } | null;
   _count: { denominations: number };
+  /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+   * catalog navigation and denomination labeling (Tasks 11-13) key off
+   * these three, null until an admin sets them. */
+  gameVariant: string | null;
+  gameVariantEmoji: string | null;
+  gameRegion: string | null;
 }
 
 export interface CatalogData {

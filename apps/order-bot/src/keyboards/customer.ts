@@ -8,10 +8,11 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
+import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
+import { formatDenominationLabel } from "../util/denominationLabel";
 
 export const CB_PREFIX = "v1";
 
@@ -313,6 +314,9 @@ interface DenominationLike {
   id: number;
   name: string;
   durationLabel: string;
+  /** Precomputed compact Game Top Up label (gameTopUpDenomLabel); falls back
+   * to durationLabel||name when absent. Computed by the caller, not here. */
+  buttonLabel?: string;
 }
 
 /**
@@ -327,19 +331,136 @@ interface DenominationLike {
 export function denominationPickerKb(
   denominations: DenominationLike[],
   productId: number,
+  productName: string,
   lang: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < denominations.length; i += 2) {
     rows.push(
       denominations.slice(i, i + 2).map((d) => ({
-        text: d.durationLabel || d.name,
+        text: truncLabel(d.buttonLabel ?? formatDenominationLabel(productName, d.durationLabel || d.name)),
         data: cb("browse", "denom", d.id),
       })),
     );
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  return ik(rows);
+}
+
+// ---------------------------------------------------------------------------
+// Products entry flow: group picker -> category picker
+// ---------------------------------------------------------------------------
+
+/**
+ * First step of the "🛍 Products" entry point — exactly two buckets
+ * (Category.group is admin-set and drives this split; see CategoryGroup).
+ * Tapping a group opens `categoryPickerKb` scoped to that group.
+ */
+export function groupPickerKb(lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("browse.group_game_topup", lang), data: cb("browse", "grp", CategoryGroup.GAME_TOPUP) },
+      { text: coreT("browse.group_premium_apps", lang), data: cb("browse", "grp", CategoryGroup.PREMIUM_APPS) },
+    ],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
+interface CategoryLike {
+  id: number;
+  name: string;
+  emoji: string | null;
+}
+
+/**
+ * Second step of the Products entry flow — one button per active Category
+ * within the group picked by `groupPickerKb`, laid out 2 per row. Always
+ * renders the trailing Back/Menu row, even for an empty `categories` array,
+ * so an empty group never leaves the customer on a dead-end screen (the
+ * message body carries the "no categories yet" copy in that case).
+ */
+export function categoryPickerKb(categories: CategoryLike[], lang: string): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    rows.push(
+      categories.slice(i, i + 2).map((c) => ({
+        text: truncLabel(`${c.emoji ? c.emoji + " " : ""}${c.name}`, 30),
+        data: cb("browse", "cat", c.id),
+      })),
+    );
+  }
+  rows.push([
+    { text: coreT("menu.back", lang), data: cb("browse", "grps") },
+    { text: coreT("menu.main", lang), data: cb("menu", "main") },
+  ]);
+  return ik(rows);
+}
+
+/**
+ * Game Top Up variant picker (e.g. weapon/character skin lines within a
+ * Category) — one button per variant, laid out 2 per row, index-addressed via
+ * `browse:gvar:<categoryId>:<index>` (the variant list itself is resolved by
+ * the handler, not carried in callback_data). Button text is not HTML-parsed
+ * by Telegram (unlike message bodies), so no `esc()` is needed here.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — the caller (browseCategoryEntry) computes it, since only it knows the
+ * category's group; it must NOT be `cb("browse", "cat", categoryId)` (that
+ * would re-enter this SAME variant picker — a no-op loop, Finding I2/3 of the
+ * final-review). The one level up from a variant picker is the category
+ * picker (`cb("browse", "grp", group)`).
+ */
+export function gameVariantPickerKb(
+  variants: Array<{ label: string; emoji: string | null }>,
+  categoryId: number,
+  backTarget: string,
+  lang: string,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < variants.length; i += 2) {
+    rows.push(
+      variants.slice(i, i + 2).map((v, j) => ({
+        text: v.emoji ? `${v.emoji} ${v.label}` : v.label,
+        data: cb("browse", "gvar", categoryId, i + j),
+      })),
+    );
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  return ik(rows);
+}
+
+/**
+ * Game Top Up region picker, shown after a variant is chosen — one button per
+ * region string, laid out 2 per row, index-addressed the same way as
+ * `gameVariantPickerKb`. Button text is not HTML-parsed by Telegram, so no
+ * `esc()` is needed here either.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — computed by the caller (enterGameVariant), since only it knows whether a
+ * real variant picker was actually shown for this navigation. When one was
+ * shown, Back re-opens it (`cb("browse", "gvars", categoryId)`); when the
+ * variant step was auto-skipped (0/1 distinct variant), that picker was never
+ * rendered, so Back must skip straight to the category picker
+ * (`cb("browse", "grp", group)`) instead of re-rendering THIS SAME region
+ * picker (Finding I2/3 of the final-review).
+ */
+export function gameRegionPickerKb(
+  regions: string[],
+  categoryId: number,
+  backTarget: string,
+  lang: string,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < regions.length; i += 2) {
+    rows.push(
+      regions.slice(i, i + 2).map((r, j) => ({
+        text: r,
+        data: cb("browse", "greg", categoryId, i + j),
+      })),
+    );
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
   return ik(rows);
 }
 

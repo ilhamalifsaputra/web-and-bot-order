@@ -14,7 +14,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { CategoryGroup, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
@@ -55,6 +55,27 @@ export function listActiveCategories(db: Db) {
   });
 }
 
+/**
+ * Active categories in `group` — with one deliberate carve-out: `Category.group`
+ * shipped nullable with no backfill, so every pre-existing category (all of
+ * them, at first) reads `group: null` and would otherwise be invisible from
+ * the group→category picker. Rather than a data migration, a `null` group is
+ * treated as PREMIUM_APPS at display time (the shop's only category type
+ * before this feature) — a request for GAME_TOPUP (the new, opt-in bucket)
+ * stays an exact match; a null-group category never appears there.
+ */
+export function listActiveCategoriesByGroup(db: Db, group: string) {
+  // Prisma/SQLite rejects `null` inside a String field's `in` filter, so the
+  // PREMIUM_APPS fallback is expressed as an OR of two exact matches instead.
+  return db.category.findMany({
+    where:
+      group === CategoryGroup.PREMIUM_APPS
+        ? { isActive: true, OR: [{ group: CategoryGroup.PREMIUM_APPS }, { group: null }] }
+        : { isActive: true, group },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
 export function listAllCategories(db: Db) {
   return db.category.findMany({
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -70,6 +91,7 @@ export async function createCategory(
         emoji?: string | null;
         description?: string | null;
         image?: string | null;
+        group?: string | null;
         sortOrder?: number;
         checkoutFlow?: string;
       },
@@ -88,6 +110,7 @@ export async function createCategory(
       emoji: a.emoji ?? null,
       description: ("description" in a ? a.description : null) ?? null,
       image: ("image" in a ? a.image : null) ?? null,
+      group: ("group" in a ? a.group : null) ?? null,
       sortOrder: a.sortOrder ?? 0,
       checkoutFlow: ("checkoutFlow" in a ? a.checkoutFlow : null) ?? "catalog",
     },
@@ -173,6 +196,13 @@ export async function createCatalogProduct(
      * the exact `brand` string Digiflazz reports, used to match a re-import
      * of the same brand back to this Product instead of duplicating it. */
     digiflazzBrand?: string | null;
+    /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+     * catalog navigation and denomination labeling (Tasks 11-13) key off
+     * these three, e.g. grouping "Mobile Legends" skins by variant/region.
+     * All independent of each other and of every other field above. */
+    gameVariant?: string | null;
+    gameVariantEmoji?: string | null;
+    gameRegion?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
@@ -191,6 +221,9 @@ export async function createCatalogProduct(
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
       digiflazzBrand: args.digiflazzBrand ?? null,
+      gameVariant: args.gameVariant ?? null,
+      gameVariantEmoji: args.gameVariantEmoji ?? null,
+      gameRegion: args.gameRegion ?? null,
     },
   });
 }
@@ -347,6 +380,13 @@ export async function createDenomination(
      * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
      * the caller server-side; never trust a client-submitted boolean here). */
     priceOverridden?: boolean;
+    /** The compact-button quantity (Task 8/14), e.g. `86` for an 86-diamond
+     * top-up — paired with qtyUnit and formatted by formatDenominationLabel.
+     * Set together by the admin; independent of every other field above. */
+    qtyValue?: number | null;
+    /** The short unit word paired with qtyValue on the compact button, e.g.
+     * "Diamonds", "UC", "Bonds" (Task 8/14). */
+    qtyUnit?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -374,6 +414,8 @@ export async function createDenomination(
       regionWarning: args.regionWarning ?? null,
       expectedRegionCode: args.expectedRegionCode ?? null,
       priceOverridden: args.priceOverridden ?? false,
+      qtyValue: args.qtyValue ?? null,
+      qtyUnit: args.qtyUnit ?? null,
     },
   });
 }
@@ -488,13 +530,27 @@ export type CatalogProduct = Product & {
  * Active products (with ≥1 active denomination) in a category — or the whole
  * catalog when categoryId is omitted. Each carries its active denominations
  * price-asc so a card can show the starting price. Ordered by sortOrder, name.
+ *
+ * `filter` is optional and additive: an EXISTING caller passing only
+ * `(db, categoryId)` sees no behavior change. When passed, key PRESENCE (not
+ * truthiness) decides whether that dimension is filtered — `"gameVariant" in
+ * filter` lets a caller filter on an explicit `null` (products with no
+ * variant set) as distinct from omitting the key entirely (don't filter on
+ * that dimension at all). This backs the bot's Game Top Up variant/region
+ * navigation layer once a variant+region has been resolved.
  */
-export function listCatalogProducts(db: Db, categoryId?: number): Promise<CatalogProduct[]> {
+export function listCatalogProducts(
+  db: Db,
+  categoryId?: number,
+  filter?: { gameVariant?: string | null; gameRegion?: string | null },
+): Promise<CatalogProduct[]> {
   return db.product.findMany({
     where: {
       isActive: true,
       isArchived: false,
       ...(categoryId != null ? { categoryId } : {}),
+      ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
+      ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
       denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
@@ -503,6 +559,70 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
+}
+
+export interface GameVariantOption {
+  label: string;
+  emoji: string | null;
+}
+
+/**
+ * Distinct (gameVariant, gameVariantEmoji) pairs among a category's
+ * catalog-eligible products (active, not archived, ≥1 active denomination).
+ * 0 or 1 result means "no variant picker needed for this category" — callers
+ * use `.length` to decide whether to show the Game Top Up variant step.
+ */
+export async function listCategoryGameVariants(db: Db, categoryId: number): Promise<GameVariantOption[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      isActive: true,
+      isArchived: false,
+      gameVariant: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameVariant: true, gameVariantEmoji: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Map<string, GameVariantOption>();
+  for (const p of products) {
+    if (!seen.has(p.gameVariant!)) seen.set(p.gameVariant!, { label: p.gameVariant!, emoji: p.gameVariantEmoji });
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Distinct gameRegion values among a category's catalog-eligible products,
+ * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
+ * category with no variant picker but still a region picker). Same
+ * 0-or-1-means-skip contract as `listCategoryGameVariants`.
+ */
+export async function listCategoryGameRegions(
+  db: Db,
+  categoryId: number,
+  gameVariant: string | null,
+): Promise<string[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      gameVariant,
+      isActive: true,
+      isArchived: false,
+      gameRegion: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameRegion: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of products) {
+    if (!seen.has(p.gameRegion!)) {
+      seen.add(p.gameRegion!);
+      out.push(p.gameRegion!);
+    }
+  }
+  return out;
 }
 
 /** Newest active products (by newest active denomination) for the home grid. */

@@ -43,6 +43,9 @@ interface DenominationRow {
   isActive: boolean;
   type: string;
   durationLabel: string;
+  /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
+  qtyValue: number | null;
+  qtyUnit: string | null;
 }
 
 interface ProductDetail {
@@ -57,6 +60,12 @@ interface ProductDetail {
   webImageUrl: string | null;
   category: { id: number; name: string } | null;
   denominations: DenominationRow[];
+  /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+   * catalog navigation and denomination labeling (Tasks 11-13) key off
+   * these three, null until an admin sets them. */
+  gameVariant: string | null;
+  gameVariantEmoji: string | null;
+  gameRegion: string | null;
 }
 
 interface DenomStat {
@@ -91,6 +100,12 @@ export function ProductDetailPage() {
   const [editingProduct, setEditingProduct] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [descriptionDraft, setDescriptionDraft] = useState("");
+  // Game-navigation classification (Task 8/14) — bot navigation and
+  // denomination labeling (Tasks 11-13) key off these three. Independent of
+  // each other and of every other field on this form.
+  const [gameVariantDraft, setGameVariantDraft] = useState("");
+  const [gameVariantEmojiDraft, setGameVariantEmojiDraft] = useState("");
+  const [gameRegionDraft, setGameRegionDraft] = useState("");
   // Storefront detail blocks — each renders as its own titled section on the
   // product page, and stays hidden there while it's blank.
   const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
@@ -118,6 +133,9 @@ export function ProductDetailPage() {
       await apiPatch(`/api/catalog/products/${productId}`, {
         name: nameDraft.trim(),
         description: descriptionDraft.trim(),
+        gameVariant: gameVariantDraft.trim(),
+        gameVariantEmoji: gameVariantEmojiDraft.trim(),
+        gameRegion: gameRegionDraft.trim(),
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
@@ -278,6 +296,9 @@ export function ProductDetailPage() {
               onClick={() => {
                 setNameDraft(product.name);
                 setDescriptionDraft(product.description ?? "");
+                setGameVariantDraft(product.gameVariant ?? "");
+                setGameVariantEmojiDraft(product.gameVariantEmoji ?? "");
+                setGameRegionDraft(product.gameRegion ?? "");
                 setWhatYouGetDraft(product.whatYouGet ?? "");
                 setTermsDraft(product.terms ?? "");
                 setWarrantyNoteDraft(product.warrantyNote ?? "");
@@ -319,6 +340,36 @@ export function ProductDetailPage() {
             <div>
               <label className="text-sm font-medium text-ink">Description</label>
               <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
+            </div>
+            {/* Game-navigation classification (Task 8/14) — optional, powers
+                the bot's catalog navigation and denomination labeling for
+                game top-up products (e.g. Mobile Legends' Diamonds variant). */}
+            <div>
+              <label className="text-sm font-medium text-ink">Game Variant</label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={gameVariantDraft}
+                onChange={(e) => setGameVariantDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Game Variant Emoji</label>
+              <Input
+                className="mt-1 w-24"
+                placeholder="e.g. 💎"
+                value={gameVariantEmojiDraft}
+                onChange={(e) => setGameVariantEmojiDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Game Region</label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. Global"
+                value={gameRegionDraft}
+                onChange={(e) => setGameRegionDraft(e.target.value)}
+              />
             </div>
             <div>
               <label className="text-sm font-medium text-ink">What the buyer gets</label>

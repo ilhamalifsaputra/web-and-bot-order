@@ -159,6 +159,13 @@ model Category {
   image       String?
   sortOrder   Int     @default(0) @map("sort_order")
   isActive    Boolean @default(true) @map("is_active")
+  /// Top-level bucket for the bot's "🛍 Products" entry point — GAME_TOPUP |
+  /// PREMIUM_APPS (packages/core/src/enums.ts CategoryGroup). Admin-set, null
+  /// until classified. A category with no group is unreachable from the
+  /// customer group→category picker until an admin assigns one — it stays
+  /// reachable via search, Popular, and /start deep links, which are
+  /// intentionally group-agnostic.
+  group       String?
   /// How checkout behaves for every product/denomination under this category:
   /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
   /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
@@ -201,6 +208,28 @@ model Product {
   /// over matching by name so the admin can rename the display name freely
   /// without breaking future syncs.
   digiflazzBrand String? @map("digiflazz_brand")
+  /// Game Top Up display grouping only (Category.group === "GAME_TOPUP");
+  /// Premium Apps products leave this null and render exactly as today.
+  /// Free-text edition label an admin sets when one Category (a "Game")
+  /// sells more than one purchasable edition, e.g. "Infinite" vs "Regular"
+  /// for Arena Breakout. Null = no variant distinction; the bot nav skips
+  /// the variant-picker screen entirely for this category. Deliberately
+  /// independent of (never synced from) the existing Digiflazz Product-name
+  /// "(Region)" suffix convention (packages/core/src/suppliers/digiflazz.ts) —
+  /// that's a supplier re-sync mechanism, unrelated to this display field.
+  gameVariant      String? @map("game_variant")
+  /// Admin-set emoji shown on the variant-picker button (prefixed to
+  /// gameVariant's label) and reused as a prefix on denomination buttons
+  /// under this product. Kept separate from gameVariant so the bot never
+  /// has to parse an emoji back out of admin-authored text.
+  gameVariantEmoji String? @map("game_variant_emoji")
+  /// Admin-set free-text region/country label (e.g. "🇮🇩 Indonesia") — any
+  /// flag glyph is part of this string, unlike gameVariantEmoji, since a
+  /// region label is only ever rendered once, at the region picker.
+  /// Independent of Denomination.expectedRegionCode (machine ISO-ish code
+  /// checked against a live supplier API) and of the Digiflazz Product-name
+  /// "(Region)" suffix — neither backfills this field.
+  gameRegion       String? @map("game_region")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
@@ -277,6 +306,17 @@ model Denomination {
   /// is true, so a deliberate manual price change is never silently
   /// overwritten by the next sync tick.
   priceOverridden      Boolean   @default(false) @map("price_overridden")
+  /// Game Top Up compact-label display only. The pure numeric top-up amount
+  /// (e.g. 2500), decoupled from name/durationLabel's free text — which for
+  /// Digiflazz-imported rows already repeats the game name (e.g. "Mobile
+  /// Legends 86 Diamonds") and can't be reliably re-parsed. Null = this SKU
+  /// has no compact quantity set; the bot falls back unchanged to
+  /// durationLabel||name.
+  qtyValue Int?    @map("qty_value")
+  /// The short unit word paired with qtyValue on the compact button, e.g.
+  /// "Diamonds", "UC", "Bonds". Set together with qtyValue by the admin,
+  /// never derived/parsed from name/durationLabel.
+  qtyUnit  String? @map("qty_unit")
   warrantyDays         Int       @default(30) @map("warranty_days")
   sortOrder            Int       @default(0) @map("sort_order")
   isActive             Boolean   @default(true) @map("is_active")

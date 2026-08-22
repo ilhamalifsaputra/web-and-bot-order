@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { CategoryDialog } from "./CategoryDialog";
 import type { CategoryRow } from "../../api/catalog";
 
@@ -13,6 +14,7 @@ const CATEGORY: CategoryRow = {
   sortOrder: 3,
   isActive: true,
   checkoutFlow: "catalog",
+  group: null,
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -29,6 +31,10 @@ function lastRequest(fetchMock: ReturnType<typeof vi.fn>) {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => false);
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
 });
 
 describe("CategoryDialog", () => {
@@ -49,8 +55,34 @@ describe("CategoryDialog", () => {
     const req = lastRequest(fetchMock);
     expect(req.url).toBe("/api/catalog/categories");
     expect(req.method).toBe("POST");
-    expect(req.body).toEqual({ name: "Games", emoji: "🎮", description: null, checkoutFlow: "catalog" });
+    expect(req.body).toEqual({
+      name: "Games",
+      emoji: "🎮",
+      description: null,
+      checkoutFlow: "catalog",
+      group: null,
+    });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("sends the selected group in the create POST body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ category: { id: 9 } }, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const onSaved = vi.fn();
+
+    render(<CategoryDialog onClose={vi.fn()} onSaved={onSaved} />);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Games" } });
+
+    await user.click(screen.getByRole("combobox", { name: "Group" }));
+    await waitFor(() => screen.getByRole("option", { name: "🎮 Game Top Up" }));
+    await user.click(screen.getByRole("option", { name: "🎮 Game Top Up" }));
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const req = lastRequest(fetchMock);
+    expect(req.body.group).toBe("GAME_TOPUP");
   });
 
   it("edits with PATCH and sends only the fields it shows, never the slug", async () => {
@@ -73,9 +105,31 @@ describe("CategoryDialog", () => {
       emoji: "📱",
       description: "Mobile apps",
       checkoutFlow: "catalog",
+      group: null,
     });
     expect(req.body).not.toHaveProperty("slug");
     expect(req.body).not.toHaveProperty("sortOrder");
+  });
+
+  it("seeds the group select from the category being edited and re-sends it unchanged", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: 7, name: "Apps" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSaved = vi.fn();
+
+    render(
+      <CategoryDialog
+        category={{ ...CATEGORY, group: "PREMIUM_APPS" }}
+        onClose={vi.fn()}
+        onSaved={onSaved}
+      />,
+    );
+    expect(screen.getByRole("combobox", { name: "Group" })).toHaveTextContent("💎 Premium Apps");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    const req = lastRequest(fetchMock);
+    expect(req.body.group).toBe("PREMIUM_APPS");
   });
 
   it("seeds the checkout-flow radio from the category being edited and sends a changed value", async () => {

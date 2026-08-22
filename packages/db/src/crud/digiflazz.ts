@@ -17,6 +17,19 @@
  *    for the "Sukses" (and later, webhook-driven) case: flips the order to
  *    DELIVERED and runs the same shared side effects a manually-fulfilled
  *    order gets.
+ *
+ * Retry safety: `refId = order.orderCode` is passed to every
+ * createTransaction call (@app/core/suppliers/digiflazz — see its own doc
+ * comment) and is Digiflazz's own idempotency key: a repeat call with the
+ * same refId returns the existing transaction rather than creating a new
+ * one. That is what makes it safe for this module to automatically retry a
+ * "Pending" or transient-error (HTTP/network) outcome — re-dispatching the
+ * same order never double-charges or double-delivers at the supplier.
+ * recordDigiflazzOutcome (below) is the one place that decides retry vs.
+ * terminal, bounded by the 24h backoff window in digiflazzBackoff.ts. An
+ * explicit "Gagal" is never retried — the same input would just fail
+ * identically again — and goes straight to a terminal, admin-alerted
+ * failure instead.
  */
 import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
@@ -197,6 +210,20 @@ export interface DigiflazzDispatchSummary {
 
 const ZERO_SUMMARY: DigiflazzDispatchSummary = { claimed: 0, delivered: 0, pending: 0, failed: 0 };
 
+/** How long a recheck claim's lease lasts before the order becomes
+ * eligible for re-claiming again — self-heals a crashed/killed attempt
+ * (a process restart between the claim committing and
+ * recordDigiflazzOutcome writing the real outcome) instead of leaving the
+ * order permanently unclaimable (neither candidate-query arm would ever
+ * match a bare `null`, since arm 1 needs digiflazzDispatchedAt: null —
+ * already false by the time of a recheck — and arm 2 needs
+ * digiflazzNextRecheckAt <= now, never true for null). Comfortably longer
+ * than a single createTransaction HTTP round-trip (HTTP_TIMEOUT_MS.gatewayWrite,
+ * @app/core/http) with generous margin, short enough that a genuinely
+ * crashed attempt recovers within a couple of poller ticks rather than
+ * being stuck until the 24h window silently expires with nobody paged. */
+export const DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS = 3 * 60_000;
+
 /**
  * Enqueue the "needs a human" admin alert for an order this poller could not
  * auto-fulfil via Digiflazz (SKU missing supplierSku, Digiflazz reported
@@ -284,8 +311,8 @@ export async function recordDigiflazzOutcome(
     const attempt = order.digiflazzAttempts + 1;
     const nextRecheckAt = nextDigiflazzRecheckAt(dispatchedAt, attempt);
     if (nextRecheckAt) {
-      await db.order.update({
-        where: { id: order.id },
+      const claim = await db.order.updateMany({
+        where: { id: order.id, status: OrderStatus.PROCESSING },
         data: {
           digiflazzStatus: "pending_at_supplier",
           digiflazzAttempts: attempt,
@@ -293,7 +320,7 @@ export async function recordDigiflazzOutcome(
           digiflazzFailureDetail: outcome.kind === "transient_error" ? outcome.message : null,
         },
       });
-      emitDigiflazzOrderStatusChanged(order.id);
+      if (claim.count === 1) emitDigiflazzOrderStatusChanged(order.id);
       return "pending";
     }
     const reason =
@@ -315,21 +342,28 @@ async function terminalFailDigiflazzOrder(
   order: DigiflazzCandidateOrder,
   reason: string,
 ): Promise<"failed"> {
-  await db.order.update({
-    where: { id: order.id },
+  const claim = await db.order.updateMany({
+    where: { id: order.id, status: OrderStatus.PROCESSING },
     data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null, digiflazzFailureDetail: reason },
   });
-  await alertDigiflazzDispatchFailed(db, order, reason);
-  emitDigiflazzOrderStatusChanged(order.id);
+  if (claim.count === 1) {
+    await alertDigiflazzDispatchFailed(db, order, reason);
+    emitDigiflazzOrderStatusChanged(order.id);
+  }
   return "failed";
 }
 
 /**
  * The Digiflazz dispatch poller. Finds PROCESSING orders whose item routes to
- * Digiflazz (denomination.autoDeliverySource === "digiflazz") and haven't been
- * dispatched yet (digiflazzDispatchedAt IS NULL), claims each one atomically
- * (same updateMany-with-status-guard shape fulfillManualOrder's own claim
- * uses, applied to the dispatch step instead of the delivery step — see
+ * Digiflazz (denomination.autoDeliverySource === "digiflazz") and matches
+ * EITHER of two candidate-query arms: (1) haven't been dispatched yet
+ * (digiflazzDispatchedAt IS NULL), or (2) are due for a recheck of a
+ * previous "Pending"/transient-error attempt (digiflazzStatus ===
+ * "pending_at_supplier" AND digiflazzNextRecheckAt has passed — see
+ * recordDigiflazzOutcome's own doc comment below for how that backoff
+ * schedule is decided). Claims each one atomically (same
+ * updateMany-with-status-guard shape fulfillManualOrder's own claim uses,
+ * applied to the dispatch step instead of the delivery step — see
  * Order.digiflazzDispatchedAt's doc comment in schema.prisma), and places the
  * top-up order with Digiflazz.
  *
@@ -389,7 +423,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
             digiflazzStatus: "pending_at_supplier",
             digiflazzNextRecheckAt: { lte: claimNow },
           },
-          data: { digiflazzNextRecheckAt: null },
+          data: { digiflazzNextRecheckAt: new Date(claimNow.getTime() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) },
         });
     if (claim.count !== 1) continue;
     summary.claimed++;
@@ -424,9 +458,29 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
       });
 
       if (result.status === "Sukses") {
-        await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "" });
-        summary.delivered++;
-        logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
+        try {
+          await fulfillDigiflazzOrder(db, order.id, { sn: result.sn ?? "" });
+          summary.delivered++;
+          logger.info(`Digiflazz auto-delivered order ${order.orderCode} (buyerSkuCode ${supplierSku})`);
+        } catch (fulfillErr) {
+          // Digiflazz already confirmed Sukses — this order must NEVER be
+          // retried or re-dispatched (retrying would call Digiflazz again
+          // for an order it already fulfilled; fulfillDigiflazzOrder's own
+          // atomic claim would just throw ValidationError a second time
+          // regardless). Whatever failed here — a side effect after the
+          // DELIVERED claim already committed, or the claim itself losing
+          // a race to another caller — needs a human, same as any other
+          // terminal failure: alert directly (NOT via recordDigiflazzOutcome,
+          // which would wrongly write pending/terminal digiflazz* fields
+          // onto an order that may already be DELIVERED).
+          const fulfillMessage = fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr);
+          await alertDigiflazzDispatchFailed(
+            db,
+            order,
+            `Digiflazz confirmed Sukses but fulfilling the order failed (${fulfillMessage})`,
+          );
+          summary.failed++;
+        }
       } else if (result.status === "Pending") {
         const outcome = await recordDigiflazzOutcome(db, order, { kind: "pending" }, dispatchedAt);
         if (outcome === "pending") {

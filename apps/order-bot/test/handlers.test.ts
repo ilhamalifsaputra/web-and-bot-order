@@ -1545,7 +1545,24 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
   it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
     const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
-    const d1 = await createDenomination(prisma, { productId: p.id, name: "7 day", type: "SHARED", durationLabel: "7 day", price: "10000" });
+    // durationLabel embeds the product name around the digit ("Spotify Premium
+    // 1 Bulan") so the two candidate code paths genuinely diverge:
+    //   - formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan")
+    //     pulls "1" to the front and collapses the surrounding descriptor
+    //     ("Spotify Premium Bulan") down to the product's own name, since that
+    //     name is embedded in it -> "1 Spotify Premium".
+    //   - the raw gameTopUpDenomLabel fallback (d.durationLabel || d.name),
+    //     which is what would leak through as an unconditional buttonLabel if
+    //     the qtyValue/qtyUnit gate were ever removed, stays verbatim:
+    //     "Spotify Premium 1 Bulan".
+    // These strings differ, so this test fails if the gating regresses.
+    const d1 = await createDenomination(prisma, {
+      productId: p.id,
+      name: "Spotify Premium 1 Bulan",
+      type: "SHARED",
+      durationLabel: "Spotify Premium 1 Bulan",
+      price: "10000",
+    });
     await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "30000" });
 
     const { ctx, sink } = customerCtx();
@@ -1554,7 +1571,7 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toBe("7 day"); // unchanged formatDenominationLabel output — buttonLabel stays undefined
+    expect(button.text).toBe("1 Spotify Premium"); // formatDenominationLabel output — buttonLabel stays undefined
   });
 });
 

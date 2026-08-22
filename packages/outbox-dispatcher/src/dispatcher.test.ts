@@ -335,7 +335,7 @@ describe("drainBatch routes ADMIN_DIGIFLAZZ_RESYNC_ABORTED as an admin DM, never
   it("sends to the admin's chat_id even when a public channel IS configured, with orderId null", async () => {
     await addAdminIdToDb(prisma, 900_200_001);
     setBotIdentity({ publicChannelId: -1009876543211 });
-    await enqueueAdminDigiflazzResyncAborted(prisma, { sharpChanges: 7, consideredRows: 10 });
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "sharp_change", sharpChanges: 7, consideredRows: 10 });
 
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);

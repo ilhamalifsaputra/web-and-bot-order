@@ -1070,7 +1070,12 @@ describe("resyncDigiflazzCatalog", () => {
         .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
         .sort((a, b) => a - b);
       expect(chatIds).toEqual([700, 701]);
-      const payload = JSON.parse(alertRows[0]!.payloadJson) as { sharp_changes: number; considered_rows: number };
+      const payload = JSON.parse(alertRows[0]!.payloadJson) as {
+        kind: string;
+        sharp_changes: number;
+        considered_rows: number;
+      };
+      expect(payload.kind).toBe("sharp_change");
       expect(payload.sharp_changes).toBe(6);
       expect(payload.considered_rows).toBe(6);
     });
@@ -1161,6 +1166,14 @@ describe("resyncDigiflazzCatalog", () => {
         .map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id)
         .sort((a, b) => a - b);
       expect(chatIds).toEqual([700, 701]);
+      const payload = JSON.parse(alertRows[0]!.payloadJson) as {
+        kind: string;
+        sharp_changes?: number;
+        considered_rows?: number;
+      };
+      expect(payload.kind).toBe("no_usable_rows");
+      expect(payload.sharp_changes).toBeUndefined();
+      expect(payload.considered_rows).toBeUndefined();
     });
 
     // Regression guard for the distinction the fix must get right: a supplier

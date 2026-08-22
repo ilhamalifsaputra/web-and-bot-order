@@ -469,8 +469,8 @@ describe("enqueueAdminStalePayment", () => {
 // shape. Runs after the earlier blocks, so 4001/4002/4501/4502 are already
 // persisted in the shared `admin_ids` Setting.
 describe("enqueueAdminDigiflazzResyncAborted", () => {
-  it("enqueues one ADMIN_DIGIFLAZZ_RESYNC_ABORTED DM per resolved admin, with orderId null and chat_id/sharp_changes/considered_rows", async () => {
-    await enqueueAdminDigiflazzResyncAborted(prisma, { sharpChanges: 7, consideredRows: 10 });
+  it("enqueues one ADMIN_DIGIFLAZZ_RESYNC_ABORTED DM per resolved admin, with orderId null and chat_id/kind/sharp_changes/considered_rows for the sharp_change kind", async () => {
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "sharp_change", sharpChanges: 7, consideredRows: 10 });
 
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
@@ -479,9 +479,27 @@ describe("enqueueAdminDigiflazzResyncAborted", () => {
     expect(rows.every((r) => r.orderId === null)).toBe(true);
     const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
     expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
-    const payload = JSON.parse(rows[0]!.payloadJson) as { sharp_changes: number; considered_rows: number };
+    const payload = JSON.parse(rows[0]!.payloadJson) as { kind: string; sharp_changes: number; considered_rows: number };
+    expect(payload.kind).toBe("sharp_change");
     expect(payload.sharp_changes).toBe(7);
     expect(payload.considered_rows).toBe(10);
+  });
+
+  it("enqueues a no_usable_rows payload without sharp_changes/considered_rows", async () => {
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "no_usable_rows" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+    });
+    const newestRows = rows.slice(-4); // this test's own fan-out, appended after the sharp_change test's rows
+    expect(newestRows.length).toBeGreaterThan(0);
+    for (const row of newestRows) {
+      expect(row.orderId).toBeNull();
+      const payload = JSON.parse(row.payloadJson) as { kind: string; sharp_changes?: number; considered_rows?: number };
+      expect(payload.kind).toBe("no_usable_rows");
+      expect(payload.sharp_changes).toBeUndefined();
+      expect(payload.considered_rows).toBeUndefined();
+    }
   });
 });
 

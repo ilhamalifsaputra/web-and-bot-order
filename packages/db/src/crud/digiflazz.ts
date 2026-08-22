@@ -808,8 +808,8 @@ export async function resyncDigiflazzCatalog(
     await enqueueAdminDigiflazzResyncAborted(
       db,
       abortReason.kind === "sharp_change"
-        ? { sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows }
-        : { sharpChanges: 0, consideredRows: 0 },
+        ? { kind: "sharp_change", sharpChanges: abortReason.sharpChanges, consideredRows: abortReason.consideredRows }
+        : { kind: "no_usable_rows" },
     );
     return zero;
   }

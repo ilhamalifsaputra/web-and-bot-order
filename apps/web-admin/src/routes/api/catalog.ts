@@ -37,7 +37,7 @@ import {
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { isFlashActive } from "@app/core/flash";
-import { ProductType, DeliveryType } from "@app/core/enums";
+import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { zAdditionalFields } from "@app/core/deliveryFields";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -110,10 +110,22 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const name = (typeof body.name === "string" ? body.name : "").trim();
     if (!name) return reply.code(400).send({ error: "Name is required." });
 
+    // Unlike checkoutFlow below, group has no safe schema default to fall
+    // back to — it's null until an admin classifies it — so an explicitly
+    // sent, unrecognized value is rejected rather than silently dropped.
+    let group: string | null = null;
+    if (body.group !== undefined && body.group !== null) {
+      if (typeof body.group !== "string" || !Object.values(CategoryGroup).includes(body.group as CategoryGroup)) {
+        return reply.code(400).send({ error: "Invalid group." });
+      }
+      group = body.group;
+    }
+
     const cat = await createCategory(prisma, {
       name,
       emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
+      group,
       sortOrder: Number(body.sortOrder) || 0,
       // Has a safe schema default ("catalog"), so an absent or invalid value
       // silently falls back instead of 400ing — unlike PATCH below, where an
@@ -162,6 +174,12 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
         return reply.code(400).send({ error: "Checkout flow must be \"catalog\" or \"instant\"." });
       }
       fields.checkoutFlow = body.checkoutFlow;
+    }
+    if (body.group !== undefined) {
+      if (body.group !== null && !Object.values(CategoryGroup).includes(body.group as CategoryGroup)) {
+        return reply.code(400).send({ error: "Invalid group." });
+      }
+      fields.group = body.group;
     }
 
     await updateCategory(prisma, id, fields);

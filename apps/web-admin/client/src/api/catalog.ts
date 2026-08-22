@@ -17,6 +17,9 @@ export interface CategoryRow {
   sortOrder: number;
   isActive: boolean;
   checkoutFlow: "catalog" | "instant";
+  /** Customer-facing top-level bucket ("GAME_TOPUP" | "PREMIUM_APPS"), or
+   * null until an admin classifies it. See CategoryGroup in @app/core/enums. */
+  group: string | null;
 }
 
 export interface ProductRow {

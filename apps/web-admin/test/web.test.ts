@@ -1591,6 +1591,30 @@ describe("catalog JSON API — create category", () => {
     expect(cat!.checkoutFlow).toBe("catalog");
   });
 
+  it("persists a valid group", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Mobile Legends", group: "GAME_TOPUP" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.group).toBe("GAME_TOPUP");
+  });
+
+  it("defaults group to null when omitted", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "No Group" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.group).toBeNull();
+  });
+
+  it("rejects an invalid group with 400 and creates nothing", async () => {
+    const before = await prisma.category.count();
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Group", group: "NOT_A_GROUP" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.category.count()).toBe(before);
+  });
+
   it("rejects empty name with 400", async () => {
     const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
     expect(res.statusCode).toBe(400);
@@ -2222,6 +2246,37 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(res.statusCode).toBe(400);
       const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
       expect(after!.checkoutFlow).toBe(before!.checkoutFlow);
+    });
+
+    it("persists a valid group", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "PREMIUM_APPS",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.group).toBe("PREMIUM_APPS");
+    });
+
+    it("clears the group back to null when explicitly sent null", async () => {
+      await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "GAME_TOPUP",
+      });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: null,
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.group).toBeNull();
+    });
+
+    it("rejects an invalid group with 400 and writes nothing", async () => {
+      const before = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "NOT_A_GROUP",
+      });
+      expect(res.statusCode).toBe(400);
+      const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(after!.group).toBe(before!.group);
     });
 
     it("rejects a non-existent category id with 404", async () => {

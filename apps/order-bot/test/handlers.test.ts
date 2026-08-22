@@ -1212,7 +1212,14 @@ describe("group and category pickers", () => {
 // ===========================================================================
 
 describe("game variant and region pickers", () => {
-  it("gameVariantPickerKb lays out 3 entries as two rows plus a back row", () => {
+  // backTarget is now an explicit, caller-computed callback_data string
+  // (Finding 3/I2 of the final-review) rather than something the keyboard
+  // builder hardcodes itself — these tests pass an arbitrary value and assert
+  // it round-trips verbatim into the Back row, proving the parameter is
+  // genuinely threaded through (not silently ignored/hardcoded internally).
+  const VARIANT_BACK = "v1:browse:grp:GAME_TOPUP";
+
+  it("gameVariantPickerKb lays out 3 entries as two rows plus a back row, honoring the caller-supplied backTarget", () => {
     const kb = gameVariantPickerKb(
       [
         { label: "Mobile Legends", emoji: "🎮" },
@@ -1220,6 +1227,7 @@ describe("game variant and region pickers", () => {
         { label: "PUBG Mobile", emoji: "🎯" },
       ],
       5,
+      VARIANT_BACK,
       "en",
     );
     const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
@@ -1228,15 +1236,17 @@ describe("game variant and region pickers", () => {
     expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:2"]);
     expect(rows[0]![0]!.text).toBe("🎮 Mobile Legends");
     expect(rows[0]![1]!.text).toBe("Free Fire");
-    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:5"]);
+    // Back goes to the CATEGORY picker, not `v1:browse:cat:5` (which would
+    // just re-render this same variant picker — the Finding 3/I2 bug).
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual([VARIANT_BACK]);
   });
 
   it("gameVariantPickerKb with a single entry renders one row plus the trailing back row", () => {
-    const kb = gameVariantPickerKb([{ label: "Solo Variant", emoji: null }], 5, "en");
+    const kb = gameVariantPickerKb([{ label: "Solo Variant", emoji: null }], 5, VARIANT_BACK, "en");
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows.length).toBe(2);
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0"]);
-    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:5"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual([VARIANT_BACK]);
   });
 
   it("gameVariantPickerKb with 2 entries renders exactly one variant row plus the back row", () => {
@@ -1246,6 +1256,7 @@ describe("game variant and region pickers", () => {
         { label: "B", emoji: null },
       ],
       5,
+      VARIANT_BACK,
       "en",
     );
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
@@ -1253,27 +1264,29 @@ describe("game variant and region pickers", () => {
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0", "v1:browse:gvar:5:1"]);
   });
 
-  it("gameRegionPickerKb lays out 3 entries as two rows plus a back row, button text is the raw region string", () => {
-    const kb = gameRegionPickerKb(["Asia", "Europe", "America"], 5, "en");
+  it("gameRegionPickerKb lays out 3 entries as two rows plus a back row, button text is the raw region string, honoring the caller-supplied backTarget", () => {
+    const backTarget = "v1:browse:gvars:5"; // variant picker WAS shown for this navigation
+    const kb = gameRegionPickerKb(["Asia", "Europe", "America"], 5, backTarget, "en");
     const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
     expect(rows.length).toBe(3); // two rows of regions + trailing back row
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
     expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:2"]);
     expect(rows[0]![0]!.text).toBe("Asia");
     expect(rows[0]![1]!.text).toBe("Europe");
-    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvars:5"]);
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual([backTarget]);
   });
 
-  it("gameRegionPickerKb with a single entry renders one row plus the trailing back row", () => {
-    const kb = gameRegionPickerKb(["Solo Region"], 5, "en");
+  it("gameRegionPickerKb's Back target is the CATEGORY picker when the variant step was skipped (not a re-render of itself)", () => {
+    const backTarget = "v1:browse:grp:GAME_TOPUP"; // variant step was auto-skipped for this navigation
+    const kb = gameRegionPickerKb(["Solo Region"], 5, backTarget, "en");
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows.length).toBe(2);
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0"]);
-    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvars:5"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual([backTarget]);
   });
 
   it("gameRegionPickerKb with 2 entries renders exactly one region row plus the back row", () => {
-    const kb = gameRegionPickerKb(["A", "B"], 5, "en");
+    const kb = gameRegionPickerKb(["A", "B"], 5, "v1:browse:gvars:5", "en");
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows.length).toBe(2);
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
@@ -1308,8 +1321,14 @@ describe("group/category browsing handlers", () => {
   });
 
   it("browseCategoriesInGroup renders the empty state without dead-ending when the group has no categories", async () => {
+    // GAME_TOPUP, not PREMIUM_APPS: since Finding 1 (final-review C1-fix), a
+    // null-group category displays as PREMIUM_APPS (the sample fixture's own
+    // "Streaming" category has no group set), so PREMIUM_APPS is never
+    // genuinely empty here. GAME_TOPUP has no such fallback — it's the one
+    // group this suite's fixtures never populate by default — so it's the
+    // one that actually exercises the empty-state render path.
     const { ctx, sink } = customerCtx();
-    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
     expect(sentIncludes(sink, "No categories in this section yet")).toBe(true);
     expect(offersForwardAction(sink)).toBe(true);
   });
@@ -1611,9 +1630,12 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     // durationLabel embeds the product name around the digit ("Spotify Premium
     // 1 Bulan") so the two candidate code paths genuinely diverge:
     //   - formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan")
-    //     pulls "1" to the front and collapses the surrounding descriptor
-    //     ("Spotify Premium Bulan") down to the product's own name, since that
-    //     name is embedded in it -> "1 Spotify Premium".
+    //     pulls "1" to the front, strips the redundant "Spotify Premium" prefix
+    //     out of the leading descriptor text, and keeps the genuine trailing
+    //     distinguisher ("Bulan") intact -> "1 Bulan" (Finding 2/I1+I6 of the
+    //     final-review fixed a bug where this used to collapse the WHOLE
+    //     descriptor down to the bare product name, discarding "Bulan" and
+    //     making this indistinguishable from a hypothetical "...1 Tahun" SKU).
     //   - the raw gameTopUpDenomLabel fallback (d.durationLabel || d.name),
     //     which is what would leak through as an unconditional buttonLabel if
     //     the qtyValue/qtyUnit gate were ever removed, stays verbatim:
@@ -1634,7 +1656,214 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
     const flat = (markup?.inline_keyboard ?? []).flat();
     const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
-    expect(button.text).toBe("1 Spotify Premium"); // formatDenominationLabel output — buttonLabel stays undefined
+    expect(button.text).toBe("1 Bulan"); // formatDenominationLabel output — buttonLabel stays undefined
+  });
+});
+
+// ===========================================================================
+// Final-review fixes (Findings 3-6): Back-button targets for the variant/
+// region pickers, scratch-clearing for the Game Top Up navigation fields,
+// trusting a fresh Category.group read, and keeping sc(ctx).categoryId in
+// sync across the variant/region resolution chain.
+// ===========================================================================
+
+describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
+  it("the variant picker's Back button targets the CATEGORY picker, not a re-render of itself", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire Back Test", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2 variants -> variant picker rendered
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    // Never the old no-op-loop target.
+    expect(backRow.callback_data).not.toBe(`v1:browse:cat:${cat.id}`);
+  });
+
+  it("the region picker's Back button targets the VARIANT picker when one was actually shown", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Back Test", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    // A second variant so browseCategoryEntry renders the variant picker
+    // (this navigation genuinely shows it) before the customer taps it.
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2 variants -> variant picker shown
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((b) => b.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0); // "Standard" (alphabetically first) is index 0
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions)
+
+    const regionMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (regionMarkup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:gvars:${cat.id}`);
+  });
+
+  it("the region picker's Back button targets the CATEGORY picker when the variant step was auto-skipped", async () => {
+    // Exactly 1 distinct variant -> browseCategoryEntry skips the variant
+    // picker entirely, so the region picker's Back must NOT point at
+    // `gvars:<id>` (that would re-render a variant picker that never existed
+    // for this navigation) — it must skip straight to the category picker.
+    const cat = await createCategory(prisma, { name: "PUBG Back Test", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // variant auto-skipped, region picker (2 regions) shown directly
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe(`v1:browse:gvars:${cat.id}`);
+  });
+});
+
+describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence", () => {
+  it("browseGroups clears every Game Top Up navigation field from scratch", async () => {
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseGroups(ctx);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("entering a non-GAME_TOPUP category clears all five Game Top Up navigation fields, not just the two 'resolved' ones", async () => {
+    const cat = await createCategory(prisma, { name: "Plain Premium Cat", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Plain Product" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseCategoryEntry(ctx, cat.id);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("browseProduct's buttonLabel prefers the PRODUCT's own gameVariantEmoji over a stale, different session-scratch emoji", async () => {
+    const cat = await createCategory(prisma, { name: "Emoji Precedence Cat", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Emoji Precedence Product" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameVariantEmoji: "🆕" } });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+    await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 60, qtyUnit: "UC" } });
+    await createDenomination(prisma, { productId: p.id, name: "325 UC", type: "SHARED", durationLabel: "325 UC", price: "75000" });
+
+    // Simulate a leftover emoji from a DIFFERENT, previously-browsed category
+    // (e.g. via Popular/search, which never sets/clears these fields at all).
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), scratch: { gameVariantEmoji: "🕹️" } } });
+    await customer.browseProduct(ctx, p.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toContain("🆕"); // the product's own emoji wins
+    expect(button.text).not.toContain("🕹️"); // the stale session one never leaks in
+  });
+});
+
+describe("Finding 5 (I4): browseCategoryEntry trusts the fresh Category.group read", () => {
+  it("re-entering the same category after an admin cleared its group updates scratch to the fresh value, not the stale one", async () => {
+    const cat = await createCategory(prisma, { name: "Reclassified Cat", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Reclassified Product" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // scratch.group = GAME_TOPUP
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+
+    // Admin reclassifies the category to no group at all.
+    await prisma.category.update({ where: { id: cat.id }, data: { group: null } });
+
+    // Customer taps the same (stale) category button again.
+    await customer.browseCategoryEntry(ctx, cat.id);
+    const scratch = ctx.session.scratch as { group?: string };
+    expect(scratch.group).toBeUndefined(); // fresh value, not the stale "GAME_TOPUP" fallback
+  });
+});
+
+describe("Finding 6 (I5): sc(ctx).categoryId stays in sync through the variant/region resolution chain", () => {
+  it("tapping a variant/region picker button for category A, with sc(ctx).categoryId stale at category B, resolves against category A", async () => {
+    const catA = await createCategory(prisma, { name: "Sync Category A", group: CategoryGroup.GAME_TOPUP });
+    const aVariant1 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Variant One" });
+    await prisma.product.update({ where: { id: aVariant1.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const aVariant2 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Variant Two" });
+    await prisma.product.update({ where: { id: aVariant2.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant2.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const catB = await createCategory(prisma, { name: "Sync Category B", group: CategoryGroup.GAME_TOPUP });
+    const bProduct = await createCatalogProduct(prisma, { categoryId: catB.id, name: "B Product" });
+    await createDenomination(prisma, { productId: bProduct.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    // Simulate the exact staleness scenario: the customer holds an old
+    // gvar:<catA> button, but sc(ctx).categoryId currently reads catB (set by
+    // some unrelated, more recent interaction) and gameVariantEntries
+    // legitimately corresponds to catA (the entries snapshot this very tap
+    // was rendered against).
+    const { ctx, sink } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: { categoryId: catB.id, gameVariantEntries: [{ label: "Standard", emoji: null }] },
+      },
+    });
+
+    await customer.pickGameVariant(ctx, catA.id, 0);
+
+    const scratch = ctx.session.scratch as { categoryId?: number };
+    expect(scratch.categoryId).toBe(catA.id); // synced to the tapped category, not left at B
+    expect(sentIncludes(sink, "A Variant One")).toBe(true);
+    expect(sentIncludes(sink, "A Variant Two")).toBe(true);
+    expect(sentIncludes(sink, "B Product")).toBe(false); // never shows category B's products
   });
 });
 

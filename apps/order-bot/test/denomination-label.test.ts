@@ -30,6 +30,21 @@ describe("formatDenominationLabel", () => {
   it('handles empty strings: "" → ""', () => {
     expect(formatDenominationLabel("Bonds", "")).toBe("");
   });
+
+  // Finding 2 (final-review C-fix): collapseDescriptor used to replace the
+  // WHOLE leftover descriptor with the bare product name whenever the name
+  // appeared anywhere in it — so a genuine trailing distinguisher (a duration
+  // unit) got silently discarded, making two different SKUs render identical.
+  it('preserves a genuine trailing distinguisher: "Capcut Pro 1 Bulan" → "1 Bulan" (not "1 Capcut Pro")', () => {
+    expect(formatDenominationLabel("Capcut Pro", "Capcut Pro 1 Bulan")).toBe("1 Bulan");
+  });
+
+  it('preserves a genuine trailing distinguisher: "Capcut Pro 1 Tahun" → "1 Tahun", distinct from "1 Bulan"', () => {
+    const bulan = formatDenominationLabel("Capcut Pro", "Capcut Pro 1 Bulan");
+    const tahun = formatDenominationLabel("Capcut Pro", "Capcut Pro 1 Tahun");
+    expect(tahun).toBe("1 Tahun");
+    expect(tahun).not.toBe(bulan);
+  });
 });
 
 describe("gameTopUpDenomLabel", () => {

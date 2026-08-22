@@ -1235,11 +1235,50 @@ describe("listActiveCategoriesByGroup", () => {
     // Verify PREMIUM_APPS category is not included
     expect(gameTopupList.some((c) => c.id === premiumApps1.id)).toBe(false);
 
-    // Test listing PREMIUM_APPS categories
+    // Test listing PREMIUM_APPS categories. Not asserting an exact length here
+    // (unlike GAME_TOPUP above): by design (Finding 1's display-time
+    // fallback), a null-group category also counts as PREMIUM_APPS, and this
+    // suite's many earlier `createCategory(prisma, name)` calls (via the
+    // `makeCategory` helper, no group) have already populated the shared test
+    // DB with plenty of those — a fixed-length assertion here would be
+    // asserting an accident of test order, not this function's contract.
     const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
-    expect(premiumAppsList).toHaveLength(1);
-    expect(premiumAppsList[0]!.id).toBe(premiumApps1.id);
-    expect(premiumAppsList[0]!.name).toBe("Premium A");
+    const premiumIds = premiumAppsList.map((c) => c.id);
+    expect(premiumIds).toContain(premiumApps1.id);
+    expect(premiumAppsList.find((c) => c.id === premiumApps1.id)!.name).toBe("Premium A");
+    // The GAME_TOPUP-tagged categories must never leak into PREMIUM_APPS.
+    expect(premiumIds).not.toContain(gameTopup1.id);
+    expect(premiumIds).not.toContain(gameTopup2.id);
+    expect(premiumIds).not.toContain(inactiveGameTopup.id);
+  });
+
+  // Finding 1 (final-review C1-fix): Category.group shipped nullable with no
+  // backfill, so every pre-existing category reads group: null and would
+  // otherwise vanish from the group→category picker. A null group is treated
+  // as PREMIUM_APPS at DISPLAY time only (no DB/migration change) — GAME_TOPUP
+  // stays an exact match, since it's the new opt-in bucket.
+  it("treats a null-group category as PREMIUM_APPS (display-time fallback, no migration)", async () => {
+    const nullGroupCat = await createCategory(prisma, { name: `Legacy No Group ${Math.random()}` }); // group omitted -> null
+    const explicitPremiumCat = await createCategory(prisma, { name: `Explicit Premium ${Math.random()}`, group: "PREMIUM_APPS" });
+    const gameTopupCat = await createCategory(prisma, { name: `Game Only ${Math.random()}`, group: "GAME_TOPUP" });
+
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    const premiumIds = premiumAppsList.map((c) => c.id);
+    // Null-group category appears under PREMIUM_APPS...
+    expect(premiumIds).toContain(nullGroupCat.id);
+    // ...alongside an explicitly-tagged PREMIUM_APPS category (no regression)...
+    expect(premiumIds).toContain(explicitPremiumCat.id);
+    // ...with no duplicates...
+    expect(premiumIds.filter((id) => id === nullGroupCat.id)).toHaveLength(1);
+    // ...and a GAME_TOPUP category never leaks in.
+    expect(premiumIds).not.toContain(gameTopupCat.id);
+
+    // The null-group category must NOT appear under GAME_TOPUP — that bucket
+    // stays an exact match (Game Top Up is the new, opt-in bucket).
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    const gameTopupIds = gameTopupList.map((c) => c.id);
+    expect(gameTopupIds).toContain(gameTopupCat.id);
+    expect(gameTopupIds).not.toContain(nullGroupCat.id);
   });
 
   it("returns empty array when no active categories match the group", async () => {

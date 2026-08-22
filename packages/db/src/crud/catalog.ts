@@ -14,7 +14,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { CategoryGroup, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
@@ -55,9 +55,23 @@ export function listActiveCategories(db: Db) {
   });
 }
 
+/**
+ * Active categories in `group` — with one deliberate carve-out: `Category.group`
+ * shipped nullable with no backfill, so every pre-existing category (all of
+ * them, at first) reads `group: null` and would otherwise be invisible from
+ * the group→category picker. Rather than a data migration, a `null` group is
+ * treated as PREMIUM_APPS at display time (the shop's only category type
+ * before this feature) — a request for GAME_TOPUP (the new, opt-in bucket)
+ * stays an exact match; a null-group category never appears there.
+ */
 export function listActiveCategoriesByGroup(db: Db, group: string) {
+  // Prisma/SQLite rejects `null` inside a String field's `in` filter, so the
+  // PREMIUM_APPS fallback is expressed as an OR of two exact matches instead.
   return db.category.findMany({
-    where: { isActive: true, group },
+    where:
+      group === CategoryGroup.PREMIUM_APPS
+        ? { isActive: true, OR: [{ group: CategoryGroup.PREMIUM_APPS }, { group: null }] }
+        : { isActive: true, group },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
 }

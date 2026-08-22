@@ -303,6 +303,15 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).categoryId;
   delete sc(ctx).group;
   delete sc(ctx).productId;
+  // Finding I3 (final-review): this is the true top of the Products flow — a
+  // fresh entry must never resume a leftover Game Top Up variant/region
+  // navigation state from a previous browse session (wrong emoji leaking onto
+  // an unrelated product, or a stale index resolving against the wrong list).
+  delete sc(ctx).gameVariantEmoji;
+  delete sc(ctx).gameVariantEntries;
+  delete sc(ctx).gameRegionEntries;
+  delete sc(ctx).resolvedGameVariant;
+  delete sc(ctx).resolvedGameRegion;
   await smartEdit(ctx, t(ctx, "browse.group_picker_title"), ckb.groupPickerKb(lang));
 }
 
@@ -350,22 +359,50 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number): P
     await browseGroups(ctx);
     return;
   }
-  sc(ctx).group = category.group ?? sc(ctx).group;
+  // Finding I4 (final-review): always trust the fresh DB value. The old
+  // `category.group ?? sc(ctx).group` fallback meant a category an admin had
+  // just reclassified to null/a different group, re-entered via a stale
+  // `v1:browse:cat:<id>` button, would keep whatever group scratch happened
+  // to have from a PREVIOUS category — silently misapplying a Game Top Up
+  // variant/region filter (or skipping one) that no longer matches reality.
+  sc(ctx).group = category.group ?? undefined;
 
   if (category.group !== CategoryGroup.GAME_TOPUP) {
+    // Finding I3 (final-review): a non-GAME_TOPUP category can never have a
+    // variant/region navigation state — clear every field that flow can set,
+    // not just the two "resolved" ones, or a leftover gameVariantEmoji/
+    // gameVariantEntries/gameRegionEntries from an EARLIER Game Top Up
+    // category could still leak into this one (wrong emoji on a denomination
+    // button, or a stale index resolving against the wrong list).
     delete sc(ctx).resolvedGameVariant;
     delete sc(ctx).resolvedGameRegion;
+    delete sc(ctx).gameVariantEmoji;
+    delete sc(ctx).gameVariantEntries;
+    delete sc(ctx).gameRegionEntries;
     await browseProductsFlat(ctx, 0);
     return;
   }
 
+  // Guaranteed non-null: the branch above already returned for every other
+  // value, so `category.group` here is exactly CategoryGroup.GAME_TOPUP.
+  const group = category.group;
   const variants = await listCategoryGameVariants(prisma, categoryId);
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
-    await smartEdit(ctx, t(ctx, "browse.choose_variant"), ckb.gameVariantPickerKb(variants, categoryId, ctx.session.lang));
+    // Back goes UP to the category picker (Finding I2/3 of the final-review)
+    // — `cb("browse", "cat", categoryId)` would just re-render this SAME
+    // variant picker, a no-op loop, since this category has >1 variant.
+    await smartEdit(
+      ctx,
+      t(ctx, "browse.choose_variant"),
+      ckb.gameVariantPickerKb(variants, categoryId, ckb.cb("browse", "grp", group), ctx.session.lang),
+    );
     return;
   }
-  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null);
+  // Variant step auto-skipped (0/1 distinct variant) — no picker was shown,
+  // so if the region step DOES render, its own Back must skip straight to
+  // the category picker, not re-render this same (skipped) step.
+  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, ckb.cb("browse", "grp", group));
 }
 
 /** A customer tapped one entry on the variant picker rendered by
@@ -378,17 +415,28 @@ export async function pickGameVariant(ctx: MyContext, categoryId: number, idx: n
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     return;
   }
-  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji);
+  // A real variant picker WAS shown for this tap — the region step's own Back
+  // (if it renders) should re-open it.
+  await enterGameVariant(ctx, categoryId, entry.label, entry.emoji, ckb.cb("browse", "gvars", categoryId));
 }
 
 /** Shared by browseCategoryEntry's single-variant skip and pickGameVariant's
  * explicit tap: record the resolved variant, then render the region picker
- * or skip it the same way. */
+ * or skip it the same way.
+ *
+ * `regionBackTarget` is the callback_data the REGION picker's Back button
+ * should carry if it ends up rendering — computed by the caller, since only
+ * the caller knows whether a real variant picker was actually shown for this
+ * navigation (Finding I2/3 of the final-review): `browseCategoryEntry`'s
+ * skip-path passes the category picker's target; `pickGameVariant` (a real
+ * tap on a real picker) passes the variant picker's own target.
+ */
 async function enterGameVariant(
   ctx: MyContext,
   categoryId: number,
   gameVariant: string | null,
   gameVariantEmoji: string | null,
+  regionBackTarget: string,
 ): Promise<void> {
   sc(ctx).resolvedGameVariant = gameVariant;
   sc(ctx).gameVariantEmoji = gameVariantEmoji;
@@ -396,7 +444,7 @@ async function enterGameVariant(
   const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
   if (regions.length > 1) {
     sc(ctx).gameRegionEntries = regions;
-    await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, ctx.session.lang));
+    await smartEdit(ctx, t(ctx, "browse.choose_region"), ckb.gameRegionPickerKb(regions, categoryId, regionBackTarget, ctx.session.lang));
     return;
   }
   await enterGameRegion(ctx, categoryId, gameVariant, regions[0] ?? null);
@@ -424,6 +472,17 @@ async function enterGameRegion(
   gameRegion: string | null,
 ): Promise<void> {
   sc(ctx).resolvedGameRegion = gameRegion;
+  // Finding I5 (final-review): the variant/region navigation chain threads
+  // `categoryId` from the TAPPED CALLBACK, not from scratch — but
+  // `browseProductsFlat` (the fallback below, when more than one product
+  // matches) reads `sc(ctx).categoryId`. Without this sync, a stale
+  // cross-category tap could make the single-product collapse check above
+  // use one category while the rendered fallback list shows a different
+  // one's products. This is the single place every call chain
+  // (pickGameVariant/pickGameRegion, and browseCategoryEntry's own skip
+  // paths) funnels through before falling through to browseProductsFlat, so
+  // syncing it here (once) covers every caller.
+  sc(ctx).categoryId = categoryId;
   const products = await listCatalogProducts(prisma, categoryId, { gameVariant, gameRegion });
   if (products.length === 1) {
     await browseProduct(ctx, products[0]!.id);
@@ -712,9 +771,16 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
       // through to its existing formatDenominationLabel(...) call, exactly as
       // before this task (the hard zero-behavior-change bar for Premium Apps,
       // and for any Game Top Up SKU an admin hasn't backfilled yet).
+      // Finding I3 (final-review): the PRODUCT's own gameVariantEmoji wins —
+      // session scratch is only a fallback for the rare case it has none. The
+      // old precedence (scratch first) meant a leftover emoji from a
+      // PREVIOUSLY-browsed Game Top Up category's variant navigation could
+      // leak onto a completely different product's denomination buttons here
+      // (this screen is also reached via Popular/search, which never go
+      // through the variant-picker flow that sets/clears scratch at all).
       const buttonLabel =
         d.qtyValue != null && d.qtyUnit
-          ? gameTopUpDenomLabel(d, unitPrice, sc(ctx).gameVariantEmoji ?? product.gameVariantEmoji)
+          ? gameTopUpDenomLabel(d, unitPrice, product.gameVariantEmoji ?? sc(ctx).gameVariantEmoji)
           : undefined;
       return { line, buttonLabel };
     }),

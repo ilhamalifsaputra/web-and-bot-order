@@ -401,13 +401,20 @@ export function categoryPickerKb(categories: CategoryLike[], lang: string): Inli
  * Game Top Up variant picker (e.g. weapon/character skin lines within a
  * Category) — one button per variant, laid out 2 per row, index-addressed via
  * `browse:gvar:<categoryId>:<index>` (the variant list itself is resolved by
- * the handler, not carried in callback_data). Back returns to the category's
- * denomination/product picker. Button text is not HTML-parsed by Telegram
- * (unlike message bodies), so no `esc()` is needed here.
+ * the handler, not carried in callback_data). Button text is not HTML-parsed
+ * by Telegram (unlike message bodies), so no `esc()` is needed here.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — the caller (browseCategoryEntry) computes it, since only it knows the
+ * category's group; it must NOT be `cb("browse", "cat", categoryId)` (that
+ * would re-enter this SAME variant picker — a no-op loop, Finding I2/3 of the
+ * final-review). The one level up from a variant picker is the category
+ * picker (`cb("browse", "grp", group)`).
  */
 export function gameVariantPickerKb(
   variants: Array<{ label: string; emoji: string | null }>,
   categoryId: number,
+  backTarget: string,
   lang: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
@@ -419,19 +426,29 @@ export function gameVariantPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "cat", categoryId) }]);
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
   return ik(rows);
 }
 
 /**
  * Game Top Up region picker, shown after a variant is chosen — one button per
  * region string, laid out 2 per row, index-addressed the same way as
- * `gameVariantPickerKb`. Back returns to the variant picker. Button text is
- * not HTML-parsed by Telegram, so no `esc()` is needed here either.
+ * `gameVariantPickerKb`. Button text is not HTML-parsed by Telegram, so no
+ * `esc()` is needed here either.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — computed by the caller (enterGameVariant), since only it knows whether a
+ * real variant picker was actually shown for this navigation. When one was
+ * shown, Back re-opens it (`cb("browse", "gvars", categoryId)`); when the
+ * variant step was auto-skipped (0/1 distinct variant), that picker was never
+ * rendered, so Back must skip straight to the category picker
+ * (`cb("browse", "grp", group)`) instead of re-rendering THIS SAME region
+ * picker (Finding I2/3 of the final-review).
  */
 export function gameRegionPickerKb(
   regions: string[],
   categoryId: number,
+  backTarget: string,
   lang: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
@@ -443,7 +460,7 @@ export function gameRegionPickerKb(
       })),
     );
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "gvars", categoryId) }]);
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
   return ik(rows);
 }
 

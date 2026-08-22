@@ -3,12 +3,15 @@ import { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
 
 /**
  * Concise denomination-picker button label: pulls a leading/embedded
- * quantity to the front, and collapses any leftover descriptor down to the
- * product's own canonical name when that's genuinely all the leftover text
- * says (so "Bonds 1580" and the noisier "Arena Breakout Bonds 1580" both
- * become "1580 Bonds"). Safe/idempotent on labels with no digits or whose
- * digits already sit at position 0 with no product-name text in the rest
- * (e.g. "1 Month", "1 month preorder") — those round-trip unchanged.
+ * quantity to the front, and collapses redundant product-name noise out of
+ * the leftover descriptor (so "Bonds 1580" and the noisier "Arena Breakout
+ * Bonds 1580" both become "1580 Bonds"). Genuine distinguishing text that
+ * follows the quantity (a duration unit, a variant word, …) is always kept —
+ * "Capcut Pro 1 Bulan" and "Capcut Pro 1 Tahun" collapse to "1 Bulan" and
+ * "1 Tahun" respectively, never the same "1 Capcut Pro" for both. Safe/
+ * idempotent on labels with no digits or whose digits already sit at
+ * position 0 with no product-name text in the rest (e.g. "1 Month", "1
+ * month preorder") — those round-trip unchanged.
  */
 export function formatDenominationLabel(productName: string, rawLabel: string): string {
   const raw = rawLabel.trim();
@@ -16,19 +19,41 @@ export function formatDenominationLabel(productName: string, rawLabel: string): 
 
   const match = raw.match(/\d+/);
   if (!match) {
-    return collapseDescriptor(productName, raw) || raw;
+    return collapseWhole(productName, raw) || raw;
   }
 
   const qty = match[0];
   const before = raw.slice(0, match.index).trim();
   const after = raw.slice((match.index ?? 0) + qty.length).trim();
-  const descriptor = collapseDescriptor(productName, [before, after].filter(Boolean).join(" ").trim());
+  const descriptor = collapseDescriptor(productName, before, after);
 
   const body = descriptor ? `${qty} ${descriptor}` : qty;
   return appendDiamondSuffix(body);
 }
 
-function collapseDescriptor(productName: string, text: string): string {
+/**
+ * Combine the leading/trailing descriptor text found around the extracted
+ * quantity into one collapsed descriptor.
+ *
+ * - No trailing text (`after` empty): the leading text is the ENTIRE
+ *   descriptor, so it's safe to collapse the old way — if the product name
+ *   appears anywhere in it, the whole thing becomes the bare product name,
+ *   dropping redundant category-name noise ("Arena Breakout Bonds" → "Bonds").
+ * - Trailing text present: it's genuine information that must never be
+ *   discarded (a duration unit, a variant word, …). Only the product-name
+ *   phrase itself is stripped out of the leading text; whatever legitimately
+ *   distinct text is left (in `before`, and always all of `after`) survives.
+ */
+function collapseDescriptor(productName: string, before: string, after: string): string {
+  if (!after) return collapseWhole(productName, before);
+  const pn = productName.trim();
+  if (!pn || !before) return [before, after].filter(Boolean).join(" ").trim();
+  const re = new RegExp(`\\b${escapeRegExp(pn)}\\b`, "i");
+  const strippedBefore = before.replace(re, "").trim();
+  return [strippedBefore, after].filter(Boolean).join(" ").trim();
+}
+
+function collapseWhole(productName: string, text: string): string {
   const pn = productName.trim();
   if (!pn || !text) return text;
   const re = new RegExp(`\\b${escapeRegExp(pn)}\\b`, "i");

@@ -28,7 +28,7 @@ import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -42,7 +42,7 @@ import {
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -909,6 +909,7 @@ describe("denomination picker", () => {
         { id: 2, name: "B", durationLabel: "1 Month" },
       ],
       99,
+      "Test Product",
       "en",
     );
     const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
@@ -932,11 +933,29 @@ describe("denomination picker", () => {
         { id: 3, name: "C", durationLabel: "3 Months" },
       ],
       99,
+      "Test Product",
       "en",
     );
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2"]);
     expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:3"]);
+  });
+
+  it("denominationPickerKb formats labels through formatDenominationLabel (no-op on plain plan names)", () => {
+    const kb = denominationPickerKb(
+      [
+        { id: 1, name: "A", durationLabel: "7 day" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
+      ],
+      99,
+      "Test Product",
+      "en",
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
+    expect(member1.text).toBe("7 day");
+    expect(member2.text).toBe("1 Month");
   });
 
   it("browseProduct surfaces the denomination picker for a multi-denomination Product", async () => {
@@ -994,6 +1013,56 @@ describe("denomination picker", () => {
     await customer.browseProduct(ctx, product.id);
     const updated = await getCatalogProduct(prisma, product.id);
     expect(updated?.imageFileId).toBe("CACHED456");
+  });
+});
+
+// ===========================================================================
+// groupPickerKb / categoryPickerKb (Products entry flow: group -> category)
+// ===========================================================================
+
+describe("group and category pickers", () => {
+  it("groupPickerKb renders exactly the two group buttons plus a menu row", () => {
+    const kb = groupPickerKb("en");
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual([
+      `v1:browse:grp:${CategoryGroup.GAME_TOPUP}`,
+      `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}`,
+    ]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:menu:main"]);
+  });
+
+  it("categoryPickerKb lays categories out two per row plus a back/menu row", () => {
+    const kb = categoryPickerKb(
+      [
+        { id: 1, name: "Mobile Legends", emoji: "🎮" },
+        { id: 2, name: "Free Fire", emoji: null },
+        { id: 3, name: "PUBG Mobile", emoji: "🎯" },
+      ],
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of categories + trailing back/menu row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:1", "v1:browse:cat:2"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:3"]);
+    expect(rows[0]![0]!.text).toBe("🎮 Mobile Legends");
+    expect(rows[0]![1]!.text).toBe("Free Fire");
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+
+  it("categoryPickerKb with a single category renders one row plus the trailing row", () => {
+    const kb = categoryPickerKb([{ id: 1, name: "Solo Category", emoji: null }], "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+
+  it("categoryPickerKb with an empty array still renders the trailing back/menu row, never a dead end", () => {
+    const kb = categoryPickerKb([], "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
   });
 });
 

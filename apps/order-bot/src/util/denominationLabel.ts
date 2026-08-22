@@ -1,3 +1,6 @@
+import type { Decimal } from "@app/core/money";
+import { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
+
 /**
  * Concise denomination-picker button label: pulls a leading/embedded
  * quantity to the front, and collapses any leftover descriptor down to the
@@ -39,4 +42,28 @@ function appendDiamondSuffix(text: string): string {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface GameTopUpDenomLike {
+  qtyValue: number | null;
+  qtyUnit: string | null;
+  durationLabel: string;
+  name: string;
+}
+
+/**
+ * Compact "<qty> <unit> — <price>" denomination button label for Game Top Up
+ * SKUs, optionally prefixed with the parent Product's gameVariantEmoji.
+ * Falls back to the existing plain durationLabel||name whenever
+ * qtyValue/qtyUnit is unset (non-Game-Top-Up denominations, or a Game Top Up
+ * SKU an admin hasn't backfilled yet).
+ */
+export function gameTopUpDenomLabel(
+  d: GameTopUpDenomLike,
+  unitPrice: Decimal.Value,
+  variantEmoji?: string | null,
+): string {
+  if (d.qtyValue == null || !d.qtyUnit) return d.durationLabel || d.name;
+  const label = `${formatCompactQty(d.qtyValue)} ${d.qtyUnit} — ${formatCompactPrice(unitPrice)}`;
+  return variantEmoji ? `${variantEmoji} ${label}` : label;
 }

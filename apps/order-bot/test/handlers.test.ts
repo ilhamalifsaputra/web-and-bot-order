@@ -42,7 +42,7 @@ import {
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb, gameVariantPickerKb, gameRegionPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -1018,6 +1018,23 @@ describe("denomination picker", () => {
     expect(member2.text).toBe("1 Month");
   });
 
+  it("denominationPickerKb prefers buttonLabel over formatDenominationLabel when present", () => {
+    const kb = denominationPickerKb(
+      [
+        { id: 1, name: "A", durationLabel: "7 day", buttonLabel: "1.58K Bonds — Rp79K" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
+      ],
+      99,
+      "Test Product",
+      "en",
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
+    expect(member1.text).toBe("1.58K Bonds — Rp79K"); // buttonLabel wins, no formatDenominationLabel call
+    expect(member2.text).toBe("1 Month"); // no buttonLabel → falls back to existing behavior
+  });
+
   it("browseProduct surfaces the denomination picker for a multi-denomination Product", async () => {
     const { product, m1, m2 } = await makeProductWithTwo();
     const { ctx, sink } = customerCtx();
@@ -1123,6 +1140,80 @@ describe("group and category pickers", () => {
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows.length).toBe(1);
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+});
+
+// ===========================================================================
+// gameVariantPickerKb / gameRegionPickerKb (Game Top Up variant/region picker
+// screens — Task 11; a LATER task wires these into actual handlers).
+// ===========================================================================
+
+describe("game variant and region pickers", () => {
+  it("gameVariantPickerKb lays out 3 entries as two rows plus a back row", () => {
+    const kb = gameVariantPickerKb(
+      [
+        { label: "Mobile Legends", emoji: "🎮" },
+        { label: "Free Fire", emoji: null },
+        { label: "PUBG Mobile", emoji: "🎯" },
+      ],
+      5,
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of variants + trailing back row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0", "v1:browse:gvar:5:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:2"]);
+    expect(rows[0]![0]!.text).toBe("🎮 Mobile Legends");
+    expect(rows[0]![1]!.text).toBe("Free Fire");
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:5"]);
+  });
+
+  it("gameVariantPickerKb with a single entry renders one row plus the trailing back row", () => {
+    const kb = gameVariantPickerKb([{ label: "Solo Variant", emoji: null }], 5, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:5"]);
+  });
+
+  it("gameVariantPickerKb with 2 entries renders exactly one variant row plus the back row", () => {
+    const kb = gameVariantPickerKb(
+      [
+        { label: "A", emoji: null },
+        { label: "B", emoji: null },
+      ],
+      5,
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0", "v1:browse:gvar:5:1"]);
+  });
+
+  it("gameRegionPickerKb lays out 3 entries as two rows plus a back row, button text is the raw region string", () => {
+    const kb = gameRegionPickerKb(["Asia", "Europe", "America"], 5, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of regions + trailing back row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:2"]);
+    expect(rows[0]![0]!.text).toBe("Asia");
+    expect(rows[0]![1]!.text).toBe("Europe");
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvars:5"]);
+  });
+
+  it("gameRegionPickerKb with a single entry renders one row plus the trailing back row", () => {
+    const kb = gameRegionPickerKb(["Solo Region"], 5, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvars:5"]);
+  });
+
+  it("gameRegionPickerKb with 2 entries renders exactly one region row plus the back row", () => {
+    const kb = gameRegionPickerKb(["A", "B"], 5, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
   });
 });
 

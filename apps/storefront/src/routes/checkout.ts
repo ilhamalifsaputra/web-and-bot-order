@@ -1367,7 +1367,14 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // "unrecognised status treated as Pending" philosophy elsewhere.
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
-      await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+      try {
+        await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+      } catch (recordErr) {
+        // Same guarantee as the Gagal/Pending branches below: a failure
+        // writing this outcome (e.g. the DB update itself) must not surface
+        // as an HTTP 500, or Digiflazz will retry-storm this endpoint.
+        logger.warn({ err: recordErr }, `Digiflazz callback failed to record a transient re-check failure for order ${order.orderCode} — the live re-check's own failure was still logged above`);
+      }
       return reply.send({ status: "ok" });
     }
 

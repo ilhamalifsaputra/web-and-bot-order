@@ -508,6 +508,30 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.digiflazzFailureDetail).toContain("Digiflazz transaction failed: request timed out");
   });
 
+  // Regression guard (review of Task 7's first pass): the transient-error
+  // catch's own recordDigiflazzOutcome call was originally unguarded, so a
+  // failure writing that outcome (e.g. the DB update itself) would propagate
+  // out of the route handler uncaught and surface as an HTTP 500 — telling
+  // Digiflazz to retry-storm this endpoint, exactly what this whole handler
+  // exists to avoid. Mirrors the sibling "Gagal callback whose
+  // recordDigiflazzOutcome write throws still 200s" test above.
+  it("a live-re-check-throws callback whose recordDigiflazzOutcome write also throws still 200s instead of 500ing", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFLIVEFAILTHROWS");
+    digiflazzSupplierMock.createTransaction.mockRejectedValue(new Error("Digiflazz transaction failed: request timed out"));
+    const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
+
+    vi.mocked(recordDigiflazzOutcome).mockImplementationOnce(() => {
+      throw new Error("transient DB write failure");
+    });
+
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+  });
+
   // Task 7 cross-entry-point proof: the poller (dispatchPendingDigiflazzOrders)
   // and this webhook's live re-check both funnel into the SAME
   // recordDigiflazzOutcome — this test proves that claim is real by having

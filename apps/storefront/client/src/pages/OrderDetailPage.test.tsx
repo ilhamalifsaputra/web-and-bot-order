@@ -330,6 +330,22 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
     expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
   });
 
+  // Final whole-branch review I-2 fix: the base GET now returns digiflazz_status
+  // directly (mapped, buyer-safe) rather than the SSE push being the only
+  // source for it — proving the fallback actually works (not just that the
+  // field exists in the type) requires a fixture with digiflazz_status
+  // already present on the INITIAL fetch and NO SSE push at all.
+  it("shows the digiflazz_pending_body text from the initial fetch alone, with no SSE push at all", async () => {
+    renderDetail(() => processingData({ order: { ...baseOrder, status: "PROCESSING", digiflazz_status: "pending" } }));
+    await screen.findAllByText("Being prepared");
+
+    expect(
+      await screen.findByText("We're finalizing your top-up with our supplier. This usually only takes a moment."),
+    ).toBeInTheDocument();
+    // No SSE frame was ever emitted — MockEventSource.instances[0].emit(...)
+    // deliberately never called in this test.
+  });
+
   it("shows the digiflazz_pending_body text once the SSE stream pushes digiflazzStatus: pending", async () => {
     renderDetail(() => processingData());
     await screen.findAllByText("Being prepared");

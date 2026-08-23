@@ -2252,6 +2252,42 @@ describe("/api/v1/account twins", () => {
       expect(probe.statusCode).toBe(404);
     });
 
+    // Final whole-branch review I-2 fix: the base GET must include the
+    // buyer-safe digiflazz_status directly, not rely on the SSE stream as
+    // the only source for it — otherwise the storefront's 5s poll wipes the
+    // SSE-merged value back to undefined on every tick until the status
+    // genuinely changes again (which can be many minutes away). Mirrors
+    // Task 11's own apiOrderDigiflazzStream.test.ts assertions: the mapped
+    // buyer-safe value, and the raw internal string never appearing in the
+    // response body at all.
+    it("GET /account/orders/:code includes a buyer-safe digiflazz_status mapped from the internal value", async () => {
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-DGZ-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "15000",
+          totalAmount: "15000",
+          status: OrderStatus.PROCESSING,
+          digiflazzStatus: "pending_at_supplier",
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, unitPrice: "15000", warrantyDaysSnapshot: 30 },
+      });
+
+      const pending = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json().order.digiflazz_status).toBe("pending");
+      expect(JSON.stringify(pending.json())).not.toContain("pending_at_supplier");
+
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed" } });
+      const failed = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(failed.json().order.digiflazz_status).toBe("reviewing");
+      // The raw internal "failed" string must never appear anywhere in the
+      // response body — a buyer must never see the word "failed".
+      expect(JSON.stringify(failed.json())).not.toContain("failed");
+    });
+
     // Task 4: a WALLET_TOPUP order (zero OrderItem rows) isn't a "My Orders"
     // purchase — it's already visible via the wallet ledger — so even its
     // own owner gets 404 (never a crash on the empty items array) when

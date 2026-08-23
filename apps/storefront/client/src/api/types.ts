@@ -489,6 +489,19 @@ export interface OrderDetailData {
      * `credentials` instead). */
     delivered_content: string | null;
     items: OrderDetailItem[];
+    /** Buyer-safe Digiflazz dispatch sub-status, pushed live via the
+     * digiflazz/stream SSE endpoint (Task 11) — undefined until the first
+     * push arrives, even for a Digiflazz-routed order. "pending" = still
+     * being processed with the supplier; "reviewing" = the automated
+     * attempt didn't resolve and our team is following up (the calm,
+     * never-alarming buyer-facing framing for what's internally a
+     * terminal dispatch failure — see web.digiflazz_failed_* in
+     * packages/core/locales). Never the raw internal digiflazzStatus
+     * value or any diagnostic text — the SSE route itself already
+     * enforces that mapping server-side (apiOrderDigiflazzStream.ts), this
+     * field's type is just documenting that guarantee on the client side
+     * too. */
+    digiflazz_status?: "pending" | "reviewing" | null;
   };
   delivered: boolean;
   pending_payment: boolean;

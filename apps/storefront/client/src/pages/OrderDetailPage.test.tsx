@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,6 +11,27 @@ vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPatch: vi.fn(),
 }));
+
+// The page opens an SSE connection whenever `processing` is true (useSse,
+// wired inside OrderDetailPage), so every test that renders a processing
+// order needs EventSource stubbed, or it would throw on a real EventSource
+// constructor jsdom doesn't implement.
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  closed = false;
+  url: string;
+  constructor(url: string, _opts?: { withCredentials?: boolean }) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+  emit(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+  }
+}
 
 const context: ShopContext = {
   lang: "en",
@@ -68,6 +89,12 @@ describe("OrderDetailPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.instances = [];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("shows credentials for a delivered order", async () => {
@@ -270,5 +297,88 @@ describe("OrderDetailPage", () => {
     await screen.findByText("Your credentials"); // web.credentials, en.json
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     window.history.pushState({}, "", "/account/orders/ORD1"); // reset for other tests
+  });
+});
+
+describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+    vi.stubGlobal("EventSource", MockEventSource);
+    MockEventSource.instances = [];
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function processingData(overrides: Partial<OrderDetailData> = {}): OrderDetailData {
+    return {
+      order: { ...baseOrder, status: "PROCESSING" },
+      delivered: false,
+      pending_payment: false,
+      processing: true,
+      ...overrides,
+    };
+  }
+
+  it("renders the reassurance card without any digiflazz sub-status line before any SSE push arrives", async () => {
+    renderDetail(() => processingData());
+    expect(await screen.findAllByText("Being prepared")).toHaveLength(2);
+    expect(screen.queryByText("We're finalizing your top-up with our supplier. This usually only takes a moment.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Our team is reviewing your order and will finish it shortly.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/undefined/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the digiflazz_pending_body text once the SSE stream pushes digiflazzStatus: pending", async () => {
+    renderDetail(() => processingData());
+    await screen.findAllByText("Being prepared");
+
+    MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "pending" });
+
+    expect(
+      await screen.findByText("We're finalizing your top-up with our supplier. This usually only takes a moment."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the digiflazz_failed_body text once the SSE stream pushes digiflazzStatus: reviewing, and never the word 'failed'", async () => {
+    renderDetail(() => processingData());
+    await screen.findAllByText("Being prepared");
+
+    MockEventSource.instances[0]!.emit({ orderStatus: "PROCESSING", digiflazzStatus: "reviewing" });
+
+    expect(
+      await screen.findByText("Our team is reviewing your order and will finish it shortly."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/failed/i)).not.toBeInTheDocument();
+  });
+
+  it("does not open an SSE connection when the order is not processing", async () => {
+    renderDetail(() => ({
+      order: { ...baseOrder, items: [{ ...baseOrder.items[0], credentials: "user:pass" }] },
+      delivered: true,
+      pending_payment: false,
+      processing: false,
+    }));
+    await screen.findByText("Your credentials");
+    expect(MockEventSource.instances).toHaveLength(0);
+  });
+
+  it("ignores orderStatus from the SSE push — the page still shows the processing card, not a delivered view", async () => {
+    renderDetail(() => processingData());
+    await screen.findAllByText("Being prepared");
+
+    MockEventSource.instances[0]!.emit({ orderStatus: "DELIVERED", digiflazzStatus: "pending" });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("We're finalizing your top-up with our supplier. This usually only takes a moment."),
+      ).toBeInTheDocument(),
+    );
+    // Still the processing reassurance card, not the delivered-order view —
+    // proving the merge did NOT overwrite order.status/processing/delivered
+    // from the SSE push's orderStatus field.
+    expect(screen.getAllByText("Being prepared").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Your credentials")).not.toBeInTheDocument();
   });
 });

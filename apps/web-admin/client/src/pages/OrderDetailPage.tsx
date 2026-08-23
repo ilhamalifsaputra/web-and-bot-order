@@ -55,9 +55,16 @@ interface OrderDetail {
    * always null for auto-delivered orders, which deliver via stockItem
    * instead. The admin's own audit view of what was sent to the buyer. */
   deliveredContent: string | null;
-  /** Populated only once the SSE stream (useSse below) delivers its first
-   * push — undefined until then, even for a Digiflazz-routed order. Not
-   * part of the base GET /api/orders/:orderId response. */
+  /** The base GET /api/orders/:orderId response already carries these
+   * (getOrder's `include: fullInclude` returns every Order scalar column,
+   * not a narrowing `select`) — `optional` here is only because the field
+   * predates that response's own type, not because it's ever really absent
+   * for a real order. `useSse` (below) keeps these current between
+   * fetches for a Digiflazz-routed order; on a genuine order.status
+   * change it triggers a full refetch (queryClient.invalidateQueries)
+   * rather than merging status directly, so these four fields and the
+   * status-derived canAct/canFulfill/canReject/isDelivered booleans can
+   * never show a stale combination for longer than one refetch. */
   digiflazzStatus?: string | null;
   digiflazzAttempts?: number;
   digiflazzNextRecheckAt?: string | null;

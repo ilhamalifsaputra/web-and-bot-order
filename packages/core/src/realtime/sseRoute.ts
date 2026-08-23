@@ -225,6 +225,15 @@ export function streamSse<T>(
 
       writeData(initialValue);
 
+      // writeData's own JSON.stringify guard closes the connection
+      // (cleanup()) on a failure to serialize initialValue, rather than
+      // throwing — so unlike the try/catches above, that failure surfaces
+      // as `closed` becoming true rather than a caught exception here. Bail
+      // out the same way the two blocks above do, or subscribe()/setInterval
+      // below would register a listener and a timer against an already-torn
+      // -down connection that nothing will ever clear.
+      if (closed) return;
+
       try {
         unsubscribe = opts.subscribe(() => {
           void reReadAndMaybePush();

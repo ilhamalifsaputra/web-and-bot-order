@@ -122,21 +122,63 @@ A fresh worktree is a fresh checkout — the ignored files do not come with it:
 ## Graphify knowledge graph
 
 This project has a graphify knowledge graph at `graphify-out/` (committed to
-git, kept fresh by a `Stop` hook in `.claude/settings.json` that runs
+git, kept fresh two ways: a `Stop` hook in `.claude/settings.json` that runs
 `graphify update .` in the background after any turn with uncommitted
-changes — no manual update needed).
+changes, and a repo-wide `post-commit`/`post-checkout` git hook. **The git
+hooks only fire from the main checkout, not from worktrees** — a worktree
+session that needs fresher results mid-task should run
+`graphify update . --force` itself rather than assume the hook covers it).
 
 **For codebase/architecture questions, consult it before grepping or reading
 raw files** — it returns a scoped answer instead of burning tokens on raw
 file contents:
-- `graphify query "<question>"` — general codebase/architecture questions
+- `graphify query "<question>"` — general codebase/architecture questions;
+  once you know the relevant community/relation, add `--context <relation>`
+  to target it instead of eating the `--budget` on an undifferentiated batch
 - `graphify path "<A>" "<B>"` — how two things relate
 - `graphify explain "<concept>"` — focused explanation of one concept/symbol
 - `graphify-out/GRAPH_REPORT.md` — only for broad architecture review, or
   when query/path/explain don't surface enough
 
+`.graphifyignore` excludes `package.json`/`tsconfig*.json`/lockfiles/
+`components.json` from extraction — their JSON keys (`dependencies`,
+`scripts`, `compilerOptions`, ...) have no edges to real code and were
+showing up as junk community-hub names in `GRAPH_REPORT.md`. Don't remove
+those excludes without re-checking the "Community Hubs" list stays clean.
+
+Community labels come from `graphify label`, which calls an LLM and costs
+tokens to (re)generate. No cloud API key (`GEMINI_API_KEY` etc.) is
+configured for graphify's backend, so re-labeling today means either setting
+one (cheapest) or using the `claude-cli` backend, which shells out to this
+CLI and spends Claude usage instead. Don't re-run `graphify label`
+speculatively — only when hub names in `GRAPH_REPORT.md` have visibly
+degraded back to raw filenames/JSON keys.
+
 Fall back to Glob/Grep/Read when the question is about exact current file
 contents (e.g. verifying a specific line before editing), not architecture.
+
+## Context7 (library/framework docs)
+
+Use the `context7-mcp` skill (or the `context7` MCP tools directly) before
+guessing at an external library's current API — training data goes stale,
+and this stack moves fast (grammY, Fastify, Prisma, React, Tailwind, Radix).
+Resolve the library ID, then pull docs scoped to the specific API surface
+you're touching rather than the whole doc set. Skip it for this repo's own
+code (graphify/Grep already cover that) and for stable APIs you're already
+confident about — it's for closing a real knowledge gap, not a default
+first step.
+
+## Sequential-thinking (structured reasoning)
+
+A `sequential-thinking` MCP server is installed for problems that genuinely
+need an explicit, revisable chain of intermediate steps — a root cause with
+several competing hypotheses, a design tradeoff spanning multiple files, a
+plan whose steps depend on each other in ways worth double-checking before
+committing to them. It's not a default for every task: anything with a
+dedicated skill (`systematic-debugging`, `writing-plans`, `brainstorming`)
+should use that skill's process first, and reach for sequential-thinking
+only if its structure doesn't fit the problem. Skip it for straightforward
+or mechanical work — it costs tokens without adding value there.
 
 ## Task tracking
 

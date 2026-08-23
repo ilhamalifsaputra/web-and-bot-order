@@ -1,0 +1,10 @@
+# Boilerplate config files whose JSON keys (dependencies, scripts, exports,
+# compilerOptions, include, ...) were being extracted as graph nodes with no
+# edges to real code — pure noise that polluted community-hub labels in
+# GRAPH_REPORT.md across every app/package in the monorepo.
+**/package.json
+**/package.prod.json
+**/package-lock.json
+**/pnpm-lock.yaml
+**/tsconfig*.json
+**/components.json

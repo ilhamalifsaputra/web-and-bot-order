@@ -402,26 +402,26 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         // provider has no credentials configured is skipped up front, never
         // even added to `entries` — that's a config gap, not a lookup
         // failure, so it shouldn't count against the provider's turn. ---
-        const mappings = await getEnabledProviderMappingsForGame(prisma, gameId);
-        const entries: NicknameServiceProviderEntry[] = [];
-        for (const mapping of mappings) {
-          let provider: NicknameServiceProviderEntry["provider"] | null = null;
-          if (mapping.provider === "kokinpay") {
-            const creds = await getKokinpayCreds(prisma);
-            if (creds) provider = createKokinpayNicknameProvider(creds);
-          } else if (mapping.provider === "vipreseller") {
-            const creds = await getVipResellerCreds(prisma);
-            if (creds) provider = createVipResellerNicknameProvider(creds);
-          } else if (mapping.provider === "melostore") {
-            const creds = await getMelostoreCreds(prisma);
-            if (creds) provider = createMelostoreNicknameProvider(creds);
-          }
-          // An unrecognized `mapping.provider` string (shouldn't happen —
-          // admin UI only writes the three known values) is silently
-          // skipped, same as a mapping with no credentials configured.
-          if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
-        }
         try {
+          const mappings = await getEnabledProviderMappingsForGame(prisma, gameId);
+          const entries: NicknameServiceProviderEntry[] = [];
+          for (const mapping of mappings) {
+            let provider: NicknameServiceProviderEntry["provider"] | null = null;
+            if (mapping.provider === "kokinpay") {
+              const creds = await getKokinpayCreds(prisma);
+              if (creds) provider = createKokinpayNicknameProvider(creds);
+            } else if (mapping.provider === "vipreseller") {
+              const creds = await getVipResellerCreds(prisma);
+              if (creds) provider = createVipResellerNicknameProvider(creds);
+            } else if (mapping.provider === "melostore") {
+              const creds = await getMelostoreCreds(prisma);
+              if (creds) provider = createMelostoreNicknameProvider(creds);
+            }
+            // An unrecognized `mapping.provider` string (shouldn't happen —
+            // admin UI only writes the three known values) is silently
+            // skipped, same as a mapping with no credentials configured.
+            if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
+          }
           const result = await new NicknameService(entries).checkNickname({ target: accountId, server });
           if (result.status === "found") {
             response.available = true;
@@ -431,7 +431,12 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           // "not_found" / "no_providers_configured" → response stays
           // { available: false }, never surfaced as an error to the buyer.
         } catch (err) {
-          // Defense in depth — every adapter (kokinpayProvider.ts,
+          // Widened to also cover getEnabledProviderMappingsForGame and the
+          // get*Creds calls above (not just checkNickname) — an unexpected
+          // DB-layer error from either of those must degrade silently too,
+          // the same "never throw to the buyer" contract as every other
+          // branch in this handler. Defense in depth for checkNickname
+          // itself — every adapter (kokinpayProvider.ts,
           // vipresellerProvider.ts, melostoreProvider.ts) already catches its
           // own underlying HTTP client's throw and maps it to a
           // NicknameLookupOutcome, so NicknameService.checkNickname should

@@ -480,6 +480,39 @@ describe("POST /api/v1/topup/check-account — gameId-based multi-provider (Task
     expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
   });
 
+  it("getEnabledProviderMappingsForGame throwing (DB-layer error, not a lookup error) degrades to available:false, never a 5xx — review fix, Important finding", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-db-error",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+
+    // Simulate a transient DB failure in the mapping-fetch step itself
+    // (BEFORE the NicknameService.checkNickname call the old try/catch
+    // boundary stopped at) — the widened try/catch must still catch this and
+    // degrade silently, not let it propagate to the route's global error
+    // handler as a 500. Same restore-by-hand pattern as
+    // packages/db/src/crud/users.test.ts's "db.user.update fails" case:
+    // mockRestore alone leaves the Prisma delegate method undefined since
+    // it's served through a proxy, not an own property.
+    const originalFindMany = prisma.providerGameMapping.findMany.bind(prisma.providerGameMapping);
+    const findManySpy = vi
+      .spyOn(prisma.providerGameMapping, "findMany")
+      .mockRejectedValueOnce(new Error("Simulated DB read timeout"));
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "999" }, "10.0.9.9");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+
+    findManySpy.mockRestore();
+    (prisma.providerGameMapping as unknown as Record<string, unknown>).findMany = originalFindMany;
+  });
+
   it("gameId AND legacy nicknameCheckGameCode both set: the gameId path is used, the legacy KokinPay call is never made", async () => {
     const { gameId, denominationId } = await makeGameDenomination({
       nicknameCheckGameCode: "legacy-code-should-not-run",

@@ -114,6 +114,7 @@ export interface HealthStatus {
   tokopay: HealthEntry;
   paydisini: HealthEntry;
   nowpayments: HealthEntry;
+  digiflazzCatalogSync: HealthEntry;
 }
 
 export interface TopProductRow {

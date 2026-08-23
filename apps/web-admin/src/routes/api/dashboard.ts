@@ -45,6 +45,7 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
+  getDigiflazzCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -166,7 +167,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
     const toEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
 
-    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds] =
+    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds, digiflazzCreds] =
       await Promise.all([
         resolveBotCredentials(prisma),
         resolveBinanceInternalConfig(prisma),
@@ -175,6 +176,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         getTokopayCreds(prisma),
         getPaydisiniCreds(prisma),
         getNowpaymentsCreds(prisma),
+        getDigiflazzCreds(prisma),
       ]);
     // Same credential gate the QRIS watchdogs use (tokopayPollWatchdog and its
     // two twins, apps/order-bot/src/jobs/index.ts) — a rail the shop has never
@@ -182,8 +184,9 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const tokopayEnabled = tokopayCreds !== null;
     const paydisiniEnabled = paydisiniCreds !== null;
     const nowpaymentsEnabled = nowpaymentsCreds !== null;
+    const digiflazzEnabled = digiflazzCreds !== null;
 
-    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth] =
+    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth, digiflazzCatalogSyncHealth] =
       await Promise.all([
         binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
         bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
@@ -191,6 +194,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         tokopayEnabled ? getPollHealth(prisma, "tokopay") : null,
         paydisiniEnabled ? getPollHealth(prisma, "paydisini") : null,
         nowpaymentsEnabled ? getPollHealth(prisma, "nowpayments") : null,
+        digiflazzEnabled ? getPollHealth(prisma, "digiflazzCatalogSync") : null,
       ]);
 
     return {
@@ -216,6 +220,12 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled, staleMs: TOKOPAY_POLL_STALE_MS })),
       paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled, staleMs: PAYDISINI_POLL_STALE_MS })),
       nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled, staleMs: NOWPAYMENTS_POLL_STALE_MS })),
+      // The hourly catalog re-sync (resyncDigiflazzCatalog) — no bespoke
+      // staleMs override needed: unlike the QRIS rails' multi-minute
+      // reconcile cycles, this job is a single price-list fetch + a batch
+      // of local writes, so evaluatePollHealth's default crypto-rail
+      // staleness window is the right fit.
+      digiflazzCatalogSync: toEntry(evaluatePollHealth(digiflazzCatalogSyncHealth, { enabled: digiflazzEnabled })),
     };
   });
 

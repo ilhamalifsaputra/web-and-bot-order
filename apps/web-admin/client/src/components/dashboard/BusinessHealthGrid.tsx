@@ -12,6 +12,7 @@ const SERVICES: Array<{ key: keyof HealthStatus; label: string }> = [
   { key: "tokopay", label: "TokoPay" },
   { key: "paydisini", label: "PayDisini" },
   { key: "nowpayments", label: "NOWPayments" },
+  { key: "digiflazzCatalogSync", label: "Digiflazz Catalog Sync" },
 ];
 
 const LABEL: Record<HealthLevel, string> = {

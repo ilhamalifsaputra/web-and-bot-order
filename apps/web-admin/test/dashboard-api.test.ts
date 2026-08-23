@@ -16,6 +16,8 @@ import {
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
   POLL_HEALTH_KEYS,
+  DIGIFLAZZ_USERNAME_KEY,
+  DIGIFLAZZ_API_KEY_KEY,
 } from "@app/db";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { TOKOPAY_POLL_STALE_MS } from "@app/core/payments/reconcileCycleBudget";
@@ -198,6 +200,32 @@ describe("GET /api/dashboard/health", () => {
     expect(body.tokopay.status).toBe("unmonitored");
     expect(body.paydisini.status).toBe("unmonitored");
     expect(body.nowpayments.status).toBe("unmonitored");
+    expect(body.digiflazzCatalogSync.status).toBe("unmonitored");
+  });
+
+  it("reports digiflazzCatalogSync as green when configured and a recent heartbeat is recorded, red when stale", async () => {
+    await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.digiflazzCatalogSync,
+      JSON.stringify({ lastRun: new Date().toISOString(), consecutiveFailures: 0 }),
+    );
+
+    const healthy = await get("/api/dashboard/health", cookie);
+    expect(healthy.statusCode).toBe(200);
+    expect(healthy.json().digiflazzCatalogSync.status).toBe("green");
+
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.digiflazzCatalogSync,
+      JSON.stringify({ lastRun: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const stale = await get("/api/dashboard/health", cookie);
+    expect(stale.statusCode).toBe(200);
+    expect(stale.json().digiflazzCatalogSync.status).toBe("red");
   });
 
   // The headline bug this task fixes: a poller that is enabled but has gone

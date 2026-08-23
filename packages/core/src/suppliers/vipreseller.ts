@@ -127,3 +127,58 @@ export async function checkGameRegion(
       : null;
   return { countryCode };
 }
+
+export interface VipResellerNicknameResult {
+  nickname: string | null;
+}
+
+/**
+ * ⚠ ASSUMPTION (new, on top of this file's existing top-of-file disclaimer):
+ * the request already asks type:"get-nickname" (see checkGameRegion above);
+ * body.data is expected to carry the nickname string, but its exact key is
+ * UNVERIFIED against a live account — this must be verified before go-live,
+ * same discipline as every other flagged assumption in this file. Added for
+ * the NicknameService multi-provider adapter
+ * (packages/core/src/nickname/vipresellerProvider.ts); does NOT change
+ * checkGameRegion or any of its callers.
+ */
+export async function checkNicknameViaVipReseller(
+  creds: VipResellerCreds,
+  args: { gameCode: string; id: string; server?: string },
+): Promise<VipResellerNicknameResult> {
+  const sign = createHash("md5").update(`${creds.apiId}${creds.apiKey}`).digest("hex");
+  const body = await fetchVipResellerJson(
+    `${API_BASE}/game-feature`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        key: creds.apiKey,
+        sign,
+        type: "get-nickname",
+        code: args.gameCode,
+        target: args.id,
+        ...(args.server ? { additional_target: args.server } : {}),
+      }),
+    },
+    HTTP_TIMEOUT_MS.gatewayRead, // a live-typing UX convenience, not a checkout-blocking call — bounded, but no need for the longer checkout write budget
+  );
+
+  if (body.result !== true) {
+    // Not-found, invalid code, or any other non-success outcome — a normal
+    // "no nickname available" result, never a thrown error (same fail-safe
+    // convention as checkGameRegion above).
+    return { nickname: null };
+  }
+  const data = body.data;
+  if (typeof data === "string") {
+    return { nickname: data };
+  }
+  if (typeof data === "object" && data !== null && typeof (data as Record<string, unknown>).nickname === "string") {
+    return { nickname: (data as Record<string, unknown>).nickname as string };
+  }
+  // Missing/malformed body.data — degrade to "no nickname available" rather
+  // than throw (see this function's ⚠ ASSUMPTION above about the unverified
+  // exact key).
+  return { nickname: null };
+}

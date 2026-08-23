@@ -177,6 +177,58 @@ model Category {
   @@map("categories")
 }
 
+/// Top-level catalog entity for nickname-checkable games (e.g. Mobile Legends,
+/// COD, PUBG). One Game may be sold through multiple providers, each with a
+/// different provider-specific code — that mapping lives in ProviderGameMapping.
+/// Task 2 will add Product.gameId to tie catalog products to a game.
+model Game {
+  id                Int      @id @default(autoincrement())
+  slug              String   @unique(map: "ix_games_slug")
+  name              String
+  /// Optional category/classification within the game system (e.g. "multiplayer", "battle_royale").
+  category          String?
+  /// Whether this game supports buyer nickname checks (third-party API lookups).
+  nicknameSupported Boolean  @default(true) @map("nickname_supported")
+  /// Whether this game requires a zone/region code from the buyer at checkout.
+  requiresZone      Boolean  @default(false) @map("requires_zone")
+  /// Whether this game requires a server/realm code from the buyer at checkout.
+  requiresServer    Boolean  @default(false) @map("requires_server")
+  /// Soft-enabled toggle; false removes the game from storefront/admin catalogs.
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  providerMappings ProviderGameMapping[]
+
+  @@map("games")
+}
+
+/// Maps a Game to a provider's game code, supporting multi-provider catalog
+/// routing. Each row pairs a game with a provider (kokinpay, vipreseller, melostore)
+/// and the provider's internal game code; enabled + priority govern which providers
+/// are tried and in what order.
+model ProviderGameMapping {
+  id               Int      @id @default(autoincrement())
+  gameId           Int      @map("game_id")
+  /// Provider identifier: "kokinpay" | "vipreseller" | "melostore".
+  provider         String
+  /// Provider's internal code for this game (used in API calls to that provider).
+  providerGameCode String   @map("provider_game_code")
+  /// false temporarily disables this provider for a game (soft-disable without deleting).
+  enabled          Boolean  @default(true)
+  /// Ascending priority order; 0 = highest priority, tried first. Used to rank
+  /// which provider's API is queried for nickname checks and order fulfillment.
+  priority         Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([gameId, provider], map: "ix_provider_game_mappings_game_provider")
+  @@index([gameId, enabled, priority], map: "ix_provider_game_mappings_game_priority")
+  @@map("provider_game_mappings")
+}
+
 /// Mid-tier of the catalog (Category → **Product** → Denomination). The
 /// customer-facing item (e.g. "CapCut Pro"); carries image/description/nav only.
 /// NO price, NO stock — those live on each child Denomination (the sellable SKU).

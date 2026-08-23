@@ -144,11 +144,22 @@ export function OrderDetailPage() {
         digiflazzNextRecheckAt: string | null;
         digiflazzFailureDetail: string | null;
       };
+      if (snapshot.orderStatus !== prev.order.status) {
+        // The order's overall status changed (e.g. a Sukses-driven
+        // DELIVERED transition) — canAct/canCredit/canFulfill/canReject/
+        // isDelivered are server-computed siblings of order.status, not
+        // derivable from this SSE snapshot alone, so a partial merge here
+        // would desync them from the badge (Fix 3, final review finding
+        // I-3). Invalidate instead: the next refetch brings status and
+        // every derived boolean back in lockstep. The four digiflazz*
+        // fields below still update immediately via the merge in the
+        // meantime, so the sub-status badge doesn't wait on the refetch.
+        void qc.invalidateQueries({ queryKey: ["order", orderId] });
+      }
       return {
         ...prev,
         order: {
           ...prev.order,
-          status: snapshot.orderStatus,
           digiflazzStatus: snapshot.digiflazzStatus,
           digiflazzAttempts: snapshot.digiflazzAttempts,
           digiflazzNextRecheckAt: snapshot.digiflazzNextRecheckAt,

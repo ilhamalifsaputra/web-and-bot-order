@@ -15,25 +15,6 @@ import {
   NOWPAYMENTS_POLL_STALE_MS,
 } from "@app/core/payments/reconcileCycleBudget";
 import { displayDateTime } from "../../dateDisplay";
-
-/**
- * Staleness threshold for the digiflazzCatalogSync Business Health rail —
- * see the doc comment at this constant's one call site (below, inside the
- * /api/dashboard/health handler) for the full "why not the crypto-rail
- * default" derivation. The hourly cron (apps/order-bot/src/jobs/index.ts's
- * scheduleDigiflazzCatalogSync, "15 * * * *") is the source of truth for
- * "1 hour" — this constant is not derived from a shared config value the
- * way the QRIS rails' own staleMs is (QRIS_STALE_MARGIN_MS derives from
- * config.POLL_INTERVAL_SECONDS), since the cron expression itself isn't
- * exposed as one. 70 minutes = the hourly cadence + a flat 10-minute
- * margin: generous enough to absorb one run's own duration (a bounded
- * price-list HTTP fetch plus a batch of local writes — seconds in
- * practice, never remotely close to 10 minutes) plus ordinary process
- * restart/scheduling jitter, while still flipping this card red within
- * ~10 minutes of a genuinely missed hourly run rather than waiting for a
- * second missed run to notice.
- */
-const DIGIFLAZZ_CATALOG_SYNC_STALE_MS = 70 * 60_000;
 import {
   prisma,
   revenueSummary,
@@ -67,6 +48,25 @@ import {
   getDigiflazzCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
+
+/**
+ * Staleness threshold for the digiflazzCatalogSync Business Health rail —
+ * see the doc comment at this constant's one call site (inside the
+ * /api/dashboard/health handler below) for the full "why not the crypto-rail
+ * default" derivation. The hourly cron (apps/order-bot/src/jobs/index.ts's
+ * scheduleDigiflazzCatalogSync, "15 * * * *") is the source of truth for
+ * "1 hour" — this constant is not derived from a shared config value the
+ * way the QRIS rails' own staleMs is (QRIS_STALE_MARGIN_MS derives from
+ * config.POLL_INTERVAL_SECONDS), since the cron expression itself isn't
+ * exposed as one. 70 minutes = the hourly cadence + a flat 10-minute
+ * margin: generous enough to absorb one run's own duration (a bounded
+ * price-list HTTP fetch plus a batch of local writes — seconds in
+ * practice, never remotely close to 10 minutes) plus ordinary process
+ * restart/scheduling jitter, while still flipping this card red within
+ * ~10 minutes of a genuinely missed hourly run rather than waiting for a
+ * second missed run to notice.
+ */
+const DIGIFLAZZ_CATALOG_SYNC_STALE_MS = 70 * 60_000;
 
 function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   const idr = new Decimal(r.revenue_idr);

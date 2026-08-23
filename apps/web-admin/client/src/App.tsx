@@ -4,6 +4,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { DigiflazzSyncPage } from "./pages/DigiflazzSyncPage";
 import { CategoriesPage } from "./pages/CategoriesPage";
+import { GamesPage } from "./pages/GamesPage";
+import { GameDetailPage } from "./pages/GameDetailPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductCreatePage } from "./pages/ProductCreatePage";
 import { DenominationCreatePage } from "./pages/DenominationCreatePage";
@@ -64,6 +66,8 @@ export default function App() {
         {/* Deliberately not nested under /catalog: the sidebar's NavLink matches
             by prefix, so /catalog/categories would light up both entries. */}
         <Route path="/categories" element={<CategoriesPage />} />
+        <Route path="/games" element={<GamesPage />} />
+        <Route path="/games/:gameId" element={<GameDetailPage />} />
         <Route path="/stock" element={<StockPage />} />
         <Route path="/stock/:productId" element={<StockProductPage />} />
         <Route path="/flash-sales" element={<FlashSalesPage />} />

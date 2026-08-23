@@ -16,15 +16,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
-// Wraps (not replaces) the real alertDigiflazzDispatchFailed so a single test
-// below can force it to throw (mockImplementationOnce) — verifying the Gagal
+// Wraps (not replaces) the real recordDigiflazzOutcome so a single test below
+// can force it to throw (mockImplementationOnce) — verifying the Gagal
 // branch's try/catch still 200s — while every other test keeps the real
-// enqueue-alert + audit-log behavior.
+// shared decision logic (attempt/backoff writes, alert-enqueue + audit-log
+// on a terminal outcome) that the poller (dispatchPendingDigiflazzOrders)
+// also goes through.
 vi.mock("@app/db", async (orig) => {
   const actual = await orig<typeof import("@app/db")>();
   return {
     ...actual,
-    alertDigiflazzDispatchFailed: vi.fn(actual.alertDigiflazzDispatchFailed),
+    recordDigiflazzOutcome: vi.fn(actual.recordDigiflazzOutcome),
   };
 });
 // Task 12: the webhook now calls createTransaction as a live re-verification
@@ -49,7 +51,8 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
-  alertDigiflazzDispatchFailed,
+  recordDigiflazzOutcome,
+  dispatchPendingDigiflazzOrders,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
   ADMIN_IDS_KEY,
@@ -352,6 +355,13 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
+    // Task 7: the Gagal branch now goes through recordDigiflazzOutcome (same
+    // shared decision point the poller uses — see digiflazz.test.ts's D3
+    // case for the identical assertion pattern) instead of an inline
+    // alert-only call, so it also writes the terminal digiflazz* fields.
+    expect(updated!.digiflazzStatus).toBe("failed");
+    expect(updated!.digiflazzNextRecheckAt).toBeNull();
+    expect(updated!.digiflazzFailureDetail).toContain("Saldo tidak cukup");
 
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
@@ -362,7 +372,7 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(auditRow).not.toBeNull();
   });
 
-  it("a Gagal callback whose admin alert throws still 200s instead of 500ing", async () => {
+  it("a Gagal callback whose recordDigiflazzOutcome write throws still 200s instead of 500ing", async () => {
     await setSetting(prisma, ADMIN_IDS_KEY, "555");
     const order = await createProcessingDigiflazzOrder("ORD-DFGAGALTHROWS");
     digiflazzSupplierMock.createTransaction.mockResolvedValue({
@@ -374,7 +384,7 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Gagal", message: "Saldo tidak cukup" });
 
-    vi.mocked(alertDigiflazzDispatchFailed).mockImplementationOnce(() => {
+    vi.mocked(recordDigiflazzOutcome).mockImplementationOnce(() => {
       throw new Error("transient DB write failure");
     });
 
@@ -386,7 +396,11 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(updated!.status).toBe("PROCESSING");
   });
 
-  it("a Pending callback takes no action and leaves the order PROCESSING", async () => {
+  // Task 7: unlike before (a bare no-op comment), a Pending callback now
+  // advances the same recordDigiflazzOutcome backoff schedule the poller
+  // uses, so a webhook-driven Pending report stops being invisible to the
+  // realtime status feature.
+  it("a Pending callback advances the backoff schedule via recordDigiflazzOutcome and leaves the order PROCESSING", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFPENDING");
     digiflazzSupplierMock.createTransaction.mockResolvedValue({
       refId: order.orderCode,
@@ -397,12 +411,26 @@ describe("POST /pay/digiflazz/callback", () => {
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
 
+    // This order was created directly (never dispatched by the poller), so
+    // order.digiflazzDispatchedAt is still null and the handler falls back
+    // to `new Date()` as its dispatchedAt anchor — capture "now" here to
+    // check the recheck delta against that same anchor.
+    const before = new Date();
     const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
+    expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated!.digiflazzAttempts).toBe(1);
+    expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
+    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0]
+    // (digiflazzBackoff.ts) — same delta-check pattern as digiflazz.test.ts's
+    // D2 case ("leaves a Pending order PROCESSING with the claim set").
+    const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
   });
 
   // Review fix (Important, post-Task-12): a validly-signed replay for an
@@ -453,11 +481,17 @@ describe("POST /pay/digiflazz/callback", () => {
   // own try/catch already handles). Must not take any delivery action and
   // must still 200 (so Digiflazz doesn't retry-storm the endpoint) — leaving
   // the order PROCESSING for a future callback or the next poller tick.
-  it("leaves the order PROCESSING and still 200s when the live re-check itself throws", async () => {
+  // Task 7: unlike before (a complete no-op on the digiflazz* fields), the
+  // live re-check's HTTP call itself throwing is now recorded via
+  // recordDigiflazzOutcome's "transient_error" kind — the same retryable
+  // treatment dispatchPendingDigiflazzOrders' own catch block gives an
+  // in-flight HTTP failure — while still never surfacing as an HTTP 500.
+  it("leaves the order PROCESSING, records a retryable transient error, and still 200s when the live re-check itself throws", async () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFLIVEFAIL");
     digiflazzSupplierMock.createTransaction.mockRejectedValue(new Error("Digiflazz transaction failed: request timed out"));
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-1" });
 
+    const before = new Date();
     const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
@@ -465,5 +499,58 @@ describe("POST /pay/digiflazz/callback", () => {
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PROCESSING");
     expect(updated!.deliveredContent).toBeNull();
+    expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated!.digiflazzAttempts).toBe(1);
+    expect(updated!.digiflazzNextRecheckAt).not.toBeNull();
+    const deltaMs = updated!.digiflazzNextRecheckAt!.getTime() - before.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    expect(updated!.digiflazzFailureDetail).toContain("Digiflazz transaction failed: request timed out");
+  });
+
+  // Task 7 cross-entry-point proof: the poller (dispatchPendingDigiflazzOrders)
+  // and this webhook's live re-check both funnel into the SAME
+  // recordDigiflazzOutcome — this test proves that claim is real by having
+  // the poller dispatch an order to Pending first (digiflazzAttempts -> 1),
+  // then sending this webhook a Pending callback for the SAME order and
+  // checking digiflazzAttempts continues to 2 rather than resetting to 1,
+  // which would only happen if the webhook ran its own independent counter.
+  it("a webhook Pending report picks up where the poller's own dispatch left off (shared attempt/backoff schedule, not reset)", async () => {
+    const order = await createProcessingDigiflazzOrder("ORD-DFCONTINUE");
+    digiflazzSupplierMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode,
+      status: "Pending",
+      sn: null,
+      message: null,
+      price: null,
+    });
+
+    // The dispatch poller places THIS order and gets Pending back —
+    // digiflazzAttempts becomes 1, mirroring digiflazz.test.ts's "leaves a
+    // Pending order PROCESSING with the claim set" case. Only this test's
+    // own order is asserted on below — dispatchPendingDigiflazzOrders scans
+    // the whole orders table, so other PROCESSING digiflazz-routed orders
+    // left behind by earlier tests in this file may also get swept up in
+    // the same pass; that doesn't affect this order's row.
+    await dispatchPendingDigiflazzOrders(prisma);
+    const afterDispatch = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(afterDispatch!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(afterDispatch!.digiflazzAttempts).toBe(1);
+    expect(afterDispatch!.digiflazzDispatchedAt).not.toBeNull();
+
+    // Now this webhook's own live re-check ALSO reports Pending for the same
+    // order — recordDigiflazzOutcome must continue the same attempt counter/
+    // backoff schedule the poller started (1 -> 2), not restart a second
+    // independent one.
+    const payload = signedPayload({ refId: order.orderCode, status: "Pending" });
+    const res = await app.inject({ method: "POST", url: "/pay/digiflazz/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "ok" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PROCESSING");
+    expect(updated!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(updated!.digiflazzAttempts).toBe(2); // continued, not reset to 1
+    expect(updated!.digiflazzDispatchedAt).toEqual(afterDispatch!.digiflazzDispatchedAt); // same dispatch anchor, unchanged
   });
 });

@@ -66,7 +66,7 @@ import {
   MAX_CART_ORDER_UNITS,
   getDigiflazzCreds,
   fulfillDigiflazzOrder,
-  alertDigiflazzDispatchFailed,
+  recordDigiflazzOutcome,
   resolveSingleDigiflazzItem,
   buildDigiflazzCustomerNo,
 } from "@app/db";
@@ -1341,6 +1341,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
 
+    // By the time a genuine Digiflazz webhook can exist for this refId,
+    // this shop must already have called createTransaction for it at least
+    // once (either the dispatch poller or an earlier webhook call) — so
+    // digiflazzDispatchedAt should always be set here. The `?? new Date()`
+    // fallback is defensive only (should never actually trigger) — see
+    // dispatchPendingDigiflazzOrders' own identical pattern for a fresh
+    // dispatch, which this mirrors.
+    const dispatchedAt = order.digiflazzDispatchedAt ?? new Date();
+
     let result: DigiflazzTransactionResult;
     try {
       result = await createDigiflazzTransaction(creds, {
@@ -1358,6 +1367,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // "unrecognised status treated as Pending" philosophy elsewhere.
       const message = err instanceof Error ? err.message : String(err);
       logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
+      await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
       return reply.send({ status: "ok" });
     }
 
@@ -1375,25 +1385,30 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
       }
     } else if (result.status === "Gagal") {
-      // Same "needs a human" alert dispatchPendingDigiflazzOrders itself
-      // raises when Digiflazz reports Gagal synchronously — reused here
-      // rather than duplicated so the alert text/audit trail stay identical
-      // regardless of which path (poller vs. this webhook) sees the failure.
       try {
-        await alertDigiflazzDispatchFailed(
+        await recordDigiflazzOutcome(
           prisma,
           order,
-          `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}`,
+          { kind: "terminal", reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}` },
+          dispatchedAt,
         );
       } catch (err) {
-        // Same guarantee as the Sukses branch above: a transient failure here
-        // (e.g. the admin-alert/audit-log write) must not surface as an HTTP
-        // 500, or Digiflazz will retry-storm this endpoint.
-        logger.warn({ err }, `Digiflazz callback failed to alert admins for order ${order.orderCode} — Gagal status was still reported`);
+        // Same guarantee as the Sukses branch above: a transient failure
+        // here (e.g. the admin-alert/audit-log write inside
+        // recordDigiflazzOutcome) must not surface as an HTTP 500, or
+        // Digiflazz will retry-storm this endpoint.
+        logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
+      }
+    } else if (result.status === "Pending") {
+      // Unlike before this task, a webhook-reported Pending now advances
+      // the same backoff schedule the poller uses (recordDigiflazzOutcome),
+      // instead of being invisible to the realtime status feature.
+      try {
+        await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
+      } catch (err) {
+        logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
       }
     }
-    // "Pending" needs no action here — the order stays PROCESSING, awaiting a
-    // future callback or the next dispatch-poller tick.
 
     return reply.send({ status: "ok" });
   });

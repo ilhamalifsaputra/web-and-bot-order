@@ -321,6 +321,43 @@ describe("streamSse", () => {
     expect(subscribe).not.toHaveBeenCalled();
   });
 
+  // Deferred finding #7: writeData's JSON.stringify(value) had no try/catch,
+  // where `value` comes from caller-supplied initial()/poll() functions — a
+  // circular reference or a BigInt would throw synchronously. Thrown from
+  // writeData(initialValue) inside the unawaited connect IIFE, that would be
+  // an unhandled rejection AND leave the hijacked socket open forever (the
+  // same failure mode the initial()-rejects fix above closed for a
+  // different code path). No current caller can trigger this (all three
+  // routes stream plain string/number/null fields from a narrow Prisma
+  // `select`), but this guards the third of three instances of this same
+  // bug class this module has now had fixed.
+  it("cleans up instead of throwing when the pushed value can't be JSON.stringify'd (e.g. a circular reference)", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const initial = vi.fn().mockResolvedValue(circular);
+    const poll = vi.fn();
+    const subscribe = vi.fn().mockReturnValue(() => {});
+    const changed = vi.fn();
+
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial,
+      poll,
+      subscribe,
+      changed,
+    });
+    await done;
+
+    // Cleaned up (response ended) rather than throwing out of the test —
+    // and no partial/fallback frame was ever written, since a value that
+    // can't be JSON-stringified has no safe partial representation.
+    expect(reply.fakeRaw.end).toHaveBeenCalledTimes(1);
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.anything() }),
+      expect.stringContaining("JSON.stringify"),
+    );
+  });
+
   // Regression guard: a caller-supplied changed() that throws must not
   // produce an unhandled rejection from the fire-and-forget poll tick —
   // it should log and skip the tick, same as a poll() rejection.

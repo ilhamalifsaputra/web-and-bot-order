@@ -108,7 +108,26 @@ export function streamSse<T>(
 
     const writeData = (value: T) => {
       if (connectionGone()) return;
-      reply.raw.write(`data: ${JSON.stringify(value)}\n\n`);
+      let frame: string;
+      try {
+        frame = `data: ${JSON.stringify(value)}\n\n`;
+      } catch (err) {
+        // A circular reference or a BigInt in the caller-supplied value would
+        // throw synchronously here — no current caller can trigger this
+        // (all three routes stream plain string/number/null fields from a
+        // narrow Prisma `select`), but this module already fixed two other
+        // instances of exactly this bug class (unguarded opts.changed()/
+        // opts.subscribe() calls) — this is the third, in the one place
+        // those earlier fixes didn't cover. A throw here would otherwise be
+        // an unhandled rejection (this runs inside the unawaited connect
+        // IIFE) AND leave the hijacked socket open forever. No safe partial
+        // frame exists for a value that can't be JSON-stringified, so close
+        // the connection instead of attempting one.
+        logger.warn({ err }, "SSE writeData() failed to JSON.stringify the pushed value; closing the connection");
+        cleanup();
+        return;
+      }
+      reply.raw.write(frame);
       lastPushed = value;
     };
 

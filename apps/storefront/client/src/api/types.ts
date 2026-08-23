@@ -489,6 +489,24 @@ export interface OrderDetailData {
      * `credentials` instead). */
     delivered_content: string | null;
     items: OrderDetailItem[];
+    /** Buyer-safe Digiflazz dispatch sub-status. Final whole-branch review
+     * I-2 fix: the base GET now returns this directly (mapped, buyer-safe,
+     * from apiAccount.ts's own copy of the toBuyerStatus mapping), so it's
+     * populated from the very first fetch, not just once the digiflazz/
+     * stream SSE endpoint (Task 11) delivers its first push. The SSE push
+     * is a pure latency optimization layered on top of an already-complete
+     * value — same pattern the plan intended everywhere else — not the only
+     * source for it. "pending" = still being processed with the supplier;
+     * "reviewing" = the automated attempt didn't resolve and our team is
+     * following up (the calm, never-alarming buyer-facing framing for
+     * what's internally a terminal dispatch failure — see
+     * web.digiflazz_failed_* in packages/core/locales). Never the raw
+     * internal digiflazzStatus value or any diagnostic text — both
+     * apiAccount.ts and apiOrderDigiflazzStream.ts already enforce that
+     * mapping server-side, this field's type is just documenting that
+     * guarantee on the client side too. Still optional in the type
+     * (harmless) so an older/mocked payload without it still type-checks. */
+    digiflazz_status?: "pending" | "reviewing" | null;
   };
   delivered: boolean;
   pending_payment: boolean;

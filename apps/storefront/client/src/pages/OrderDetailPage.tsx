@@ -48,6 +48,7 @@ import { t, currentLang } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useSse } from "../hooks/useSse";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
@@ -68,6 +69,31 @@ export default function OrderDetailPage() {
     // LATEST fetched status on every tick instead of freezing at mount time).
     refetchInterval: (query) => (query.state.data?.order.status === "PROCESSING" ? 5000 : false),
   });
+
+  // Layered on top of, not replacing, the poll above — this only lowers the
+  // latency of the digiflazz_status sub-status line. The merge deliberately
+  // does NOT touch order.status (unlike the admin app's equivalent): this
+  // page's `processing`/`delivered` booleans are computed server-side and
+  // are their own source of truth, so a partial SSE push must never let them
+  // drift out of sync with order.status — only the poll's full refetch (which
+  // always brings status and the derived booleans together) may change them.
+  // Connecting only while `data?.processing` is true also means the
+  // connection self-closes the moment the poll's own refetch reports the
+  // order left PROCESSING — no separate teardown logic needed.
+  useSse<OrderDetailData>(
+    data?.processing ? `/api/v1/account/orders/${code}/digiflazz/stream` : null,
+    ["account-order", code],
+    (prev, next) => {
+      // No base order loaded yet — nothing to merge into. `merge`'s declared
+      // return type is T, but this repo's strict TS config rejects casting
+      // `undefined` straight to OrderDetailData, so route it through
+      // `unknown` — the runtime value is still `undefined`, which
+      // setQueryData leaves as-is (there's nothing cached to overwrite).
+      if (!prev) return prev as unknown as OrderDetailData;
+      const snapshot = next as { orderStatus: string; digiflazzStatus: "pending" | "reviewing" | null };
+      return { ...prev, order: { ...prev.order, digiflazz_status: snapshot.digiflazzStatus } };
+    },
+  );
 
   const [editMode, setEditMode] = useState(false);
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
@@ -187,6 +213,12 @@ export default function OrderDetailPage() {
             <div>
               <div className="text-sm font-semibold text-ink">{t("web.order_processing_title")}</div>
               <div className="text-xs text-ink-soft mt-0.5">{t("web.order_processing_body")}</div>
+              {order.digiflazz_status === "pending" && (
+                <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_pending_body")}</div>
+              )}
+              {order.digiflazz_status === "reviewing" && (
+                <div className="text-xs text-ink-soft mt-1">{t("web.digiflazz_failed_body")}</div>
+              )}
             </div>
           </div>
           <button type="button" className="btn btn-soft btn-sm" disabled={isFetching} onClick={() => void refetch()}>

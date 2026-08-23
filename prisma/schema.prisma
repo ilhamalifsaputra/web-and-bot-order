@@ -503,6 +503,33 @@ model Order {
   /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
   /// can never place the same top-up order twice. Null = not yet dispatched.
   digiflazzDispatchedAt DateTime? @map("digiflazz_dispatched_at")
+  /// Digiflazz supplier-dispatch sub-status — separate from Order.status
+  /// (which stays PROCESSING for every one of these until DELIVERED) because
+  /// Order.status already carries broader lifecycle meaning (PROCESSING/
+  /// DELIVERED/CANCELLED/...) consumed by many other status-driven code paths
+  /// — conflating "how the supplier call is going" into it risks breaking
+  /// those. Null = not yet dispatched (mirrors digiflazzDispatchedAt: null).
+  /// One of: "pending_at_supplier" (dispatched, awaiting Sukses/Gagal —
+  /// covers both a fresh dispatch and a later backoff recheck), "failed"
+  /// (terminal — either an explicit Gagal, or the recheck backoff window was
+  /// exhausted still Pending/erroring; requires manual admin fulfilment,
+  /// same remedy as today). No "delivered" value here — that's
+  /// Order.status=DELIVERED.
+  digiflazzStatus        String?   @map("digiflazz_status")
+  /// Recheck/retry attempt counter for the backoff schedule (0 at first
+  /// dispatch, incremented on each recheck attempt whether it's a re-poll of
+  /// a Pending order or a retry of a transient HTTP/network failure).
+  digiflazzAttempts      Int       @default(0) @map("digiflazz_attempts")
+  /// When this order is next due for a recheck — drives
+  /// dispatchPendingDigiflazzOrders's claim query for the "already dispatched,
+  /// due for a recheck" branch. Null once terminal (delivered or failed) or
+  /// before the first dispatch.
+  digiflazzNextRecheckAt DateTime? @map("digiflazz_next_recheck_at")
+  /// Internal-only diagnostic for admins (AuditLog/admin UI) — the raw
+  /// Digiflazz message or exception text from the last failed attempt. NEVER
+  /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
+  /// text, not this field.
+  digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)
@@ -522,6 +549,7 @@ model Order {
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@index([status, deliveredAt], map: "ix_orders_status_delivered")
   @@index([kind], map: "ix_orders_kind")
+  @@index([digiflazzStatus, digiflazzNextRecheckAt], map: "ix_orders_digiflazz_recheck")
   @@map("orders")
 }
 

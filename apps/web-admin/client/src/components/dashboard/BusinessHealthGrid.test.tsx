@@ -28,6 +28,7 @@ describe("BusinessHealthGrid", () => {
       tokopay: entry("unmonitored"),
       paydisini: entry("unmonitored"),
       nowpayments: entry("unmonitored"),
+      digiflazzCatalogSync: entry("unmonitored"),
     });
     await waitFor(() => expect(screen.getByText("Telegram Bot")).toBeInTheDocument());
     expect(screen.getByText("Binance")).toBeInTheDocument();

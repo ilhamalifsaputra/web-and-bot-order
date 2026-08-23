@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -10,6 +10,27 @@ import { apiPost } from "../api/client";
 vi.mock("../api/client", () => ({
   apiPost: vi.fn(),
 }));
+
+// The page now always opens an SSE connection for live digiflazz sub-status
+// (useSse, wired inside OrderDetailPage), so every test in this file needs
+// EventSource stubbed, or it would throw on a real EventSource constructor
+// jsdom doesn't implement.
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  closed = false;
+  url: string;
+  constructor(url: string, _opts?: { withCredentials?: boolean }) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+  emit(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+  }
+}
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -67,6 +88,12 @@ const ORDER_DETAIL_DATA = {
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(apiPost).mockReset();
+  vi.stubGlobal("EventSource", MockEventSource);
+  MockEventSource.instances = [];
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("OrderDetailPage", () => {
@@ -378,5 +405,188 @@ describe("OrderDetailPage — manual fulfilment", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     expect(screen.queryByText("Delivered Content")).not.toBeInTheDocument();
+  });
+});
+
+describe("OrderDetailPage — realtime digiflazz sub-status", () => {
+  // Final whole-branch review I-3 fix: this SSE push's orderStatus
+  // ("PROCESSING") differs from the initial fetch's order.status
+  // ("PENDING_VERIFICATION"), which now correctly triggers an
+  // invalidateQueries refetch (see Fix 3) — the mocked fetch needs a second
+  // queued response for it. That refetch response carries the same
+  // digiflazz fields the SSE push carried (realistic: GET /api/orders/:id
+  // already returns real digiflazzStatus scalars, Fix 2's admin-side
+  // confirmation), so the badge reads correctly regardless of whether the
+  // merge or the refetch resolves last.
+  it("shows the pending-at-supplier badge with the attempt count once the SSE stream pushes it", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: {
+            ...ORDER_DETAIL_DATA.order,
+            status: "PROCESSING",
+            digiflazzStatus: "pending_at_supplier",
+            digiflazzAttempts: 2,
+            digiflazzNextRecheckAt: "2026-01-01T00:05:00.000Z",
+            digiflazzFailureDetail: null,
+          },
+          canAct: false,
+          canFulfill: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    MockEventSource.instances[0].emit({
+      orderStatus: "PROCESSING",
+      digiflazzStatus: "pending_at_supplier",
+      digiflazzAttempts: 2,
+      digiflazzNextRecheckAt: "2026-01-01T00:05:00.000Z",
+      digiflazzFailureDetail: null,
+    });
+
+    await waitFor(() => expect(screen.getByText(/pending at supplier/i)).toBeInTheDocument());
+    expect(screen.getByText(/attempt 2/i)).toBeInTheDocument();
+  });
+
+  it("shows the failed badge and the failure detail text once the SSE stream pushes a failed status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    MockEventSource.instances[0].emit({
+      orderStatus: "PENDING_VERIFICATION",
+      digiflazzStatus: "failed",
+      digiflazzAttempts: 5,
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: "Supplier returned insufficient balance.",
+    });
+
+    await waitFor(() => expect(screen.getByText(/failed — needs manual review/i)).toBeInTheDocument());
+    expect(screen.getByText("Supplier returned insufficient balance.")).toBeInTheDocument();
+  });
+
+  // Final whole-branch review I-3 fix: the SSE merge no longer overwrites
+  // order.status directly — a changed orderStatus now triggers an
+  // invalidateQueries instead, so status AND its server-computed sibling
+  // booleans (canAct/canFulfill/canReject/isDelivered) refetch together
+  // rather than desyncing. This test's mocked fetch now needs a SECOND
+  // response for that refetch, carrying the post-transition eligibility
+  // booleans alongside the DELIVERED status.
+  it("updates the Status badge to DELIVERED when the SSE stream pushes a Sukses transition", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    // StatusBadge title-cases the raw code — the seeded order is
+    // PENDING_VERIFICATION, so "Delivered" isn't present yet.
+    expect(screen.queryByText("Delivered")).not.toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED" },
+          isDelivered: true,
+          canAct: false,
+          canFulfill: false,
+          canReject: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    MockEventSource.instances[0].emit({
+      orderStatus: "DELIVERED",
+      digiflazzStatus: null,
+      digiflazzAttempts: 1,
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: null,
+    });
+
+    // An invalidate-triggered refetch also eventually shows "Delivered" —
+    // this is the pre-existing Task 13 assertion, still true after the fix.
+    await waitFor(() => expect(screen.getByText("Delivered")).toBeInTheDocument());
+  });
+
+  // The actual I-3 regression guard: the original Task 13 test only checked
+  // the Status badge, never whether the action panel (which reads the
+  // separate canAct/canFulfill/canReject booleans, not order.status) stayed
+  // in sync with it. Before the fix, the badge flipped to "Delivered" while
+  // Approve/Reject kept rendering as if the order were still actionable —
+  // this proves that split-brain is closed.
+  it("hides the action buttons once an SSE-triggered orderStatus transition invalidates and refetches", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    // canAct: true in the fixture — the Approve button is up before the push.
+    expect(screen.getByRole("button", { name: /approve & deliver/i })).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED" },
+          isDelivered: true,
+          canAct: false,
+          canFulfill: false,
+          canReject: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    MockEventSource.instances[0].emit({
+      orderStatus: "DELIVERED",
+      digiflazzStatus: null,
+      digiflazzAttempts: 1,
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: null,
+    });
+
+    await waitFor(() => expect(screen.getByText("Delivered")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /approve & deliver/i })).not.toBeInTheDocument();
+  });
+
+  it("does not open an SSE connection while orderId is still undefined", () => {
+    function NoParamWrapper({ children }: { children: React.ReactNode }) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      return (
+        <MemoryRouter initialEntries={["/orders"]}>
+          <QueryClientProvider client={qc}>
+            <Routes>
+              <Route path="/orders" element={children} />
+            </Routes>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+    }
+    vi.spyOn(globalThis, "fetch");
+    render(<OrderDetailPage />, { wrapper: NoParamWrapper });
+    expect(MockEventSource.instances).toHaveLength(0);
   });
 });

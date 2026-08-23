@@ -45,8 +45,28 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
+  getDigiflazzCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
+
+/**
+ * Staleness threshold for the digiflazzCatalogSync Business Health rail —
+ * see the doc comment at this constant's one call site (inside the
+ * /api/dashboard/health handler below) for the full "why not the crypto-rail
+ * default" derivation. The hourly cron (apps/order-bot/src/jobs/index.ts's
+ * scheduleDigiflazzCatalogSync, "15 * * * *") is the source of truth for
+ * "1 hour" — this constant is not derived from a shared config value the
+ * way the QRIS rails' own staleMs is (QRIS_STALE_MARGIN_MS derives from
+ * config.POLL_INTERVAL_SECONDS), since the cron expression itself isn't
+ * exposed as one. 70 minutes = the hourly cadence + a flat 10-minute
+ * margin: generous enough to absorb one run's own duration (a bounded
+ * price-list HTTP fetch plus a batch of local writes — seconds in
+ * practice, never remotely close to 10 minutes) plus ordinary process
+ * restart/scheduling jitter, while still flipping this card red within
+ * ~10 minutes of a genuinely missed hourly run rather than waiting for a
+ * second missed run to notice.
+ */
+const DIGIFLAZZ_CATALOG_SYNC_STALE_MS = 70 * 60_000;
 
 function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   const idr = new Decimal(r.revenue_idr);
@@ -166,7 +186,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
     const toEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
 
-    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds] =
+    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds, digiflazzCreds] =
       await Promise.all([
         resolveBotCredentials(prisma),
         resolveBinanceInternalConfig(prisma),
@@ -175,6 +195,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         getTokopayCreds(prisma),
         getPaydisiniCreds(prisma),
         getNowpaymentsCreds(prisma),
+        getDigiflazzCreds(prisma),
       ]);
     // Same credential gate the QRIS watchdogs use (tokopayPollWatchdog and its
     // two twins, apps/order-bot/src/jobs/index.ts) — a rail the shop has never
@@ -182,8 +203,9 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const tokopayEnabled = tokopayCreds !== null;
     const paydisiniEnabled = paydisiniCreds !== null;
     const nowpaymentsEnabled = nowpaymentsCreds !== null;
+    const digiflazzEnabled = digiflazzCreds !== null;
 
-    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth] =
+    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth, digiflazzCatalogSyncHealth] =
       await Promise.all([
         binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
         bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
@@ -191,6 +213,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         tokopayEnabled ? getPollHealth(prisma, "tokopay") : null,
         paydisiniEnabled ? getPollHealth(prisma, "paydisini") : null,
         nowpaymentsEnabled ? getPollHealth(prisma, "nowpayments") : null,
+        digiflazzEnabled ? getPollHealth(prisma, "digiflazzCatalogSync") : null,
       ]);
 
     return {
@@ -216,6 +239,31 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled, staleMs: TOKOPAY_POLL_STALE_MS })),
       paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled, staleMs: PAYDISINI_POLL_STALE_MS })),
       nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled, staleMs: NOWPAYMENTS_POLL_STALE_MS })),
+      // Review fix (Task 12): the hourly catalog re-sync
+      // (scheduleDigiflazzCatalogSync, cron "15 * * * *",
+      // apps/order-bot/src/jobs/index.ts) writes its heartbeat once per
+      // COMPLETED run, not continuously — so it is EVEN LESS frequent than
+      // the QRIS rails' own multi-minute reconcile cycles, not "frequent
+      // enough for the crypto-rail default" as first assumed here. Passing
+      // no staleMs (evaluatePollHealth's 5-minute DEFAULT_STALE_MS,
+      // packages/core/src/payments/pollHealth.ts, tuned for the ~2-minute
+      // crypto pollers) would flip this card red roughly 55 of every 60
+      // minutes even when the job is running exactly on schedule — the
+      // same "watching a slow-cadence job with a fast-cadence rail's
+      // threshold" mistake the comment above already explains for
+      // tokopay/paydisini/nowpayments, just from the opposite direction (an
+      // hourly job, not a slow-running one). DIGIFLAZZ_CATALOG_SYNC_STALE_MS
+      // is local to this file rather than living in
+      // reconcileCycleBudget.ts (the QRIS rails' shared derivation) because
+      // there is no watchdog cron for this rail today (unlike
+      // tokopayPollWatchdog and its two twins) — this dashboard endpoint is
+      // the only consumer, so there is nothing else to keep in sync with.
+      digiflazzCatalogSync: toEntry(
+        evaluatePollHealth(digiflazzCatalogSyncHealth, {
+          enabled: digiflazzEnabled,
+          staleMs: DIGIFLAZZ_CATALOG_SYNC_STALE_MS,
+        }),
+      ),
     };
   });
 

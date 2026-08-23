@@ -15,6 +15,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { RefreshCw, Check, X, CircleDollarSign, Send, MailX } from "lucide-react";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { useSse } from "../hooks/useSse";
 
 interface OrderItem {
   id: number;
@@ -54,6 +55,20 @@ interface OrderDetail {
    * always null for auto-delivered orders, which deliver via stockItem
    * instead. The admin's own audit view of what was sent to the buyer. */
   deliveredContent: string | null;
+  /** The base GET /api/orders/:orderId response already carries these
+   * (getOrder's `include: fullInclude` returns every Order scalar column,
+   * not a narrowing `select`) — `optional` here is only because the field
+   * predates that response's own type, not because it's ever really absent
+   * for a real order. `useSse` (below) keeps these current between
+   * fetches for a Digiflazz-routed order; on a genuine order.status
+   * change it triggers a full refetch (queryClient.invalidateQueries)
+   * rather than merging status directly, so these four fields and the
+   * status-derived canAct/canFulfill/canReject/isDelivered booleans can
+   * never show a stale combination for longer than one refetch. */
+  digiflazzStatus?: string | null;
+  digiflazzAttempts?: number;
+  digiflazzNextRecheckAt?: string | null;
+  digiflazzFailureDetail?: string | null;
 }
 
 interface MoneyView {
@@ -119,6 +134,47 @@ export function OrderDetailPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const qc = useQueryClient();
   const { data, isError } = useOrderDetail(orderId ?? "");
+  useSse<OrderDetailData>(
+    orderId ? `/api/orders/${orderId}/digiflazz/stream` : null,
+    ["order", orderId],
+    (prev, next) => {
+      // No base order loaded yet — nothing to merge into. `merge`'s declared
+      // return type is T, but this repo's strict TS config rejects casting
+      // `undefined` straight to OrderDetailData, so route it through
+      // `unknown` — the runtime value is still `undefined`, which
+      // setQueryData leaves as-is (there's nothing cached to overwrite).
+      if (!prev) return prev as unknown as OrderDetailData;
+      const snapshot = next as {
+        orderStatus: string;
+        digiflazzStatus: string | null;
+        digiflazzAttempts: number;
+        digiflazzNextRecheckAt: string | null;
+        digiflazzFailureDetail: string | null;
+      };
+      if (snapshot.orderStatus !== prev.order.status) {
+        // The order's overall status changed (e.g. a Sukses-driven
+        // DELIVERED transition) — canAct/canCredit/canFulfill/canReject/
+        // isDelivered are server-computed siblings of order.status, not
+        // derivable from this SSE snapshot alone, so a partial merge here
+        // would desync them from the badge (Fix 3, final review finding
+        // I-3). Invalidate instead: the next refetch brings status and
+        // every derived boolean back in lockstep. The four digiflazz*
+        // fields below still update immediately via the merge in the
+        // meantime, so the sub-status badge doesn't wait on the refetch.
+        void qc.invalidateQueries({ queryKey: ["order", orderId] });
+      }
+      return {
+        ...prev,
+        order: {
+          ...prev.order,
+          digiflazzStatus: snapshot.digiflazzStatus,
+          digiflazzAttempts: snapshot.digiflazzAttempts,
+          digiflazzNextRecheckAt: snapshot.digiflazzNextRecheckAt,
+          digiflazzFailureDetail: snapshot.digiflazzFailureDetail,
+        },
+      };
+    },
+  );
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -213,6 +269,25 @@ export function OrderDetailPage() {
               <span className="text-ink-soft">Status</span>
               <StatusBadge status={order.status} />
             </div>
+            {order.digiflazzStatus === "pending_at_supplier" && (
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Digiflazz</span>
+                <Badge variant="secondary">
+                  Pending at supplier{order.digiflazzAttempts ? ` (attempt ${order.digiflazzAttempts})` : ""}
+                </Badge>
+              </div>
+            )}
+            {order.digiflazzStatus === "failed" && (
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between">
+                  <span className="text-ink-soft">Digiflazz</span>
+                  <Badge variant="destructive">Failed — needs manual review</Badge>
+                </div>
+                {order.digiflazzFailureDetail && (
+                  <p className="text-xs text-ink-soft">{order.digiflazzFailureDetail}</p>
+                )}
+              </div>
+            )}
             <div className="flex justify-between gap-4">
               <span className="shrink-0 text-ink-soft">Customer</span>
               <span className="flex min-w-0 items-center gap-2 text-ink">

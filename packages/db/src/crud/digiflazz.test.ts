@@ -18,6 +18,25 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   getPriceList: digiflazzMock.getPriceList,
 }));
 
+// Fix-pass regression test support (Critical #2): enqueueManualDeliveredDm is
+// called INSIDE fulfillDigiflazzOrder, AFTER its own PROCESSING->DELIVERED
+// claim and finalizeDeliverySideEffects have already run — mocking it to
+// reject for one test is the cleanest way to reproduce "a side effect after
+// the DELIVERED claim already committed threw". Defaults to the real
+// implementation (set below once importOriginal resolves) so every other
+// test in this file keeps exercising the genuine notification-enqueue path.
+const notificationsMock = vi.hoisted(() => ({
+  enqueueManualDeliveredDm: vi.fn(),
+}));
+vi.mock("./notifications", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./notifications")>();
+  notificationsMock.enqueueManualDeliveredDm.mockImplementation(actual.enqueueManualDeliveredDm);
+  return {
+    ...actual,
+    enqueueManualDeliveredDm: notificationsMock.enqueueManualDeliveredDm,
+  };
+});
+
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
@@ -50,6 +69,8 @@ import {
   splitMixedDigiflazzProducts,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
+  getDigiflazzSyncStatus,
+  DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS,
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -202,7 +223,15 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it("never calls Digiflazz twice for the same order (double-dispatch guard)", async () => {
+  // A Pending order's next recheck is scheduled a couple of minutes out
+  // (see nextDigiflazzRecheckAt/DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] in
+  // digiflazzBackoff.ts), so calling the poller again immediately after
+  // still finds nothing due — the claim query's recheck branch
+  // (digiflazzNextRecheckAt <= now) doesn't match yet. This is no longer
+  // "this order can NEVER be retried" (it will be, once due — see the
+  // "recheck claim picks up a due Pending order on a later tick" test
+  // below), only "not due for its first recheck yet".
+  it("does not re-call Digiflazz on an immediate second tick — the recheck isn't due yet", async () => {
     const order = await makeProcessingDigiflazzOrder();
     digiflazzMock.createTransaction.mockResolvedValue({
       refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
@@ -227,6 +256,13 @@ describe("dispatchPendingDigiflazzOrders", () => {
     const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
     expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
     expect(refreshed!.digiflazzDispatchedAt).not.toBeNull();
+    expect(refreshed!.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed!.digiflazzAttempts).toBe(1);
+    expect(refreshed!.digiflazzNextRecheckAt).not.toBeNull();
+    // ~2 minutes ahead per DIGIFLAZZ_RECHECK_SCHEDULE_MINUTES[0] (digiflazzBackoff.ts)
+    const deltaMs = refreshed!.digiflazzNextRecheckAt!.getTime() - refreshed!.digiflazzDispatchedAt!.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
   });
 
   it("alerts admins and leaves PROCESSING on Gagal, without fulfilling", async () => {
@@ -247,6 +283,9 @@ describe("dispatchPendingDigiflazzOrders", () => {
     expect(refreshed!.status).toBe(OrderStatus.PROCESSING);
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed!.digiflazzFailureDetail).toContain("Saldo tidak cukup");
   });
 
   it("is a no-op when Digiflazz isn't configured", async () => {
@@ -386,6 +425,251 @@ describe("dispatchPendingDigiflazzOrders", () => {
     const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
     expect(alertRow).not.toBeNull();
   });
+
+  // Task 5 (realtime Digiflazz status): the recheck half of the OR-query and
+  // atomic claim added alongside recordDigiflazzOutcome.
+  it("recheck claim picks up a due Pending order on a later tick", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    const afterFirst = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(afterFirst.digiflazzStatus).toBe("pending_at_supplier");
+
+    // Simulate time having passed: back-date the scheduled recheck into the
+    // past so the next tick's OR-query/claim picks this order up again.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzNextRecheckAt: new Date(Date.now() - 5_000) },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Sukses", sn: "SN-RECHECK", message: "ok", price: null,
+    });
+
+    const second = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(digiflazzMock.createTransaction).toHaveBeenCalledTimes(2);
+    expect(second).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("marks failed after the backoff window is exhausted while still Pending", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    // Simulate a long-running retry sequence: first dispatch was 25h ago (past
+    // the 24h window), 20 attempts already made (past the front-loaded
+    // schedule), and a recheck that's due now.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        digiflazzDispatchedAt: new Date(Date.now() - 25 * 3_600_000),
+        digiflazzAttempts: 20,
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() - 60_000),
+      },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed.digiflazzFailureDetail).toBeTruthy();
+    expect(refreshed.digiflazzFailureDetail).toMatch(/24h|never resolved/i);
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
+  });
+
+  it("transient HTTP error is retried on the same schedule, not immediately terminal", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockRejectedValue(new Error("network blip"));
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 1, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzNextRecheckAt).not.toBeNull();
+    const deltaMs = refreshed.digiflazzNextRecheckAt!.getTime() - refreshed.digiflazzDispatchedAt!.getTime();
+    expect(deltaMs).toBeGreaterThan(60_000);
+    expect(deltaMs).toBeLessThanOrEqual(3 * 60_000);
+    expect(refreshed.digiflazzFailureDetail).toContain("network blip");
+  });
+
+  it("explicit Gagal is terminal immediately regardless of attempt count", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+    // Already mid-backoff: a third recheck is due now.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        digiflazzDispatchedAt: new Date(Date.now() - 20 * 60_000),
+        digiflazzAttempts: 3,
+        digiflazzStatus: "pending_at_supplier",
+        digiflazzNextRecheckAt: new Date(Date.now() - 60_000),
+      },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: "Saldo tidak cukup", price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.digiflazzStatus).toBe("failed");
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+  });
+
+  // Fix-pass regression guard (Critical #1): the recheck claim used to write
+  // digiflazzNextRecheckAt: null, which permanently orphans an order if the
+  // process crashes between the claim committing and recordDigiflazzOutcome
+  // running (neither candidate-query arm would ever match a bare null — see
+  // this file's module doc comment). The fix writes a future LEASE instead.
+  // This test constructs that exact post-claim lease state directly (rather
+  // than relying on the "recheck claim picks up a due Pending order on a
+  // later tick" test above, which already covers "any due order gets
+  // re-picked-up" but never specifically proves the self-heal depends on
+  // lease EXPIRY) and confirms: not claimed while the lease is still in the
+  // future, then claimed once the lease has passed.
+  it("a crashed recheck claim self-heals only after its lease expires, not before", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzNextRecheckAt: new Date(Date.now() - 5_000) }, // due for a recheck
+    });
+
+    // Inspect the ACTUAL recheck claim's write (not a hand-simulated one):
+    // createTransaction is only ever called AFTER the recheck claim has
+    // already committed, so peeking at the row from inside this mock
+    // observes exactly the intermediate state a process crash between the
+    // claim and recordDigiflazzOutcome would leave behind. Before the C-1
+    // fix this was `null` (permanently unclaimable — neither candidate-query
+    // arm ever matches null); after the fix it must be a future lease.
+    // NOTE: any `expect()` thrown from inside this mock would be swallowed
+    // by dispatchPendingDigiflazzOrders' own try/catch (it treats a thrown
+    // createTransaction as a transient HTTP error) instead of failing the
+    // test, so capture the observed value and assert on it AFTER the call
+    // returns instead of asserting inside the mock.
+    let midFlightNextRecheckAt: Date | null | undefined;
+    digiflazzMock.createTransaction.mockImplementation(async (_creds: unknown, args: { refId: string }) => {
+      const midFlight = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+      midFlightNextRecheckAt = midFlight.digiflazzNextRecheckAt;
+      return { refId: args.refId, status: "Pending", sn: null, message: null, price: null };
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    expect(midFlightNextRecheckAt).not.toBeNull();
+    expect(midFlightNextRecheckAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(midFlightNextRecheckAt!.getTime()).toBeLessThanOrEqual(Date.now() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS);
+
+    // Now exercise the self-heal timing itself: overwrite whatever real
+    // backoff value recordDigiflazzOutcome just wrote with a lease-shaped
+    // value that is STILL in the future (simulating "claimed, then crashed
+    // right after") and confirm it is NOT re-claimed yet — proving the
+    // self-heal genuinely depends on lease expiry, not just "any due order
+    // gets picked up" (which the "recheck claim picks up a due Pending
+    // order on a later tick" test above already covers).
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Sukses", sn: "SN-SELF-HEAL", message: "ok", price: null,
+    });
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzNextRecheckAt: new Date(Date.now() + DIGIFLAZZ_RECHECK_CLAIM_LEASE_MS) },
+    });
+    const whileLeased = await dispatchPendingDigiflazzOrders(prisma);
+    expect(whileLeased).toEqual({ claimed: 0, delivered: 0, pending: 0, failed: 0 });
+
+    // Advance the lease into the past — simulating it having expired after
+    // the crashed attempt — and confirm the order self-heals: it's
+    // re-claimed and dispatched again.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { digiflazzNextRecheckAt: new Date(Date.now() - 1_000) },
+    });
+    const afterExpiry = await dispatchPendingDigiflazzOrders(prisma);
+    expect(afterExpiry).toEqual({ claimed: 1, delivered: 1, pending: 0, failed: 0 });
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+  });
+
+  // Fix-pass regression guard (Critical #2): fulfillDigiflazzOrder used to be
+  // called inside the SAME try/catch as createTransaction, so a failure AFTER
+  // its own PROCESSING->DELIVERED claim committed (e.g. a side effect like
+  // enqueueManualDeliveredDm throwing) was miscategorized as a retryable
+  // transient error — no admin alert, and a scheduled "retry" that could
+  // never fire because the order no longer matches the PROCESSING candidate
+  // query. Mock enqueueManualDeliveredDm (called INSIDE fulfillDigiflazzOrder
+  // after the DELIVERED claim and finalizeDeliverySideEffects have already
+  // run) to reject once, reproducing exactly that shape.
+  it("a failure inside fulfillDigiflazzOrder after Sukses alerts admins instead of being silently retried", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    const order = await makeProcessingDigiflazzOrder();
+
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Sukses", sn: "SN-POST-FAIL", message: "ok", price: null,
+    });
+    notificationsMock.enqueueManualDeliveredDm.mockRejectedValueOnce(new Error("outbox write failed"));
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    // The claim inside fulfillDigiflazzOrder still committed — that part
+    // didn't fail; only the later side effect did.
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+    expect(refreshed.deliveredContent).toBe("SN-POST-FAIL");
+    // Final whole-branch review I-1 fix: fulfillDigiflazzOrder's own
+    // PROCESSING->DELIVERED claim now unconditionally clears digiflazzStatus/
+    // digiflazzNextRecheckAt/digiflazzFailureDetail as part of that SAME
+    // atomic update — the order genuinely delivered (the claim committed
+    // before the later enqueueManualDeliveredDm side effect threw), so it's
+    // no longer "in flight at the supplier" regardless of that later
+    // failure. digiflazzAttempts staying at its untouched default (0) is
+    // what actually proves recordDigiflazzOutcome's transient_error branch
+    // never ran — that branch would have bumped attempts to 1, and
+    // terminalFailDigiflazzOrder would have set digiflazzStatus to "failed"
+    // instead of null — neither happened.
+    expect(refreshed.digiflazzStatus).toBeNull();
+    expect(refreshed.digiflazzAttempts).toBe(0);
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    // The admin alert fired — this is what proves the failure is treated as
+    // terminal-needs-a-human, not a silently-retried transient error.
+    // Deferred finding #5 fix: filter by the specific event this alert path
+    // enqueues (alertDigiflazzDispatchFailed -> enqueueManualOrderAdminAlert
+    // -> NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, see notifications.ts)
+    // rather than matching ANY row for this orderId — an unfiltered query
+    // only passed today because PUBLIC_CHANNEL_ID is unset in the test
+    // environment, which happens to suppress the unrelated ORDER_DELIVERED
+    // testimonial-post notification finalizeDeliverySideEffects also
+    // enqueues for the same delivered order.
+    const alertRow = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
+    });
+    expect(alertRow).not.toBeNull();
+    // Deferred finding #3 fix (describeFulfillFailure): the natural-language
+    // `reason` this alert path builds only lands in the AuditLog's `details`
+    // (enqueueManualOrderAdminAlert's own payload never carries it — see
+    // alertDigiflazzDispatchFailed) — assert it never leaks a raw
+    // ValidationError i18n key like "error.order_not_processing". A cheap,
+    // general substring guard, regardless of which ValidationError (if any)
+    // actually fired.
+    const auditRow = await prisma.auditLog.findFirst({
+      where: { action: "order.digiflazz_dispatch_failed", targetId: order.id },
+    });
+    expect(auditRow).not.toBeNull();
+    expect(auditRow!.details).not.toContain("error.");
+  });
 });
 
 describe("fulfillDigiflazzOrder", () => {
@@ -405,6 +689,38 @@ describe("fulfillDigiflazzOrder", () => {
     });
     expect(auditRow).not.toBeNull();
     expect(auditRow!.adminId).toBeNull();
+  });
+
+  // Final whole-branch review I-1 (+ deferred #1/#2): the atomic
+  // PROCESSING->DELIVERED claim must clear digiflazzStatus/
+  // digiflazzNextRecheckAt/digiflazzFailureDetail — without this, every
+  // successfully auto-delivered order kept showing a stale
+  // "pending_at_supplier" badge forever (the schema's own "null once
+  // terminal" doc comment on digiflazzStatus, violated). Dispatch to
+  // pending_at_supplier first (same Pending-dispatch setup as the "leaves a
+  // Pending order PROCESSING with the claim set" test above), then call
+  // fulfillDigiflazzOrder directly with a Sukses-equivalent sn.
+  it("clears digiflazzStatus/digiflazzNextRecheckAt/digiflazzFailureDetail on delivery", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    const pending = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(pending.digiflazzStatus).toBe("pending_at_supplier");
+    expect(pending.digiflazzNextRecheckAt).not.toBeNull();
+
+    await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-CLEARED" });
+
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+    expect(refreshed.digiflazzStatus).toBeNull();
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed.digiflazzFailureDetail).toBeNull();
+    // digiflazzAttempts/digiflazzDispatchedAt are historical facts, not
+    // in-flight state — left untouched by the fix.
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzDispatchedAt).not.toBeNull();
   });
 
   it("rejects a second claim on an already-delivered order", async () => {
@@ -1204,6 +1520,52 @@ describe("resyncDigiflazzCatalog", () => {
       });
       expect(alertRows).toHaveLength(0);
     });
+
+    // Task 5 (realtime Digiflazz status): the sync-status-store write added to
+    // resyncDigiflazzCatalog's abort branches, recording the SAME abortReason
+    // this describe block's other tests already assert on via the audit log /
+    // admin alert.
+    it("records an aborted status with the right abortReason when the circuit breaker trips", async () => {
+      await setSetting(prisma, ADMIN_IDS_KEY, "700");
+      const denoms = await makeDigiflazzDenoms(6, "15000");
+      digiflazzMock.getPriceList.mockResolvedValue(
+        denoms.map((d) => priceListItem({ buyerSkuCode: d.supplierSku!, price: new Decimal(10) })),
+      );
+
+      await resyncDigiflazzCatalog(prisma);
+      const status = await getDigiflazzSyncStatus(prisma);
+
+      expect(status).not.toBeNull();
+      expect(status!.status).toBe("aborted");
+      expect(status!.abortReason).toBe("sharp_change");
+      expect(status!.updated).toBe(0);
+      expect(status!.deactivated).toBe(0);
+    });
+  });
+
+  // Task 5 (realtime Digiflazz status): the sync-status-store write added to
+  // resyncDigiflazzCatalog's normal-completion path (recordDigiflazzSyncStatus,
+  // digiflazzSyncStatus.ts), unconditional even on a no-op tick.
+  it("records a success status after a normal run", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends", categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(20000), buyerProductStatus: true }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+    const status = await getDigiflazzSyncStatus(prisma);
+
+    expect(status).not.toBeNull();
+    expect(status!.status).toBe("success");
+    expect(status!.updated).toBe(result.updated);
+    expect(status!.deactivated).toBe(result.deactivated);
+    expect(status!.abortReason).toBeNull();
+    const finishedAtMs = new Date(status!.finishedAt).getTime();
+    expect(Date.now() - finishedAtMs).toBeLessThan(5_000);
   });
 });
 

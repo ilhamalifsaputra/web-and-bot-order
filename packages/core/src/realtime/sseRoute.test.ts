@@ -6,16 +6,20 @@ import { logger } from "../logger";
 /** A minimal ServerResponse-like double the tests control directly. */
 function makeFakeRaw() {
   const writes: string[] = [];
-  return {
+  const raw = {
     writeHead: vi.fn(),
     write: vi.fn((chunk: string) => {
       writes.push(chunk);
       return true;
     }),
+    end: vi.fn(() => {
+      raw.writableEnded = true;
+    }),
     destroyed: false,
     writableEnded: false,
     writes,
   };
+  return raw;
 }
 
 function makeFakeReply() {
@@ -292,5 +296,90 @@ describe("streamSse", () => {
     await done;
 
     expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression guard (review finding): cleanup() previously never called
+  // reply.raw.end(), so a connection that never got past a failing
+  // initial() left the client's EventSource dangling on an open,
+  // silent "200 text/event-stream" response forever.
+  it("actually ends the response when initial() rejects, instead of leaving the connection open", async () => {
+    const initial = vi.fn().mockRejectedValue(new Error("DB unavailable"));
+    const poll = vi.fn();
+    const subscribe = vi.fn().mockReturnValue(() => {});
+    const changed = vi.fn();
+
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial,
+      poll,
+      subscribe,
+      changed,
+    });
+    await done;
+
+    expect(reply.fakeRaw.end).toHaveBeenCalledTimes(1);
+    expect(poll).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  // Regression guard: a caller-supplied changed() that throws must not
+  // produce an unhandled rejection from the fire-and-forget poll tick —
+  // it should log and skip the tick, same as a poll() rejection.
+  it("a changed() that throws on one tick doesn't crash the connection; the next tick still works", async () => {
+    const initial = vi.fn().mockResolvedValue({ status: "PENDING" });
+    const poll = vi.fn().mockResolvedValue({ status: "SUKSES" });
+    const subscribe = vi.fn().mockReturnValue(() => {});
+    const changed = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("changed() bug");
+      })
+      .mockReturnValueOnce(true);
+
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial,
+      poll,
+      subscribe,
+      changed,
+      pollIntervalMs: 1000,
+    });
+    await vi.waitFor(() => expect(initial).toHaveBeenCalled());
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // First tick: changed() throws. Must not throw / crash the test process,
+    // and must not write anything for this tick.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([{ status: "PENDING" }]);
+
+    // Second tick: changed() resolves normally, connection is still alive.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([{ status: "PENDING" }, { status: "SUKSES" }]);
+
+    req.fakeRaw.emit("close");
+    await done;
+  });
+
+  // Regression guard: a caller-supplied subscribe() that throws must not
+  // produce an unhandled rejection from the top-level connect IIFE — it
+  // should log and close the connection cleanly, same as initial() failing.
+  it("closes cleanly (and still ends the response) when subscribe() throws", async () => {
+    const initial = vi.fn().mockResolvedValue({ status: "PENDING" });
+    const poll = vi.fn();
+    const subscribe = vi.fn().mockImplementation(() => {
+      throw new Error("subscribe() bug");
+    });
+    const changed = vi.fn();
+
+    const done = streamSse(reply as unknown as SseReply, req as unknown as SseRequest, {
+      initial,
+      poll,
+      subscribe,
+      changed,
+    });
+    await done;
+
+    expect(dataFrames(reply.fakeRaw.writes)).toEqual([{ status: "PENDING" }]);
+    expect(reply.fakeRaw.end).toHaveBeenCalledTimes(1);
+    expect(poll).not.toHaveBeenCalled();
   });
 });

@@ -125,9 +125,22 @@ export function streamSse<T>(
         interval = null;
       }
       if (unsubscribe !== null) {
-        unsubscribe();
+        try {
+          unsubscribe();
+        } catch (err) {
+          // Caller-supplied — must never crash cleanup (this can run
+          // synchronously inside the "close" event handler, where an
+          // uncaught throw would be worse than a swallowed one here).
+          logger.warn({ err }, "SSE subscribe()'s unsubscribe function threw during cleanup");
+        }
         unsubscribe = null;
       }
+      // Actually terminate the response — without this, a connection that
+      // never gets past a failing initial() (or any other cleanup() call
+      // reached before the client itself disconnected) leaves the socket
+      // open indefinitely: reply.hijack() + writeHead() have already told
+      // the client "200, streaming," and nothing else will ever end it.
+      if (!connectionGone()) reply.raw.end();
       resolve();
     };
 
@@ -155,7 +168,19 @@ export function streamSse<T>(
         cleanup();
         return;
       }
-      if (opts.changed(lastPushed, next)) {
+      let isChanged: boolean;
+      try {
+        isChanged = opts.changed(lastPushed, next);
+      } catch (err) {
+        // Caller-supplied — must never crash this fire-and-forget tick
+        // (reReadAndMaybePush is invoked as `void ...()`, so an unguarded
+        // throw here would be an unhandled promise rejection). Safer
+        // default: skip this tick like a poll() failure, rather than
+        // guessing whether "changed" was meant.
+        logger.warn({ err }, "SSE changed() threw while comparing state; skipping this tick");
+        return;
+      }
+      if (isChanged) {
         writeData(next);
       } else {
         writeKeepAlive();
@@ -181,9 +206,23 @@ export function streamSse<T>(
 
       writeData(initialValue);
 
-      unsubscribe = opts.subscribe(() => {
-        void reReadAndMaybePush();
-      });
+      try {
+        unsubscribe = opts.subscribe(() => {
+          void reReadAndMaybePush();
+        });
+      } catch (err) {
+        // Caller-supplied — same reasoning as opts.initial() failing: no
+        // upstream error handler is left once reply.hijack() has run, so
+        // close cleanly rather than let this propagate as an unhandled
+        // rejection out of this unawaited IIFE. The poll fallback alone
+        // (started below) would otherwise still work without a subscribe
+        // path, but a THROWING subscribe implementation is a caller bug
+        // worth surfacing/closing over, not silently limping on without
+        // the fast path.
+        logger.warn({ err }, "SSE subscribe() threw while establishing the fast path; closing the connection cleanly");
+        cleanup();
+        return;
+      }
 
       interval = setInterval(() => {
         void reReadAndMaybePush();

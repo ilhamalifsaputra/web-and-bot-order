@@ -580,6 +580,41 @@ describe("SettingsPage", () => {
     expect(screen.getByText("The poller has never completed a cycle.")).toBeInTheDocument();
   });
 
+  it("renders the MeloStore (Nickname Check) card with both fields masked/secret, and wires its own Test Connection button", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "melostore_api_key", label: "MeloStore API key", secret: true, hasValue: true, value: "", needsRestart: false },
+            { key: "melostore_secret_key", label: "MeloStore secret key", secret: true, hasValue: true, value: "", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const melostoreCard = document.getElementById("settings-melostore") as HTMLElement;
+    expect(melostoreCard).not.toBeNull();
+    expect(within(melostoreCard).getByText("MeloStore API key")).toBeInTheDocument();
+    expect(within(melostoreCard).getByText("MeloStore secret key")).toBeInTheDocument();
+
+    // Both fields are secret — their Edit inputs render as password fields,
+    // same masking as the KokinPay/VIP-Reseller cards' credential rows.
+    const user = userEvent.setup();
+    await user.click(within(melostoreCard).getAllByRole("button", { name: "Edit" })[0]!);
+    expect(screen.getByLabelText("MeloStore API key")).toHaveAttribute("type", "password");
+
+    const testButton = within(melostoreCard).getByRole("button", { name: "Test Connection" });
+    expect(testButton).toBeEnabled();
+    await user.click(testButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Test the MeloStore connection?")).toBeInTheDocument();
+  });
+
   it("Export Configuration downloads the exported fields", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(

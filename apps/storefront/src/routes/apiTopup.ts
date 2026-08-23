@@ -23,8 +23,29 @@
  * original UX reference site had over a plain form: a live in-game nickname
  * lookup on the buyer's account field, wired into InstantBuyPage.tsx's
  * debounced live-typing UX (Task 7, the final task of the Digiflazz top-up
- * pilot). Backed by KokinPay (@app/core/suppliers/kokinpay), a separate
- * service from Digiflazz chosen specifically for this lookup.
+ * pilot). Originally backed by KokinPay (@app/core/suppliers/kokinpay) alone,
+ * a separate service from Digiflazz chosen specifically for this lookup.
+ *
+ * The nickname-multiprovider plan (Task 9) added a second, preferred path:
+ * when the denomination's product is linked to a `Game`
+ * (`Product.gameId`), the lookup instead runs through
+ * `NicknameService` (@app/core/nickname/service) against every ENABLED
+ * `ProviderGameMapping` row for that game, in ascending `priority` order,
+ * trying kokinpay/vipreseller/melostore adapters in turn and falling
+ * through on a retryable failure (network/HTTP/provider-side error) until
+ * one answers or the list is exhausted. A mapping whose provider has no
+ * credentials configured is skipped, not treated as a failure. The original
+ * `nicknameCheckGameCode`-driven KokinPay-only block above still runs
+ * verbatim as the fallback for a denomination with NO `gameId` — it is
+ * legacy, not deleted, since plenty of denominations may never get a `Game`
+ * link. The two paths are mutually exclusive per request: `gameId`, when
+ * present, always wins over `nicknameCheckGameCode`.
+ *
+ * The region-check block below is deliberately NOT part of this
+ * `gameId` branch — it stays gated on `expectedRegionCode` +
+ * `nicknameCheckGameCode` exactly as it always has, regardless of whether
+ * `gameId` is also set on the same denomination. Extending region-check to
+ * the multi-provider path is out of scope for this pilot.
  *
  * Region-check Task C added a second, fully independent lookup on the same
  * request/response cycle: a VIP-Reseller (@app/core/suppliers/vipreseller)
@@ -63,11 +84,18 @@ import {
   prisma,
   createGuestUser,
   getDenomination,
+  getDenominationWithProduct,
   getKokinpayCreds,
   getVipResellerCreds,
+  getMelostoreCreds,
+  getEnabledProviderMappingsForGame,
 } from "@app/db";
 import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 import { checkGameRegion } from "@app/core/suppliers/vipreseller";
+import { NicknameService, type NicknameServiceProviderEntry } from "@app/core/nickname/service";
+import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvider";
+import { createVipResellerNicknameProvider } from "@app/core/nickname/vipresellerProvider";
+import { createMelostoreNicknameProvider } from "@app/core/nickname/melostoreProvider";
 import { logger } from "@app/core/logger";
 import { OrderCurrency } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -347,53 +375,163 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         return reply.send(NOT_AVAILABLE);
       }
 
-      const denomination = await getDenomination(prisma, denominationId);
-      // Shared game-code prerequisite for BOTH providers, per the design
-      // decision to reuse nicknameCheckGameCode as the VIP-Reseller code too
-      // — a denomination with expectedRegionCode set but this left blank
-      // silently never runs the region check either (see top-of-file comment).
-      // Checked together with the null-denomination case so `denomination` is
-      // narrowed non-null for the rest of this handler.
-      if (!denomination || !denomination.nicknameCheckGameCode) return reply.send(NOT_AVAILABLE);
-      const gameCode = denomination.nicknameCheckGameCode;
+      const denomination = await getDenominationWithProduct(prisma, denominationId);
+      // Shared prerequisite for the nickname-check side: either the new
+      // `gameId` link (Task 9) or the legacy `nicknameCheckGameCode` must be
+      // present, or there is nothing to look up. Checked together with the
+      // null-denomination case so `denomination` is narrowed non-null for the
+      // rest of this handler. Note this does NOT gate the region-check block
+      // below, which has its own independent prerequisite
+      // (`expectedRegionCode && nicknameCheckGameCode`, still legacy-only).
+      // Final-review fix, Finding 3: a `gameId` link only counts when the
+      // linked Game row is loaded AND still active AND still supports
+      // nickname checks. Any of those failing degrades EXACTLY as if
+      // `gameId` were unset for this request — falls through to
+      // `legacyGameCode` below if set, else stays `{ available: false }`.
+      // No throw, per this handler's silent-degrade discipline.
+      const rawGameId = denomination?.product?.gameId ?? null;
+      const linkedGame = denomination?.product?.game ?? null;
+      const gameId =
+        rawGameId != null && linkedGame && linkedGame.isActive && linkedGame.nicknameSupported ? rawGameId : null;
+      const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
+      if (!denomination || (!gameId && !legacyGameCode)) return reply.send(NOT_AVAILABLE);
 
       const server = typeof req.body?.server === "string" ? req.body.server.trim() || undefined : undefined;
 
-      // One shared response object — both provider blocks below only ADD
-      // fields to it, never `reply.send()` on their own, so neither provider
-      // can short-circuit the other.
+      // One shared response object — both the nickname-check branch and the
+      // region-check block below only ADD fields to it, never `reply.send()`
+      // on their own, so neither can short-circuit the other.
       const response: CheckAccountResponse = { available: false };
 
-      // --- KokinPay nickname-check block (Task 7 logic, unchanged in
-      // substance, restructured to set `response` instead of returning). ---
-      const kokinpayCreds = await getKokinpayCreds(prisma);
-      if (kokinpayCreds) {
+      if (gameId) {
+        // --- Multi-provider nickname-check (Task 9, new). Tries every
+        // ENABLED ProviderGameMapping row for this game in ascending
+        // priority order via NicknameService, which itself already handles
+        // per-provider retry-on-failure/fallthrough. A mapping whose
+        // provider has no credentials configured is skipped up front, never
+        // even added to `entries` — that's a config gap, not a lookup
+        // failure, so it shouldn't count against the provider's turn. ---
         try {
-          const result = await checkGameNickname(kokinpayCreds, { gameCode, id: accountId, server });
-          response.available = true;
-          response.valid = result.valid;
-          response.nickname = result.nickname;
+          const mappings = await getEnabledProviderMappingsForGame(prisma, gameId);
+          const entries: NicknameServiceProviderEntry[] = [];
+          for (const mapping of mappings) {
+            let provider: NicknameServiceProviderEntry["provider"] | null = null;
+            if (mapping.provider === "kokinpay") {
+              const creds = await getKokinpayCreds(prisma);
+              if (creds) provider = createKokinpayNicknameProvider(creds);
+            } else if (mapping.provider === "vipreseller") {
+              const creds = await getVipResellerCreds(prisma);
+              if (creds) provider = createVipResellerNicknameProvider(creds);
+            } else if (mapping.provider === "melostore") {
+              const creds = await getMelostoreCreds(prisma);
+              if (creds) provider = createMelostoreNicknameProvider(creds);
+            }
+            // An unrecognized `mapping.provider` string (shouldn't happen —
+            // admin UI only writes the three known values) is silently
+            // skipped, same as a mapping with no credentials configured.
+            if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
+          }
+          const result = await new NicknameService(entries).checkNickname({ target: accountId, server });
+          if (result.status === "found") {
+            response.available = true;
+            response.valid = true;
+            response.nickname = result.nickname;
+          } else if (result.status === "not_found" && result.definitive) {
+            // Final-review fix, Finding 1: a provider gave a definitive
+            // "no such account" answer — mirror the legacy KokinPay-only
+            // block's shape below so InstantBuyPage.tsx renders the same
+            // "not found" hint it already knows how to show. A
+            // non-definitive not_found (every provider failed/was
+            // unreachable) and no_providers_configured both stay
+            // { available: false } — "couldn't determine anything" must
+            // stay silent, never look like "confirmed missing".
+            response.available = true;
+            response.valid = false;
+          }
+          if (result.status !== "found") {
+            // Final-review fix, Finding 2: a misconfigured priority-0
+            // mapping (e.g. a typo'd providerGameCode) can make the highest-
+            // priority provider return a non-retryable error, which stops
+            // NicknameService before any lower-priority provider is ever
+            // tried — and previously nothing logged that. Purely additive
+            // observability: no credentials, request bodies, or full entry
+            // objects, just plain counts/ids.
+            //
+            // Field names deliberately say "configured", not "attempted"/
+            // "tried": `entries` is every enabled+credentialed mapping for
+            // this game, not the set NicknameService actually called before
+            // stopping (it stops at the first non-retryable error, per
+            // Finding 1's `definitive` semantics) — a re-review of this fix
+            // caught that "lastProviderId" would misreport a provider that
+            // was never invoked in exactly the priority-0-typo case this log
+            // exists to diagnose. Reflecting the honest, cheap-to-compute
+            // value (what was configured) rather than a false claim about
+            // what ran was chosen over adding a stop-point tracker to
+            // NicknameService, which would be the larger redesign Finding 2
+            // explicitly said not to do.
+            logger.info(
+              {
+                gameId,
+                providersConfigured: entries.length,
+                lastConfiguredProviderId: entries[entries.length - 1]?.provider.id ?? null,
+              },
+              "Multi-provider nickname check found no result for one storefront lookup — buyer's keystroke got no live nickname, degrading silently.",
+            );
+          }
         } catch (err) {
-          // The KokinPay client's own error message is already credential-free
-          // (packages/core/src/suppliers/kokinpay.ts's guarantee) — safe to log,
-          // but this is a debounced live-typing call, so a single flaky lookup
-          // is expected background noise, not something worth an admin-facing
-          // warn-level entry. The buyer never sees this at all: `response`
-          // simply keeps `available: false`, same as "no check configured."
+          // Widened to also cover getEnabledProviderMappingsForGame and the
+          // get*Creds calls above (not just checkNickname) — an unexpected
+          // DB-layer error from either of those must degrade silently too,
+          // the same "never throw to the buyer" contract as every other
+          // branch in this handler. Defense in depth for checkNickname
+          // itself — every adapter (kokinpayProvider.ts,
+          // vipresellerProvider.ts, melostoreProvider.ts) already catches its
+          // own underlying HTTP client's throw and maps it to a
+          // NicknameLookupOutcome, so NicknameService.checkNickname should
+          // never actually throw. Caught anyway for the same silent-degrade
+          // discipline as every other branch in this handler.
           logger.info(
             { err },
-            "KokinPay nickname check failed for one storefront lookup — degrading to no live check for this keystroke, buyer unaffected.",
+            "Multi-provider nickname check failed for one storefront lookup — degrading to no live check for this keystroke, buyer unaffected.",
           );
+        }
+      } else if (legacyGameCode) {
+        const gameCode = legacyGameCode;
+        // --- KokinPay nickname-check block (Task 7 logic, unchanged in
+        // substance, restructured to set `response` instead of returning). ---
+        const kokinpayCreds = await getKokinpayCreds(prisma);
+        if (kokinpayCreds) {
+          try {
+            const result = await checkGameNickname(kokinpayCreds, { gameCode, id: accountId, server });
+            response.available = true;
+            response.valid = result.valid;
+            response.nickname = result.nickname;
+          } catch (err) {
+            // The KokinPay client's own error message is already credential-free
+            // (packages/core/src/suppliers/kokinpay.ts's guarantee) — safe to log,
+            // but this is a debounced live-typing call, so a single flaky lookup
+            // is expected background noise, not something worth an admin-facing
+            // warn-level entry. The buyer never sees this at all: `response`
+            // simply keeps `available: false`, same as "no check configured."
+            logger.info(
+              { err },
+              "KokinPay nickname check failed for one storefront lookup — degrading to no live check for this keystroke, buyer unaffected.",
+            );
+          }
         }
       }
 
       // --- VIP-Reseller region-check block (Region-check Task C, new).
-      // Fully independent of the KokinPay block above: runs (or skips) purely
-      // off `denomination.expectedRegionCode` + its own credentials, and only
-      // ever ADDS `region_mismatch: true` to `response` — every other outcome
-      // (not configured, no creds, no country data, a throw) leaves
-      // `region_mismatch` unset, never present in the JSON. ---
-      if (denomination.expectedRegionCode) {
+      // Fully independent of the nickname-check branch above (both the
+      // gameId multi-provider path and the legacy KokinPay path): runs (or
+      // skips) purely off `denomination.expectedRegionCode` +
+      // `nicknameCheckGameCode` + its own credentials, and only ever ADDS
+      // `region_mismatch: true` to `response` — every other outcome (not
+      // configured, no creds, no country data, a throw) leaves
+      // `region_mismatch` unset, never present in the JSON. Deliberately NOT
+      // extended to gameId — see top-of-file comment. ---
+      if (denomination.expectedRegionCode && legacyGameCode) {
+        const gameCode = legacyGameCode;
         const vipResellerCreds = await getVipResellerCreds(prisma);
         if (vipResellerCreds) {
           try {

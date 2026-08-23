@@ -36,25 +36,37 @@ function isValidPrice(value: string): boolean {
  * in a session — no extra request in the common "detail → new denomination"
  * navigation path. */
 interface ProductForBreadcrumb {
-  product: { id: number; name: string };
+  product: {
+    id: number;
+    name: string;
+    /** Task 10/12: the parent Product's Linked Game (null until an admin
+     * links one) — drives DeliveryTypeSection's legacy-field note below. */
+    gameId?: number | null;
+  };
 }
 
-function useProductName(productId: string | undefined): string {
+/** Reads the same `["catalog", productId]` query the breadcrumb name has
+ * always used (see the doc comment above) and additionally surfaces the
+ * parent Product's Linked Game — no extra request. */
+function useParentProduct(productId: string | undefined) {
   const { data } = useQuery<ProductForBreadcrumb>({
     queryKey: ["catalog", productId],
     queryFn: async () => apiGet<ProductForBreadcrumb>(`/api/catalog/${productId}`),
     enabled: !!productId,
   });
-  // Fallback while loading (or if the fetch hasn't resolved yet): the
-  // product id, not a hardcoded generic "Product" label.
-  return data?.product.name ?? `Product #${productId ?? "?"}`;
+  return {
+    // Fallback while loading (or if the fetch hasn't resolved yet): the
+    // product id, not a hardcoded generic "Product" label.
+    name: data?.product.name ?? `Product #${productId ?? "?"}`,
+    gameId: data?.product.gameId ?? null,
+  };
 }
 
 export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const productName = useProductName(productId);
+  const { name: productName, gameId: parentProductGameId } = useParentProduct(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -217,6 +229,7 @@ export function DenominationCreatePage() {
           onRegionWarningChange={setRegionWarning}
           expectedRegionCode={expectedRegionCode}
           onExpectedRegionCodeChange={setExpectedRegionCode}
+          productHasLinkedGame={Boolean(parentProductGameId)}
         />
 
         <div>

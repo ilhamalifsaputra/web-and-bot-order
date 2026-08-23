@@ -32,6 +32,7 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
+import { useGames } from "../api/games";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 
@@ -66,6 +67,10 @@ interface ProductDetail {
   gameVariant: string | null;
   gameVariantEmoji: string | null;
   gameRegion: string | null;
+  /** Structural link (Task 10/12) to the canonical Game catalog model that
+   * drives the multi-provider nickname check — distinct from the three
+   * free-text fields above. Null until an admin links a Game. */
+  gameId: number | null;
 }
 
 interface DenomStat {
@@ -94,6 +99,7 @@ export function ProductDetailPage() {
   const navigate = useNavigate();
   const { data, isError, refetch } = useProductDetail(productId ?? "");
   const { data: catalog } = useCatalog();
+  const { data: games } = useGames();
   const queryClient = useQueryClient();
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const [togglingDenom, setTogglingDenom] = useState<Set<number>>(new Set());
@@ -106,6 +112,12 @@ export function ProductDetailPage() {
   const [gameVariantDraft, setGameVariantDraft] = useState("");
   const [gameVariantEmojiDraft, setGameVariantEmojiDraft] = useState("");
   const [gameRegionDraft, setGameRegionDraft] = useState("");
+  // Linked Game (Task 10/12) — structural FK to the new Game catalog model,
+  // independent of the three cosmetic fields above. "" means no game linked
+  // (null); a Select item's value can't itself be an empty string (Radix),
+  // so this stores the numeric id as a string and maps "" <-> null at the
+  // save-payload boundary.
+  const [gameIdDraft, setGameIdDraft] = useState("");
   // Storefront detail blocks — each renders as its own titled section on the
   // product page, and stays hidden there while it's blank.
   const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
@@ -136,6 +148,7 @@ export function ProductDetailPage() {
         gameVariant: gameVariantDraft.trim(),
         gameVariantEmoji: gameVariantEmojiDraft.trim(),
         gameRegion: gameRegionDraft.trim(),
+        gameId: gameIdDraft ? Number(gameIdDraft) : null,
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
@@ -299,6 +312,7 @@ export function ProductDetailPage() {
                 setGameVariantDraft(product.gameVariant ?? "");
                 setGameVariantEmojiDraft(product.gameVariantEmoji ?? "");
                 setGameRegionDraft(product.gameRegion ?? "");
+                setGameIdDraft(product.gameId != null ? String(product.gameId) : "");
                 setWhatYouGetDraft(product.whatYouGet ?? "");
                 setTermsDraft(product.terms ?? "");
                 setWarrantyNoteDraft(product.warrantyNote ?? "");
@@ -370,6 +384,41 @@ export function ProductDetailPage() {
                 value={gameRegionDraft}
                 onChange={(e) => setGameRegionDraft(e.target.value)}
               />
+            </div>
+            {/* Linked Game (Task 10/12) — a structural link to the new Game
+                catalog model powering the multi-provider nickname check.
+                Distinct from the three fields above: those are free-text
+                cosmetic labels for bot navigation, this is a nullable FK
+                (Game.id) validated server-side against active Games. */}
+            <div>
+              <label className="text-sm font-medium text-ink" id="product-linked-game-label">Linked Game</label>
+              <Select
+                value={gameIdDraft || "none"}
+                onValueChange={(v) => setGameIdDraft(v === "none" ? "" : v)}
+              >
+                <SelectTrigger className="mt-1" aria-labelledby="product-linked-game-label">
+                  <SelectValue placeholder="No linked game" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No linked game</SelectItem>
+                  {/* Final-review fix, Finding 4: only offer active games —
+                      EXCEPT the currently-linked one, kept visible even if
+                      it's since been deactivated, so editing an
+                      already-linked product doesn't make the current
+                      selection vanish from the list. */}
+                  {(games?.games ?? [])
+                    .filter((g) => g.isActive || String(g.id) === gameIdDraft)
+                    .map((g) => (
+                      <SelectItem key={g.id} value={String(g.id)}>
+                        {g.name}
+                        {g.isActive ? "" : " (inactive)"}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-ink-soft">
+                Links this product to a Game for the new multi-provider nickname check.
+              </p>
             </div>
             <div>
               <label className="text-sm font-medium text-ink">What the buyer gets</label>

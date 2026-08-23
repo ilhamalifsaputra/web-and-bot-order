@@ -83,6 +83,7 @@ export function DeliveryTypeSection({
   onRegionWarningChange,
   expectedRegionCode,
   onExpectedRegionCodeChange,
+  productHasLinkedGame,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -110,6 +111,12 @@ export function DeliveryTypeSection({
    * automatic region check for this product. */
   expectedRegionCode: string;
   onExpectedRegionCodeChange: (next: string) => void;
+  /** Task 12: true when the parent Product has a Linked Game (a Task 10
+   * `Product.gameId`) set. Purely a UI hint — renders a note near the two
+   * legacy nickname/region-check fields below pointing out that the new
+   * Game-based nickname check has taken over for products that opted in;
+   * never changes those fields' own behavior or validation. */
+  productHasLinkedGame?: boolean;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
@@ -295,6 +302,12 @@ export function DeliveryTypeSection({
             e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
             the live nickname check for this product.
           </p>
+          {productHasLinkedGame && (
+            <p className="mt-1 text-xs text-ink-soft">
+              This product uses the new Game-based nickname check — this field only affects the
+              legacy region-check, if separately configured.
+            </p>
+          )}
         </div>
       )}
 
@@ -340,6 +353,12 @@ export function DeliveryTypeSection({
             VIP-Reseller (only available for some games, e.g. Mobile Legends). Leave blank to skip
             the automatic check.
           </p>
+          {productHasLinkedGame && (
+            <p className="mt-1 text-xs text-ink-soft">
+              This product uses the new Game-based nickname check — this field only affects the
+              legacy region-check, if separately configured.
+            </p>
+          )}
         </div>
       )}
     </div>

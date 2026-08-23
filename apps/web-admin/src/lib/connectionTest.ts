@@ -26,6 +26,7 @@ import {
   getDigiflazzCreds,
   getKokinpayCreds,
   getVipResellerCreds,
+  getMelostoreCreds,
 } from "@app/db";
 import { checkTransaction as tokopayCheckTransaction } from "@app/core/payments/tokopay";
 import { checkTransaction as paydisiniCheckTransaction } from "@app/core/payments/paydisini";
@@ -33,6 +34,7 @@ import { getPaymentStatus as nowpaymentsGetStatus } from "@app/core/payments/now
 import { getPriceList } from "@app/core/suppliers/digiflazz";
 import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 import { checkGameRegion } from "@app/core/suppliers/vipreseller";
+import { checkGameNickname as melostoreCheckGameNickname } from "@app/core/suppliers/melostore";
 
 export interface ConnectionTestResult {
   ok: boolean;
@@ -266,10 +268,34 @@ export async function testVipReseller(): Promise<ConnectionTestResult> {
   }
 }
 
+/** A throwaway lookup that will never match a real account — reports whether
+ * MeloStore accepted the request at all (a well-formed found-OR-not-found
+ * response), not whether this particular id happens to exist. Same "call the
+ * real endpoint, don't just check the shape" approach as testKokinpay/
+ * testVipReseller: `id: "0"` is not a real MeloStore account id for any
+ * game, so a "not found" result (errorCode 4001/4006) here is the EXPECTED,
+ * connection-works outcome. */
+export async function testMelostore(): Promise<ConnectionTestResult> {
+  const creds = await getMelostoreCreds(prisma);
+  if (!creds) return { ok: false, detail: "MeloStore API key and secret key are not both set." };
+  try {
+    const result = await melostoreCheckGameNickname(creds, { gameCode: "mobile-legends", id: "0" });
+    return {
+      ok: true,
+      detail: result.valid
+        ? `Connected — MeloStore accepted the credentials and returned a nickname ("${result.nickname}").`
+        : "Connected — MeloStore accepted the credentials and responded (the test id wasn't found, as expected).",
+    };
+  } catch (err) {
+    return { ok: false, detail: `MeloStore test failed: ${errorMessage(err)}` };
+  }
+}
+
 /** Method key (as used in PAYMENT_METHODS / PAY_CRED_GROUPS, or — for
- * Digiflazz/KokinPay/VIP-Reseller — the supplier equivalent) → tester.
- * "bybit_bsc" intentionally reuses testBybit — it shares the same account
- * credentials as "bybit", so there is nothing separate to verify here. */
+ * Digiflazz/KokinPay/VIP-Reseller/MeloStore — the supplier equivalent) →
+ * tester. "bybit_bsc" intentionally reuses testBybit — it shares the same
+ * account credentials as "bybit", so there is nothing separate to verify
+ * here. */
 export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult>> = {
   tokopay: testTokopay,
   paydisini: testPaydisini,
@@ -280,4 +306,5 @@ export const CONNECTION_TESTS: Record<string, () => Promise<ConnectionTestResult
   digiflazz: testDigiflazz,
   kokinpay: testKokinpay,
   vipreseller: testVipReseller,
+  melostore: testMelostore,
 };

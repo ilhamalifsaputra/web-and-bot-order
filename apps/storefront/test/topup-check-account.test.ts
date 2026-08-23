@@ -17,10 +17,20 @@ vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
   checkGameNickname: kokinpayMock.checkGameNickname,
 }));
 
-const vipResellerMock = vi.hoisted(() => ({ checkGameRegion: vi.fn() }));
+const vipResellerMock = vi.hoisted(() => ({ checkGameRegion: vi.fn(), checkNicknameViaVipReseller: vi.fn() }));
 vi.mock("@app/core/suppliers/vipreseller", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@app/core/suppliers/vipreseller")>()),
   checkGameRegion: vipResellerMock.checkGameRegion,
+  checkNicknameViaVipReseller: vipResellerMock.checkNicknameViaVipReseller,
+}));
+
+// Task 9 (multi-provider nickname check): MeloStore is a brand-new supplier
+// only ever reached through the gameId branch, never the legacy KokinPay-only
+// block — mocked the same way as the two suppliers above.
+const melostoreMock = vi.hoisted(() => ({ checkGameNickname: vi.fn() }));
+vi.mock("@app/core/suppliers/melostore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@app/core/suppliers/melostore")>()),
+  checkGameNickname: melostoreMock.checkGameNickname,
 }));
 
 import type { FastifyInstance } from "fastify";
@@ -32,9 +42,13 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  createGame,
+  upsertProviderGameMapping,
   KOKINPAY_API_KEY_KEY,
   VIPRESELLER_API_ID_KEY,
   VIPRESELLER_API_KEY_KEY,
+  MELOSTORE_API_KEY_KEY,
+  MELOSTORE_SECRET_KEY_KEY,
 } from "@app/db";
 import { buildApp } from "../src/server";
 
@@ -108,6 +122,8 @@ afterAll(async () => {
 beforeEach(() => {
   kokinpayMock.checkGameNickname.mockReset();
   vipResellerMock.checkGameRegion.mockReset();
+  vipResellerMock.checkNicknameViaVipReseller.mockReset();
+  melostoreMock.checkGameNickname.mockReset();
 });
 
 describe("POST /api/v1/topup/check-account", () => {
@@ -264,5 +280,394 @@ describe("POST /api/v1/topup/check-account — region-check (Task C)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ available: true, valid: true, nickname: "ProPlayer123" });
     expect(vipResellerMock.checkGameRegion).not.toHaveBeenCalled();
+  });
+});
+
+// Task 9 (nickname-multiprovider plan): the gameId-driven NicknameService
+// branch. Every case here builds its OWN Game + Product(gameId) + Denomination
+// via makeGameDenomination below, so ProviderGameMapping rows/priorities from
+// one test never leak into another — only the credential Settings are shared/
+// reset explicitly per test, matching this file's existing convention (see
+// the region-check describe block's own comment on that).
+//
+// The pre-existing "gameId is null, legacy nicknameCheckGameCode is set"
+// case is NOT re-tested here: the top describe block's "returns available:true
+// with the resolved nickname on a successful lookup" test already exercises
+// exactly that path (denomWithCheckId has no Game link at all), and the
+// restructure in apiTopup.ts kept that block byte-identical — confirmed by
+// the fact that all 14 pre-existing tests in this file still pass unmodified
+// against the restructured handler.
+describe("POST /api/v1/topup/check-account — gameId-based multi-provider (Task 9)", () => {
+  let categoryId: number;
+  let gameCounter = 0;
+
+  beforeAll(async () => {
+    const cat = await prisma.category.create({ data: { name: "Task9Cat", slug: "task9-cat", sortOrder: 1 } });
+    categoryId = cat.id;
+  });
+
+  async function makeGameDenomination(opts?: {
+    nicknameCheckGameCode?: string | null;
+    expectedRegionCode?: string | null;
+  }) {
+    gameCounter += 1;
+    const game = await createGame(prisma, { slug: `task9-game-${gameCounter}`, name: `Task9 Game ${gameCounter}` });
+    const product = await createCatalogProduct(prisma, { categoryId, name: `Task9 Product ${gameCounter}` });
+    await prisma.product.update({ where: { id: product.id }, data: { gameId: game.id } });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: `Task9 Denom ${gameCounter}`,
+      type: "SHARED",
+      durationLabel: "1x",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify([
+        {
+          key: "user_id",
+          label: { id: "Game ID", en: "Game ID" },
+          type: "text",
+          required: true,
+          options: [],
+          placeholder: "",
+        },
+      ]),
+      nicknameCheckGameCode: opts?.nicknameCheckGameCode ?? undefined,
+      expectedRegionCode: opts?.expectedRegionCode ?? undefined,
+    });
+    return { gameId: game.id, denominationId: denom.id };
+  }
+
+  it("one enabled kokinpay mapping, provider returns a nickname", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "MultiProviderPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "111" }, "10.0.9.1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "MultiProviderPlayer" });
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "kp-code", id: "111", server: undefined },
+    );
+  });
+
+  it("two enabled mappings by priority: priority-0 fails with a retryable network error, priority-1 succeeds (fallback works)", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-fallback",
+      enabled: true,
+      priority: 0,
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "vipreseller",
+      providerGameCode: "vip-code-fallback",
+      enabled: true,
+      priority: 1,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
+    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
+    kokinpayMock.checkGameNickname.mockRejectedValueOnce(new Error("KokinPay check-nickname network error"));
+    vipResellerMock.checkNicknameViaVipReseller.mockResolvedValueOnce({ nickname: "FallbackPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "222" }, "10.0.9.2");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "FallbackPlayer" });
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(vipResellerMock.checkNicknameViaVipReseller).toHaveBeenCalledWith(
+      { apiId: "vip-id", apiKey: "vip-key" },
+      { gameCode: "vip-code-fallback", id: "222", server: undefined },
+    );
+  });
+
+  it("priority-0 returns a definitive not-found outcome: response is available:true valid:false (final-review fix, Finding 1) and priority-1 is never called", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-definitive",
+      enabled: true,
+      priority: 0,
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "vipreseller",
+      providerGameCode: "vip-code-definitive",
+      enabled: true,
+      priority: 1,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
+    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
+    // A well-formed "not found" result — kokinpayProvider.ts maps this to the
+    // non-retryable INVALID_TARGET, so NicknameService stops here with
+    // definitive:true (see service.test.ts). The route now mirrors the
+    // legacy KokinPay-only path's shape for the same outcome.
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "333" }, "10.0.9.3");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: false });
+    expect(vipResellerMock.checkNicknameViaVipReseller).not.toHaveBeenCalled();
+  });
+
+  it("all providers exhausted with retryable errors (non-definitive not_found): response stays available:false", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-exhausted",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    // A network-style throw maps (via kokinpayProvider.ts) to a retryable
+    // error code — with only one entry, NicknameService exhausts the list
+    // and returns { status: "not_found", definitive: false }, which must NOT
+    // be surfaced as "confirmed missing" the way a definitive not-found is.
+    kokinpayMock.checkGameNickname.mockRejectedValueOnce(new Error("KokinPay check-nickname network error"));
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "334" }, "10.0.9.10");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+  });
+
+  it("a disabled mapping is excluded from the attempt entirely", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "vipreseller",
+      providerGameCode: "vip-code-disabled",
+      enabled: false,
+      priority: 0,
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-enabled",
+      enabled: true,
+      priority: 1,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
+    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "EnabledOnlyPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "444" }, "10.0.9.4");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "EnabledOnlyPlayer" });
+    expect(vipResellerMock.checkNicknameViaVipReseller).not.toHaveBeenCalled();
+  });
+
+  it("zero ProviderGameMapping rows for the game: available:false, no throw", async () => {
+    const { denominationId } = await makeGameDenomination();
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "555" }, "10.0.9.5");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+  });
+
+  it("a mapping's credentials are not configured: that mapping is skipped, falls through to the next one", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-no-creds",
+      enabled: true,
+      priority: 0,
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "vipreseller",
+      providerGameCode: "vip-code-has-creds",
+      enabled: true,
+      priority: 1,
+    });
+    await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
+    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
+    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
+    vipResellerMock.checkNicknameViaVipReseller.mockResolvedValueOnce({ nickname: "SkippedToNextPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "666" }, "10.0.9.6");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "SkippedToNextPlayer" });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+
+  it("getEnabledProviderMappingsForGame throwing (DB-layer error, not a lookup error) degrades to available:false, never a 5xx — review fix, Important finding", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-db-error",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+
+    // Simulate a transient DB failure in the mapping-fetch step itself
+    // (BEFORE the NicknameService.checkNickname call the old try/catch
+    // boundary stopped at) — the widened try/catch must still catch this and
+    // degrade silently, not let it propagate to the route's global error
+    // handler as a 500. Same restore-by-hand pattern as
+    // packages/db/src/crud/users.test.ts's "db.user.update fails" case:
+    // mockRestore alone leaves the Prisma delegate method undefined since
+    // it's served through a proxy, not an own property.
+    const originalFindMany = prisma.providerGameMapping.findMany.bind(prisma.providerGameMapping);
+    const findManySpy = vi
+      .spyOn(prisma.providerGameMapping, "findMany")
+      .mockRejectedValueOnce(new Error("Simulated DB read timeout"));
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "999" }, "10.0.9.9");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+
+    findManySpy.mockRestore();
+    (prisma.providerGameMapping as unknown as Record<string, unknown>).findMany = originalFindMany;
+  });
+
+  it("gameId AND legacy nicknameCheckGameCode both set: the gameId path is used, the legacy KokinPay call is never made", async () => {
+    const { gameId, denominationId } = await makeGameDenomination({
+      nicknameCheckGameCode: "legacy-code-should-not-run",
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "gameid-path-code",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "GameIdPathPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "777" }, "10.0.9.7");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "GameIdPathPlayer" });
+    // Called exactly once, with the MAPPING's game code — if the legacy
+    // block had ALSO run, this mock (shared by both code paths) would have
+    // been called a second time with "legacy-code-should-not-run" instead.
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "gameid-path-code", id: "777", server: undefined },
+    );
+  });
+
+  it("region-check still runs independently off the legacy game code even when gameId is also set", async () => {
+    const { gameId, denominationId } = await makeGameDenomination({
+      nicknameCheckGameCode: "legacy-code-for-region",
+      expectedRegionCode: "id",
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "gameid-path-code-region",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
+    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "RegionPathPlayer" });
+    vipResellerMock.checkGameRegion.mockResolvedValueOnce({ countryCode: "US" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "888" }, "10.0.9.8");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      available: true,
+      valid: true,
+      nickname: "RegionPathPlayer",
+      region_mismatch: true,
+    });
+    // The nickname-check side went through the gameId/mapping path (its own
+    // game code)...
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "gameid-path-code-region", id: "888", server: undefined },
+    );
+    // ...while the region-check ran independently, off the LEGACY game code,
+    // exactly as it does with no gameId at all (see the region-check describe
+    // block above).
+    expect(vipResellerMock.checkGameRegion).toHaveBeenCalledWith(
+      { apiId: "vip-id", apiKey: "vip-key" },
+      { gameCode: "legacy-code-for-region", id: "888", server: undefined },
+    );
+  });
+
+  // Final-review fix, Finding 3: Game.isActive must be enforced at runtime —
+  // a gameId link to a deactivated Game must behave exactly as if gameId
+  // were unset for this request.
+  it("gameId links to an inactive Game: behaves as gameId unset, degrades to available:false (no legacy fallback configured)", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-inactive-game",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { isActive: false } });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1001" }, "10.0.9.11");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+
+  it("gameId links to an inactive Game but the denomination also has a legacy nicknameCheckGameCode: falls through to the legacy KokinPay path", async () => {
+    const { gameId, denominationId } = await makeGameDenomination({
+      nicknameCheckGameCode: "legacy-fallback-code",
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "gameid-path-should-not-run",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { isActive: false } });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "LegacyFallbackPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1002" }, "10.0.9.12");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "LegacyFallbackPlayer" });
+    // Called exactly once, with the LEGACY game code — proof the gameId/
+    // mapping path never ran once the Game was inactive.
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "legacy-fallback-code", id: "1002", server: undefined },
+    );
+  });
+
+  it("gameId links to a Game with nicknameSupported:false: behaves as gameId unset", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-no-nickname-support",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { nicknameSupported: false } });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1003" }, "10.0.9.13");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
   });
 });

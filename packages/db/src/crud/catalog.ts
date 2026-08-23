@@ -437,7 +437,14 @@ export function getDenominationBySlug(db: Db, slug: string) {
 export function getDenominationWithProduct(db: Db, denominationId: number) {
   return db.denomination.findUnique({
     where: { id: denominationId },
-    include: { product: { include: { category: true } } },
+    // `game` (final-review fix, Finding 3): the storefront's gameId
+    // nickname-check branch (apiTopup.ts) needs `product.game.isActive` /
+    // `.nicknameSupported` to enforce those flags, which it can't see
+    // through `product.gameId` alone. Purely additive — every other caller
+    // (apps/web-admin's stock routes, apps/storefront's cart/apiAccount,
+    // the order-bot's product-detail render) only reads fields already on
+    // this shape, so widening the include doesn't change what they get.
+    include: { product: { include: { category: true, game: true } } },
   });
 }
 

@@ -47,6 +47,7 @@ import {
   flashSalePerformance,
   CategoryMismatchError,
 } from "./catalog";
+import { createGame } from "./games";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 
@@ -440,6 +441,32 @@ describe("getCatalogProductWithDenominations / getDenominationWithProduct", () =
     const got = await getDenominationWithProduct(prisma, d.id);
     expect(got!.product.id).toBe(p.id);
     expect(got!.product.category.id).toBe(cat.id);
+  });
+
+  // Final-review fix, Finding 3: apiTopup.ts's gameId nickname-check branch
+  // needs product.game's isActive/nicknameSupported to enforce those flags,
+  // which it can't see through product.gameId alone.
+  it("also loads the linked Game when the product has a gameId", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Parent With Game");
+    const game = await createGame(prisma, { slug: "catalog-test-game", name: "Catalog Test Game" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameId: game.id } });
+    const d = await makeDenom(p.id, "1 Month", "5");
+
+    const got = await getDenominationWithProduct(prisma, d.id);
+    expect(got!.product.game).not.toBeNull();
+    expect(got!.product.game!.id).toBe(game.id);
+    expect(got!.product.game!.isActive).toBe(true);
+    expect(got!.product.game!.nicknameSupported).toBe(true);
+  });
+
+  it("has a null game when the product has no gameId", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Parent No Game");
+    const d = await makeDenom(p.id, "1 Month", "5");
+
+    const got = await getDenominationWithProduct(prisma, d.id);
+    expect(got!.product.game).toBeNull();
   });
 });
 

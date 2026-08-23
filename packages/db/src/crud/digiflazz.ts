@@ -479,6 +479,12 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
             order,
             `Digiflazz confirmed Sukses but fulfilling the order failed (${fulfillMessage})`,
           );
+          // The order genuinely transitioned PROCESSING -> DELIVERED (the
+          // claim inside fulfillDigiflazzOrder committed before this later
+          // side effect threw) — realtime subscribers must still hear about
+          // that, even though this catch's own remedy is an admin alert
+          // rather than a digiflazz* field write.
+          emitDigiflazzOrderStatusChanged(order.id);
           summary.failed++;
         }
       } else if (result.status === "Pending") {

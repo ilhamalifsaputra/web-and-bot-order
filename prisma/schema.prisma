@@ -199,6 +199,7 @@ model Game {
   updatedAt         DateTime @updatedAt @map("updated_at")
 
   providerMappings ProviderGameMapping[]
+  products         Product[]
 
   @@map("games")
 }
@@ -290,12 +291,20 @@ model Product {
   /// Delete, which is refused once it has denominations.
   isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at")
+  /// Nullable FK to Game — links this Product to the canonical Game record
+  /// that drives the multi-provider nickname-check (NicknameService). Null =
+  /// not yet migrated; the storefront falls back entirely to the legacy
+  /// per-Denomination nicknameCheckGameCode/expectedRegionCode fields, which
+  /// keep working completely unchanged.
+  gameId      Int?     @map("game_id")
 
   category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  game            Game?          @relation(fields: [gameId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
 
   @@index([categoryId], map: "ix_products_category_id")
+  @@index([gameId], map: "ix_products_game_id")
   @@map("products")
 }
 

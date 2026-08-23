@@ -43,3 +43,4 @@ export * from "./crud/smtp";
 export * from "./crud/ownerEmail";
 export * from "./crud/integrity";
 export * from "./crud/storageMaintenance";
+export * from "./crud/games";

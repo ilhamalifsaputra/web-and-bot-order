@@ -629,24 +629,46 @@ describe("dispatchPendingDigiflazzOrders", () => {
     // didn't fail; only the later side effect did.
     expect(refreshed.status).toBe(OrderStatus.DELIVERED);
     expect(refreshed.deliveredContent).toBe("SN-POST-FAIL");
-    // digiflazzStatus must stay exactly what the fresh-dispatch claim itself
-    // set it to ("pending_at_supplier" — the initial atomic claim in
-    // dispatchPendingDigiflazzOrders writes that BEFORE calling Digiflazz,
-    // see the claim shape in the code) — NOT further advanced by
-    // recordDigiflazzOutcome (which fulfillDigiflazzOrder's own throw path
-    // must never reach). digiflazzAttempts/digiflazzNextRecheckAt staying at
-    // their untouched defaults (0/null) is what actually proves
-    // recordDigiflazzOutcome's transient_error branch never ran — that
-    // branch would have bumped attempts to 1 and set a future recheck time,
-    // and terminalFailDigiflazzOrder would have flipped digiflazzStatus to
-    // "failed" — neither happened.
-    expect(refreshed.digiflazzStatus).toBe("pending_at_supplier");
+    // Final whole-branch review I-1 fix: fulfillDigiflazzOrder's own
+    // PROCESSING->DELIVERED claim now unconditionally clears digiflazzStatus/
+    // digiflazzNextRecheckAt/digiflazzFailureDetail as part of that SAME
+    // atomic update — the order genuinely delivered (the claim committed
+    // before the later enqueueManualDeliveredDm side effect threw), so it's
+    // no longer "in flight at the supplier" regardless of that later
+    // failure. digiflazzAttempts staying at its untouched default (0) is
+    // what actually proves recordDigiflazzOutcome's transient_error branch
+    // never ran — that branch would have bumped attempts to 1, and
+    // terminalFailDigiflazzOrder would have set digiflazzStatus to "failed"
+    // instead of null — neither happened.
+    expect(refreshed.digiflazzStatus).toBeNull();
     expect(refreshed.digiflazzAttempts).toBe(0);
     expect(refreshed.digiflazzNextRecheckAt).toBeNull();
     // The admin alert fired — this is what proves the failure is treated as
     // terminal-needs-a-human, not a silently-retried transient error.
-    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    // Deferred finding #5 fix: filter by the specific event this alert path
+    // enqueues (alertDigiflazzDispatchFailed -> enqueueManualOrderAdminAlert
+    // -> NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, see notifications.ts)
+    // rather than matching ANY row for this orderId — an unfiltered query
+    // only passed today because PUBLIC_CHANNEL_ID is unset in the test
+    // environment, which happens to suppress the unrelated ORDER_DELIVERED
+    // testimonial-post notification finalizeDeliverySideEffects also
+    // enqueues for the same delivered order.
+    const alertRow = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
+    });
     expect(alertRow).not.toBeNull();
+    // Deferred finding #3 fix (describeFulfillFailure): the natural-language
+    // `reason` this alert path builds only lands in the AuditLog's `details`
+    // (enqueueManualOrderAdminAlert's own payload never carries it — see
+    // alertDigiflazzDispatchFailed) — assert it never leaks a raw
+    // ValidationError i18n key like "error.order_not_processing". A cheap,
+    // general substring guard, regardless of which ValidationError (if any)
+    // actually fired.
+    const auditRow = await prisma.auditLog.findFirst({
+      where: { action: "order.digiflazz_dispatch_failed", targetId: order.id },
+    });
+    expect(auditRow).not.toBeNull();
+    expect(auditRow!.details).not.toContain("error.");
   });
 });
 
@@ -667,6 +689,38 @@ describe("fulfillDigiflazzOrder", () => {
     });
     expect(auditRow).not.toBeNull();
     expect(auditRow!.adminId).toBeNull();
+  });
+
+  // Final whole-branch review I-1 (+ deferred #1/#2): the atomic
+  // PROCESSING->DELIVERED claim must clear digiflazzStatus/
+  // digiflazzNextRecheckAt/digiflazzFailureDetail — without this, every
+  // successfully auto-delivered order kept showing a stale
+  // "pending_at_supplier" badge forever (the schema's own "null once
+  // terminal" doc comment on digiflazzStatus, violated). Dispatch to
+  // pending_at_supplier first (same Pending-dispatch setup as the "leaves a
+  // Pending order PROCESSING with the claim set" test above), then call
+  // fulfillDigiflazzOrder directly with a Sukses-equivalent sn.
+  it("clears digiflazzStatus/digiflazzNextRecheckAt/digiflazzFailureDetail on delivery", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Pending", sn: null, message: null, price: null,
+    });
+    await dispatchPendingDigiflazzOrders(prisma);
+    const pending = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(pending.digiflazzStatus).toBe("pending_at_supplier");
+    expect(pending.digiflazzNextRecheckAt).not.toBeNull();
+
+    await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-CLEARED" });
+
+    const refreshed = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(refreshed.status).toBe(OrderStatus.DELIVERED);
+    expect(refreshed.digiflazzStatus).toBeNull();
+    expect(refreshed.digiflazzNextRecheckAt).toBeNull();
+    expect(refreshed.digiflazzFailureDetail).toBeNull();
+    // digiflazzAttempts/digiflazzDispatchedAt are historical facts, not
+    // in-flight state — left untouched by the fix.
+    expect(refreshed.digiflazzAttempts).toBe(1);
+    expect(refreshed.digiflazzDispatchedAt).not.toBeNull();
   });
 
   it("rejects a second claim on an already-delivered order", async () => {

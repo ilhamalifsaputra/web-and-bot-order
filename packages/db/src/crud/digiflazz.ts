@@ -30,6 +30,14 @@
  * explicit "Gagal" is never retried — the same input would just fail
  * identically again — and goes straight to a terminal, admin-alerted
  * failure instead.
+ *
+ * This whole argument rests on createTransaction's refId-dedup behavior
+ * (@app/core/suppliers/digiflazz) actually working as documented — that
+ * function's own doc comment carries an explicit "⚠ ASSUMPTION... Verify
+ * against the live dashboard before go-live" flag on the exact request
+ * shape/field names this depends on, not yet confirmed against a live
+ * Digiflazz account (same hedge checkout.ts's webhook doc comment already
+ * carries for this same call).
  */
 import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
@@ -264,6 +272,29 @@ export async function alertDigiflazzDispatchFailed(
   );
 }
 
+/** Turns a fulfillDigiflazzOrder failure into a natural-language sentence
+ * for the admin-facing alert/audit text (CLAUDE.md: audit log details
+ * must read as a sentence, never a raw i18n key). fulfillDigiflazzOrder
+ * only ever throws ValidationError with one of a closed, small set of
+ * keys (or, for a non-ValidationError failure — an unexpected DB error —
+ * whatever that error's own message already is, which is already
+ * natural text, not a key). */
+function describeFulfillFailure(err: unknown): string {
+  if (err instanceof ValidationError) {
+    switch (err.key) {
+      case "error.order_not_processing":
+        return "the order was no longer PROCESSING by the time delivery ran (likely already resolved by another process)";
+      case "error.order_not_found":
+        return "the order could not be found";
+      case "error.order_not_digiflazz":
+        return "the order is no longer recognized as a single-item Digiflazz order";
+      default:
+        return err.key; // any future ValidationError key this function doesn't know about yet — still better than nothing, and cheap to extend
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export type DigiflazzOutcome =
   | { kind: "pending" }
   | { kind: "transient_error"; message: string }
@@ -473,7 +504,7 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
           // terminal failure: alert directly (NOT via recordDigiflazzOutcome,
           // which would wrongly write pending/terminal digiflazz* fields
           // onto an order that may already be DELIVERED).
-          const fulfillMessage = fulfillErr instanceof Error ? fulfillErr.message : String(fulfillErr);
+          const fulfillMessage = describeFulfillFailure(fulfillErr);
           await alertDigiflazzDispatchFailed(
             db,
             order,
@@ -561,7 +592,23 @@ export async function fulfillDigiflazzOrder(
   const now = new Date();
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING },
-    data: { status: OrderStatus.DELIVERED, deliveredContent: args.sn, deliveredAt: now },
+    data: {
+      status: OrderStatus.DELIVERED,
+      deliveredContent: args.sn,
+      deliveredAt: now,
+      // Final whole-branch review I-1 (+ deferred #1/#2): this order is no
+      // longer "in flight at the supplier" once it's DELIVERED — clear the
+      // three digiflazz* fields the dispatch/recheck path set so they read
+      // null once terminal (see this field's own doc comment in
+      // schema.prisma), instead of permanently showing a stale
+      // "pending_at_supplier" badge on every successfully auto-delivered
+      // order. digiflazzAttempts/digiflazzDispatchedAt are left untouched —
+      // those are historical facts about how the order got here, not
+      // current in-flight state, and nothing renders them as if they were.
+      digiflazzStatus: null,
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: null,
+    },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   await db.orderStatusHistory.create({

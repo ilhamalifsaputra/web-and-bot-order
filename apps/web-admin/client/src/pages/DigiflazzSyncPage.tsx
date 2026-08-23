@@ -11,6 +11,8 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { toast } from "sonner";
 import { apiPost, apiGet } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { useDigiflazzSyncStatus } from "../hooks/useDigiflazzSyncStatus";
+import { formatRelativeTime } from "../lib/relativeTime";
 
 interface SkuRow {
   buyerSkuCode: string;
@@ -36,6 +38,7 @@ interface Category {
 export function DigiflazzSyncPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const syncStatus = useDigiflazzSyncStatus();
   const { data: categoriesData } = useQuery({
     queryKey: ["digiflazz-categories"],
     queryFn: () => apiGet<{ categories: Category[] }>("/api/catalog/digiflazz/categories"),
@@ -162,6 +165,41 @@ export function DigiflazzSyncPage() {
 
   return (
     <PageLayout title="Sync Digiflazz">
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Hourly Sync Status</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {syncStatus.data === undefined && (
+            <p className="text-sm text-ink-soft">Loading sync status…</p>
+          )}
+          {syncStatus.data === null && (
+            <p className="text-sm text-ink-soft">
+              This shop's catalog has never been auto-synced yet — the hourly sync will run automatically.
+            </p>
+          )}
+          {syncStatus.data && syncStatus.data.status === "success" && (
+            <p className="text-sm text-ink">
+              Last synced {formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)} —{" "}
+              {syncStatus.data.updated} price(s) updated, {syncStatus.data.deactivated} deactivated.
+            </p>
+          )}
+          {syncStatus.data && syncStatus.data.status === "aborted" && (
+            <p className="text-sm text-rust">
+              {syncStatus.data.abortReason === "sharp_change"
+                ? "Aborted: too many prices moved sharply — this usually means the supplier's response was malformed, not a real market-wide price change."
+                : "Aborted: the supplier returned no usable price data."}{" "}
+              ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
+            </p>
+          )}
+          {syncStatus.data && syncStatus.data.status === "error" && (
+            <p className="text-sm text-rust">
+              The last sync attempt failed. ({formatRelativeTime(syncStatus.data.finishedAt, syncStatus.data.finishedAt)})
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       <PageHeader
         title="Sync Digiflazz"
         description="Pull Digiflazz's Game price list, review, and bulk-import new titles into the catalog."

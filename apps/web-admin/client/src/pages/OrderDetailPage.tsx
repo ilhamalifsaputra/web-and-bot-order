@@ -15,6 +15,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { RefreshCw, Check, X, CircleDollarSign, Send, MailX } from "lucide-react";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { useSse } from "../hooks/useSse";
 
 interface OrderItem {
   id: number;
@@ -54,6 +55,13 @@ interface OrderDetail {
    * always null for auto-delivered orders, which deliver via stockItem
    * instead. The admin's own audit view of what was sent to the buyer. */
   deliveredContent: string | null;
+  /** Populated only once the SSE stream (useSse below) delivers its first
+   * push — undefined until then, even for a Digiflazz-routed order. Not
+   * part of the base GET /api/orders/:orderId response. */
+  digiflazzStatus?: string | null;
+  digiflazzAttempts?: number;
+  digiflazzNextRecheckAt?: string | null;
+  digiflazzFailureDetail?: string | null;
 }
 
 interface MoneyView {
@@ -119,6 +127,36 @@ export function OrderDetailPage() {
   const { orderId } = useParams<{ orderId: string }>();
   const qc = useQueryClient();
   const { data, isError } = useOrderDetail(orderId ?? "");
+  useSse<OrderDetailData>(
+    orderId ? `/api/orders/${orderId}/digiflazz/stream` : null,
+    ["order", orderId],
+    (prev, next) => {
+      // No base order loaded yet — nothing to merge into. `merge`'s declared
+      // return type is T, but this repo's strict TS config rejects casting
+      // `undefined` straight to OrderDetailData, so route it through
+      // `unknown` — the runtime value is still `undefined`, which
+      // setQueryData leaves as-is (there's nothing cached to overwrite).
+      if (!prev) return prev as unknown as OrderDetailData;
+      const snapshot = next as {
+        orderStatus: string;
+        digiflazzStatus: string | null;
+        digiflazzAttempts: number;
+        digiflazzNextRecheckAt: string | null;
+        digiflazzFailureDetail: string | null;
+      };
+      return {
+        ...prev,
+        order: {
+          ...prev.order,
+          status: snapshot.orderStatus,
+          digiflazzStatus: snapshot.digiflazzStatus,
+          digiflazzAttempts: snapshot.digiflazzAttempts,
+          digiflazzNextRecheckAt: snapshot.digiflazzNextRecheckAt,
+          digiflazzFailureDetail: snapshot.digiflazzFailureDetail,
+        },
+      };
+    },
+  );
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -213,6 +251,25 @@ export function OrderDetailPage() {
               <span className="text-ink-soft">Status</span>
               <StatusBadge status={order.status} />
             </div>
+            {order.digiflazzStatus === "pending_at_supplier" && (
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Digiflazz</span>
+                <Badge variant="secondary">
+                  Pending at supplier{order.digiflazzAttempts ? ` (attempt ${order.digiflazzAttempts})` : ""}
+                </Badge>
+              </div>
+            )}
+            {order.digiflazzStatus === "failed" && (
+              <div className="flex flex-col gap-1">
+                <div className="flex justify-between">
+                  <span className="text-ink-soft">Digiflazz</span>
+                  <Badge variant="destructive">Failed — needs manual review</Badge>
+                </div>
+                {order.digiflazzFailureDetail && (
+                  <p className="text-xs text-ink-soft">{order.digiflazzFailureDetail}</p>
+                )}
+              </div>
+            )}
             <div className="flex justify-between gap-4">
               <span className="shrink-0 text-ink-soft">Customer</span>
               <span className="flex min-w-0 items-center gap-2 text-ink">

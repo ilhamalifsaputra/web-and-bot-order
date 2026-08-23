@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -11,6 +11,27 @@ vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
 }));
+
+// The page now always opens an SSE connection for the sync-status card on
+// mount (useDigiflazzSyncStatus), so every test in this file — not just the
+// ones exercising the card — needs EventSource stubbed, or the wizard tests
+// would throw on a real EventSource constructor jsdom doesn't implement.
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  closed = false;
+  url: string;
+  constructor(url: string, _opts?: { withCredentials?: boolean }) {
+    this.url = url;
+    MockEventSource.instances.push(this);
+  }
+  close() {
+    this.closed = true;
+  }
+  emit(data: unknown) {
+    this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent);
+  }
+}
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -100,6 +121,12 @@ beforeEach(() => {
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   Element.prototype.setPointerCapture = vi.fn();
   Element.prototype.releasePointerCapture = vi.fn();
+  vi.stubGlobal("EventSource", MockEventSource);
+  MockEventSource.instances = [];
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 async function syncWizard(user: ReturnType<typeof userEvent.setup>) {
@@ -259,5 +286,67 @@ describe("DigiflazzSyncPage", () => {
     const item = screen.getByText((_, el) => el?.tagName === "LI" && /mobile legends/i.test(el.textContent ?? ""));
     expect(item).toHaveTextContent("Mobile Legends — 1 SKU(s)");
     expect(item).not.toHaveTextContent(/mobile legends\s*\(/i);
+  });
+});
+
+describe("DigiflazzSyncPage — hourly sync status card", () => {
+  it("renders the loading state before any push arrives", () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(screen.getByText(/loading sync status/i)).toBeInTheDocument();
+  });
+
+  it("renders the never-synced empty state when the stream pushes null", async () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    MockEventSource.instances[0].emit(null);
+    await waitFor(() => expect(screen.getByText(/never been auto-synced/i)).toBeInTheDocument());
+  });
+
+  it("renders the success message with counts and a relative time when the stream pushes a success status", async () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    MockEventSource.instances[0].emit({
+      status: "success",
+      updated: 5,
+      deactivated: 2,
+      abortReason: null,
+      finishedAt: new Date().toISOString(),
+    });
+    await waitFor(() => expect(screen.getByText(/last synced/i)).toBeInTheDocument());
+    const message = screen.getByText(/last synced/i);
+    expect(message).toHaveTextContent("5");
+    expect(message).toHaveTextContent("2");
+    expect(message).toHaveTextContent(/just now/i);
+  });
+
+  it("renders the sharp_change-specific abort message", async () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    MockEventSource.instances[0].emit({
+      status: "aborted",
+      updated: 0,
+      deactivated: 0,
+      abortReason: "sharp_change",
+      finishedAt: new Date().toISOString(),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/too many prices moved sharply/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("renders the no_usable_rows-specific abort message", async () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    MockEventSource.instances[0].emit({
+      status: "aborted",
+      updated: 0,
+      deactivated: 0,
+      abortReason: "no_usable_rows",
+      finishedAt: new Date().toISOString(),
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/supplier returned no usable price data/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("still renders the existing wizard UI alongside the new card", () => {
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
   });
 });

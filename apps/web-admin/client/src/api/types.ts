@@ -126,6 +126,18 @@ export interface TopProductRow {
   costUnknownUnits: number;
 }
 
+/** Mirrors the shape pushed by GET /api/dashboard/digiflazz-sync/stream (and
+ * returned by getDigiflazzSyncStatus, Task 3) — the hourly catalog resync's
+ * last-run outcome. `null` (not this type) means no Settings row exists yet,
+ * i.e. the shop has never synced. */
+export interface DigiflazzSyncStatus {
+  status: "success" | "aborted" | "error";
+  updated: number;
+  deactivated: number;
+  abortReason: "sharp_change" | "no_usable_rows" | null;
+  finishedAt: string;
+}
+
 export type AnalyticsRange = "7d" | "30d";
 export type AnalyticsCurrency = "idr" | "usdt" | "combined";
 export type AnalyticsMetric = "revenue" | "orders";

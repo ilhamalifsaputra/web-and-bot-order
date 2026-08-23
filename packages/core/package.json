@@ -38,7 +38,8 @@
     "./suppliers/kokinpay": "./src/suppliers/kokinpay.ts",
     "./suppliers/vipreseller": "./src/suppliers/vipreseller.ts",
     "./nudge": "./src/nudge.ts",
-    "./realtime/digiflazzEvents": "./src/realtime/digiflazzEvents.ts"
+    "./realtime/digiflazzEvents": "./src/realtime/digiflazzEvents.ts",
+    "./realtime/sseRoute": "./src/realtime/sseRoute.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

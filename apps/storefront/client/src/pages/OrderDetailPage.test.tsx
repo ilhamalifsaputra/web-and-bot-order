@@ -377,8 +377,18 @@ describe("OrderDetailPage — realtime digiflazz sub-status (Task 14)", () => {
     );
     // Still the processing reassurance card, not the delivered-order view —
     // proving the merge did NOT overwrite order.status/processing/delivered
-    // from the SSE push's orderStatus field.
-    expect(screen.getAllByText("Being prepared").length).toBeGreaterThan(0);
+    // from the SSE push's orderStatus field. Asserting the exact count (2:
+    // the StatusBadge chip + the card title, same as the other "still
+    // processing" tests in this file) rather than just >0 matters here: a
+    // regression that merged order.status into the cache WITHOUT also
+    // touching the top-level processing/delivered booleans (the narrower,
+    // more likely mistake than corrupting all three) would still leave the
+    // processing card and "Your credentials" section exactly as they are —
+    // the only thing that would change is StatusBadge switching from
+    // "Being prepared" to "Delivered" for its one occurrence, dropping the
+    // count from 2 to 1. A bare >0 check can't see that; this can.
+    expect(screen.getAllByText("Being prepared")).toHaveLength(2);
+    expect(screen.queryByText("Delivered")).not.toBeInTheDocument();
     expect(screen.queryByText("Your credentials")).not.toBeInTheDocument();
   });
 });

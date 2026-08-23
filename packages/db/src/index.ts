@@ -29,6 +29,7 @@ export * from "./crud/tokopay";
 export * from "./crud/digiflazz";
 export * from "./crud/digiflazzSyncStatus";
 export * from "./crud/kokinpay";
+export * from "./crud/melostore";
 export * from "./crud/vipreseller";
 export * from "./crud/paydisini";
 export * from "./crud/nowpayments";

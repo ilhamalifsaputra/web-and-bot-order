@@ -52,7 +52,7 @@ describe("NicknameService.checkNickname", () => {
 
     const result = await service.checkNickname(REQ);
 
-    expect(result).toEqual({ status: "not_found" });
+    expect(result).toEqual({ status: "not_found", definitive: true });
     expect(providerA.checkNickname).toHaveBeenCalledTimes(1);
     expect(providerB.checkNickname).not.toHaveBeenCalled();
   });
@@ -69,7 +69,7 @@ describe("NicknameService.checkNickname", () => {
 
     const result = await service.checkNickname(REQ);
 
-    expect(result).toEqual({ status: "not_found" });
+    expect(result).toEqual({ status: "not_found", definitive: false });
     expect(providerA.checkNickname).toHaveBeenCalledTimes(1);
     expect(providerB.checkNickname).toHaveBeenCalledTimes(1);
     expect(providerC.checkNickname).toHaveBeenCalledTimes(1);

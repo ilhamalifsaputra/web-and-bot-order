@@ -338,13 +338,31 @@ describe("PATCH /api/catalog/products/:id — gameId (Task 10)", () => {
     expect(row!.gameId).toBe(game.id);
   });
 
-  it("rejects a non-existent gameId with 400 and leaves the row unchanged", async () => {
+  it("rejects a non-existent gameId with 400 'Game not found.' and leaves the row unchanged", async () => {
     const productId = await seedProduct();
     const res = await patchJson(`/api/catalog/products/${productId}`, cookie, csrf, {
       name: "Parent",
       gameId: 999999,
     });
     expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "Game not found." });
+    const row = await prisma.product.findUnique({ where: { id: productId } });
+    expect(row!.gameId).toBeNull();
+  });
+
+  // Final-review fix, Finding 4: an existing-but-inactive game must get a
+  // DIFFERENT message than a genuinely non-existent one, so the admin isn't
+  // told a game "doesn't exist" when it's just been deactivated.
+  it("rejects an existing but inactive gameId with 400 'That game is inactive.' and leaves the row unchanged", async () => {
+    const game = await createGameRow();
+    await prisma.game.update({ where: { id: game.id }, data: { isActive: false } });
+    const productId = await seedProduct();
+    const res = await patchJson(`/api/catalog/products/${productId}`, cookie, csrf, {
+      name: "Parent",
+      gameId: game.id,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "That game is inactive." });
     const row = await prisma.product.findUnique({ where: { id: productId } });
     expect(row!.gameId).toBeNull();
   });

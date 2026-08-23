@@ -348,6 +348,67 @@ describe("ProductDetailPage", () => {
   // fetches GET /api/games for its options (Task 11's useGames hook) and
   // stores the chosen Game's id, distinct from the free-text gameVariant/
   // gameVariantEmoji/gameRegion fields covered by the test above.
+  // Final-review fix, Finding 4: the picker must not offer an inactive game
+  // to link, EXCEPT the currently-linked one (kept visible even if it's
+  // since been deactivated), so editing an already-linked product doesn't
+  // make the existing selection disappear from the list.
+  it("excludes an inactive, non-selected game from the picker but keeps a currently-linked-but-inactive game visible", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const withLinkedInactiveGame = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameId: 9 } };
+    const gamesWithInactive = {
+      games: [
+        ...GAMES_LIST.games,
+        {
+          id: 9,
+          slug: "retired-game",
+          name: "Retired Game",
+          category: null,
+          nicknameSupported: true,
+          requiresZone: false,
+          requiresServer: false,
+          isActive: false,
+          providerMappings: [],
+        },
+        {
+          id: 12,
+          slug: "another-inactive-game",
+          name: "Another Inactive Game",
+          category: null,
+          nicknameSupported: true,
+          requiresZone: false,
+          requiresServer: false,
+          isActive: false,
+          providerMappings: [],
+        },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body =
+        url === "/api/games"
+          ? gamesWithInactive
+          : url === "/api/catalog"
+            ? { categories: [], products: [] }
+            : url.startsWith("/api/catalog/1") && !init?.method
+              ? withLinkedInactiveGame
+              : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+    await user.click(screen.getByRole("combobox", { name: "Linked Game" }));
+
+    // The currently-linked game (id 9), though inactive, still appears.
+    expect(await screen.findByRole("option", { name: "Retired Game (inactive)" })).toBeInTheDocument();
+    // An unrelated inactive game (id 12, never linked) is excluded entirely.
+    expect(screen.queryByRole("option", { name: /another inactive game/i })).not.toBeInTheDocument();
+    // Active games are unaffected.
+    expect(screen.getByRole("option", { name: "Mobile Legends" })).toBeInTheDocument();
+  });
+
   it("shows the Linked Game picker populated with the fetched games", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     mockCatalogAndGamesFetch(PRODUCT_DETAIL);

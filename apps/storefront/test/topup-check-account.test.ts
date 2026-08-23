@@ -390,7 +390,7 @@ describe("POST /api/v1/topup/check-account — gameId-based multi-provider (Task
     );
   });
 
-  it("priority-0 returns a definitive not-found outcome: response is available:false and priority-1 is never called", async () => {
+  it("priority-0 returns a definitive not-found outcome: response is available:true valid:false (final-review fix, Finding 1) and priority-1 is never called", async () => {
     const { gameId, denominationId } = await makeGameDenomination();
     await upsertProviderGameMapping(prisma, {
       gameId,
@@ -410,13 +410,36 @@ describe("POST /api/v1/topup/check-account — gameId-based multi-provider (Task
     await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
     await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
     // A well-formed "not found" result — kokinpayProvider.ts maps this to the
-    // non-retryable INVALID_TARGET, so NicknameService stops here.
+    // non-retryable INVALID_TARGET, so NicknameService stops here with
+    // definitive:true (see service.test.ts). The route now mirrors the
+    // legacy KokinPay-only path's shape for the same outcome.
     kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null });
 
     const res = await postCheckAccount({ denomination_id: denominationId, id: "333" }, "10.0.9.3");
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ available: false });
+    expect(res.json()).toEqual({ available: true, valid: false });
     expect(vipResellerMock.checkNicknameViaVipReseller).not.toHaveBeenCalled();
+  });
+
+  it("all providers exhausted with retryable errors (non-definitive not_found): response stays available:false", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-exhausted",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    // A network-style throw maps (via kokinpayProvider.ts) to a retryable
+    // error code — with only one entry, NicknameService exhausts the list
+    // and returns { status: "not_found", definitive: false }, which must NOT
+    // be surfaced as "confirmed missing" the way a definitive not-found is.
+    kokinpayMock.checkGameNickname.mockRejectedValueOnce(new Error("KokinPay check-nickname network error"));
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "334" }, "10.0.9.10");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
   });
 
   it("a disabled mapping is excluded from the attempt entirely", async () => {
@@ -580,5 +603,71 @@ describe("POST /api/v1/topup/check-account — gameId-based multi-provider (Task
       { apiId: "vip-id", apiKey: "vip-key" },
       { gameCode: "legacy-code-for-region", id: "888", server: undefined },
     );
+  });
+
+  // Final-review fix, Finding 3: Game.isActive must be enforced at runtime —
+  // a gameId link to a deactivated Game must behave exactly as if gameId
+  // were unset for this request.
+  it("gameId links to an inactive Game: behaves as gameId unset, degrades to available:false (no legacy fallback configured)", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-inactive-game",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { isActive: false } });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1001" }, "10.0.9.11");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+
+  it("gameId links to an inactive Game but the denomination also has a legacy nicknameCheckGameCode: falls through to the legacy KokinPay path", async () => {
+    const { gameId, denominationId } = await makeGameDenomination({
+      nicknameCheckGameCode: "legacy-fallback-code",
+    });
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "gameid-path-should-not-run",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { isActive: false } });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "LegacyFallbackPlayer" });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1002" }, "10.0.9.12");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: true, valid: true, nickname: "LegacyFallbackPlayer" });
+    // Called exactly once, with the LEGACY game code — proof the gameId/
+    // mapping path never ran once the Game was inactive.
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "legacy-fallback-code", id: "1002", server: undefined },
+    );
+  });
+
+  it("gameId links to a Game with nicknameSupported:false: behaves as gameId unset", async () => {
+    const { gameId, denominationId } = await makeGameDenomination();
+    await upsertProviderGameMapping(prisma, {
+      gameId,
+      provider: "kokinpay",
+      providerGameCode: "kp-code-no-nickname-support",
+      enabled: true,
+      priority: 0,
+    });
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.game.update({ where: { id: gameId }, data: { nicknameSupported: false } });
+
+    const res = await postCheckAccount({ denomination_id: denominationId, id: "1003" }, "10.0.9.13");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ available: false });
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
   });
 });

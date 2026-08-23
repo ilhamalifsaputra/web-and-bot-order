@@ -451,7 +451,13 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
         const parsedGameId = Number(body.gameId);
         if (!Number.isInteger(parsedGameId)) return reply.code(400).send({ error: "Invalid game id." });
         const game = await getGame(prisma, parsedGameId);
-        if (!game || !game.isActive) return reply.code(400).send({ error: "Game not found." });
+        // Final-review fix, Finding 4: distinguish "doesn't exist" from
+        // "exists but inactive" — the admin's Linked Game picker can still
+        // submit an id for a game that's since been deactivated (it keeps
+        // the currently-linked game visible even when inactive), and a
+        // generic "Game not found." there is misleading.
+        if (!game) return reply.code(400).send({ error: "Game not found." });
+        if (!game.isActive) return reply.code(400).send({ error: "That game is inactive." });
         gameId = parsedGameId;
       }
     }

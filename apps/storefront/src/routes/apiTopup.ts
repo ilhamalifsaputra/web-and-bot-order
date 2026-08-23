@@ -383,7 +383,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // rest of this handler. Note this does NOT gate the region-check block
       // below, which has its own independent prerequisite
       // (`expectedRegionCode && nicknameCheckGameCode`, still legacy-only).
-      const gameId = denomination?.product?.gameId ?? null;
+      // Final-review fix, Finding 3: a `gameId` link only counts when the
+      // linked Game row is loaded AND still active AND still supports
+      // nickname checks. Any of those failing degrades EXACTLY as if
+      // `gameId` were unset for this request — falls through to
+      // `legacyGameCode` below if set, else stays `{ available: false }`.
+      // No throw, per this handler's silent-degrade discipline.
+      const rawGameId = denomination?.product?.gameId ?? null;
+      const linkedGame = denomination?.product?.game ?? null;
+      const gameId =
+        rawGameId != null && linkedGame && linkedGame.isActive && linkedGame.nicknameSupported ? rawGameId : null;
       const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
       if (!denomination || (!gameId && !legacyGameCode)) return reply.send(NOT_AVAILABLE);
 
@@ -427,9 +436,35 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
             response.available = true;
             response.valid = true;
             response.nickname = result.nickname;
+          } else if (result.status === "not_found" && result.definitive) {
+            // Final-review fix, Finding 1: a provider gave a definitive
+            // "no such account" answer — mirror the legacy KokinPay-only
+            // block's shape below so InstantBuyPage.tsx renders the same
+            // "not found" hint it already knows how to show. A
+            // non-definitive not_found (every provider failed/was
+            // unreachable) and no_providers_configured both stay
+            // { available: false } — "couldn't determine anything" must
+            // stay silent, never look like "confirmed missing".
+            response.available = true;
+            response.valid = false;
           }
-          // "not_found" / "no_providers_configured" → response stays
-          // { available: false }, never surfaced as an error to the buyer.
+          if (result.status !== "found") {
+            // Final-review fix, Finding 2: a misconfigured priority-0
+            // mapping (e.g. a typo'd providerGameCode) can make the highest-
+            // priority provider return a non-retryable error, which stops
+            // NicknameService before any lower-priority provider is ever
+            // tried — and previously nothing logged that. Purely additive
+            // observability: no credentials, request bodies, or full entry
+            // objects, just plain counts/ids.
+            logger.info(
+              {
+                gameId,
+                entriesAttempted: entries.length,
+                lastProviderId: entries[entries.length - 1]?.provider.id ?? null,
+              },
+              "Multi-provider nickname check found no result for one storefront lookup — buyer's keystroke got no live nickname, degrading silently.",
+            );
+          }
         } catch (err) {
           // Widened to also cover getEnabledProviderMappingsForGame and the
           // get*Creds calls above (not just checkNickname) — an unexpected

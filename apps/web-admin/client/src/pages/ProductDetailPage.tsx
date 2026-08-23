@@ -401,11 +401,19 @@ export function ProductDetailPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No linked game</SelectItem>
-                  {(games?.games ?? []).map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>
-                      {g.name}
-                    </SelectItem>
-                  ))}
+                  {/* Final-review fix, Finding 4: only offer active games —
+                      EXCEPT the currently-linked one, kept visible even if
+                      it's since been deactivated, so editing an
+                      already-linked product doesn't make the current
+                      selection vanish from the list. */}
+                  {(games?.games ?? [])
+                    .filter((g) => g.isActive || String(g.id) === gameIdDraft)
+                    .map((g) => (
+                      <SelectItem key={g.id} value={String(g.id)}>
+                        {g.name}
+                        {g.isActive ? "" : " (inactive)"}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               <p className="mt-1 text-xs text-ink-soft">

@@ -456,11 +456,24 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
             // tried — and previously nothing logged that. Purely additive
             // observability: no credentials, request bodies, or full entry
             // objects, just plain counts/ids.
+            //
+            // Field names deliberately say "configured", not "attempted"/
+            // "tried": `entries` is every enabled+credentialed mapping for
+            // this game, not the set NicknameService actually called before
+            // stopping (it stops at the first non-retryable error, per
+            // Finding 1's `definitive` semantics) — a re-review of this fix
+            // caught that "lastProviderId" would misreport a provider that
+            // was never invoked in exactly the priority-0-typo case this log
+            // exists to diagnose. Reflecting the honest, cheap-to-compute
+            // value (what was configured) rather than a false claim about
+            // what ran was chosen over adding a stop-point tracker to
+            // NicknameService, which would be the larger redesign Finding 2
+            // explicitly said not to do.
             logger.info(
               {
                 gameId,
-                entriesAttempted: entries.length,
-                lastProviderId: entries[entries.length - 1]?.provider.id ?? null,
+                providersConfigured: entries.length,
+                lastConfiguredProviderId: entries[entries.length - 1]?.provider.id ?? null,
               },
               "Multi-provider nickname check found no result for one storefront lookup — buyer's keystroke got no live nickname, degrading silently.",
             );

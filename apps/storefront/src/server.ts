@@ -28,6 +28,7 @@ import apiCartRoutes from "./routes/apiCart";
 import apiCheckoutRoutes from "./routes/apiCheckout";
 import apiTrackRoutes from "./routes/apiTrack";
 import apiAccountRoutes from "./routes/apiAccount";
+import apiOrderDigiflazzStreamRoutes from "./routes/apiOrderDigiflazzStream";
 import apiWalletTopupRoutes from "./routes/apiWalletTopup";
 import apiTopupRoutes from "./routes/apiTopup";
 import seoRoutes from "./routes/seo";
@@ -180,6 +181,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(apiCheckoutRoutes, { prefix: "/api/v1" });
   await app.register(apiTrackRoutes, { prefix: "/api/v1" });
   await app.register(apiAccountRoutes, { prefix: "/api/v1" });
+  await app.register(apiOrderDigiflazzStreamRoutes, { prefix: "/api/v1" });
   await app.register(apiWalletTopupRoutes, { prefix: "/api/v1" });
   await app.register(apiTopupRoutes, { prefix: "/api/v1" });
   await app.register(seoRoutes);

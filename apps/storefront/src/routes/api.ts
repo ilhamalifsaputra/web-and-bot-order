@@ -457,6 +457,15 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // and re-POSTs qty:1 for the SAME denomination would otherwise land at
     // qty:2 even though every individual request in isolation looked like
     // "qty 1" — checking the raw request alone would miss exactly that case.
+    // COUPLING WARNING (final whole-branch review): this literal-string check
+    // treats `autoDeliverySource` as a boolean "is-Digiflazz" flag, matching
+    // `@app/core/cartComposition`'s DIGIFLAZZ_SOURCE/cartKindOf and
+    // `packages/db/src/crud/digiflazz.ts`'s dispatchPendingDigiflazzOrders.
+    // `packages/db/src/crud/productProviderMappings.ts`'s
+    // resolveDenominationProvider can write a different provider string into
+    // this same column — see its comment for why that silently stops this
+    // guard from applying to that SKU. Not reachable today (no production
+    // caller of that resolver yet).
     if (denom.autoDeliverySource === "digiflazz") {
       const alreadyInCart = existingLines.some((l) => l.denomination_id === denom.id);
       if (qty !== 1 || alreadyInCart) {

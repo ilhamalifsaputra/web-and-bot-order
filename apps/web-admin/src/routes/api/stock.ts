@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import {
   prisma,
   listAllDenominations,
@@ -48,6 +49,16 @@ function csvRow(fields: string[]): string {
  * partial plaintext (or its length) to a page load nobody asked to reveal
  * anything on. */
 const MASKED_CREDENTIAL = "••••••••";
+
+/** Operator-facing message for `CredentialKeyConfigError` — the bulk-add and
+ * reveal routes below (the ones that call into encryptCredentials/
+ * decryptCredentials) catch that specific error (never a bare `catch` — a
+ * real bug in the handler should still hit the generic HTML 500 in
+ * server.ts) and return this as JSON instead, so a missing/malformed
+ * `CREDENTIAL_ENCRYPTION_KEY` surfaces as a readable admin error instead of
+ * `apiPost` failing to parse an HTML error page. */
+const CREDENTIAL_KEY_ERROR_MESSAGE =
+  "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
  * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
@@ -145,7 +156,16 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const { added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds));
+    let added: number, skipped: number;
+    try {
+      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_upload",
@@ -304,7 +324,16 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // its null return doubles as "no such stock item".
   app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
-    const credentials = await revealStockCredentials(prisma, stockId);
+    let credentials: string | null;
+    try {
+      credentials = await revealStockCredentials(prisma, stockId);
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Credential reveal failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
     if (credentials === null) return reply.code(404).send({ error: "Stock item not found." });
 
     await logAdminAction(prisma, {

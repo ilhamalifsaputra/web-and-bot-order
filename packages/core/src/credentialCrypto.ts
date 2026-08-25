@@ -40,19 +40,36 @@ export interface CredentialEnvelope {
   authTag: string; // base64
 }
 
+/**
+ * Raised by `keyForVersion` whenever `CREDENTIAL_ENCRYPTION_KEY` is missing,
+ * malformed, or doesn't cover the requested key version — i.e. an operator
+ * configuration problem, not a data-integrity one (a tampered/mis-keyed
+ * envelope still throws a plain `Error` from `decryptCredentials`'s
+ * `decipher.final()`). Callers that want to turn "encryption isn't
+ * configured" into a clear operator-facing response (rather than falling
+ * through to a generic 500) should catch this specific class — see
+ * apps/web-admin/src/routes/api/stock.ts's bulk-add and reveal routes.
+ */
+export class CredentialKeyConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CredentialKeyConfigError";
+  }
+}
+
 /** Resolve the raw AES-256 key bytes for a given envelope key version.
  * Throws (never logs the key material) if unconfigured, malformed, or the
  * requested version has no known key — the last case only matters once a
  * second key generation exists, which isn't wired up yet. */
 function keyForVersion(version: number): Buffer {
   if (version !== CURRENT_KEY_VERSION) {
-    throw new Error(
+    throw new CredentialKeyConfigError(
       `No decryption key is configured for credential key version ${version} (current version is ${CURRENT_KEY_VERSION}).`,
     );
   }
   const raw = process.env.CREDENTIAL_ENCRYPTION_KEY;
   if (!raw) {
-    throw new Error(
+    throw new CredentialKeyConfigError(
       "CREDENTIAL_ENCRYPTION_KEY is not configured — cannot encrypt or decrypt stock item credentials. Set it in .env (see .env.example).",
     );
   }
@@ -60,10 +77,10 @@ function keyForVersion(version: number): Buffer {
   try {
     key = Buffer.from(raw, "hex");
   } catch {
-    throw new Error("CREDENTIAL_ENCRYPTION_KEY is not valid hex.");
+    throw new CredentialKeyConfigError("CREDENTIAL_ENCRYPTION_KEY is not valid hex.");
   }
   if (key.length !== KEY_LENGTH_BYTES) {
-    throw new Error(
+    throw new CredentialKeyConfigError(
       `CREDENTIAL_ENCRYPTION_KEY must decode to exactly ${KEY_LENGTH_BYTES} bytes (${KEY_LENGTH_BYTES * 2} hex characters) for AES-256-GCM.`,
     );
   }

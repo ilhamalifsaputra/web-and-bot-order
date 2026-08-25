@@ -3414,6 +3414,27 @@ describe("stock", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  // Final whole-branch review finding — see the matching reveal-route test's
+  // comment above for the full rationale; bulkAddStock is the other named
+  // call site (it decrypts existing rows to dedupe, then encrypts new ones).
+  it("a malformed CREDENTIAL_ENCRYPTION_KEY surfaces as a JSON 500, not an HTML error page", async () => {
+    const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+    try {
+      const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
+        csrf_token: seed.csrf,
+        credentials: `keyerr${counter}@e.com:p`,
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["content-type"]).toContain("application/json");
+      const body = JSON.parse(res.body) as { error: string };
+      expect(body.error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+    } finally {
+      if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+    }
+  });
+
   // Data-1: bulkAddStock is called inside prisma.$transaction (see
   // routes/api/stock.ts) so two concurrent uploads of the SAME fresh
   // credential can't both pass the "not already present" check and both
@@ -3547,6 +3568,31 @@ describe("stock", () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: "bad-token" });
       expect(res.statusCode).toBe(403);
+    });
+
+    // Final whole-branch review finding: a missing/malformed
+    // CREDENTIAL_ENCRYPTION_KEY used to surface as server.ts's generic
+    // text/html 500 page, which broke the admin client's apiPost (it expects
+    // JSON and gets an HTML parse error instead of a readable message). The
+    // route now catches CredentialKeyConfigError specifically and returns a
+    // clear JSON error. CREDENTIAL_ENCRYPTION_KEY is read straight from
+    // process.env at call time (see credentialCrypto.ts's own comment on
+    // why), so mutating it here takes effect immediately — same technique
+    // credentialCrypto.test.ts uses to test the unconfigured/malformed cases.
+    it("a malformed CREDENTIAL_ENCRYPTION_KEY surfaces as a JSON 500, not an HTML error page", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+      process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+      try {
+        const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+        expect(res.statusCode).toBe(500);
+        expect(res.headers["content-type"]).toContain("application/json");
+        const body = JSON.parse(res.body) as { error: string };
+        expect(body.error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+      } finally {
+        if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+        else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+      }
     });
   });
 });

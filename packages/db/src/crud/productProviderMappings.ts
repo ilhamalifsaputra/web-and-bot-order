@@ -78,6 +78,29 @@ export async function resolveDenominationProvider(db: Db, productId: number) {
     orderBy: { priority: "asc" },
   });
   if (!top) return null;
+  // COUPLING WARNING (final whole-branch review, Trustance Master
+  // Architecture Phase 1): `top.provider` is an arbitrary provider string
+  // from this table (the mapping tests themselves create "providerB"/
+  // "providerC"), but THREE other places treat `autoDeliverySource` as a
+  // boolean "is this Digiflazz-dispatched" flag, not an arbitrary provider
+  // id:
+  //   - packages/core/src/cartComposition.ts's `DIGIFLAZZ_SOURCE` constant /
+  //     `cartKindOf` — reclassifies the SKU as PREMIUM (not TOPUP) the
+  //     moment this isn't exactly "digiflazz".
+  //   - apps/storefront/src/routes/api.ts's single-unit cart guard — stops
+  //     applying the same way.
+  //   - packages/db/src/crud/digiflazz.ts's `dispatchPendingDigiflazzOrders`
+  //     — its poller query filters on `autoDeliverySource: "digiflazz"`
+  //     literally, so any other value means the SKU is picked up by NO
+  //     dispatcher at all.
+  // Writing any provider value here other than `"digiflazz"` silently breaks
+  // all three guards for that SKU: it misclassifies as a normal premium item
+  // and a paid order for it sits in the manual queue forever, with nothing
+  // to auto-fulfil it. This is not reachable today (no production caller
+  // invokes `resolveDenominationProvider`), but MUST be fixed — with a real
+  // multi-provider dispatch registry, not this single boolean-shaped column
+  // — before a second transaction provider is ever actually onboarded
+  // through this table.
   await updateDenomination(db, productId, { autoDeliverySource: top.provider, supplierSku: top.providerSku });
   return top;
 }

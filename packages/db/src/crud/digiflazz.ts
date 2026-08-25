@@ -406,6 +406,19 @@ async function terminalFailDigiflazzOrder(
  * inside a long-held transaction would starve every other writer, so the
  * atomic claim is its own short write and the HTTP call happens outside it —
  * same reasoning as enqueueFlashSaleBroadcast's chunking.
+ *
+ * COUPLING WARNING (final whole-branch review): the `autoDeliverySource:
+ * "digiflazz"` filter below is a hardcoded literal — this is the ONLY
+ * dispatcher that exists, so any Denomination whose `autoDeliverySource` is
+ * some other provider string is picked up by NO dispatcher at all and its
+ * paid orders sit in the manual queue forever.
+ * `packages/db/src/crud/productProviderMappings.ts`'s
+ * resolveDenominationProvider can write such a value (its own comment names
+ * this and the other two affected sites: `@app/core/cartComposition`'s
+ * DIGIFLAZZ_SOURCE/cartKindOf and apps/storefront/src/routes/api.ts's
+ * single-unit guard). Not reachable today (no production caller of that
+ * resolver yet), but a real multi-provider dispatch registry is required
+ * before a second transaction provider is ever onboarded through that table.
  */
 export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<DigiflazzDispatchSummary> {
   const creds = await getDigiflazzCreds(db);

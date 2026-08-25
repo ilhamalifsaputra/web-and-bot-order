@@ -89,7 +89,19 @@ export const CartKind = {
 } as const;
 export type CartKind = (typeof CartKind)[keyof typeof CartKind];
 
-/** The `Denomination.autoDeliverySource` value that marks a top-up. */
+/** The `Denomination.autoDeliverySource` value that marks a top-up.
+ *
+ * COUPLING WARNING: this treats `autoDeliverySource` as a boolean
+ * "is-Digiflazz" flag, but `packages/db/src/crud/productProviderMappings.ts`'s
+ * `resolveDenominationProvider` can write any arbitrary provider string into
+ * that same column (its mapping-table tests create "providerB"/"providerC").
+ * The moment a non-"digiflazz" value lands there, `cartKindOf` below silently
+ * reclassifies that SKU as PREMIUM instead of TOPUP. See that resolver's own
+ * comment for the other two affected call sites
+ * (apps/storefront/src/routes/api.ts's single-unit guard and
+ * packages/db/src/crud/digiflazz.ts's dispatchPendingDigiflazzOrders) — not
+ * reachable today (no production caller of resolveDenominationProvider yet),
+ * but must be fixed before a second transaction provider is onboarded. */
 export const DIGIFLAZZ_SOURCE = "digiflazz";
 
 /** Pre-existing key: the cart mixes delivery types (or holds a non-AUTO line

@@ -133,7 +133,8 @@ export async function establishSession(
     // clipped id list tells an operator nothing a count does not.
     logger.info(
       `Merged a guest cart into user ${user.id}'s account cart on sign-in and skipped ${skipped} of its ${guestCart.length} lines, ` +
-        `because keeping them would have produced a cart that checkout refuses (game top-ups and other products cannot share an order). ` +
+        `because keeping them would have produced a cart that checkout refuses: an order may hold either one hand-fulfilled line ` +
+        `(manual, manual_with_info, or a supplier-routed game top-up) or any number of instant-delivery lines, never both. ` +
         `The buyer keeps the lines that do fit; the skipped ones were never added, so nothing they can see was removed.`,
     );
   }

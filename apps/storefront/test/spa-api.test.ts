@@ -800,8 +800,8 @@ describe("/api/v1/auth", () => {
   // lines that would conflict, so the result is always a cart POST /cart would
   // have let the buyer build by hand.
   //
-  // These assert a DELIBERATE behavior change (the only one in Task 3 besides
-  // the AUTO-typed-top-up rejection) — everything else in the task is a no-op.
+  // These assert the ONE deliberate behavior change in Task 3 — everything else
+  // in that task is a no-op shadow of behavior that already existed.
   async function loginWithCookie(username: string, password: string, cookie: string): Promise<string> {
     const login = await app.inject({
       method: "POST",

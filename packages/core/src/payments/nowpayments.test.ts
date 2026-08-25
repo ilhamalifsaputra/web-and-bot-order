@@ -17,48 +17,36 @@ function stubFetchJson(payload: unknown, opts: { ok?: boolean; status?: number }
 }
 
 /**
- * Independent re-implementation of recursive alphabetical key-sorting, written
- * separately from `nowpayments.ts`'s internal `sortKeysDeep` so the mandatory
- * regression test below isn't just calling the same code it's supposed to be
- * checking. Used only to build the "expected" signature in the test fixture.
+ * Build a correct signature + matching (rawBody, parsedBody) pair the way
+ * NOWPayments actually verifies (Task 2a fix): HMAC-SHA512 over the RAW
+ * request body bytes, no re-serialization. `raw` is the literal string that
+ * would have gone out over the wire; `body` is `JSON.parse(raw)`, exactly
+ * what a Fastify JSON parser hands the route handler.
  */
-function independentSortKeysDeep(obj: unknown): unknown {
-  if (Array.isArray(obj)) return obj.map(independentSortKeysDeep);
-  if (obj !== null && typeof obj === "object") {
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(obj as Record<string, unknown>).sort()) {
-      out[key] = independentSortKeysDeep((obj as Record<string, unknown>)[key]);
-    }
-    return out;
-  }
-  return obj;
-}
-
-/** Build a correct signature the same way the implementation should: sort keys
- * recursively, JSON.stringify, HMAC-SHA512 with the ipn secret. */
-function makeSignature(body: Record<string, unknown>) {
-  return createHmac("sha512", CREDS.ipnSecret).update(JSON.stringify(independentSortKeysDeep(body))).digest("hex");
+function signedIpn(raw: string) {
+  const signature = createHmac("sha512", CREDS.ipnSecret).update(raw).digest("hex");
+  const body = JSON.parse(raw) as Record<string, unknown>;
+  return { raw, body, signature };
 }
 
 describe("verifyIpn", () => {
   it("returns null when the signature header is missing", () => {
-    expect(verifyIpn({ order_id: "ORD-1", payment_status: "finished" }, undefined, CREDS)).toBeNull();
+    const { raw, body } = signedIpn('{"order_id":"ORD-1","payment_status":"finished"}');
+    expect(verifyIpn(raw, body, undefined, CREDS)).toBeNull();
   });
 
   it("returns null when the signature is wrong", () => {
-    const body = { order_id: "ORD-1", payment_status: "finished", payment_id: "PID-1", actually_paid: 10 };
-    expect(verifyIpn(body, "deadbeef", CREDS)).toBeNull();
+    const { raw, body } = signedIpn(
+      '{"order_id":"ORD-1","payment_status":"finished","payment_id":"PID-1","actually_paid":10}',
+    );
+    expect(verifyIpn(raw, body, "deadbeef", CREDS)).toBeNull();
   });
 
   it("verifies a correctly signed payload and normalizes fields", () => {
-    const body = {
-      order_id: "ORD-1",
-      payment_status: "finished",
-      payment_id: "PID-1",
-      actually_paid: 10.5,
-    };
-    const sig = makeSignature(body);
-    const result = verifyIpn(body, sig, CREDS);
+    const { raw, body, signature } = signedIpn(
+      '{"order_id":"ORD-1","payment_status":"finished","payment_id":"PID-1","actually_paid":10.5}',
+    );
+    const result = verifyIpn(raw, body, signature, CREDS);
     expect(result).not.toBeNull();
     expect(result?.orderId).toBe("ORD-1");
     expect(result?.trxId).toBe("PID-1");
@@ -71,17 +59,20 @@ describe("verifyIpn", () => {
   // rejected outright, never normalized to trxId: "" — an empty string would
   // otherwise become a valid (poisoned) idempotency ledger key upstream.
   it("returns null (rejects) when payment_id is missing, even with a correctly signed body", () => {
-    const body = { order_id: "ORD-NOPID", payment_status: "finished", actually_paid: 10 };
-    const sig = makeSignature(body);
-    expect(verifyIpn(body, sig, CREDS)).toBeNull();
+    const { raw, body, signature } = signedIpn('{"order_id":"ORD-NOPID","payment_status":"finished","actually_paid":10}');
+    expect(verifyIpn(raw, body, signature, CREDS)).toBeNull();
   });
 
   it("returns null (rejects) when payment_id is present but not a string/number (e.g. null, object)", () => {
-    const bodyNull = { order_id: "ORD-NULLPID", payment_status: "finished", payment_id: null, actually_paid: 10 };
-    expect(verifyIpn(bodyNull, makeSignature(bodyNull), CREDS)).toBeNull();
+    const nullPid = signedIpn(
+      '{"order_id":"ORD-NULLPID","payment_status":"finished","payment_id":null,"actually_paid":10}',
+    );
+    expect(verifyIpn(nullPid.raw, nullPid.body, nullPid.signature, CREDS)).toBeNull();
 
-    const bodyObj = { order_id: "ORD-OBJPID", payment_status: "finished", payment_id: { bad: true }, actually_paid: 10 };
-    expect(verifyIpn(bodyObj, makeSignature(bodyObj), CREDS)).toBeNull();
+    const objPid = signedIpn(
+      '{"order_id":"ORD-OBJPID","payment_status":"finished","payment_id":{"bad":true},"actually_paid":10}',
+    );
+    expect(verifyIpn(objPid.raw, objPid.body, objPid.signature, CREDS)).toBeNull();
   });
 
   // A literal "" payment_id passes `typeof x === "string"` — it's a distinct
@@ -89,60 +80,83 @@ describe("verifyIpn", () => {
   // otherwise trxId: "" flows straight through as a valid, ledger-poisoning
   // idempotency key (this was the gap a reviewer caught in the first pass).
   it("returns null (rejects) when payment_id is a literal empty string", () => {
-    const body = { order_id: "ORD-EMPTYPID", payment_status: "finished", payment_id: "", actually_paid: 10 };
-    expect(verifyIpn(body, makeSignature(body), CREDS)).toBeNull();
+    const { raw, body, signature } = signedIpn(
+      '{"order_id":"ORD-EMPTYPID","payment_status":"finished","payment_id":"","actually_paid":10}',
+    );
+    expect(verifyIpn(raw, body, signature, CREDS)).toBeNull();
   });
 
   it("still rejects a second, independent IPN missing payment_id — proves there's no shared poisoned state across calls", () => {
-    const body1 = { order_id: "ORD-NOPID-A", payment_status: "finished", actually_paid: 10 };
-    const body2 = { order_id: "ORD-NOPID-B", payment_status: "finished", actually_paid: 20 };
-    expect(verifyIpn(body1, makeSignature(body1), CREDS)).toBeNull();
-    expect(verifyIpn(body2, makeSignature(body2), CREDS)).toBeNull();
+    const first = signedIpn('{"order_id":"ORD-NOPID-A","payment_status":"finished","actually_paid":10}');
+    const second = signedIpn('{"order_id":"ORD-NOPID-B","payment_status":"finished","actually_paid":20}');
+    expect(verifyIpn(first.raw, first.body, first.signature, CREDS)).toBeNull();
+    expect(verifyIpn(second.raw, second.body, second.signature, CREDS)).toBeNull();
   });
 
   it("marks a non-finished status as not paid", () => {
-    const body = { order_id: "ORD-2", payment_status: "waiting", payment_id: "PID-2", pay_amount: 5 };
-    const sig = makeSignature(body);
-    const result = verifyIpn(body, sig, CREDS);
+    const { raw, body, signature } = signedIpn(
+      '{"order_id":"ORD-2","payment_status":"waiting","payment_id":"PID-2","pay_amount":5}',
+    );
+    const result = verifyIpn(raw, body, signature, CREDS);
     expect(result).not.toBeNull();
     expect(result?.paid).toBe(false);
     expect(result?.status).toBe("waiting");
   });
 
   /**
-   * MANDATORY regression test (per task brief): hand/independently-compute the
-   * HMAC-SHA512 over a fixture whose keys are DELIBERATELY out of alphabetical
-   * order in the literal, including a nested object that is also unsorted.
-   * This proves the implementation actually sorts (recursively) before hashing
-   * rather than hashing whatever key order the JS engine happens to iterate in.
+   * MANDATORY regression test (Task 2a): a payload that is byte-identical in
+   * MEANING but differently FORMATTED — `1.50` in the raw body vs. what
+   * `JSON.parse` then `JSON.stringify` would produce (`1.5`, the trailing
+   * zero dropped) — must still verify correctly, because `verifyIpn` now
+   * HMACs the raw bytes directly instead of re-serializing.
+   *
+   * This is exactly the case the OLD `JSON.stringify(sortKeysDeep(body))`
+   * approach would have silently broken on: NOWPayments computes its
+   * signature over ITS OWN raw bytes (`"10.50"`), so a receiver that hashes
+   * `JSON.stringify(JSON.parse(raw))` instead would get `"10.5"` — a
+   * different string, a different HMAC, a mismatch — and reject a
+   * genuinely-valid, correctly-signed IPN.
    */
-  it("verifies a signature computed independently over a manually-sorted fixture with deliberately unsorted keys", () => {
-    // Deliberately unsorted at both levels: {c, a, b} and nested {z, y}.
-    const body: Record<string, unknown> = {
-      payment_status: "finished",
-      order_id: "ORD-XYZ",
-      payment_id: "PID-999",
-      actually_paid: 42,
-      extra: { z: 1, y: 2 },
-    };
+  it("verifies a signature computed over raw bytes with a numeric field formatted differently than JSON.stringify would produce (1.50 vs 1.5) — the exact case the old re-serialization approach would have broken", () => {
+    // NOWPayments' literal wire bytes: actually_paid keeps a trailing zero.
+    const raw = '{"order_id":"ORD-FMT","payment_status":"finished","payment_id":"PID-FMT-1","actually_paid":1.50}';
+    const body = JSON.parse(raw) as Record<string, unknown>;
 
-    // Independently (NOT calling sortKeysDeep) construct the expected sorted
-    // JSON string by hand, mirroring alphabetical key order at every level:
-    // top-level sorted: actually_paid, extra, order_id, payment_id, payment_status
-    // nested "extra" sorted: y, z
-    const handSortedJson =
-      '{"actually_paid":42,"extra":{"y":2,"z":1},"order_id":"ORD-XYZ","payment_id":"PID-999","payment_status":"finished"}';
-    const independentSignature = createHmac("sha512", CREDS.ipnSecret).update(handSortedJson).digest("hex");
+    // Sanity-check the premise: re-serializing what JSON.parse produced does
+    // NOT reproduce the original bytes — this is the divergence the fix
+    // guards against.
+    expect(JSON.stringify(body)).not.toBe(raw);
+    expect(JSON.stringify(body)).toContain('"actually_paid":1.5');
+    expect(raw).toContain('"actually_paid":1.50');
 
-    const result = verifyIpn(body, independentSignature, CREDS);
+    // NOWPayments signs the RAW bytes it actually sent.
+    const signature = createHmac("sha512", CREDS.ipnSecret).update(raw).digest("hex");
+
+    // Correct (fixed) behavior: hashing the raw bytes verifies.
+    const result = verifyIpn(raw, body, signature, CREDS);
     expect(result).not.toBeNull();
-    expect(result?.orderId).toBe("ORD-XYZ");
-    expect(result?.trxId).toBe("PID-999");
+    expect(result?.trxId).toBe("PID-FMT-1");
     expect(result?.paid).toBe(true);
+    expect(result?.amount.toFixed(2)).toBe("1.50");
 
-    // Sanity-check the hand-sorted string itself matches the independent
-    // sorter, so a typo in the literal above can't silently invalidate the test.
-    expect(JSON.stringify(independentSortKeysDeep(body))).toBe(handSortedJson);
+    // Regression guard: the OLD approach (re-serializing the parsed body via
+    // JSON.stringify before hashing, key-sorted or not) would have computed
+    // a DIFFERENT digest than NOWPayments' own signature over `raw`, since
+    // JSON.stringify(JSON.parse("1.50")) === "1.5", not "1.50". Prove that
+    // divergence directly so this test would have failed loud against the
+    // reverted implementation.
+    const oldStyleDigest = createHmac("sha512", CREDS.ipnSecret).update(JSON.stringify(body)).digest("hex");
+    expect(oldStyleDigest).not.toBe(signature);
+  });
+
+  it("rejects when the raw body was tampered with even though the parsed body still looks valid (proves the hash covers the real bytes, not a derived view)", () => {
+    const raw = '{"order_id":"ORD-TAMPER","payment_status":"finished","payment_id":"PID-TAMPER-1","actually_paid":10}';
+    const signature = createHmac("sha512", CREDS.ipnSecret).update(raw).digest("hex");
+    // Attacker (or a proxy re-encoding the body) changes the amount but the
+    // signature header travels with the ORIGINAL raw bytes' digest.
+    const tamperedRaw = raw.replace('"actually_paid":10', '"actually_paid":999999');
+    const tamperedBody = JSON.parse(tamperedRaw) as Record<string, unknown>;
+    expect(verifyIpn(tamperedRaw, tamperedBody, signature, CREDS)).toBeNull();
   });
 });
 

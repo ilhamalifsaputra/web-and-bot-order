@@ -1204,71 +1204,103 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- NOWPayments IPN webhook (public; signature is the auth) — DIFFERS
   // from TokoPay/PayDisini above: the signature arrives via the HTTP header
-  // `x-nowpayments-sig`, not a body field, and is HMAC-SHA512 over the
-  // recursively-key-sorted body (verifyIpn handles both). `orderId` in the
-  // verified result is `order.orderCode` (NOWPayments' `order_id`, set to
-  // orderCode when the invoice was created above), so lookup is via
-  // getOrderByCode exactly like the other two gateways. Same response
-  // contract: 403 disabled, 403 bad signature, 200 for every other outcome
-  // (ignored/unmatched/amount mismatch/delivered/delivery-failed) so
-  // NOWPayments stops retrying regardless of outcome. ----
-  app.post("/pay/nowpayments/callback", async (req, reply) => {
-    // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
-    if (webhookRateLimited("nowpayments", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
-
-    const creds = await getNowpaymentsCreds(prisma);
-    if (!creds) return reply.code(403).send({ status: "disabled" });
-
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const sigHeader = req.headers["x-nowpayments-sig"];
-    const cb = verifyIpn(body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
-    // Only an EXACT "finished" status is a delivery — every other status
-    // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
-    // expired) is "not ready yet" and ignored, never an error.
-    if (!cb.paid) return reply.send({ status: "ignored" });
-
-    const order = await getOrderByCode(prisma, cb.orderId);
-    // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
-    if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
-      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
-      return reply.send({ status: "unmatched" });
-    }
-    // Amount sanity: never deliver on a short/partial payment.
-    if (cb.amount.lessThan(order.totalAmount)) {
-      logger.warn(
-        `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
-      );
-      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
-      return reply.send({ status: "amount mismatch" });
-    }
-
-    try {
-      const r = await deliverPaidNowpaymentsOrder(prisma, {
-        orderId: order.id,
-        trxId: cb.trxId,
-        amount: cb.amount,
-        shopUrl: shopPublicUrl(),
-      });
-      if (r.status === "delivered") nudgeOutboxDispatcher();
-      if (r.status === "stale") {
-        logger.warn(
-          `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
-        );
-        await enqueueAdminStalePayment(prisma, {
-          orderId: order.id,
-          orderCode: order.orderCode,
-          gateway: "NOWPayments",
-          trxId: cb.trxId,
-        });
+  // `x-nowpayments-sig`, not a body field, and is HMAC-SHA512 over the RAW
+  // request body bytes (Task 2a fix — see nowpayments.ts's top doc comment
+  // for why: re-serializing the parsed JSON with `JSON.stringify` risks a
+  // byte-level mismatch, e.g. `1.50` vs `1.5`, that would silently break
+  // every IPN's signature). `orderId` in the verified result is
+  // `order.orderCode` (NOWPayments' `order_id`, set to orderCode when the
+  // invoice was created above), so lookup is via getOrderByCode exactly like
+  // the other two gateways. Same response contract: 403 disabled, 403 bad
+  // signature, 200 for every other outcome (ignored/unmatched/amount
+  // mismatch/delivered/delivery-failed) so NOWPayments stops retrying
+  // regardless of outcome. ----
+  //
+  // Registered inside its own nested `app.register` so the raw-body-capturing
+  // `addContentTypeParser` below is scoped ONLY to this one route (Fastify
+  // encapsulates content-type parsers to the plugin context they're declared
+  // in — docs/Reference/ContentTypeParser.md) and never touches the
+  // TokoPay/PayDisini/Digiflazz webhooks that share this file's outer
+  // registration, none of which need the raw body (their signature schemes
+  // hash specific fields, not the whole body — see tokopay.ts/paydisini.ts).
+  await app.register(async (scoped) => {
+    scoped.addContentTypeParser("application/json", { parseAs: "string" }, (req, rawBody: string, done) => {
+      (req as FastifyRequest & { rawBody?: string }).rawBody = rawBody;
+      if (rawBody === "") {
+        // Mirrors Fastify's own default-parser rejection of an empty JSON body.
+        const err = new Error("Body cannot be empty when content-type is set to 'application/json'") as Error & {
+          statusCode?: number;
+        };
+        err.statusCode = 400;
+        done(err, undefined);
+        return;
       }
-      return reply.send({ status: r.status });
-    } catch (err) {
-      logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
-      // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
-      // and an admin resolves it from the orders panel.
-      return reply.send({ status: "delivery failed" });
-    }
+      try {
+        done(null, JSON.parse(rawBody));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    });
+
+    scoped.post("/pay/nowpayments/callback", async (req, reply) => {
+      // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
+      if (webhookRateLimited("nowpayments", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
+      const creds = await getNowpaymentsCreds(prisma);
+      if (!creds) return reply.code(403).send({ status: "disabled" });
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const rawBody = (req as FastifyRequest & { rawBody?: string }).rawBody ?? "";
+      const sigHeader = req.headers["x-nowpayments-sig"];
+      const cb = verifyIpn(rawBody, body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
+      if (!cb) return reply.code(403).send({ status: "bad signature" });
+      // Only an EXACT "finished" status is a delivery — every other status
+      // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
+      // expired) is "not ready yet" and ignored, never an error.
+      if (!cb.paid) return reply.send({ status: "ignored" });
+
+      const order = await getOrderByCode(prisma, cb.orderId);
+      // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
+      if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        return reply.send({ status: "unmatched" });
+      }
+      // Amount sanity: never deliver on a short/partial payment.
+      if (cb.amount.lessThan(order.totalAmount)) {
+        logger.warn(
+          `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        );
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        return reply.send({ status: "amount mismatch" });
+      }
+
+      try {
+        const r = await deliverPaidNowpaymentsOrder(prisma, {
+          orderId: order.id,
+          trxId: cb.trxId,
+          amount: cb.amount,
+          shopUrl: shopPublicUrl(),
+        });
+        if (r.status === "delivered") nudgeOutboxDispatcher();
+        if (r.status === "stale") {
+          logger.warn(
+            `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+          );
+          await enqueueAdminStalePayment(prisma, {
+            orderId: order.id,
+            orderCode: order.orderCode,
+            gateway: "NOWPayments",
+            trxId: cb.trxId,
+          });
+        }
+        return reply.send({ status: r.status });
+      } catch (err) {
+        logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
+        // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
+        // and an admin resolves it from the orders panel.
+        return reply.send({ status: "delivery failed" });
+      }
+    });
   });
 
   // ---- Digiflazz webhook (public; signature is the auth) ----

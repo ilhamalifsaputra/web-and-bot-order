@@ -107,10 +107,18 @@ diproses" (`isUniqueViolation`).
   `price_amount`/`price_currency=usd`/`pay_currency`/`order_id`/
   `ipn_callback_url`. Tidak idempoten by `order_id` (tidak seperti TokoPay/
   PayDisini) — setiap panggilan membuat invoice baru.
-- **Signature IPN:** HMAC-SHA512 atas `JSON.stringify` body yang key-nya
-  di-**sort rekursif alfabetis** (`sortKeysDeep`, termasuk objek nested),
-  dikirim via header `x-nowpayments-sig` — skema ini **terdokumentasi baik
-  secara publik, bukan tebakan** (beda dari TokoPay/PayDisini). Hanya status
+- **Signature IPN:** HMAC-SHA512 atas **raw bytes** body request (persis
+  seperti yang dikirim NOWPayments, ditangkap lewat `addContentTypeParser`
+  yang di-scope hanya ke route ini di `checkout.ts`, sebelum body
+  di-parse/JSON-ulang), dikirim via header `x-nowpayments-sig` — skema ini
+  **terdokumentasi baik secara publik, bukan tebakan** (beda dari
+  TokoPay/PayDisini). Sebelumnya `verifyIpn` meng-hash
+  `JSON.stringify(sortKeysDeep(parsedBody))` (re-serialize hasil parse, bukan
+  raw bytes) — itu cuma "kebetulan" cocok karena sort key menetralkan
+  perbedaan urutan field, tapi divergensi byte-level lain (mis. `1.50` vs
+  `1.5` pada angka) akan diam-diam merusak verifikasi signature (Task 2a
+  fix). `sortKeysDeep` masih diekspor sebagai utility mandiri tapi TIDAK lagi
+  dipakai `verifyIpn`. Hanya status
   `payment_status === "finished"` dianggap `paid` (dicek lewat `isProviderPaid`,
   lihat §Pemetaan status di atas) — status lain
   (`waiting`/`confirming`/`confirmed`/`sending`/`partially_paid`/`failed`/

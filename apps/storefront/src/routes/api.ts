@@ -18,7 +18,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
-import { DeliveryType, OrderCurrency } from "@app/core/enums";
+import { OrderCurrency } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
@@ -31,6 +31,11 @@ import {
   addToCart,
   countAvailableStock,
   createGuestUser,
+  findIdempotentResponse,
+  saveIdempotentResponse,
+  hashIdempotentRequest,
+  IdempotencyKeyReuseError,
+  type IdempotentReplay,
   type CatalogProduct,
 } from "@app/db";
 import type { Category, Denomination } from "@prisma/client";
@@ -44,7 +49,8 @@ import {
   CART_COOKIE_VERSION,
   type GuestCartLine,
 } from "../shop";
-import { loadCartLines, loadGuestCartItems } from "./cart";
+import { loadCartLines, loadGuestCartItems, cartCompositionLineOf } from "./cart";
+import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited } from "../rateLimit";
@@ -242,6 +248,21 @@ export function withGuestCsrf<T extends object>(body: T, isGuest: boolean, custo
   return isGuest ? { ...body, csrf_token: customer.csrf } : body;
 }
 
+/** Stable name for POST /checkout's idempotency ledger row (packages/db/src/crud/idempotency.ts) —
+ * NOT the literal URL, so it stays correct if the route is ever remounted. */
+const CHECKOUT_IDEMPOTENCY_ENDPOINT = "storefront.checkout.create";
+
+/** An `Idempotency-Key` header, trimmed and length-capped — Fastify hands
+ * back `string | string[] | undefined` for a possibly-repeated header; a
+ * repeat takes the first value. Empty/oversized values are treated as "no
+ * key" (opt out) rather than rejected, since this feature is additive and
+ * must never turn a missing/malformed header into a hard failure. */
+function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header) ?? "";
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
+}
+
 /**
  * How long the guest's `201` will wait on SMTP before giving up on the mail.
  *
@@ -436,6 +457,15 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // and re-POSTs qty:1 for the SAME denomination would otherwise land at
     // qty:2 even though every individual request in isolation looked like
     // "qty 1" — checking the raw request alone would miss exactly that case.
+    // COUPLING WARNING (final whole-branch review): this literal-string check
+    // treats `autoDeliverySource` as a boolean "is-Digiflazz" flag, matching
+    // `@app/core/cartComposition`'s DIGIFLAZZ_SOURCE/cartKindOf and
+    // `packages/db/src/crud/digiflazz.ts`'s dispatchPendingDigiflazzOrders.
+    // `packages/db/src/crud/productProviderMappings.ts`'s
+    // resolveDenominationProvider can write a different provider string into
+    // this same column — see its comment for why that silently stops this
+    // guard from applying to that SKU. Not reachable today (no production
+    // caller of that resolver yet).
     if (denom.autoDeliverySource === "digiflazz") {
       const alreadyInCart = existingLines.some((l) => l.denomination_id === denom.id);
       if (qty !== 1 || alreadyInCart) {
@@ -443,24 +473,21 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Cart guard (Task 6 design decision): a cart containing any manual /
-    // manual_with_info line may contain EXACTLY that one line (any quantity)
-    // — no other lines, same-SKU or different-SKU, auto or otherwise. This is
-    // stricter than "auto vs manual" alone because Order.customerData assumes
-    // one denomination's field spec applies to the whole order (the bot only
-    // ever orders one denomination at a time) — the storefront's cart can
-    // hold multiple products, which would break that assumption if two
-    // different manual_with_info SKUs landed in the same order. Re-adding the
-    // SAME denomination that's already the cart's one line (qty increment,
-    // handled below by addToCart's upsert / the guest merge branch) is not a
-    // new line, so it's exempt.
-    if (existingLines.length > 0) {
-      const isSameSingleLine = existingLines.length === 1 && existingLines[0]!.denomination_id === denom.id;
-      const mixedDelivery =
-        denom.deliveryType !== DeliveryType.AUTO || existingLines.some((l) => l.delivery_type !== DeliveryType.AUTO);
-      if (mixedDelivery && !isSameSingleLine) {
-        return reply.code(400).send({ error: "error.cart_mixed_delivery" });
-      }
+    // Cart composition guard. Was an inline `mixedDelivery` local; it is now
+    // the named `cart_kind` rule in @app/core/cartComposition, shared with the
+    // checkout re-assertion (routes/checkout.ts) and the pay-from-balance rail
+    // (packages/db/src/crud/wallet_checkout.ts) so the three can no longer
+    // drift. The rule it enforces is UNCHANGED — Trustance Phase 1 Task 3
+    // named and centralized it, deliberately without loosening it. See that
+    // module's doc comment for the full statement, including why re-adding the
+    // cart's sole line is exempt and why a top-up is identified by
+    // autoDeliverySource rather than deliveryType.
+    const additionError = cartAdditionError(
+      existingLines.map(cartCompositionLineOf),
+      { denominationId: denom.id, deliveryType: denom.deliveryType, autoDeliverySource: denom.autoDeliverySource },
+    );
+    if (additionError) {
+      return reply.code(400).send({ error: additionError });
     }
 
     if (customer) {
@@ -501,6 +528,103 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
+
+    const method = (req.body?.method ?? "").toLowerCase();
+    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+
+    // Idempotency (Task 1): an `Idempotency-Key` header lets a double-tapped
+    // "Pay" button or a network retry replay the exact response from the
+    // first attempt instead of creating a second order or (for a guest) a
+    // second orphan account. `idem` bundles the key with its request hash
+    // into one nullable value so every use below narrows together — no `!`
+    // assertions.
+    //
+    // Deliberately checked BEFORE establishGuestCustomer runs (fix pass 2,
+    // review finding "guest-checkout idempotency doesn't protect the
+    // scenario it's built for"): establishGuestCustomer mints a BRAND-NEW
+    // `User` row every time it's called without an existing session cookie —
+    // which is exactly what happens on a genuine "client never saw the first
+    // response" retry, since that retry also arrives with no cookie. Hashing
+    // on the resulting (fresh, different-every-time) userId would make that
+    // exact retry compute a NEW hash each attempt, defeating replay and
+    // creating a second orphan guest account — the bug this fix closes.
+    // Checking first means a matching replay short-circuits before
+    // establishGuestCustomer is ever called, so no second account is minted
+    // and no order-creating mutation runs twice.
+    //
+    // Hash shape differs by branch: signed-in includes `userId` (stable
+    // across any retry, and stops two different accounts from colliding on
+    // or replaying each other's key); the guest/anonymous branch has no
+    // stable userId yet, so it hashes the request's own content instead
+    // (method/voucherCode/customerData/guestEmail) — accepting that a guest's
+    // Idempotency-Key must be unique per checkout ATTEMPT rather than tied to
+    // an account, since no account exists until the attempt succeeds.
+    //
+    // Trade-off: a replay hit returns the cached body WITHOUT re-running
+    // establishSession, so it carries no Set-Cookie. For a guest whose very
+    // first response (headers included) truly never reached the browser,
+    // that means the replay leaves them without a session cookie even though
+    // the order was created — recoverable via the order code shown in the
+    // replayed body plus POST /api/v1/track (see sendGuestOrderCodeEmail's
+    // doc comment above), which exists for exactly this "lost the cookie"
+    // case. The alternative — minting a fresh guest session on every replay —
+    // was rejected: it would pair the ORIGINAL cached body's csrf_token with
+    // a NEW session's csrf secret, breaking CSRF on the buyer's very next
+    // authenticated call.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? {
+          key: idempotencyKeyHeader,
+          requestHash: hashIdempotentRequest(
+            signedIn
+              ? { userId: signedIn.userId, method, voucherCode, customerData: req.body?.customer_data ?? null }
+              : {
+                  method,
+                  voucherCode,
+                  customerData: req.body?.customer_data ?? null,
+                  guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
+                },
+          ),
+        }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "error.idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    // Sends the reply AND, when an Idempotency-Key was supplied, persists it
+    // first — so a retry that arrives after this returns replays it above
+    // instead of re-running the mutation. Used for every exit below,
+    // including the 400s: a validation failure (e.g. out of stock) is just
+    // as safe and just as worth replaying as a success.
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     // Guest checkout (Task 4): an anonymous buyer is turned into a real
     // `User` + session here, then falls through to the SAME performCheckout /
     // ValidationError / 201 tail as a signed-in buyer below. Everything cheap
@@ -524,9 +648,6 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // "Intentional" comment in establishGuestCustomer for why).
     const isGuest = !signedIn;
 
-    const method = (req.body?.method ?? "").toLowerCase();
-    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
-
     // Wallet credit as a payment method — no gateway, settles synchronously.
     // Separate method tokens from the gateway ones below; performCheckout
     // is untouched by this branch.
@@ -538,12 +659,10 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
           voucherCode,
           req.body?.customer_data,
         );
-        return reply
-          .code(201)
-          .send(withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
+        return respond(201, withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
         }
         throw e;
       }
@@ -572,10 +691,10 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       // `email_sent` is added for guests only: the checked-in test for the
       // signed-in 201 asserts that body is EXACTLY `{ order_code, pay_url }`,
       // and a registered buyer has no use for a flag about mail they never get.
-      return reply.code(201).send(withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
+      return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
       }
       throw e;
     }

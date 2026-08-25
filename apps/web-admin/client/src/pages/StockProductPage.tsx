@@ -30,19 +30,13 @@ interface StockItem {
   id: number;
   status: string;
   note: string | null;
+  /** Always the server's constant mask placeholder — StockItem.credentials is
+   *  encrypted at rest and this list payload never carries a decrypted value.
+   *  The real credential is fetched per-row, on demand, via the reveal
+   *  mutation below (POST /api/stock/item/:id/reveal), which the server
+   *  audits as credential_revealed every time it's called. */
   credentials: string;
   createdAtDisplay: string | null;
-}
-
-/** Masked preview of an account credential — enough of a prefix to tell rows
- *  apart while screen-sharing, the rest dotted out. The dot run is capped so a
- *  long `email:password:recovery` line can't stretch the column. */
-export function maskCredential(value: string): string {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed) return "—";
-  const visible = trimmed.slice(0, 10);
-  const hiddenCount = Math.min(Math.max(trimmed.length - visible.length, 0), 8);
-  return visible + "•".repeat(hiddenCount);
 }
 
 interface StockProductData {
@@ -84,7 +78,11 @@ export function StockProductPage() {
   const [activeTab, setActiveTab] = useState<"available" | "sold" | "dead">("available");
   // Only one account is readable at a time — revealing another row hides the
   // previous one, so a shared screen never shows a column of plaintext logins.
+  // `revealedText` is fetched fresh from the server (never derived from the
+  // list payload, which only ever carries the masked placeholder) — every
+  // fetch is an explicit, server-audited credential_revealed action.
   const [revealedId, setRevealedId] = useState<number | null>(null);
+  const [revealedText, setRevealedText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [pendingMarkDead, setPendingMarkDead] = useState<StockItem | null>(null);
 
@@ -92,16 +90,42 @@ export function StockProductPage() {
     setActiveTab(tab as typeof activeTab);
     setSelected(new Set());
     setRevealedId(null);
+    setRevealedText(null);
   }
 
-  function copyCredential(item: StockItem) {
+  async function fetchRevealed(item: StockItem): Promise<string> {
+    const result = await apiPost<{ ok: boolean; credentials: string | null }>(
+      `/api/stock/item/${item.id}/reveal`,
+      {},
+    );
+    const text = result.credentials ?? "";
+    setRevealedId(item.id);
+    setRevealedText(text);
+    return text;
+  }
+
+  function toggleReveal(item: StockItem) {
+    if (revealedId === item.id) {
+      setRevealedId(null);
+      setRevealedText(null);
+      return;
+    }
+    fetchRevealed(item).catch((e: unknown) => {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to reveal the account credential."));
+    });
+  }
+
+  async function copyCredential(item: StockItem) {
     if (!navigator.clipboard) return;
-    navigator.clipboard.writeText(item.credentials).then(() => {
+    try {
+      const text = revealedId === item.id && revealedText != null ? revealedText : await fetchRevealed(item);
+      await navigator.clipboard.writeText(text);
       setCopiedId(item.id);
       setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
-    }).catch(err => {
+    } catch (err) {
       console.error("Failed to copy the stock item's account credential to the clipboard", err);
-    });
+      toast.error(describeError(err instanceof Error ? err.message : "Failed to copy the account credential."));
+    }
   }
 
   const bulkAdd = useMutation({
@@ -297,7 +321,7 @@ export function StockProductPage() {
                 return (
                   <div className="flex items-center gap-1">
                     <span className="font-mono text-xs text-ink break-all">
-                      {revealed ? (item.credentials || "—") : maskCredential(item.credentials)}
+                      {revealed ? (revealedText || "—") : item.credentials}
                     </span>
                     <Button
                       variant="ghost"
@@ -307,7 +331,7 @@ export function StockProductPage() {
                           ? `Hide account for stock item ${item.id}`
                           : `Show account for stock item ${item.id}`
                       }
-                      onClick={() => setRevealedId(id => (id === item.id ? null : item.id))}
+                      onClick={() => toggleReveal(item)}
                     >
                       {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     </Button>
@@ -315,7 +339,7 @@ export function StockProductPage() {
                       variant="ghost"
                       size="sm"
                       aria-label={`Copy account for stock item ${item.id}`}
-                      onClick={() => copyCredential(item)}
+                      onClick={() => void copyCredential(item)}
                     >
                       {copiedId === item.id
                         ? <Check className="h-3.5 w-3.5 text-grass" />

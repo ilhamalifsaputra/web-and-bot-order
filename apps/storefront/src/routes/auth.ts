@@ -17,7 +17,17 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
-import { prisma, setSetting, addToCart, getDenomination, getUserByTelegramId, hasCartItem } from "@app/db";
+import {
+  prisma,
+  setSetting,
+  addToCart,
+  getCart,
+  cartCompositionLineOfCartItem,
+  getDenomination,
+  getUserByTelegramId,
+  hasCartItem,
+} from "@app/db";
+import { cartAdditionError, type CartCompositionLine } from "@app/core/cartComposition";
 import {
   makeCustomerSession,
   newJti,
@@ -53,9 +63,46 @@ export async function establishSession(
   user: SessionUser,
 ): Promise<CustomerSession> {
   const guestCart = readGuestCart(req);
+  // The cart the merge builds ON TOP OF — the buyer's existing account cart,
+  // which the guest lines join rather than replace.
+  //
+  // Before Trustance Phase 1 Task 3 this loop upserted every guest line blind,
+  // with no composition awareness at all, and it is the one path that reaches
+  // CartItem without passing `POST /cart`'s guard. So it could hand a buyer a
+  // cart that BOTH checkout choke points then refuse — the buyer would sign in,
+  // press Pay, get `error.cart_mixed_delivery`, and have no way forward except
+  // working out for themselves which line to delete. (The checkout guards' own
+  // comments name this path as the reason they exist.)
+  //
+  // Policy: merge greedily, skip what would conflict. Each guest line is
+  // checked against the cart as it will actually be once the lines accepted
+  // before it are in, so the result is always a cart `POST /cart` would have
+  // allowed the buyer to build by hand. Chosen over the two alternatives
+  // because it loses the least: dropping the whole guest cart on one bad line
+  // throws away lines that were perfectly fine, and refusing the login itself
+  // would let a stale cookie lock someone out of their account.
+  //
+  // Deterministic: cookie order decides, and the account cart always wins,
+  // because it is the one the buyer can currently see.
+  //
+  // Skipped entirely when there is no guest cart to merge — that is the common
+  // case for a plain sign-in, and it must not pay for a cart read.
+  const mergedLines: CartCompositionLine[] = guestCart.length
+    ? (await getCart(prisma, user.id)).map(cartCompositionLineOfCartItem)
+    : [];
+  let skipped = 0;
   for (const line of guestCart) {
     const denom = await getDenomination(prisma, line.p);
     if (!denom?.isActive) continue;
+    const candidate: CartCompositionLine = {
+      denominationId: denom.id,
+      deliveryType: denom.deliveryType,
+      autoDeliverySource: denom.autoDeliverySource,
+    };
+    if (cartAdditionError(mergedLines, candidate)) {
+      skipped += 1;
+      continue;
+    }
     // Digiflazz single-unit guard (final-review N1 fix, Batch 1 review
     // finding): the guest cart cookie has no signature, so a crafted Cookie
     // header can carry any {p, q} pair straight past POST /cart's own guard
@@ -67,10 +114,29 @@ export async function establishSession(
     // rather than letting it land above 1. (dispatchPendingDigiflazzOrders'
     // own defense-in-depth check remains the final backstop regardless.)
     if (denom.autoDeliverySource === "digiflazz") {
-      if (!(await hasCartItem(prisma, user.id, line.p))) await addToCart(prisma, user.id, line.p, 1);
+      if (!(await hasCartItem(prisma, user.id, line.p))) {
+        await addToCart(prisma, user.id, line.p, 1);
+        mergedLines.push(candidate);
+      }
       continue;
     }
     await addToCart(prisma, user.id, line.p, line.q);
+    // Only a line that became a NEW cart line widens the composition. An
+    // upsert onto a denomination already present just bumped its quantity, and
+    // quantity is not something either composition rule looks at.
+    if (!mergedLines.some((l) => l.denominationId === candidate.denominationId)) {
+      mergedLines.push(candidate);
+    }
+  }
+  if (skipped > 0) {
+    // Count only, never the ids — per CLAUDE.md's logging rules, and because a
+    // clipped id list tells an operator nothing a count does not.
+    logger.info(
+      `Merged a guest cart into user ${user.id}'s account cart on sign-in and skipped ${skipped} of its ${guestCart.length} lines, ` +
+        `because keeping them would have produced a cart that checkout refuses: an order may hold either one hand-fulfilled line ` +
+        `(manual, manual_with_info, or a supplier-routed game top-up) or any number of instant-delivery lines, never both. ` +
+        `The buyer keeps the lines that do fit; the skipped ones were never added, so nothing they can see was removed.`,
+    );
   }
   if (guestCart.length) writeGuestCart(reply, []);
 

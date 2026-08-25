@@ -456,12 +456,71 @@ model Denomination {
   reviews              Review[]
   restockSubscriptions RestockSubscription[]
   bulkPricing          BulkPricing?
+  providerMappings     ProductProviderMapping[]
 
   @@index([productId], map: "ix_denominations_product_id")
   // The announce job scans for flash sales that have started but not yet been
   // broadcast; both it and the catalog reads filter on the window's end.
   @@index([flashEndsAt], map: "ix_denominations_flash_ends_at")
   @@map("denominations")
+}
+
+/// Maps a Denomination (SKU) to a transaction-fulfilment provider's own SKU
+/// code, supporting multi-provider dispatch routing — the transaction-side
+/// analogue of ProviderGameMapping above (which does this for nickname-check
+/// lookups). Digiflazz is the only real transaction provider today; this
+/// model exists to remove the STRUCTURAL blocker — a SKU hard-bound to
+/// Digiflazz in the schema via Denomination.autoDeliverySource/supplierSku
+/// alone — so a second provider can be added later without a schema
+/// migration. No second adapter or fallback-on-failure routing is built here
+/// (see .superpowers/sdd/task-4-brief.md); the per-order Digiflazz dispatch
+/// path (packages/db/src/crud/digiflazz.ts) keeps reading
+/// Denomination.autoDeliverySource/supplierSku directly and unchanged — this
+/// model's resolver (packages/db/src/crud/productProviderMappings.ts) is what
+/// keeps those two cache fields in sync with the current top-priority enabled
+/// mapping, so the read-heavy dispatch path stays a single-table read.
+///
+/// `productId` is named to match every other FK to Denomination already in
+/// this schema (OrderItem.productId, CartItem.productId, StockItem.productId)
+/// — Denomination was physically the old `products` table (see its own doc
+/// comment above), so `product_id` is this repo's established column name
+/// for "the SKU this row is about", not a reference to the mid-tier Product
+/// model.
+model ProductProviderMapping {
+  id           Int       @id @default(autoincrement())
+  /// Holds a Denomination id — see this model's doc comment for why the
+  /// column is named product_id.
+  productId    Int       @map("product_id")
+  /// Provider identifier: "digiflazz" today; free-text (like
+  /// ProviderGameMapping.provider) so a second transaction provider can be
+  /// added later without a schema change.
+  provider     String
+  /// The provider's own SKU/product code for this Denomination (Digiflazz's
+  /// buyer_sku_code, e.g. "ML86").
+  providerSku  String    @map("provider_sku")
+  /// The provider's last-known cost for this SKU, for margin reporting —
+  /// populated by a future price-sync job (explicitly deferred, see
+  /// task-4-brief.md's "provider price/balance sync workers (D4)"); null
+  /// until then. Decimal, never float (CLAUDE.md money rule).
+  providerCost Decimal?  @map("provider_cost")
+  /// When providerCost was last refreshed from the provider. Null until a
+  /// future sync job sets it.
+  costSyncedAt DateTime? @map("cost_synced_at")
+  /// false temporarily disables this provider for this SKU (soft-disable
+  /// without deleting) — the resolver skips a disabled row when recomputing
+  /// the Denomination's cached autoDeliverySource/supplierSku.
+  enabled      Boolean   @default(true)
+  /// Ascending priority order; 0 = highest priority, tried first by the
+  /// resolver when more than one enabled provider row exists for this SKU.
+  priority     Int       @default(0)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([productId, provider], map: "ix_product_provider_mappings_product_provider")
+  @@index([productId, enabled, priority], map: "ix_product_provider_mappings_product_priority")
+  @@map("product_provider_mappings")
 }
 
 model StockItem {
@@ -663,6 +722,28 @@ model OrderItem {
   /// settlePaidOrder falls back to the live denomination row for those, i.e.
   /// exactly the pre-Task-15 behavior — zero regression risk either way.
   deliveryTypeSnapshot String? @map("delivery_type_snapshot")
+  /// Per-line fulfilment state — OrderItemStatus (@app/core/enums): PENDING,
+  /// WAITING_FOR_INFO, INFO_SUBMITTED, QUEUED, PROCESSING, DELIVERED, FAILED,
+  /// CANCELLED. String, not a native enum, matching every other enum column in
+  /// this schema.
+  ///
+  /// A SHADOW of Order.status, not a source of truth. Nothing branches on it:
+  /// settlePaidOrder still takes one whole-order auto-vs-manual branch and
+  /// writes every item's status to match that branch's outcome, in the same
+  /// transaction as the order-level status write. Since the cart composition
+  /// rule (@app/core/cartComposition) keeps every order homogeneous, the items
+  /// of an order always share one status. Added by Trustance Phase 1 Task 3 as
+  /// the foundation a later plan needs to let lines resolve independently.
+  ///
+  /// Nullable, no default — the SAME deploy-boundary reasoning as
+  /// deliveryTypeSnapshot directly above, and for once that is not a copied
+  /// caveat but the load-bearing choice: `prisma db push` adds the column
+  /// without running any backfill, so `NOT NULL DEFAULT 'PENDING'` would stamp
+  /// PENDING onto the items of every order ever delivered. Null means "row
+  /// predates this column"; deriveOrderStatusFromItems reads it as "unknown"
+  /// and declines to derive anything, which is exactly the pre-Task-3
+  /// behavior for those rows.
+  status               String? @map("status")
 
   // Restrict, not Cascade (Infra-5 fix, security audit 2026-06-23): line items
   // are the order's financial detail — deleting an Order must never silently
@@ -1125,4 +1206,27 @@ model ProcessedNowpaymentsTx {
 
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")
+}
+
+/// Client-side idempotency ledger for checkout/refund-style mutations — a
+/// DIFFERENT mechanism from the Processed*Tx ledgers above (those dedupe an
+/// inbound payment-gateway webhook callback; this dedupes a double-tapped or
+/// retried request from a browser/admin client). The caller sends an
+/// `Idempotency-Key` header; (key, endpoint) is claimed exactly once via the
+/// unique index below. A retry with the same key AND the same requestHash
+/// replays responseBody/statusCode verbatim instead of re-running the
+/// mutation; the same key with a DIFFERENT hash means the key was reused for
+/// a distinct request (a client bug) and is rejected with 409 rather than
+/// silently replaying the wrong response or overwriting the original.
+model IdempotencyRecord {
+  id           Int      @id @default(autoincrement())
+  key          String
+  endpoint     String
+  requestHash  String   @map("request_hash")
+  responseBody String   @map("response_body")
+  statusCode   Int      @map("status_code")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([key, endpoint], map: "ix_idempotency_record_key_endpoint")
+  @@map("idempotency_records")
 }

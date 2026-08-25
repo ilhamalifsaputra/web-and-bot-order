@@ -18,6 +18,12 @@ import { t } from "../../lib/i18n";
  */
 const STATUS_LABEL_KEY: Record<string, string> = {
   delivered: "status.label.delivered",
+  // Unreachable today (see OrderStatus.PARTIALLY_DELIVERED in @app/core/enums),
+  // but mapped anyway: without a key the fallback title-cases the raw value,
+  // which would render untranslated English to an Indonesian buyer. Toned
+  // AMBER rather than GRASS — part of the order did not arrive, so it must not
+  // look like a clean success.
+  partially_delivered: "status.label.partially_delivered",
   paid: "status.label.paid",
   available: "web.status_chip_available",
   active: "web.status_chip_active",
@@ -42,7 +48,16 @@ const STATUS_LABEL_KEY: Record<string, string> = {
 };
 
 const GRASS = new Set(["delivered", "paid", "available", "active", "closed", "sent", "matched", "credited_to_balance"]);
-const AMBER = new Set(["pending_verification", "reserved", "open", "replied", "pending", "underpaid", "processing"]);
+const AMBER = new Set([
+  "pending_verification",
+  "reserved",
+  "open",
+  "replied",
+  "pending",
+  "underpaid",
+  "processing",
+  "partially_delivered",
+]);
 const PINE = new Set(["pending_payment"]);
 const RUST = new Set(["cancelled", "rejected", "refunded", "dead", "failed", "unmatched"]);
 

@@ -790,6 +790,186 @@ describe("/api/v1/auth", () => {
     expect(cart2.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
   });
 
+  // Trustance Phase 1 Task 3 — the guest-cart-merge fix.
+  //
+  // The merge on login is the one path that reaches CartItem without passing
+  // POST /cart's composition guard, and it used to upsert every guest line
+  // blind. A forged (or merely stale) cookie could therefore hand a buyer a
+  // cart that BOTH checkout choke points then refuse, with no way forward
+  // except guessing which line to delete. It now merges greedily and skips the
+  // lines that would conflict, so the result is always a cart POST /cart would
+  // have let the buyer build by hand.
+  //
+  // These assert the ONE deliberate behavior change in Task 3 — everything else
+  // in that task is a no-op shadow of behavior that already existed.
+  async function loginWithCookie(username: string, password: string, cookie: string): Promise<string> {
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie },
+      payload: { identifier: username, password },
+    });
+    expect(login.statusCode).toBe(200);
+    return (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+  }
+
+  const guestCookieFor = (items: { p: number; q: number }[]): string =>
+    "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items }));
+
+  it("login merge skips a guest line that would conflict, keeping the ones that fit", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeConflictCat", slug: `merge-conflict-cat-${Date.now()}`, sortOrder: 9 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Conflict Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "20000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    await makeUser("mergeskipuser", "merge-skip-pw-1", "MSKIPREF");
+    // A cookie POST /cart would never have produced: a manual line AND an auto
+    // line together.
+    const cookie = guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 2 }]);
+    const sessionCookie = await loginWithCookie("mergeskipuser", "merge-skip-pw-1", cookie);
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    // Cookie order decides: the manual line arrived first and is kept; the auto
+    // line would have made the cart un-checkout-able, so it was dropped.
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id, qty: 1 });
+  });
+
+  it("login merge never overrides the account's own cart — a conflicting guest line is the one dropped", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeAccountWinsCat", slug: `merge-acct-cat-${Date.now()}`, sortOrder: 10 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Account Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Account Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "30000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+
+    const userId = await makeUser("mergeacctuser", "merge-acct-pw-1", "MACCTREF");
+    // The buyer already holds a manual line in the cart they can SEE.
+    await addToCart(prisma, userId, manualDenom.id, 1);
+
+    const sessionCookie = await loginWithCookie(
+      "mergeacctuser",
+      "merge-acct-pw-1",
+      guestCookieFor([{ p: denomId, q: 3 }]),
+    );
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id, qty: 1 });
+  });
+
+  it("login merge is unchanged for a cart with no conflict — every auto line still merges", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeCleanCat", slug: `merge-clean-cat-${Date.now()}`, sortOrder: 11 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Clean Auto" });
+    const secondAuto = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Second Auto Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "12000",
+    });
+
+    await makeUser("mergecleanuser", "merge-clean-pw-1", "MCLEANREF");
+    const sessionCookie = await loginWithCookie(
+      "mergecleanuser",
+      "merge-clean-pw-1",
+      guestCookieFor([{ p: denomId, q: 2 }, { p: secondAuto.id, q: 1 }]),
+    );
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    const ids = cart.json().items.map((i: { denomination_id: number }) => i.denomination_id).sort();
+    expect(ids).toEqual([denomId, secondAuto.id].sort());
+  });
+
+  it("a merged cart always passes the checkout composition guard it used to be able to fail", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeCheckoutCat", slug: `merge-checkout-cat-${Date.now()}`, sortOrder: 12 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Checkout Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Checkout Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "25000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    await makeUser("mergechkuser", "merge-chk-pw-1", "MCHKREF");
+    const sessionCookie = await loginWithCookie(
+      "mergechkuser",
+      "merge-chk-pw-1",
+      guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 1 }]),
+    );
+
+    // The point of the fix: whatever the checkout does next (it may still fail
+    // for unrelated reasons like a disabled gateway), it is NOT rejected for
+    // cart composition, because the merge could not build a bad cart.
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    const csrf = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: sessionCookie } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: sessionCookie, "x-csrf-token": String(csrf.json().csrf_token ?? "") },
+      payload: { method: "qris" },
+    });
+    expect(res.json().error).not.toBe("error.cart_mixed_delivery");
+  });
+
+  it("register merges the guest cart under the same composition rule as login", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeRegisterCat", slug: `merge-register-cat-${Date.now()}`, sortOrder: 13 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Register Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Register Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "22000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    const reg = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      headers: { cookie: guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 1 }]) },
+      payload: {
+        username: "mergereguser",
+        email: "mergereguser@u.test",
+        password: "merge-reg-pw-1",
+        password2: "merge-reg-pw-1",
+        fullName: "Merge Reg",
+      },
+    });
+    expect(reg.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(reg.headers["set-cookie"]) ? reg.headers["set-cookie"] : [String(reg.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id });
+  });
+
   it("register: validation errors return i18n keys; success signs in", async () => {
     const bad = await app.inject({
       method: "POST",

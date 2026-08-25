@@ -1,5 +1,7 @@
 export * from "./config";
 export * from "./enums";
+export * from "./cartComposition";
+export * from "./orderItemStatus";
 export * from "./money";
 export * from "./datetime";
 export * from "./errors";

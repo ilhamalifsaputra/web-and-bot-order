@@ -326,6 +326,7 @@
   "status.label.confirming": "Menunggu Konfirmasi",
   "status.label.processing": "Sedang Diproses",
   "status.label.delivered": "Terkirim",
+  "status.label.partially_delivered": "Terkirim Sebagian",
   "status.label.failed": "Gagal",
   "status.label.refunded": "Direfund",
   "support.admin_reply": "<b>Balasan dari support:</b>\n\n{message}\n\n<i>Jika masalah sudah selesai, tap tombol di bawah untuk menutup tiket.</i>",

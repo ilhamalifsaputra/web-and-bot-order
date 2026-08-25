@@ -28,7 +28,12 @@ export default defineConfig({
     // also covers suites with no env bootstrap (e.g. packages/core). Only
     // honoured when running under Vitest — see packages/core/src/password.ts,
     // where the production cost is a hard constant.
-    env: { BCRYPT_COST: "4" },
+    // CREDENTIAL_ENCRYPTION_KEY: a fixed 32-byte-hex test key for
+    // @app/core/credentialCrypto (StockItem.credentials encryption, Task 2)
+    // so every suite gets a working key without needing its own env
+    // bootstrap — same rationale as BCRYPT_COST above. Not a real secret;
+    // never use this value outside tests.
+    env: { BCRYPT_COST: "4", CREDENTIAL_ENCRYPTION_KEY: "00".repeat(32) },
     // Vitest's 5s default is a unit-test budget, but most of this suite is
     // real-SQLite integration tests: tests/helpers/testdb.ts gives every test
     // file its own temp DB (so there is no cross-file lock contention to

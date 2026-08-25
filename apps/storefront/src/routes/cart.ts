@@ -16,6 +16,7 @@ import type { FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { UserRole } from "@app/core/enums";
+import type { CartCompositionLine } from "@app/core/cartComposition";
 import {
   prisma,
   getCartWithDenominationProduct,
@@ -64,10 +65,31 @@ export interface CartLineView {
    * single-SKU-per-non-auto-cart guard (POST /cart) and the checkout
    * info-collection step (checkoutView's items array). */
   delivery_type: string;
+  /** `Denomination.autoDeliverySource` — "digiflazz" for a supplier-routed
+   * game top-up, null otherwise. The cart_kind half of the composition guard
+   * (POST /cart) needs it, because deliveryType alone cannot tell a top-up
+   * apart from a premium SKU that collects buyer info: the Digiflazz catalog
+   * sync creates both as `manual_with_info`. See @app/core/cartComposition. */
+  auto_delivery_source: string | null;
   /** Live flash sale on this SKU, or null. `unit_price` above ALREADY carries
    * the discount; this is only what the line needs to strike through the old
    * price and count down to the end of the sale. */
   flash: FlashLineView | null;
+}
+
+/**
+ * Adapt a rendered cart line to the shape the shared composition rule
+ * (@app/core/cartComposition) reads. One mapper rather than an inline object
+ * literal at each call site, so a future field the rule needs is added in one
+ * place — and so the rule keeps knowing nothing about the storefront's
+ * snake_case view types.
+ */
+export function cartCompositionLineOf(line: CartLineView): CartCompositionLine {
+  return {
+    denominationId: line.denomination_id,
+    deliveryType: line.delivery_type,
+    autoDeliverySource: line.auto_delivery_source,
+  };
 }
 
 /** Flash-sale badge data shared by the cart line and the checkout summary. */
@@ -152,6 +174,7 @@ export async function loadCartLines(
             line_total: unit.times(r.quantity).toString(),
             available: await countAvailableStock(prisma, r.productId),
             delivery_type: denom.deliveryType,
+            auto_delivery_source: denom.autoDeliverySource,
             flash: flashViewFor(denom, unit),
           };
         }),
@@ -179,6 +202,7 @@ export async function loadCartLines(
         line_total: unit.times(l.q).toString(),
         available,
         delivery_type: denom.deliveryType,
+        auto_delivery_source: denom.autoDeliverySource,
         flash: flashViewFor(denom, unit),
       } satisfies CartLineView;
     }),

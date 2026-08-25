@@ -15,7 +15,7 @@
  * nothing to wait for, the credit already fully paid for the order.
  */
 import { Decimal } from "@app/core/money";
-import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import {
@@ -28,7 +28,8 @@ import {
 } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { transitionOrderStatus } from "./orderStatus";
-import { getCart } from "./cart";
+import { getCart, cartCompositionLineOfCartItem } from "./cart";
+import { cartCompositionError } from "@app/core/cartComposition";
 
 export type WalletCheckoutResult = SettleResult;
 
@@ -138,8 +139,13 @@ export async function completeCartOrderWithWalletCredit(
 ): Promise<WalletCheckoutResult> {
   const cartLines = await getCart(db, args.user.id);
   const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
-  if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
-    throw new ValidationError("error.cart_mixed_delivery");
+  // The same shared `cart_kind` rule performCheckout applies — literally the
+  // same function now, rather than a copy of its two-line check that had to be
+  // kept in step by hand (Trustance Phase 1 Task 3). Rule and error keys
+  // unchanged.
+  const compositionError = cartCompositionError(activeCartLines.map(cartCompositionLineOfCartItem));
+  if (compositionError) {
+    throw new ValidationError(compositionError);
   }
 
   const created = await createOrderFromCart(db, {

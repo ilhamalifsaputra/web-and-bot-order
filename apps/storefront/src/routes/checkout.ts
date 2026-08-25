@@ -28,9 +28,11 @@ import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
+import { cartCompositionError } from "@app/core/cartComposition";
 import {
   prisma,
   getCart,
+  cartCompositionLineOfCartItem,
   getDenomination,
   getBulkPricingForDenomination,
   getVoucherByCode,
@@ -593,8 +595,13 @@ export async function performCheckout(
     // an "auto" order) if that assumption is ever violated.
     const cartLines = await getCart(tx, customer.userId);
     const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
-    if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
-      throw new ValidationError("error.cart_mixed_delivery");
+    // Now the shared, named `cart_kind` rule (@app/core/cartComposition)
+    // rather than an inline copy of the add-to-cart check — same rule, same
+    // error key for every cart a buyer can actually build, just no longer
+    // duplicated across three files. Trustance Phase 1 Task 3.
+    const compositionError = cartCompositionError(activeCartLines.map(cartCompositionLineOfCartItem));
+    if (compositionError) {
+      throw new ValidationError(compositionError);
     }
 
     // Server-side revalidation of the buyer-submitted manual_with_info

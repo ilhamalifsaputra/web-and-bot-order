@@ -1,0 +1,22 @@
+-- Task 3 (Trustance Master Architecture Phase 1): OrderItem.status — the
+-- per-line fulfilment state that shadows Order.status.
+--
+-- Pure additive `ALTER TABLE ADD COLUMN`, hand-written per docs/MIGRATIONS.md
+-- (this repo deploys schema with `prisma db push`, so these files are the SQL
+-- audit trail, kept equivalent to what `prisma migrate diff --script` produces
+-- and enforced by `pnpm run check-migration-drift` in `pretest`).
+--
+-- NULLABLE WITH NO DEFAULT, deliberately — do not "tidy" this into
+-- `NOT NULL DEFAULT 'PENDING'`. `db push` adds a column but never runs a
+-- backfill, so a default would stamp PENDING onto the items of every order
+-- already DELIVERED, inverting the meaning of the column on historical rows.
+-- Null means "row predates this column" and every consumer treats it as
+-- unknown. This is the same rule `delivery_type_snapshot` follows on this
+-- table, and for the same documented reason.
+--
+-- Safe on a live DB: adds one nullable column, touches no existing data, and
+-- rebuilds no table (SQLite `ADD COLUMN` with no default is an O(1) header
+-- change). No code branches on the column.
+
+-- AlterTable
+ALTER TABLE "order_items" ADD COLUMN "status" TEXT;

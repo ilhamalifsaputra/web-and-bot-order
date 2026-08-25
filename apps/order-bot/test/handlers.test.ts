@@ -51,6 +51,7 @@ import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -450,7 +451,10 @@ describe("customer handlers", () => {
 
     const { ctx, sink } = customerCtx();
     await customer.viewOrder(ctx, order!.id);
-    expect(sentIncludes(sink, sold!.credentials)).toBe(true);
+    // `sold` is fetched directly (not via getOrder, which decrypts) — the raw
+    // column value is the encrypted envelope, so decrypt before comparing
+    // against what the buyer's DM actually contains.
+    expect(sentIncludes(sink, decryptCredentials(sold!.credentials))).toBe(true);
   });
 
   // Task 4: a WALLET_TOPUP order isn't a "My Orders" purchase (it's already

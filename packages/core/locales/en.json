@@ -326,6 +326,7 @@
   "status.label.confirming": "Confirming",
   "status.label.processing": "Processing",
   "status.label.delivered": "Delivered",
+  "status.label.partially_delivered": "Partially Delivered",
   "status.label.failed": "Failed",
   "status.label.refunded": "Refunded",
   "support.admin_reply": "<b>Reply from support:</b>\n\n{message}\n\n<i>If your issue is resolved, tap the button below to close this ticket.</i>",

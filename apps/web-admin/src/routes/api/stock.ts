@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import {
   prisma,
   listAllDenominations,
@@ -19,6 +20,7 @@ import {
   logAdminAction,
   enqueueRestockBroadcast,
   updateDenomination,
+  revealStockCredentials,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
@@ -37,6 +39,26 @@ function csvField(value: string): string {
 function csvRow(fields: string[]): string {
   return fields.map(csvField).join(",") + "\r\n";
 }
+
+/** Constant placeholder shown for every credential in the list/detail
+ * payload — StockItem.credentials is encrypted at rest (Task 2) and this
+ * route never decrypts a whole page of rows just to display them. A real
+ * value is only ever returned by the explicit, audited
+ * POST /api/stock/item/:stockId/reveal below. Deliberately NOT derived from
+ * the stored value's length or a decrypted prefix — either would leak
+ * partial plaintext (or its length) to a page load nobody asked to reveal
+ * anything on. */
+const MASKED_CREDENTIAL = "••••••••";
+
+/** Operator-facing message for `CredentialKeyConfigError` — the bulk-add and
+ * reveal routes below (the ones that call into encryptCredentials/
+ * decryptCredentials) catch that specific error (never a bare `catch` — a
+ * real bug in the handler should still hit the generic HTML 500 in
+ * server.ts) and return this as JSON instead, so a missing/malformed
+ * `CREDENTIAL_ENCRYPTION_KEY` surfaces as a readable admin error instead of
+ * `apiPost` failing to parse an HTML error page. */
+const CREDENTIAL_KEY_ERROR_MESSAGE =
+  "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
  * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
@@ -112,7 +134,9 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       id: i.id,
       status: i.status,
       note: i.note,
-      credentials: i.credentials,
+      // Masked by default — see MASKED_CREDENTIAL's own comment. The real
+      // value is fetched per-row, on demand, via the reveal route below.
+      credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
     return reply.send({ product, items: itemsWithDisplay, available, waiting });
@@ -132,7 +156,16 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const { added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds));
+    let added: number, skipped: number;
+    try {
+      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_upload",
@@ -274,6 +307,43 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       details: `Updated stock item note to: "${note.slice(0, 200)}".`, // never the credentials
     });
     return reply.send({ ok: true });
+  });
+
+  // Explicit, audited reveal of ONE stock item's real credential — the only
+  // route that ever returns a decrypted value from this file. csrfProtect
+  // (not currentAdmin) even though it's read-only in effect: revealing a
+  // secret is a privileged action same as the mutations above, and gating it
+  // on the CSRF token keeps it out of reach of a bare cross-site GET/image
+  // tag. Every call is audited as credential_revealed (lowercase snake_case,
+  // like every other action in this file — see docs/LOGGING.md and
+  // AuditPage.tsx's humanizeActionCode, which title-cases this convention;
+  // an all-caps action would render as shouting-case next to every other
+  // row) — including repeat reveals of the same item, so the trail shows
+  // every time an admin actually looked, not just the first. One query
+  // (revealStockCredentials) covers both the existence check and the read —
+  // its null return doubles as "no such stock item".
+  app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    let credentials: string | null;
+    try {
+      credentials = await revealStockCredentials(prisma, stockId);
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Credential reveal failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
+    if (credentials === null) return reply.code(404).send({ error: "Stock item not found." });
+
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "credential_revealed",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves
+    });
+    return reply.send({ ok: true, credentials });
   });
 
   // Download remaining (AVAILABLE) credentials as a plain-text file, one login

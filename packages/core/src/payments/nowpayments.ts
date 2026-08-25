@@ -191,6 +191,31 @@ export interface NowpaymentsIpn {
 }
 
 /**
+ * Replay window (Task 2b): reject an IPN whose own `updated_at`/`created_at`
+ * timestamp is older than this. NOWPayments' payment-status object — which
+ * the IPN body mirrors ("the body of the IPN request is similar to a get
+ * payment status response body", per NOWPayments' own help-center docs) —
+ * carries both fields as ISO-8601 strings (e.g. `"2019-04-18T13:39:27.982Z"`);
+ * corroborated independently by the `go-nowpayments` SDK's `Payment`/
+ * `PaymentStatus` structs, which map `json:"created_at"` / `json:"updated_at"`
+ * straight through with no transformation, and by a public NOWPayments IPN
+ * mock payload carrying the same two fields. `updated_at` is preferred over
+ * `created_at`: it advances on every status transition (waiting → confirming
+ * → finished, …), so it reflects when THIS report was generated, not just
+ * when the invoice was first opened — the same role `auth_date` plays in
+ * `apps/storefront/src/auth.ts`'s Telegram-login replay guard
+ * (`TG_AUTH_MAX_AGE_SECONDS`), which this window is modeled on.
+ *
+ * ⚠ ASSUMPTION (flagged, same posture as the rest of this file): the exact
+ *   field presence is corroborated via a third-party SDK and a community
+ *   mock payload, not NOWPayments' own dashboard/docs page (blocked from
+ *   direct fetch at write time). If a genuine IPN body is ever missing both
+ *   fields, `verifyIpn` does NOT reject on that alone (see below) — only a
+ *   PRESENT-but-stale timestamp is treated as a replay.
+ */
+export const NOWPAYMENTS_IPN_MAX_AGE_MS = 5 * 60_000;
+
+/**
  * Verify an IPN webhook's `x-nowpayments-sig` header + normalize the body.
  * Returns null on a missing/invalid signature, or on a signature-valid body
  * that's missing/malformed `payment_id` (M-12, backend audit 2026-07-31): a
@@ -219,12 +244,29 @@ export interface NowpaymentsIpn {
  * for that capture (checkout.ts's scoped `addContentTypeParser`). `body` is
  * the already-parsed form of that SAME payload, used only to read out the
  * normalized fields below once the signature over `rawBody` has checked out.
+ *
+ * Replay window (Task 2b): once the signature is verified — so a forged
+ * timestamp can't slip past without also forging a valid HMAC over the whole
+ * raw body — `body.updated_at` (falling back to `body.created_at`) is
+ * checked against `now`. A body captured off the wire and replayed later
+ * (e.g. a MITM'd proxy, a leaked request log) carries its ORIGINAL
+ * timestamp, so replaying it past `NOWPAYMENTS_IPN_MAX_AGE_MS` is rejected
+ * here, same as a bad signature. A body with neither field, or with a value
+ * that doesn't parse as a date, does NOT fail this check on its own — see
+ * the ⚠ ASSUMPTION above `NOWPAYMENTS_IPN_MAX_AGE_MS` for why: this rail's
+ * `ProcessedNowpaymentsTx` idempotency ledger (UNIQUE `trxId`) is always the
+ * backstop replay defense regardless of whether a usable timestamp was
+ * present on any given call, exactly like TokoPay/PayDisini (which never
+ * carry one at all — see the doc comments on their `verifyCallback`).
+ * `now` is a parameter (defaulting to `Date.now()`) purely so tests can pin
+ * it instead of racing the wall clock.
  */
 export function verifyIpn(
   rawBody: string,
   body: Record<string, unknown>,
   signatureHeader: string | undefined,
   creds: Pick<NowpaymentsCreds, "ipnSecret">,
+  now: number = Date.now(),
 ): NowpaymentsIpn | null {
   if (!signatureHeader) return null;
 
@@ -232,6 +274,15 @@ export function verifyIpn(
   if (!constantTimeEqual(expected, signatureHeader.toLowerCase())) {
     logger.warn("NOWPayments IPN (Instant Payment Notification) webhook signature mismatch — rejecting the callback as unverified");
     return null;
+  }
+
+  const tsRaw = body.updated_at ?? body.created_at;
+  if (typeof tsRaw === "string" && tsRaw) {
+    const tsMs = Date.parse(tsRaw);
+    if (Number.isFinite(tsMs) && now - tsMs > NOWPAYMENTS_IPN_MAX_AGE_MS) {
+      logger.warn("NOWPayments IPN signature is valid but its own timestamp is older than the 5-minute replay window — rejecting the callback as a likely replay");
+      return null;
+    }
   }
 
   if (

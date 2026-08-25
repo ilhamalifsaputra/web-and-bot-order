@@ -87,6 +87,12 @@ diproses" (`isUniqueViolation`).
   dulu webhook punya salinan inline lebih pendek tanpa `lunas`/`berhasil`,
   sehingga transaksi yang dilaporkan TokoPay dalam bahasa Indonesia diterima
   poller tapi ditolak webhook.
+- **Tidak ada replay-window check (Task 2b):** body callback TokoPay tidak
+  membawa field timestamp apa pun — signature-nya fungsi tetap dari
+  `merchantId:secret:refId`, tidak ada nilai waktu-kirim untuk dicek
+  terhadap `now`. Pertahanan replay untuk rail ini murni ledger idempotency
+  `ProcessedTokopayTx` (UNIQUE `trxId`) — lihat doc comment `verifyCallback`
+  di `tokopay.ts`.
 
 ## PayDisini (QRIS/e-wallet, IDR)
 
@@ -100,6 +106,10 @@ diproses" (`isUniqueViolation`).
 - Webhook `/pay/paydisini/callback` mengikuti kontrak respons identik
   TokoPay (lihat bagian Webhook di bawah) — **tanpa** live re-confirm
   tambahan (signature mencakup `amount` di skema ini, beda dari TokoPay).
+- **Tidak ada replay-window check (Task 2b):** sama seperti TokoPay, body
+  callback PayDisini tidak membawa field timestamp — pertahanan replay
+  murni ledger idempotency `ProcessedPaydisiniTx` (UNIQUE `trxId`) — lihat
+  doc comment `verifyCallback` di `paydisini.ts`.
 
 ## NOWPayments (hosted invoice, USDT)
 
@@ -126,6 +136,17 @@ diproses" (`isUniqueViolation`).
   `confirmed` dan `sending`: keduanya terdengar final padahal dananya belum
   masuk ke akun merchant, dan `partially_paid` terdengar cukup dekat padahal
   itu kurang bayar.
+- **Replay-window check (Task 2b):** BEDA dari TokoPay/PayDisini — body IPN
+  NOWPayments membawa `updated_at`/`created_at` (ISO-8601), dikonfirmasi
+  lewat SDK pihak ketiga (`go-nowpayments`) dan contoh payload publik, bukan
+  dashboard resmi langsung (halaman dokumentasi resmi terblokir saat
+  investigasi ditulis — flagged ASSUMPTION, sama seperti bagian lain file
+  ini). `verifyIpn` menolak callback yang signature-nya valid TAPI
+  `updated_at` (fallback `created_at`) lebih tua dari 5 menit dari `now` —
+  lihat `NOWPAYMENTS_IPN_MAX_AGE_MS` di `nowpayments.ts`. Body yang TIDAK
+  membawa field manapun tidak ditolak hanya karena itu (ledger
+  `ProcessedNowpaymentsTx` tetap jadi pertahanan cadangan) — hanya timestamp
+  yang ADA tapi basi yang dianggap replay.
 - **Cek status (reconcile):** `GET {API_BASE}/v1/invoice/{invoiceId}` —
   endpoint persis ini **flagged ASSUMPTION** (mungkin NOWPayments
   menyediakan `/v1/payment/{id}` terpisah).

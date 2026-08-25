@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyIpn, getPaymentStatus, createInvoice } from "./nowpayments";
+import { verifyIpn, getPaymentStatus, createInvoice, NOWPAYMENTS_IPN_MAX_AGE_MS } from "./nowpayments";
 
 const CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t" };
 const FULL_CREDS = { apiKey: "API-KEY", ipnSecret: "ipn-s3cr3t", payCurrency: "usdttrc20" };
@@ -157,6 +157,84 @@ describe("verifyIpn", () => {
     const tamperedRaw = raw.replace('"actually_paid":10', '"actually_paid":999999');
     const tamperedBody = JSON.parse(tamperedRaw) as Record<string, unknown>;
     expect(verifyIpn(tamperedRaw, tamperedBody, signature, CREDS)).toBeNull();
+  });
+
+  // Task 2b: reject a signature-valid IPN whose own updated_at/created_at
+  // timestamp is older than the 5-minute replay window.
+  describe("replay window", () => {
+    const NOW = Date.parse("2026-08-25T12:00:00.000Z");
+
+    it("accepts a payload whose updated_at is within the 5-minute window", () => {
+      const fresh = new Date(NOW - 60_000).toISOString(); // 1 minute old
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-FRESH","payment_status":"finished","payment_id":"PID-FRESH","actually_paid":10,"updated_at":"${fresh}"}`,
+      );
+      const result = verifyIpn(raw, body, signature, CREDS, NOW);
+      expect(result).not.toBeNull();
+      expect(result?.trxId).toBe("PID-FRESH");
+    });
+
+    it("rejects a payload whose updated_at is older than the 5-minute window, even with a correct signature", () => {
+      const stale = new Date(NOW - NOWPAYMENTS_IPN_MAX_AGE_MS - 1_000).toISOString(); // 5m01s old
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-STALE","payment_status":"finished","payment_id":"PID-STALE","actually_paid":10,"updated_at":"${stale}"}`,
+      );
+      expect(verifyIpn(raw, body, signature, CREDS, NOW)).toBeNull();
+    });
+
+    it("accepts a payload exactly at the window boundary (not yet older than the window)", () => {
+      const boundary = new Date(NOW - NOWPAYMENTS_IPN_MAX_AGE_MS).toISOString(); // exactly 5m old
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-BOUNDARY","payment_status":"finished","payment_id":"PID-BOUNDARY","actually_paid":10,"updated_at":"${boundary}"}`,
+      );
+      expect(verifyIpn(raw, body, signature, CREDS, NOW)).not.toBeNull();
+    });
+
+    it("falls back to created_at when updated_at is absent", () => {
+      const stale = new Date(NOW - NOWPAYMENTS_IPN_MAX_AGE_MS - 1_000).toISOString();
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-CREATED","payment_status":"finished","payment_id":"PID-CREATED","actually_paid":10,"created_at":"${stale}"}`,
+      );
+      expect(verifyIpn(raw, body, signature, CREDS, NOW)).toBeNull();
+    });
+
+    it("prefers updated_at over created_at when both are present", () => {
+      // created_at is stale (invoice opened long ago) but updated_at (the
+      // latest status transition) is fresh — must not be rejected.
+      const staleCreated = new Date(NOW - NOWPAYMENTS_IPN_MAX_AGE_MS * 10).toISOString();
+      const freshUpdated = new Date(NOW - 30_000).toISOString();
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-BOTH","payment_status":"finished","payment_id":"PID-BOTH","actually_paid":10,"created_at":"${staleCreated}","updated_at":"${freshUpdated}"}`,
+      );
+      expect(verifyIpn(raw, body, signature, CREDS, NOW)).not.toBeNull();
+    });
+
+    // A payload with neither field must NOT be rejected on that basis alone
+    // (see the ⚠ ASSUMPTION doc comment on NOWPAYMENTS_IPN_MAX_AGE_MS) — the
+    // idempotency ledger remains the backstop for a body shaped this way.
+    it("does not reject a payload carrying neither updated_at nor created_at, however old `now` is", () => {
+      const { raw, body, signature } = signedIpn(
+        '{"order_id":"ORD-NOTS","payment_status":"finished","payment_id":"PID-NOTS","actually_paid":10}',
+      );
+      const farFuture = NOW + NOWPAYMENTS_IPN_MAX_AGE_MS * 100;
+      expect(verifyIpn(raw, body, signature, CREDS, farFuture)).not.toBeNull();
+    });
+
+    it("does not reject a payload whose timestamp field is present but unparseable as a date", () => {
+      const { raw, body, signature } = signedIpn(
+        '{"order_id":"ORD-BADTS","payment_status":"finished","payment_id":"PID-BADTS","actually_paid":10,"updated_at":"not-a-date"}',
+      );
+      expect(verifyIpn(raw, body, signature, CREDS, NOW)).not.toBeNull();
+    });
+
+    it("defaults `now` to the wall clock when not passed, so existing callers are unaffected", () => {
+      // Freeze near "now" so this test is deterministic without pinning `now` explicitly.
+      const nowIso = new Date().toISOString();
+      const { raw, body, signature } = signedIpn(
+        `{"order_id":"ORD-DEFAULT","payment_status":"finished","payment_id":"PID-DEFAULT","actually_paid":10,"updated_at":"${nowIso}"}`,
+      );
+      expect(verifyIpn(raw, body, signature, CREDS)).not.toBeNull();
+    });
   });
 });
 

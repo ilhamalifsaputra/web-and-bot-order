@@ -618,3 +618,24 @@ export const BroadcastStatus = {
 export type BroadcastStatus =
   (typeof BroadcastStatus)[keyof typeof BroadcastStatus];
 export const zBroadcastStatus = z.nativeEnum(BroadcastStatus);
+
+/**
+ * Refund.status (Trustance Master Architecture Task 8a/8b). String, not a
+ * native Prisma enum — matching every other lifecycle-status column in this
+ * schema (Order.status, OrderItem.status, Denomination.deliveryType).
+ *
+ * The legal transition shape is PENDING -> PROCESSING -> COMPLETED | FAILED,
+ * with CANCELLED reachable from PENDING or PROCESSING only — see
+ * `REFUND_LEGAL_TRANSITIONS` (packages/db/src/crud/refunds.ts), which mirrors
+ * `LEGAL_TRANSITIONS` in orderStatus.ts. COMPLETED/FAILED/CANCELLED are all
+ * terminal: no code path transitions a Refund back out of any of them.
+ */
+export const RefundStatus = {
+  PENDING: "PENDING",
+  PROCESSING: "PROCESSING",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
+export const zRefundStatus = z.nativeEnum(RefundStatus);

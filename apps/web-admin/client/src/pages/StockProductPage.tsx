@@ -34,7 +34,7 @@ interface StockItem {
    *  encrypted at rest and this list payload never carries a decrypted value.
    *  The real credential is fetched per-row, on demand, via the reveal
    *  mutation below (POST /api/stock/item/:id/reveal), which the server
-   *  audits as CREDENTIAL_REVEALED every time it's called. */
+   *  audits as credential_revealed every time it's called. */
   credentials: string;
   createdAtDisplay: string | null;
 }
@@ -80,7 +80,7 @@ export function StockProductPage() {
   // previous one, so a shared screen never shows a column of plaintext logins.
   // `revealedText` is fetched fresh from the server (never derived from the
   // list payload, which only ever carries the masked placeholder) — every
-  // fetch is an explicit, server-audited CREDENTIAL_REVEALED action.
+  // fetch is an explicit, server-audited credential_revealed action.
   const [revealedId, setRevealedId] = useState<number | null>(null);
   const [revealedText, setRevealedText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);

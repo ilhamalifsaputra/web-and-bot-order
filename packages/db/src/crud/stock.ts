@@ -129,7 +129,7 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
 /**
  * The single explicit-reveal read: decrypts ONE stock item's credential for
  * an admin who just asked to see it. Callers MUST audit this as
- * `CREDENTIAL_REVEALED` (see apps/web-admin/src/routes/api/stock.ts) — this
+ * `credential_revealed` (see apps/web-admin/src/routes/api/stock.ts) — this
  * function itself does not write the audit row, since it has no admin id to
  * attribute it to. Returns null if the id doesn't exist.
  */

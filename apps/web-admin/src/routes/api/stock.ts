@@ -294,18 +294,22 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // (not currentAdmin) even though it's read-only in effect: revealing a
   // secret is a privileged action same as the mutations above, and gating it
   // on the CSRF token keeps it out of reach of a bare cross-site GET/image
-  // tag. Every call is audited as CREDENTIAL_REVEALED — including repeat
-  // reveals of the same item — so the trail shows every time an admin
-  // actually looked, not just the first.
+  // tag. Every call is audited as credential_revealed (lowercase snake_case,
+  // like every other action in this file — see docs/LOGGING.md and
+  // AuditPage.tsx's humanizeActionCode, which title-cases this convention;
+  // an all-caps action would render as shouting-case next to every other
+  // row) — including repeat reveals of the same item, so the trail shows
+  // every time an admin actually looked, not just the first. One query
+  // (revealStockCredentials) covers both the existence check and the read —
+  // its null return doubles as "no such stock item".
   app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
-    const item = await getStockItem(prisma, stockId);
-    if (!item) return reply.code(404).send({ error: "Stock item not found." });
-
     const credentials = await revealStockCredentials(prisma, stockId);
+    if (credentials === null) return reply.code(404).send({ error: "Stock item not found." });
+
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
-      action: "CREDENTIAL_REVEALED",
+      action: "credential_revealed",
       targetType: "stock_item",
       targetId: stockId,
       details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves

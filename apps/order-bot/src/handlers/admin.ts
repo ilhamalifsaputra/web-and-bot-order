@@ -484,7 +484,11 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
     let creds: string;
     try {
       creds = decryptCredentials(it.credentials ?? "");
-    } catch {
+    } catch (err) {
+      logger.warn(
+        { err, stockItemId: it.id },
+        "Failed to decrypt a stock item's credentials for the admin preview — check CREDENTIAL_ENCRYPTION_KEY",
+      );
       creds = "[unavailable]";
     }
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");

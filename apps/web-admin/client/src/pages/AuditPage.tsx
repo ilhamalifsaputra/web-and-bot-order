@@ -96,6 +96,11 @@ const ACTION_LABELS: Record<string, string> = {
   stock_mark_dead: "Stock marked dead",
   stock_edit_note: "Stock note edited",
   stock_download: "Stock downloaded",
+  // Explicit entry rather than relying on the humanizer fallback below: that
+  // fallback title-cases EVERY word ("Credential Revealed"), not just the
+  // first, so it wouldn't actually match this table's sentence-case
+  // convention (Task 2, credential encryption at rest).
+  credential_revealed: "Credential revealed",
 };
 
 /** Fallback for any action code not in `ACTION_LABELS` above: turn

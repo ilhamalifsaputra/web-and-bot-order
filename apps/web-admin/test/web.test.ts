@@ -3502,7 +3502,7 @@ describe("stock", () => {
   });
 
   describe("POST /api/stock/item/:stockId/reveal", () => {
-    it("returns the decrypted credential and audits CREDENTIAL_REVEALED", async () => {
+    it("returns the decrypted credential and audits credential_revealed", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const expected = decryptCredentials(item.credentials);
 
@@ -3512,7 +3512,7 @@ describe("stock", () => {
       expect(body.credentials).toBe(expected);
 
       const audit = await prisma.auditLog.findFirst({
-        where: { action: "CREDENTIAL_REVEALED", targetId: item.id },
+        where: { action: "credential_revealed", targetId: item.id },
         orderBy: { id: "desc" },
       });
       expect(audit).toBeTruthy();
@@ -3526,7 +3526,7 @@ describe("stock", () => {
       await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
 
       const audits = await prisma.auditLog.findMany({
-        where: { action: "CREDENTIAL_REVEALED", targetId: item.id },
+        where: { action: "credential_revealed", targetId: item.id },
       });
       expect(audits.length).toBe(2);
     });

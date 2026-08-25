@@ -341,4 +341,51 @@ describe("createRefundItem — sum invariant", () => {
       createRefundItem(prisma, { refundId: refund.id, orderItemId: itemB.id, amount: "1.00" }),
     ).rejects.toThrow(ValidationError);
   });
+
+  it("releases the item's refund budget after the consuming Refund is CANCELLED", async () => {
+    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const admin = await makeAdmin();
+    const refundA = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR" });
+    await createRefundItem(prisma, { refundId: refundA.id, orderItemId: item.id, amount: "5.00" });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refundA.id,
+      from: RefundStatus.PENDING,
+      to: RefundStatus.CANCELLED,
+      adminId: admin.id,
+    });
+
+    // The full subtotal should be refundable again, since refundA never
+    // actually paid out anything.
+    const refundB = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR" });
+    const refundItemB = await createRefundItem(prisma, { refundId: refundB.id, orderItemId: item.id, amount: "5.00" });
+    expect(refundItemB.amount.toString()).toBe("5");
+  });
+
+  it("releases the item's refund budget after the consuming Refund FAILs", async () => {
+    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const admin = await makeAdmin();
+    const refundA = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR" });
+    await createRefundItem(prisma, { refundId: refundA.id, orderItemId: item.id, amount: "5.00" });
+    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PROCESSING, to: RefundStatus.FAILED, adminId: admin.id });
+
+    const refundB = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR" });
+    const refundItemB = await createRefundItem(prisma, { refundId: refundB.id, orderItemId: item.id, amount: "5.00" });
+    expect(refundItemB.amount.toString()).toBe("5");
+  });
+
+  it("still counts a COMPLETED refund's RefundItem amount against the budget (does not release it)", async () => {
+    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const admin = await makeAdmin();
+    const refundA = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR" });
+    await createRefundItem(prisma, { refundId: refundA.id, orderItemId: item.id, amount: "5.00" });
+    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PROCESSING, to: RefundStatus.COMPLETED, adminId: admin.id });
+
+    const refundB = await createRefund(prisma, { orderId: order.id, amount: "1.00", currency: "IDR" });
+    await expect(
+      createRefundItem(prisma, { refundId: refundB.id, orderItemId: item.id, amount: "1.00" }),
+    ).rejects.toThrow(ValidationError);
+  });
 });

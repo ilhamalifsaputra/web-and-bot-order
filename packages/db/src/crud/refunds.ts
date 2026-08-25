@@ -50,6 +50,18 @@ const TERMINAL_REFUND_STATUSES: readonly string[] = [
 ];
 
 /**
+ * Terminal Refund statuses that never moved money: a CANCELLED or FAILED
+ * Refund's RefundItem rows must NOT count against an OrderItem's refund
+ * budget (see `createRefundItem`'s doc comment). Deliberately a subset of
+ * `TERMINAL_REFUND_STATUSES` — COMPLETED is also terminal but DID pay out,
+ * so it must keep counting against the budget.
+ */
+const REFUND_STATUSES_THAT_DID_NOT_CONSUME_BUDGET: readonly string[] = [
+  RefundStatus.CANCELLED,
+  RefundStatus.FAILED,
+];
+
+/**
  * Create a new Refund request record. Validates that `currency` matches the
  * referenced Order's own currency (a refund must stay pinned to the currency
  * the original payment was made in — see Refund.currency's schema doc
@@ -175,6 +187,17 @@ export async function transitionRefundStatus(
  * that sum — a partial refund history can span more than one Refund request
  * over time (e.g. buy 3, one turns out dead now and another later).
  *
+ * Only RefundItem rows whose parent Refund is PENDING, PROCESSING, or
+ * COMPLETED count against the budget — those are the only statuses where the
+ * refund plausibly has (or still could) move money. A CANCELLED or FAILED
+ * Refund never paid out anything, so its RefundItem rows must NOT keep
+ * counting against the OrderItem's subtotal — otherwise cancelling/failing a
+ * refund would permanently burn that item's refund budget with no recovery
+ * path short of a raw DB edit. This is why the exclusion set is specifically
+ * `{CANCELLED, FAILED}` and not the full `TERMINAL_REFUND_STATUSES` (which
+ * also includes COMPLETED — a COMPLETED refund DID move money and must keep
+ * counting).
+ *
  * `currency` is NOT accepted as a parameter — it is always copied from the
  * parent Refund's own currency (which is itself already validated against
  * the Order's currency by `createRefund`), matching RefundItem's own schema
@@ -214,10 +237,13 @@ export async function createRefundItem(
   const subtotal = new Decimal(orderItem.unitPrice).times(orderItem.quantity);
 
   const existing = await db.refundItem.aggregate({
-    where: { orderItemId: args.orderItemId },
+    where: {
+      orderItemId: args.orderItemId,
+      refund: { status: { notIn: [...REFUND_STATUSES_THAT_DID_NOT_CONSUME_BUDGET] } },
+    },
     _sum: { amount: true },
   });
-  const alreadyRefunded = new Decimal(existing._sum.amount ?? 0);
+  const alreadyRefunded = new Decimal(existing._sum?.amount ?? 0);
   const projected = alreadyRefunded.plus(amount);
 
   if (projected.greaterThan(subtotal)) {

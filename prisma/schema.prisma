@@ -766,8 +766,12 @@ model Refund {
   orderId           Int       @map("order_id")
   /// Total refund amount for this Refund row, in `currency` below. For a
   /// partial/per-item refund this should equal the sum of its RefundItem
-  /// rows' amounts (enforced at the application layer in a later task, not
-  /// here — see RefundItem's doc comment).
+  /// rows' amounts. KNOWN OPEN GAP (not enforced anywhere today, schema or
+  /// application layer): nothing currently checks that this Refund.amount
+  /// actually equals the sum of its own RefundItem.amount rows — a future
+  /// plan should close this; do not assume it holds. See RefundItem's doc
+  /// comment for the (separate, already-enforced) cross-refund per-OrderItem
+  /// budget invariant, which is unrelated to this one.
   amount            Decimal
   /// Snapshot of the currency the ORIGINAL payment was made in (IDR or
   /// USDT), copied at Refund-creation time from `Order.currency` — not
@@ -792,9 +796,15 @@ model Refund {
   /// native Prisma enum — matching every other lifecycle-status column in
   /// this schema (`Order.status`, `OrderItem.status`,
   /// `Denomination.deliveryType`). The state machine that governs these
-  /// transitions is intentionally NOT part of this task (schema-only); it
-  /// lands in the follow-up task that also wires COMPLETED to the wallet
-  /// payout path.
+  /// transitions lives in `REFUND_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/refunds.ts), validated by
+  /// `transitionRefundStatus`. Reaching COMPLETED via `transitionRefundStatus`
+  /// is record-keeping only — it does NOT call `adjustWallet` or trigger any
+  /// payout; see that file's module comment. The only payout path wired up
+  /// today is `refundUnderpaidOrder` (packages/db/src/crud/
+  /// binance_internal.ts), and it writes its Refund row directly (bypassing
+  /// `transitionRefundStatus`) at the same time it performs its own wallet
+  /// credit, rather than driving this state machine.
   status            String    @default("PENDING")
   /// The refund's OWN external reference at whatever rail actually pays it
   /// out (e.g. a payment gateway's refund-transaction id, or a manual note
@@ -843,12 +853,14 @@ model Refund {
 /// exceed that OrderItem's own subtotal (`unitPrice * quantity`, in the same
 /// currency as the original payment). SQLite's CHECK constraints can't
 /// express a cross-row aggregate like "sum of sibling rows", so this schema
-/// only provides the pieces a later application-layer check needs — the
+/// only provides the pieces the application-layer check needs — the
 /// `orderItemId` FK to group by, and the `amount` column to sum. The actual
-/// enforcement (reading existing RefundItem rows for that orderItemId inside
-/// the same transaction that inserts a new one) is deferred to the
-/// follow-up task that builds the crud layer. Do not assume this invariant
-/// holds just because the schema exists.
+/// enforcement (reading existing RefundItem rows for that orderItemId before
+/// inserting a new one, excluding rows whose parent Refund is CANCELLED or
+/// FAILED since those never consumed the budget) is `createRefundItem`
+/// (packages/db/src/crud/refunds.ts). Do not assume this invariant holds
+/// just because the schema exists — go read that function if you need to
+/// verify current behavior.
 model RefundItem {
   id          Int      @id @default(autoincrement())
   refundId    Int      @map("refund_id")

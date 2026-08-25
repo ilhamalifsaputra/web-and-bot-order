@@ -456,12 +456,71 @@ model Denomination {
   reviews              Review[]
   restockSubscriptions RestockSubscription[]
   bulkPricing          BulkPricing?
+  providerMappings     ProductProviderMapping[]
 
   @@index([productId], map: "ix_denominations_product_id")
   // The announce job scans for flash sales that have started but not yet been
   // broadcast; both it and the catalog reads filter on the window's end.
   @@index([flashEndsAt], map: "ix_denominations_flash_ends_at")
   @@map("denominations")
+}
+
+/// Maps a Denomination (SKU) to a transaction-fulfilment provider's own SKU
+/// code, supporting multi-provider dispatch routing — the transaction-side
+/// analogue of ProviderGameMapping above (which does this for nickname-check
+/// lookups). Digiflazz is the only real transaction provider today; this
+/// model exists to remove the STRUCTURAL blocker — a SKU hard-bound to
+/// Digiflazz in the schema via Denomination.autoDeliverySource/supplierSku
+/// alone — so a second provider can be added later without a schema
+/// migration. No second adapter or fallback-on-failure routing is built here
+/// (see .superpowers/sdd/task-4-brief.md); the per-order Digiflazz dispatch
+/// path (packages/db/src/crud/digiflazz.ts) keeps reading
+/// Denomination.autoDeliverySource/supplierSku directly and unchanged — this
+/// model's resolver (packages/db/src/crud/productProviderMappings.ts) is what
+/// keeps those two cache fields in sync with the current top-priority enabled
+/// mapping, so the read-heavy dispatch path stays a single-table read.
+///
+/// `productId` is named to match every other FK to Denomination already in
+/// this schema (OrderItem.productId, CartItem.productId, StockItem.productId)
+/// — Denomination was physically the old `products` table (see its own doc
+/// comment above), so `product_id` is this repo's established column name
+/// for "the SKU this row is about", not a reference to the mid-tier Product
+/// model.
+model ProductProviderMapping {
+  id           Int       @id @default(autoincrement())
+  /// Holds a Denomination id — see this model's doc comment for why the
+  /// column is named product_id.
+  productId    Int       @map("product_id")
+  /// Provider identifier: "digiflazz" today; free-text (like
+  /// ProviderGameMapping.provider) so a second transaction provider can be
+  /// added later without a schema change.
+  provider     String
+  /// The provider's own SKU/product code for this Denomination (Digiflazz's
+  /// buyer_sku_code, e.g. "ML86").
+  providerSku  String    @map("provider_sku")
+  /// The provider's last-known cost for this SKU, for margin reporting —
+  /// populated by a future price-sync job (explicitly deferred, see
+  /// task-4-brief.md's "provider price/balance sync workers (D4)"); null
+  /// until then. Decimal, never float (CLAUDE.md money rule).
+  providerCost Decimal?  @map("provider_cost")
+  /// When providerCost was last refreshed from the provider. Null until a
+  /// future sync job sets it.
+  costSyncedAt DateTime? @map("cost_synced_at")
+  /// false temporarily disables this provider for this SKU (soft-disable
+  /// without deleting) — the resolver skips a disabled row when recomputing
+  /// the Denomination's cached autoDeliverySource/supplierSku.
+  enabled      Boolean   @default(true)
+  /// Ascending priority order; 0 = highest priority, tried first by the
+  /// resolver when more than one enabled provider row exists for this SKU.
+  priority     Int       @default(0)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([productId, provider], map: "ix_product_provider_mappings_product_provider")
+  @@index([productId, enabled, priority], map: "ix_product_provider_mappings_product_priority")
+  @@map("product_provider_mappings")
 }
 
 model StockItem {

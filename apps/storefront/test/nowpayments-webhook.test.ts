@@ -1,11 +1,19 @@
 // NOWPayments IPN webhook (POST /pay/nowpayments/callback) — DIFFERS from the
 // TokoPay/PayDisini callback (apps/storefront/test/paydisini-webhook.test.ts)
 // in exactly one respect: the signature arrives via the HTTP header
-// `x-nowpayments-sig` (HMAC-SHA512 over the recursively-key-sorted JSON body),
-// not a body field. Same response contract otherwise: 403 disabled, 403 bad
-// signature, 200 for every other outcome (ignored/unmatched/amount
-// mismatch/delivered/delivery-failed) so the gateway always stops retrying
-// except on a signature problem. Pattern: apps/storefront/test/paydisini-webhook.test.ts.
+// `x-nowpayments-sig` (HMAC-SHA512 over the RAW request body bytes — Task 2a
+// fix, see nowpayments.ts's top doc comment), not a body field. Same response
+// contract otherwise: 403 disabled, 403 bad signature, 200 for every other
+// outcome (ignored/unmatched/amount mismatch/delivered/delivery-failed) so
+// the gateway always stops retrying except on a signature problem. Pattern:
+// apps/storefront/test/paydisini-webhook.test.ts.
+//
+// Because the signature now covers the literal wire bytes, every `app.inject`
+// call below sends `payload: raw` (a STRING, built by `JSON.stringify` from
+// this test file, standing in for NOWPayments' own serialization) with an
+// explicit `content-type: application/json` header — never a bare object —
+// so light-my-request doesn't re-serialize it itself, and the signature is
+// computed over that exact same string.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { createHmac } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,11 +30,6 @@ import {
   createCatalogProduct,
   createDenomination,
 } from "@app/db";
-// Import the REAL sort helper from the gateway client (rather than a
-// hand-rolled re-implementation) so this test fails loudly if NOWPayments'
-// recursive-key-sort logic ever changes/breaks instead of silently testing
-// against a second, possibly-drifted copy.
-import { sortKeysDeep } from "@app/core/payments/nowpayments";
 import { buildApp } from "../src/server";
 
 const API_KEY = "ak-test-nowpayments";
@@ -43,7 +46,11 @@ async function disableNowpayments() {
   await deleteSetting(prisma, "nowpayments_pay_currency");
 }
 
-/** Build an IPN body + a REAL HMAC-SHA512-over-sorted-keys signature for it. */
+/**
+ * Build a raw IPN JSON string (standing in for NOWPayments' own wire bytes)
+ * + a REAL HMAC-SHA512-over-the-raw-bytes signature for it (Task 2a fix —
+ * the webhook now hashes the exact request body, not a re-serialization).
+ */
 function signedIpn(args: { orderId: string; amount: string; trxId?: string; status?: string }) {
   const body = {
     order_id: args.orderId,
@@ -52,8 +59,9 @@ function signedIpn(args: { orderId: string; amount: string; trxId?: string; stat
     actually_paid: args.amount,
     pay_amount: args.amount,
   };
-  const signature = createHmac("sha512", IPN_SECRET).update(JSON.stringify(sortKeysDeep(body))).digest("hex");
-  return { body, signature };
+  const raw = JSON.stringify(body);
+  const signature = createHmac("sha512", IPN_SECRET).update(raw).digest("hex");
+  return { body, raw, signature };
 }
 
 let app: FastifyInstance;
@@ -124,35 +132,40 @@ async function createPendingNowpaymentsOrder(orderCode: string, totalAmountUsdt:
 describe("POST /pay/nowpayments/callback", () => {
   it("403s when NOWPayments is disabled (no creds configured)", async () => {
     await disableNowpayments();
-    const { body } = signedIpn({ orderId: "ORD-DISABLED", amount: "50" });
+    const { raw } = signedIpn({ orderId: "ORD-DISABLED", amount: "50" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": "irrelevant" },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": "irrelevant" },
+      payload: raw,
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ status: "disabled" });
   });
 
   it("403s on a bad signature", async () => {
-    const { body } = signedIpn({ orderId: "ORD-BADSIG", amount: "50" });
+    const { raw } = signedIpn({ orderId: "ORD-BADSIG", amount: "50" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": "0".repeat(128) },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": "0".repeat(128) },
+      payload: raw,
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ status: "bad signature" });
   });
 
   it("403s when the signature header is missing entirely", async () => {
-    const { body } = signedIpn({ orderId: "ORD-NOSIG", amount: "50" });
+    const { raw } = signedIpn({ orderId: "ORD-NOSIG", amount: "50" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      payload: body,
+      // Still need content-type: application/json so the body parses (the
+      // custom parser runs before the route handler, which is what rejects
+      // for a missing x-nowpayments-sig header below) — no x-nowpayments-sig
+      // header is the actual thing under test here.
+      headers: { "content-type": "application/json" },
+      payload: raw,
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ status: "bad signature" });
@@ -160,13 +173,13 @@ describe("POST /pay/nowpayments/callback", () => {
 
   it("happy path: delivers the order and marks it DELIVERED on a finished/paid IPN", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-NPHAPPY", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-HAPPY-1" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-HAPPY-1" });
 
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "delivered" });
@@ -181,13 +194,13 @@ describe("POST /pay/nowpayments/callback", () => {
 
   it("is idempotent: replaying the same payment_id after delivery is a no-op (already_processed)", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-NPREPLAY", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-REPLAY-1" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-REPLAY-1" });
 
     const first = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(first.statusCode).toBe(200);
     expect(first.json()).toEqual({ status: "delivered" });
@@ -195,8 +208,8 @@ describe("POST /pay/nowpayments/callback", () => {
     const second = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(second.statusCode).toBe(200);
     expect(second.json()).toEqual({ status: "already_processed" });
@@ -212,20 +225,20 @@ describe("POST /pay/nowpayments/callback", () => {
   // poisoned "" claim (or anything else) behind for the second to trip on.
   it("403s on an otherwise-correctly-signed IPN missing payment_id, and independently rejects a second one — no poisoned empty-string ledger state left behind", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-NOPID-NP", "50");
-    const body = {
+    const raw = JSON.stringify({
       order_id: order.orderCode,
       payment_status: "finished",
       actually_paid: "50",
       pay_amount: "50",
       // payment_id deliberately omitted
-    };
-    const signature = createHmac("sha512", IPN_SECRET).update(JSON.stringify(sortKeysDeep(body))).digest("hex");
+    });
+    const signature = createHmac("sha512", IPN_SECRET).update(raw).digest("hex");
 
     const first = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(first.statusCode).toBe(403);
     expect(first.json()).toEqual({ status: "bad signature" });
@@ -237,8 +250,8 @@ describe("POST /pay/nowpayments/callback", () => {
     const second = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(second.statusCode).toBe(403);
     expect(second.json()).toEqual({ status: "bad signature" });
@@ -255,13 +268,13 @@ describe("POST /pay/nowpayments/callback", () => {
   // first didn't leave a poisoned "" ledger row for the second to trip on.
   it("403s on an otherwise-correctly-signed IPN with a literal empty-string payment_id, and independently rejects a second one — no poisoned empty-string ledger state left behind", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-EMPTYPID-NP", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "" });
 
     const first = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(first.statusCode).toBe(403);
     expect(first.json()).toEqual({ status: "bad signature" });
@@ -273,8 +286,8 @@ describe("POST /pay/nowpayments/callback", () => {
     const second = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(second.statusCode).toBe(403);
     expect(second.json()).toEqual({ status: "bad signature" });
@@ -285,12 +298,12 @@ describe("POST /pay/nowpayments/callback", () => {
   });
 
   it("records an unmatched tx when no NOWPAYMENTS order matches the order_id", async () => {
-    const { body, signature } = signedIpn({ orderId: "ORD-NO-SUCH-ORDER", amount: "12.5", trxId: "PID-UNMATCHED-1" });
+    const { raw, signature } = signedIpn({ orderId: "ORD-NO-SUCH-ORDER", amount: "12.5", trxId: "PID-UNMATCHED-1" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
@@ -313,12 +326,12 @@ describe("POST /pay/nowpayments/callback", () => {
         paymentMethod: "TOKOPAY", // not NOWPAYMENTS
       },
     });
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50000", trxId: "PID-WRONGMETHOD-1" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50000", trxId: "PID-WRONGMETHOD-1" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
@@ -341,12 +354,12 @@ describe("POST /pay/nowpayments/callback", () => {
         paymentMethod: "NOWPAYMENTS",
       },
     });
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50000", trxId: "PID-WRONGCURR-1" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50000", trxId: "PID-WRONGCURR-1" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "unmatched" });
@@ -357,12 +370,12 @@ describe("POST /pay/nowpayments/callback", () => {
 
   it("never delivers a short/underpaid amount — records unmatched instead", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-SHORTPAY-NP", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "40", trxId: "PID-SHORT-1" }); // less than totalAmount
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "40", trxId: "PID-SHORT-1" }); // less than totalAmount
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "amount mismatch" });
@@ -377,12 +390,12 @@ describe("POST /pay/nowpayments/callback", () => {
 
   it("ignores a non-finished (waiting/confirming/partially_paid) IPN without touching the order or ledger", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-PENDINGCB-NP", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-PENDING-1", status: "waiting" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-PENDING-1", status: "waiting" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ignored" });
@@ -395,12 +408,12 @@ describe("POST /pay/nowpayments/callback", () => {
 
   it("ignores partially_paid (close-but-not-finished) without delivering — never an error condition", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-PARTIAL-NP", "50");
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "49.99", trxId: "PID-PARTIAL-1", status: "partially_paid" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "49.99", trxId: "PID-PARTIAL-1", status: "partially_paid" });
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ignored" });
@@ -426,13 +439,13 @@ describe("POST /pay/nowpayments/callback", () => {
         paymentMethod: "NOWPAYMENTS",
       },
     });
-    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-STALE-1" });
+    const { raw, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-STALE-1" });
 
     const res = await app.inject({
       method: "POST",
       url: "/pay/nowpayments/callback",
-      headers: { "x-nowpayments-sig": signature },
-      payload: body,
+      headers: { "content-type": "application/json", "x-nowpayments-sig": signature },
+      payload: raw,
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "stale" });

@@ -191,6 +191,21 @@ export interface PaydisiniCallback {
  *   guesses `md5(merchantApiKey:userKey:refId:amount)` by analogy with
  *   TokoPay's `md5(merchant:secret:ref_id)`. Verify against the live dashboard
  *   before go-live.
+ *
+ * No replay-window check here (Task 2b): like TokoPay, PayDisini's callback
+ * body carries no timestamp field — the signature is a fixed function of
+ * `apiKey`/`userKey`/`refId`/`amount`, none of which are time-varying, and
+ * neither PayDisini's public docs nor the fields this client already reads
+ * off the body (`ref_id`/`unique_code`/`reference`, `amount`/`nominal`,
+ * `status`, `trx_id`) include a send-time or event-time value to check `now`
+ * against. As with TokoPay, inventing one from the request's OWN arrival
+ * time at our server would not be a replay defense — a replayed request
+ * arrives "now" too, so that would just restate the current time, not
+ * detect anything. The real replay defense for this rail is
+ * `ProcessedPaydisiniTx` (UNIQUE `trxId`, populated via `gatewayLedgerTrxId`
+ * in apps/storefront/src/routes/checkout.ts): a replayed callback for an
+ * already-delivered order hits that UNIQUE constraint and is turned away
+ * before any second delivery, regardless of how stale the replayed body is.
  */
 export function verifyCallback(
   body: Record<string, unknown>,

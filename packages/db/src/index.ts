@@ -38,6 +38,7 @@ export * from "./crud/wallet_topup";
 export * from "./crud/credentials";
 export * from "./crud/webauth";
 export * from "./crud/admins";
+export * from "./crud/idempotency";
 export * from "./crud/web_secret";
 export * from "./crud/setup";
 export * from "./crud/smtp";

@@ -66,6 +66,7 @@ export async function resetDb(prisma: PrismaClient) {
   // which would otherwise leave getSetting's in-memory cache serving stale
   // values against a now-empty table.
   __clearSettingsCacheForTests(prisma);
+  await prisma.idempotencyRecord.deleteMany();
   await prisma.notificationOutbox.deleteMany();
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();

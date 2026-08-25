@@ -31,6 +31,11 @@ import {
   addToCart,
   countAvailableStock,
   createGuestUser,
+  findIdempotentResponse,
+  saveIdempotentResponse,
+  hashIdempotentRequest,
+  IdempotencyKeyReuseError,
+  type IdempotentReplay,
   type CatalogProduct,
 } from "@app/db";
 import type { Category, Denomination } from "@prisma/client";
@@ -240,6 +245,21 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
  */
 export function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
   return isGuest ? { ...body, csrf_token: customer.csrf } : body;
+}
+
+/** Stable name for POST /checkout's idempotency ledger row (packages/db/src/crud/idempotency.ts) —
+ * NOT the literal URL, so it stays correct if the route is ever remounted. */
+const CHECKOUT_IDEMPOTENCY_ENDPOINT = "storefront.checkout.create";
+
+/** An `Idempotency-Key` header, trimmed and length-capped — Fastify hands
+ * back `string | string[] | undefined` for a possibly-repeated header; a
+ * repeat takes the first value. Empty/oversized values are treated as "no
+ * key" (opt out) rather than rejected, since this feature is additive and
+ * must never turn a missing/malformed header into a hard failure. */
+function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header) ?? "";
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
 }
 
 /**
@@ -527,6 +547,56 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
 
+    // Idempotency (Task 1): an `Idempotency-Key` header lets a double-tapped
+    // "Pay" button or a network retry replay the exact response from the
+    // first attempt instead of creating a second order. Opt-in — a request
+    // with no header runs exactly as before. Scoped to this buyer's id (not
+    // just the header value) so two different accounts can never collide on,
+    // or replay, each other's key. Deliberately placed AFTER guest/session
+    // resolution above: it guards the actual order-creating mutation below,
+    // not the (separately rate-limited) guest-account bootstrap.
+    const idempotencyKey = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const requestHash = idempotencyKey
+      ? hashIdempotentRequest({ userId: customer.userId, method, voucherCode, customerData: req.body?.customer_data ?? null })
+      : null;
+
+    if (idempotencyKey) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idempotencyKey,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: requestHash!,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send(withGuestCsrf({ error: "error.idempotency_key_reused" }, isGuest, customer));
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    // Sends the reply AND, when an Idempotency-Key was supplied, persists it
+    // first — so a retry that arrives after this returns replays it above
+    // instead of re-running the mutation. Used for every exit below,
+    // including the 400s: a validation failure (e.g. out of stock) is just
+    // as safe and just as worth replaying as a success.
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idempotencyKey) {
+        await saveIdempotentResponse(prisma, {
+          key: idempotencyKey,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: requestHash!,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     // Wallet credit as a payment method — no gateway, settles synchronously.
     // Separate method tokens from the gateway ones below; performCheckout
     // is untouched by this branch.
@@ -538,12 +608,10 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
           voucherCode,
           req.body?.customer_data,
         );
-        return reply
-          .code(201)
-          .send(withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
+        return respond(201, withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
         }
         throw e;
       }
@@ -572,10 +640,10 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       // `email_sent` is added for guests only: the checked-in test for the
       // signed-in 201 asserts that body is EXACTLY `{ order_code, pay_url }`,
       // and a registered buyer has no use for a flag about mail they never get.
-      return reply.code(201).send(withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
+      return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
       }
       throw e;
     }

@@ -21,6 +21,11 @@ import {
   cancelOrder,
   logAdminAction,
   listCombinedLedger,
+  findIdempotentResponse,
+  saveIdempotentResponse,
+  hashIdempotentRequest,
+  IdempotencyKeyReuseError,
+  type IdempotentReplay,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
@@ -34,6 +39,21 @@ const PAGE_SIZE = 50;
 const ORDER_KINDS = [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP] as const;
 
 class NotFoundError extends Error {}
+
+/** Stable name for the underpaid-order refund route's idempotency ledger row
+ * (packages/db/src/crud/idempotency.ts) — not the literal URL, so it stays
+ * correct if the route is ever remounted. */
+const REFUND_IDEMPOTENCY_ENDPOINT = "web-admin.payments.refundUnderpaid";
+
+/** An `Idempotency-Key` header, trimmed and length-capped — a repeat header
+ * takes the first value. Empty/oversized values are treated as "no key"
+ * (opt out) rather than rejected, since this is additive and must never turn
+ * a missing/malformed header into a hard failure. */
+function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header) ?? "";
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
+}
 
 export default async function paymentsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/payments", { preHandler: currentAdmin }, async (req, reply) => {
@@ -120,6 +140,49 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    // Idempotency (Task 1): a double-clicked "Refund" button (or a retried
+    // request after the admin's browser never saw the first response) would
+    // otherwise hit refundUnderpaidOrder's own state guard on the SECOND
+    // click and show the admin a confusing "order not underpaid" 422, even
+    // though the first click already succeeded. An `Idempotency-Key` header
+    // lets that retry replay the exact first response instead. Opt-in — a
+    // request with no header behaves exactly as before.
+    const idempotencyKey = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const requestHash = idempotencyKey ? hashIdempotentRequest({ orderId }) : null;
+
+    if (idempotencyKey) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idempotencyKey,
+          endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
+          requestHash: requestHash!,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idempotencyKey) {
+        await saveIdempotentResponse(prisma, {
+          key: idempotencyKey,
+          endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
+          requestHash: requestHash!,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     try {
       const { refunded } = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
@@ -130,10 +193,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         details: `Refunded ${refunded.toString()} to the buyer's wallet for an underpaid order.`,
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return reply.send({ ok: true });
+    return respond(200, { ok: true });
   });
 
   app.post("/api/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {

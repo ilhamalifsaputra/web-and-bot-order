@@ -1126,3 +1126,26 @@ model ProcessedNowpaymentsTx {
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")
 }
+
+/// Client-side idempotency ledger for checkout/refund-style mutations — a
+/// DIFFERENT mechanism from the Processed*Tx ledgers above (those dedupe an
+/// inbound payment-gateway webhook callback; this dedupes a double-tapped or
+/// retried request from a browser/admin client). The caller sends an
+/// `Idempotency-Key` header; (key, endpoint) is claimed exactly once via the
+/// unique index below. A retry with the same key AND the same requestHash
+/// replays responseBody/statusCode verbatim instead of re-running the
+/// mutation; the same key with a DIFFERENT hash means the key was reused for
+/// a distinct request (a client bug) and is rejected with 409 rather than
+/// silently replaying the wrong response or overwriting the original.
+model IdempotencyRecord {
+  id           Int      @id @default(autoincrement())
+  key          String
+  endpoint     String
+  requestHash  String   @map("request_hash")
+  responseBody String   @map("response_body")
+  statusCode   Int      @map("status_code")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([key, endpoint], map: "ix_idempotency_record_key_endpoint")
+  @@map("idempotency_records")
+}

@@ -1,7 +1,7 @@
 // Storefront JSON API (/api/v1) tests — drives the Fastify app with
 // app.inject() against an isolated temp DB (pattern: storefront.test.ts).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import {
@@ -652,6 +652,116 @@ describe("POST /api/v1/checkout", () => {
         await deleteSetting(prisma, "bybit_api_secret");
         await deleteSetting(prisma, "usd_idr_rate");
       }
+    });
+  });
+
+  // Task 1: Idempotency-Key protects the order-creating mutation from a
+  // double-tapped "Pay" button or a network retry. Own buyer + own cart
+  // reset per test so these are independent of execution order and of the
+  // "signed-in customer" block above.
+  describe("Idempotency-Key (Task 1)", () => {
+    let buyerId: number;
+    let cookie: string;
+    let csrf: string;
+
+    beforeAll(async () => {
+      const { hashPassword } = await import("@app/core/password");
+      const u = await prisma.user.create({
+        data: {
+          loginUsername: "idempotencyuser",
+          email: "idempotency@u.test",
+          passwordHash: hashPassword("idempotency-pw-99"),
+          referralCode: "IDEMPKT",
+          walletBalance: "1000000",
+        },
+      });
+      buyerId = u.id;
+      const session = await loginAs("idempotencyuser", "idempotency-pw-99");
+      cookie = session.cookie;
+      csrf = session.csrf;
+    });
+
+    beforeEach(async () => {
+      const { addToCart } = await import("@app/db");
+      await prisma.cartItem.deleteMany({ where: { userId: buyerId } });
+      await addToCart(prisma, buyerId, denomId, 1);
+    });
+
+    it("replays the exact response for a repeated 400 (validation failure) instead of re-running it", async () => {
+      const key = "idem-400-repeat";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(first.statusCode).toBe(400);
+      expect(first.json()).toEqual({ error: "web.pay_method_unavailable" });
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(second.statusCode).toBe(400);
+      expect(second.json()).toEqual({ error: "web.pay_method_unavailable" });
+    });
+
+    it("409s when the same key is reused with a DIFFERENT request body", async () => {
+      const key = "idem-conflict";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(first.statusCode).toBe(400);
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "bybit" }, // different method => different request hash
+      });
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+    });
+
+    it("a repeated wallet checkout with the same key creates exactly ONE order and replays the order_code", async () => {
+      const key = "idem-wallet-success";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "wallet_idr" },
+      });
+      expect(first.statusCode).toBe(201);
+      const firstBody = first.json();
+      expect(typeof firstBody.order_code).toBe("string");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "wallet_idr" },
+      });
+      expect(second.statusCode).toBe(201);
+      expect(second.json()).toEqual(firstBody);
+
+      const orders = await prisma.order.findMany({ where: { userId: buyerId, orderCode: firstBody.order_code } });
+      expect(orders).toHaveLength(1);
+    });
+
+    it("with no Idempotency-Key header, behaves exactly as before (opt-in feature)", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { method: "qris" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
     });
   });
 });

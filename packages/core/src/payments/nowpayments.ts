@@ -280,7 +280,10 @@ export function verifyIpn(
   if (typeof tsRaw === "string" && tsRaw) {
     const tsMs = Date.parse(tsRaw);
     if (Number.isFinite(tsMs) && now - tsMs > NOWPAYMENTS_IPN_MAX_AGE_MS) {
-      logger.warn("NOWPayments IPN signature is valid but its own timestamp is older than the 5-minute replay window — rejecting the callback as a likely replay");
+      logger.warn(
+        { order_id: body.order_id, payment_id: body.payment_id, ipn_timestamp: tsRaw },
+        "NOWPayments IPN signature is valid but its own timestamp is older than the 5-minute replay window — rejecting the callback as a likely replay",
+      );
       return null;
     }
   }

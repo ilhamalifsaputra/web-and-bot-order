@@ -109,9 +109,106 @@ export const OrderStatus = {
    * throw post-payment-confirmation) — needs admin attention. Distinct from
    * CANCELLED/REJECTED, which stay customer/admin-initiated only. */
   FAILED: "FAILED",
+  /** Some of the order's items were delivered and the rest ended FAILED or
+   * CANCELLED, with nothing still in flight — derived by
+   * `recomputeOrderStatus` (packages/db/src/crud/orders.ts) from the set of
+   * `OrderItem.status` values.
+   *
+   * NOTHING PRODUCES THIS TODAY, on purpose. Trustance Phase 1 Task 3 added
+   * the per-item status machinery as a provable no-op shadow of the existing
+   * order-level outcome: every order the current code paths can create is
+   * homogeneous (the cart composition rule in @app/core/cartComposition
+   * forbids mixing), so every item in an order always shares one status and
+   * `recomputeOrderStatus` always derives the status the order already has.
+   * `orderItemStatus.test.ts` asserts that unreachability directly.
+   *
+   * It exists because a later plan will loosen cart mixing so a MANUAL_ACCOUNT
+   * line and an INSTANT line can resolve independently — at which point a
+   * genuinely split order becomes representable. That plan also owns the
+   * Refund/IN_DOUBT work a paid-but-failed line needs; do not start producing
+   * this value before that resolution path exists, or a buyer ends up with a
+   * partially-delivered order and nowhere to take the difference. */
+  PARTIALLY_DELIVERED: "PARTIALLY_DELIVERED",
 } as const;
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
+
+/**
+ * Per-line fulfilment state — stored on `order_items.status` (Trustance
+ * Phase 1, Task 3). String enum, uppercase member names, matching every other
+ * legacy-shaped enum in this file rather than DeliveryType's lowercase values:
+ * this mirrors `Order.status`, which it shadows, so the two read alike in the
+ * DB and in a log line.
+ *
+ * ## It is a SHADOW today, not a source of truth
+ *
+ * Nothing branches on this column. `settlePaidOrder` still computes one
+ * order-wide `isManual` boolean and takes the same whole-order branch it always
+ * did; the item statuses are written alongside that branch's own order-level
+ * status write, in the same transaction, so they always agree with it and with
+ * each other. Every order the current code paths can create is homogeneous, so
+ * a split set of item statuses is not reachable — `orderItemStatus.test.ts`
+ * proves that for every order shape (all-AUTO multi-item, single manual, and
+ * top-up). Loosening that is a later plan's job.
+ *
+ * ## Deliberately absent
+ *
+ * `IN_DOUBT` and `REFUNDED` are NOT here. They belong to the Refund domain,
+ * which this plan defers — adding the names without the resolution path behind
+ * them would invite a call site to move an item into a state nothing can move
+ * it out of.
+ *
+ * ## Null means "row predates this column"
+ *
+ * The column is nullable with NO default, for the same reason
+ * `OrderItem.deliveryTypeSnapshot` is (see its comment in schema.prisma): this
+ * repo deploys schema with `prisma db push`, which adds the column but never
+ * backfills it. A `NOT NULL DEFAULT 'PENDING'` would silently relabel every
+ * historical DELIVERED order's items as PENDING at the deploy boundary.
+ * Consumers must treat null as "unknown, derive nothing" — which is exactly
+ * what `deriveOrderStatusFromItems` does.
+ */
+export const OrderItemStatus = {
+  /** Created, not yet paid for. The state every new OrderItem starts in. */
+  PENDING: "PENDING",
+  /** Reserved for the future per-item info flow: this line needs buyer input
+   * before it can be fulfilled. Not written by any current code path — today
+   * `manual_with_info` answers are collected order-wide BEFORE payment, into
+   * `Order.customerData`. */
+  WAITING_FOR_INFO: "WAITING_FOR_INFO",
+  /** Reserved, pairs with WAITING_FOR_INFO. Not written today. */
+  INFO_SUBMITTED: "INFO_SUBMITTED",
+  /** Paid, and waiting on an admin to hand-fulfil it. The MANUAL branch of
+   * `settlePaidOrder` sets this — the item-level shadow of the order reaching
+   * `OrderStatus.PROCESSING`. */
+  QUEUED: "QUEUED",
+  /** Reserved: fulfilment is actively under way for this line (e.g. a supplier
+   * dispatch is in flight). Not written today — the Digiflazz rail tracks its
+   * own progress on the Order, not per item. */
+  PROCESSING: "PROCESSING",
+  /** Fulfilled. Set by `approveOrder`'s atomic claim (the AUTO path) and by
+   * `fulfillManualOrder` (the hand-fulfilment path). */
+  DELIVERED: "DELIVERED",
+  /** Fulfilment failed for this line. Reserved — no current path writes it,
+   * because a whole-order failure is recorded on the Order today. */
+  FAILED: "FAILED",
+  /** This line was cancelled before fulfilment. Reserved, same reason. */
+  CANCELLED: "CANCELLED",
+} as const;
+export type OrderItemStatus = (typeof OrderItemStatus)[keyof typeof OrderItemStatus];
+export const zOrderItemStatus = z.nativeEnum(OrderItemStatus);
+
+/** Item states that mean "this line has not reached an outcome yet". An order
+ * with any of these still keeps whatever in-flight status it already has —
+ * `deriveOrderStatusFromItems` refuses to derive a terminal status while one
+ * is present. */
+export const IN_FLIGHT_ORDER_ITEM_STATUSES: readonly OrderItemStatus[] = [
+  OrderItemStatus.PENDING,
+  OrderItemStatus.WAITING_FOR_INFO,
+  OrderItemStatus.INFO_SUBMITTED,
+  OrderItemStatus.QUEUED,
+  OrderItemStatus.PROCESSING,
+];
 
 /** Customer-facing label (an i18n key, not literal text) for a stored
  * OrderStatus. Several internal/automated states fold into the same coarse
@@ -135,6 +232,12 @@ export function customerStatusLabel(status: string): string {
       return "status.label.processing";
     case OrderStatus.DELIVERED:
       return "status.label.delivered";
+    // Gets its own label rather than folding into "Delivered": the whole point
+    // of the state is that part of the order did NOT arrive, and a buyer told
+    // "Delivered" would have no reason to open a ticket. Unreachable today —
+    // see OrderStatus.PARTIALLY_DELIVERED.
+    case OrderStatus.PARTIALLY_DELIVERED:
+      return "status.label.partially_delivered";
     case OrderStatus.CANCELLED:
     case OrderStatus.REJECTED:
     case OrderStatus.FAILED:

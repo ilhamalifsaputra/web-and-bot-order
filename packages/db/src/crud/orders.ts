@@ -8,11 +8,13 @@ import { config } from "@app/core/config";
 import {
   OrderKind,
   OrderStatus,
+  OrderItemStatus,
   StockStatus,
   UserRole,
   DeliveryType,
   langCode,
 } from "@app/core/enums";
+import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -55,7 +57,7 @@ import {
   enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { transitionOrderStatus } from "./orderStatus";
+import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 
 const ZERO = new Decimal(0);
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -620,6 +622,11 @@ export async function createOrderFromCart(
         unitPrice: unit,
         warrantyDaysSnapshot: warrantyDays,
         deliveryTypeSnapshot: ci.product.deliveryType,
+        // Every new line starts PENDING (unpaid). Written explicitly rather
+        // than left to a column default so that null keeps meaning exactly one
+        // thing — "row predates this column" — see OrderItem.status in
+        // schema.prisma.
+        status: OrderItemStatus.PENDING,
       });
     }
   }
@@ -802,6 +809,9 @@ export async function createOrderDirect(
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
         deliveryTypeSnapshot: product.deliveryType,
+        // Same as createOrderFromCart's loop — explicit PENDING, never a
+        // column default.
+        status: OrderItemStatus.PENDING,
       },
     });
   }
@@ -1359,6 +1369,22 @@ export async function approveOrder(
     data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
   });
 
+  // Per-item shadow of the claim above (Trustance Phase 1, Task 3). Placed
+  // HERE, immediately behind the atomic claim, rather than in settlePaidOrder's
+  // AUTO branch, for two reasons: it lands inside the same transaction as the
+  // order-level DELIVERED write (so the two can never diverge, and a throw
+  // below — e.g. out of stock — rolls both back together), and it covers the
+  // callers that reach approveOrder without going through settlePaidOrder.
+  //
+  // Every item, one value: this function delivers the order as a whole, so a
+  // split outcome is not representable here. Making items resolve
+  // independently is a later plan's job — see OrderItem.status in
+  // schema.prisma.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.DELIVERED },
+  });
+
   const credentials: string[] = [];
 
   for (const item of order.items) {
@@ -1781,6 +1807,81 @@ async function maybeEnqueueBulkPurchaseBroadcast(db: Db, order: OrderWithInclude
 }
 
 /**
+ * Bring `Order.status` into agreement with the statuses of its `OrderItem`
+ * rows (Trustance Phase 1, Task 3).
+ *
+ * ## Today this provably does nothing
+ *
+ * Call it and it returns `null` — every time, for every order this codebase can
+ * create. That is not an accident, it is the acceptance criterion for the task
+ * that added it. The cart composition rule (@app/core/cartComposition) keeps
+ * every order homogeneous; `settlePaidOrder`, `approveOrder` and
+ * `fulfillManualOrder` each write one status to every item of an order in the
+ * same transaction as the order-level status write; so the derived status is
+ * always the status the order already has, which
+ * `deriveOrderStatusFromItems` reports as "nothing to change".
+ * `orderItemStatus.test.ts` (packages/db/src/crud) asserts exactly this for
+ * every order shape, including that PARTIALLY_DELIVERED never comes out.
+ *
+ * It is wired into `settlePaidOrder` and `fulfillManualOrder` anyway, at the
+ * points where those functions have just written a status, so the no-op is
+ * continuously exercised rather than merely asserted once — if a future change
+ * ever makes items disagree with their order, that shows up here immediately
+ * instead of at the next audit.
+ *
+ * ## When it does start doing something
+ *
+ * A later plan loosens cart mixing so lines resolve independently; at that
+ * point a genuinely split order becomes representable and this is what folds
+ * the per-line outcomes back into one order-level status, including
+ * PARTIALLY_DELIVERED.
+ *
+ * ## Deliberate safety properties
+ *
+ * - It goes through `transitionOrderStatus`, so it inherits the legality table
+ *   and the atomic claim; it can never overwrite an order that moved on
+ *   underneath it, and it can never invent a structurally impossible move.
+ * - A derivation it is not sure about is not a derivation: a legacy null item
+ *   status, an item still in flight, or an order with no items all yield
+ *   `null`. See `deriveOrderStatusFromItems`.
+ * - A lost race is benign (another writer got there first), so this uses the
+ *   `try` variant and reports the outcome rather than throwing into a caller
+ *   whose real work already succeeded.
+ *
+ * @returns the status it wrote, or `null` when it left the order alone.
+ */
+export async function recomputeOrderStatus(db: Db, orderId: number): Promise<string | null> {
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, orderCode: true, status: true, items: { select: { status: true } } },
+  });
+  if (!order) return null;
+
+  const derived = deriveOrderStatusFromItems(
+    order.items.map((it) => it.status),
+    order.status,
+  );
+  if (derived === null) return null;
+
+  // Reaching here today means an item's status disagrees with its order's,
+  // which the invariants above say cannot happen — so say so loudly rather
+  // than silently repairing it and losing the evidence.
+  logger.warn(
+    `Order ${order.orderCode} had a status (${order.status}) that disagreed with the outcomes recorded on its own line items, ` +
+      `which is not supposed to be reachable yet — recomputing it to ${derived}. ` +
+      `Something wrote OrderItem.status without writing the matching Order.status in the same transaction; ` +
+      `check the most recent change to settlePaidOrder/approveOrder/fulfillManualOrder.`,
+  );
+  const applied = await tryTransitionOrderStatus(db, {
+    orderId,
+    from: order.status,
+    to: derived,
+    meta: "recomputed from line-item outcomes",
+  });
+  return applied ? derived : null;
+}
+
+/**
  * Payment-confirmation entry point — the single place the auto-vs-manual
  * delivery branch lives. Every payment rail (and the human-admin approve
  * actions) call this instead of approveOrder directly, and send credentials
@@ -1793,6 +1894,11 @@ async function maybeEnqueueBulkPurchaseBroadcast(db: Db, order: OrderWithInclude
  *
  * The order must already be at PENDING_VERIFICATION (callers do the
  * PENDING_PAYMENT → PENDING_VERIFICATION transition first, exactly as before).
+ *
+ * Trustance Phase 1 Task 3 added per-item `OrderItem.status` writes inside each
+ * branch. It did NOT change which branch runs: the order-wide `isManual`
+ * boolean below is untouched, and the item statuses are a shadow of whichever
+ * branch it selects, never an input to it.
  */
 export type SettleResult =
   | { kind: "delivered"; order: OrderWithIncludes; credentials: string[] }
@@ -1884,6 +1990,13 @@ export async function settlePaidOrder(
     // order is ready" is true here; the MANUAL branch below is NOT ready yet
     // and must not send it (fulfillManualOrder does, when it really is).
     await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+    // Consistency check, not a state change: approveOrder just wrote DELIVERED
+    // to the order AND to every one of its items, so this derives DELIVERED,
+    // sees the order already has it, and returns null without touching
+    // anything. Kept in the hot path so that stays continuously true rather
+    // than true-as-of-the-last-review. `result.order` is deliberately NOT
+    // re-fetched afterwards — there is nothing to re-fetch.
+    await recomputeOrderStatus(db, orderId);
     return { kind: "delivered", order: result.order, credentials: result.credentials };
   }
 
@@ -1894,6 +2007,16 @@ export async function settlePaidOrder(
     from: OrderStatus.PENDING_VERIFICATION,
     to: OrderStatus.PROCESSING,
     meta: `awaiting manual fulfilment (admin_id=${args.adminId})`,
+  });
+  // Per-item shadow of the PROCESSING transition above (Trustance Phase 1,
+  // Task 3): the order is paid and now sitting in the hand-fulfilment queue, so
+  // every line is QUEUED. Same transaction as the order-level write, and — as
+  // in the AUTO branch — one value for every item, because this branch decided
+  // the outcome for the whole order. Note the branch itself is UNCHANGED: the
+  // `isManual` split above still reads order-wide, exactly as before.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.QUEUED },
   });
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
@@ -1925,6 +2048,10 @@ export async function settlePaidOrder(
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
   );
+  // Same consistency check as the AUTO branch. Every item is QUEUED, which is
+  // an in-flight state, so the derivation declines and the order keeps the
+  // PROCESSING it was just given.
+  await recomputeOrderStatus(db, orderId);
   const refreshed = await getOrder(db, orderId);
   return { kind: "processing", order: refreshed!, credentials: [] };
 }
@@ -1958,6 +2085,14 @@ export async function fulfillManualOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `manual_fulfill by admin_id=${args.adminId}` },
   });
+  // Per-item shadow of the claim above (Trustance Phase 1, Task 3): the admin
+  // hand-delivered the order, so every line moves QUEUED -> DELIVERED. Behind
+  // the atomic claim, so a lost double-tap race (claim.count !== 1 throws
+  // above) never reaches it.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.DELIVERED },
+  });
 
   await finalizeDeliverySideEffects(db, order, now);
 
@@ -1986,6 +2121,10 @@ export async function fulfillManualOrder(
   });
 
   logger.info(`Manually fulfilled order ${order.orderCode} by admin ${args.adminId}`);
+  // Same consistency check as settlePaidOrder's two branches: the claim above
+  // wrote DELIVERED to the order and to every item, so this derives DELIVERED,
+  // finds it already set, and changes nothing.
+  await recomputeOrderStatus(db, orderId);
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed! };
 }

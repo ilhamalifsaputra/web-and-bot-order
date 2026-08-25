@@ -722,6 +722,28 @@ model OrderItem {
   /// settlePaidOrder falls back to the live denomination row for those, i.e.
   /// exactly the pre-Task-15 behavior — zero regression risk either way.
   deliveryTypeSnapshot String? @map("delivery_type_snapshot")
+  /// Per-line fulfilment state — OrderItemStatus (@app/core/enums): PENDING,
+  /// WAITING_FOR_INFO, INFO_SUBMITTED, QUEUED, PROCESSING, DELIVERED, FAILED,
+  /// CANCELLED. String, not a native enum, matching every other enum column in
+  /// this schema.
+  ///
+  /// A SHADOW of Order.status, not a source of truth. Nothing branches on it:
+  /// settlePaidOrder still takes one whole-order auto-vs-manual branch and
+  /// writes every item's status to match that branch's outcome, in the same
+  /// transaction as the order-level status write. Since the cart composition
+  /// rule (@app/core/cartComposition) keeps every order homogeneous, the items
+  /// of an order always share one status. Added by Trustance Phase 1 Task 3 as
+  /// the foundation a later plan needs to let lines resolve independently.
+  ///
+  /// Nullable, no default — the SAME deploy-boundary reasoning as
+  /// deliveryTypeSnapshot directly above, and for once that is not a copied
+  /// caveat but the load-bearing choice: `prisma db push` adds the column
+  /// without running any backfill, so `NOT NULL DEFAULT 'PENDING'` would stamp
+  /// PENDING onto the items of every order ever delivered. Null means "row
+  /// predates this column"; deriveOrderStatusFromItems reads it as "unknown"
+  /// and declines to derive anything, which is exactly the pre-Task-3
+  /// behavior for those rows.
+  status               String? @map("status")
 
   // Restrict, not Cascade (Infra-5 fix, security audit 2026-06-23): line items
   // are the order's financial detail — deleting an Order must never silently

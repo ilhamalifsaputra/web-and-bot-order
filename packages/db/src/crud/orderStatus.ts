@@ -55,6 +55,13 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REJECTED,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    // Legal in shape only — nothing reaches it yet. `recomputeOrderStatus`
+    // (orders.ts) is the sole writer, and it can only derive
+    // PARTIALLY_DELIVERED from an order whose items ended with a split
+    // outcome, which no current code path can produce. Listed so the future
+    // plan that does produce one is not blocked by this table. See
+    // OrderStatus.PARTIALLY_DELIVERED in @app/core/enums.
+    OrderStatus.PARTIALLY_DELIVERED,
   ],
   // Manual fulfilment queue: an admin either delivers the typed content
   // (fulfillManualOrder → DELIVERED) or rejects/cancels the order.
@@ -63,6 +70,8 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REJECTED,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    // Same "shape-legal, unreachable today" note as above.
+    OrderStatus.PARTIALLY_DELIVERED,
   ],
   // Legacy/transitional value — kept for any historical or edge writer.
   [OrderStatus.PAID]: [OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.REFUNDED],
@@ -73,6 +82,11 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   ],
   // Terminal states — no outgoing transitions.
   [OrderStatus.DELIVERED]: [],
+  // Terminal for the same reason DELIVERED is: the order's lines have all
+  // reached an outcome, some good and some not. What a buyer is owed for the
+  // failed half is a Refund-domain question, and that domain is deferred —
+  // when it lands it will add the outgoing edge (REFUNDED) here.
+  [OrderStatus.PARTIALLY_DELIVERED]: [],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.REJECTED]: [],
   [OrderStatus.REFUNDED]: [],

@@ -18,7 +18,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
-import { DeliveryType, OrderCurrency } from "@app/core/enums";
+import { OrderCurrency } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
@@ -49,7 +49,8 @@ import {
   CART_COOKIE_VERSION,
   type GuestCartLine,
 } from "../shop";
-import { loadCartLines, loadGuestCartItems } from "./cart";
+import { loadCartLines, loadGuestCartItems, cartCompositionLineOf } from "./cart";
+import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited } from "../rateLimit";
@@ -463,24 +464,21 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Cart guard (Task 6 design decision): a cart containing any manual /
-    // manual_with_info line may contain EXACTLY that one line (any quantity)
-    // — no other lines, same-SKU or different-SKU, auto or otherwise. This is
-    // stricter than "auto vs manual" alone because Order.customerData assumes
-    // one denomination's field spec applies to the whole order (the bot only
-    // ever orders one denomination at a time) — the storefront's cart can
-    // hold multiple products, which would break that assumption if two
-    // different manual_with_info SKUs landed in the same order. Re-adding the
-    // SAME denomination that's already the cart's one line (qty increment,
-    // handled below by addToCart's upsert / the guest merge branch) is not a
-    // new line, so it's exempt.
-    if (existingLines.length > 0) {
-      const isSameSingleLine = existingLines.length === 1 && existingLines[0]!.denomination_id === denom.id;
-      const mixedDelivery =
-        denom.deliveryType !== DeliveryType.AUTO || existingLines.some((l) => l.delivery_type !== DeliveryType.AUTO);
-      if (mixedDelivery && !isSameSingleLine) {
-        return reply.code(400).send({ error: "error.cart_mixed_delivery" });
-      }
+    // Cart composition guard. Was an inline `mixedDelivery` local; it is now
+    // the named `cart_kind` rule in @app/core/cartComposition, shared with the
+    // checkout re-assertion (routes/checkout.ts) and the pay-from-balance rail
+    // (packages/db/src/crud/wallet_checkout.ts) so the three can no longer
+    // drift. The rule it enforces is UNCHANGED — Trustance Phase 1 Task 3
+    // named and centralized it, deliberately without loosening it. See that
+    // module's doc comment for the full statement, including why re-adding the
+    // cart's sole line is exempt and why a top-up is identified by
+    // autoDeliverySource rather than deliveryType.
+    const additionError = cartAdditionError(
+      existingLines.map(cartCompositionLineOf),
+      { denominationId: denom.id, deliveryType: denom.deliveryType, autoDeliverySource: denom.autoDeliverySource },
+    );
+    if (additionError) {
+      return reply.code(400).send({ error: additionError });
     }
 
     if (customer) {

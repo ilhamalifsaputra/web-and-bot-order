@@ -557,6 +557,105 @@ describe("POST /api/v1/cart — Digiflazz single-unit guard", () => {
   });
 });
 
+// Trustance Phase 1 Task 3 — `cart_kind` at the route boundary.
+//
+// The suite above ("cart guard (single-SKU-per-non-auto-cart)") is the
+// characterization half: it passes UNCHANGED, which is the evidence that
+// naming the rule did not alter it. This suite covers the two things naming it
+// added.
+describe("POST /api/v1/cart — cart_kind (TOPUP vs PREMIUM)", () => {
+  let topupDenomId: number;
+  let autoTypedTopupId: number;
+
+  beforeAll(async () => {
+    // A top-up EXACTLY as packages/db/src/crud/digiflazz.ts creates one.
+    const { members } = await seedProduct(categoryId, "Kind Topup Game", [{ name: "86 Diamonds", price: "20000" }]);
+    topupDenomId = members[0]!.id;
+    await updateDenomination(prisma, topupDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "kind86",
+    });
+
+    // A shape the catalog sync NEVER produces: Digiflazz-routed but hand-edited
+    // to auto delivery. This is the only input that reaches the kind rule,
+    // because every real top-up is non-AUTO and the pre-existing homogeneity
+    // rule catches those first.
+    const { members: members2 } = await seedProduct(categoryId, "Kind Misconfigured Game", [
+      { name: "Misconfigured", price: "21000" },
+    ]);
+    autoTypedTopupId = members2[0]!.id;
+    await updateDenomination(prisma, autoTypedTopupId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.AUTO,
+      supplierSku: "kindauto",
+    });
+  });
+
+  const cookieOf = (res: { headers: Record<string, unknown> }): string =>
+    (Array.isArray(res.headers["set-cookie"]) ? res.headers["set-cookie"] : [String(res.headers["set-cookie"])])
+      .map((c) => String(c).split(";")[0])
+      .join("; ");
+
+  // THE no-op proof at the route level: a real top-up mixing with a premium
+  // line is still refused under the OLD error key. A buyer sees exactly the
+  // message they saw before this task.
+  it("a real top-up joining a premium cart is still rejected as error.cart_mixed_delivery", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: topupDenomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  it("a premium line joining a real top-up cart is still rejected as error.cart_mixed_delivery", async () => {
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: topupDenomId, qty: 1 },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: denomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  // The single intentional behavior delta in Task 3. Before it, this add
+  // SUCCEEDED — and the resulting order would have been settled by
+  // dispatchPendingDigiflazzOrders, which places one supplier top-up and then
+  // marks the WHOLE order DELIVERED, so the buyer paid for two lines and
+  // received one.
+  it("an admin-misconfigured AUTO-typed top-up is refused with error.cart_kind_conflict", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: autoTypedTopupId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_kind_conflict" });
+  });
+
+  it("an AUTO-typed top-up is still allowed to be the cart's only line", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: autoTypedTopupId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: autoTypedTopupId, qty: 1 });
+  });
+});
+
 describe("POST /api/v1/checkout", () => {
   // Guest checkout (Task 4) replaced the blanket 401 with a validated guest
   // branch: no session is required, but a contact email is, and it is checked

@@ -12,6 +12,7 @@ describe("orderStatus", () => {
       "PAID",
       "PROCESSING",
       "DELIVERED",
+      "PARTIALLY_DELIVERED",
       "CANCELLED",
       "REJECTED",
       "REFUNDED",

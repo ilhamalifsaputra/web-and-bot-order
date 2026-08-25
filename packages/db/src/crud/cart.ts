@@ -3,6 +3,29 @@
  * capped at 99 per line.
  */
 import type { Db } from "./_types";
+import type { CartCompositionLine } from "@app/core/cartComposition";
+
+/**
+ * Adapt a `getCart` row to the shape the shared cart composition rule
+ * (@app/core/cartComposition) reads. Used by both money-moving choke points
+ * that re-assert cart composition — the gateway rail
+ * (apps/storefront/src/routes/checkout.ts) and the pay-from-balance rail
+ * (./wallet_checkout.ts) — so those two can no longer disagree about which
+ * denomination fields the rule is applied to.
+ *
+ * Note `row.product` is the Denomination (the sellable SKU), not the mid-tier
+ * Product; the relation kept its pre-rename name (see getCart's include).
+ */
+export function cartCompositionLineOfCartItem(row: {
+  productId: number;
+  product: { deliveryType: string; autoDeliverySource: string | null };
+}): CartCompositionLine {
+  return {
+    denominationId: row.productId,
+    deliveryType: row.product.deliveryType,
+    autoDeliverySource: row.product.autoDeliverySource,
+  };
+}
 
 export function getCart(db: Db, userId: number) {
   return db.cartItem.findMany({

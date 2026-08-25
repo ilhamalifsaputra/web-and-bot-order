@@ -19,6 +19,7 @@ import {
   logAdminAction,
   enqueueRestockBroadcast,
   updateDenomination,
+  revealStockCredentials,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
@@ -37,6 +38,16 @@ function csvField(value: string): string {
 function csvRow(fields: string[]): string {
   return fields.map(csvField).join(",") + "\r\n";
 }
+
+/** Constant placeholder shown for every credential in the list/detail
+ * payload — StockItem.credentials is encrypted at rest (Task 2) and this
+ * route never decrypts a whole page of rows just to display them. A real
+ * value is only ever returned by the explicit, audited
+ * POST /api/stock/item/:stockId/reveal below. Deliberately NOT derived from
+ * the stored value's length or a decrypted prefix — either would leak
+ * partial plaintext (or its length) to a page load nobody asked to reveal
+ * anything on. */
+const MASKED_CREDENTIAL = "••••••••";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
  * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
@@ -112,7 +123,9 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       id: i.id,
       status: i.status,
       note: i.note,
-      credentials: i.credentials,
+      // Masked by default — see MASKED_CREDENTIAL's own comment. The real
+      // value is fetched per-row, on demand, via the reveal route below.
+      credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
     return reply.send({ product, items: itemsWithDisplay, available, waiting });
@@ -274,6 +287,30 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       details: `Updated stock item note to: "${note.slice(0, 200)}".`, // never the credentials
     });
     return reply.send({ ok: true });
+  });
+
+  // Explicit, audited reveal of ONE stock item's real credential — the only
+  // route that ever returns a decrypted value from this file. csrfProtect
+  // (not currentAdmin) even though it's read-only in effect: revealing a
+  // secret is a privileged action same as the mutations above, and gating it
+  // on the CSRF token keeps it out of reach of a bare cross-site GET/image
+  // tag. Every call is audited as CREDENTIAL_REVEALED — including repeat
+  // reveals of the same item — so the trail shows every time an admin
+  // actually looked, not just the first.
+  app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const item = await getStockItem(prisma, stockId);
+    if (!item) return reply.code(404).send({ error: "Stock item not found." });
+
+    const credentials = await revealStockCredentials(prisma, stockId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "CREDENTIAL_REVEALED",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves
+    });
+    return reply.send({ ok: true, credentials });
   });
 
   // Download remaining (AVAILABLE) credentials as a plain-text file, one login

@@ -14,6 +14,7 @@ import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
   prisma,
   listPendingVerifications,
@@ -475,7 +476,17 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   };
   const lines = items.map((it) => {
     const icon = statusIcons[it.status] ?? "⚪";
-    const creds = it.credentials ?? "";
+    // listStockItemsForProduct returns the raw encrypted envelope (it's also
+    // used for the web-admin masked list) — decrypt just for this preview.
+    // Never let a decrypt failure (e.g. unconfigured key) crash the whole
+    // admin stock browser or leak the raw ciphertext envelope as if it were
+    // the account itself.
+    let creds: string;
+    try {
+      creds = decryptCredentials(it.credentials ?? "");
+    } catch {
+      creds = "[unavailable]";
+    }
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");
     return `${icon} #${it.id} — ${preview}`;
   });

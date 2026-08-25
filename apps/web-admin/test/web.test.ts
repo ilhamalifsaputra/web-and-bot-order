@@ -81,6 +81,7 @@ import {
   resetAccountFailures,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
@@ -3436,8 +3437,12 @@ describe("stock", () => {
     expect(bodies.reduce((sum, b) => sum + b.skipped, 0)).toBe(1);
 
     expect(await countAvailableStock(prisma, seed.productId)).toBe(before + 1);
-    const rows = await prisma.stockItem.findMany({ where: { productId: seed.productId, credentials: dupCred } });
-    expect(rows.length).toBe(1);
+    // Credentials are encrypted at rest (fresh IV per row) — decrypt to find
+    // the one row that actually holds dupCred instead of matching the column
+    // literally.
+    const allRows = await prisma.stockItem.findMany({ where: { productId: seed.productId } });
+    const matching = allRows.filter((r) => decryptCredentials(r.credentials) === dupCred);
+    expect(matching.length).toBe(1);
   });
 
   it("restock broadcast message names both the product type and the denomination", async () => {
@@ -3479,10 +3484,11 @@ describe("stock", () => {
     expect(res.headers.location).toBe("/login");
   });
 
-  // The Stock Items table shows the account credential (masked, with a reveal
-  // toggle), so the detail payload must carry it — but nothing more of the raw
-  // row than the page actually renders.
-  it("detail returns each item's credential and no order linkage", async () => {
+  // The Stock Items table shows the account credential masked by default,
+  // with an explicit per-row reveal (Task 2: StockItem.credentials is
+  // encrypted at rest) — the list payload must never carry a decrypted
+  // value, and nothing more of the raw row than the page actually renders.
+  it("detail returns each item's credential MASKED (never the decrypted value) and no order linkage", async () => {
     const res = await get(`/api/stock/${seed.productId}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { items: Record<string, unknown>[] };
@@ -3491,8 +3497,57 @@ describe("stock", () => {
     expect(Object.keys(item).sort()).toEqual(
       ["createdAtDisplay", "credentials", "id", "note", "status"],
     );
-    expect(typeof item.credentials).toBe("string");
+    expect(item.credentials).toBe("••••••••");
     expect(item).not.toHaveProperty("orderId");
+  });
+
+  describe("POST /api/stock/item/:stockId/reveal", () => {
+    it("returns the decrypted credential and audits CREDENTIAL_REVEALED", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const expected = decryptCredentials(item.credentials);
+
+      const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { ok: boolean; credentials: string };
+      expect(body.credentials).toBe(expected);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "CREDENTIAL_REVEALED", targetId: item.id },
+        orderBy: { id: "desc" },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit!.adminId).toBe(seed.adminId);
+      expect(audit!.details ?? "").not.toContain(expected); // never the credential itself
+    });
+
+    it("audits every reveal, not just the first", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+
+      const audits = await prisma.auditLog.findMany({
+        where: { action: "CREDENTIAL_REVEALED", targetId: item.id },
+      });
+      expect(audits.length).toBe(2);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await post(`/api/stock/item/999999/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await post(`/api/stock/item/${item.id}/reveal`, null, { csrf_token: "x" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: "bad-token" });
+      expect(res.statusCode).toBe(403);
+    });
   });
 });
 
@@ -3651,7 +3706,10 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers["content-type"]).toContain("text/plain");
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.headers["content-disposition"]).toContain(".txt");
-      for (const it of avail) expect(res.body).toContain(it.credentials);
+      // Credentials are encrypted at rest — the download body is the
+      // decrypted plaintext, so compare against the decrypted DB value, not
+      // the raw (encrypted) column.
+      for (const it of avail) expect(res.body).toContain(decryptCredentials(it.credentials));
 
       const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
       expect(audit.length).toBeGreaterThanOrEqual(1);

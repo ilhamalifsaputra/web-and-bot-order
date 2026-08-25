@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
-import { StockProductPage, maskCredential } from "./StockProductPage";
+import { StockProductPage } from "./StockProductPage";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -30,7 +30,7 @@ const STOCK_PRODUCT_DATA = {
     product: { id: 1, name: "CapCut Pro", category: { name: "Apps" } },
   },
   items: [
-    { id: 101, status: "AVAILABLE", note: null, credentials: "buyer@mail.com:Pass123", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
+    { id: 101, status: "AVAILABLE", note: null, credentials: "••••••••", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
   ],
   available: 1,
   waiting: 0,
@@ -303,76 +303,98 @@ describe("StockProductPage", () => {
     expect(await screen.findByText("network")).toBeInTheDocument();
   });
 
-  it("masks the account credential until the row is revealed", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+  it("masks the account credential until the row is revealed, via an audited server round-trip", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
-    // Masked by default: the prefix shows, the full credential does not.
-    expect(screen.getByText("buyer@mail••••••••")).toBeInTheDocument();
+    // Masked by default — the list payload never carries the real value.
+    expect(screen.getByText("••••••••")).toBeInTheDocument();
     expect(screen.queryByText("buyer@mail.com:Pass123")).not.toBeInTheDocument();
 
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, credentials: "buyer@mail.com:Pass123" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Show account for stock item 101" }));
-    expect(screen.getByText("buyer@mail.com:Pass123")).toBeInTheDocument();
+    expect(await screen.findByText("buyer@mail.com:Pass123")).toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/stock/item/101/reveal",
+      expect.objectContaining({ method: "POST" }),
+    );
 
-    // The same button now hides it again.
+    // The same button now hides it again — no extra fetch needed to hide.
+    const revealCallCount = fetchSpy.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Hide account for stock item 101" }));
     expect(screen.queryByText("buyer@mail.com:Pass123")).not.toBeInTheDocument();
-    expect(screen.getByText("buyer@mail••••••••")).toBeInTheDocument();
+    expect(screen.getByText("••••••••")).toBeInTheDocument();
+    expect(fetchSpy.mock.calls.length).toBe(revealCallCount);
   });
 
-  it("copies the full credential even while it is masked", async () => {
+  it("copies the full credential, revealing it via the server first", async () => {
     // See VouchersPage.test.tsx — user-event installs the clipboard stub, so we
     // spy on its writeText rather than pre-mocking navigator.clipboard.
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const writeText = vi.spyOn(navigator.clipboard, "writeText");
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, credentials: "buyer@mail.com:Pass123" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     const copyButton = screen.getByRole("button", { name: "Copy account for stock item 101" });
     await user.click(copyButton);
 
-    expect(writeText).toHaveBeenCalledWith("buyer@mail.com:Pass123");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/stock/item/101/reveal",
+      expect.objectContaining({ method: "POST" }),
+    );
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("buyer@mail.com:Pass123"));
     await waitFor(() => expect(copyButton.querySelector("svg.lucide-check")).toBeInTheDocument());
   });
 
-  it("clears the revealed account when switching tabs", async () => {
+  it("clears the revealed account when switching tabs, re-revealing (and re-auditing) on return", async () => {
     const mixedData = {
       ...STOCK_PRODUCT_DATA,
       items: [
-        { id: 101, status: "AVAILABLE", note: null, credentials: "a@mail.com:Pw1", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
-        { id: 102, status: "SOLD", note: null, credentials: "b@mail.com:Pw2", createdAt: "2026-01-02T00:00:00.000Z", createdAtDisplay: "2026-01-02" },
+        { id: 101, status: "AVAILABLE", note: null, credentials: "••••••••", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
+        { id: 102, status: "SOLD", note: null, credentials: "••••••••", createdAt: "2026-01-02T00:00:00.000Z", createdAtDisplay: "2026-01-02" },
       ],
     };
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(mixedData), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByRole("tab", { name: "Available (1)" })).toBeInTheDocument());
 
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, credentials: "a@mail.com:Pw1" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Show account for stock item 101" }));
-    expect(screen.getByText("a@mail.com:Pw1")).toBeInTheDocument();
+    expect(await screen.findByText("a@mail.com:Pw1")).toBeInTheDocument();
 
     // Radix Tabs selects on mousedown, not click.
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold (1)" }));
-    expect(await screen.findByText("b@mail.com••••")).toBeInTheDocument();
+    expect(await screen.findByText("••••••••")).toBeInTheDocument();
+    expect(screen.queryByText("a@mail.com:Pw1")).not.toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByRole("tab", { name: "Available (1)" }));
-    expect(await screen.findByText("a@mail.com••••")).toBeInTheDocument();
-    expect(screen.queryByText("a@mail.com:Pw1")).not.toBeInTheDocument();
-  });
-
-  describe("maskCredential", () => {
-    it("keeps a short prefix and caps the dot run", () => {
-      expect(maskCredential("buyer@mail.com:Pass123")).toBe("buyer@mail••••••••");
-      expect(maskCredential("a@mail.com:Pw1")).toBe("a@mail.com••••");
-      expect(maskCredential("short")).toBe("short");
-      expect(maskCredential("")).toBe("—");
-    });
+    expect(await screen.findByText("••••••••")).toBeInTheDocument();
   });
 });

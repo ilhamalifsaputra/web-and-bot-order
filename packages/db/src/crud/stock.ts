@@ -1,8 +1,17 @@
 /**
  * Stock domain — port of the "Stock" section of Python crud.py, including the
  * reserved-stock allocation that prevents two buyers grabbing the same row.
+ *
+ * `StockItem.credentials` is encrypted at rest (AES-256-GCM, Task 2 — see
+ * @app/core/credentialCrypto): every write here encrypts, every read that
+ * hands a plaintext credential back to a caller decrypts. Reads that only
+ * need to KNOW a row exists (getStockItem, listStockItemsForProduct) do NOT
+ * decrypt — those feed the admin masked-by-default list and the bot's admin
+ * stock browser, neither of which should carry plaintext through unrelated
+ * code paths. `revealStockCredentials` is the sole explicit-reveal read.
  */
 import { StockStatus } from "@app/core/enums";
+import { encryptCredentials, decryptCredentials } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 
 /**
@@ -13,6 +22,14 @@ import type { Db } from "./_types";
  * different buyers, delivering the same digital account twice (Stock-1 fix,
  * security audit 2026-06-23). `skipped` covers both kinds of duplicates so
  * the caller can report one honest total to the admin.
+ *
+ * Dedup can no longer filter existing rows in SQL (`credentials: { in: ... }`):
+ * each encryption uses a fresh random IV, so the same plaintext never
+ * produces the same stored ciphertext twice, and there is nothing left in the
+ * column for a plaintext `IN (...)` match to find. Instead this fetches every
+ * existing AVAILABLE/RESERVED/SOLD row for the product and decrypts each to
+ * compare — O(existing rows) per call, acceptable for what's documented
+ * (Task 2 brief) as a low-volume table.
  */
 export async function bulkAddStock(
   db: Db,
@@ -22,18 +39,14 @@ export async function bulkAddStock(
   if (credentials.length === 0) return { added: 0, skipped: 0 };
 
   const deduped = [...new Set(credentials)];
-  const existing = new Set(
-    (
-      await db.stockItem.findMany({
-        where: {
-          productId,
-          credentials: { in: deduped },
-          status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
-        },
-        select: { credentials: true },
-      })
-    ).map((r) => r.credentials),
-  );
+  const existingRows = await db.stockItem.findMany({
+    where: {
+      productId,
+      status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
+    },
+    select: { credentials: true },
+  });
+  const existing = new Set(existingRows.map((r) => decryptCredentials(r.credentials)));
   const fresh = deduped.filter((c) => !existing.has(c));
 
   if (fresh.length === 0) return { added: 0, skipped: credentials.length };
@@ -41,7 +54,7 @@ export async function bulkAddStock(
   const res = await db.stockItem.createMany({
     data: fresh.map((c) => ({
       productId,
-      credentials: c,
+      credentials: encryptCredentials(c),
       status: StockStatus.AVAILABLE,
     })),
   });
@@ -110,7 +123,20 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
     orderBy: { id: "asc" },
     select: { credentials: true },
   });
-  return rows.map((r) => r.credentials);
+  return rows.map((r) => decryptCredentials(r.credentials));
+}
+
+/**
+ * The single explicit-reveal read: decrypts ONE stock item's credential for
+ * an admin who just asked to see it. Callers MUST audit this as
+ * `CREDENTIAL_REVEALED` (see apps/web-admin/src/routes/api/stock.ts) — this
+ * function itself does not write the audit row, since it has no admin id to
+ * attribute it to. Returns null if the id doesn't exist.
+ */
+export async function revealStockCredentials(db: Db, stockId: number): Promise<string | null> {
+  const item = await db.stockItem.findUnique({ where: { id: stockId }, select: { credentials: true } });
+  if (!item) return null;
+  return decryptCredentials(item.credentials);
 }
 
 export function listStockItemsForProduct(db: Db, productId: number, limit = 30) {

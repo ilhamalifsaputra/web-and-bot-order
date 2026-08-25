@@ -28,6 +28,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -354,8 +355,39 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
   throw new Error("Could not generate a unique order code");
 }
 
-export function getOrder(db: Db, orderId: number) {
-  return db.order.findUnique({ where: { id: orderId }, include: fullInclude });
+/**
+ * Decrypts `item.stockItem.credentials` in place on an order fetched with
+ * `fullInclude` — `StockItem.credentials` is encrypted at rest (Task 2, see
+ * @app/core/credentialCrypto). This is the single choke point: every caller
+ * of getOrder/getOrderByCodeFull/listUserDeliveredOrders (buyer-facing order
+ * detail in the bot and storefront, the account-file DM builders, the
+ * web-admin order detail page) reads `stockItem.credentials` expecting
+ * plaintext, and all of them ultimately source the row from one of these
+ * three functions. Returns `order` unchanged if it's null (not-found) or has
+ * no items with stock attached — cheap no-op for every non-manual-account
+ * order kind.
+ */
+function withDecryptedStockCredentials<T extends { items: Array<{ stockItem: { credentials: string } | null }> }>(
+  order: T,
+): T {
+  // Cast at the end, not the object literal itself: TypeScript can't verify
+  // a spread literal satisfies an unconstrained generic T even when it's
+  // structurally identical apart from one string field's value — the shape
+  // (item/stockItem fields, array length) is unchanged, only
+  // stockItem.credentials's runtime value is.
+  return {
+    ...order,
+    items: order.items.map((item) =>
+      item.stockItem
+        ? { ...item, stockItem: { ...item.stockItem, credentials: decryptCredentials(item.stockItem.credentials) } }
+        : item,
+    ),
+  } as T;
+}
+
+export async function getOrder(db: Db, orderId: number) {
+  const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
+  return order ? withDecryptedStockCredentials(order) : order;
 }
 
 export function getOrderByCode(db: Db, orderCode: string) {
@@ -367,8 +399,9 @@ export function getOrderByCode(db: Db, orderCode: string) {
 
 /** By code with the full include (items+stockItem+product, user, voucher) —
  * storefront order detail needs stockItem.credentials for DELIVERED orders. */
-export function getOrderByCodeFull(db: Db, orderCode: string) {
-  return db.order.findUnique({ where: { orderCode }, include: fullInclude });
+export async function getOrderByCodeFull(db: Db, orderCode: string) {
+  const order = await db.order.findUnique({ where: { orderCode }, include: fullInclude });
+  return order ? withDecryptedStockCredentials(order) : order;
 }
 
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
@@ -902,13 +935,14 @@ export function countUserPendingOrders(db: Db, userId: number) {
   });
 }
 
-export function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
-  return db.order.findMany({
+export async function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
+  const orders = await db.order.findMany({
     where: { userId, status: OrderStatus.DELIVERED },
     orderBy: { createdAt: "desc" },
     take: limit,
     include: { items: { include: { product: true, stockItem: true } } },
   });
+  return orders.map(withDecryptedStockCredentials);
 }
 
 export async function attachPaymentProof(
@@ -1346,7 +1380,14 @@ export async function approveOrder(
       where: { id: stock.id },
       data: { status: StockStatus.SOLD, soldAt: now },
     });
-    credentials.push(stock.credentials);
+    // `stock` may already be plaintext here (when it came from `order.items`,
+    // which getOrder above already decrypted) or still be the raw encrypted
+    // envelope (the `replacement` branch just above, fetched straight off
+    // Prisma via allocateOneAvailableStock, bypassing getOrder). decryptCredentials
+    // is safe either way: a plaintext account string never happens to parse
+    // as our envelope JSON, so decrypting an already-plaintext value is a
+    // documented no-op (see its own doc comment).
+    credentials.push(decryptCredentials(stock.credentials));
   }
 
   await db.order.update({

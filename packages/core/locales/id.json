@@ -225,6 +225,8 @@
   "error.refund_item_order_mismatch": "Item pesanan ini bukan bagian dari pesanan pada refund tersebut.",
   "error.refund_exceeds_item_subtotal": "Refund ini akan melebihi subtotal item pesanan ({subtotal} {currency}) — {alreadyRefunded} sudah direfund, {attempted} yang dicoba.",
   "error.illegal_refund_status_transition": "Status refund ini tidak dapat berubah dari {from} ke {to}.",
+  "error.refund_amount_invalid": "Jumlah refund harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
+  "error.refund_item_on_terminal_refund": "Tidak bisa menambahkan item refund ke refund yang statusnya sudah {status}.",
   "error.review_already_exists": "Pesanan ini sudah di-review.",
   "error.review_requires_delivered": "Hanya pesanan yang sudah delivered yang dapat di-review.",
   "error.text_required": "Kirim pesan teks.",

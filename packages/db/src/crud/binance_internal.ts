@@ -900,11 +900,17 @@ export async function deliverUnderpaidOrder(
  * subtotal. Attaching RefundItem rows here would misrepresent this as a
  * per-item partial refund, which it structurally isn't. A whole-order Refund
  * with no item children is the correct shape for this call site.
+ *
+ * The Refund row (and the wallet credit above it) are both gated on
+ * `received.greaterThan(0)`: an UNDERPAID order with a zero received amount
+ * (e.g. the shortfall ledger row itself recorded 0) must not leave a
+ * misleading COMPLETED Refund of 0.00 in refund history implying a payout
+ * that never happened — `refundId` is `null` in that case.
  */
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number }> {
+): Promise<{ refunded: Decimal; refundId: number | null }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
@@ -927,16 +933,22 @@ export async function refundUnderpaidOrder(
         adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
       },
     });
-    const refund = await tx.refund.create({
-      data: {
-        orderId: order.id,
-        amount: received,
-        currency: order.currency,
-        reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
-        status: RefundStatus.COMPLETED,
-        processedAt: new Date(),
-      },
-    });
+    // Only write a Refund record when money actually moved (`received > 0`,
+    // guarding the wallet credit above too) — an UNDERPAID order with a zero
+    // received amount would otherwise leave a misleading COMPLETED Refund of
+    // 0.00 in refund history, implying a payout that never happened.
+    const refund = received.greaterThan(0)
+      ? await tx.refund.create({
+          data: {
+            orderId: order.id,
+            amount: received,
+            currency: order.currency,
+            reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+            status: RefundStatus.COMPLETED,
+            processedAt: new Date(),
+          },
+        })
+      : null;
     await transitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.UNDERPAID,
@@ -944,7 +956,7 @@ export async function refundUnderpaidOrder(
       meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
     logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
-    return { refunded: received, refundId: refund.id };
+    return { refunded: received, refundId: refund?.id ?? null };
   });
 }
 

@@ -62,15 +62,47 @@ const REFUND_STATUSES_THAT_DID_NOT_CONSUME_BUDGET: readonly string[] = [
 ];
 
 /**
+ * Parse+validate a `Decimal.Value` refund amount: must be a well-formed,
+ * finite, strictly-positive number. Converts a raw `[DecimalError] Invalid
+ * argument` (malformed string) into the same clean `ValidationError` as the
+ * range checks, so no raw Decimal exception ever escapes `createRefund`/
+ * `createRefundItem` — a future route wrapping either would otherwise return
+ * an unhandled 500 instead of a clean 422. Same idiom as
+ * `parseMinAmount`/`_minAmount.ts` and the rate check in `pricing.ts`'s
+ * `refreshUsdIdrRate`, except here an invalid amount is a hard reject
+ * (`throw`), not a silent `null` — this is money actually being recorded on
+ * a Refund/RefundItem row, not a free-text display-only setting.
+ */
+function parseRefundAmount(raw: Decimal.Value): Decimal {
+  let amount: Decimal;
+  try {
+    amount = new Decimal(raw);
+  } catch {
+    throw new ValidationError("error.refund_amount_invalid");
+  }
+  if (!amount.isFinite() || !amount.greaterThan(0)) {
+    throw new ValidationError("error.refund_amount_invalid");
+  }
+  return amount;
+}
+
+/**
  * Create a new Refund request record. Validates that `currency` matches the
  * referenced Order's own currency (a refund must stay pinned to the currency
  * the original payment was made in — see Refund.currency's schema doc
  * comment) and snapshots it onto the row, same as every other order-adjacent
- * financial snapshot in this schema.
+ * financial snapshot in this schema. `amount` is validated finite/positive by
+ * `parseRefundAmount` (a zero/negative/malformed amount would create a
+ * nonsense financial record).
  *
  * This does NOT move money — it only records that a refund is requested/
  * decided, starting in PENDING (the schema default). See this file's module
  * comment for the money-movement scope boundary.
+ *
+ * Audits the creation via `logAdminAction` (`refund_created`), same pattern
+ * `transitionRefundStatus` uses for status moves — every Refund-domain state
+ * change carries the acting admin's id (CLAUDE.md: "Audit every state
+ * change").
  */
 export async function createRefund(
   db: Db,
@@ -80,9 +112,13 @@ export async function createRefund(
     currency: string;
     reason?: string | null;
     externalReference?: string | null;
+    adminId: number;
   },
 ): Promise<Refund> {
-  const order = await db.order.findUnique({ where: { id: args.orderId }, select: { id: true, currency: true } });
+  const order = await db.order.findUnique({
+    where: { id: args.orderId },
+    select: { id: true, currency: true, orderCode: true },
+  });
   if (!order) throw new ValidationError("error.order_not_found");
   if (args.currency !== order.currency) {
     throw new ValidationError("error.refund_currency_mismatch", {
@@ -90,16 +126,27 @@ export async function createRefund(
       orderCurrency: order.currency,
     });
   }
+  const amount = parseRefundAmount(args.amount);
 
-  return db.refund.create({
+  const refund = await db.refund.create({
     data: {
       orderId: args.orderId,
-      amount: new Decimal(args.amount),
+      amount,
       currency: args.currency,
       reason: args.reason ?? null,
       externalReference: args.externalReference ?? null,
     },
   });
+
+  await logAdminAction(db, {
+    adminId: args.adminId,
+    action: "refund_created",
+    targetType: "refund",
+    targetId: refund.id,
+    details: `Created a ${refund.status} refund of ${amount.toString()} ${refund.currency} for order ${order.orderCode}.`,
+  });
+
+  return refund;
 }
 
 export interface RefundFilter {
@@ -219,13 +266,37 @@ export async function transitionRefundStatus(
  * conflicting concurrent write is serialized (or, in the rare interactive-
  * transaction race, thrown as a busy/snapshot error) rather than silently
  * violating the invariant — it fails closed, never open.
+ *
+ * Rejects attaching a new item to a Refund that is already terminal
+ * (`TERMINAL_REFUND_STATUSES` — COMPLETED, FAILED, or CANCELLED): a COMPLETED
+ * Refund is an already-settled financial record, and retroactively adding a
+ * RefundItem to it would silently change what that settled record claims to
+ * have refunded, with no audit trail for the mutation. A CANCELLED/FAILED
+ * Refund is dead — items belong on a new Refund request, not resurrected onto
+ * one that never (or no longer) applies. `amount` is validated finite/
+ * positive by `parseRefundAmount`, for the same reasons `createRefund`
+ * validates it (see that function's doc comment) — a negative amount here
+ * would additionally corrupt the sum invariant below (shrinking
+ * `alreadyRefunded` and letting a later item silently overrun the subtotal).
+ *
+ * Audits the creation via `logAdminAction` (`refund_item_created`), same
+ * pattern as `createRefund`/`transitionRefundStatus`.
  */
 export async function createRefundItem(
   db: Db,
-  args: { refundId: number; orderItemId: number; amount: Decimal.Value; reason?: string | null },
+  args: {
+    refundId: number;
+    orderItemId: number;
+    amount: Decimal.Value;
+    reason?: string | null;
+    adminId: number;
+  },
 ): Promise<RefundItem> {
   const refund = await db.refund.findUnique({ where: { id: args.refundId } });
   if (!refund) throw new ValidationError("error.refund_not_found");
+  if (TERMINAL_REFUND_STATUSES.includes(refund.status)) {
+    throw new ValidationError("error.refund_item_on_terminal_refund", { status: refund.status });
+  }
 
   const orderItem = await db.orderItem.findUnique({ where: { id: args.orderItemId } });
   if (!orderItem) throw new ValidationError("error.order_item_not_found");
@@ -233,7 +304,7 @@ export async function createRefundItem(
     throw new ValidationError("error.refund_item_order_mismatch");
   }
 
-  const amount = new Decimal(args.amount);
+  const amount = parseRefundAmount(args.amount);
   const subtotal = new Decimal(orderItem.unitPrice).times(orderItem.quantity);
 
   const existing = await db.refundItem.aggregate({
@@ -255,7 +326,7 @@ export async function createRefundItem(
     });
   }
 
-  return db.refundItem.create({
+  const refundItem = await db.refundItem.create({
     data: {
       refundId: args.refundId,
       orderItemId: args.orderItemId,
@@ -264,4 +335,14 @@ export async function createRefundItem(
       reason: args.reason ?? null,
     },
   });
+
+  await logAdminAction(db, {
+    adminId: args.adminId,
+    action: "refund_item_created",
+    targetType: "refund_item",
+    targetId: refundItem.id,
+    details: `Added a refund item of ${amount.toString()} ${refund.currency} for order item ${args.orderItemId} to refund #${args.refundId}.`,
+  });
+
+  return refundItem;
 }

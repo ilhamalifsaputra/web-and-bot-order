@@ -18,7 +18,7 @@
  * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, RefundStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
@@ -877,11 +877,40 @@ export async function deliverUnderpaidOrder(
  * Resolve UNDERPAID by refunding the received USDT to the buyer's wallet and
  * marking the order REFUNDED. Rolls back voucher usage so reconciliation stays
  * clean. (UNDERPAID orders never reserved stock, so there is nothing to release.)
+ *
+ * Also writes a `Refund` record (Trustance Master Architecture Task 8b) so
+ * this concrete, already-idempotency-protected payout path shows up in the
+ * new Refund domain's history instead of being invisible to it. That Refund
+ * row is created directly here with `status: COMPLETED` and `processedAt`
+ * already stamped — NOT via `createRefund`/`transitionRefundStatus`
+ * (packages/db/src/crud/refunds.ts) — because by the time this function
+ * writes it, the wallet credit a few lines above has already happened
+ * atomically in this same transaction. Running it through the general
+ * PENDING->PROCESSING->COMPLETED workflow would fabricate intermediate
+ * states ("awaiting review", "processing") that never actually occurred for
+ * this specific path, and would double the audit trail: the route that
+ * calls this function (apps/web-admin/src/routes/api/payments.ts) already
+ * writes one `logAdminAction` "underpaid_refund" entry for the human-facing
+ * audit log, so this Refund row is pure structured record-keeping, not a
+ * second audit line.
+ *
+ * No `RefundItem` rows: an UNDERPAID order never reserved stock or resolved
+ * any specific OrderItem, and the refunded amount is the shortfall the buyer
+ * actually sent — a quantity with no relationship to any OrderItem's
+ * subtotal. Attaching RefundItem rows here would misrepresent this as a
+ * per-item partial refund, which it structurally isn't. A whole-order Refund
+ * with no item children is the correct shape for this call site.
+ *
+ * The Refund row (and the wallet credit above it) are both gated on
+ * `received.greaterThan(0)`: an UNDERPAID order with a zero received amount
+ * (e.g. the shortfall ledger row itself recorded 0) must not leave a
+ * misleading COMPLETED Refund of 0.00 in refund history implying a payout
+ * that never happened — `refundId` is `null` in that case.
  */
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal }> {
+): Promise<{ refunded: Decimal; refundId: number | null }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
@@ -904,6 +933,22 @@ export async function refundUnderpaidOrder(
         adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
       },
     });
+    // Only write a Refund record when money actually moved (`received > 0`,
+    // guarding the wallet credit above too) — an UNDERPAID order with a zero
+    // received amount would otherwise leave a misleading COMPLETED Refund of
+    // 0.00 in refund history, implying a payout that never happened.
+    const refund = received.greaterThan(0)
+      ? await tx.refund.create({
+          data: {
+            orderId: order.id,
+            amount: received,
+            currency: order.currency,
+            reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+            status: RefundStatus.COMPLETED,
+            processedAt: new Date(),
+          },
+        })
+      : null;
     await transitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.UNDERPAID,
@@ -911,7 +956,7 @@ export async function refundUnderpaidOrder(
       meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
     logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
-    return { refunded: received };
+    return { refunded: received, refundId: refund?.id ?? null };
   });
 }
 

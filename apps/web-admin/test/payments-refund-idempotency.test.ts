@@ -92,6 +92,17 @@ describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
     expect(walletTx).toHaveLength(1);
     const auditRows = await prisma.auditLog.findMany({ where: { action: "underpaid_refund", targetId: order.id } });
     expect(auditRows).toHaveLength(1);
+
+    // Task 8b: refundUnderpaidOrder now also writes a Refund record — exactly
+    // one, already COMPLETED (the wallet credit already happened), never
+    // duplicated by a replayed idempotent request.
+    const refunds = await prisma.refund.findMany({ where: { orderId: order.id } });
+    expect(refunds).toHaveLength(1);
+    const refundRow = refunds[0]!;
+    expect(refundRow.status).toBe("COMPLETED");
+    expect(refundRow.amount.toString()).toBe("1");
+    expect(refundRow.currency).toBe(order.currency);
+    expect(refundRow.processedAt).toBeInstanceOf(Date);
   });
 
   it("replays a stored 422 the same way — a retry doesn't re-attempt a refund the order can no longer accept", async () => {

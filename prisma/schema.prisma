@@ -661,6 +661,7 @@ model Order {
   notificationOutbox NotificationOutbox[]
   voucherRedemptions VoucherRedemption[]
   statusHistory      OrderStatusHistory[]
+  refunds            Refund[]
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -749,14 +750,149 @@ model OrderItem {
   // are the order's financial detail — deleting an Order must never silently
   // erase them. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order     Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
-  product   Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
-  stockItem StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  product     Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  stockItem   StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  refundItems RefundItem[]
 
   @@index([orderId], map: "ix_order_items_order_id")
   @@index([productId], map: "ix_order_items_product_id")
   @@map("order_items")
+}
+
+model Refund {
+  id                Int       @id @default(autoincrement())
+  orderId           Int       @map("order_id")
+  /// Total refund amount for this Refund row, in `currency` below. For a
+  /// partial/per-item refund this should equal the sum of its RefundItem
+  /// rows' amounts. KNOWN OPEN GAP (not enforced anywhere today, schema or
+  /// application layer): nothing currently checks that this Refund.amount
+  /// actually equals the sum of its own RefundItem.amount rows — a future
+  /// plan should close this; do not assume it holds. See RefundItem's doc
+  /// comment for the (separate, already-enforced) cross-refund per-OrderItem
+  /// budget invariant, which is unrelated to this one.
+  amount            Decimal
+  /// Snapshot of the currency the ORIGINAL payment was made in (IDR or
+  /// USDT), copied at Refund-creation time from `Order.currency` — not
+  /// derived by joining back to Order on read. Mirrors this schema's
+  /// existing convention for order-adjacent financial snapshots: e.g.
+  /// `Order.fxRate` freezes the IDR/USDT rate "so later rate edits never
+  /// change what historical orders were charged", and `OrderItem.unitPrice`
+  /// freezes the price paid independent of later catalog price edits. A
+  /// refund must stay pinned to its original payment's currency for the
+  /// same reason — if a future admin edits how currency conversion works,
+  /// every already-decided refund amount must stay exactly what was
+  /// approved.
+  currency          String
+  /// Free-text admin-typed explanation ("dead account, buyer confirmed",
+  /// "goodwill refund - late delivery"), matching this schema's existing
+  /// precedent for "why did this happen" fields on Order
+  /// (`rejectionReason`, `adminNote`) — both free String?, not a
+  /// constrained enum, because refund reasons are as varied as support
+  /// tickets and a fixed value set would just grow an "OTHER" bucket anyway.
+  reason            String?
+  /// PENDING | PROCESSING | COMPLETED | FAILED | CANCELLED. String, not a
+  /// native Prisma enum — matching every other lifecycle-status column in
+  /// this schema (`Order.status`, `OrderItem.status`,
+  /// `Denomination.deliveryType`). The state machine that governs these
+  /// transitions lives in `REFUND_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/refunds.ts), validated by
+  /// `transitionRefundStatus`. Reaching COMPLETED via `transitionRefundStatus`
+  /// is record-keeping only — it does NOT call `adjustWallet` or trigger any
+  /// payout; see that file's module comment. The only payout path wired up
+  /// today is `refundUnderpaidOrder` (packages/db/src/crud/
+  /// binance_internal.ts), and it writes its Refund row directly (bypassing
+  /// `transitionRefundStatus`) at the same time it performs its own wallet
+  /// credit, rather than driving this state machine.
+  status            String    @default("PENDING")
+  /// The refund's OWN external reference at whatever rail actually pays it
+  /// out (e.g. a payment gateway's refund-transaction id, or a manual note
+  /// an admin types when reconciling a bank-transfer refund) — distinct
+  /// from the ORIGINAL payment's reference, which is deliberately NOT
+  /// duplicated here. This repo has no single `Payment` table to point a
+  /// typed `paymentId` FK at (6 different payment rails, tracked
+  /// differently — some directly on `Order` via
+  /// `paymentRef`/`binanceTxid`/`bybitTxid`, others via dedicated
+  /// `Processed*Tx` ledger tables), and every one of those original-payment
+  /// identifiers is already reachable through `orderId` -> `Order`, so a
+  /// second column holding the same reference again would be pure
+  /// duplication with a staleness risk if the Order row it copied from were
+  /// ever corrected. Nullable: not every refund path will have an external
+  /// reference (e.g. a pure wallet-credit refund settled entirely inside
+  /// this DB).
+  externalReference String?   @map("external_reference")
+  /// Set when this Refund reaches a terminal state (COMPLETED, FAILED, or
+  /// CANCELLED) — mirrors `Order.paidAt`/`Order.deliveredAt`'s pattern of a
+  /// nullable timestamp that means "not yet reached this milestone", not
+  /// "when the row was created" (that's `createdAt` below).
+  processedAt       DateTime? @map("processed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  // Restrict, not Cascade (matches WalletTransaction/OrderStatusHistory/
+  // Referral/Review's existing policy for Order-adjacent financial-audit
+  // rows, Infra-5 fix, security audit 2026-06-23): a Refund is itself a
+  // financial-audit record — deleting the Order it refunds must never
+  // silently erase it. No code path hard-deletes an Order today; this is a
+  // schema-level guardrail against ever adding one.
+  order Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  items RefundItem[]
+
+  @@index([orderId], map: "ix_refunds_order_id")
+  @@index([status], map: "ix_refunds_status")
+  @@map("refunds")
+}
+
+/// Per-item breakdown of a Refund, for partial refunds (qty>1 premium items,
+/// or multi-item premium carts) where only some units/lines of an order are
+/// being refunded — e.g. buy 3 Netflix accounts, one turns out dead.
+///
+/// INVARIANT (enforced at the APPLICATION layer, NOT here): the sum of
+/// `amount` across every RefundItem row for a given `orderItemId` must never
+/// exceed that OrderItem's own subtotal (`unitPrice * quantity`, in the same
+/// currency as the original payment). SQLite's CHECK constraints can't
+/// express a cross-row aggregate like "sum of sibling rows", so this schema
+/// only provides the pieces the application-layer check needs — the
+/// `orderItemId` FK to group by, and the `amount` column to sum. The actual
+/// enforcement (reading existing RefundItem rows for that orderItemId before
+/// inserting a new one, excluding rows whose parent Refund is CANCELLED or
+/// FAILED since those never consumed the budget) is `createRefundItem`
+/// (packages/db/src/crud/refunds.ts). Do not assume this invariant holds
+/// just because the schema exists — go read that function if you need to
+/// verify current behavior.
+model RefundItem {
+  id          Int      @id @default(autoincrement())
+  refundId    Int      @map("refund_id")
+  orderItemId Int      @map("order_item_id")
+  amount      Decimal
+  /// Same snapshot-at-creation-time reasoning as `Refund.currency` above —
+  /// copied from the parent Refund's currency (and transitively from
+  /// Order.currency), not derived by joining back on read.
+  currency    String
+  /// Free-text, same precedent as `Refund.reason` — lets a per-item refund
+  /// carry its own explanation distinct from the parent Refund's overall
+  /// reason (e.g. parent reason "partial refund - 1 of 3 dead", this row's
+  /// reason "account banned within 24h, screenshot on ticket #482").
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Restrict, not Cascade, for two independent reasons layered on the same
+  // policy (Infra-5, security audit 2026-06-23):
+  //  - orderItem: never let the OrderItem this refund is FOR be silently
+  //    erased out from under an existing refund record — same guardrail as
+  //    every other Order-adjacent financial-audit row in this schema.
+  //  - refund: RefundItem is itself financial-audit-significant (it's the
+  //    per-line detail of a Refund, same category as Refund itself), and no
+  //    code path deletes a Refund either — so it gets the same conservative
+  //    policy as its parent, not the looser Cascade some non-financial
+  //    detail tables use elsewhere (e.g. TicketMessage -> SupportTicket).
+  refund    Refund    @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([refundId], map: "ix_refund_items_refund_id")
+  @@index([orderItemId], map: "ix_refund_items_order_item_id")
+  @@map("refund_items")
 }
 
 model Voucher {

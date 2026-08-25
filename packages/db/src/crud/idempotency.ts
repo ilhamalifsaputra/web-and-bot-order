@@ -19,6 +19,15 @@
  *
  * No key header ⇒ opt out entirely; every existing caller that never sends
  * one keeps today's exactly-once-per-request behavior unchanged.
+ *
+ * KNOWN FOLLOW-UP: `idempotency_records` has no retention/TTL and grows
+ * unbounded — same as the Processed*Tx ledgers above, which also have no
+ * cleanup job today (checked: `packages/db/src/crud/storageMaintenance.ts`
+ * doesn't touch any of them). A row here is only ever useful for as long as
+ * a client might plausibly retry with the same key (minutes, not months), so
+ * a scheduled `deleteMany({ where: { createdAt: { lt: <cutoff> } } })` would
+ * be a safe, cheap addition later — not built now since no such job exists
+ * for this table's siblings either, and one wasn't requested by this task.
  */
 import { createHash } from "node:crypto";
 import type { Db } from "./_types";

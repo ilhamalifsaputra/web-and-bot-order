@@ -521,6 +521,103 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
+
+    const method = (req.body?.method ?? "").toLowerCase();
+    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+
+    // Idempotency (Task 1): an `Idempotency-Key` header lets a double-tapped
+    // "Pay" button or a network retry replay the exact response from the
+    // first attempt instead of creating a second order or (for a guest) a
+    // second orphan account. `idem` bundles the key with its request hash
+    // into one nullable value so every use below narrows together — no `!`
+    // assertions.
+    //
+    // Deliberately checked BEFORE establishGuestCustomer runs (fix pass 2,
+    // review finding "guest-checkout idempotency doesn't protect the
+    // scenario it's built for"): establishGuestCustomer mints a BRAND-NEW
+    // `User` row every time it's called without an existing session cookie —
+    // which is exactly what happens on a genuine "client never saw the first
+    // response" retry, since that retry also arrives with no cookie. Hashing
+    // on the resulting (fresh, different-every-time) userId would make that
+    // exact retry compute a NEW hash each attempt, defeating replay and
+    // creating a second orphan guest account — the bug this fix closes.
+    // Checking first means a matching replay short-circuits before
+    // establishGuestCustomer is ever called, so no second account is minted
+    // and no order-creating mutation runs twice.
+    //
+    // Hash shape differs by branch: signed-in includes `userId` (stable
+    // across any retry, and stops two different accounts from colliding on
+    // or replaying each other's key); the guest/anonymous branch has no
+    // stable userId yet, so it hashes the request's own content instead
+    // (method/voucherCode/customerData/guestEmail) — accepting that a guest's
+    // Idempotency-Key must be unique per checkout ATTEMPT rather than tied to
+    // an account, since no account exists until the attempt succeeds.
+    //
+    // Trade-off: a replay hit returns the cached body WITHOUT re-running
+    // establishSession, so it carries no Set-Cookie. For a guest whose very
+    // first response (headers included) truly never reached the browser,
+    // that means the replay leaves them without a session cookie even though
+    // the order was created — recoverable via the order code shown in the
+    // replayed body plus POST /api/v1/track (see sendGuestOrderCodeEmail's
+    // doc comment above), which exists for exactly this "lost the cookie"
+    // case. The alternative — minting a fresh guest session on every replay —
+    // was rejected: it would pair the ORIGINAL cached body's csrf_token with
+    // a NEW session's csrf secret, breaking CSRF on the buyer's very next
+    // authenticated call.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? {
+          key: idempotencyKeyHeader,
+          requestHash: hashIdempotentRequest(
+            signedIn
+              ? { userId: signedIn.userId, method, voucherCode, customerData: req.body?.customer_data ?? null }
+              : {
+                  method,
+                  voucherCode,
+                  customerData: req.body?.customer_data ?? null,
+                  guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
+                },
+          ),
+        }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "error.idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    // Sends the reply AND, when an Idempotency-Key was supplied, persists it
+    // first — so a retry that arrives after this returns replays it above
+    // instead of re-running the mutation. Used for every exit below,
+    // including the 400s: a validation failure (e.g. out of stock) is just
+    // as safe and just as worth replaying as a success.
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     // Guest checkout (Task 4): an anonymous buyer is turned into a real
     // `User` + session here, then falls through to the SAME performCheckout /
     // ValidationError / 201 tail as a signed-in buyer below. Everything cheap
@@ -543,59 +640,6 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // session's CSRF token (fix pass 1, review finding I-1: see the
     // "Intentional" comment in establishGuestCustomer for why).
     const isGuest = !signedIn;
-
-    const method = (req.body?.method ?? "").toLowerCase();
-    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
-
-    // Idempotency (Task 1): an `Idempotency-Key` header lets a double-tapped
-    // "Pay" button or a network retry replay the exact response from the
-    // first attempt instead of creating a second order. Opt-in — a request
-    // with no header runs exactly as before. Scoped to this buyer's id (not
-    // just the header value) so two different accounts can never collide on,
-    // or replay, each other's key. Deliberately placed AFTER guest/session
-    // resolution above: it guards the actual order-creating mutation below,
-    // not the (separately rate-limited) guest-account bootstrap.
-    const idempotencyKey = normalizeIdempotencyKey(req.headers["idempotency-key"]);
-    const requestHash = idempotencyKey
-      ? hashIdempotentRequest({ userId: customer.userId, method, voucherCode, customerData: req.body?.customer_data ?? null })
-      : null;
-
-    if (idempotencyKey) {
-      let replay: IdempotentReplay | null;
-      try {
-        replay = await findIdempotentResponse(prisma, {
-          key: idempotencyKey,
-          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
-          requestHash: requestHash!,
-        });
-      } catch (e) {
-        if (e instanceof IdempotencyKeyReuseError) {
-          return reply.code(409).send(withGuestCsrf({ error: "error.idempotency_key_reused" }, isGuest, customer));
-        }
-        throw e;
-      }
-      if (replay) {
-        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
-      }
-    }
-
-    // Sends the reply AND, when an Idempotency-Key was supplied, persists it
-    // first — so a retry that arrives after this returns replays it above
-    // instead of re-running the mutation. Used for every exit below,
-    // including the 400s: a validation failure (e.g. out of stock) is just
-    // as safe and just as worth replaying as a success.
-    const respond = async (statusCode: number, body: unknown) => {
-      if (idempotencyKey) {
-        await saveIdempotentResponse(prisma, {
-          key: idempotencyKey,
-          endpoint: CHECKOUT_IDEMPOTENCY_ENDPOINT,
-          requestHash: requestHash!,
-          statusCode,
-          responseBody: JSON.stringify(body),
-        });
-      }
-      return reply.code(statusCode).send(body);
-    };
 
     // Wallet credit as a payment method — no gateway, settles synchronously.
     // Separate method tokens from the gateway ones below; performCheckout

@@ -148,16 +148,18 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // though the first click already succeeded. An `Idempotency-Key` header
     // lets that retry replay the exact first response instead. Opt-in — a
     // request with no header behaves exactly as before.
-    const idempotencyKey = normalizeIdempotencyKey(req.headers["idempotency-key"]);
-    const requestHash = idempotencyKey ? hashIdempotentRequest({ orderId }) : null;
+    // `idem` bundles the key with its request hash into one nullable value
+    // so every use below narrows together — no `!` assertions needed.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
 
-    if (idempotencyKey) {
+    if (idem) {
       let replay: IdempotentReplay | null;
       try {
         replay = await findIdempotentResponse(prisma, {
-          key: idempotencyKey,
+          key: idem.key,
           endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
-          requestHash: requestHash!,
+          requestHash: idem.requestHash,
         });
       } catch (e) {
         if (e instanceof IdempotencyKeyReuseError) {
@@ -171,11 +173,11 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     }
 
     const respond = async (statusCode: number, body: unknown) => {
-      if (idempotencyKey) {
+      if (idem) {
         await saveIdempotentResponse(prisma, {
-          key: idempotencyKey,
+          key: idem.key,
           endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
-          requestHash: requestHash!,
+          requestHash: idem.requestHash,
           statusCode,
           responseBody: JSON.stringify(body),
         });

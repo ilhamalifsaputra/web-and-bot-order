@@ -933,7 +933,6 @@ describe("/api/v1/auth", () => {
       payload: { method: "qris" },
     });
     expect(res.json().error).not.toBe("error.cart_mixed_delivery");
-    expect(res.json().error).not.toBe("error.cart_kind_conflict");
   });
 
   it("register merges the guest cart under the same composition rule as login", async () => {

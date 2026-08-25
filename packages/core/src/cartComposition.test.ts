@@ -16,7 +16,6 @@ import {
   cartAdditionError,
   cartCompositionError,
   CART_MIXED_DELIVERY,
-  CART_KIND_CONFLICT,
   type CartCompositionLine,
 } from "./cartComposition";
 
@@ -111,13 +110,14 @@ describe("cartAdditionError — today's add-to-cart behavior, unchanged", () => 
   });
 });
 
-describe("cartAdditionError — cart_kind, and why it is unreachable today", () => {
+describe("cartAdditionError — a top-up is governed entirely by the homogeneity rule", () => {
   // THE PROOF this task hangs on. A Digiflazz top-up as the catalog sync
   // actually creates it is deliveryType MANUAL_WITH_INFO, i.e. non-AUTO — so
   // the pre-existing homogeneity rule already forbids it sharing a cart with
-  // anything, and CART_KIND_CONFLICT can never be the reason a real add is
-  // rejected. The error key a buyer sees is byte-identical to today's.
-  it("a real top-up mixing with premium is rejected as error.cart_mixed_delivery, NOT the new kind conflict", () => {
+  // anything. There is nothing left for a separate "one kind per cart" check to
+  // reject, which is why this module does not have one. The error key a buyer
+  // sees is byte-identical to today's.
+  it("a real top-up mixing with premium is rejected as error.cart_mixed_delivery", () => {
     expect(cartAdditionError([auto(1)], topup(2))).toBe(CART_MIXED_DELIVERY);
     expect(cartAdditionError([topup(1)], auto(2))).toBe(CART_MIXED_DELIVERY);
     expect(cartAdditionError([manual(1)], topup(2))).toBe(CART_MIXED_DELIVERY);
@@ -128,28 +128,33 @@ describe("cartAdditionError — cart_kind, and why it is unreachable today", () 
     expect(cartAdditionError([topup(1)], topup(2))).toBe(CART_MIXED_DELIVERY);
   });
 
-  // The ONE input shape that reaches the new branch, and it is not a shape the
-  // system creates: an admin would have to hand-edit a Digiflazz SKU's
-  // deliveryType to AUTO. See cartComposition.ts for why rejecting it is the
-  // right call rather than a regression.
-  it("only an admin-misconfigured AUTO-typed top-up reaches CART_KIND_CONFLICT", () => {
-    const misconfigured: CartCompositionLine = {
+  // The one shape homogeneity does NOT catch: a Digiflazz-sourced SKU an admin
+  // hand-edited to `auto` (e.g. migrated off the supplier rail onto local
+  // stock). A previous revision rejected this as a kind conflict on a premise
+  // that turned out to be false — the Digiflazz poller only ever looks at
+  // PROCESSING orders and an all-AUTO order never reaches PROCESSING. Pinned
+  // as ALLOWED so the check is not reintroduced by reflex; see
+  // cartComposition.ts's doc comment for the full trace.
+  it("an AUTO-typed Digiflazz SKU is allowed to share an all-AUTO cart (no kind gate)", () => {
+    const autoTypedTopup: CartCompositionLine = {
       denominationId: 2,
       deliveryType: DeliveryType.AUTO,
       autoDeliverySource: "digiflazz",
     };
-    expect(cartAdditionError([auto(1)], misconfigured)).toBe(CART_KIND_CONFLICT);
-    expect(cartAdditionError([misconfigured], auto(1))).toBe(CART_KIND_CONFLICT);
+    expect(cartAdditionError([auto(1)], autoTypedTopup)).toBeNull();
+    expect(cartAdditionError([autoTypedTopup], auto(1))).toBeNull();
+    // ...and it is still classified as a TOPUP, for the future plan's benefit.
+    expect(cartKindOf(autoTypedTopup)).toBe(CartKind.TOPUP);
   });
 
-  it("an AUTO-typed top-up is still allowed to be the cart's only line", () => {
-    const misconfigured: CartCompositionLine = {
+  it("an AUTO-typed top-up is also fine as the cart's only line", () => {
+    const autoTypedTopup: CartCompositionLine = {
       denominationId: 2,
       deliveryType: DeliveryType.AUTO,
       autoDeliverySource: "digiflazz",
     };
-    expect(cartAdditionError([], misconfigured)).toBeNull();
-    expect(cartAdditionError([misconfigured], misconfigured)).toBeNull();
+    expect(cartAdditionError([], autoTypedTopup)).toBeNull();
+    expect(cartAdditionError([autoTypedTopup], autoTypedTopup)).toBeNull();
   });
 });
 
@@ -172,19 +177,22 @@ describe("cartCompositionError — the checkout re-assertion, unchanged", () => 
     expect(cartCompositionError([auto(1), topup(2)])).toBe(CART_MIXED_DELIVERY);
   });
 
-  // Same unreachability proof as the add path: for every SKU shape the system
-  // creates, a kind conflict implies a non-AUTO line implies the pre-existing
-  // rule already fired, so the error key at checkout never changes.
-  it("a real mixed-kind cart still reports error.cart_mixed_delivery, not the new kind conflict", () => {
+  // Same proof as the add path: for every SKU shape the system creates, a
+  // mixed-kind cart is already a mixed-delivery cart, so the error key at
+  // checkout never changes.
+  it("a real mixed-kind cart reports error.cart_mixed_delivery", () => {
     expect(cartCompositionError([topup(1), auto(2)])).toBe(CART_MIXED_DELIVERY);
   });
 
-  it("only an all-AUTO mixed-kind cart (admin misconfiguration) reports CART_KIND_CONFLICT", () => {
-    const misconfigured: CartCompositionLine = {
+  // The pay-button counterpart of the add-path case above. This mattered more
+  // than the add path did: rejecting here would have failed an ALREADY BUILT
+  // cart at the pay button, with an error key the buyer had never seen.
+  it("an all-AUTO cart containing an AUTO-typed Digiflazz SKU passes (no kind gate)", () => {
+    const autoTypedTopup: CartCompositionLine = {
       denominationId: 2,
       deliveryType: DeliveryType.AUTO,
       autoDeliverySource: "digiflazz",
     };
-    expect(cartCompositionError([auto(1), misconfigured])).toBe(CART_KIND_CONFLICT);
+    expect(cartCompositionError([auto(1), autoTypedTopup])).toBeNull();
   });
 });

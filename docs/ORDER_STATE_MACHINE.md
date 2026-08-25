@@ -9,7 +9,8 @@ lihat §Invariant).
 
 ```ts
 PENDING_PAYMENT | PAYMENT_DETECTED | CONFIRMING | CONFIRMED | PENDING_VERIFICATION |
-PAID | DELIVERED | CANCELLED | REJECTED | REFUNDED | UNDERPAID | FAILED
+PAID | PROCESSING | DELIVERED | PARTIALLY_DELIVERED | CANCELLED | REJECTED |
+REFUNDED | UNDERPAID | FAILED
 ```
 
 `PAYMENT_DETECTED`/`CONFIRMING`/`CONFIRMED`/`FAILED` HANYA ditulis oleh rail
@@ -32,6 +33,16 @@ stateDiagram-v2
     PENDING_VERIFICATION --> DELIVERED: approveOrder (admin ATAU adminId:0 auto)<br/>klaim atomik updateMany
     PENDING_VERIFICATION --> REJECTED: rejectOrder (admin, manual proof palsu/tidak valid)
 
+    %% --- Jalur hand-fulfilment (SKU manual / manual_with_info) ---
+    PENDING_VERIFICATION --> PROCESSING: settlePaidOrder cabang MANUAL<br/>(dibayar, antre difulfil admin — tanpa stok)
+    PROCESSING --> DELIVERED: fulfillManualOrder (admin ketik kredensial)<br/>klaim atomik updateMany
+    PROCESSING --> REJECTED: rejectOrder
+    PROCESSING --> CANCELLED: creditOrderToBalance (H-2)<br/>(cancelOrder MENOLAK — order sudah dibayar)
+
+    %% --- Belum bisa dicapai (fondasi rencana berikutnya) ---
+    PENDING_VERIFICATION --> PARTIALLY_DELIVERED: recomputeOrderStatus<br/>(BELUM PERNAH TERJADI — lihat catatan)
+    PROCESSING --> PARTIALLY_DELIVERED: recomputeOrderStatus<br/>(BELUM PERNAH TERJADI — lihat catatan)
+
     UNDERPAID --> PENDING_VERIFICATION: deliverUnderpaidOrder (admin pilih "kirim juga")
     UNDERPAID --> REFUNDED: refundUnderpaidOrder (admin pilih "refund ke wallet")
 
@@ -52,10 +63,28 @@ stateDiagram-v2
     FAILED --> REFUNDED: admin resolve manual
 
     DELIVERED --> [*]
+    PARTIALLY_DELIVERED --> [*]
     CANCELLED --> [*]
     REJECTED --> [*]
     REFUNDED --> [*]
     FAILED --> [*]
+
+    note right of PARTIALLY_DELIVERED
+        BELUM ADA order yang bisa mencapai
+        status ini. Ditambahkan Task 3
+        (Trustance Phase 1) sebagai fondasi:
+        recomputeOrderStatus menurunkannya dari
+        himpunan OrderItem.status, dan aturan
+        komposisi keranjang membuat SEMUA order
+        homogen — jadi setiap item satu order
+        selalu berakhir di status yang sama.
+        Rencana berikutnyalah yang melonggarkan
+        pencampuran keranjang sekaligus membawa
+        domain Refund/IN_DOUBT; jangan mulai
+        menulis status ini sebelum itu ada,
+        atau pembeli terjebak dengan order
+        setengah terkirim tanpa jalur ganti rugi.
+    end note
 
     note right of PAID
         Status PAID ADA di enum tapi
@@ -87,7 +116,9 @@ stateDiagram-v2
 | `CONFIRMED` | **Bybit BSC saja.** `confirmations >= requiredConfirmations` — milestone display-only, BUKAN trigger delivery. `confirmedAt` terisi. | RESERVED | Ya → `PENDING_VERIFICATION` atau `FAILED` (hanya dari delivery throw) |
 | `PENDING_VERIFICATION` | Pembayaran terdeteksi oleh gateway auto-confirm — status **transien**, hampir selalu langsung diikuti `approveOrder` dalam transaksi yang sama. | RESERVED | Ya → `DELIVERED` atau `REJECTED` |
 | `UNDERPAID` | (Hanya Binance Internal) Note transfer cocok tapi nominal kurang dari total. Menunggu keputusan admin. | RESERVED (tidak pernah dilepas sampai resolve) | Ya → `PENDING_VERIFICATION` atau `REFUNDED` |
+| `PROCESSING` | Pembayaran dikonfirmasi untuk SKU manual/`manual_with_info` — order menunggu difulfil tangan oleh admin (tidak ada stok yang dialokasikan). Hanya dicapai lewat cabang MANUAL `settlePaidOrder`; SKU auto tidak pernah masuk sini. `paidAt` terisi, `deliveredAt` masih null. Sejak Task 3 setiap `OrderItem.status` order ini ikut ditulis `QUEUED` di transaksi yang sama. | Tidak pernah direservasi (SKU manual tidak punya stok) | Ya → `DELIVERED` (`fulfillManualOrder`) atau `REJECTED`. Ke `CANCELLED` HANYA lewat `creditOrderToBalance` — `cancelOrder` menolak order yang sudah dibayar (`error.order_paid_needs_credit`) |
 | `DELIVERED` | **Terminal.** Stok `SOLD`, kredensial sudah/akan dikirim via outbox. | SOLD | Tidak — `creditOrderToBalance`/`cancelOrder` menolak (`error.order_already_delivered`) |
+| `PARTIALLY_DELIVERED` | **Terminal. BELUM BISA DICAPAI order manapun** — ditambahkan Task 3 (Trustance Phase 1) sebagai fondasi, bukan alur aktif. Artinya: sebagian item terkirim, sisanya `FAILED`/`CANCELLED`, dan tidak ada lagi yang in-flight. Satu-satunya penulis adalah `recomputeOrderStatus`, yang menurunkannya dari himpunan `OrderItem.status`; karena aturan komposisi keranjang (`@app/core/cartComposition`) menjaga semua order homogen, himpunan itu tidak pernah terbelah hari ini (dibuktikan di `packages/db/src/crud/orderItemStatus.test.ts`). | Mengikuti item masing-masing | Tidak (transisi keluar `REFUNDED` menyusul bersama domain Refund) |
 | `CANCELLED` | **Terminal.** Stok dilepas (`AVAILABLE`), wallet/voucher di-refund. | Dilepas | Tidak (re-cancel = no-op idempoten) |
 | `REJECTED` | **Terminal.** Admin menolak bukti bayar manual. Stok dilepas. | Dilepas | Tidak |
 | `REFUNDED` | **Terminal.** Dari `UNDERPAID` (saldo USDT dikembalikan ke wallet) ATAU dari `FAILED` (admin resolve manual). | Tidak pernah direservasi (UNDERPAID) / RESERVED (FAILED, dilepas saat resolve) | Tidak |
@@ -153,12 +184,26 @@ stateDiagram-v2
   `DELIVERED` — order kedua untuk stok yang sama gagal saat creation
   (`error.out_of_stock`), bukan setelah pembeli kedua sudah bayar
   (Checkout-2 fix). Detail: [INVENTORY_SYSTEM.md](INVENTORY_SYSTEM.md).
-- **Status terminal (`DELIVERED`/`CANCELLED`/`REJECTED`/`REFUNDED`/`FAILED`)
-  tidak bisa ditransisikan lagi** kecuali `FAILED`, yang punya dua transisi
-  keluar manual (`CANCELLED`/`REFUNDED`, admin resolve) — `cancelOrder`/
-  `creditOrderToBalance` keduanya cek daftar status terminal dan menolak
-  (atau no-op idempoten untuk `CANCELLED`/`REJECTED`/`REFUNDED` yang
-  di-cancel ulang).
+- **Status terminal (`DELIVERED`/`PARTIALLY_DELIVERED`/`CANCELLED`/`REJECTED`/
+  `REFUNDED`/`FAILED`) tidak bisa ditransisikan lagi** kecuali `FAILED`, yang
+  punya dua transisi keluar manual (`CANCELLED`/`REFUNDED`, admin resolve) —
+  `cancelOrder`/`creditOrderToBalance` keduanya cek daftar status terminal dan
+  menolak (atau no-op idempoten untuk `CANCELLED`/`REJECTED`/`REFUNDED` yang
+  di-cancel ulang). `PARTIALLY_DELIVERED` terminal tanpa transisi keluar sama
+  sekali hari ini; edge `→ REFUNDED` menyusul bersama domain Refund yang
+  ditunda.
+- **`OrderItem.status` adalah bayangan, bukan sumber kebenaran** (Task 3,
+  Trustance Phase 1). `approveOrder`, cabang MANUAL `settlePaidOrder`, dan
+  `fulfillManualOrder` menulis satu status yang sama ke SELURUH item order, di
+  transaksi yang sama dengan penulisan `Order.status` yang sudah ada — tidak ada
+  kode yang bercabang berdasarkan kolom itu. Kolomnya nullable tanpa default:
+  `db push` tidak pernah backfill, jadi `null` berarti "baris lebih tua dari
+  kolom ini" dan `deriveOrderStatusFromItems` menolak menyimpulkan apa pun
+  darinya. Jalur terminal non-delivery (`cancelOrder`/`rejectOrder`/
+  `autoCancelExpiredOrders`/`creditOrderToBalance`) BELUM menulis kolom ini —
+  itemnya tertinggal `PENDING`/`QUEUED`, keduanya in-flight, sehingga
+  `recomputeOrderStatus` tetap menolak bertindak dan tidak bisa menghidupkan
+  kembali order yang sudah terminal.
 - **`attachPaymentProof` (manual "upload bukti+TxID") sudah retired dari bot** —
   lihat komentar `apps/order-bot/src/handlers/checkout.ts` ("the legacy manual
   Binance-Pay proof/verification path is retired"). Tidak ada handler bot yang

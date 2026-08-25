@@ -557,13 +557,15 @@ describe("POST /api/v1/cart — Digiflazz single-unit guard", () => {
   });
 });
 
-// Trustance Phase 1 Task 3 — `cart_kind` at the route boundary.
+// Trustance Phase 1 Task 3 — top-ups at the route boundary.
 //
 // The suite above ("cart guard (single-SKU-per-non-auto-cart)") is the
-// characterization half: it passes UNCHANGED, which is the evidence that
-// naming the rule did not alter it. This suite covers the two things naming it
-// added.
-describe("POST /api/v1/cart — cart_kind (TOPUP vs PREMIUM)", () => {
+// characterization half: it passes UNCHANGED, which is the evidence that naming
+// and centralizing the rule did not alter it. This suite adds the top-up
+// dimension that suite never covered, and pins that the rule stayed exactly as
+// permissive as it was — including for the one shape a reverted `cart_kind`
+// check would have started rejecting.
+describe("POST /api/v1/cart — top-up lines under the composition rule", () => {
   let topupDenomId: number;
   let autoTypedTopupId: number;
 
@@ -577,10 +579,10 @@ describe("POST /api/v1/cart — cart_kind (TOPUP vs PREMIUM)", () => {
       supplierSku: "kind86",
     });
 
-    // A shape the catalog sync NEVER produces: Digiflazz-routed but hand-edited
-    // to auto delivery. This is the only input that reaches the kind rule,
-    // because every real top-up is non-AUTO and the pre-existing homogeneity
-    // rule catches those first.
+    // A shape the catalog sync never produces on its own, but an admin can:
+    // Digiflazz-sourced, hand-edited to auto delivery (e.g. a SKU migrated off
+    // the supplier rail onto local stock). It is the only top-up shape the
+    // homogeneity rule does NOT catch, and it must stay allowed.
     const { members: members2 } = await seedProduct(categoryId, "Kind Misconfigured Game", [
       { name: "Misconfigured", price: "21000" },
     ]);
@@ -628,12 +630,15 @@ describe("POST /api/v1/cart — cart_kind (TOPUP vs PREMIUM)", () => {
     expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
   });
 
-  // The single intentional behavior delta in Task 3. Before it, this add
-  // SUCCEEDED — and the resulting order would have been settled by
-  // dispatchPendingDigiflazzOrders, which places one supplier top-up and then
-  // marks the WHOLE order DELIVERED, so the buyer paid for two lines and
-  // received one.
-  it("an admin-misconfigured AUTO-typed top-up is refused with error.cart_kind_conflict", async () => {
+  // REGRESSION PIN. An earlier revision of Task 3 rejected this add with a new
+  // `error.cart_kind_conflict`, believing the resulting order would reach
+  // dispatchPendingDigiflazzOrders and have one supplier top-up delivered for
+  // two paid lines. That was wrong (Task 3 review): the poller selects only
+  // `status: PROCESSING` orders, and an all-AUTO order goes
+  // PENDING_VERIFICATION -> DELIVERED through approveOrder without ever being
+  // PROCESSING. Rejecting it broke a working admin configuration for no gain,
+  // so the check was reverted. This test exists so it is not reintroduced.
+  it("an AUTO-typed Digiflazz SKU may join an all-AUTO cart, exactly as before Task 3", async () => {
     const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
     const res = await app.inject({
       method: "POST",
@@ -641,11 +646,11 @@ describe("POST /api/v1/cart — cart_kind (TOPUP vs PREMIUM)", () => {
       headers: { cookie: cookieOf(add) },
       payload: { denomination_id: autoTypedTopupId, qty: 1 },
     });
-    expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual({ error: "error.cart_kind_conflict" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(2);
   });
 
-  it("an AUTO-typed top-up is still allowed to be the cart's only line", async () => {
+  it("an AUTO-typed top-up is also fine as the cart's only line", async () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/cart",

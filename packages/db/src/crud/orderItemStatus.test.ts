@@ -34,6 +34,7 @@ import {
   fulfillManualOrder,
   recomputeOrderStatus,
   cancelOrder,
+  creditOrderToBalance,
 } from "./orders";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
@@ -329,15 +330,23 @@ describe("recomputeOrderStatus — the cases where it must refuse to act", () =>
   // (approveOrder, settlePaidOrder's manual branch, fulfillManualOrder) only.
   // The paths that END an order without delivering it — cancelOrder,
   // rejectOrder, autoCancelExpiredOrders, creditOrderToBalance — still move
-  // Order.status while leaving every item PENDING. That was not extended
-  // because REJECTED and REFUNDED have no OrderItemStatus counterpart (both are
-  // deferred with the Refund domain), so mapping them onto CANCELLED would
-  // invent information rather than record it.
+  // Order.status while leaving the items at whatever in-flight status they last
+  // had. That depends on WHERE the order was cancelled from, so both cases are
+  // covered below:
   //
-  // What matters is that the gap is INERT, not merely unfinished: PENDING is an
-  // in-flight status, so the derivation declines and recompute can never drag a
-  // cancelled order back out of its terminal state. This test is the proof.
-  it("a cancelled order keeps items PENDING, and recompute refuses to resurrect it", async () => {
+  //   cancelled from PENDING_VERIFICATION -> items still PENDING
+  //   cancelled from PROCESSING           -> items still QUEUED
+  //
+  // The gap was not closed because REJECTED and REFUNDED have no
+  // OrderItemStatus counterpart (both deferred with the Refund domain), so
+  // mapping them onto CANCELLED would invent information rather than record it.
+  //
+  // What matters is that the gap is INERT, not merely unfinished: PENDING and
+  // QUEUED are BOTH in IN_FLIGHT_ORDER_ITEM_STATUSES, so the derivation
+  // declines either way and recompute can never drag a terminal order back out
+  // of its state. Nothing in production reads OrderItem.status except
+  // recomputeOrderStatus itself. These two tests are the proof.
+  it("an order cancelled from PENDING_VERIFICATION keeps items PENDING; recompute refuses to resurrect it", async () => {
     const order = await makePendingVerificationOrder(sample.product.id, 2);
     await cancelOrder(prisma, order.id, "test cancellation");
 
@@ -345,6 +354,32 @@ describe("recomputeOrderStatus — the cases where it must refuse to act", () =>
     expect(cancelled!.status).toBe(OrderStatus.CANCELLED);
     // The shadow does not (yet) cover this path.
     expect((await itemStatuses(order.id)).every((s) => s === OrderItemStatus.PENDING)).toBe(true);
+
+    const before = await historyCount(order.id);
+    expect(await recomputeOrderStatus(prisma, order.id)).toBeNull();
+    const after = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(after!.status).toBe(OrderStatus.CANCELLED);
+    expect(await historyCount(order.id)).toBe(before);
+  });
+
+  // NOTE the different entry point. `cancelOrder` REFUSES a PROCESSING order
+  // (it is already paid — `assertNotPaidWithoutCredit` throws
+  // error.order_paid_needs_credit), so the real way out of the fulfilment queue
+  // is `creditOrderToBalance`, which refunds the buyer to store credit and
+  // lands the order in CANCELLED. That is the H-2 fix.
+  it("an order credited out of PROCESSING keeps items QUEUED; recompute is equally inert", async () => {
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const order = await makePendingVerificationOrder(manualDenom.id, 2);
+    await settlePaidOrder(prisma, order.id, { adminId });
+    expect((await itemStatuses(order.id)).every((s) => s === OrderItemStatus.QUEUED)).toBe(true);
+
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
+
+    const cancelled = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(cancelled!.status).toBe(OrderStatus.CANCELLED);
+    // QUEUED, NOT PENDING — the distinction the first version of this comment
+    // got wrong.
+    expect((await itemStatuses(order.id)).every((s) => s === OrderItemStatus.QUEUED)).toBe(true);
 
     const before = await historyCount(order.id);
     expect(await recomputeOrderStatus(prisma, order.id)).toBeNull();

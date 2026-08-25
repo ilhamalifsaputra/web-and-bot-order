@@ -36,38 +36,50 @@
  *
  * ## The rule (deliberately NOT loosened by this task)
  *
- * 1. **Homogeneity, exactly as before.** A cart holding any non-AUTO line may
- *    hold EXACTLY that one line, at any quantity. This is stricter than a plain
- *    auto-vs-manual split because `Order.customerData` and
- *    `Order.deliveredContent` are order-level columns whose readers assume
- *    `items[0]`'s denomination speaks for the whole order.
- * 2. **One kind per cart.** A cart may not mix TOPUP and PREMIUM lines.
+ * **Homogeneity, exactly as before.** A cart holding any non-AUTO line may hold
+ * EXACTLY that one line, at any quantity. This is stricter than a plain
+ * auto-vs-manual split because `Order.customerData` and
+ * `Order.deliveredContent` are order-level columns whose readers assume
+ * `items[0]`'s denomination speaks for the whole order.
  *
- * Rule 1 is checked FIRST, on purpose. For every SKU shape the system actually
- * creates, a TOPUP line is non-AUTO, so rule 1 already forbids it sharing a
- * cart with anything and rule 2 can never be the reason an add is refused —
- * the error key a buyer sees is byte-identical to today's
- * `error.cart_mixed_delivery`. `cartComposition.test.ts` proves this case by
- * case; it is the "zero behavior change" guarantee this task is built on.
+ * That is the whole rule. There is deliberately NO second "one kind per cart"
+ * check, because a separate check would have nothing left to reject:
  *
- * ## The one input that does reach rule 2
+ * - Every top-up the Digiflazz catalog sync creates is `MANUAL_WITH_INFO`, i.e.
+ *   non-AUTO, so the homogeneity rule already forbids it sharing a cart with
+ *   anything at all. A mixed-kind cart is, for every SKU shape the system
+ *   creates, already a mixed-delivery cart.
+ * - The only shape that would slip past homogeneity is an all-AUTO cart holding
+ *   a Digiflazz-sourced SKU an admin hand-edited to `deliveryType: auto`. An
+ *   earlier revision of this file rejected that, on the belief it would
+ *   otherwise reach `dispatchPendingDigiflazzOrders` and have one supplier
+ *   top-up delivered for a multi-line order. **That belief was wrong** and the
+ *   check was reverted (Task 3 review): that poller selects only
+ *   `status: PROCESSING` orders (`packages/db/src/crud/digiflazz.ts`), and an
+ *   all-AUTO order goes `PENDING_VERIFICATION -> DELIVERED` through
+ *   `approveOrder` without ever passing through PROCESSING. The poller is never
+ *   involved in that shape. Such a SKU also carries no stock, so
+ *   `createOrderFromCart`'s pre-check already fails it closed with
+ *   `error.out_of_stock` before any money moves; and an admin who genuinely
+ *   migrated a Digiflazz SKU onto local stock has a working configuration that
+ *   a kind check would have broken. Do not reintroduce that check without
+ *   re-verifying both code paths.
  *
- * An admin hand-editing a Digiflazz SKU's `deliveryType` to `auto` produces a
- * line that is TOPUP-kinded but AUTO-typed, which rule 1 lets through and rule
- * 2 then rejects with `error.cart_kind_conflict`. Today that add succeeds, so
- * this is the single intentional behavior delta in this task — and it closes a
- * latent money bug rather than opening one: `dispatchPendingDigiflazzOrders`
- * places exactly ONE supplier top-up per order and then marks the WHOLE order
- * DELIVERED, so a buyer who got a Digiflazz line into a multi-line cart would
- * pay for every line and receive one. That is the same failure the
- * single-unit guard in `POST /cart` already exists to prevent; this closes the
- * remaining door to it.
+ * `CartKind`/`cartKindOf` below therefore name and classify, but do not gate.
+ * They are the piece a later plan needs: once premium mixing is loosened, the
+ * homogeneity rule stops subsuming the kind distinction and a real "one kind
+ * per cart" check becomes load-bearing. Keeping the classifier here — tested,
+ * and keyed on the one field that is actually correct — means that plan starts
+ * from a verified answer rather than re-deriving it.
  */
 import { DeliveryType } from "./enums";
 
 /**
  * Which fulfilment world a cart line belongs to. Stored nowhere — derived from
  * the denomination on every read, so it can never go stale against the SKU.
+ *
+ * Classification only: nothing in this module gates on it today, because the
+ * homogeneity rule already subsumes it. See the module doc comment.
  */
 export const CartKind = {
   /** Fulfilled by the Digiflazz supplier rail. */
@@ -81,10 +93,9 @@ export type CartKind = (typeof CartKind)[keyof typeof CartKind];
 export const DIGIFLAZZ_SOURCE = "digiflazz";
 
 /** Pre-existing key: the cart mixes delivery types (or holds a non-AUTO line
- * alongside anything else). Unchanged wording, unchanged trigger. */
+ * alongside anything else). Unchanged wording, unchanged trigger, and — since
+ * the kind check was reverted — the only key this module can return. */
 export const CART_MIXED_DELIVERY = "error.cart_mixed_delivery";
-/** New key: the cart would hold both a TOPUP and a PREMIUM line. */
-export const CART_KIND_CONFLICT = "error.cart_kind_conflict";
 
 /** The minimum a caller must know about a cart line to classify it. Callers
  * pass their own row shape's fields, so this module never depends on Prisma. */
@@ -123,15 +134,9 @@ export function cartAdditionError(
   const isSameSingleLine = existing.length === 1 && existing[0]!.denominationId === incoming.denominationId;
   if (isSameSingleLine) return null;
 
-  // Rule 1 first — see the doc comment: this ordering is what keeps every
-  // rejection a buyer can actually trigger on its pre-existing error key.
   const anyNonAuto =
     incoming.deliveryType !== DeliveryType.AUTO || existing.some((l) => l.deliveryType !== DeliveryType.AUTO);
   if (anyNonAuto) return CART_MIXED_DELIVERY;
-
-  // Rule 2.
-  const incomingKind = cartKindOf(incoming);
-  if (existing.some((l) => cartKindOf(l) !== incomingKind)) return CART_KIND_CONFLICT;
 
   return null;
 }
@@ -149,12 +154,7 @@ export function cartAdditionError(
 export function cartCompositionError(lines: readonly CartCompositionLine[]): string | null {
   if (lines.length <= 1) return null;
 
-  // Rule 1 first, same reason as above.
   if (lines.some((l) => l.deliveryType !== DeliveryType.AUTO)) return CART_MIXED_DELIVERY;
-
-  // Rule 2.
-  const firstKind = cartKindOf(lines[0]!);
-  if (lines.some((l) => cartKindOf(l) !== firstKind)) return CART_KIND_CONFLICT;
 
   return null;
 }

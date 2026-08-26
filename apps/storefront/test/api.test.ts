@@ -310,6 +310,40 @@ describe("POST /api/v1/cart", () => {
       expect(body.items[0]).toMatchObject({ denomination_id: denomId, qty: 3 });
       expect(body.subtotal).toBe("120000");
     });
+
+    // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+    // check above — same failure shape either way (an attacker can't tell
+    // "bad token" from "bad origin" apart from the response).
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: { denomination_id: denomId, qty: 1 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    it("200s with a valid token and no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("200s with a valid token and an Origin header matching this request's own host", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 
@@ -721,6 +755,19 @@ describe("POST /api/v1/checkout", () => {
         method: "POST",
         url: "/api/v1/checkout",
         headers: { cookie, "x-csrf-token": "wrong" },
+        payload: { method: "qris" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    // Task 12: this handler's CSRF check is its own inline copy (not
+    // csrfOk), so it needs its own Origin-mismatch coverage.
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
         payload: { method: "qris" },
       });
       expect(res.statusCode).toBe(403);

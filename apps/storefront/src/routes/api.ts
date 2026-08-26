@@ -49,7 +49,7 @@ import {
   CART_COOKIE_VERSION,
   type GuestCartLine,
 } from "../shop";
-import { loadCartLines, loadGuestCartItems, cartCompositionLineOf } from "./cart";
+import { loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
 import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
@@ -426,7 +426,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const customer = await optionalCustomer(req);
     if (customer) {
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
@@ -536,7 +536,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const signedIn = await optionalCustomer(req);
     if (signedIn) {
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }

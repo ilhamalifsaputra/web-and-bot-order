@@ -105,11 +105,35 @@ export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
   req.admin = data;
 };
 
+/** Origin/Referer check — defense-in-depth ALONGSIDE csrfCheck's token check,
+ * not a replacement. Compares the Origin header's hostname (or Referer's,
+ * when Origin is absent) against this request's own hostname (Fastify's
+ * req.hostname, which already respects TRUST_PROXY the same way req.ip
+ * does — see storefront's rateLimit.ts's clientIp doc comment). No Origin
+ * AND no Referer passes (many legitimate same-site requests omit both); a
+ * header that IS present but names a different host fails. */
+function originOk(req: FastifyRequest): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const raw = typeof origin === "string" ? origin : typeof referer === "string" ? referer : null;
+  if (raw === null) return true;
+  try {
+    return new URL(raw).hostname === req.hostname;
+  } catch {
+    return false; // an unparseable Origin/Referer is suspicious, not trusted
+  }
+}
+
 const csrfCheck: preHandlerHookHandler = async (req, reply) => {
   const bodyToken = (req.body as Record<string, unknown> | undefined)?.csrf_token;
   const headerToken = req.headers["x-csrf-token"];
   const token = bodyToken ?? (typeof headerToken === "string" ? headerToken : undefined);
-  if (typeof token !== "string" || !req.admin || !constantTimeEqual(token, req.admin.csrf)) {
+  if (
+    typeof token !== "string" ||
+    !req.admin ||
+    !constantTimeEqual(token, req.admin.csrf) ||
+    !originOk(req)
+  ) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
 };

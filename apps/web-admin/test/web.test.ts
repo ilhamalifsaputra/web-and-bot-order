@@ -814,6 +814,42 @@ describe("orders", () => {
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
 
+  // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+  // check above — same 403 "CSRF check failed" response either way, so an
+  // attacker can't distinguish "bad token" from "bad origin".
+  it("approve rejects a valid CSRF token when Origin is present but mismatched (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://evil.example" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("approve accepts a valid CSRF token with no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("approve accepts a valid CSRF token with an Origin header matching this request's own host", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "http://localhost" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("approve accepts the CSRF token via an X-CSRF-Token header, with no body field at all", async () => {
     const orderId = await makePendingOrder();
     setBotIdentity({ publicChannelId: -100123456789 });

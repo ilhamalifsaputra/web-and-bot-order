@@ -45,7 +45,26 @@ export function csrfOk(req: FastifyRequest, customer: Customer | null): boolean 
   if (!customer) return true;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
-  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf) && originOk(req);
+}
+
+/** Origin/Referer check — defense-in-depth ALONGSIDE csrfOk's token check,
+ * not a replacement. Compares the Origin header's hostname (or Referer's,
+ * when Origin is absent) against this request's own hostname (Fastify's
+ * req.hostname, which already respects TRUST_PROXY the same way req.ip
+ * does — see rateLimit.ts's clientIp). No Origin AND no Referer passes
+ * (many legitimate same-site requests omit both); a header that IS present
+ * but names a different host fails. */
+export function originOk(req: FastifyRequest): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const raw = typeof origin === "string" ? origin : typeof referer === "string" ? referer : null;
+  if (raw === null) return true;
+  try {
+    return new URL(raw).hostname === req.hostname;
+  } catch {
+    return false; // an unparseable Origin/Referer is suspicious, not trusted
+  }
 }
 
 export interface CartLineView {

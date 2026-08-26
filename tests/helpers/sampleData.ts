@@ -73,6 +73,11 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.review.deleteMany();
   await prisma.referral.deleteMany();
   await prisma.restockSubscription.deleteMany();
+  // AdminTask.order/orderItem/refund are all onDelete:Restrict (Task 9a —
+  // same operational-audit-record policy as Refund/RefundItem) — must be
+  // cleared before RefundItem/Refund/OrderItem/Order, or a leftover
+  // AdminTask row blocks any of those deletes below.
+  await prisma.adminTask.deleteMany();
   // RefundItem.orderItem and Refund.order are both onDelete:Restrict
   // (Refund domain, Task 8a — same financial-audit-record policy as
   // OrderItem/OrderStatusHistory) — must be cleared before OrderItem/Order,

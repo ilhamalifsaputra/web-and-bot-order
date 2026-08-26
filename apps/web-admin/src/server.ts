@@ -32,6 +32,7 @@ import paymentsApiRoutes from "./routes/api/payments";
 import usersApiRoutes from "./routes/api/users";
 import broadcastApiRoutes from "./routes/api/broadcast";
 import supportApiRoutes from "./routes/api/support";
+import adminTasksApiRoutes from "./routes/api/adminTasks";
 import settingsApiRoutes from "./routes/api/settings";
 import brandingApiRoutes from "./routes/api/branding";
 import catalogApiRoutes from "./routes/api/catalog";
@@ -140,6 +141,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(usersApiRoutes);
   await app.register(broadcastApiRoutes);
   await app.register(supportApiRoutes);
+  await app.register(adminTasksApiRoutes);
   await app.register(settingsApiRoutes);
   await app.register(brandingApiRoutes);
   await app.register(catalogApiRoutes);

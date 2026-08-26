@@ -48,3 +48,4 @@ export * from "./crud/storageMaintenance";
 export * from "./crud/games";
 export * from "./crud/productProviderMappings";
 export * from "./crud/refunds";
+export * from "./crud/adminTasks";

@@ -16,6 +16,7 @@ import {
   Star,
   BarChart2,
   ClipboardList,
+  ListChecks,
   Send,
   Shield,
   Settings,
@@ -80,6 +81,7 @@ const NAV_GROUPS: NavGroup[] = [
     header: "Support",
     items: [
       { to: "/support", label: "Tickets", icon: MessageCircle },
+      { to: "/tasks", label: "Tasks", icon: ListChecks },
       { to: "/broadcast", label: "Broadcast", icon: Megaphone },
       { to: "/reviews", label: "Reviews", icon: Star },
     ],

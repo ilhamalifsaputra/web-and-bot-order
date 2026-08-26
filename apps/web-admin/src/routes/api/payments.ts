@@ -28,6 +28,7 @@ import {
   type IdempotentReplay,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { paymentsMutationRateLimited } from "../../auth";
 import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
@@ -125,6 +126,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/order/:orderId/deliver", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
@@ -180,6 +185,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
 
     // Idempotency (Task 1): a double-clicked "Refund" button (or a retried
@@ -243,6 +252,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
@@ -299,6 +312,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/match", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
@@ -370,6 +387,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/credit", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
@@ -444,6 +465,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/dismiss", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
 
     const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);

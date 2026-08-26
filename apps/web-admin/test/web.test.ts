@@ -79,6 +79,9 @@ import {
   accountLockedOut,
   recordAccountFailure,
   resetAccountFailures,
+  paymentsMutationRateLimited,
+  resetPaymentsMutationRateLimit,
+  PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
 import { decryptCredentials } from "@app/core/credentialCrypto";
@@ -123,6 +126,7 @@ beforeEach(async () => {
   resetAccountFailures(1000);
   resetBotIdentity();
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
+  resetPaymentsMutationRateLimit(admin.id);
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
   const parentProduct = await createCatalogProduct(prisma, {
@@ -501,6 +505,23 @@ describe("account lockout", () => {
     expect(accountLockedOut(tg)).toBe(true);
     resetAccountFailures(tg);
     expect(accountLockedOut(tg)).toBe(false);
+  });
+});
+
+describe("payments mutation rate limit", () => {
+  it("allows up to the cap for one admin, trips on the next call, leaves other admins unaffected, and clears on reset", () => {
+    const adminId = 8888881; // dedicated id, untouched elsewhere
+    const otherAdminId = 8888882;
+    resetPaymentsMutationRateLimit(adminId);
+    resetPaymentsMutationRateLimit(otherAdminId);
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      expect(paymentsMutationRateLimited(adminId)).toBe(false);
+    }
+    expect(paymentsMutationRateLimited(adminId)).toBe(true);
+    // A different admin id shares no budget with the one above.
+    expect(paymentsMutationRateLimited(otherAdminId)).toBe(false);
+    resetPaymentsMutationRateLimit(adminId);
+    expect(paymentsMutationRateLimited(adminId)).toBe(false);
   });
 });
 
@@ -5618,6 +5639,25 @@ describe("payments", () => {
     // And of course no audit row exists either.
     const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss", details: "tx=ATOMTX1" } });
     expect(audit.length).toBe(0);
+  });
+
+  it("dismiss trips 429 after PAYMENTS_MUTATION_RATE_LIMIT_MAX calls in one window and recovers after a reset", async () => {
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      await recordUnmatchedTx(prisma, { binanceTxId: `RLTX${i}`, amount: "1.00" });
+      const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: `RLTX${i}` });
+      expect(res.statusCode).toBe(200);
+    }
+    // The (max+1)th call in the same window is rejected before it ever
+    // touches the ledger row — dismissUnmatchedTx never runs.
+    await recordUnmatchedTx(prisma, { binanceTxId: "RLTX-OVER", amount: "1.00" });
+    const limited = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(limited.statusCode).toBe(429);
+    expect(JSON.parse(limited.body)).toEqual({ error: "error.rate_limited" });
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "RLTX-OVER" } }))!.outcome).toBe("unmatched");
+
+    resetPaymentsMutationRateLimit(seed.adminId);
+    const recovered = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(recovered.statusCode).toBe(200);
   });
 });
 

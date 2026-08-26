@@ -181,10 +181,55 @@ describe("transitionRefundStatus — state machine", () => {
       from: RefundStatus.PROCESSING,
       to: RefundStatus.COMPLETED,
       adminId: admin.id,
+      acknowledgeNoPayout: true,
     });
 
     expect(result.status).toBe(RefundStatus.COMPLETED);
     expect(result.processedAt).toBeInstanceOf(Date);
+  });
+
+  it("rejects PROCESSING -> COMPLETED without acknowledgeNoPayout", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+
+    const auditRowsBefore = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+
+    await expect(
+      transitionRefundStatus(prisma, {
+        refundId: refund.id,
+        from: RefundStatus.PROCESSING,
+        to: RefundStatus.COMPLETED,
+        adminId: admin.id,
+      }),
+    ).rejects.toThrow(ValidationError);
+
+    // No NEW audit row should have been written for the rejected COMPLETED
+    // attempt (the PENDING -> PROCESSING transition above legitimately wrote
+    // its own audit row already, so the assertion is "count unchanged", not
+    // "count is zero").
+    const auditRowsAfter = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    expect(auditRowsAfter).toHaveLength(auditRowsBefore.length);
+  });
+
+  it("a COMPLETED transition's audit entry states it is record-keeping only", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: admin.id,
+      acknowledgeNoPayout: true,
+    });
+
+    const auditRows = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    const completedRow = auditRows.find((r) => (r.details ?? "").includes("PROCESSING") && (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("Record-keeping only — no payout was triggered");
   });
 
   it("PROCESSING -> FAILED succeeds and stamps processedAt", async () => {
@@ -443,12 +488,51 @@ describe("createRefundItem — sum invariant", () => {
     const refundA = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
     await createRefundItem(prisma, { refundId: refundA.id, orderItemId: item.id, amount: "5.00", adminId: admin.id });
     await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
-    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PROCESSING, to: RefundStatus.COMPLETED, adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refundA.id, from: RefundStatus.PROCESSING, to: RefundStatus.COMPLETED, adminId: admin.id, acknowledgeNoPayout: true });
 
     const refundB = await createRefund(prisma, { orderId: order.id, amount: "1.00", currency: "IDR", adminId: admin.id });
     await expect(
       createRefundItem(prisma, { refundId: refundB.id, orderItemId: item.id, amount: "1.00", adminId: admin.id }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+describe("createRefundItem — Refund.amount invariant", () => {
+  it("rejects a RefundItem that would push this refund's own item total over Refund.amount", async () => {
+    // subtotal 5.00 — comfortably larger than the Refund.amount (3.00) used
+    // below, so the item's own subtotal is never the binding constraint here.
+    const { order, item } = await makeOrderWithItem(1);
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "3.00", currency: "IDR", adminId: admin.id });
+
+    await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "2.00", adminId: admin.id });
+
+    // 2.00 already on this refund + 2.00 attempted = 4.00, which is > this
+    // refund's own 3.00 amount, but still comfortably under the item's 5.00
+    // subtotal — the pre-existing cross-refund subtotal check would NOT
+    // reject this on its own; only the new per-refund invariant does.
+    await expect(
+      createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "2.00", adminId: admin.id }),
+    ).rejects.toThrow(ValidationError);
+
+    const rows = await prisma.refundItem.findMany({ where: { refundId: refund.id } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("allows a RefundItem that exactly matches the remaining Refund.amount (boundary)", async () => {
+    const { order, item } = await makeOrderWithItem(1); // subtotal 5.00
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "3.00", currency: "IDR", adminId: admin.id });
+
+    await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "2.00", adminId: admin.id });
+
+    // 2.00 already on this refund + 1.00 attempted = exactly 3.00, matching
+    // Refund.amount exactly — not strictly-less, must still succeed.
+    const refundItem = await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "1.00", adminId: admin.id });
+    expect(refundItem.amount.toString()).toBe("1");
+
+    const rows = await prisma.refundItem.findMany({ where: { refundId: refund.id } });
+    expect(rows).toHaveLength(2);
   });
 });
 
@@ -499,7 +583,7 @@ describe("createRefundItem — rejects attaching to a terminal Refund", () => {
     const admin = await makeAdmin();
     const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
     await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
-    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PROCESSING, to: RefundStatus.COMPLETED, adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PROCESSING, to: RefundStatus.COMPLETED, adminId: admin.id, acknowledgeNoPayout: true });
 
     await expect(
       createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "1.00", adminId: admin.id }),

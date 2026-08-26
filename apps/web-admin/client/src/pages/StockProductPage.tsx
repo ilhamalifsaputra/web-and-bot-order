@@ -13,7 +13,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical } from "lucide-react";
+import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical, Trash2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -85,6 +85,7 @@ export function StockProductPage() {
   const [revealedText, setRevealedText] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [pendingMarkDead, setPendingMarkDead] = useState<StockItem | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<StockItem | null>(null);
 
   function changeTab(tab: string) {
     setActiveTab(tab as typeof activeTab);
@@ -251,6 +252,16 @@ export function StockProductPage() {
     }
   }
 
+  async function deleteItem(id: number) {
+    try {
+      await apiPost(`/api/stock/item/${id}/delete`, {});
+      await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Stock item deleted.");
+    } catch (e) {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete item."));
+    }
+  }
+
   async function saveNote(id: number) {
     try {
       await apiPost(`/api/stock/item/${id}/note`, { note: noteDraft });
@@ -409,6 +420,15 @@ export function StockProductPage() {
                           </DropdownMenuItem>
                         </>
                       )}
+                      {item.status !== "SOLD" && (
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => { e.preventDefault(); setPendingDelete(item); }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -522,6 +542,17 @@ export function StockProductPage() {
           description={`Mark stock item #${pendingMarkDead.id} dead. This removes it from availability.`}
           confirmLabel="Mark Dead"
           onConfirm={() => markItemDead(pendingMarkDead.id)}
+        />
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingDelete(null); }}
+          title="Delete this stock item?"
+          description={`Delete stock item #${pendingDelete.id}. This cannot be undone.`}
+          confirmLabel="Delete"
+          onConfirm={() => deleteItem(pendingDelete.id)}
         />
       )}
     </PageLayout>

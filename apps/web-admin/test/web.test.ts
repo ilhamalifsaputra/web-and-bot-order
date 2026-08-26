@@ -3773,6 +3773,48 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
     });
   });
 
+  describe("POST /api/stock/item/:stockId/delete", () => {
+    it("happy path deletes a single item and audits without leaking credentials", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeTruthy();
+      expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await postJson(`/api/stock/item/999999/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("refuses to delete a SOLD (delivered) item — 409, row unchanged, no audit row", async () => {
+      const item = await prisma.stockItem.update({
+        where: { id: (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(409);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).not.toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeNull();
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("POST /api/stock/item/:stockId/note", () => {
     it("happy path updates the note and audits", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;

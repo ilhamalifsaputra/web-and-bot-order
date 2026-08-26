@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { bulkDeleteStock, listAvailableCredentials } from "@app/db";
+import { bulkDeleteStock, deleteStockItem, listAvailableCredentials } from "@app/db";
 import { StockStatus } from "@app/core/enums";
 
 let db: TestDb;
@@ -98,6 +98,65 @@ describe("bulkDeleteStock", () => {
 
   it("returns 0 for an empty id list", async () => {
     expect(await bulkDeleteStock(prisma, [])).toBe(0);
+  });
+});
+
+describe("deleteStockItem", () => {
+  it("hard-deletes a plain AVAILABLE item and returns true", async () => {
+    const { product } = sample;
+    const [id] = await idsFor(product.id, StockStatus.AVAILABLE);
+
+    const deleted = await deleteStockItem(prisma, id!);
+
+    expect(deleted).toBe(true);
+    expect(await prisma.stockItem.findUnique({ where: { id } })).toBeNull();
+  });
+
+  it("refuses a SOLD item — returns false, row still exists", async () => {
+    const { product } = sample;
+    const [soldId] = await idsFor(product.id, StockStatus.AVAILABLE);
+    await prisma.stockItem.update({
+      where: { id: soldId },
+      data: { status: StockStatus.SOLD, soldAt: new Date() },
+    });
+
+    const deleted = await deleteStockItem(prisma, soldId!);
+
+    expect(deleted).toBe(false);
+    expect(await prisma.stockItem.findUnique({ where: { id: soldId } })).not.toBeNull();
+  });
+
+  it("refuses an item tied to an order item — returns false, row still exists", async () => {
+    const { product, user } = sample;
+    const [stockId] = await idsFor(product.id, StockStatus.AVAILABLE);
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "ORD-LINK-DEL-1",
+        userId: user.id,
+        status: "DELIVERED",
+        subtotalAmount: "5.0000",
+        totalAmount: "5.0000",
+        items: {
+          create: {
+            productId: product.id,
+            stockItemId: stockId,
+            quantity: 1,
+            unitPrice: "5.0000",
+            warrantyDaysSnapshot: 30,
+          },
+        },
+      },
+    });
+    expect(order.id).toBeGreaterThan(0);
+
+    const deleted = await deleteStockItem(prisma, stockId!);
+
+    expect(deleted).toBe(false);
+    expect(await prisma.stockItem.findUnique({ where: { id: stockId } })).not.toBeNull();
+  });
+
+  it("returns false for a non-existent id", async () => {
+    expect(await deleteStockItem(prisma, 999999)).toBe(false);
   });
 });
 

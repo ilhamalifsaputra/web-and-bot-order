@@ -18,6 +18,7 @@
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -483,13 +484,44 @@ describe("POST /api/v1/topup/order — signed-in gateway branch", () => {
     expect(res.statusCode).toBe(201);
   });
 
-  it("201s with a valid token and an Origin header matching this request's own host", async () => {
+  // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+  // configured, originOk falls back to comparing against req.hostname —
+  // this test's own suite (setup-env.ts) sets SHOP_PUBLIC_URL by default, so
+  // it's cleared for this one case to exercise the fallback path.
+  it("201s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
     await makeUser("topuporiginok", "topuporiginok-pw-1", "TPORGO");
     const { cookie, csrf } = await loginAs("topuporiginok", "topuporiginok-pw-1");
+    const originalShop = config.SHOP_PUBLIC_URL;
+    const originalPublic = config.PUBLIC_URL;
+    config.SHOP_PUBLIC_URL = undefined;
+    config.PUBLIC_URL = undefined;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/topup/order",
+        headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+        payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+      });
+      expect(res.statusCode).toBe(201);
+    } finally {
+      config.SHOP_PUBLIC_URL = originalShop;
+      config.PUBLIC_URL = originalPublic;
+    }
+  });
+
+  // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+  // this test suite — see setup-env.ts), the Origin check must prefer it
+  // over req.hostname — an Origin matching the configured public origin
+  // passes even though it does NOT match this injected request's own
+  // apparent host ("localhost").
+  it("201s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+    await makeUser("topuporiginconfig", "topuporiginconfig-pw-1", "TPORGC");
+    const { cookie, csrf } = await loginAs("topuporiginconfig", "topuporiginconfig-pw-1");
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/topup/order",
-      headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
       payload: { denomination_id: denomId, qty: 1, method: "bybit" },
     });
     expect(res.statusCode).toBe(201);
@@ -878,6 +910,47 @@ describe("POST /api/v1/topup/order — Idempotency-Key", () => {
       url: "/api/v1/topup/order",
       headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
       payload: { denomination_id: denomId, qty: 1, method: "bybit", voucher_code: "TOPUP10" }, // different body => different hash
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(1);
+  });
+
+  // Whole-branch review finding I-1: the signed-in branch's idempotency hash
+  // used to omit `customer_data` entirely, so two purchases of the same
+  // denomination for two DIFFERENT game accounts under the same
+  // Idempotency-Key would incorrectly replay the first order's response for
+  // the second, silently dropping it. Same denomination/qty/method, only
+  // `customer_data` differs — must now 409, not replay.
+  it("signed-in: 409s when the same key is reused with the SAME denomination/qty/method but DIFFERENT customer_data, without creating a second order", async () => {
+    const uid = await makeUser("topupidemcustdata", "topupidemcustdata-pw-1", "TPIDCD");
+    const { cookie, csrf } = await loginAs("topupidemcustdata", "topupidemcustdata-pw-1");
+    const key = "topup-idem-signedin-customerdata-conflict";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: {
+        denomination_id: denomId,
+        qty: 1,
+        method: "bybit",
+        customer_data: [{ user_id: "111111" }],
+      },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: {
+        denomination_id: denomId,
+        qty: 1,
+        method: "bybit",
+        customer_data: [{ user_id: "222222" }], // only customer_data differs => different hash
+      },
     });
     expect(second.statusCode).toBe(409);
     expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });

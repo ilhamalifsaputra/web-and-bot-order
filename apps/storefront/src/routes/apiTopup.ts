@@ -356,7 +356,14 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           key: idempotencyKeyHeader,
           requestHash: hashIdempotentRequest(
             signedIn
-              ? { denominationId: denom.id, quantity, method, voucherCode, userId: signedIn.userId }
+              ? {
+                  denominationId: denom.id,
+                  quantity,
+                  method,
+                  voucherCode,
+                  userId: signedIn.userId,
+                  customerData: req.body?.customer_data ?? null,
+                }
               : {
                   denominationId: denom.id,
                   quantity,

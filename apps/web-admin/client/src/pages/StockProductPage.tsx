@@ -221,13 +221,19 @@ export function StockProductPage() {
   }
 
   async function bulkDelete(ids: number[]) {
-    const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost(`/api/stock/${productId}/bulk-delete`, { ids });
+      const result = await apiPost<{ ok: boolean; count: number; skipped: number }>(
+        `/api/stock/${productId}/bulk-delete`,
+        { ids },
+      );
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
-      toast.success(`${count} item(s) deleted.`);
+      toast.success(
+        result.skipped === 0
+          ? `${result.count} item(s) deleted.`
+          : `${result.count} item(s) deleted. ${result.skipped} skipped (sold or linked to an order).`,
+      );
     } catch (e) {
       toast.error(describeError(e instanceof Error ? e.message : "Failed to delete items."));
     } finally {

@@ -107,18 +107,26 @@ export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
 
 /** Origin/Referer check — defense-in-depth ALONGSIDE csrfCheck's token check,
  * not a replacement. Compares the Origin header's hostname (or Referer's,
- * when Origin is absent) against this request's own hostname (Fastify's
+ * when Origin is absent) against the app's own configured public origin
+ * (`ADMIN_PUBLIC_URL`) when one is set — mirroring the storefront's
+ * originOk (routes/cart.ts) / publicBase (shop.ts) fallback shape. Only when
+ * unconfigured does this fall back to this request's own hostname (Fastify's
  * req.hostname, which already respects TRUST_PROXY the same way req.ip
- * does — see storefront's rateLimit.ts's clientIp doc comment). No Origin
- * AND no Referer passes (many legitimate same-site requests omit both); a
- * header that IS present but names a different host fails. */
+ * does — see storefront's rateLimit.ts's clientIp doc comment). Preferring
+ * the configured origin avoids a deploy-time availability trap: a reverse
+ * proxy that doesn't forward the `Host` header correctly would otherwise
+ * make req.hostname disagree with the real public origin and 403 every
+ * mutation. No Origin AND no Referer passes (many legitimate same-site
+ * requests omit both); a header that IS present but names a different host
+ * fails. */
 function originOk(req: FastifyRequest): boolean {
   const origin = req.headers.origin;
   const referer = req.headers.referer;
   const raw = typeof origin === "string" ? origin : typeof referer === "string" ? referer : null;
   if (raw === null) return true;
+  const expectedHostname = config.ADMIN_PUBLIC_URL ? new URL(config.ADMIN_PUBLIC_URL).hostname : req.hostname;
   try {
-    return new URL(raw).hostname === req.hostname;
+    return new URL(raw).hostname === expectedHostname;
   } catch {
     return false; // an unparseable Origin/Referer is suspicious, not trusted
   }

@@ -3,6 +3,7 @@
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -335,11 +336,44 @@ describe("POST /api/v1/cart", () => {
       expect(res.statusCode).toBe(200);
     });
 
-    it("200s with a valid token and an Origin header matching this request's own host", async () => {
+    // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+    // configured, originOk falls back to comparing against req.hostname —
+    // this is that fallback path, exercised by temporarily unsetting both
+    // (this test suite's setup-env.ts sets SHOP_PUBLIC_URL by default, so it
+    // must be cleared for this one case).
+    it("200s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+      const originalShop = config.SHOP_PUBLIC_URL;
+      const originalPublic = config.PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/cart",
+          headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+          payload: { denomination_id: denomId, qty: 2 },
+        });
+        expect(res.statusCode).toBe(200);
+      } finally {
+        config.SHOP_PUBLIC_URL = originalShop;
+        config.PUBLIC_URL = originalPublic;
+      }
+    });
+
+    // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+    // this test suite — see setup-env.ts), the Origin check must prefer it
+    // over req.hostname — so an Origin matching the configured public origin
+    // passes even though it does NOT match this injected request's own
+    // apparent host ("localhost"). This is the deploy-time availability gap
+    // the fix closes: a proxy that mangles the Host header must not 403
+    // every mutation as long as the buyer's browser really is on the
+    // configured public origin.
+    it("200s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+      expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
       const res = await app.inject({
         method: "POST",
         url: "/api/v1/cart",
-        headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
         payload: { denomination_id: denomId, qty: 2 },
       });
       expect(res.statusCode).toBe(200);

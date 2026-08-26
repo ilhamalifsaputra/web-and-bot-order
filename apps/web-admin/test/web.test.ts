@@ -851,6 +851,32 @@ describe("orders", () => {
     expect(res.statusCode).toBe(200);
   });
 
+  // Whole-branch review finding I-3: when ADMIN_PUBLIC_URL IS configured,
+  // the Origin check must prefer it over req.hostname — this is the
+  // deploy-time availability gap the fix closes: a reverse proxy that
+  // mangles the Host header must not 403 every mutation as long as the
+  // admin's browser really is on the configured public origin. setup-env.ts
+  // leaves ADMIN_PUBLIC_URL unset by default, so it's set here just for this
+  // one case and restored afterwards.
+  it("approve accepts a valid CSRF token with an Origin header matching the configured ADMIN_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    const original = config.ADMIN_PUBLIC_URL;
+    config.ADMIN_PUBLIC_URL = "https://admin.test.invalid";
+    try {
+      const orderId = await makePendingOrder();
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/orders/${orderId}/approve`,
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://admin.test.invalid" },
+        cookies: { [COOKIE]: seed.cookie },
+        payload: form({ csrf_token: seed.csrf }),
+      });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      config.ADMIN_PUBLIC_URL = original;
+    }
+  });
+
   it("approve accepts the CSRF token via an X-CSRF-Token header, with no body field at all", async () => {
     const orderId = await makePendingOrder();
     setBotIdentity({ publicChannelId: -100123456789 });

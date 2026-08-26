@@ -23,6 +23,8 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "That admin account could not be found.",
   "error.admin_task_assignee_not_admin":
     "That user isn't an admin and can't be assigned tasks.",
+  "error.rate_limited":
+    "You're doing that too quickly — wait a minute and try again.",
 };
 
 /** Looks up a known `ValidationError` key and returns a readable English

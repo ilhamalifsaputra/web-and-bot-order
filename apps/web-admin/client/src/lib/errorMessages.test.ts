@@ -14,6 +14,12 @@ describe("describeError", () => {
     );
   });
 
+  it("maps error.rate_limited to a readable sentence (whole-branch review I-2 — payments 429s used to show the raw i18n key)", () => {
+    expect(describeError("error.rate_limited")).toBe(
+      "You're doing that too quickly — wait a minute and try again.",
+    );
+  });
+
   it("falls back to the raw string for an unknown key, so it's always safe to wrap any e.message", () => {
     expect(describeError("error.some_unmapped_key")).toBe("error.some_unmapped_key");
     expect(describeError("Failed to load")).toBe("Failed to load");

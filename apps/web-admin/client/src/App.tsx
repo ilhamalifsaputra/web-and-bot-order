@@ -29,6 +29,7 @@ import { UserDetailPage } from "./pages/UserDetailPage";
 import { BroadcastPage } from "./pages/BroadcastPage";
 import { SupportPage } from "./pages/SupportPage";
 import { TicketDetailPage } from "./pages/TicketDetailPage";
+import { TasksPage } from "./pages/TasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BrandingPage } from "./pages/BrandingPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -84,6 +85,7 @@ export default function App() {
         <Route path="/broadcast" element={<BroadcastPage />} />
         <Route path="/support" element={<SupportPage />} />
         <Route path="/support/:ticketId" element={<TicketDetailPage />} />
+        <Route path="/tasks" element={<TasksPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/branding" element={<BrandingPage />} />
         <Route path="/storage" element={<StoragePage />} />

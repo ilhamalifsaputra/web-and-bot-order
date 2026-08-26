@@ -151,7 +151,12 @@ export async function createAdminTask(
 export interface AdminTaskFilter {
   status?: string;
   type?: string;
-  assignedTo?: number;
+  /** A specific admin's User.id, or the literal `"unassigned"` to match rows
+   * with a null `assignedTo` (Task 9b's queue-view "Unassigned" filter —
+   * mirrors SupportTicket's assigned/unassigned toggle, but keyed to a real
+   * admin id here since AdminTask's filter already supports assignee
+   * equality, unlike TicketFilter). */
+  assignedTo?: number | "unassigned";
   orderId?: number;
   priority?: string;
 }
@@ -160,7 +165,8 @@ function adminTaskWhere(f: AdminTaskFilter): Prisma.AdminTaskWhereInput {
   const where: Prisma.AdminTaskWhereInput = {};
   if (f.status) where.status = f.status;
   if (f.type) where.type = f.type;
-  if (f.assignedTo != null) where.assignedTo = f.assignedTo;
+  if (f.assignedTo === "unassigned") where.assignedTo = null;
+  else if (f.assignedTo != null) where.assignedTo = f.assignedTo;
   if (f.orderId != null) where.orderId = f.orderId;
   if (f.priority) where.priority = f.priority;
   return where;

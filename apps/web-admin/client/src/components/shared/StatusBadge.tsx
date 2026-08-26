@@ -70,6 +70,16 @@ const TONE: Record<string, Tone> = {
   // the pair is visibly a pair.
   WALLET_TOPUP: "success",
   PRODUCT: "neutral",
+  // AdminTaskStatus (Tasks page, Task 9b) — PENDING reuses the same "warning"
+  // tone order/ticket PENDING already gets above (needs an admin's action).
+  // ASSIGNED/IN_PROGRESS are normal in-flight work (neutral — listed
+  // explicitly for clarity, not because the fallback would differ).
+  // ESCALATED needs urgent attention; COMPLETED is done, matching
+  // DELIVERED's success tone.
+  ASSIGNED: "neutral",
+  IN_PROGRESS: "neutral",
+  ESCALATED: "danger",
+  COMPLETED: "success",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

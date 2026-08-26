@@ -35,7 +35,19 @@ export function OperationCenter() {
 
   return (
     <section>
-      <h2 className="mb-2 font-display text-lg font-semibold text-ink">Operation Center</h2>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="font-display text-lg font-semibold text-ink">Operation Center</h2>
+        {/* The cards below are read-only counters computed live from Order/
+            Payment-adjacent tables (GET /api/dashboard/operations) — a
+            SEPARATE concept from the AdminTask queue (Task 9b's Tasks page).
+            Nothing currently creates AdminTask rows from these same events,
+            so none of these counters map onto a task-queue filter yet; this
+            is a plain, generic link to the queue rather than a false
+            counter-to-task correspondence. */}
+        <Link to="/tasks" className="text-sm font-medium text-pine hover:underline">
+          Manage Tasks →
+        </Link>
+      </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load operations.</p>}

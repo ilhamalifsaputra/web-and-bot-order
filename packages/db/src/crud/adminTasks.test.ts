@@ -245,6 +245,20 @@ describe("listAdminTasks / countAdminTasks", () => {
     expect(pendingCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("filters by assignedTo: 'unassigned' (Task 9b's queue-view filter)", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const assigned = await createAdminTask(prisma, { type: AdminTaskType.MANUAL_DELIVERY, orderId: order.id, adminId: admin.id });
+    const unassigned = await createAdminTask(prisma, { type: AdminTaskType.MANUAL_DELIVERY, orderId: order.id, adminId: admin.id });
+    await assignAdminTask(prisma, { taskId: assigned.id, from: AdminTaskStatus.PENDING, assignedTo: admin.id, adminId: admin.id });
+
+    const unassignedOnly = await listAdminTasks(prisma, { assignedTo: "unassigned", orderId: order.id });
+    expect(unassignedOnly.map((t) => t.id)).toEqual([unassigned.id]);
+
+    const unassignedCount = await countAdminTasks(prisma, { assignedTo: "unassigned", orderId: order.id });
+    expect(unassignedCount).toBe(1);
+  });
+
   it("includes order/orderItem/refund/assignee relations", async () => {
     const { order, item } = await makeOrderWithItem();
     const admin = await makeAdmin();

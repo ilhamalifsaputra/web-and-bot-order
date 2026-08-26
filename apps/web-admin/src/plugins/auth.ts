@@ -64,8 +64,15 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // must track the live paths or every non-super role silently loses its RBAC
 // grants (a real regression caught by the /api/* test-trio work).
 const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast"];
-// Operational routes — super + support.
-const OPS_PREFIXES = ["/api/orders", "/api/support", "/api/outbox", "/api/payments", "/api/reviews"];
+// Operational routes — super + support. `/api/admin-tasks` (the Task 9b
+// queue: assign/start/complete/escalate on manual-ops tasks) sits here, not
+// in CONFIG_PREFIXES — it's an operational queue like Support/Orders, not a
+// structural/config surface, even though one task type (REFUND_REVIEW) is
+// money-adjacent; the state machine itself only ever changes AdminTask.status/
+// assignedTo, never moves money directly (that stays gated behind the
+// existing Refund/wallet routes), so support-tier access is consistent with
+// this repo's existing RBAC tiering rather than inventing a new one.
+const OPS_PREFIXES = ["/api/orders", "/api/support", "/api/outbox", "/api/payments", "/api/reviews", "/api/admin-tasks"];
 
 const underAny = (path: string, prefixes: string[]) =>
   prefixes.some((p) => path === p || path.startsWith(p + "/"));

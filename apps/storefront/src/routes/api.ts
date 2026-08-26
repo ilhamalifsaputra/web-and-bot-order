@@ -256,8 +256,13 @@ const CHECKOUT_IDEMPOTENCY_ENDPOINT = "storefront.checkout.create";
  * back `string | string[] | undefined` for a possibly-repeated header; a
  * repeat takes the first value. Empty/oversized values are treated as "no
  * key" (opt out) rather than rejected, since this feature is additive and
- * must never turn a missing/malformed header into a hard failure. */
-function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+ * must never turn a missing/malformed header into a hard failure.
+ *
+ * Exported (Task 3) so the cart-free instant-buy order route
+ * (routes/apiTopup.ts) reads the SAME header the SAME way, rather than a
+ * second copy of this rule that could drift — same cross-file-reuse reason as
+ * `withGuestCsrf` above. */
+export function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
   const raw = (Array.isArray(header) ? header[0] : header) ?? "";
   const trimmed = raw.trim();
   return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;

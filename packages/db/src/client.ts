@@ -1,7 +1,9 @@
 /**
  * Prisma client singleton — replacement for Python `database/session.py`.
- * Sets the same PRAGMAs the SQLAlchemy engine used (FK on, WAL, synchronous
- * NORMAL) plus a busy_timeout to avoid SQLITE_BUSY under concurrent writers.
+ * Sets the same PRAGMAs the SQLAlchemy engine used (FK on, WAL) plus a
+ * busy_timeout to avoid SQLITE_BUSY under concurrent writers. synchronous
+ * is FULL, not the SQLAlchemy engine's original NORMAL — durability over
+ * throughput on a single-VPS deployment (2026-08-26 decision).
  */
 import { PrismaClient } from "@prisma/client";
 
@@ -17,7 +19,8 @@ import { PrismaClient } from "@prisma/client";
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 export const prisma: PrismaClient =
-  globalForPrisma.prisma ?? new PrismaClient();
+  globalForPrisma.prisma ??
+  new PrismaClient({ transactionOptions: { maxWait: 5000, timeout: 10000 } });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
@@ -30,7 +33,7 @@ export async function initDb(): Promise<void> {
   // which $executeRawUnsafe rejects on SQLite.
   await prisma.$queryRawUnsafe("PRAGMA foreign_keys = ON");
   await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL");
-  await prisma.$queryRawUnsafe("PRAGMA synchronous = NORMAL");
+  await prisma.$queryRawUnsafe("PRAGMA synchronous = FULL");
   await prisma.$queryRawUnsafe("PRAGMA busy_timeout = 5000");
   initialized = true;
 }

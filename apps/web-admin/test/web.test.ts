@@ -34,6 +34,7 @@ import {
   listTicketMessages,
   setSetting,
   getSetting,
+  getDecryptedSetting,
   deleteSetting,
   getVoucherByCode,
   countAvailableStock,
@@ -84,7 +85,7 @@ import {
   PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
@@ -5002,8 +5003,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_secret", value: "BINSECRETVALUE",
     });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
-    expect(await getSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawKey = await getSetting(prisma, "binance_api_key");
+    expect(rawKey).not.toBe("BINKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawKey!)).toBe(true);
+    const rawSecret = await getSetting(prisma, "binance_api_secret");
+    expect(rawSecret).not.toBe("BINSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -5011,7 +5020,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -5041,7 +5050,12 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_apikey", value: "PDAPIKEYSECRET",
     });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "paydisini_apikey");
+    expect(rawApiKey).not.toBe("PDAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -5049,7 +5063,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
 
     // The stored secret is never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -5106,8 +5120,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_ipn_secret", value: "NOWIPNSECRETVALUE",
     });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
-    expect(await getSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+
+    // Task 13: the rows are encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "nowpayments_api_key");
+    expect(rawApiKey).not.toBe("NOWAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
+    const rawIpnSecret = await getSetting(prisma, "nowpayments_ipn_secret");
+    expect(rawIpnSecret).not.toBe("NOWIPNSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawIpnSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -5115,7 +5137,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -5206,7 +5228,12 @@ describe("settings", () => {
       csrf_token: seed.csrf, key: "bscscan_api_key", value: "SUPERSECRETBSCSCANKEY",
     });
     expect(res.statusCode).toBe(200);
-    expect(await getSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+    expect(await getDecryptedSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const raw = await getSetting(prisma, "bscscan_api_key");
+    expect(raw).not.toBe("SUPERSECRETBSCSCANKEY");
+    expect(isEncryptedCredentialEnvelope(raw!)).toBe(true);
 
     const page = await get("/api/settings", seed.cookie);
     expect(page.body).not.toContain("SUPERSECRETBSCSCANKEY");

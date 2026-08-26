@@ -26,7 +26,7 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
-import { getSetting } from "./settings";
+import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
@@ -37,8 +37,8 @@ export const NOWPAYMENTS_MIN_AMOUNT_KEY = "nowpayments_min_amount";
 /** Read NOWPayments gateway credentials from Settings; null = the USDT path is off. */
 export async function getNowpaymentsCreds(db: Db): Promise<(NowpaymentsCreds & { minAmount: Decimal | null }) | null> {
   const [apiKey, ipnSecret, enabled, payCurrency, minAmountSetting] = await Promise.all([
-    getSetting(db, NOWPAYMENTS_API_KEY_KEY),
-    getSetting(db, NOWPAYMENTS_IPN_SECRET_KEY),
+    getDecryptedSetting(db, NOWPAYMENTS_API_KEY_KEY),
+    getDecryptedSetting(db, NOWPAYMENTS_IPN_SECRET_KEY),
     getSetting(db, NOWPAYMENTS_ENABLED_KEY),
     getSetting(db, NOWPAYMENTS_PAY_CURRENCY_KEY),
     getSetting(db, NOWPAYMENTS_MIN_AMOUNT_KEY),

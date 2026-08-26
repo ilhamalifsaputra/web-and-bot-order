@@ -10,7 +10,7 @@
  */
 import type { VipResellerCreds } from "@app/core/suppliers/vipreseller";
 import type { Db } from "./_types";
-import { getSetting } from "./settings";
+import { getSetting, getDecryptedSetting } from "./settings";
 
 /** Setting keys — wired to admin Settings (apps/web-admin/src/routes/api/
  * settings.ts EDITABLE/SECRET_KEYS), same as every other `getXCreds`
@@ -25,7 +25,7 @@ export const VIPRESELLER_API_KEY_KEY = "vipreseller_api_key";
  * test) is expected to treat null as "degrade silently, don't error." */
 export async function getVipResellerCreds(db: Db): Promise<VipResellerCreds | null> {
   const apiId = await getSetting(db, VIPRESELLER_API_ID_KEY);
-  const apiKey = await getSetting(db, VIPRESELLER_API_KEY_KEY);
+  const apiKey = await getDecryptedSetting(db, VIPRESELLER_API_KEY_KEY);
   if (!apiId || !apiKey) return null;
   return { apiId, apiKey };
 }

@@ -7,6 +7,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
 import { getKokinpayCreds, setSetting, deleteSetting, KOKINPAY_API_KEY_KEY } from "@app/db";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -31,5 +32,10 @@ describe("getKokinpayCreds", () => {
   it("returns null when no API key is configured", async () => {
     await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
     expect(await getKokinpayCreds(prisma)).toBeNull();
+  });
+
+  it("decrypts the API key when stored as an encrypted envelope (Task 13)", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, encryptCredentials("real-kokinpay-apikey"));
+    expect(await getKokinpayCreds(prisma)).toEqual({ apiKey: "real-kokinpay-apikey" });
   });
 });

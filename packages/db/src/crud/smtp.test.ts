@@ -13,6 +13,7 @@ vi.mock("@app/core/config", () => ({ config: mockConfig }));
 
 import { getSmtpCreds } from "./smtp";
 import type { Db } from "./_types";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 /** In-memory Setting store as a Db stub (only `setting.findUnique` is used). */
 function stubDb(values: Record<string, string>): Db {
@@ -93,5 +94,16 @@ describe("getSmtpCreds", () => {
       stubDb({ smtp_host: "smtp.example.com", smtp_from: "Shop <noreply@example.com>", smtp_port: "not-a-number" }),
     );
     expect(creds?.port).toBe(587);
+  });
+
+  it("decrypts smtp_pass when stored as an encrypted envelope (Task 13)", async () => {
+    const creds = await getSmtpCreds(
+      stubDb({
+        smtp_host: "smtp.hostinger.com",
+        smtp_from: "Trustance <no-reply@trustance.id>",
+        smtp_pass: encryptCredentials("real-smtp-password"),
+      }),
+    );
+    expect(creds?.pass).toBe("real-smtp-password");
   });
 });

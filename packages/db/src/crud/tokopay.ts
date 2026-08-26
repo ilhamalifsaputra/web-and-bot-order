@@ -27,7 +27,7 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
-import { getSetting } from "./settings";
+import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
@@ -39,7 +39,7 @@ export const TOKOPAY_MIN_AMOUNT_KEY = "tokopay_min_amount";
 export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmount: Decimal | null }) | null> {
   const [merchantId, secret, enabled, channel, minAmountSetting] = await Promise.all([
     getSetting(db, TOKOPAY_MERCHANT_KEY),
-    getSetting(db, TOKOPAY_SECRET_KEY),
+    getDecryptedSetting(db, TOKOPAY_SECRET_KEY),
     getSetting(db, TOKOPAY_ENABLED_KEY),
     getSetting(db, TOKOPAY_CHANNEL_KEY),
     getSetting(db, TOKOPAY_MIN_AMOUNT_KEY),

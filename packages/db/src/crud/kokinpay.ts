@@ -8,7 +8,7 @@
  */
 import type { KokinpayCreds } from "@app/core/suppliers/kokinpay";
 import type { Db } from "./_types";
-import { getSetting } from "./settings";
+import { getDecryptedSetting } from "./settings";
 
 /** Setting key — wired to admin Settings (apps/web-admin/src/routes/api/
  * settings.ts EDITABLE/SECRET_KEYS), same as every other `getXCreds`
@@ -22,7 +22,7 @@ export const KOKINPAY_API_KEY_KEY = "kokinpay_api_key";
  * Settings connection test) already treats as "degrade silently, don't
  * error." */
 export async function getKokinpayCreds(db: Db): Promise<KokinpayCreds | null> {
-  const apiKey = await getSetting(db, KOKINPAY_API_KEY_KEY);
+  const apiKey = await getDecryptedSetting(db, KOKINPAY_API_KEY_KEY);
   if (!apiKey) return null;
   return { apiKey };
 }

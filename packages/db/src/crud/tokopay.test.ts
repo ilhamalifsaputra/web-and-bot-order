@@ -37,6 +37,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -599,6 +600,14 @@ describe("getTokopayCreds — minAmount", () => {
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
     await setSetting(prisma, "tokopay_min_amount", "-1");
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
+  });
+});
+
+describe("getTokopayCreds — encrypted secret (Task 13)", () => {
+  it("decrypts a tokopay_secret row stored as an encrypted envelope", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M");
+    await setSetting(prisma, "tokopay_secret", encryptCredentials("real-tokopay-secret"));
+    expect((await getTokopayCreds(prisma))!.secret).toBe("real-tokopay-secret");
   });
 });
 

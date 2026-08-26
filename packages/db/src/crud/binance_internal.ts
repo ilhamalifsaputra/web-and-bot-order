@@ -39,7 +39,7 @@ import {
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
@@ -94,8 +94,8 @@ function pick(dbVal: string | null, envVal?: string): string {
 export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
   const [uid, key, secret, flag, minAmountSetting] = await Promise.all([
     getSetting(db, BINANCE_UID_KEY),
-    getSetting(db, BINANCE_API_KEY_KEY),
-    getSetting(db, BINANCE_API_SECRET_KEY),
+    getDecryptedSetting(db, BINANCE_API_KEY_KEY),
+    getDecryptedSetting(db, BINANCE_API_SECRET_KEY),
     getSetting(db, BINANCE_INTERNAL_ENABLED_KEY),
     getSetting(db, BINANCE_INTERNAL_MIN_AMOUNT_KEY),
   ]);

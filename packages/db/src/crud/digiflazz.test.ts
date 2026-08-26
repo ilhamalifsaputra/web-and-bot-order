@@ -75,6 +75,7 @@ import {
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 // I3 test: spy on getSetting itself (not just the underlying Prisma query,
 // which a 30s TTL cache can mask) to confirm the markup setting is read a
 // CONSTANT number of times per run, not once per denomination.
@@ -138,6 +139,11 @@ describe("getDigiflazzCreds", () => {
   it("returns null when explicitly disabled", async () => {
     await setSetting(prisma, DIGIFLAZZ_ENABLED_KEY, "false");
     expect(await getDigiflazzCreds(prisma)).toBeNull();
+  });
+
+  it("decrypts the digiflazz api key when stored as an encrypted envelope (Task 13)", async () => {
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, encryptCredentials("real-digiflazz-apikey"));
+    expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "real-digiflazz-apikey" });
   });
 });
 

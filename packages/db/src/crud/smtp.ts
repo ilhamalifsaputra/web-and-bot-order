@@ -8,7 +8,7 @@
 import { config } from "@app/core/config";
 import type { SmtpCreds } from "@app/core/mailer";
 import type { Db } from "./_types";
-import { getSetting } from "./settings";
+import { getSetting, getDecryptedSetting } from "./settings";
 
 export const SMTP_HOST_KEY = "smtp_host";
 export const SMTP_PORT_KEY = "smtp_port";
@@ -31,7 +31,7 @@ export async function getSmtpCreds(db: Db): Promise<SmtpCreds | null> {
     getSetting(db, SMTP_HOST_KEY),
     getSetting(db, SMTP_PORT_KEY),
     getSetting(db, SMTP_USER_KEY),
-    getSetting(db, SMTP_PASS_KEY),
+    getDecryptedSetting(db, SMTP_PASS_KEY),
     getSetting(db, SMTP_FROM_KEY),
     getSetting(db, SMTP_SECURE_KEY),
   ]);

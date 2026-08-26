@@ -44,6 +44,11 @@ class NotFoundError extends Error {}
  * (packages/db/src/crud/idempotency.ts) — not the literal URL, so it stays
  * correct if the route is ever remounted. */
 const REFUND_IDEMPOTENCY_ENDPOINT = "web-admin.payments.refundUnderpaid";
+const DELIVER_IDEMPOTENCY_ENDPOINT = "web-admin.payments.deliverUnderpaid";
+const CANCEL_IDEMPOTENCY_ENDPOINT = "web-admin.payments.cancelUnderpaid";
+const MATCH_IDEMPOTENCY_ENDPOINT = "web-admin.payments.manualMatch";
+const CREDIT_IDEMPOTENCY_ENDPOINT = "web-admin.payments.creditBalance";
+const DISMISS_IDEMPOTENCY_ENDPOINT = "web-admin.payments.dismissTx";
 
 /** An `Idempotency-Key` header, trimmed and length-capped — a repeat header
  * takes the first value. Empty/oversized values are treated as "no key"
@@ -121,6 +126,42 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/payments/order/:orderId/deliver", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     try {
       const { order } = await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
@@ -131,11 +172,11 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         details: `Delivered underpaid order ${order.orderCode} anyway.`,
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
     logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
-    return reply.send({ ok: true });
+    return respond(200, { ok: true });
   });
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {
@@ -203,6 +244,42 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     try {
       await prisma.$transaction(async (tx) => {
         const order = await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
@@ -215,22 +292,60 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return reply.send({ ok: true });
+    return respond(200, { ok: true });
   });
 
   app.post("/api/payments/match", { preHandler: csrfProtect }, async (req, reply) => {
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode }) }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     if (!binanceTxId || !orderCode) {
-      return reply.code(400).send({ error: "Both a transfer id and an order code are required." });
+      return respond(400, { error: "Both a transfer id and an order code are required." });
     }
     try {
       const target = await getOrderByCode(prisma, orderCode);
-      if (!target) return reply.code(404).send({ error: `Order ${orderCode} not found.` });
+      if (!target) return respond(404, { error: `Order ${orderCode} not found.` });
       const result = await manualMatchTx(prisma, {
         binanceTxId,
         orderId: target.id,
@@ -247,9 +362,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
             : `Matched transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
       });
       logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });
@@ -258,8 +373,46 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode }) }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     if (!binanceTxId || !orderCode) {
-      return reply.code(400).send({ error: "Both a transfer id and an order code are required." });
+      return respond(400, { error: "Both a transfer id and an order code are required." });
     }
     try {
       await prisma.$transaction(async (tx) => {
@@ -282,17 +435,53 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
       logger.info(`Admin ${req.admin!.userId} credited Binance transfer ${binanceTxId} to order ${orderCode}'s buyer balance via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof NotFoundError) return reply.code(404).send({ error: e.message });
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof NotFoundError) return respond(404, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });
 
   app.post("/api/payments/dismiss", { preHandler: csrfProtect }, async (req, reply) => {
     const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
-    if (!binanceTxId) return reply.code(400).send({ error: "A payment reference is required." });
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
+    if (!binanceTxId) return respond(400, { error: "A payment reference is required." });
     try {
       await prisma.$transaction(async (tx) => {
         await dismissUnmatchedTx(tx, binanceTxId);
@@ -304,9 +493,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
       logger.info(`Admin ${req.admin!.userId} dismissed unmatched Binance transfer ${binanceTxId} via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });

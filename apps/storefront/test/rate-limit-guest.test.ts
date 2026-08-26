@@ -20,12 +20,18 @@ import {
   guestCheckoutRateLimited,
   trackLookupRateLimited,
   checkoutPreviewRateLimited,
+  checkoutSubmitRateLimited,
+  linkTelegramRateLimited,
   GUEST_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS,
   GUEST_CHECKOUT_RATE_LIMIT_MAX,
   TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS,
   TRACK_LOOKUP_RATE_LIMIT_MAX,
   CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
   CHECKOUT_PREVIEW_RATE_LIMIT_MAX,
+  CHECKOUT_SUBMIT_RATE_LIMIT_WINDOW_SECONDS,
+  CHECKOUT_SUBMIT_RATE_LIMIT_MAX,
+  LINK_TELEGRAM_RATE_LIMIT_WINDOW_SECONDS,
+  LINK_TELEGRAM_RATE_LIMIT_MAX,
 } from "../src/rateLimit";
 
 beforeEach(() => {
@@ -183,5 +189,74 @@ describe("guestCheckoutRateLimited and trackLookupRateLimited are independent", 
 
     // Checkout quota for the SAME ip is untouched.
     expect(guestCheckoutRateLimited(ip)).toBe(false);
+  });
+});
+
+// Task 5: the actual order-creating mutations (POST /api/v1/checkout and
+// POST /topup/order) had no throttle at all before this — checkoutPreviewRateLimited
+// above only guards the anonymous READS, not the writes.
+describe("checkoutSubmitRateLimited", () => {
+  it("allows CHECKOUT_SUBMIT_RATE_LIMIT_MAX calls then blocks the next one", () => {
+    const ip = "10.10.10.1";
+    for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+      expect(checkoutSubmitRateLimited(ip)).toBe(false);
+    }
+    expect(checkoutSubmitRateLimited(ip)).toBe(true);
+  });
+
+  it("lets the IP through again once the window has fully elapsed", () => {
+    const ip = "10.10.10.2";
+    for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+      expect(checkoutSubmitRateLimited(ip)).toBe(false);
+    }
+    expect(checkoutSubmitRateLimited(ip)).toBe(true); // now capped
+
+    vi.advanceTimersByTime((CHECKOUT_SUBMIT_RATE_LIMIT_WINDOW_SECONDS + 1) * 1000);
+
+    expect(checkoutSubmitRateLimited(ip)).toBe(false); // window has shifted
+  });
+
+  it("gives a second IP its own, unexhausted quota", () => {
+    const ipA = "10.10.10.3";
+    const ipB = "10.10.10.4";
+    for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+      expect(checkoutSubmitRateLimited(ipA)).toBe(false);
+    }
+    expect(checkoutSubmitRateLimited(ipA)).toBe(true); // ipA capped
+    expect(checkoutSubmitRateLimited(ipB)).toBe(false); // ipB untouched
+  });
+});
+
+// Task 5: GET /account/settings/link-telegram — keyed by customer id (not
+// IP) since the route only ever runs behind an authenticated session.
+describe("linkTelegramRateLimited", () => {
+  it("allows LINK_TELEGRAM_RATE_LIMIT_MAX calls then blocks the next one", () => {
+    const customerId = 11101;
+    for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
+      expect(linkTelegramRateLimited(customerId)).toBe(false);
+    }
+    expect(linkTelegramRateLimited(customerId)).toBe(true);
+  });
+
+  it("lets the customer through again once the window has fully elapsed", () => {
+    const customerId = 11102;
+    for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
+      expect(linkTelegramRateLimited(customerId)).toBe(false);
+    }
+    expect(linkTelegramRateLimited(customerId)).toBe(true); // now capped
+
+    vi.advanceTimersByTime((LINK_TELEGRAM_RATE_LIMIT_WINDOW_SECONDS + 1) * 1000);
+
+    expect(linkTelegramRateLimited(customerId)).toBe(false); // window has shifted
+  });
+
+  it("gives a second customer id its own, unexhausted quota", () => {
+    const customerA = 11103;
+    const customerB = 11104;
+    for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
+      expect(linkTelegramRateLimited(customerA)).toBe(false);
+    }
+    expect(linkTelegramRateLimited(customerA)).toBe(true); // customerA capped
+    expect(linkTelegramRateLimited(customerB)).toBe(false); // customerB untouched
   });
 });

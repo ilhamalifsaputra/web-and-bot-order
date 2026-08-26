@@ -111,6 +111,7 @@ import {
   nicknameCheckRateLimited,
   checkoutPreviewRateLimited,
   guestCheckoutRateLimited,
+  checkoutSubmitRateLimited,
 } from "../rateLimit";
 import { checkoutView, performDirectCheckout, performDirectWalletCheckout } from "./checkout";
 import { csrfOk } from "./cart";
@@ -294,6 +295,14 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       guest_email?: string;
     };
   }>("/topup/order", async (req, reply) => {
+    // Rate limit FIRST — cheapest possible short-circuit, before any
+    // DB/session work (including the idempotency check below). Shared with
+    // POST /api/v1/checkout (see checkoutSubmitRateLimited's doc comment in
+    // ../rateLimit.ts).
+    if (checkoutSubmitRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const signedIn = await optionalCustomer(req);
     if (signedIn) {
       // Header-only, byte-for-byte as POST /api/v1/checkout gates itself (not

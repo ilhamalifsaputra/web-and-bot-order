@@ -16,6 +16,7 @@ import {
 } from "@app/db";
 import { DeliveryType } from "@app/core/enums";
 import { buildApp } from "../src/server";
+import { CHECKOUT_SUBMIT_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 async function seedProduct(
   categoryId: number,
@@ -44,6 +45,14 @@ let categorySlug: string;
 let productSlug: string;
 let denomId: number;
 let emptyProductSlug: string;
+
+/** A distinct simulated client IP per test, so one test's checkout-submit
+ * quota can never spill into another's (the limiter is process-wide). */
+let ipCounter = 0;
+function freshIp(): string {
+  ipCounter += 1;
+  return `192.0.2.${ipCounter}`;
+}
 
 beforeAll(async () => {
   await initDb();
@@ -866,6 +875,43 @@ describe("POST /api/v1/checkout", () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+    });
+  });
+
+  // Task 5: checkoutSubmitRateLimited(ip) — the order-creating mutation
+  // itself had no throttle at all before this. Checked as the very first
+  // statement, so a 400 (guest email missing) below still counts as a hit.
+  describe("rate limiting (Task 5)", () => {
+    it("429s after CHECKOUT_SUBMIT_RATE_LIMIT_MAX submits from one IP, without affecting a different IP", async () => {
+      const ip = freshIp();
+      for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/checkout",
+          headers: { "x-forwarded-for": ip },
+          payload: { method: "qris" },
+        });
+        expect(res.statusCode).toBe(400); // still under the cap (missing guest email)
+      }
+      const limited = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": ip },
+        payload: { method: "qris" },
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toEqual({ error: "error.rate_limited" });
+
+      // A different IP has its own, unexhausted quota.
+      const otherIp = freshIp();
+      const unaffected = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": otherIp },
+        payload: { method: "qris" },
+      });
+      expect(unaffected.statusCode).toBe(400);
+      expect(unaffected.json()).toEqual({ error: "web.guest_email_invalid" });
     });
   });
 });

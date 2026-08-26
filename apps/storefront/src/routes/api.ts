@@ -53,7 +53,7 @@ import { loadCartLines, loadGuestCartItems, cartCompositionLineOf } from "./cart
 import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
-import { clientIp, guestCheckoutRateLimited } from "../rateLimit";
+import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
 
 interface CategoryJson {
@@ -526,6 +526,13 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       guest_email?: string;
     };
   }>("/checkout", async (req, reply) => {
+    // Rate limit FIRST — cheapest possible short-circuit, before any
+    // DB/session work (including the idempotency check below). Shared with
+    // POST /topup/order (see checkoutSubmitRateLimited's doc comment).
+    if (checkoutSubmitRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const signedIn = await optionalCustomer(req);
     if (signedIn) {
       const token = req.headers["x-csrf-token"];

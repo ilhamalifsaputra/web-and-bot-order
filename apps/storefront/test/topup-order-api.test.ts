@@ -35,7 +35,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX } from "../src/rateLimit";
+import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX, CHECKOUT_SUBMIT_RATE_LIMIT_MAX } from "../src/rateLimit";
 import { MAX_PENDING_ORDERS } from "../src/routes/checkout";
 
 let app: FastifyInstance;
@@ -904,5 +904,44 @@ describe("POST /api/v1/topup/order — Idempotency-Key", () => {
     expect(await countUsers()).toBe(usersAfterFirst);
     const secondGuest = await prisma.user.findFirst({ where: { guestEmail: "topup.idem.conflict.b@example.com" } });
     expect(secondGuest).toBeNull();
+  });
+});
+
+// Task 5: checkoutSubmitRateLimited(ip) — POST /topup/order shares ONE quota
+// with POST /api/v1/checkout (see rateLimit.ts's doc comment); checked as the
+// very first statement, so a 400 (deactivated denomination) below still
+// counts as a hit.
+describe("POST /api/v1/topup/order — rate limiting (Task 5)", () => {
+  it("429s after CHECKOUT_SUBMIT_RATE_LIMIT_MAX submits from one IP, without affecting a different IP", async () => {
+    const ip = freshIp();
+    const headers = { "x-forwarded-for": ip };
+    for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/topup/order",
+        headers,
+        payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+      });
+      expect(res.statusCode).toBe(400); // still under the cap (deactivated denom)
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers,
+      payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
+
+    // A different IP has its own, unexhausted quota.
+    const otherIp = freshIp();
+    const unaffected = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": otherIp },
+      payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+    });
+    expect(unaffected.statusCode).toBe(400);
+    expect(unaffected.json()).toEqual({ error: "invalid_request" });
   });
 });

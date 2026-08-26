@@ -111,6 +111,12 @@ function mockFetchRouter(
       const result = overrides.onPost?.(url, body) ?? { ok: true };
       return jsonResponse(result);
     }
+    // TasksPage's assignee picker calls /api/admin-tasks/assignees, NOT
+    // /api/admins (that route is requireSuper-gated — see TasksPage.tsx's
+    // useTaskAssignees comment) — checked before the /api/admin-tasks
+    // fallback below so this doesn't fall through to the tasks-shaped
+    // response.
+    if (url.startsWith("/api/admin-tasks/assignees")) return jsonResponse(adminsResponse);
     if (url.startsWith("/api/admins")) return jsonResponse(adminsResponse);
     return jsonResponse(tasksResponse);
   });

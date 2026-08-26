@@ -452,6 +452,49 @@ describe("POST /api/v1/topup/order — signed-in gateway branch", () => {
     expect(await prisma.order.count()).toBe(before);
   });
 
+  // Task 12 fix-review: this route's CSRF check is its own inline copy (the
+  // "structural twin" of POST /api/v1/checkout in api.ts, per this file's
+  // comment above), so it needed its own Origin/Referer defense-in-depth
+  // coverage rather than inheriting csrfOk's.
+  it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token, creating no order", async () => {
+    await makeUser("topuporiginbad", "topuporiginbad-pw-1", "TPORGB");
+    const { cookie, csrf } = await loginAs("topuporiginbad", "topuporiginbad-pw-1");
+    const before = await prisma.order.count();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+    expect(await prisma.order.count()).toBe(before);
+  });
+
+  it("201s with a valid token and no Origin/Referer header at all", async () => {
+    await makeUser("topuporiginnone", "topuporiginnone-pw-1", "TPORGN");
+    const { cookie, csrf } = await loginAs("topuporiginnone", "topuporiginnone-pw-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("201s with a valid token and an Origin header matching this request's own host", async () => {
+    await makeUser("topuporiginok", "topuporiginok-pw-1", "TPORGO");
+    const { cookie, csrf } = await loginAs("topuporiginok", "topuporiginok-pw-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
   it("400s web.pay_method_unavailable for a gateway that isn't configured", async () => {
     await makeUser("topupnogw", "topupnogw-pw-1", "TPNOGW");
     const { cookie, csrf } = await loginAs("topupnogw", "topupnogw-pw-1");

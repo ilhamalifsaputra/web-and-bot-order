@@ -114,7 +114,7 @@ import {
   checkoutSubmitRateLimited,
 } from "../rateLimit";
 import { checkoutView, performDirectCheckout, performDirectWalletCheckout } from "./checkout";
-import { csrfOk } from "./cart";
+import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
@@ -310,7 +310,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // route holds the stricter of the two rules). Guests are not CSRF-checked
       // for the same reason they aren't there: they have no session to ride.
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }

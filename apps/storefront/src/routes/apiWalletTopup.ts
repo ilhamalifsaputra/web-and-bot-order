@@ -36,6 +36,7 @@ import { Decimal } from "@app/core/money";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
 import { payView, payState } from "./checkout";
+import { originOk } from "./cart";
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303 — same
  * helper apiAccount.ts/apiCheckout.ts each define locally for their own file. */
@@ -53,7 +54,7 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
  * apiCheckout.ts's csrfOk, so there is no guest bypass to preserve). */
 function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
   const token = req.headers["x-csrf-token"];
-  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf) && originOk(req);
 }
 
 /** Look up an order by code and enforce BOTH ownership and

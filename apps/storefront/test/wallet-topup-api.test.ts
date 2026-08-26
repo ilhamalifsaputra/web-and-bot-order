@@ -152,6 +152,36 @@ describe("POST /api/v1/wallet/topup — validation matrix", () => {
     expect(res.json()).toEqual({ error: "csrf_failed" });
   });
 
+  // Task 12 fix-review: apiWalletTopup.ts's csrfHeaderOk (shared by both
+  // mutating wallet-topup routes) was missing the Origin/Referer
+  // defense-in-depth check that api.ts's inline checks already had — same
+  // 403 shape as a bad token, same "no Origin/Referer passes" allowance.
+  it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/wallet/topup",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+      payload: { currency: "IDR", amount: "50000", method: "qris" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+  });
+
+  it("201s with a valid token and no Origin/Referer header at all", async () => {
+    const res = await post({ currency: "IDR", amount: "50000", method: "qris" });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("201s with a valid token and an Origin header matching this request's own host", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/wallet/topup",
+      headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+      payload: { currency: "IDR", amount: "50000", method: "qris" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
   it("rejects an unknown/disabled method with a clean 400, not a 500", async () => {
     const unknown = await post({ currency: "IDR", amount: "50000", method: "visa" });
     expect(unknown.statusCode).toBe(400);

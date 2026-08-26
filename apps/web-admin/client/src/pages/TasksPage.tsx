@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -87,9 +87,8 @@ function typeLabel(type: string): string {
 }
 
 interface AdminOption {
-  id: number | null;
-  telegramId: number;
-  name: string | null;
+  id: number;
+  name: string;
 }
 
 interface TaskOrderRef {
@@ -172,11 +171,19 @@ function useAdminTasks(filters: Filters) {
   });
 }
 
-function useAdmins() {
+// `/api/admin-tasks/assignees`, NOT `/api/admins` — this page is OPS-tier
+// (mutable by support+super), but `/api/admins` is requireSuper-gated (it
+// also returns passwordSet/twoFa/hasSession flags that must stay super-only),
+// so a support-role admin would 403 on it and silently lose the ability to
+// assign a task (PENDING's only outgoing edges are assign/escalate — see
+// ADMIN_TASK_LEGAL_TRANSITIONS). This dedicated endpoint is currentAdmin-gated
+// like the rest of this route file and returns just the {id, name} pairs
+// this picker needs.
+function useTaskAssignees() {
   return useQuery<{ admins: AdminOption[] }>({
-    queryKey: ["admins"],
+    queryKey: ["admin-task-assignees"],
     queryFn: async () => {
-      const res = await fetch("/api/admins");
+      const res = await fetch("/api/admin-tasks/assignees");
       if (!res.ok) throw new Error("Failed to load");
       return res.json() as Promise<{ admins: AdminOption[] }>;
     },
@@ -210,12 +217,9 @@ export function TasksPage() {
   const [completeTarget, setCompleteTarget] = useState<number | null>(null);
 
   const { data, isError, refetch } = useAdminTasks(filters);
-  const { data: adminsData } = useAdmins();
+  const { data: adminsData } = useTaskAssignees();
 
-  const assignableAdmins = useMemo(
-    () => (adminsData?.admins ?? []).filter((a): a is AdminOption & { id: number } => a.id !== null),
-    [adminsData],
-  );
+  const assignableAdmins = adminsData?.admins ?? [];
 
   function invalidateAll() {
     void qc.invalidateQueries({ queryKey: ["admin-tasks"] });
@@ -377,7 +381,7 @@ export function TasksPage() {
               <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
               {assignableAdmins.map((a) => (
                 <SelectItem key={a.id} value={String(a.id)}>
-                  {a.name ?? `Telegram ID ${a.telegramId}`}
+                  {a.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -436,7 +440,7 @@ export function TasksPage() {
                       ) : (
                         assignableAdmins.map((a) => (
                           <SelectItem key={a.id} value={String(a.id)}>
-                            {a.name ?? `Telegram ID ${a.telegramId}`}
+                            {a.name}
                           </SelectItem>
                         ))
                       )}

@@ -196,6 +196,29 @@ export function countAdminTasks(db: Db, opts: AdminTaskFilter = {}) {
 }
 
 /**
+ * Admins eligible to be assigned an AdminTask — every `User` row with
+ * `role === ADMIN`, the exact same identity set `assignAdminTask` (below)
+ * validates a caller-supplied `assignedTo` against, so this list and that
+ * validation can never drift apart. Deliberately does NOT filter on
+ * `banned` — `assignAdminTask` doesn't check it either, so a banned admin
+ * stays assignable here too, consistent with the one place that actually
+ * enforces eligibility.
+ *
+ * Backs `GET /api/admin-tasks/assignees` (currentAdmin-gated, i.e. every
+ * authenticated role including `support` — unlike the super-only
+ * `/api/admins`, which this intentionally does not reuse or relax: that
+ * route also returns passwordSet/twoFa/hasSession flags that must stay
+ * super-only).
+ */
+export function listAdminTaskAssignees(db: Db) {
+  return db.user.findMany({
+    where: { role: UserRole.ADMIN },
+    select: { id: true, fullName: true, username: true, telegramId: true },
+    orderBy: { id: "asc" },
+  });
+}
+
+/**
  * Move an AdminTask from `from` to `to`: validates the shape against
  * `ADMIN_TASK_LEGAL_TRANSITIONS`, atomically claims the row (`updateMany`
  * with the expected current status in the WHERE clause — same pattern as

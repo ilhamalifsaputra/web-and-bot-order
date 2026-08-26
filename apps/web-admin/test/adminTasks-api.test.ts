@@ -17,7 +17,7 @@ import {
   createRefund,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
-import { makeSession, sessionJtiKey, newJti } from "../src/auth";
+import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 import { buildApp } from "../src/server";
 
 const COOKIE = config.WEB_COOKIE_NAME;
@@ -105,6 +105,25 @@ async function makeTask(overrides: Partial<Parameters<typeof createAdminTask>[1]
     ...overrides,
   });
 }
+
+describe("GET /api/admin-tasks/assignees", () => {
+  it("a support-role admin (not just super) gets a non-empty assignee list", async () => {
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    const res = await get("/api/admin-tasks/assignees", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { admins: Array<{ id: number; name: string }> };
+    expect(body.admins.length).toBeGreaterThanOrEqual(2);
+    expect(body.admins.map((a) => a.id)).toEqual(expect.arrayContaining([adminId, otherAdminId]));
+    // Never the customer, who is not role=ADMIN.
+    expect(body.admins.map((a) => a.id)).not.toContain(customerId);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await get("/api/admin-tasks/assignees", null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+});
 
 describe("GET /api/admin-tasks", () => {
   it("happy path: lists tasks newest-first with queue-wide stats", async () => {

@@ -6014,6 +6014,8 @@ describe("rbac", () => {
     expect(canMutate("support", "/api/reviews/1/hide")).toBe(true);
     expect(canMutate("support", "/api/catalog/category")).toBe(false);
     expect(canMutate("support", "/api/settings/edit")).toBe(false);
+    expect(canMutate("support", "/api/admin-tasks/1/assign")).toBe(true);
+    expect(canMutate("readonly", "/api/admin-tasks/1/assign")).toBe(false);
   });
 
   // Admin-4 (security audit, 2026-06-23): canMutate now strips the query

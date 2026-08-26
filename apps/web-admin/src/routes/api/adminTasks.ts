@@ -23,6 +23,7 @@ import {
   prisma,
   listAdminTasks,
   countAdminTasks,
+  listAdminTaskAssignees,
   assignAdminTask,
   startAdminTask,
   completeAdminTask,
@@ -84,6 +85,24 @@ function shapeTask(t: Awaited<ReturnType<typeof listAdminTasks>>[number]) {
 }
 
 export default async function adminTasksApiRoutes(app: FastifyInstance): Promise<void> {
+  // The assignee picker/filter for this page. Deliberately NOT `/api/admins`
+  // (requireSuper-gated, and it also returns passwordSet/twoFa/hasSession
+  // flags that must stay super-only) — this page is OPS-tier (support+super),
+  // so a support admin needs a currentAdmin-gated source for the same
+  // role===ADMIN identity set `assignAdminTask` validates against. No route
+  // ordering concern: every other GET here is the exact literal
+  // `/api/admin-tasks`, and the four param routes below are POST-only, so
+  // this static GET path can never collide with them.
+  app.get("/api/admin-tasks/assignees", { preHandler: currentAdmin }, async (_req, reply) => {
+    const admins = await listAdminTaskAssignees(prisma);
+    return reply.send({
+      admins: admins.map((a) => ({
+        id: a.id,
+        name: a.fullName ?? a.username ?? (a.telegramId != null ? `Telegram ID ${a.telegramId}` : `Admin #${a.id}`),
+      })),
+    });
+  });
+
   app.get("/api/admin-tasks", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const page = Math.max(Number(q.page) || 1, 1);

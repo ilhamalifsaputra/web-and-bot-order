@@ -26,7 +26,7 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueAdminOverpaid } from "./notifications";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
@@ -74,8 +74,8 @@ function pick(dbVal: string | null, envVal?: string): string {
 export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
   const [uidSetting, key, secret, flag, minAmountSetting] = await Promise.all([
     getSetting(db, BYBIT_UID_KEY),
-    getSetting(db, BYBIT_API_KEY_KEY),
-    getSetting(db, BYBIT_API_SECRET_KEY),
+    getDecryptedSetting(db, BYBIT_API_KEY_KEY),
+    getDecryptedSetting(db, BYBIT_API_SECRET_KEY),
     getSetting(db, BYBIT_ENABLED_KEY),
     getSetting(db, BYBIT_MIN_AMOUNT_KEY),
   ]);

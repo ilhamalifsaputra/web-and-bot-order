@@ -2,6 +2,7 @@
  * Runtime key/value settings — port of the "Settings" section of crud.py.
  */
 import type { Db } from "./_types";
+import { encryptCredentials, decryptCredentials } from "@app/core/credentialCrypto";
 
 // Settings are read constantly on hot paths (bot menu banner, FX rate for
 // pricing) but change only when an admin edits them, so a short TTL cache
@@ -64,4 +65,36 @@ export async function deleteSetting(db: Db, key: string): Promise<void> {
  */
 export function __clearSettingsCacheForTests(db: Db): void {
   caches.delete(db as object);
+}
+
+/** Setting keys whose value is encrypted at rest (AES-256-GCM, the same
+ * envelope/keyVersion scheme StockItem.credentials already uses). A SUBSET
+ * of apps/web-admin/src/routes/api/settings.ts's SECRET_KEYS —
+ * bot_token/notif_bot_token are deliberately excluded: they're read via 7+
+ * raw getSetting call sites across 3 apps, too many to retrofit safely in
+ * one bounded pass, and a missed site would silently hand Telegram an
+ * encrypted blob instead of a real token. */
+export const ENCRYPTED_SETTING_KEYS = new Set([
+  "tokopay_secret", "paydisini_apikey",
+  "bybit_api_key", "bybit_api_secret",
+  "binance_api_key", "binance_api_secret",
+  "nowpayments_api_key", "nowpayments_ipn_secret",
+  "bscscan_api_key", "smtp_pass", "digiflazz_api_key",
+  "kokinpay_api_key", "vipreseller_api_key",
+  "melostore_api_key", "melostore_secret_key",
+]);
+
+/** Encrypt `plaintext` and store it under `key`. Throws
+ * CredentialKeyConfigError (@app/core/credentialCrypto) if
+ * CREDENTIAL_ENCRYPTION_KEY isn't configured. */
+export async function setEncryptedSetting(db: Db, key: string, plaintext: string): Promise<void> {
+  await setSetting(db, key, encryptCredentials(plaintext));
+}
+
+/** Read + decrypt `key`; null when unset, same contract as getSetting.
+ * Safe on a legacy plaintext row — decryptCredentials returns those
+ * unchanged. */
+export async function getDecryptedSetting(db: Db, key: string): Promise<string | null> {
+  const raw = await getSetting(db, key);
+  return raw === null ? null : decryptCredentials(raw);
 }

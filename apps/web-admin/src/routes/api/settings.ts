@@ -19,7 +19,10 @@ import {
   resolveBybitBscConfig,
   getSmtpCreds,
   OWNER_EMAIL_RE,
+  ENCRYPTED_SETTING_KEYS,
+  setEncryptedSetting,
 } from "@app/db";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { verifySmtp } from "@app/core/mailer";
 import {
   hashPassword,
@@ -330,7 +333,19 @@ async function applyFieldEdit(
   }
 
   const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);
-  await setSetting(prisma, key, value);
+  if (ENCRYPTED_SETTING_KEYS.has(key)) {
+    try {
+      await setEncryptedSetting(prisma, key, value);
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Setting write failed — credential encryption is not configured correctly");
+        throw new FieldEditError(500, "Credential encryption is not configured on this server — set CREDENTIAL_ENCRYPTION_KEY and try again.");
+      }
+      throw e;
+    }
+  } else {
+    await setSetting(prisma, key, value);
+  }
   // Single process (apps/server): re-stamp so the bot's send layer picks the
   // new icons up immediately instead of at the next restart.
   if (key === CUSTOM_EMOJI_MAP_SETTING) setCustomEmojiMap(value);

@@ -31,7 +31,7 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueOrderPipelineFailed, enqueueAdminOverpaid } from "./notifications";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
@@ -82,8 +82,8 @@ function pick(dbVal: string | null, envVal?: string): string {
 export async function resolveBybitBscConfig(db: Db): Promise<BybitBscConfig> {
   const [addressSetting, key, secret, flag, minAmountSetting] = await Promise.all([
     getSetting(db, BYBIT_BSC_DEPOSIT_ADDRESS_KEY),
-    getSetting(db, BYBIT_API_KEY_KEY),
-    getSetting(db, BYBIT_API_SECRET_KEY),
+    getDecryptedSetting(db, BYBIT_API_KEY_KEY),
+    getDecryptedSetting(db, BYBIT_API_SECRET_KEY),
     getSetting(db, BYBIT_BSC_ENABLED_KEY),
     getSetting(db, BYBIT_BSC_MIN_AMOUNT_KEY),
   ]);
@@ -124,7 +124,7 @@ export interface BybitBscTrackerConfig {
  * fallback) — same Setting-wins pattern as `resolveBybitBscConfig`. */
 export async function resolveBybitBscTrackerConfig(db: Db): Promise<BybitBscTrackerConfig> {
   const [keySetting, confirmSetting] = await Promise.all([
-    getSetting(db, BSCSCAN_API_KEY_KEY),
+    getDecryptedSetting(db, BSCSCAN_API_KEY_KEY),
     getSetting(db, BYBIT_BSC_REQUIRED_CONFIRMATIONS_KEY),
   ]);
   const apiKey = pick(keySetting, config.BSCSCAN_API_KEY);

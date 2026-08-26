@@ -37,6 +37,7 @@ import {
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -581,6 +582,16 @@ describe("getNowpaymentsCreds — minAmount", () => {
     expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
     await setSetting(prisma, "nowpayments_min_amount", "-3");
     expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
+  });
+});
+
+describe("getNowpaymentsCreds — encrypted secrets (Task 13)", () => {
+  it("decrypts both nowpayments_api_key and nowpayments_ipn_secret when stored as encrypted envelopes", async () => {
+    await setSetting(prisma, "nowpayments_api_key", encryptCredentials("real-nowpayments-apikey"));
+    await setSetting(prisma, "nowpayments_ipn_secret", encryptCredentials("real-nowpayments-ipnsecret"));
+    const creds = await getNowpaymentsCreds(prisma);
+    expect(creds!.apiKey).toBe("real-nowpayments-apikey");
+    expect(creds!.ipnSecret).toBe("real-nowpayments-ipnsecret");
   });
 });
 

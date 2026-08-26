@@ -2617,6 +2617,68 @@ describe("/api/v1/account twins", () => {
       expect(rowAfterEmail!.email).toBe("accspa-new@u.test");
     });
 
+    // Task 12 fix-review: apiAccount.ts's csrfHeaderOk (shared by all 8
+    // mutating /account/* routes) was missing the Origin/Referer
+    // defense-in-depth check that api.ts's inline checks already had — same
+    // 403 shape as a bad token, same "no Origin/Referer passes" allowance.
+    it("settings credentials: 403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    it("settings credentials: 200s with a valid token and no Origin/Referer header at all", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+    // configured, originOk falls back to comparing against req.hostname —
+    // this test's own suite (setup-env.ts) sets SHOP_PUBLIC_URL by default,
+    // so it's cleared for this one case to exercise the fallback path.
+    it("settings credentials: 200s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+      const originalShop = config.SHOP_PUBLIC_URL;
+      const originalPublic = config.PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/account/settings/credentials",
+          headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+          payload: {},
+        });
+        expect(res.statusCode).toBe(200);
+      } finally {
+        config.SHOP_PUBLIC_URL = originalShop;
+        config.PUBLIC_URL = originalPublic;
+      }
+    });
+
+    // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+    // this test suite — see setup-env.ts), the Origin check must prefer it
+    // over req.hostname.
+    it("settings credentials: 200s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+      expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
     it("settings credentials: wrong current_password 400s; correct one saves, reports password_changed, and rotates the session (Storefront-2 fix)", async () => {
       const wrong = await app.inject({
         method: "POST",

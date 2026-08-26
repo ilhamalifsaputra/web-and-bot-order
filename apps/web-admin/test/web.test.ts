@@ -34,6 +34,7 @@ import {
   listTicketMessages,
   setSetting,
   getSetting,
+  getDecryptedSetting,
   deleteSetting,
   getVoucherByCode,
   countAvailableStock,
@@ -79,9 +80,12 @@ import {
   accountLockedOut,
   recordAccountFailure,
   resetAccountFailures,
+  paymentsMutationRateLimited,
+  resetPaymentsMutationRateLimit,
+  PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
@@ -123,6 +127,7 @@ beforeEach(async () => {
   resetAccountFailures(1000);
   resetBotIdentity();
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
+  resetPaymentsMutationRateLimit(admin.id);
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
   const parentProduct = await createCatalogProduct(prisma, {
@@ -504,6 +509,23 @@ describe("account lockout", () => {
   });
 });
 
+describe("payments mutation rate limit", () => {
+  it("allows up to the cap for one admin, trips on the next call, leaves other admins unaffected, and clears on reset", () => {
+    const adminId = 8888881; // dedicated id, untouched elsewhere
+    const otherAdminId = 8888882;
+    resetPaymentsMutationRateLimit(adminId);
+    resetPaymentsMutationRateLimit(otherAdminId);
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      expect(paymentsMutationRateLimited(adminId)).toBe(false);
+    }
+    expect(paymentsMutationRateLimited(adminId)).toBe(true);
+    // A different admin id shares no budget with the one above.
+    expect(paymentsMutationRateLimited(otherAdminId)).toBe(false);
+    resetPaymentsMutationRateLimit(adminId);
+    expect(paymentsMutationRateLimited(adminId)).toBe(false);
+  });
+});
+
 // ---- per-IP login throttle is not spoofable via X-Forwarded-For -----------
 // Security patch: trustProxy is unset (false) by default, so a caller cannot
 // evade loginRateLimited(ip) by sending a different X-Forwarded-For header on
@@ -791,6 +813,68 @@ describe("orders", () => {
     const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: "wrong-token" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+  // check above — same 403 "CSRF check failed" response either way, so an
+  // attacker can't distinguish "bad token" from "bad origin".
+  it("approve rejects a valid CSRF token when Origin is present but mismatched (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://evil.example" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("approve accepts a valid CSRF token with no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("approve accepts a valid CSRF token with an Origin header matching this request's own host", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "http://localhost" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  // Whole-branch review finding I-3: when ADMIN_PUBLIC_URL IS configured,
+  // the Origin check must prefer it over req.hostname — this is the
+  // deploy-time availability gap the fix closes: a reverse proxy that
+  // mangles the Host header must not 403 every mutation as long as the
+  // admin's browser really is on the configured public origin. setup-env.ts
+  // leaves ADMIN_PUBLIC_URL unset by default, so it's set here just for this
+  // one case and restored afterwards.
+  it("approve accepts a valid CSRF token with an Origin header matching the configured ADMIN_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    const original = config.ADMIN_PUBLIC_URL;
+    config.ADMIN_PUBLIC_URL = "https://admin.test.invalid";
+    try {
+      const orderId = await makePendingOrder();
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/orders/${orderId}/approve`,
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://admin.test.invalid" },
+        cookies: { [COOKIE]: seed.cookie },
+        payload: form({ csrf_token: seed.csrf }),
+      });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      config.ADMIN_PUBLIC_URL = original;
+    }
   });
 
   it("approve accepts the CSRF token via an X-CSRF-Token header, with no body field at all", async () => {
@@ -3715,6 +3799,48 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
     });
   });
 
+  describe("POST /api/stock/item/:stockId/delete", () => {
+    it("happy path deletes a single item and audits without leaking credentials", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeTruthy();
+      expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await postJson(`/api/stock/item/999999/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("refuses to delete a SOLD (delivered) item — 409, row unchanged, no audit row", async () => {
+      const item = await prisma.stockItem.update({
+        where: { id: (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(409);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).not.toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeNull();
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("POST /api/stock/item/:stockId/note", () => {
     it("happy path updates the note and audits", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
@@ -4945,8 +5071,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_secret", value: "BINSECRETVALUE",
     });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
-    expect(await getSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawKey = await getSetting(prisma, "binance_api_key");
+    expect(rawKey).not.toBe("BINKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawKey!)).toBe(true);
+    const rawSecret = await getSetting(prisma, "binance_api_secret");
+    expect(rawSecret).not.toBe("BINSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -4954,7 +5088,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -4984,7 +5118,12 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_apikey", value: "PDAPIKEYSECRET",
     });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "paydisini_apikey");
+    expect(rawApiKey).not.toBe("PDAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -4992,7 +5131,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
 
     // The stored secret is never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -5049,8 +5188,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_ipn_secret", value: "NOWIPNSECRETVALUE",
     });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
-    expect(await getSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+
+    // Task 13: the rows are encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "nowpayments_api_key");
+    expect(rawApiKey).not.toBe("NOWAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
+    const rawIpnSecret = await getSetting(prisma, "nowpayments_ipn_secret");
+    expect(rawIpnSecret).not.toBe("NOWIPNSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawIpnSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -5058,7 +5205,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -5149,7 +5296,12 @@ describe("settings", () => {
       csrf_token: seed.csrf, key: "bscscan_api_key", value: "SUPERSECRETBSCSCANKEY",
     });
     expect(res.statusCode).toBe(200);
-    expect(await getSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+    expect(await getDecryptedSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const raw = await getSetting(prisma, "bscscan_api_key");
+    expect(raw).not.toBe("SUPERSECRETBSCSCANKEY");
+    expect(isEncryptedCredentialEnvelope(raw!)).toBe(true);
 
     const page = await get("/api/settings", seed.cookie);
     expect(page.body).not.toContain("SUPERSECRETBSCSCANKEY");
@@ -5618,6 +5770,25 @@ describe("payments", () => {
     // And of course no audit row exists either.
     const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss", details: "tx=ATOMTX1" } });
     expect(audit.length).toBe(0);
+  });
+
+  it("dismiss trips 429 after PAYMENTS_MUTATION_RATE_LIMIT_MAX calls in one window and recovers after a reset", async () => {
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      await recordUnmatchedTx(prisma, { binanceTxId: `RLTX${i}`, amount: "1.00" });
+      const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: `RLTX${i}` });
+      expect(res.statusCode).toBe(200);
+    }
+    // The (max+1)th call in the same window is rejected before it ever
+    // touches the ledger row — dismissUnmatchedTx never runs.
+    await recordUnmatchedTx(prisma, { binanceTxId: "RLTX-OVER", amount: "1.00" });
+    const limited = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(limited.statusCode).toBe(429);
+    expect(JSON.parse(limited.body)).toEqual({ error: "error.rate_limited" });
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "RLTX-OVER" } }))!.outcome).toBe("unmatched");
+
+    resetPaymentsMutationRateLimit(seed.adminId);
+    const recovered = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(recovered.statusCode).toBe(200);
   });
 });
 

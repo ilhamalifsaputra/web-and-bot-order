@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { getSetting, setSetting, deleteSetting } from "./settings";
+import { getSetting, setSetting, deleteSetting, setEncryptedSetting, getDecryptedSetting } from "./settings";
+import { isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -56,5 +57,29 @@ describe("getSetting caching", () => {
 
     await deleteSetting(prisma, "to_delete");
     expect(await getSetting(prisma, "to_delete")).toBeNull();
+  });
+});
+
+describe("setEncryptedSetting / getDecryptedSetting", () => {
+  it("round-trips a plaintext value correctly", async () => {
+    await setEncryptedSetting(prisma, "encrypted_roundtrip_key", "top-secret-value");
+    expect(await getDecryptedSetting(prisma, "encrypted_roundtrip_key")).toBe("top-secret-value");
+  });
+
+  it("returns null for a missing key", async () => {
+    expect(await getDecryptedSetting(prisma, "encrypted_missing_key")).toBeNull();
+  });
+
+  it("decrypts a legacy plaintext row written via raw setSetting (backward compat)", async () => {
+    await setSetting(prisma, "encrypted_legacy_key", "legacy-plaintext-value");
+    expect(await getDecryptedSetting(prisma, "encrypted_legacy_key")).toBe("legacy-plaintext-value");
+  });
+
+  it("actually encrypts the value at rest — the raw stored row is not the plaintext", async () => {
+    await setEncryptedSetting(prisma, "encrypted_at_rest_key", "another-secret-value");
+    const row = await prisma.setting.findUnique({ where: { key: "encrypted_at_rest_key" } });
+    expect(row).not.toBeNull();
+    expect(row!.value).not.toBe("another-secret-value");
+    expect(isEncryptedCredentialEnvelope(row!.value)).toBe(true);
   });
 });

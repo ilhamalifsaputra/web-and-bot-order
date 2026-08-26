@@ -113,6 +113,20 @@ export async function bulkDeleteStock(db: Db, ids: number[]): Promise<number> {
 }
 
 /**
+ * Hard-delete one stock row. Same guard as bulkDeleteStock: refuses a SOLD
+ * row or one referenced by an order item (a delivered credential must
+ * never be deleted out from under an order). Returns true if the row was
+ * actually deleted, false if the guard rejected it or the row doesn't
+ * exist.
+ */
+export async function deleteStockItem(db: Db, stockId: number): Promise<boolean> {
+  const res = await db.stockItem.deleteMany({
+    where: { id: stockId, status: { not: StockStatus.SOLD }, orderItems: { none: {} } },
+  });
+  return res.count === 1;
+}
+
+/**
  * The remaining ready-to-sell credentials for a product, oldest first — used to
  * build the downloadable export. AVAILABLE only (the "stok tersisa"); never
  * RESERVED/SOLD/DEAD. Caller is responsible for never logging the result.

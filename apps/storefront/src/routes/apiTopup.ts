@@ -89,6 +89,11 @@ import {
   getVipResellerCreds,
   getMelostoreCreds,
   getEnabledProviderMappingsForGame,
+  findIdempotentResponse,
+  saveIdempotentResponse,
+  hashIdempotentRequest,
+  IdempotencyKeyReuseError,
+  type IdempotentReplay,
 } from "@app/db";
 import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 import { checkGameRegion } from "@app/core/suppliers/vipreseller";
@@ -106,10 +111,11 @@ import {
   nicknameCheckRateLimited,
   checkoutPreviewRateLimited,
   guestCheckoutRateLimited,
+  checkoutSubmitRateLimited,
 } from "../rateLimit";
 import { checkoutView, performDirectCheckout, performDirectWalletCheckout } from "./checkout";
-import { csrfOk } from "./cart";
-import { normalizeGuestEmail, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
+import { csrfOk, originOk } from "./cart";
+import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
 
@@ -121,6 +127,13 @@ interface CheckAccountResponse {
 }
 
 const NOT_AVAILABLE: CheckAccountResponse = { available: false };
+
+/** Stable name for POST /topup/order's idempotency ledger row
+ * (packages/db/src/crud/idempotency.ts) — NOT the literal URL, so it stays
+ * correct if the route is ever remounted. Mirrors CHECKOUT_IDEMPOTENCY_ENDPOINT
+ * (routes/api.ts) under its own name so the two routes' ledger rows can never
+ * collide even if a client (mistakenly) reused the same key across both. */
+const TOPUP_ORDER_IDEMPOTENCY_ENDPOINT = "storefront.topup.order.create";
 
 /** Shared body shape of the two instant-buy routes below. */
 interface TopupLineBody {
@@ -282,6 +295,14 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       guest_email?: string;
     };
   }>("/topup/order", async (req, reply) => {
+    // Rate limit FIRST — cheapest possible short-circuit, before any
+    // DB/session work (including the idempotency check below). Shared with
+    // POST /api/v1/checkout (see checkoutSubmitRateLimited's doc comment in
+    // ../rateLimit.ts).
+    if (checkoutSubmitRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const signedIn = await optionalCustomer(req);
     if (signedIn) {
       // Header-only, byte-for-byte as POST /api/v1/checkout gates itself (not
@@ -289,7 +310,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // route holds the stricter of the two rules). Guests are not CSRF-checked
       // for the same reason they aren't there: they have no session to ride.
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
@@ -297,21 +318,112 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
     // Validated BEFORE the guest branch below, so a request with nothing
     // buyable behind it is refused before any user row is written — the
     // cart-free equivalent of establishGuestCustomer's own empty-cart check.
+    // Also needed (denom.id, quantity) before the idempotency hash below can
+    // be computed, which is why they're resolved first.
     const denom = await resolveTopupDenomination(req.body?.denomination_id);
     if (!denom) return reply.code(400).send({ error: "invalid_request" });
     const quantity = resolveTopupQuantity(req.body?.qty, denom);
     if (quantity === null) return reply.code(400).send({ error: "invalid_request" });
     const line = { denominationId: denom.id, quantity };
 
+    const method = (req.body?.method ?? "").toLowerCase();
+    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+
+    // Idempotency (Task 3): an `Idempotency-Key` header lets a double-tapped
+    // "Beli" button or a network retry replay the exact response from the
+    // first attempt instead of creating a second order or (for a guest) a
+    // second orphan account. Mirrors POST /api/v1/checkout's own wiring
+    // (routes/api.ts) exactly, including WHY it runs before
+    // establishGuestTopupCustomer: that function mints a brand-new guest
+    // `User` row on every call with no existing session cookie — exactly
+    // what a genuine "client never saw the first response" retry looks like.
+    // Checking first means a matching replay short-circuits before
+    // establishGuestTopupCustomer is ever called, so no second guest account
+    // is minted and no order-creating mutation runs twice.
+    //
+    // Hash shape differs from checkout's: this route has no cart, so its
+    // "line" comes straight from the request body rather than being implied
+    // by `userId` alone — denominationId/quantity/method/voucherCode must all
+    // be in the hash to tell two different purchases apart under the same
+    // key. Signed-in adds `userId` (stable across any retry); guest has no
+    // stable userId yet, so it adds its own normalized `guestEmail` plus
+    // `customerData` instead — same trade-off checkout's guest branch makes:
+    // a guest's Idempotency-Key is unique per checkout ATTEMPT, not tied to
+    // an account, since no account exists until the attempt succeeds.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? {
+          key: idempotencyKeyHeader,
+          requestHash: hashIdempotentRequest(
+            signedIn
+              ? {
+                  denominationId: denom.id,
+                  quantity,
+                  method,
+                  voucherCode,
+                  userId: signedIn.userId,
+                  customerData: req.body?.customer_data ?? null,
+                }
+              : {
+                  denominationId: denom.id,
+                  quantity,
+                  method,
+                  voucherCode,
+                  guestEmail: (req.body?.guest_email ?? "").trim().toLowerCase(),
+                  customerData: req.body?.customer_data ?? null,
+                },
+          ),
+        }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "error.idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    // Sends the reply AND, when an Idempotency-Key was supplied, persists it
+    // first — so a retry that arrives after this returns replays it above
+    // instead of re-running the mutation. Used for every exit below,
+    // including the 400s: a validation failure is just as safe and just as
+    // worth replaying as a success, since replaying it re-runs nothing.
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: TOPUP_ORDER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
+    // establishGuestTopupCustomer's OWN internal early exits (bad email,
+    // wallet-for-guest, guest-checkout-rate-limited) stay RAW — not routed
+    // through `respond()` — exactly like establishGuestCustomer's early exits
+    // in routes/api.ts. A retry after one of those failures should re-evaluate
+    // cleanly, since no guest row was created yet.
     const customer = signedIn ?? (await establishGuestTopupCustomer(req, reply));
     if (!customer) return; // the guest branch already sent its 4xx/429
     // True only when `customer` came from establishGuestTopupCustomer above —
     // decides whether the response has to carry the freshly minted session's
     // CSRF token (see withGuestCsrf).
     const isGuest = !signedIn;
-
-    const method = (req.body?.method ?? "").toLowerCase();
-    const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
 
     // Wallet credit — no gateway, settles synchronously. Only ever reachable
     // for a signed-in buyer: establishGuestTopupCustomer rejects these tokens.
@@ -324,12 +436,13 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
           voucherCode,
           req.body?.customer_data,
         );
-        return reply
-          .code(201)
-          .send(withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
+        return respond(
+          201,
+          withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer),
+        );
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
         }
         throw e;
       }
@@ -348,10 +461,10 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       const emailSent = guestEmail ? await sendGuestOrderCodeEmail(req, guestEmail, orderCode) : false;
 
       const body = { order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` };
-      return reply.code(201).send(withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
+      return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
       }
       throw e;
     }

@@ -275,3 +275,57 @@ export function nicknameCheckRateLimited(ip: string): boolean {
     NICKNAME_CHECK_RATE_LIMIT_MAX,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Checkout-submit rate limit (per IP, in-process) — Task 5. Every other
+// throttle in this file guards a READ or a login attempt; this is the first
+// one guarding the order-creating MUTATIONS themselves:
+// `POST /api/v1/checkout` and `POST /topup/order`. Both share ONE quota
+// deliberately (one Map, keyed by IP only) — same reasoning as
+// checkoutPreviewRateLimited sharing across its two routes above: an
+// attacker must not be able to reset the budget by alternating endpoints.
+//
+// Unlike checkoutPreviewRateLimited, this DOES apply to signed-in callers
+// too — a preview is a cheap read that login already gates well enough, but
+// this is a database-writing, potentially payment-gateway-calling mutation,
+// so being logged in doesn't make repeat submits free.
+// ---------------------------------------------------------------------------
+
+const checkoutSubmitHits = new Map<string, number[]>();
+export const CHECKOUT_SUBMIT_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const CHECKOUT_SUBMIT_RATE_LIMIT_MAX = 30;
+
+/** True if `ip` has exceeded its checkout/topup-submit quota within the window. */
+export function checkoutSubmitRateLimited(ip: string): boolean {
+  return slidingWindowLimited(checkoutSubmitHits, ip, CHECKOUT_SUBMIT_RATE_LIMIT_WINDOW_SECONDS, CHECKOUT_SUBMIT_RATE_LIMIT_MAX);
+}
+
+// ---------------------------------------------------------------------------
+// Telegram-account-linking rate limit (per customer id, in-process) — Task 5.
+// `GET /account/settings/link-telegram` only ever runs behind an
+// authenticated session (routes/settings.ts's `currentCustomer` preHandler),
+// so identity is the right dimension here rather than IP — same reasoning as
+// `accountLockedOut`/`recordAccountFailure` above being keyed by identifier
+// rather than source. Window/max (5/600s) mirrors
+// GUEST_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS/_MAX since linking Telegram is a
+// similarly rare, deliberate action.
+//
+// Keyed by `String(customerId)`: slidingWindowLimited's `store` param type is
+// `Map<string, number[]>`, so this declares the same shape as every other
+// throttle in this file rather than a `Map<number, ...>` that wouldn't
+// type-check against it.
+// ---------------------------------------------------------------------------
+
+const linkTelegramHits = new Map<string, number[]>();
+export const LINK_TELEGRAM_RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
+export const LINK_TELEGRAM_RATE_LIMIT_MAX = 5;
+
+/** True if `customerId` has exceeded its Telegram-linking quota within the window. */
+export function linkTelegramRateLimited(customerId: number): boolean {
+  return slidingWindowLimited(
+    linkTelegramHits,
+    String(customerId),
+    LINK_TELEGRAM_RATE_LIMIT_WINDOW_SECONDS,
+    LINK_TELEGRAM_RATE_LIMIT_MAX,
+  );
+}

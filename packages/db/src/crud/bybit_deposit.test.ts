@@ -40,6 +40,7 @@ import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import type { Db } from "./_types";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 /** Mutable in-memory Setting store backing both `findUnique` and `upsert`,
  * needed by recordBybitPollHealth (writes) + getBybitPollHealth (reads). */
@@ -142,6 +143,20 @@ describe("resolveBybitConfig — minAmount", () => {
   it("treats a non-numeric or non-positive value as null (never throws)", async () => {
     expect((await resolveBybitConfig(stubDb({ ...CREDS, bybit_min_amount: "not-a-number" }))).minAmount).toBeNull();
     expect((await resolveBybitConfig(stubDb({ ...CREDS, bybit_min_amount: "0" }))).minAmount).toBeNull();
+  });
+});
+
+describe("resolveBybitConfig — encrypted secrets (Task 13)", () => {
+  it("decrypts bybit_api_key and bybit_api_secret when stored as encrypted envelopes", async () => {
+    const cfg = await resolveBybitConfig(
+      stubDb({
+        bybit_uid: "db-uid",
+        bybit_api_key: encryptCredentials("real-bybit-apikey"),
+        bybit_api_secret: encryptCredentials("real-bybit-apisecret"),
+      }),
+    );
+    expect(cfg.apiKey).toBe("real-bybit-apikey");
+    expect(cfg.apiSecret).toBe("real-bybit-apisecret");
   });
 });
 

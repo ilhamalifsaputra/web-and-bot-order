@@ -6,7 +6,7 @@
  * from Settings. Mirrors crud/kokinpay.ts exactly.
  */
 import type { Db } from "./_types";
-import { getSetting } from "./settings";
+import { getDecryptedSetting } from "./settings";
 
 /** Setting key — wired to admin Settings (apps/web-admin/src/routes/api/
  * settings.ts EDITABLE/SECRET_KEYS), same as every other `getXCreds`
@@ -28,8 +28,8 @@ export interface MelostoreCreds {
  * Settings connection test) already treats as "degrade silently, don't
  * error." */
 export async function getMelostoreCreds(db: Db): Promise<MelostoreCreds | null> {
-  const apiKey = await getSetting(db, MELOSTORE_API_KEY_KEY);
-  const secretKey = await getSetting(db, MELOSTORE_SECRET_KEY_KEY);
+  const apiKey = await getDecryptedSetting(db, MELOSTORE_API_KEY_KEY);
+  const secretKey = await getDecryptedSetting(db, MELOSTORE_SECRET_KEY_KEY);
   if (!apiKey || !secretKey) return null;
   return { apiKey, secretKey };
 }

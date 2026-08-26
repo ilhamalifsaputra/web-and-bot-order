@@ -56,7 +56,7 @@ import {
 } from "@app/core/suppliers/digiflazz";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
-import { getSetting } from "./settings";
+import { getSetting, getDecryptedSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
 import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
@@ -86,7 +86,7 @@ export const DIGIFLAZZ_ENABLED_KEY = "digiflazz_enabled";
 export async function getDigiflazzCreds(db: Db): Promise<DigiflazzCreds | null> {
   const [username, apiKey, enabled] = await Promise.all([
     getSetting(db, DIGIFLAZZ_USERNAME_KEY),
-    getSetting(db, DIGIFLAZZ_API_KEY_KEY),
+    getDecryptedSetting(db, DIGIFLAZZ_API_KEY_KEY),
     getSetting(db, DIGIFLAZZ_ENABLED_KEY),
   ]);
   if (!username || !apiKey) return null;

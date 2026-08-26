@@ -6,6 +6,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
 import { getMelostoreCreds, setSetting, deleteSetting, MELOSTORE_API_KEY_KEY, MELOSTORE_SECRET_KEY_KEY } from "@app/db";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -44,5 +45,11 @@ describe("getMelostoreCreds", () => {
     await deleteSetting(prisma, MELOSTORE_API_KEY_KEY);
     await deleteSetting(prisma, MELOSTORE_SECRET_KEY_KEY);
     expect(await getMelostoreCreds(prisma)).toBeNull();
+  });
+
+  it("decrypts both the API key and secret key when stored as encrypted envelopes (Task 13)", async () => {
+    await setSetting(prisma, MELOSTORE_API_KEY_KEY, encryptCredentials("real-melostore-apikey"));
+    await setSetting(prisma, MELOSTORE_SECRET_KEY_KEY, encryptCredentials("real-melostore-secretkey"));
+    expect(await getMelostoreCreds(prisma)).toEqual({ apiKey: "real-melostore-apikey", secretKey: "real-melostore-secretkey" });
   });
 });

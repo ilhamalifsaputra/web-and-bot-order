@@ -34,9 +34,12 @@ import {
   clearPaymentMessageAnchorsAt,
   bulkAddStock,
   cancelOrder,
+  resolveBinanceInternalConfig,
+  setSetting,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -1000,5 +1003,16 @@ describe("payment-message anchor reuse", () => {
     await clearPaymentMessageAnchorsAt(prisma, 555, 999);
 
     expect(await anchorOf(anchored)).toEqual({ chatId: BigInt(555), messageId: 777 });
+  });
+});
+
+describe("resolveBinanceInternalConfig — encrypted secrets (Task 13)", () => {
+  it("decrypts binance_api_key and binance_api_secret when stored as encrypted envelopes", async () => {
+    await setSetting(prisma, "binance_receive_uid", "db-uid");
+    await setSetting(prisma, "binance_api_key", encryptCredentials("real-binance-apikey"));
+    await setSetting(prisma, "binance_api_secret", encryptCredentials("real-binance-apisecret"));
+    const cfg = await resolveBinanceInternalConfig(prisma);
+    expect(cfg.apiKey).toBe("real-binance-apikey");
+    expect(cfg.apiSecret).toBe("real-binance-apisecret");
   });
 });

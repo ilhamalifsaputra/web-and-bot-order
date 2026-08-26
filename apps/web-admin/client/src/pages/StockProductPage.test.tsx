@@ -106,6 +106,85 @@ describe("StockProductPage", () => {
     );
   });
 
+  it("bulk deletes selected items and shows success message when all are deleted", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select stock item 101/i }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, count: 1, skipped: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...STOCK_PRODUCT_DATA, items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/10/bulk-delete",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [101] }) }),
+      ),
+    );
+    expect(await screen.findByText("1 item(s) deleted.")).toBeInTheDocument();
+  });
+
+  it("bulk deletes items and shows skip explanation when some are skipped", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const mixedData = {
+      ...STOCK_PRODUCT_DATA,
+      items: [
+        { id: 101, status: "AVAILABLE", note: null, credentials: "a@mail.com:Pw1", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
+        { id: 102, status: "AVAILABLE", note: null, credentials: "b@mail.com:Pw2", createdAt: "2026-01-02T00:00:00.000Z", createdAtDisplay: "2026-01-02" },
+        { id: 103, status: "SOLD", note: null, credentials: "c@mail.com:Pw3", createdAt: "2026-01-03T00:00:00.000Z", createdAtDisplay: "2026-01-03" },
+      ],
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(mixedData), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Available (2)" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select stock item 101/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /select stock item 102/i }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, count: 2, skipped: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...mixedData, items: [mixedData.items[2]] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/10/bulk-delete",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [101, 102] }) }),
+      ),
+    );
+    expect(await screen.findByText("2 item(s) deleted. 1 skipped (sold or linked to an order).")).toBeInTheDocument();
+  });
+
   it("selects all items on the page via the header checkbox", async () => {
     const mixedData = {
       ...STOCK_PRODUCT_DATA,
@@ -159,6 +238,38 @@ describe("StockProductPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/stock/item/101/dead", expect.objectContaining({ method: "POST" })),
     );
+  });
+
+  it("deletes a single item after confirming", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for stock item 101" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Delete"));
+
+    const dialog = await screen.findByRole("dialog");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...STOCK_PRODUCT_DATA, items: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/stock/item/101/delete", expect.objectContaining({ method: "POST" })),
+    );
+    expect(await screen.findByText("Stock item deleted.")).toBeInTheDocument();
   });
 
   it("edits a stock item's note", async () => {

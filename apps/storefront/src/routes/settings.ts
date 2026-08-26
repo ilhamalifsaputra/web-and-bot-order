@@ -13,6 +13,7 @@ import { prisma, linkTelegram } from "@app/db";
 import { verifyTelegramLogin } from "../auth";
 import { currentCustomer } from "../plugins/auth";
 import { resolveBotToken } from "../shop";
+import { linkTelegramRateLimited } from "../rateLimit";
 
 const settingsRoutes: FastifyPluginAsync = async (app) => {
   // ---- GET /account/settings/link-telegram ----------------------------------
@@ -21,6 +22,14 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: currentCustomer },
     async (req, reply) => {
       const customer = req.customer!;
+      // Rate limit: linking is a rare, deliberate action (5/10min, mirrors
+      // guestCheckoutRateLimited) — keyed by customer id since this route
+      // only ever runs behind an authenticated session. Reuses the existing
+      // ?err=tg_invalid redirect target rather than inventing a new `err`
+      // value the client doesn't recognize.
+      if (linkTelegramRateLimited(customer.userId)) {
+        return reply.code(303).redirect("/account/settings?err=tg_invalid");
+      }
       const auth = verifyTelegramLogin(req.query, await resolveBotToken());
       if (!auth) return reply.code(303).redirect("/account/settings?err=tg_invalid");
       const fullName =

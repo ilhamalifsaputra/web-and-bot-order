@@ -187,12 +187,30 @@ export function listRefunds(
  */
 export async function transitionRefundStatus(
   db: Db,
-  args: { refundId: number; from: string; to: string; adminId: number; meta?: string | null },
+  args: {
+    refundId: number;
+    from: string;
+    to: string;
+    adminId: number;
+    meta?: string | null;
+    /** Required (must be `true`) when `to` is COMPLETED. This generic path
+     * NEVER moves money — see this file's module comment. Forcing an
+     * explicit, named acknowledgment here (rather than silently allowing
+     * COMPLETED) is what stops a future caller from mistaking this for a
+     * payout-triggering completion. A refund that should actually pay the
+     * buyer must go through a dedicated payout function instead (today:
+     * refundUnderpaidOrder in binance_internal.ts, which writes its own
+     * COMPLETED Refund row directly and never calls this function). */
+    acknowledgeNoPayout?: boolean;
+  },
 ): Promise<Refund> {
   const { refundId, from, to, adminId, meta } = args;
 
   if (!REFUND_LEGAL_TRANSITIONS[from]?.includes(to)) {
     throw new ValidationError("error.illegal_refund_status_transition", { from, to });
+  }
+  if (to === RefundStatus.COMPLETED && !args.acknowledgeNoPayout) {
+    throw new ValidationError("error.refund_completed_requires_payout_acknowledgement");
   }
 
   const claim = await db.refund.updateMany({
@@ -213,13 +231,10 @@ export async function transitionRefundStatus(
   const refund = await db.refund.findUniqueOrThrow({ where: { id: refundId } });
   const order = await db.order.findUnique({ where: { id: refund.orderId }, select: { orderCode: true } });
 
-  await logAdminAction(db, {
-    adminId,
-    action: "refund_status_change",
-    targetType: "refund",
-    targetId: refundId,
-    details: `Refund #${refundId} for order ${order?.orderCode ?? refund.orderId} moved from ${from} to ${to}${meta ? ` (${meta})` : ""}.`,
-  });
+  const details =
+    `Refund #${refundId} for order ${order?.orderCode ?? refund.orderId} moved from ${from} to ${to}${meta ? ` (${meta})` : ""}.` +
+    (to === RefundStatus.COMPLETED ? " Record-keeping only — no payout was triggered by this transition." : "");
+  await logAdminAction(db, { adminId, action: "refund_status_change", targetType: "refund", targetId: refundId, details });
 
   return refund;
 }
@@ -244,6 +259,15 @@ export async function transitionRefundStatus(
  * `{CANCELLED, FAILED}` and not the full `TERMINAL_REFUND_STATUSES` (which
  * also includes COMPLETED — a COMPLETED refund DID move money and must keep
  * counting).
+ *
+ * Also enforces a SECOND, narrower invariant scoped to this one refund only
+ * (Refund.amount's own schema doc comment): the sum of every RefundItem row
+ * already attached to THIS refund, plus this new amount, must never exceed
+ * the parent Refund's own quoted `amount`. This is unrelated to the
+ * cross-refund subtotal check above — that one sums across every non-terminal
+ * Refund touching a given OrderItem; this one is a promise a single Refund
+ * made about itself. Both checks run and either can independently reject the
+ * insert.
  *
  * `currency` is NOT accepted as a parameter — it is always copied from the
  * parent Refund's own currency (which is itself already validated against
@@ -322,6 +346,28 @@ export async function createRefundItem(
       subtotal: subtotal.toString(),
       currency: refund.currency,
       alreadyRefunded: alreadyRefunded.toString(),
+      attempted: amount.toString(),
+    });
+  }
+
+  // Refund.amount invariant (Refund.amount's own schema doc comment flags
+  // this as a previously-open gap): the sum of every RefundItem row already
+  // attached to THIS refund, plus this new amount, must never exceed the
+  // parent Refund's own quoted total. Scoped to refundId only — unlike the
+  // cross-refund subtotal check above (which sums across every non-terminal
+  // Refund touching this OrderItem), Refund.amount is a promise this ONE
+  // refund made about itself, unrelated to any other Refund's items.
+  const refundTotal = await db.refundItem.aggregate({
+    where: { refundId: args.refundId },
+    _sum: { amount: true },
+  });
+  const alreadyOnRefund = new Decimal(refundTotal._sum?.amount ?? 0);
+  const projectedOnRefund = alreadyOnRefund.plus(amount);
+  if (projectedOnRefund.greaterThan(refund.amount)) {
+    throw new ValidationError("error.refund_item_exceeds_refund_amount", {
+      refundAmount: refund.amount.toString(),
+      currency: refund.currency,
+      alreadyOnRefund: alreadyOnRefund.toString(),
       attempted: amount.toString(),
     });
   }

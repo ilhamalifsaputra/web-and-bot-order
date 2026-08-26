@@ -18,6 +18,7 @@
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -35,7 +36,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX } from "../src/rateLimit";
+import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX, CHECKOUT_SUBMIT_RATE_LIMIT_MAX } from "../src/rateLimit";
 import { MAX_PENDING_ORDERS } from "../src/routes/checkout";
 
 let app: FastifyInstance;
@@ -452,6 +453,80 @@ describe("POST /api/v1/topup/order — signed-in gateway branch", () => {
     expect(await prisma.order.count()).toBe(before);
   });
 
+  // Task 12 fix-review: this route's CSRF check is its own inline copy (the
+  // "structural twin" of POST /api/v1/checkout in api.ts, per this file's
+  // comment above), so it needed its own Origin/Referer defense-in-depth
+  // coverage rather than inheriting csrfOk's.
+  it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token, creating no order", async () => {
+    await makeUser("topuporiginbad", "topuporiginbad-pw-1", "TPORGB");
+    const { cookie, csrf } = await loginAs("topuporiginbad", "topuporiginbad-pw-1");
+    const before = await prisma.order.count();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+    expect(await prisma.order.count()).toBe(before);
+  });
+
+  it("201s with a valid token and no Origin/Referer header at all", async () => {
+    await makeUser("topuporiginnone", "topuporiginnone-pw-1", "TPORGN");
+    const { cookie, csrf } = await loginAs("topuporiginnone", "topuporiginnone-pw-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+  // configured, originOk falls back to comparing against req.hostname —
+  // this test's own suite (setup-env.ts) sets SHOP_PUBLIC_URL by default, so
+  // it's cleared for this one case to exercise the fallback path.
+  it("201s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+    await makeUser("topuporiginok", "topuporiginok-pw-1", "TPORGO");
+    const { cookie, csrf } = await loginAs("topuporiginok", "topuporiginok-pw-1");
+    const originalShop = config.SHOP_PUBLIC_URL;
+    const originalPublic = config.PUBLIC_URL;
+    config.SHOP_PUBLIC_URL = undefined;
+    config.PUBLIC_URL = undefined;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/topup/order",
+        headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+        payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+      });
+      expect(res.statusCode).toBe(201);
+    } finally {
+      config.SHOP_PUBLIC_URL = originalShop;
+      config.PUBLIC_URL = originalPublic;
+    }
+  });
+
+  // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+  // this test suite — see setup-env.ts), the Origin check must prefer it
+  // over req.hostname — an Origin matching the configured public origin
+  // passes even though it does NOT match this injected request's own
+  // apparent host ("localhost").
+  it("201s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+    await makeUser("topuporiginconfig", "topuporiginconfig-pw-1", "TPORGC");
+    const { cookie, csrf } = await loginAs("topuporiginconfig", "topuporiginconfig-pw-1");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
   it("400s web.pay_method_unavailable for a gateway that isn't configured", async () => {
     await makeUser("topupnogw", "topupnogw-pw-1", "TPNOGW");
     const { cookie, csrf } = await loginAs("topupnogw", "topupnogw-pw-1");
@@ -752,5 +827,237 @@ describe("POST /api/v1/topup/order — guest branch", () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toEqual({ error: "error.rate_limited" });
     expect(await countUsers()).toBe(before);
+  });
+});
+
+// -------------------------------------------------------- Idempotency-Key
+// Task 3: an `Idempotency-Key` header on POST /topup/order lets a
+// double-tapped "Beli" button or a network retry replay the exact response
+// from the first attempt instead of creating a second order — or, for a
+// guest, a second orphan account. Mirrors POST /api/v1/checkout's own
+// Idempotency-Key contract (api.test.ts's "Idempotency-Key (Task 1)" block,
+// guest-checkout-api.test.ts's guest-branch block) on this route's cart-free
+// rail. Every request below calls freshIp() so these tests can't interact
+// with any other test's rate-limit budget (a future task adds rate limiting
+// to this same route).
+describe("POST /api/v1/topup/order — Idempotency-Key", () => {
+  it("with no header, two identical requests create two separate orders (opt-in feature)", async () => {
+    const uid = await makeUser("topupidemnohdr", "topupidemnohdr-pw-1", "TPINHD");
+    const { cookie, csrf } = await loginAs("topupidemnohdr", "topupidemnohdr-pw-1");
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp() },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().order_code).not.toBe(first.json().order_code);
+
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(2);
+  });
+
+  it("signed-in: replays the exact response for a repeated request with the same key, creating exactly ONE order", async () => {
+    const uid = await makeUser("topupidemreplay", "topupidemreplay-pw-1", "TPIDRP");
+    const { cookie, csrf } = await loginAs("topupidemreplay", "topupidemreplay-pw-1");
+    const key = "topup-idem-signedin-replay";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(first.statusCode).toBe(201);
+    const firstBody = first.json();
+    expect(typeof firstBody.order_code).toBe("string");
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toEqual(firstBody);
+
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(1);
+  });
+
+  it("signed-in: 409s when the same key is reused with a DIFFERENT request body, without creating a second order", async () => {
+    const uid = await makeUser("topupidemconflict", "topupidemconflict-pw-1", "TPIDCF");
+    const { cookie, csrf } = await loginAs("topupidemconflict", "topupidemconflict-pw-1");
+    const key = "topup-idem-signedin-conflict";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit" },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit", voucher_code: "TOPUP10" }, // different body => different hash
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(1);
+  });
+
+  // Whole-branch review finding I-1: the signed-in branch's idempotency hash
+  // used to omit `customer_data` entirely, so two purchases of the same
+  // denomination for two DIFFERENT game accounts under the same
+  // Idempotency-Key would incorrectly replay the first order's response for
+  // the second, silently dropping it. Same denomination/qty/method, only
+  // `customer_data` differs — must now 409, not replay.
+  it("signed-in: 409s when the same key is reused with the SAME denomination/qty/method but DIFFERENT customer_data, without creating a second order", async () => {
+    const uid = await makeUser("topupidemcustdata", "topupidemcustdata-pw-1", "TPIDCD");
+    const { cookie, csrf } = await loginAs("topupidemcustdata", "topupidemcustdata-pw-1");
+    const key = "topup-idem-signedin-customerdata-conflict";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: {
+        denomination_id: denomId,
+        qty: 1,
+        method: "bybit",
+        customer_data: [{ user_id: "111111" }],
+      },
+    });
+    expect(first.statusCode).toBe(201);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": freshIp(), "idempotency-key": key },
+      payload: {
+        denomination_id: denomId,
+        qty: 1,
+        method: "bybit",
+        customer_data: [{ user_id: "222222" }], // only customer_data differs => different hash
+      },
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+
+    expect(await prisma.order.count({ where: { userId: uid } })).toBe(1);
+  });
+
+  it("guest: a repeated request with no session cookie in either attempt creates exactly ONE guest User and ONE order, and replays the body", async () => {
+    const ip = freshIp();
+    const key = "topup-idem-guest-replay";
+    const email = "topup.idem.replay@example.com";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit", guest_email: email },
+    });
+    expect(first.statusCode).toBe(201);
+    const firstBody = first.json();
+    expect(typeof firstBody.order_code).toBe("string");
+
+    // Second attempt: same key, same body, SAME lack of a session cookie —
+    // simulates the client never having received the first response at all.
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit", guest_email: email },
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toEqual(firstBody);
+    // The replay short-circuits before establishGuestTopupCustomer runs, so
+    // it carries no Set-Cookie of its own.
+    expect(second.headers["set-cookie"]).toBeUndefined();
+
+    const guests = await prisma.user.findMany({ where: { guestEmail: email } });
+    expect(guests).toHaveLength(1);
+    const orders = await prisma.order.findMany({ where: { orderCode: firstBody.order_code } });
+    expect(orders).toHaveLength(1);
+    expect(orders[0]!.userId).toBe(guests[0]!.id);
+  });
+
+  it("guest: 409s when the same key is reused for a DIFFERENT request, without minting a second account", async () => {
+    const ip = freshIp();
+    const key = "topup-idem-guest-conflict";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit", guest_email: "topup.idem.conflict.a@example.com" },
+    });
+    expect(first.statusCode).toBe(201);
+    const usersAfterFirst = await countUsers();
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { denomination_id: denomId, qty: 1, method: "bybit", guest_email: "topup.idem.conflict.b@example.com" }, // different email => different hash
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+    // The conflict short-circuited before establishGuestTopupCustomer ran for
+    // the second (different) email — no new user row was created for it.
+    expect(await countUsers()).toBe(usersAfterFirst);
+    const secondGuest = await prisma.user.findFirst({ where: { guestEmail: "topup.idem.conflict.b@example.com" } });
+    expect(secondGuest).toBeNull();
+  });
+});
+
+// Task 5: checkoutSubmitRateLimited(ip) — POST /topup/order shares ONE quota
+// with POST /api/v1/checkout (see rateLimit.ts's doc comment); checked as the
+// very first statement, so a 400 (deactivated denomination) below still
+// counts as a hit.
+describe("POST /api/v1/topup/order — rate limiting (Task 5)", () => {
+  it("429s after CHECKOUT_SUBMIT_RATE_LIMIT_MAX submits from one IP, without affecting a different IP", async () => {
+    const ip = freshIp();
+    const headers = { "x-forwarded-for": ip };
+    for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/topup/order",
+        headers,
+        payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+      });
+      expect(res.statusCode).toBe(400); // still under the cap (deactivated denom)
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers,
+      payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
+
+    // A different IP has its own, unexhausted quota.
+    const otherIp = freshIp();
+    const unaffected = await app.inject({
+      method: "POST",
+      url: "/api/v1/topup/order",
+      headers: { "x-forwarded-for": otherIp },
+      payload: { denomination_id: inactiveDenomId, qty: 1, method: "bybit" },
+    });
+    expect(unaffected.statusCode).toBe(400);
+    expect(unaffected.json()).toEqual({ error: "invalid_request" });
   });
 });

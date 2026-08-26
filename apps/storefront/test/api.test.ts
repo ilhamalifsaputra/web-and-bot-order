@@ -3,6 +3,7 @@
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -16,6 +17,7 @@ import {
 } from "@app/db";
 import { DeliveryType } from "@app/core/enums";
 import { buildApp } from "../src/server";
+import { CHECKOUT_SUBMIT_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 async function seedProduct(
   categoryId: number,
@@ -44,6 +46,14 @@ let categorySlug: string;
 let productSlug: string;
 let denomId: number;
 let emptyProductSlug: string;
+
+/** A distinct simulated client IP per test, so one test's checkout-submit
+ * quota can never spill into another's (the limiter is process-wide). */
+let ipCounter = 0;
+function freshIp(): string {
+  ipCounter += 1;
+  return `192.0.2.${ipCounter}`;
+}
 
 beforeAll(async () => {
   await initDb();
@@ -300,6 +310,73 @@ describe("POST /api/v1/cart", () => {
       const body = res.json();
       expect(body.items[0]).toMatchObject({ denomination_id: denomId, qty: 3 });
       expect(body.subtotal).toBe("120000");
+    });
+
+    // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+    // check above — same failure shape either way (an attacker can't tell
+    // "bad token" from "bad origin" apart from the response).
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: { denomination_id: denomId, qty: 1 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    it("200s with a valid token and no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+    // configured, originOk falls back to comparing against req.hostname —
+    // this is that fallback path, exercised by temporarily unsetting both
+    // (this test suite's setup-env.ts sets SHOP_PUBLIC_URL by default, so it
+    // must be cleared for this one case).
+    it("200s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+      const originalShop = config.SHOP_PUBLIC_URL;
+      const originalPublic = config.PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/cart",
+          headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+          payload: { denomination_id: denomId, qty: 2 },
+        });
+        expect(res.statusCode).toBe(200);
+      } finally {
+        config.SHOP_PUBLIC_URL = originalShop;
+        config.PUBLIC_URL = originalPublic;
+      }
+    });
+
+    // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+    // this test suite — see setup-env.ts), the Origin check must prefer it
+    // over req.hostname — so an Origin matching the configured public origin
+    // passes even though it does NOT match this injected request's own
+    // apparent host ("localhost"). This is the deploy-time availability gap
+    // the fix closes: a proxy that mangles the Host header must not 403
+    // every mutation as long as the buyer's browser really is on the
+    // configured public origin.
+    it("200s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+      expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
     });
   });
 });
@@ -718,6 +795,19 @@ describe("POST /api/v1/checkout", () => {
       expect(res.json()).toEqual({ error: "csrf_failed" });
     });
 
+    // Task 12: this handler's CSRF check is its own inline copy (not
+    // csrfOk), so it needs its own Origin-mismatch coverage.
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: { method: "qris" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
     it("400s an unavailable payment method (no tokopay creds configured)", async () => {
       const res = await app.inject({
         method: "POST",
@@ -866,6 +956,43 @@ describe("POST /api/v1/checkout", () => {
       });
       expect(res.statusCode).toBe(400);
       expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+    });
+  });
+
+  // Task 5: checkoutSubmitRateLimited(ip) — the order-creating mutation
+  // itself had no throttle at all before this. Checked as the very first
+  // statement, so a 400 (guest email missing) below still counts as a hit.
+  describe("rate limiting (Task 5)", () => {
+    it("429s after CHECKOUT_SUBMIT_RATE_LIMIT_MAX submits from one IP, without affecting a different IP", async () => {
+      const ip = freshIp();
+      for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/checkout",
+          headers: { "x-forwarded-for": ip },
+          payload: { method: "qris" },
+        });
+        expect(res.statusCode).toBe(400); // still under the cap (missing guest email)
+      }
+      const limited = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": ip },
+        payload: { method: "qris" },
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toEqual({ error: "error.rate_limited" });
+
+      // A different IP has its own, unexhausted quota.
+      const otherIp = freshIp();
+      const unaffected = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": otherIp },
+        payload: { method: "qris" },
+      });
+      expect(unaffected.statusCode).toBe(400);
+      expect(unaffected.json()).toEqual({ error: "web.guest_email_invalid" });
     });
   });
 });

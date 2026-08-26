@@ -12,6 +12,7 @@ import {
   bulkAddStock,
   bulkMarkStockDead,
   bulkDeleteStock,
+  deleteStockItem,
   listAvailableCredentials,
   getStockItem,
   markStockDead,
@@ -287,6 +288,35 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       targetType: "stock_item",
       targetId: stockId,
       details: `Marked stock item dead. Note: "${note.slice(0, 200)}".`, // never the credentials
+    });
+    return reply.send({ ok: true });
+  });
+
+  // Hard-delete ONE stock item — the single-item sibling of bulk-delete above,
+  // filling a gap where only bulk selection could delete a row. Same guard as
+  // bulkDeleteStock: refuses a SOLD row or one tied to an order item. Uses 409
+  // (not 422) to match `.../dead` just above and this file's other
+  // delete-blocked-by-existing-state routes elsewhere in the repo (e.g.
+  // catalog.ts's "Cannot delete a denomination with order history.",
+  // vouchers.ts's "Cannot delete: this code has already been used.") — the
+  // rejection here is a conflict with the row's current state/references, the
+  // same framing as those, not a request-shape validation failure (422's use
+  // elsewhere in this file, e.g. bulk-add's missing-credentials case).
+  app.post("/api/stock/item/:stockId/delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const item = await getStockItem(prisma, stockId);
+    if (!item) return reply.code(404).send({ error: "Stock item not found." });
+
+    const deleted = await deleteStockItem(prisma, stockId);
+    if (!deleted) {
+      return reply.code(409).send({ error: "This item has been sold or is linked to an order and cannot be deleted." });
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_item_delete",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Deleted stock item.`, // never the credentials
     });
     return reply.send({ ok: true });
   });

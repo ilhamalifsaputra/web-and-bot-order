@@ -49,11 +49,11 @@ import {
   CART_COOKIE_VERSION,
   type GuestCartLine,
 } from "../shop";
-import { loadCartLines, loadGuestCartItems, cartCompositionLineOf } from "./cart";
+import { loadCartLines, loadGuestCartItems, cartCompositionLineOf, originOk } from "./cart";
 import { cartAdditionError } from "@app/core/cartComposition";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
-import { clientIp, guestCheckoutRateLimited } from "../rateLimit";
+import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
 
 interface CategoryJson {
@@ -256,8 +256,13 @@ const CHECKOUT_IDEMPOTENCY_ENDPOINT = "storefront.checkout.create";
  * back `string | string[] | undefined` for a possibly-repeated header; a
  * repeat takes the first value. Empty/oversized values are treated as "no
  * key" (opt out) rather than rejected, since this feature is additive and
- * must never turn a missing/malformed header into a hard failure. */
-function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+ * must never turn a missing/malformed header into a hard failure.
+ *
+ * Exported (Task 3) so the cart-free instant-buy order route
+ * (routes/apiTopup.ts) reads the SAME header the SAME way, rather than a
+ * second copy of this rule that could drift — same cross-file-reuse reason as
+ * `withGuestCsrf` above. */
+export function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
   const raw = (Array.isArray(header) ? header[0] : header) ?? "";
   const trimmed = raw.trim();
   return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
@@ -421,7 +426,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const customer = await optionalCustomer(req);
     if (customer) {
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
@@ -521,10 +526,17 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       guest_email?: string;
     };
   }>("/checkout", async (req, reply) => {
+    // Rate limit FIRST — cheapest possible short-circuit, before any
+    // DB/session work (including the idempotency check below). Shared with
+    // POST /topup/order (see checkoutSubmitRateLimited's doc comment).
+    if (checkoutSubmitRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const signedIn = await optionalCustomer(req);
     if (signedIn) {
       const token = req.headers["x-csrf-token"];
-      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf)) {
+      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf) || !originOk(req)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }

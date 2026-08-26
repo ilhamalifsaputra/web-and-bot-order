@@ -639,3 +639,77 @@ export const RefundStatus = {
 } as const;
 export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 export const zRefundStatus = z.nativeEnum(RefundStatus);
+
+/**
+ * AdminTask.type (Trustance Master Architecture Task 9a, §38) — the five
+ * manual-operation task kinds the admin task queue can hold. String, not a
+ * native Prisma enum, matching every other lifecycle-status-adjacent column
+ * in this schema.
+ */
+export const AdminTaskType = {
+  /** A `manual_with_info`-adjacent flow needs the buyer to supply more
+   * detail before the task can proceed. */
+  REQUEST_CUSTOMER_INFO: "REQUEST_CUSTOMER_INFO",
+  /** A paid order routed to hand-fulfilment (Denomination.deliveryType
+   * manual/manual_with_info) needs an admin to type and send the content. */
+  MANUAL_DELIVERY: "MANUAL_DELIVERY",
+  /** A specific manual account needs to be picked/assigned to an order. */
+  MANUAL_ACCOUNT_ASSIGNMENT: "MANUAL_ACCOUNT_ASSIGNMENT",
+  /** A Digiflazz-routed top-up came back failed/ambiguous and needs admin
+   * review (see OrderStatus.FAILED / the Digiflazz resync circuit breaker). */
+  FAILED_TOPUP_REVIEW: "FAILED_TOPUP_REVIEW",
+  /** A Refund record needs admin review/decision — see AdminTask.refundId. */
+  REFUND_REVIEW: "REFUND_REVIEW",
+} as const;
+export type AdminTaskType = (typeof AdminTaskType)[keyof typeof AdminTaskType];
+export const zAdminTaskType = z.nativeEnum(AdminTaskType);
+
+/**
+ * AdminTask.priority — same LOW/MEDIUM/HIGH/URGENT vocabulary as
+ * `TicketPriority` (this schema's existing precedent for an admin-set
+ * triage field), kept as its own named enum rather than re-exporting
+ * TicketPriority so the AdminTask domain stays self-contained, matching how
+ * OrderStatus/RefundStatus are separate enums despite overlapping shape.
+ */
+export const AdminTaskPriority = {
+  LOW: "LOW",
+  MEDIUM: "MEDIUM",
+  HIGH: "HIGH",
+  URGENT: "URGENT",
+} as const;
+export type AdminTaskPriority = (typeof AdminTaskPriority)[keyof typeof AdminTaskPriority];
+export const zAdminTaskPriority = z.nativeEnum(AdminTaskPriority);
+
+/**
+ * AdminTask.status — the state machine driven by the four admin actions
+ * §38 names (Assign / Start / Complete / Escalate):
+ *
+ *   PENDING --assign--> ASSIGNED --start--> IN_PROGRESS --complete--> COMPLETED
+ *      |                    |                    |
+ *      +---escalate---> ESCALATED <---escalate---+
+ *                          | (assign)   | (start)   | (complete)
+ *                          +-------------------------------------> ASSIGNED / IN_PROGRESS / COMPLETED
+ *
+ * PENDING is the only status with no assignee. ASSIGNED/IN_PROGRESS/
+ * ESCALATED all carry a non-null `assignedTo` in practice (set by the
+ * `assign` action) — not enforced at the schema level (see AdminTask.
+ * assignedTo's own doc comment), the same "app-layer invariant, not a CHECK
+ * constraint" pattern this schema already uses for RefundItem's sum
+ * invariant. ESCALATED is deliberately NOT terminal: escalating hands a
+ * task to a different/more senior admin, who can still re-assign, resume,
+ * or complete it — see `ADMIN_TASK_LEGAL_TRANSITIONS`
+ * (packages/db/src/crud/adminTasks.ts) for the exact edges. COMPLETED is
+ * the only terminal status; there is no "cancelled"/"rejected" status for
+ * an AdminTask today (unlike Refund/Order) because nothing in §38 or the
+ * task description asked for one — closing that gap is future work if an
+ * admin needs to explicitly drop a task rather than complete it.
+ */
+export const AdminTaskStatus = {
+  PENDING: "PENDING",
+  ASSIGNED: "ASSIGNED",
+  IN_PROGRESS: "IN_PROGRESS",
+  ESCALATED: "ESCALATED",
+  COMPLETED: "COMPLETED",
+} as const;
+export type AdminTaskStatus = (typeof AdminTaskStatus)[keyof typeof AdminTaskStatus];
+export const zAdminTaskStatus = z.nativeEnum(AdminTaskStatus);

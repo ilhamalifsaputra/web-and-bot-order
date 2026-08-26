@@ -70,6 +70,7 @@ model User {
   ticketsAsAdmin        SupportTicket[]       @relation("TicketAdmin")
   voucherRedemptions    VoucherRedemption[]
   reviewsRepliedAsAdmin Review[]              @relation("ReviewRepliedByAdmin")
+  adminTasksAssigned    AdminTask[]           @relation("AdminTaskAssignee")
 
   @@index([role, createdAt], map: "ix_users_role_created_at")
   @@index([lastSeenAt], map: "ix_users_last_seen_at")
@@ -662,6 +663,7 @@ model Order {
   voucherRedemptions VoucherRedemption[]
   statusHistory      OrderStatusHistory[]
   refunds            Refund[]
+  adminTasks         AdminTask[]
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -755,6 +757,7 @@ model OrderItem {
   product     Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItem   StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
   refundItems RefundItem[]
+  adminTasks  AdminTask[]
 
   @@index([orderId], map: "ix_order_items_order_id")
   @@index([productId], map: "ix_order_items_product_id")
@@ -836,8 +839,9 @@ model Refund {
   // financial-audit record — deleting the Order it refunds must never
   // silently erase it. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  items RefundItem[]
+  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  items      RefundItem[]
+  adminTasks AdminTask[]
 
   @@index([orderId], map: "ix_refunds_order_id")
   @@index([status], map: "ix_refunds_status")
@@ -893,6 +897,100 @@ model RefundItem {
   @@index([refundId], map: "ix_refund_items_refund_id")
   @@index([orderItemId], map: "ix_refund_items_order_item_id")
   @@map("refund_items")
+}
+
+/// Manual-operation task queue (Trustance Master Architecture Task 9a, §38):
+/// "manual operation must become a task" — a persisted, assignable,
+/// admin-worked queue item, distinct from the read-only, live-derived
+/// counters `GET /api/dashboard/operations` computes directly from
+/// Order/Payment-adjacent tables (apps/web-admin/src/routes/api/dashboard.ts,
+/// OperationCenter.tsx). That endpoint answers "how many X are pending right
+/// now"; AdminTask answers "who is working this specific one, and what
+/// state is it in" — the two are not merged, and OperationCenter does not
+/// read this table (a later task may wire it to link into an AdminTask queue
+/// UI, out of scope here).
+///
+/// `type` — REQUEST_CUSTOMER_INFO | MANUAL_DELIVERY |
+/// MANUAL_ACCOUNT_ASSIGNMENT | FAILED_TOPUP_REVIEW | REFUND_REVIEW
+/// (AdminTaskType, @app/core/enums). String, not a native Prisma enum —
+/// matches every other lifecycle-status-adjacent column in this schema
+/// (Order.status, OrderItem.status, Refund.status).
+model AdminTask {
+  id Int @id @default(autoincrement())
+
+  type String
+
+  /// Both independently nullable, mirroring SupportTicket's identical
+  /// orderId?/nothing-else-required shape: a task can be about a whole order
+  /// (e.g. MANUAL_DELIVERY for a whole-order manual product) or a specific
+  /// line within it (e.g. FAILED_TOPUP_REVIEW for one Digiflazz-routed item
+  /// in a multi-item cart). Neither is required — a task type that needs no
+  /// order context is representable, same as a general SupportTicket.
+  orderId     Int? @map("order_id")
+  orderItemId Int? @map("order_item_id")
+  /// Optional link to the specific Refund a REFUND_REVIEW task is about.
+  /// Not in the master-architecture field list verbatim, but added because
+  /// an Order can carry more than one Refund (partial/multiple refund
+  /// requests over time — see RefundItem's cross-refund budget invariant) —
+  /// without this, a REFUND_REVIEW task pointed only at `orderId` would
+  /// leave an admin to guess which of the order's Refund rows is under
+  /// review. Optional/nullable like every other reference field here; every
+  /// other task `type` is expected to leave this null.
+  refundId Int? @map("refund_id")
+
+  /// Acting admin this task is currently assigned to — same "which admin did
+  /// this" convention as SupportTicket.adminId/AuditLog.adminId: a plain
+  /// nullable FK to User (this repo's admins are User rows with
+  /// role=ADMIN, not a separate Admin table), NoAction on delete (matches
+  /// SupportTicket.admin/AuditLog.admin, not the Restrict policy used for
+  /// order/orderItem/refund below — those are the audit-significant parent
+  /// rows this task is ABOUT, whereas assignedTo is only "who is currently
+  /// working it" and losing that pointer if the admin row were ever removed
+  /// is not the same category of data loss).
+  assignedTo Int? @map("assigned_to")
+
+  /// LOW | MEDIUM | HIGH | URGENT (AdminTaskPriority, @app/core/enums) —
+  /// same vocabulary as SupportTicket.priority, defaults MEDIUM.
+  priority String @default("MEDIUM")
+
+  /// PENDING | ASSIGNED | IN_PROGRESS | ESCALATED | COMPLETED
+  /// (AdminTaskStatus, @app/core/enums). The state machine that governs
+  /// these transitions — driven by the four admin actions in §38 (Assign /
+  /// Start / Complete / Escalate) — lives in `ADMIN_TASK_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/adminTasks.ts), validated by
+  /// `transitionAdminTaskStatus`.
+  status String @default("PENDING")
+
+  dueAt DateTime? @map("due_at")
+  /// Set once, when this task reaches COMPLETED — mirrors
+  /// Refund.processedAt's "not yet reached this milestone" pattern.
+  completedAt DateTime? @map("completed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // orderId/orderItemId/refundId: Restrict, not Cascade — matches
+  // Refund/RefundItem's existing conservative FK policy for every other
+  // Order-adjacent financial/operational-audit row (Infra-5 fix, security
+  // audit 2026-06-23). An AdminTask is itself an operational-audit record;
+  // no code path hard-deletes an Order/OrderItem/Refund today, and this is a
+  // schema-level guardrail against ever adding one that would silently
+  // orphan a task record.
+  order     Order?     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  refund    Refund?    @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  // assignedTo: NoAction, matching SupportTicket.admin/AuditLog.admin's
+  // existing "acting admin" FK policy (not Restrict) — see the field's own
+  // doc comment above for why this one FK is deliberately not Restrict.
+  assignee User? @relation("AdminTaskAssignee", fields: [assignedTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status], map: "ix_admin_tasks_status")
+  @@index([type], map: "ix_admin_tasks_type")
+  @@index([assignedTo], map: "ix_admin_tasks_assigned_to")
+  @@index([orderId], map: "ix_admin_tasks_order_id")
+  @@index([orderItemId], map: "ix_admin_tasks_order_item_id")
+  @@index([refundId], map: "ix_admin_tasks_refund_id")
+  @@map("admin_tasks")
 }
 
 model Voucher {

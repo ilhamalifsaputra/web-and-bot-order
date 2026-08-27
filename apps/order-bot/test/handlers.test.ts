@@ -2413,6 +2413,55 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
+  // A1: the atomic checkoutIntentId constraint is the correctness guarantee
+  // behind refuseDuplicateCheckout's best-effort pre-check — this proves the
+  // atomic path ALSO degrades gracefully into the same buyer-facing UX, not a
+  // raw/unhandled error, on the cases the pre-check's per-product+window scope
+  // can't catch (e.g. a different product, or outside DUPLICATE_CHECKOUT_
+  // WINDOW_MS). The colliding order below is created for a DIFFERENT product
+  // than the one this call buys, so refuseDuplicateCheckout's own
+  // `items: { some: { productId } }` filter can't be what refuses this call —
+  // only createOrderDirect's DuplicateCheckoutIntentError catch in
+  // buyNowTokopay can be.
+  it("buyNowTokopay converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent@x.com:pw"]);
+    const checkoutIntentId = "11111111-1111-1111-1111-111111111111";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payq:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // No second order — the collision was refused, not raced through.
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // Same alert copy refuseDuplicateCheckout uses (checkout.duplicate_pending),
+    // not error.generic or a thrown/unhandled exception.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
   it("buyNowInternal's screen carries native copy-to-clipboard buttons for the Binance UID and unique payment code", async () => {
     // Pins the real call site (checkout.ts's buyNowInternal → proofCancelKb(..., copy)),
     // not just the keyboard builder in isolation — nothing else would catch

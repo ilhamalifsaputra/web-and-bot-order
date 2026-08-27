@@ -59,6 +59,52 @@ import {
 import { logAdminAction } from "./audit";
 import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 
+/**
+ * Thrown by `createOrderDirect`/`createOrderFromCart` when the caller-supplied
+ * `checkoutIntentId` collides with one already stamped on another `Order` row
+ * — the atomic, DB-enforced counterpart to the bot's best-effort
+ * `refuseDuplicateCheckout` check (apps/order-bot/src/handlers/checkout.ts):
+ * two near-simultaneous "Buy Now" taps for the same checkout attempt race to
+ * insert an `Order` with the same `checkoutIntentId`; the `orders.checkout_
+ * intent_id` unique index lets exactly one INSERT win, and the loser's
+ * `db.order.create` rejects with a Postgres unique-violation (P2002) instead
+ * of silently creating a second order.
+ *
+ * Deliberately thrown rather than caught-and-recovered inside this function
+ * (contrast `idempotency.ts`'s `saveIdempotentResponse`, which swallows its
+ * own collision): every existing caller wraps `createOrderDirect`/
+ * `createOrderFromCart` in an outer `prisma.$transaction(async (tx) => ...)`
+ * that keeps using `tx` afterward (e.g. `finalizeOrderPayment`). Once one
+ * query on a Postgres transaction fails, the WHOLE transaction is aborted —
+ * any further query on that same `tx`, even a harmless read, fails with
+ * "current transaction is aborted" — so recovering inside this function would
+ * only trade one error for a more confusing one the instant the caller's
+ * `$transaction` callback does anything else with `tx`. Throwing instead lets
+ * Prisma roll the doomed transaction back cleanly; the caller catches this
+ * error class OUTSIDE the failed `$transaction` call and decides the UX from
+ * there (checkout.ts's buyNow* handlers show the same "duplicate pending"
+ * toast `refuseDuplicateCheckout` already uses — see its doc comment).
+ */
+export class DuplicateCheckoutIntentError extends Error {
+  constructor(public readonly checkoutIntentId: string) {
+    super(`checkoutIntentId "${checkoutIntentId}" already has an order — refusing to create a second one`);
+    this.name = "DuplicateCheckoutIntentError";
+  }
+}
+
+/**
+ * Look up the order a given `checkoutIntentId` already created — for a
+ * `DuplicateCheckoutIntentError` catch site that wants to know more about the
+ * existing order than "it exists" (today's bot UX doesn't need this; it's
+ * exported for future consumers, e.g. Task 2/3's payment-rail wiring). Pass
+ * the top-level `prisma` client, not the `tx` whose transaction just failed —
+ * see `DuplicateCheckoutIntentError`'s doc comment for why that transaction
+ * can no longer run any query.
+ */
+export function getOrderByCheckoutIntentId(db: Db, checkoutIntentId: string) {
+  return db.order.findUnique({ where: { checkoutIntentId } });
+}
+
 const ZERO = new Decimal(0);
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 // Matches the cart's own cap (packages/db/src/crud/cart.ts) — the final
@@ -418,6 +464,13 @@ export async function createOrderFromCart(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
     customerData?: string | null;
+    /** Client-minted UUID identifying one checkout attempt (Task A1) — stamped
+     * on the created Order under a DB-enforced unique constraint, so two
+     * concurrent calls with the SAME value can never both create an order.
+     * Omit for callers that don't need this guard (existing behavior,
+     * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
+     * contract. */
+    checkoutIntentId?: string | null;
   },
 ) {
   // Only lines whose product is still active are eligible to become an order
@@ -548,22 +601,35 @@ export async function createOrderFromCart(
   }
 
   // 6. Persist order shell (need id for unique cents)
-  const order = await db.order.create({
-    data: {
-      orderCode,
-      userId: args.user.id,
-      subtotalAmount: q4(subtotal),
-      bulkDiscountAmount: q4(bulkDiscount),
-      discountAmount: q4(discount),
-      walletUsed,
-      uniqueCents: ZERO,
-      totalAmount: ZERO,
-      voucherId: voucher ? voucher.id : null,
-      status: OrderStatus.PENDING_PAYMENT,
-      customerData: customerDataToStore,
-      expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
-    },
-  });
+  let order;
+  try {
+    order = await db.order.create({
+      data: {
+        orderCode,
+        userId: args.user.id,
+        subtotalAmount: q4(subtotal),
+        bulkDiscountAmount: q4(bulkDiscount),
+        discountAmount: q4(discount),
+        walletUsed,
+        uniqueCents: ZERO,
+        totalAmount: ZERO,
+        voucherId: voucher ? voucher.id : null,
+        status: OrderStatus.PENDING_PAYMENT,
+        customerData: customerDataToStore,
+        expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
+        checkoutIntentId: args.checkoutIntentId ?? null,
+      },
+    });
+  } catch (e) {
+    // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
+    // genuine checkoutIntentId collision (nothing else this INSERT can violate
+    // is caller-suppliable at this point — orderCode was just freshly minted
+    // as unique above), and only when the caller opted into the guard.
+    if (args.checkoutIntentId && isUniqueViolation(e)) {
+      throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
+    }
+    throw e;
+  }
 
   // 7. Pre-check every AUTO line's availability before reserving anything, so
   // the common "you asked for more than we have" case fails before any row is
@@ -679,6 +745,13 @@ export async function createOrderDirect(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
     customerData?: string | null;
+    /** Client-minted UUID identifying one checkout attempt (Task A1) — stamped
+     * on the created Order under a DB-enforced unique constraint, so two
+     * concurrent calls with the SAME value can never both create an order.
+     * Omit for callers that don't need this guard (existing behavior,
+     * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
+     * contract. */
+    checkoutIntentId?: string | null;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -771,22 +844,35 @@ export async function createOrderDirect(
     customerDataToStore = JSON.stringify(validateCustomerData(fields, parsedAnswers, args.quantity));
   }
 
-  const order = await db.order.create({
-    data: {
-      orderCode,
-      userId: args.user.id,
-      subtotalAmount: subtotal,
-      bulkDiscountAmount: bulkDiscount,
-      discountAmount: voucherDiscount,
-      voucherId: voucher ? voucher.id : null,
-      walletUsed: ZERO,
-      uniqueCents: ZERO,
-      totalAmount: ZERO,
-      status: OrderStatus.PENDING_PAYMENT,
-      customerData: customerDataToStore,
-      expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
-    },
-  });
+  let order;
+  try {
+    order = await db.order.create({
+      data: {
+        orderCode,
+        userId: args.user.id,
+        subtotalAmount: subtotal,
+        bulkDiscountAmount: bulkDiscount,
+        discountAmount: voucherDiscount,
+        voucherId: voucher ? voucher.id : null,
+        walletUsed: ZERO,
+        uniqueCents: ZERO,
+        totalAmount: ZERO,
+        status: OrderStatus.PENDING_PAYMENT,
+        customerData: customerDataToStore,
+        expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
+        checkoutIntentId: args.checkoutIntentId ?? null,
+      },
+    });
+  } catch (e) {
+    // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
+    // genuine checkoutIntentId collision (nothing else this INSERT can violate
+    // is caller-suppliable at this point — orderCode was just freshly minted
+    // as unique above), and only when the caller opted into the guard.
+    if (args.checkoutIntentId && isUniqueViolation(e)) {
+      throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
+    }
+    throw e;
+  }
 
   // Reserve stock atomically per unit for AUTO (Checkout-2/Stock-1 fix — see
   // createOrderFromCart's matching loop for the full rationale); MANUAL creates

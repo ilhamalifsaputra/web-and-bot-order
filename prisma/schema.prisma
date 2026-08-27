@@ -651,6 +651,14 @@ model Order {
   /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
   /// text, not this field.
   digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
+  /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
+  /// bubble is first rendered for a given checkout attempt and passed through
+  /// to createOrderDirect/createOrderFromCart. The unique constraint is the
+  /// atomic, DB-enforced guard against two near-simultaneous "Buy Now" taps
+  /// both creating an order — see packages/db/src/crud/orders.ts's
+  /// DuplicateCheckoutIntentError. Nullable: existing rows and any
+  /// non-bot-originated order creation path never set it.
+  checkoutIntentId       String?   @unique(map: "ix_orders_checkout_intent_id") @map("checkout_intent_id")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)

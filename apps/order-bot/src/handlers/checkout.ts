@@ -8,6 +8,7 @@
  * instructions. Every rail auto-confirms and delivers on its own; the legacy
  * manual Binance-Pay proof/verification path is retired.
  */
+import { randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
@@ -31,6 +32,7 @@ import {
   getUser,
   countUserPendingOrders,
   createOrderDirect,
+  DuplicateCheckoutIntentError,
   createInternalOrder,
   createBybitOrder,
   createBybitBscOrder,
@@ -114,6 +116,23 @@ const DUPLICATE_CHECKOUT_WINDOW_MS = 30_000;
  * screen itself and returns true when a duplicate is found; the caller must
  * stop. Returns false when it's safe to create a new order.
  */
+/**
+ * Toast + edit-to-backToMain shown whenever a checkout attempt is refused as
+ * a duplicate — whether caught by {@link refuseDuplicateCheckout}'s
+ * best-effort pre-check or by a caller catching a
+ * `DuplicateCheckoutIntentError` from the atomic `checkoutIntentId`
+ * constraint (createOrderDirect/createOrderFromCart,
+ * packages/db/src/crud/orders.ts). Same copy either way — the buyer can't
+ * tell which guard caught it, and shouldn't need to.
+ */
+async function notifyDuplicateCheckout(ctx: MyContext): Promise<void> {
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+  } else {
+    await smartEdit(ctx, t(ctx, "checkout.duplicate_pending"), ckb.backToMain(ctx.session.lang));
+  }
+}
+
 async function refuseDuplicateCheckout(
   ctx: MyContext,
   userId: number,
@@ -130,11 +149,7 @@ async function refuseDuplicateCheckout(
     },
   });
   if (!dupe) return false;
-  if (ctx.callbackQuery) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
-  } else {
-    await smartEdit(ctx, t(ctx, "checkout.duplicate_pending"), ckb.backToMain(ctx.session.lang));
-  }
+  await notifyDuplicateCheckout(ctx);
   return true;
 }
 
@@ -371,6 +386,17 @@ export async function showOrderConfirmation(
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
+
+  // Mint the checkoutIntentId for this attempt the first time the "Confirm &
+  // Pay" bubble actually renders (not on the diversion/early-return branches
+  // above, which never show it) — reused as-is across every re-render of this
+  // SAME attempt (voucher entry, wallet toggle, the USDT submenu) so a single
+  // attempt always maps to one id, and cleared by every buyNow*/
+  // completeOrderWithWallet handler once an order is actually created (A1 —
+  // see DuplicateCheckoutIntentError in packages/db/src/crud/orders.ts).
+  if (typeof ctx.session.scratch.checkoutIntentId !== "string") {
+    ctx.session.scratch.checkoutIntentId = randomUUID();
+  }
 
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
@@ -655,6 +681,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -746,6 +773,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -834,6 +862,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -901,10 +930,12 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData });
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData, checkoutIntentId });
       if (!created) return created;
       const finalized = await finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
@@ -915,6 +946,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
       return useWalletUsdt ? getOrder(tx, created.id) : finalized;
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -932,6 +967,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -1040,6 +1076,8 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
 
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
@@ -1050,11 +1088,16 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
+        checkoutIntentId,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -1072,6 +1115,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -1196,6 +1240,8 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
 
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
@@ -1206,11 +1252,16 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
+        checkoutIntentId,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -1228,6 +1279,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -1379,6 +1431,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   if (result.kind === "delivered") {
     // Deliver the account file directly (the order is already DELIVERED and

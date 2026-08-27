@@ -204,7 +204,7 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 
 /** Side-effectful boot: DB, command menu, workers, transport, listen, shutdown. */
 export async function start(): Promise<void> {
-  await initDb(); // single PrismaClient, sets WAL + busy_timeout PRAGMAs
+  await initDb(); // no-op on Postgres; kept so this boot path matches every other caller
 
   // Fail-loud on a drifted live DB: a missing payment-ledger table makes that
   // gateway confirm-but-never-deliver (P2021 at the first ledger write), so the

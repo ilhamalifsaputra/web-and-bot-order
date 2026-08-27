@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }
   const apply = argv.includes("--apply");
 
-  await initDb(); // WAL + busy_timeout PRAGMAs, same as the app
+  await initDb(); // no-op on Postgres; kept for boot-sequencing parity with the app
 
   if (!apply) {
     const { mixed, skipped, conflicts } = await detectMixedDigiflazzProducts(prisma);

@@ -529,8 +529,18 @@ WEB_COOKIE_SECRET=<openssl rand -hex 32>   # ← beda (acak, min 32 char)
 SHOP_PUBLIC_URL=https://shop-a.com         # ← domain toko ini (link DM + callback gateway)
 WEB_COOKIE_SECURE=true                     # produksi di balik HTTPS
 BOT_MODE=polling                           # default; tidak butuh domain untuk bot
-DATABASE_URL_PRISMA=file:/app/data/bot.db  # Docker: path ABSOLUT; ./data-nya beda per direktori
+POSTGRES_DB=shopa                          # ← beda (DB Postgres terpisah per toko)
+POSTGRES_USER=shopa
+POSTGRES_PASSWORD=<acak-kuat-per-toko>     # ← beda
+DATABASE_URL_PRISMA=postgresql://shopa:<password>@postgres:5432/shopa  # host tetap `postgres` (lihat §8a POSTGRES_MIGRATION.md)
 ```
+
+> Tidak perlu `POSTGRES_PORT` terpisah per toko: `docker-compose.postgres.prod.yml`
+> tidak mempublikasikan port host sama sekali (Postgres hanya dijangkau lewat
+> jaringan internal Compose), dan nama volume/container-nya otomatis
+> di-prefix `COMPOSE_PROJECT_NAME` — jadi tiap instance sudah dapat container
+> `postgres` dan volume data sendiri tanpa perlu variabel port tambahan (lihat
+> juga "Backup & batas" di bawah).
 
 Gateway pembayaran (TokoPay / PayDisini / NOWPayments) **tidak** diisi di `.env` —
 diisi di web-admin → Settings tiap instance (tersimpan di DB masing-masing, jadi
@@ -541,8 +551,8 @@ otomatis terpisah). Pakai akun gateway berbeda per toko.
 ```bash
 git clone <repo-url> /opt/shop-a && cd /opt/shop-a
 cp .env.example .env                                      # isi sesuai tabel di atas
-docker compose run --rm server pnpm prisma db push        # skema sebelum start (hindari P2022)
-docker compose up -d                                      # nama container otomatis dari COMPOSE_PROJECT_NAME
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm prisma db push   # skema sebelum start (hindari P2022)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d                                 # nama container otomatis dari COMPOSE_PROJECT_NAME
 ```
 
 `docker-compose.yml` repo ini sudah siap multi-instance: nama container diturunkan

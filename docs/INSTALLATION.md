@@ -11,7 +11,7 @@
 |---|---|---|
 | Node.js | ≥ 22.13 (image Docker: `node:24-slim`) | Ya (non-Docker) |
 | pnpm | `9.15.9` (pinned via `packageManager` di `package.json`) | Ya (non-Docker) |
-| Database | SQLite (file tunggal, mode WAL) — **tidak ada server DB terpisah** | Bawaan |
+| Database | PostgreSQL 16 (via `docker-compose.postgres.prod.yml`/`docker-compose.postgres.yml`) — **server DB terpisah, wajib** | Ya |
 | Redis | **Tidak dipakai** — tidak ada di stack ini | — |
 | Docker | Engine terbaru, untuk Jalur A | Opsional |
 | OS | Linux (VPS) untuk produksi; Windows/macOS untuk dev lokal | — |

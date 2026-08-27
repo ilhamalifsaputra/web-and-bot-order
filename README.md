@@ -61,7 +61,10 @@ cp .env.example .env
 ```
 
 ```ini
-DATABASE_URL_PRISMA=file:./data/bot.db        # biarkan default kalau pakai Docker
+POSTGRES_DB=bot_order
+POSTGRES_USER=bot_order
+POSTGRES_PASSWORD=ganti-dengan-password-acak-yang-kuat   # ganti nilainya, lalu samakan persis di baris di bawah
+DATABASE_URL_PRISMA=postgresql://bot_order:ganti-dengan-password-acak-yang-kuat@postgres:5432/bot_order
 ADMIN_IDS=12345678                            # ID Telegram-mu; pisah koma kalau >1
 WEB_COOKIE_SECRET=hasil_openssl_rand_hex_32   # kunci login panel admin
 TIMEZONE=Asia/Jakarta
@@ -98,18 +101,20 @@ cd web-and-bot-order
 cp .env.example .env   # lalu isi sesuai bagian 2
 ```
 
-**3. Bangun image & siapkan database:**
+**3. Bangun image & siapkan database** (Postgres jalan lewat overlay
+`docker-compose.postgres.prod.yml` — `docker-compose.yml` sendirian tidak
+cukup lagi karena skemanya sekarang `postgresql`-only):
 
 ```bash
-docker compose build
-docker compose run --rm server pnpm exec prisma db push
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push
 ```
 
 **4. Nyalakan layanan** (satu proses gabungan: panel admin + toko web + bot +
-pengiriman notifikasi + poller pembayaran):
+pengiriman notifikasi + poller pembayaran, plus container `postgres`):
 
 ```bash
-docker compose up -d               # panel admin (8000) + toko web (8100) + bot
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d   # panel admin (8000) + toko web (8100) + bot + Postgres
 ```
 
 > 🛍️ Toko web (port 8100) ikut jalan dalam proses yang sama — tak perlu nyalakan
@@ -119,8 +124,8 @@ docker compose up -d               # panel admin (8000) + toko web (8100) + bot
 **5. Cek:**
 
 ```bash
-docker compose ps                  # "running"/"healthy"
-docker compose logs -f server      # log gabungan (Ctrl+C keluar)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps                  # "running"/"healthy"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server       # log gabungan (Ctrl+C keluar)
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
@@ -247,9 +252,9 @@ di [`DOCS.md`](DOCS.md).
 git pull
 
 # Docker:
-docker compose build
-docker compose run --rm server pnpm exec prisma db push      # jika skema berubah
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push      # jika skema berubah
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d
 
 # Non-Docker:
 pnpm install && pnpm prisma:generate && pnpm exec prisma db push
@@ -386,7 +391,7 @@ packages/
   outbox-dispatcher/ Pengirim notifikasi (drain notification_outbox → Telegram)
   web-ui/           Tema & template bersama
 prisma/schema.prisma   Skema database (PostgreSQL)
-data/bot.db            Database (di-gitignore)
+data/                  Log & snapshot backup lokal (di-gitignore)
 ```
 
 **Dokumen lain:** [`DOCS.md`](DOCS.md) (arsitektur, fitur, env lengkap) ·

@@ -420,16 +420,24 @@ off-box note, which applies equally here).
    same 6-hourly cadence:
 
    ```cron
-   0 */6 * * * cd /srv/app && POSTGRES_USER=bot_order POSTGRES_DB=bot_order \
-     docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-     exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
-     > /srv/backups/pg-$(date +\%Y\%m\%d-\%H\%M\%S).dump 2>> /var/log/bot-backup.log
+   0 */6 * * * cd /srv/app && docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml exec -T postgres pg_dump -U bot_order -Fc bot_order > /srv/backups/pg-$(date +\%Y\%m\%d-\%H\%M\%S).dump 2>> /var/log/bot-backup.log
    ```
 
-   (cron needs `%` escaped as `\%` in `date` format strings — a common
-   gotcha, called out here so the job doesn't silently write a garbled
-   filename.) Substitute your real `POSTGRES_USER`/`POSTGRES_DB` and backup
-   directory.
+   This has to be a single crontab line: Vixie cron's command field ends at
+   end-of-line, it does **not** support backslash line-continuation, so a
+   "multi-line" entry silently becomes several malformed crontab lines
+   (syntax error, job never runs). The `POSTGRES_USER`/`POSTGRES_DB` values
+   are also inlined literally here (shown as the `.env.example` defaults,
+   `bot_order`/`bot_order`) rather than referenced as `$POSTGRES_USER`/
+   `$POSTGRES_DB` — a leading `VAR=value` assignment prefix on a cron command
+   does not propagate into that same command's `$VAR` expansion, so
+   `pg_dump -U "$POSTGRES_USER" ...` would resolve to `pg_dump -U "" ...`
+   and fail, while the `>` redirect still creates a zero-byte "backup" file
+   with no visible error. (cron also needs `%` escaped as `\%` in `date`
+   format strings — a separate gotcha, called out so the job doesn't
+   silently write a garbled filename.) Substitute your real
+   `POSTGRES_USER`/`POSTGRES_DB` and backup directory as literal text, not
+   shell variables, if they differ from the defaults shown here.
 
 3. **This is a starting point, not a full backup strategy.** Retention
    pruning, integrity verification, off-box/3-2-1 copies, and point-in-time

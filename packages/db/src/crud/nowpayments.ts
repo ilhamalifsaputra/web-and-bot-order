@@ -29,6 +29,7 @@ import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 /** Minimum-payment-amount note shown at checkout (USDT) — blank = no note. */
@@ -167,6 +168,12 @@ export async function deliverPaidNowpaymentsOrder(
         );
         return { status: "stale" as const };
       }
+      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+      // ledger row (if any) BEFORE settling, so both branches below can
+      // confirm it once delivery actually succeeds. May legitimately be null
+      // — orders created before this ledger was wired up, or a rail change
+      // that left no PENDING row — and that is never treated as an error.
+      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch(() => null);
       if (order.kind === OrderKind.WALLET_TOPUP) {
         // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
         // settleWalletTopup itself — the ONE call site for that event across
@@ -175,6 +182,14 @@ export async function deliverPaidNowpaymentsOrder(
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        if (pendingPayment) {
+          // Best-effort, never blocking: the wallet credit above already
+          // committed, so a ledger-only failure here must not roll back a
+          // real settlement. See this file's Task A2b comments for why.
+          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+          );
+        }
         logger.info(
         {
           event: PaymentLogEvent.PAYMENT_CONFIRMED,
@@ -198,6 +213,12 @@ export async function deliverPaidNowpaymentsOrder(
         meta: `trxId=${args.trxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (pendingPayment) {
+        // Best-effort, never blocking — see the WALLET_TOPUP branch above.
+        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+        );
+      }
       // Buyer DM via the outbox — only if the buyer has a Telegram account.
       // Web-only buyers (telegramId=null) have no chat to DM; they see their
       // order on the storefront instead. Link only — the outbox payload is

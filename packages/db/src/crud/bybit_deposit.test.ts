@@ -29,6 +29,7 @@ import {
   recordUnmatchedBybitTx,
 } from "./bybit_deposit";
 import { createOrderDirect, cancelOrder } from "./orders";
+import { createPaymentAttempt } from "./payments";
 import { ADMIN_IDS_KEY } from "./admins";
 import { setSetting } from "./settings";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
@@ -709,6 +710,73 @@ describe("deliverPaidBybitOrder — re-claiming a bybitTxId across non-deliverin
       amount: recoveryOrder.totalAmount,
     });
     expect(recovered.status).toBe("delivered");
+  });
+});
+
+// Trustance Phase A Task A2b: deliverPaidBybitOrder now also confirms this
+// order's own PENDING Payment ledger row (if any) in the same transaction as
+// delivery — see this file's crud/bybit_deposit.ts for the hook point. This
+// rail has no memo, so createPaymentAttempt's `reference` is always null
+// here (unlike Binance Internal's own equivalent test).
+describe("deliverPaidBybitOrder — Payment ledger confirmation (Task A2b)", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makePendingBybitOrder() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
+    return order;
+  }
+
+  it("confirms the order's PENDING Payment attempt on delivery, with a null reference (no memo on this rail)", async () => {
+    const order = await makePendingBybitOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+    expect(attempt.reference).toBeNull();
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "tx-ledger-confirm-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.confirmedAt).not.toBeNull();
+    expect(confirmed.pendingOrderId).toBeNull();
+  });
+
+  it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {
+    const order = await makePendingBybitOrder();
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "tx-no-ledger-row-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const rows = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(rows.length).toBe(0);
   });
 });
 

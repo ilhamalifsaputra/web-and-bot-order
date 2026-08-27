@@ -693,6 +693,23 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+  // now that the order (and its paymentRef note) has actually been created.
+  // Best-effort and never blocking — the Order row (paymentRef/paymentMethod)
+  // is still the source of truth every rail's own poller reads; a ledger
+  // hiccup here must never stop the buyer from seeing their payment
+  // instructions.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BINANCE_INTERNAL,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: order.paymentRef,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Binance Internal attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+  }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
   // for a retry.
@@ -792,6 +809,21 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger.
+  // No paymentRef on this rail (Internal Transfer carries no memo — matching
+  // is by unique amount only), so `reference` stays null. Best-effort and
+  // never blocking, same reasoning as buyNowInternal's identical call above.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Bybit Internal Transfer attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+  }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
   // for a retry.
@@ -887,6 +919,22 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   if (!order) {
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
+  }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger.
+  // No paymentRef on this rail either (BEP20 on-chain transfers carry no
+  // memo — matching is by unique amount only), so `reference` stays null.
+  // Best-effort and never blocking, same reasoning as buyNowInternal's
+  // identical call above.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT_BSC,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Bybit BSC deposit attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
   }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
@@ -1040,6 +1088,22 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     if (!committed) {
       logger.warn(`Created a NOWPayments invoice for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
     }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the hosted invoice was actually created — `gateway.invoiceId`
+    // is NOWPayments' own clean reference, matching what the cache above
+    // just committed to Order.paymentRef. Best-effort and never blocking,
+    // same reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.NOWPAYMENTS,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.invoiceId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s NOWPayments attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+    }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
@@ -1184,6 +1248,22 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
     if (!committed) {
       logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the gateway transaction was actually created — `gateway.trxId`
+    // is TokoPay's own clean reference, matching what the cache above just
+    // committed to Order.paymentRef. Best-effort and never blocking, same
+    // reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.TOKOPAY,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.trxId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s TokoPay attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
@@ -1343,6 +1423,22 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "paydisini", ...gateway });
     if (!committed) {
       logger.warn(`Created a PayDisini transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the gateway transaction was actually created — `gateway.trxId`
+    // is PayDisini's own clean reference, matching what the cache above just
+    // committed to Order.paymentRef. Best-effort and never blocking, same
+    // reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.PAYDISINI,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.trxId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s PayDisini attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);

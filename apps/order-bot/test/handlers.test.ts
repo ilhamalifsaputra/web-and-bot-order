@@ -2269,6 +2269,16 @@ describe("checkout handlers", () => {
     const cached = JSON.parse(order.paymentRef!) as { gateway?: string; trxId?: string };
     expect(cached.gateway).toBe("tokopay");
     expect(cached.trxId).toBe("TP-TEST");
+
+    // Trustance Phase A Task A2b: a PENDING Payment ledger row now exists for
+    // this attempt, with the gateway's own clean trxId as its reference (not
+    // the JSON-cached blob Order.paymentRef holds).
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order.id } });
+    expect(payment.method).toBe("TOKOPAY");
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe("TP-TEST");
+    expect(payment.amount.toString()).toBe(new Decimal(order.totalAmount).toString());
+    expect(payment.currency).toBe("IDR");
   });
 
   it("buyNowTokopay cancels the order shell when the gateway create call fails (Checkout-3 fix)", async () => {
@@ -2610,6 +2620,45 @@ describe("checkout handlers", () => {
     const copies = (markup?.inline_keyboard ?? []).flat().map((b) => b.copy_text?.text);
     expect(copies).toContain("UID123");
     expect(copies).toContain(order!.paymentRef);
+  });
+
+  // Trustance Phase A Task A2b: buyNowInternal now also records a PENDING
+  // Payment ledger row once the order (and its paymentRef note) exists. Uses
+  // its own higher-priced product (not sample.product, whose IDR 5.00 price
+  // rounds to a 0 USDT total at this rate — createPaymentAttempt correctly
+  // rejects a zero amount, which would make this assertion flaky against the
+  // shared fixture instead of proving anything about the wiring itself).
+  it("buyNowInternal records a PENDING Payment ledger row with the order's own transfer-note reference (Task A2b)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const category = await createCategory(prisma, `a2b-cat-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "A2b Ledger Product" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "A2b Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "160000.00",
+      warrantyDays: 30,
+    });
+    await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"], 1);
+
+    const { ctx } = customerCtx();
+    await checkout.buyNowInternal(ctx, denom.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(order?.paymentRef).toBeTruthy();
+    expect(new Decimal(order!.totalAmount).greaterThan(0)).toBe(true);
+
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order!.id } });
+    expect(payment.method).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe(order!.paymentRef);
+    expect(payment.currency).toBe("USDT");
+    expect(payment.amount.toString()).toBe(new Decimal(order!.totalAmount).toString());
   });
 
   it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {

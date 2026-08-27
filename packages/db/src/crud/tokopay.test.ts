@@ -31,6 +31,7 @@ import {
   bulkAddStock,
   cancelOrder,
   finalizeOrderPayment,
+  createPaymentAttempt,
 } from "@app/db";
 import { OrderCurrency } from "@app/core/enums";
 import { config } from "@app/core/config";
@@ -270,6 +271,53 @@ describe("deliverPaidTokopayOrder", () => {
 
     const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-discount-exact-1" } });
     expect(ledgerRow?.outcome).toBe("matched"); // not "overpaid" either — exact fee, no excess
+  });
+});
+
+// Trustance Phase A Task A2b: deliverPaidTokopayOrder now also confirms this
+// order's own PENDING Payment ledger row (if any) in the same transaction as
+// delivery — see this file's crud/tokopay.ts for the hook point. TokoPay's
+// own gateway trxId is the clean `reference` checkout.ts's buyNowTokopay
+// records at creation; this test uses the same shape.
+describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", () => {
+  it("confirms the order's PENDING Payment attempt on delivery", async () => {
+    const order = await makePendingTokopayOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "TOKOPAY-TRX-LEDGER-1",
+    });
+    expect(attempt.reference).toBe("TOKOPAY-TRX-LEDGER-1");
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-ledger-confirm-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.confirmedAt).not.toBeNull();
+    expect(confirmed.pendingOrderId).toBeNull();
+    // The attempt keeps its OWN reference — independent of Order.paymentRef.
+    expect(confirmed.reference).toBe("TOKOPAY-TRX-LEDGER-1");
+  });
+
+  it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {
+    const order = await makePendingTokopayOrder();
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-no-ledger-row-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    const rows = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(rows.length).toBe(0);
   });
 });
 

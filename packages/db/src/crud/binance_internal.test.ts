@@ -36,6 +36,7 @@ import {
   cancelOrder,
   resolveBinanceInternalConfig,
   setSetting,
+  createPaymentAttempt,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -240,6 +241,77 @@ describe("deliverPaidInternalOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+});
+
+// Trustance Phase A Task A2b: deliverPaidInternalOrder now also confirms this
+// order's own PENDING Payment ledger row (if any) in the same transaction as
+// delivery — see this file's crud/binance_internal.ts for the hook point.
+describe("deliverPaidInternalOrder — Payment ledger confirmation (Task A2b)", () => {
+  it("confirms the order's PENDING Payment attempt on delivery", async () => {
+    const order = await makePendingInternalOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BINANCE_INTERNAL,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: order.paymentRef,
+    });
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-ledger-confirm-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.confirmedAt).not.toBeNull();
+    expect(confirmed.pendingOrderId).toBeNull();
+  });
+
+  it("confirms the Payment attempt on a WALLET_TOPUP delivery too", async () => {
+    const { user } = sample;
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: user.id, amount: "10", currency: "USDT", method: PaymentMethod.BINANCE_INTERNAL, rate: "16000" }),
+    );
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BINANCE_INTERNAL,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: order.paymentRef,
+    });
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-ledger-confirm-topup-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+  });
+
+  it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {
+    // No createPaymentAttempt call here at all: this is the common case until
+    // every order flows through the new checkout.ts wiring, and it must never
+    // block or alter delivery (every OTHER test in this file already proves
+    // this implicitly by never creating a Payment row; this test just makes
+    // the guarantee explicit).
+    const order = await makePendingInternalOrder();
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-no-ledger-row-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const rows = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(rows.length).toBe(0);
   });
 });
 

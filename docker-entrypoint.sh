@@ -86,12 +86,14 @@ auto_migrate() {
     return 0
   fi
 
-  # packages/core/src/config.ts defaults this when unset, but the Prisma CLI has
-  # no such default. Mirror it, otherwise a stack booted without a .env file
-  # (docker-compose.yml marks .env optional) cannot resolve env("DATABASE_URL_PRISMA").
+  # schema.prisma's datasource provider is "postgresql" (engine-swap) — there
+  # is no SQLite fallback to default to any more. Fail loud and immediately
+  # instead of silently substituting the old file: URL, which used to produce
+  # a confusing SQLite-flavored `prisma db push` failure instead of a clear
+  # "you forgot to set this" error.
   if [ -z "${DATABASE_URL_PRISMA:-}" ]; then
-    DATABASE_URL_PRISMA="file:../data/bot.db"
-    export DATABASE_URL_PRISMA
+    log "ERROR: DATABASE_URL_PRISMA is not set. schema.prisma requires a postgresql:// connection string — set DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db> in .env (see .env.example and docs/POSTGRES_MIGRATION.md). Refusing to start." >&2
+    exit 1
   fi
 
   if ! db_path="$(resolve_db_path)"; then

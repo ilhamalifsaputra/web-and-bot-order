@@ -1,50 +1,36 @@
 import { describe, it, expect } from "vitest";
 import { missingTables, PAYMENT_LEDGER_TABLES } from "./integrity";
-import type { Db } from "./_types";
+import { prisma } from "../client";
 
 /**
- * Db stub: `$queryRawUnsafe` echoes back the queried names that are "present",
- * mirroring `SELECT name FROM sqlite_master ... WHERE name IN (...)`.
+ * Runs against the real dev Postgres container (DATABASE_URL_PRISMA in
+ * .env), not a mock — `missingTables()` now queries
+ * `information_schema.tables`, which only a real Postgres connection can
+ * answer meaningfully. `prisma db push` must have been run against that
+ * container first so the real tables exist to assert against.
  */
-function stubDb(present: string[]): Db {
-  const set = new Set(present);
-  return {
-    $queryRawUnsafe: async (_sql: string, ...names: string[]) =>
-      names.filter((n) => set.has(n)).map((name) => ({ name })),
-  } as unknown as Db;
-}
-
 describe("missingTables", () => {
-  it("returns the names that do not exist, in input order", async () => {
-    const db = stubDb(["a", "c"]);
-    expect(await missingTables(db, ["a", "b", "c", "d"])).toEqual(["b", "d"]);
-  });
-
   it("returns [] when every requested table exists", async () => {
-    const db = stubDb([...PAYMENT_LEDGER_TABLES]);
-    expect(await missingTables(db, [...PAYMENT_LEDGER_TABLES])).toEqual([]);
+    expect(await missingTables(prisma, [...PAYMENT_LEDGER_TABLES])).toEqual([]);
   });
 
-  it("flags the drift that broke NOWPayments/PayDisini delivery", async () => {
-    // Live DB had tokopay + outbox but not the two newer ledgers.
-    const db = stubDb(["processed_tokopay_tx", "notification_outbox"]);
-    expect(await missingTables(db, [...PAYMENT_LEDGER_TABLES])).toEqual([
-      "processed_binance_tx",
-      "processed_bybit_tx",
-      "processed_paydisini_tx",
-      "processed_nowpayments_tx",
-    ]);
+  it("returns [] when a mix of real tables all exist", async () => {
+    expect(await missingTables(prisma, ["users", "categories", "orders"])).toEqual([]);
+  });
+
+  it("returns the names that do not exist, in input order, alongside real ones that do", async () => {
+    expect(
+      await missingTables(prisma, ["users", "no_such_table_xyz", "categories", "also_missing_abc"]),
+    ).toEqual(["no_such_table_xyz", "also_missing_abc"]);
+  });
+
+  it("flags the drift that broke NOWPayments/PayDisini delivery (simulated: table names outside the real schema)", async () => {
+    expect(
+      await missingTables(prisma, ["processed_tokopay_tx", "notification_outbox", "processed_ghost_tx"]),
+    ).toEqual(["processed_ghost_tx"]);
   });
 
   it("returns [] for empty input without touching the DB", async () => {
-    let called = false;
-    const db = {
-      $queryRawUnsafe: async () => {
-        called = true;
-        return [];
-      },
-    } as unknown as Db;
-    expect(await missingTables(db, [])).toEqual([]);
-    expect(called).toBe(false);
+    expect(await missingTables(prisma, [])).toEqual([]);
   });
 });

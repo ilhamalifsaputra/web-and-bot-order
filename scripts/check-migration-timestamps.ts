@@ -38,25 +38,19 @@ interface GrandfatheredCollision {
  * Timestamps allowed to appear more than once, each pinned to its exact folder
  * set and the reason it is safe. Add to this only after verifying the
  * colliding migrations cannot depend on each other's output in either order.
+ *
+ * Empty as of the PostgreSQL engine-swap (Task 4, 2026-08-27): the one
+ * grandfathered pair this used to carry (`20260725000000_add_support_ticket_priority`
+ * / `20260725000000_add_ticket_priority_category_resolved`, H-9) was archived out
+ * of this directory to `prisma/migrations-sqlite-archive/` along with the rest of
+ * the SQLite-era history — this script only scans `prisma/migrations/*`, so a
+ * folder that no longer lives there needs no allowlist entry. The H-9 evidence
+ * (both orderings produce an identical schema) is unchanged and still documented
+ * in docs/MIGRATIONS.md and in the archived folders themselves; re-add an entry
+ * here only if those two folders (or an equivalent colliding pair) ever return to
+ * this active directory.
  */
-const GRANDFATHERED: Record<string, GrandfatheredCollision> = {
-  "20260725000000": {
-    folders: [
-      "20260725000000_add_support_ticket_priority",
-      "20260725000000_add_ticket_priority_category_resolved",
-    ],
-    reason:
-      "Both landed on the same day from two independently merged branches. " +
-      "They touch disjoint columns and indexes (priority + " +
-      "ix_support_tickets_priority versus category/first_response_at/" +
-      "resolved_at/last_status_change_at + ix_support_tickets_status) and " +
-      "neither reads the other's output, so both orderings produce an " +
-      "identical schema — verified by deploying the chain with the pair " +
-      "forced into the reverse order (H-9, 2026-08-01). Left unrenamed " +
-      "because renaming an applied migration folder breaks " +
-      "_prisma_migrations tracking on databases that already ran it.",
-  },
-};
+const GRANDFATHERED: Record<string, GrandfatheredCollision> = {};
 
 const migrationsDir = join(process.cwd(), "prisma", "migrations");
 

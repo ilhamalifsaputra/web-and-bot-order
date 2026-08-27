@@ -21,6 +21,9 @@ importers:
       '@types/node':
         specifier: ^22.9.0
         version: 22.19.19
+      dotenv:
+        specifier: ^16.4.5
+        version: 16.6.1
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2

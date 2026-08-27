@@ -1,33 +1,25 @@
 /**
  * dispatcher.test.ts bootstrap — MUST be the first import in that file. Sets
- * DATABASE_URL_PRISMA to an isolated temp SQLite and pushes the schema BEFORE
- * any @app/* module loads, so the @app/db `prisma` singleton (which
- * dispatcher.ts uses directly, not an injected client — binds
- * DATABASE_URL_PRISMA at construction) points at it.
+ * DATABASE_URL_PRISMA to an isolated Postgres schema (inside the shared dev
+ * container) and pushes the schema BEFORE any @app/* module loads, so the
+ * @app/db `prisma` singleton (which dispatcher.ts uses directly, not an
+ * injected client — binds DATABASE_URL_PRISMA at construction) points at it.
  *
  * No @app/* imports here, so ESM evaluates these side effects first. Mirrors
- * apps/order-bot/test/setup-db.ts.
+ * apps/order-bot/test/setup-db.ts. The provisioned schema is dropped
+ * automatically in a self-registered `afterAll`; the exported
+ * `cleanupTestDb()` dispatcher.test.ts still calls explicitly is now just an
+ * idempotent alias for the same cleanup (safe to call twice).
  */
-import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { afterAll } from "vitest";
+import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 
-const dir = mkdtempSync(join(tmpdir(), "outboxdispatcher-"));
-const file = join(dir, "test.db");
-export const DB_URL = `file:${file.replace(/\\/g, "/")}`;
-export const TMP_DIR = dir;
-
+const schemaEnv = await provisionPgTestSchema("outboxdispatcher");
+export const DB_URL = schemaEnv.url;
 process.env.DATABASE_URL_PRISMA = DB_URL;
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {
-  cwd: ROOT,
-  env: { ...process.env, DATABASE_URL_PRISMA: DB_URL },
-  stdio: "ignore",
-});
+afterAll(schemaEnv.cleanup);
 
-export function cleanupTestDb(): void {
-  rmSync(TMP_DIR, { recursive: true, force: true });
+export function cleanupTestDb(): Promise<void> {
+  return schemaEnv.cleanup();
 }

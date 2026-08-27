@@ -15,7 +15,10 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { invalidateWarmUser } from "./warmUserCache";
 
-const likeContains = (q: string) => ({ contains: q });
+// `mode: "insensitive"` is a Postgres-only Prisma feature (uses ILIKE under
+// the hood); SQLite's `contains` was always case-insensitive by default so
+// this had no explicit equivalent pre-migration.
+const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const });
 
 /** Admins are managed on the separate Admins page — the Customers page's list,
  * filters, and KPIs never include role=ADMIN, filtered or not. */

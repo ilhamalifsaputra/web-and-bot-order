@@ -252,7 +252,16 @@ export async function recordBybitBscPaymentDetected(
 
 /** Orders the confirmation tracker should poll: a Bybit BSC deposit already
  * matched (bybitTxid set) but not yet Bybit-confirmed. Includes `user` (the
- * tracker needs its language to render/push the live tracking bubble). */
+ * tracker needs its language to render/push the live tracking bubble).
+ *
+ * `orderBy: { id: "asc" }` is load-bearing, not cosmetic: bybitBscConfirmationTracker.ts's
+ * `createRotatingCursor()` indexes into this array by position across
+ * successive `pollOnce` calls, assuming the same order each time so its
+ * rotating window covers every tracked order over ceil(n / MAX_ORDERS_PER_CYCLE)
+ * cycles instead of re-visiting (or skipping) rows. SQLite's default
+ * unindexed scan order happened to match insertion order, which made this
+ * work without an explicit `orderBy` pre-migration; Postgres gives no such
+ * guarantee, so it must be explicit here. */
 export function listTrackedBybitBscOrders(db: Db) {
   return db.order.findMany({
     where: {
@@ -261,6 +270,7 @@ export function listTrackedBybitBscOrders(db: Db) {
       bybitTxid: { not: null },
     },
     include: { user: true },
+    orderBy: { id: "asc" },
   });
 }
 

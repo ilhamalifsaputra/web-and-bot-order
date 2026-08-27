@@ -27,7 +27,8 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 ## 1. Arsitektur
 
 Monorepo pnpm: lima workspace `apps/*` + tiga `packages/*`, berbagi **satu
-database SQLite** (`data/bot.db`, mode WAL).
+database PostgreSQL** (schema `public`; lihat `docs/POSTGRES_MIGRATION.md`
+untuk runbook deploy produksi).
 
 | Workspace | Peran |
 |---|---|
@@ -48,7 +49,9 @@ database SQLite** (`data/bot.db`, mode WAL).
 - **Decimal untuk semua uang** (`@app/core/money`), tidak pernah `float`.
 - **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, dispatcher
   outbox (`@app/outbox-dispatcher`, in-process di `apps/server`) yang mengirim.
-- **SQLite single-writer** — tiap `$transaction` dijaga pendek.
+- **PostgreSQL menangani konkurensi sendiri** (bukan lagi single-writer
+  seperti SQLite era sebelumnya) — tiap `$transaction` tetap dijaga pendek
+  sebagai praktik baik, bukan lagi workaround khusus SQLite.
 - **Katalog 3-tier: Category → Product → Denomination.** `Product` (mis.
   "Netflix") adalah satu-satunya kartu di grid (home, kategori `/c/:slug`,
   search) — TIDAK punya harga/stok sendiri. Tiap Product punya satu/lebih
@@ -526,8 +529,18 @@ WEB_COOKIE_SECRET=<openssl rand -hex 32>   # ← beda (acak, min 32 char)
 SHOP_PUBLIC_URL=https://shop-a.com         # ← domain toko ini (link DM + callback gateway)
 WEB_COOKIE_SECURE=true                     # produksi di balik HTTPS
 BOT_MODE=polling                           # default; tidak butuh domain untuk bot
-DATABASE_URL_PRISMA=file:/app/data/bot.db  # Docker: path ABSOLUT; ./data-nya beda per direktori
+POSTGRES_DB=shopa                          # ← beda (DB Postgres terpisah per toko)
+POSTGRES_USER=shopa
+POSTGRES_PASSWORD=<acak-kuat-per-toko>     # ← beda
+DATABASE_URL_PRISMA=postgresql://shopa:<password>@postgres:5432/shopa  # host tetap `postgres` (lihat §8a POSTGRES_MIGRATION.md)
 ```
+
+> Tidak perlu `POSTGRES_PORT` terpisah per toko: `docker-compose.postgres.prod.yml`
+> tidak mempublikasikan port host sama sekali (Postgres hanya dijangkau lewat
+> jaringan internal Compose), dan nama volume/container-nya otomatis
+> di-prefix `COMPOSE_PROJECT_NAME` — jadi tiap instance sudah dapat container
+> `postgres` dan volume data sendiri tanpa perlu variabel port tambahan (lihat
+> juga "Backup & batas" di bawah).
 
 Gateway pembayaran (TokoPay / PayDisini / NOWPayments) **tidak** diisi di `.env` —
 diisi di web-admin → Settings tiap instance (tersimpan di DB masing-masing, jadi
@@ -538,8 +551,8 @@ otomatis terpisah). Pakai akun gateway berbeda per toko.
 ```bash
 git clone <repo-url> /opt/shop-a && cd /opt/shop-a
 cp .env.example .env                                      # isi sesuai tabel di atas
-docker compose run --rm server pnpm prisma db push        # skema sebelum start (hindari P2022)
-docker compose up -d                                      # nama container otomatis dari COMPOSE_PROJECT_NAME
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm prisma db push   # skema sebelum start (hindari P2022)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d                                 # nama container otomatis dari COMPOSE_PROJECT_NAME
 ```
 
 `docker-compose.yml` repo ini sudah siap multi-instance: nama container diturunkan
@@ -561,11 +574,15 @@ nginx -t && systemctl reload nginx
 
 ### Backup & batas
 
-- **Backup per instance**: satu cron per toko memakai `deploy/backup/backup.sh`
-  dengan path DB berbeda (`/opt/shop-a/data/bot.db`, …). WAL-safe via
-  `sqlite3 .backup`; lihat `deploy/backup/README.md`.
-- **Single-writer SQLite tetap aman**: tiap instance menulis ke DB-nya **sendiri**
-  (bukan beberapa writer ke satu DB), jadi tidak memicu kebutuhan pindah Postgres.
+- **Backup per instance**: satu `pg_dump` per toko (lihat bagian 8a
+  `docs/POSTGRES_MIGRATION.md`) — tiap direktori repo/instance punya container
+  `postgres` dan volume data sendiri (`docker-compose.postgres.prod.yml`'s own
+  header comment: Compose otomatis prefix nama volume dengan
+  `COMPOSE_PROJECT_NAME`, jadi dua toko independen tidak berbagi data
+  Postgres apa pun).
+- **Tiap instance punya database Postgres sendiri** (bukan beberapa writer ke
+  satu DB yang sama), jadi isolasi antar-toko tetap terjaga sama seperti era
+  SQLite sebelumnya.
 - **Batas praktis**: N toko = 4×N container; yang membatasi adalah RAM/CPU VPS
   (kira-kira ~1 GB per toko), bukan arsitektur DB.
 

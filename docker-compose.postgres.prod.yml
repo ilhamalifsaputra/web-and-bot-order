@@ -1,0 +1,95 @@
+# Production Postgres, layered onto docker-compose.yml (NOT a replacement for
+# it — docker-compose.yml still defines the `server` service and its base
+# config; this file only adds the `postgres` service and a `depends_on` onto
+# `server`). NOTE: docker-compose.yml alone is NOT a usable SQLite-only
+# stack any more — prisma/schema.prisma's provider is `postgresql`
+# unconditionally as of the engine-swap migration, so `server` needs a
+# reachable Postgres regardless of whether this overlay is applied; running
+# docker-compose.yml by itself against a plain SQLite `.env` will not start.
+# Apply both together:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d
+#
+# (Compose merges services with the same name across -f files, and adds new
+# ones — here it adds `postgres` and layers a `depends_on` onto `server`.)
+#
+# Distinct from docker-compose.postgres.yml (Task 1's dev/local file, used only
+# to validate this migration inside a worktree): that file publishes
+# 127.0.0.1:55432 for local `psql`/tooling convenience and uses throwaway
+# credentials. This file is what a VPS actually runs, and differs on purpose:
+#   - No host port published at all. `server` reaches Postgres over the
+#     internal Compose network by service name (postgres:5432) — nothing
+#     outside the Docker network needs to reach Postgres directly. nginx
+#     stays the only public surface, same as docker-compose.yml's own
+#     convention for the app ports.
+#   - `postgres`'s data volume is named (not bind-mounted), and — like every
+#     other resource in docker-compose.yml — Compose automatically prefixes
+#     volume/container names with COMPOSE_PROJECT_NAME, so two independent
+#     shops running from two repo directories on the same host each get their
+#     own isolated Postgres data too (confirmed via `docker compose config`:
+#     the volume resolves to `<project>_postgres_data`).
+#   - `env_file` is intentionally NOT set on `postgres` here (unlike `server`'s
+#     `env_file: .env` in docker-compose.yml): the Postgres container only
+#     ever needs POSTGRES_DB/USER/PASSWORD, so those three are passed via
+#     `environment:` (substituted from the project's .env, which Compose reads
+#     automatically for variable interpolation regardless of `env_file:`)
+#     rather than handing the whole app .env — with every payment-gateway and
+#     bot secret in it — to a container that has no use for any of it.
+#
+# Required .env variables (documented with an example block in .env.example):
+#   POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+#   DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db>
+#     The host MUST be the service name `postgres`, not localhost/127.0.0.1 —
+#     that only resolves because Compose puts `server` and `postgres` on the
+#     same internal project network and DNS-resolves service names there.
+#
+# IMPORTANT — schema application is NOT automatic with this file, unlike the
+# SQLite path. docker-entrypoint.sh's auto_migrate() only knows how to
+# snapshot-then-push a `file:` (SQLite) URL; for any other DATABASE_URL_PRISMA
+# (including this postgresql:// one) resolve_db_path() returns non-zero and
+# auto_migrate() logs "DATABASE_URL_PRISMA does not point at a SQLite file...
+# Skipping the automatic schema update; apply it yourself." and returns 0 (no
+# crash, no backup/migrate machinery runs). So after `postgres` is up and
+# healthy, push the schema yourself once per deploy that changes
+# schema.prisma:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+#     run --rm server pnpm exec prisma db push --schema prisma/schema.prisma
+#
+# (Task 9's runbook covers this as an explicit deploy step — do not expect it
+# to happen for you the way it does for the SQLite entrypoint path.)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bot_order}
+      POSTGRES_USER: ${POSTGRES_USER:-bot_order}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # No `ports:` — production reaches Postgres only via the internal Compose
+    # network (postgres:5432), never from the host or the public internet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot_order} -d ${POSTGRES_DB:-bot_order}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  server:
+    # Layered onto docker-compose.yml's `server` service: don't start the app
+    # container until Postgres is actually ready to accept connections, not
+    # merely running (a fresh Postgres container needs a moment after start
+    # before `pg_isready` succeeds).
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

@@ -24,7 +24,6 @@ import {
   clearBroadcastImage,
   listTicketsForAttachmentCleanup,
   clearTicketAttachments,
-  checkpointWal,
   runStorageCleanup,
 } from "./storageMaintenance";
 import { TicketStatus, SenderType } from "@app/core/enums";
@@ -193,12 +192,6 @@ describe("listTicketsForAttachmentCleanup / clearTicketAttachments", () => {
     const freshMessages = await prisma.ticketMessage.findMany({ where: { ticketId: oldClosed.id } });
     expect(freshTicket!.attachmentUrls).toBeNull();
     expect(freshMessages.every((m) => m.attachmentUrls === null)).toBe(true);
-  });
-});
-
-describe("checkpointWal", () => {
-  it("runs without throwing", async () => {
-    await expect(checkpointWal(prisma)).resolves.not.toThrow();
   });
 });
 

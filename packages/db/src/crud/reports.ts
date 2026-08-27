@@ -334,19 +334,19 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
 
   const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
     db.processedBinanceTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedBybitTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedTokopayTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedPaydisiniTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedNowpaymentsTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
   ]);
 

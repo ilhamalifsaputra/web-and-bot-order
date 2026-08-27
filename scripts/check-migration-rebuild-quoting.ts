@@ -70,28 +70,17 @@ interface GrandfatheredFolder {
   reason: string;
 }
 
-const GRANDFATHERED: Record<string, GrandfatheredFolder> = {
-  "20260619170759_add_paydisini_nowpayments_ledgers": {
-    unqualifiedRebuilds: 11,
-    reason:
-      "Applied long before H-9; its checksum is frozen, so it cannot be " +
-      "edited without breaking every database that already ran it. Reachable " +
-      "in principle (20260530121500_binance_internal_transfer runs four " +
-      "sequential ALTER TABLE \"orders\" ADD COLUMN statements, so a partial " +
-      "failure there closed out with `migrate resolve --applied` would leave " +
-      "this folder's orders rebuild short a source column), but every column " +
-      "it adds takes a constant default and the tables are empty on the fresh " +
-      "databases where the chain is actually replayed.",
-  },
-  "20260623174046_restrict_financial_cascades": {
-    unqualifiedRebuilds: 4,
-    reason:
-      "Same situation as 20260619170759 — applied and checksum-frozen. Its " +
-      "rebuilds change foreign-key actions only; it adds no columns of its " +
-      "own, so it has no partially-applied predecessor state of its own to " +
-      "inherit.",
-  },
-};
+// Empty as of the PostgreSQL engine-swap (Task 4, 2026-08-27): both entries this
+// used to carry were archived out of `prisma/migrations/` to
+// `prisma/migrations-sqlite-archive/` along with the rest of the SQLite-era
+// history — this script only scans `prisma/migrations/*`, and the archived
+// SQLite rebuild SQL (INSERT INTO "new_x" ... table-rebuild idiom) has no
+// equivalent in PostgreSQL's baseline migration (plain CREATE TABLE, no
+// rebuild-copy pattern at all). The reasoning for why those two folders were
+// safe despite unqualified columns is unchanged and still documented in
+// docs/MIGRATIONS.md and in the archived folders themselves; re-add entries
+// here only if SQLite-style rebuild migrations ever return to this directory.
+const GRANDFATHERED: Record<string, GrandfatheredFolder> = {};
 
 const migrationsDir = join(process.cwd(), "prisma", "migrations");
 

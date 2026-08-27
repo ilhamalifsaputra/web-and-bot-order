@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   }
   const { telegramId, newPassword, keep2fa } = args;
 
-  await initDb(); // WAL + busy_timeout PRAGMAs, same as the app
+  await initDb(); // no-op on Postgres; kept for boot-sequencing parity with the app
 
   // The allow-list is env ADMIN_IDS ∪ the DB `admin_ids` Setting (same as the
   // composition root at boot, webauth.ts) — admins added live via /admins only

@@ -784,7 +784,7 @@ export async function listProcessedBinanceTx(
 ) {
   const where: Record<string, unknown> = {};
   if (opts.outcome) where.outcome = opts.outcome;
-  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim(), mode: "insensitive" };
   const rows = await db.processedBinanceTx.findMany({
     where,
     orderBy: { createdAt: "desc" },
@@ -805,7 +805,7 @@ export async function listProcessedBinanceTx(
 export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null; q?: string | null } = {}) {
   const where: Record<string, unknown> = {};
   if (opts.outcome) where.outcome = opts.outcome;
-  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim(), mode: "insensitive" };
   return db.processedBinanceTx.count({ where });
 }
 

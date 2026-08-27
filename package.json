@@ -4,7 +4,7 @@
   "private": true,
   "packageManager": "pnpm@9.15.9",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "prisma:pull": "prisma db pull",
@@ -21,7 +21,7 @@
     "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
     "binance-probe": "tsx scripts/binance-probe.ts",
     "diag-reconcile-drift": "tsx scripts/diag-reconcile-drift.ts",
-    "check-migration-drift": "prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --exit-code",
+    "check-migration-drift": "tsx scripts/check-migration-drift.ts",
     "check-migration-timestamps": "tsx scripts/check-migration-timestamps.ts",
     "check-migration-rebuild-quoting": "tsx scripts/check-migration-rebuild-quoting.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
@@ -36,6 +36,7 @@
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",
     "@types/node": "^22.9.0",
+    "dotenv": "^16.4.5",
     "esbuild": "^0.24.0",
     "prisma": "^5.22.0",
     "tsx": "^4.19.2",

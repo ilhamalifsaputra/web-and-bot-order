@@ -1,12 +1,17 @@
-# Compose for the Node stack. ONE image, ONE SQLite file (./data/bot.db, WAL mode)
-# via the mounted ./data volume.
+# Compose for the Node stack's `server` service. ONE image, ONE process.
+# NOTE: prisma/schema.prisma's provider is `postgresql` unconditionally
+# (engine-swap migration) — this file alone does not include a `postgres`
+# service, so `server` needs a reachable Postgres from elsewhere (either
+# docker-compose.postgres.prod.yml layered on top for a real deploy, or an
+# externally-reachable Postgres referenced by DATABASE_URL_PRISMA). See
+# docs/POSTGRES_MIGRATION.md. `./data` is still bind-mounted below for
+# logs and legacy SQLite backup tooling (deploy/backup/), not for a live DB.
 #
 # ONE combined process. `pnpm start` (apps/server) is the composition root: it
 # boots the web-admin, the storefront, the order-bot (polling/webhook), AND the
 # in-process workers — the outbox dispatcher (@app/outbox-dispatcher, which drains
 # notification_outbox → Telegram) and the payment-reconcile pollers. A single
-# process is the safe topology for the shared single-writer SQLite DB (one
-# PrismaClient, WAL) and guarantees each worker runs exactly once.
+# process guarantees each worker runs exactly once.
 #
 # This replaces the previous split per-app services (order-bot / web-admin /
 # storefront / notifier). Outbox delivery only happens inside this combined

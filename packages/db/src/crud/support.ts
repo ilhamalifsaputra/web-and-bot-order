@@ -461,12 +461,14 @@ function buildTicketConditions(
     conditions.push({
       prisma: {
         OR: [
-          { message: { contains: term } },
-          { user: { fullName: { contains: term } } },
-          { user: { username: { contains: term } } },
+          { message: { contains: term, mode: "insensitive" } },
+          { user: { fullName: { contains: term, mode: "insensitive" } } },
+          { user: { username: { contains: term, mode: "insensitive" } } },
         ],
       },
-      raw: Prisma.sql`(message LIKE ${likeTerm} OR user_id IN (SELECT id FROM users WHERE full_name LIKE ${likeTerm} OR username LIKE ${likeTerm}))`,
+      // ILIKE, not LIKE — Postgres's LIKE is case-sensitive (unlike SQLite's
+      // default), so this has to match the Prisma side's `mode: "insensitive"`.
+      raw: Prisma.sql`(message ILIKE ${likeTerm} OR user_id IN (SELECT id FROM users WHERE full_name ILIKE ${likeTerm} OR username ILIKE ${likeTerm}))`,
     });
   }
   return conditions;

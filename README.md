@@ -35,7 +35,7 @@ toko web berbagi **satu database PostgreSQL**.
 ## 1. Sebelum Mulai
 
 **Yang perlu disiapkan:** VPS dengan akses SSH (mis. Hostinger, DigitalOcean).
-Node.js ≥ 20 + pnpm 9 hanya untuk jalur non-Docker (`npm install -g pnpm@9`).
+Node.js ≥ 22.13 + pnpm 9 hanya untuk jalur non-Docker (`npm install -g pnpm@9`).
 
 **Tiga hal wajib:**
 
@@ -138,20 +138,20 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f
 > set `WEB_COOKIE_SECURE=true`. Toko web biasanya pakai domain sendiri via
 > `SHOP_PUBLIC_URL`.
 
-**Perintah harian:** `docker compose logs -f server` (log) ·
-`docker compose restart server` (restart, mis. setelah ganti token) ·
-`docker compose down` / `up -d` (matikan / nyalakan).
+**Perintah harian:** `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server` (log) ·
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart server` (restart, mis. setelah ganti token) ·
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml down` / `up -d` (matikan / nyalakan).
 
 ---
 
 ## 4. Jalur B — tanpa Docker
 
-Butuh **Node.js ≥ 20** + **pnpm 9** di VPS.
+Butuh **Node.js ≥ 22.13** + **pnpm 9** di VPS.
 
 ```bash
 # Install Node & pnpm
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-nvm install 20 && npm install -g pnpm@9
+nvm install 22 && npm install -g pnpm@9
 
 # Ambil kode & dependensi
 git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
@@ -211,7 +211,7 @@ Setelah aplikasi jalan dan panel admin bisa dibuka:
 > Lupa password? Jalankan pemulihan di server, lalu buka `/bootstrap` untuk set
 > password baru:
 > ```bash
-> docker compose run --rm server pnpm reset-admin-password <ID-telegram>      # Docker
+> docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm reset-admin-password <ID-telegram>      # Docker
 > pnpm reset-admin-password <ID-telegram>                                     # non-Docker
 > ```
 

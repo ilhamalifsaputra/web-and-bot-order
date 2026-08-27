@@ -35,23 +35,41 @@ export async function makeTestDb(): Promise<TestDb> {
 
   const schema = `test_${randomBytes(6).toString("hex")}`;
   const url = withSchema(baseUrl, schema);
-
-  // db push creates the schema (Postgres creates it implicitly on first use
-  // when it doesn't exist) and all tables in FK-correct order from the
-  // canonical schema.
-  execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {
-    cwd: ROOT,
-    env: { ...process.env, DATABASE_URL_PRISMA: url },
-    stdio: "ignore",
-  });
-
   const prisma = new PrismaClient({ datasourceUrl: url });
+
+  try {
+    // `prisma db push`'s schema-diffing logic issues the CREATE SCHEMA and all
+    // the CREATE TABLE statements (in FK-correct order) needed to bring this
+    // schema up to date with the canonical schema — Postgres itself does not
+    // create schemas implicitly.
+    execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {
+      cwd: ROOT,
+      env: { ...process.env, DATABASE_URL_PRISMA: url },
+      stdio: "ignore",
+    });
+  } catch (err) {
+    // db push can fail partway through provisioning (e.g. after the schema
+    // was created but before all tables landed). Best-effort drop it so a
+    // failed provision doesn't leave an orphaned test_* schema behind in the
+    // shared dev database, then re-throw the original error.
+    try {
+      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    } catch {
+      // Nothing more we can do here; the original db push error is what matters.
+    } finally {
+      await prisma.$disconnect();
+    }
+    throw err;
+  }
 
   return {
     prisma,
     cleanup: async () => {
-      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
-      await prisma.$disconnect();
+      try {
+        await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+      } finally {
+        await prisma.$disconnect();
+      }
     },
   };
 }

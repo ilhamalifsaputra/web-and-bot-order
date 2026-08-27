@@ -29,12 +29,17 @@ type Db = PrismaClient | Tx;
  * Insert one outbox row. Caller's transaction owns the commit.
  *
  * `dedupeKey` is optional and defaults to null. When given, it is written to
- * the UNIQUE `notification_outbox.dedupe_key` column via `upsert`: a
- * collision with an existing key resolves as a no-op update (the row already
- * exists, the notification is already queued or sent, and re-enqueueing is a
- * no-op rather than an error) instead of a thrown UNIQUE violation — the
- * database, not the placement of the call, is what makes the enqueue happen
- * at most once.
+ * the UNIQUE `notification_outbox.dedupe_key` column via a raw
+ * `INSERT ... ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`: a collision
+ * with an existing key resolves as a no-op (the row already exists, the
+ * notification is already queued or sent, and re-enqueueing is a no-op
+ * rather than an error) instead of a thrown UNIQUE violation — the database,
+ * not the placement of the call, is what makes the enqueue happen at most
+ * once. `RETURNING id` gives a precise "did THIS call insert a row" signal
+ * (empty result = collision), which a payload-equality check on `upsert`
+ * couldn't: the two real dedupeKey call sites retry with a byte-identical
+ * payload on collision, so comparing payloads can't tell a genuine insert
+ * apart from a same-payload collision.
  *
  * Two events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
@@ -74,23 +79,24 @@ export async function enqueueNotification(
 ): Promise<void> {
   const payloadJson = JSON.stringify(payload);
   if (dedupeKey !== undefined) {
-    // Upsert on the UNIQUE dedupeKey: a collision resolves as a no-op update
-    // (keeping the first row's payload) instead of a thrown UNIQUE
-    // violation, so it can never abort an open caller transaction on
-    // Postgres.
-    const row = await db.notificationOutbox.upsert({
-      where: { dedupeKey },
-      create: { event, orderId, payloadJson, dedupeKey },
-      update: {},
-      select: { payloadJson: true },
-    });
-    if (row.payloadJson !== payloadJson) {
-      // Collision: an earlier call already owns this key and its payload is
-      // what's stored. Deliberately silent, and no NOTIFICATION_CREATED log
-      // below — no row was written by THIS call, so claiming one was created
-      // would be a lie. (If the two payloads happen to be byte-identical,
-      // this falls through to the log below, which is harmless — the stored
-      // row's content genuinely matches what this call asked for.)
+    // Raw INSERT ... ON CONFLICT DO NOTHING on the UNIQUE dedupeKey: a
+    // collision resolves as a no-op (keeping the first row's payload)
+    // instead of a thrown UNIQUE violation, so it can never abort an open
+    // caller transaction on Postgres. RETURNING id gives a precise signal
+    // for whether THIS call inserted a row — unlike a payload comparison,
+    // it isn't fooled by a same-payload retry (the realistic case for both
+    // call sites that pass a key).
+    const inserted = await db.$queryRaw<{ id: number }[]>`
+      INSERT INTO notification_outbox (event, order_id, payload_json, dedupe_key)
+      VALUES (${event}, ${orderId}, ${payloadJson}, ${dedupeKey})
+      ON CONFLICT (dedupe_key) DO NOTHING
+      RETURNING id
+    `;
+    if (inserted.length === 0) {
+      // Collision: no row was written by this call — an earlier call
+      // already owns this dedupe key. Deliberately silent, and no
+      // NOTIFICATION_CREATED log below — claiming one was created here
+      // would be a lie even when the colliding payload happens to match.
       return;
     }
   } else {

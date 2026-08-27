@@ -44,6 +44,7 @@ import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
 import { setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { logger } from "@app/core/logger";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -673,6 +674,33 @@ describe("enqueueNotification dedupeKey", () => {
     expect(rows[0]!.dedupeKey).toBe("dupe-key");
     expect(JSON.parse(rows[0]!.payloadJson).attempt).toBe("first");
     expect(rows[1]!.dedupeKey).toBe("dupe-key-followup");
+  });
+
+  it("logs NOTIFICATION_CREATED exactly once on a same-payload collision, not once per call", async () => {
+    // The realistic collision case for the two real dedupeKey call sites
+    // (enqueueWalletTopupCreditedDm, enqueueAdminUnconfirmablePayment): a
+    // retry of the same underlying order/admin state produces a
+    // byte-identical payload, not a different one. A payload-equality
+    // heuristic can't distinguish "this call inserted the row" from "this
+    // call collided with an identical payload" — only a precise
+    // insert/no-insert signal can. Pins that the second call does NOT log
+    // NOTIFICATION_CREATED even though its payload matches the first row's.
+    const orderId = await seedOrder();
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "same" }, "k:same-payload");
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "same" }, "k:same-payload");
+
+      const rows = await prisma.notificationOutbox.findMany({ where: { dedupeKey: "k:same-payload" } });
+      expect(rows).toHaveLength(1);
+
+      const createdCalls = infoSpy.mock.calls.filter(
+        ([meta]) => (meta as { event?: string })?.event === "NOTIFICATION_CREATED",
+      );
+      expect(createdCalls).toHaveLength(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });
 

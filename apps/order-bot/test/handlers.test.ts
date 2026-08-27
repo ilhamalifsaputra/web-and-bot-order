@@ -14,6 +14,29 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+// Same shape as the TokoPay mock above — buyNowPaydisini's own audit-wiring
+// test (Phase H) needs to get past its external gateway call without a real
+// HTTP request.
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
+// Same reason as the PayDisini mock above — buyNowNowpayments's audit-wiring test.
+vi.mock("@app/core/payments/nowpayments", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
+  createInvoice: vi.fn().mockResolvedValue({
+    invoiceId: "NP-TEST",
+    invoiceUrl: "https://nowpayments.test/invoice/NP-TEST",
+  }),
+}));
+
 // claimGatewaySlot is wrapped (delegating to the real implementation by
 // default) so the M-6 race tests below can override it once to simulate a
 // concurrent claimant — see "doesn't create a second TokoPay transaction
@@ -23,9 +46,13 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
+import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
+import { createInvoice as mockedCreateNowpaymentsInvoice } from "@app/core/payments/nowpayments";
+import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
@@ -2264,8 +2291,21 @@ describe("checkout handlers", () => {
     const cached = JSON.parse(order.paymentRef!) as { gateway?: string; trxId?: string };
     expect(cached.gateway).toBe("tokopay");
     expect(cached.trxId).toBe("TP-TEST");
+
+    // Phase H customer-audit trail: a CUSTOMER-actor row for this exact order.
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.telegramUserId).toBe(42n);
+    expect(audit?.channel).toBe("BOT");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("TokoPay");
   });
 
+  // Phase H regression guard: a checkout attempt that ends in
+  // gateway_create_failed never succeeded from the buyer's point of view (no
+  // usable order was ever shown to them), so no customer-audit row should
+  // exist for it — logCheckoutAudit only runs after the full success tail.
   it("buyNowTokopay cancels the order shell when the gateway create call fails (Checkout-3 fix)", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -2278,6 +2318,7 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
     expect(orders[0]!.status).toBe("CANCELLED");
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER" } })).toBe(0);
   });
 
   // M-6 fix, backend audit 2026-07-31: the order this creates is visible to
@@ -2435,6 +2476,12 @@ describe("checkout handlers", () => {
     const copies = (markup?.inline_keyboard ?? []).flat().map((b) => b.copy_text?.text);
     expect(copies).toContain("UID123");
     expect(copies).toContain(order!.paymentRef);
+
+    // Phase H customer-audit trail.
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Binance Internal Transfer");
   });
 
   it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {
@@ -2449,6 +2496,14 @@ describe("checkout handlers", () => {
     // The order is cancelled (the unchanged cancelOrder transaction did its job).
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
+
+    // Phase H customer-audit trail — written inside the same transaction as
+    // cancelOrder (mirrors logAdminAction's convention for a self-contained
+    // mutation, e.g. conversations/reject.ts).
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id, action: "order_cancel" } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.details).toBe("Cancelled order via Telegram.");
 
     // The photo (QR) bubble itself is deleted — no QR left hanging.
     const deletes = calls(sink, "deleteMessage");
@@ -2483,6 +2538,81 @@ describe("checkout handlers", () => {
     const editedText = JSON.stringify(lastEdit.args);
     expect(editedText).toContain(sample.parentProduct.name);
     expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
+  });
+});
+
+// ===========================================================================
+// Phase H customer-audit trail — the remaining buyNow<Rail> call sites not
+// already covered above (buyNowTokopay/buyNowInternal/cancelPendingOrder).
+// Bybit/BybitBsc need no gateway mock (no external HTTP call — the rail
+// shows a static UID/address from Settings); NOWPayments/PayDisini reuse the
+// module-level vi.mock's near the top of this file, mirroring the existing
+// TokoPay mock.
+// ===========================================================================
+
+describe("Phase H customer-audit trail — remaining checkout rails", () => {
+  it("buyNowBybit logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "BYUID1");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT);
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Bybit UID transfer");
+  });
+
+  it("buyNowBybitBsc logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, "0xDEADBEEF");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, BYBIT_BSC_ENABLED_KEY, "true");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT_BSC);
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Bybit BSC on-chain deposit");
+  });
+
+  it("buyNowNowpayments logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "ak");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.NOWPAYMENTS);
+    expect(vi.mocked(mockedCreateNowpaymentsInvoice)).toHaveBeenCalled();
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("NOWPayments");
+  });
+
+  it("buyNowPaydisini logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+    const { ctx } = customerCtx();
+    await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    expect(vi.mocked(mockedCreatePaydisiniTransaction)).toHaveBeenCalled();
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("PayDisini");
   });
 });
 
@@ -2602,6 +2732,18 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(docs).toHaveLength(1);
     expect(docs[0]!.args[0]).toBe(42); // buyer's Telegram chat, not the channel
     expect((docs[0]!.args[1] as { filename?: string }).filename).toBe(`${orders[0]!.orderCode}.txt`);
+
+    // Phase H customer-audit trail — written inside the same $transaction as
+    // completeOrderWithWalletCredit (no external gateway call follows it, so
+    // this transaction IS the complete unit of "order created and paid").
+    // Filtered on actorType too: settlePaidOrder's own pre-existing
+    // Checkout-6 fix (packages/db/src/crud/orders.ts) ALSO writes an
+    // ADMIN-actor "order.auto_deliver" row for this same order id (adminId: 0
+    // = the auto-confirm path, not a human) — a second, unrelated row this
+    // assertion must not accidentally match.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: orders[0]!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("wallet credit");
   });
 
   it("v1:walletpay with useWalletUsdt set and enough USDT credit: delivers the order, IDR balance untouched", async () => {

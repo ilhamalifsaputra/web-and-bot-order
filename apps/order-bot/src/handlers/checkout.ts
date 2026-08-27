@@ -48,6 +48,8 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  logCustomerAction,
+  type Db,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -98,6 +100,34 @@ function requireUser(ctx: MyContext) {
   const u = ctx.session.dbUser;
   if (!u) throw new Error("checkout handler reached without a registered user");
   return u;
+}
+
+/**
+ * Records a customer-audit trail row (Phase H) for a checkout action that has
+ * already fully succeeded — every call site below only reaches this after the
+ * order is genuinely created/cancelled from the buyer's point of view (never
+ * on a gateway-create-failure cleanup, which isn't a customer-visible
+ * success). `db` may be `prisma` (call sites that only know success after an
+ * external gateway call) or the enclosing `tx` (call sites whose success is
+ * fully decided inside one `$transaction`, mirroring the existing
+ * `logAdminAction` convention for those — see e.g. conversations/reject.ts).
+ * See docs/LOGGING.md for the `details` sentence convention.
+ */
+async function logCheckoutAudit(
+  db: Db,
+  ctx: MyContext,
+  args: { action: string; customerId: number; targetId: number; details: string },
+): Promise<void> {
+  await logCustomerAction(db, {
+    customerId: args.customerId,
+    telegramUserId: ctx.from ? BigInt(ctx.from.id) : null,
+    channel: "BOT",
+    correlationId: String(ctx.update.update_id),
+    action: args.action,
+    targetType: "order",
+    targetId: args.targetId,
+    details: args.details,
+  });
 }
 
 // Double-tap / grammY-retry window: a second tap on the same payment button
@@ -682,6 +712,12 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   internalImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Binance Internal Transfer).",
+  });
 }
 
 /**
@@ -768,6 +804,12 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   bybitImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Bybit UID transfer).",
+  });
 }
 
 /**
@@ -859,6 +901,12 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   // The real floor here is the on-chain confirmation Bybit itself requires —
   // this only removes the poll-interval delay layered on top of that floor.
   bybitBscImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Bybit BSC on-chain deposit).",
+  });
 }
 
 /** Public origin used for the NOWPayments IPN callback URL (storefront route). */
@@ -1008,6 +1056,12 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // buyNowInternal/buyNowBybit (no countdown ticking here; that's only for
   // the manual Binance Pay screen).
   await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (NOWPayments USDT invoice).",
+  });
 }
 
 /**
@@ -1161,6 +1215,12 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (QRIS via TokoPay).",
+  });
 }
 
 /**
@@ -1310,6 +1370,12 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (QRIS via PayDisini).",
+  });
 }
 
 /**
@@ -1349,8 +1415,8 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
 
   let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
   try {
-    result = await prisma.$transaction((tx) =>
-      completeOrderWithWalletCredit(tx, {
+    result = await prisma.$transaction(async (tx) => {
+      const r = await completeOrderWithWalletCredit(tx, {
         user: {
           id: user.id,
           role: user.role,
@@ -1363,8 +1429,19 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
         currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
         rate: rate ?? undefined,
         customerData,
-      }),
-    );
+      });
+      // No external gateway call follows (unlike the buyNow<Rail> functions) —
+      // this transaction IS the complete unit of "order created and paid", so
+      // the audit row is written alongside it, mirroring logAdminAction's own
+      // convention for a self-contained mutation (e.g. conversations/reject.ts).
+      await logCheckoutAudit(tx, ctx, {
+        action: "order_create",
+        customerId: user.id,
+        targetId: r.order.id,
+        details: "Created order via Telegram checkout, paid in full with wallet credit.",
+      });
+      return r;
+    });
   } catch (e) {
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
@@ -1459,7 +1536,18 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
     return;
   }
   try {
-    await prisma.$transaction((tx) => cancelOrder(tx, orderId, "user_cancelled"));
+    await prisma.$transaction(async (tx) => {
+      await cancelOrder(tx, orderId, "user_cancelled");
+      // Mirrors logAdminAction's convention for a self-contained mutation
+      // (e.g. conversations/reject.ts) — cancelOrder + the audit row commit
+      // atomically, since there's no external gateway call to wait on here.
+      await logCheckoutAudit(tx, ctx, {
+        action: "order_cancel",
+        customerId: info.id,
+        targetId: orderId,
+        details: "Cancelled order via Telegram.",
+      });
+    });
   } catch (e) {
     if (e instanceof ValidationError) {
       if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });

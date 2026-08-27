@@ -1009,6 +1009,15 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(res.headers.location).toBe("/account/settings?linked=1");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n);
+
+    // Phase H customer-audit trail (order-bot side channel this route feeds).
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "user", targetId: row.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.customerId).toBe(row.id);
+    expect(audit?.telegramUserId).toBe(636363n);
+    expect(audit?.channel).toBe("WEB");
+    expect(audit?.action).toBe("account_link_telegram");
+    expect(audit?.details).toBe("Linked the account to Telegram (@linkedtg).");
   });
 
   it("refuses linking a telegramId owned by another account", async () => {
@@ -1035,6 +1044,12 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(res.headers.location).toBe("/account/settings?err=tg_taken");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n); // unchanged
+    // Phase H regression guard: the link attempt failed (telegramId already
+    // taken), so no NEW customer-audit row exists for the telegramId this
+    // attempt tried to link (737373n) — this describe block's tests share one
+    // DB via beforeAll, so the row from the earlier successful-link test
+    // (636363n) is deliberately excluded rather than asserting a global zero.
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER", action: "account_link_telegram", telegramUserId: 737373n } })).toBe(0);
   });
 
   // Task 5: linkTelegramRateLimited(customerId) — a fresh customer, so this

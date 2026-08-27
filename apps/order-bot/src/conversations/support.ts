@@ -9,7 +9,7 @@ import { adminIds } from "@app/core/runtime";
 import { SenderType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
-import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders } from "@app/db";
+import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders, logCustomerAction } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit, menuAnchor } from "../util/chat";
 import { t } from "../util/i18n";
@@ -142,6 +142,21 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   // --- Submit (terminal) ---
   const photoFileIds = photos.length ? photos.join(",") : null;
   const ticket = await createTicket(prisma, info.id, body, photoFileIds, null, orderId);
+  // Phase H customer-audit trail — logged right after the ticket itself
+  // exists (not gated on the best-effort admin-forward below, which can fail
+  // per-chat without undoing a ticket that was genuinely created). Uses
+  // lastCtx (the freshest waited update), not the entry `ctx`, for the same
+  // reason menuAnchor above does — see the comment on `lastCtx`'s declaration.
+  await logCustomerAction(prisma, {
+    customerId: info.id,
+    telegramUserId: lastCtx.from ? BigInt(lastCtx.from.id) : null,
+    channel: "BOT",
+    correlationId: String(lastCtx.update.update_id),
+    action: "ticket_create",
+    targetType: "ticket",
+    targetId: ticket.id,
+    details: "Created a support ticket via Telegram.",
+  });
   // Mirrors the ticket's own opening message into the thread for display —
   // createTicket already enqueued the "new ticket" owner email for this same
   // content, so notifyOwner: false stops this from also enqueueing a

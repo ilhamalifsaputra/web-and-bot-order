@@ -176,6 +176,15 @@ describe("support + reject conversations", () => {
     expect(ticket).toBeTruthy();
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
+
+    // Phase H customer-audit trail.
+    const audit = await prisma.auditLog.findFirst({ where: { targetType: "ticket", targetId: ticket!.id } });
+    expect(audit?.actorType).toBe("CUSTOMER");
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.telegramUserId).toBe(42n);
+    expect(audit?.channel).toBe("BOT");
+    expect(audit?.action).toBe("ticket_create");
+    expect(audit?.details).toBe("Created a support ticket via Telegram.");
   });
 
   it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {

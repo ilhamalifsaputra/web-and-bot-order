@@ -9,7 +9,7 @@
  * the SPA to read from the URL.
  */
 import type { FastifyPluginAsync } from "fastify";
-import { prisma, linkTelegram } from "@app/db";
+import { prisma, linkTelegram, logCustomerAction } from "@app/db";
 import { verifyTelegramLogin } from "../auth";
 import { currentCustomer } from "../plugins/auth";
 import { resolveBotToken } from "../shop";
@@ -42,6 +42,24 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
         fullName,
       );
       if (!res.ok) return reply.code(303).redirect("/account/settings?err=tg_taken");
+      // Phase H customer-audit trail. This route is the one account-linking
+      // entry point (see the file header comment) and it lives on the
+      // storefront web app, not apps/order-bot — there is no Telegram Update
+      // to derive a correlationId from, so it's left unset. targetType
+      // "user" (not "customer"/"account_link") matches the vocabulary
+      // logAdminAction call sites already use for a User-row target (e.g.
+      // apps/order-bot/src/handlers/admin.ts's user_set_reseller/wallet_adjust).
+      await logCustomerAction(prisma, {
+        customerId: customer.userId,
+        telegramUserId: BigInt(auth.id),
+        channel: "WEB",
+        action: "account_link_telegram",
+        targetType: "user",
+        targetId: customer.userId,
+        details: auth.username
+          ? `Linked the account to Telegram (@${auth.username}).`
+          : "Linked the account to Telegram.",
+      });
       return reply.code(303).redirect("/account/settings?linked=1");
     },
   );

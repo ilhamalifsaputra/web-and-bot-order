@@ -22,7 +22,7 @@ ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
     CI=1
 # Prisma reads this at `generate` time (it does NOT connect — value is a dummy).
-ENV DATABASE_URL_PRISMA=file:/app/data/bot.db
+ENV DATABASE_URL_PRISMA=postgresql://user:pass@localhost:5432/db
 
 WORKDIR /app
 

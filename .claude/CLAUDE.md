@@ -111,13 +111,16 @@ A fresh worktree is a fresh checkout — the ignored files do not come with it:
 - **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
   defaults (8109/8110) are identical in every worktree, so two sessions running
   dev servers collide. Give each session its own port pair.
-- `DATABASE_URL_PRISMA=file:../data/bot.db` resolves relative to the worktree,
-  so each worktree gets its own empty SQLite file — copy `data/bot.db` from the
-  main directory if the task needs real data. Do not repoint it at the main
-  directory's DB: shared SQLite is single-writer.
+- **SQLite-per-worktree no longer applies** — the schema is Postgres-only
+  post engine-swap. A worktree that needs a database brings up its own dev
+  Postgres with `docker compose -f docker-compose.postgres.yml up -d` and
+  points `DATABASE_URL_PRISMA` at it (see README.md's "Untuk Developer"
+  section for the exact commands/env). That compose file publishes a fixed
+  local port, so **only one worktree can run it at a time** — do not run it
+  from two worktrees concurrently.
 - **Only one worktree may run order-bot at a time.** The bot token lives in the
-  DB, so a copied `data/bot.db` means two pollers on one token, which Telegram
-  rejects with a 409.
+  DB, so pointing two worktrees at the same Postgres means two pollers on one
+  token, which Telegram rejects with a 409.
 
 ## Graphify knowledge graph
 

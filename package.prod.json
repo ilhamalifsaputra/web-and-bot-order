@@ -4,7 +4,7 @@
   "private": true,
   "description": "Combined single-process build (dist/server.cjs from `pnpm build:bundle`). Upload this as package.json (rename) alongside dist/server.cjs for a plain-node managed-hosting deploy.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node dist/server.cjs",

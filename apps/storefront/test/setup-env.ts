@@ -35,7 +35,7 @@ process.env.BYBIT_API_SECRET = "";
 // even with creds set, since it has nowhere to send the callback to.
 process.env.SHOP_PUBLIC_URL = "https://shop.test.invalid";
 
-const schemaEnv = provisionPgTestSchema("storefront");
+const schemaEnv = await provisionPgTestSchema("storefront");
 export const DB_URL = schemaEnv.url;
 process.env.DATABASE_URL_PRISMA = DB_URL;
 

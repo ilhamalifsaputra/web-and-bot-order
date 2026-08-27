@@ -42,7 +42,7 @@ export interface PgTestSchemaEnv {
  * a Postgres connection string — e.g. this worktree's dev container) and
  * runs `prisma db push` against it.
  */
-export function provisionPgTestSchema(prefix: string): PgTestSchemaEnv {
+export async function provisionPgTestSchema(prefix: string): Promise<PgTestSchemaEnv> {
   const baseUrl = process.env.DATABASE_URL_PRISMA;
   if (!baseUrl) {
     throw new Error("DATABASE_URL_PRISMA must be set to a Postgres connection string before provisioning a test schema.");
@@ -61,7 +61,7 @@ export function provisionPgTestSchema(prefix: string): PgTestSchemaEnv {
     // db push can fail partway through (schema created, not all tables
     // landed) — best-effort drop it so a failed provision doesn't leave an
     // orphaned schema behind, then re-throw the original error.
-    dropSchema(url, schema).catch(() => {});
+    await dropSchema(url, schema).catch(() => {});
     throw err;
   }
 

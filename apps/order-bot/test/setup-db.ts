@@ -29,7 +29,7 @@ process.env.BYBIT_DEPOSIT_ADDRESS = "";
 process.env.BYBIT_API_KEY = "";
 process.env.BYBIT_API_SECRET = "";
 
-const schemaEnv = provisionPgTestSchema("orderbot");
+const schemaEnv = await provisionPgTestSchema("orderbot");
 export const DB_URL = schemaEnv.url;
 process.env.DATABASE_URL_PRISMA = DB_URL;
 

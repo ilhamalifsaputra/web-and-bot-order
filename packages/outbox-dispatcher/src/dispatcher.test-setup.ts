@@ -14,7 +14,7 @@
 import { afterAll } from "vitest";
 import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 
-const schemaEnv = provisionPgTestSchema("outboxdispatcher");
+const schemaEnv = await provisionPgTestSchema("outboxdispatcher");
 export const DB_URL = schemaEnv.url;
 process.env.DATABASE_URL_PRISMA = DB_URL;
 

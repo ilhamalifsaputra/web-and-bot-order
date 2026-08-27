@@ -19,7 +19,7 @@ process.env.BINANCE_PAY_ID = "111222333";
 process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
 
-const schemaEnv = provisionPgTestSchema("server");
+const schemaEnv = await provisionPgTestSchema("server");
 export const DB_URL = schemaEnv.url;
 process.env.DATABASE_URL_PRISMA = DB_URL;
 

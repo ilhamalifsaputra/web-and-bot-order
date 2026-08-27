@@ -137,6 +137,11 @@ export async function createInternalOrder(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Forwarded verbatim to createOrderDirect; null otherwise. */
     customerData?: string | null;
+    /** Client-minted checkout attempt id (A1) — forwarded verbatim to
+     * createOrderDirect via the `...baseArgs` spread below; see
+     * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
+     * contract this enforces. */
+    checkoutIntentId?: string | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;

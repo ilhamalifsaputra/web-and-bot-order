@@ -26,6 +26,7 @@ import {
   upsertUser,
   DuplicateCheckoutIntentError,
   getOrderByCheckoutIntentId,
+  createInternalOrder,
 } from "@app/db";
 
 let db: TestDb;
@@ -162,6 +163,43 @@ describe("createOrderFromCart under true Postgres concurrency — checkoutIntent
     expect(rejected.length).toBe(4);
     for (const r of rejected) {
       expect(r.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+    }
+    expect(await prisma.order.count({ where: { checkoutIntentId } })).toBe(1);
+  });
+});
+
+// Task 1 fix (review finding): createInternalOrder (Binance Internal) is one
+// of the three USDT rails — along with createBybitOrder and
+// createBybitBscOrder — that were left unwired in the original A1 commit
+// despite being thin createOrderDirect pass-through wrappers. This proves the
+// atomic constraint holds through the wrapper under a genuine concurrent
+// race, exactly like createOrderDirect above; per the fix brief, one such
+// wrapper test plus the generic createOrderDirect coverage above is enough
+// to prove the mechanism, since createBybitOrder/createBybitBscOrder are not
+// reimplementations — they're the same `...baseArgs` spread into the same
+// createOrderDirect call.
+describe("createInternalOrder (Binance Internal wrapper) under true Postgres concurrency — checkoutIntentId collision", () => {
+  it("5 concurrent buyers, SAME checkoutIntentId, ample stock: exactly 1 order is created, 4 reject with DuplicateCheckoutIntentError", async () => {
+    const { product } = sample;
+    const buyers = await makeBuyers(5);
+    const checkoutIntentId = randomUUID();
+
+    const results = await Promise.allSettled(
+      buyers.map((user) =>
+        createInternalOrder(prisma, { user, productId: product.id, quantity: 1, rate: "16000", checkoutIntentId }),
+      ),
+    );
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createInternalOrder>>> => r.status === "fulfilled",
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(4);
+    for (const r of rejected) {
+      expect(r.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+      expect((r.reason as DuplicateCheckoutIntentError).checkoutIntentId).toBe(checkoutIntentId);
     }
     expect(await prisma.order.count({ where: { checkoutIntentId } })).toBe(1);
   });

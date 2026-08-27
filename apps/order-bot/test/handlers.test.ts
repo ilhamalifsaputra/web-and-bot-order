@@ -23,7 +23,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -2455,6 +2455,127 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     // Same alert copy refuseDuplicateCheckout uses (checkout.duplicate_pending),
     // not error.generic or a thrown/unhandled exception.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  // Task 1 fix (review finding): Binance Internal, Bybit, and Bybit BSC are
+  // thin createOrderDirect pass-through wrappers exactly like Tokopay above —
+  // they must degrade the same way on an atomic checkoutIntentId collision,
+  // not throw unhandled. Same shape as the buyNowTokopay test directly above:
+  // the colliding order is for a DIFFERENT product than the one this call
+  // buys, so only the DuplicateCheckoutIntentError catch in each buyNow*
+  // handler (not refuseDuplicateCheckout's pre-check) can be what refuses it.
+  it("buyNowInternal converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-internal@x.com:pw"]);
+    const checkoutIntentId = "22222222-2222-2222-2222-222222222222";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payx:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybit converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "UID456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybit@x.com:pw"]);
+    const checkoutIntentId = "33333333-3333-3333-3333-333333333333";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payb:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybitBsc converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, "0xDEADBEEF");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybitbsc@x.com:pw"]);
+    const checkoutIntentId = "44444444-4444-4444-4444-444444444444";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:paybc:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
     const alert = calls(sink, "answerCallbackQuery").find(
       (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
     );

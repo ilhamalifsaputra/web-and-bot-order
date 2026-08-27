@@ -650,6 +650,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -661,9 +663,14 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -742,6 +749,8 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -753,9 +762,14 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -831,6 +845,8 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitBscOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -842,9 +858,14 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;

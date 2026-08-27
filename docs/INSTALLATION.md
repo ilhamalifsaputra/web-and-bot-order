@@ -29,16 +29,16 @@ skrip migrasi Postgres, butuh minimal versi ini). Versi `prisma`/
 git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
 cd web-and-bot-order
 cp .env.example .env                          # isi sesuai docs/CONFIGURATION.md
-docker compose build
-docker compose run --rm server pnpm exec prisma db push   # buat skema
-docker compose up -d                          # admin :8000, storefront :8100
-docker compose ps                             # tunggu "healthy"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push   # buat skema
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d   # admin :8000, storefront :8100
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps      # tunggu "healthy"
 ```
 
 ### Jalur B — tanpa Docker (dev lokal / VPS manual)
 
 ```bash
-nvm install 20 && npm install -g pnpm@9
+nvm install 22 && npm install -g pnpm@9
 git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
 cd web-and-bot-order
 pnpm install
@@ -63,13 +63,16 @@ ini, `@prisma/client` tidak punya kode yang digenerate dan setiap import dari
 
 ```bash
 pnpm exec prisma db push    # non-Docker
-docker compose run --rm server pnpm exec prisma db push   # Docker (jarang perlu)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push   # Docker
 ```
 
-**Di Docker ini otomatis:** `docker-entrypoint.sh` menyelaraskan skema sebelum
-app start — snapshot terverifikasi ke `data/backups/` dulu, lalu `db push`, dan
-hanya bila skema memang berbeda. Jadi `docker compose up -d --build` sudah cukup;
-matikan dengan `AUTO_MIGRATE=0` bila ingin menerapkannya manual.
+**Di Docker ini TIDAK otomatis untuk PostgreSQL:** `docker-entrypoint.sh`'s
+snapshot-then-`db push` auto-migrate hanya berlaku untuk `DATABASE_URL_PRISMA`
+berformat `file:` (SQLite) — untuk URL `postgresql://` ia sengaja no-op (log
+"Skipping the automatic schema update") karena tidak ada file untuk di-snapshot
+dengan cara yang sama. Jadi `prisma db push` di atas WAJIB dijalankan manual
+setiap kali skema berubah, sebelum atau sesudah `docker compose up -d
+--build` — `AUTO_MIGRATE` tidak relevan untuk jalur Postgres.
 
 Detail kapan harus `db push` vs `migrate deploy`, cara menutup gap kolom
 yang hilang (`P2022`), dan alur lengkap entrypoint ada di

@@ -29,10 +29,10 @@ reconciliation gate) no matter how confident section 6 looked.
   git log --oneline -1 -- docker-compose.postgres.prod.yml scripts/migrate-sqlite-to-postgres.ts scripts/reconcile-sqlite-postgres.ts
   ```
 
-- **A real production `.env` with the Postgres block filled in.** Open
-  `.env.example` and find the `--- PostgreSQL produksi
-  (docker-compose.postgres.prod.yml) ---` block. Uncomment and fill in, in
-  your real `.env` (not `.env.example`):
+- **A real production `.env` with the Postgres block filled in.** `.env.example`'s
+  `DATABASE_URL` section is Postgres by default now (schema.prisma is
+  Postgres-only). Copy it into your real `.env` (not `.env.example`) and
+  replace the placeholder password:
 
   ```
   POSTGRES_DB=bot_order
@@ -44,14 +44,32 @@ reconciliation gate) no matter how confident section 6 looked.
   The `DATABASE_URL_PRISMA` host **must** be the literal service name
   `postgres`, not `localhost`/`127.0.0.1` — that only resolves on the
   internal Compose network between the `server` and `postgres` containers
-  (`docker-compose.postgres.prod.yml`'s own header comment). Comment out (or
-  remove) the existing `DATABASE_URL_PRISMA=file:../data/bot.db` line so only
-  one `DATABASE_URL_PRISMA` is active — the file explicitly warns "isi salah
-  satu... bukan dua-duanya sekaligus" (fill in exactly one, not both).
+  (`docker-compose.postgres.prod.yml`'s own header comment). `.env.example`
+  also keeps the legacy `DATABASE_URL_PRISMA=file:../data/bot.db` line, but
+  commented out and marked LEGACY — leave it commented; the Postgres-provider
+  schema rejects a `file:` URL outright, so only the `postgresql://` line may
+  be active.
 
   If you run more than one shop on this host, `POSTGRES_DB`/`POSTGRES_USER`/
   `POSTGRES_PASSWORD` must be unique per shop (`.env.example`'s own `[multi]`
   note).
+
+- **Tag the currently-running (pre-migration, SQLite-provider) image, and
+  note the commit it was built from.** The container running right now was
+  built from code where `schema.prisma` still says `provider = "sqlite"` and
+  the generated Prisma client is SQLite-only. Section 3a below rebuilds the
+  `bot-order-node:latest` tag from THIS branch's code (Postgres-provider
+  schema) — once that happens, `latest` no longer points at anything you can
+  roll back to. Preserve it now, before that build runs:
+
+  ```bash
+  docker tag bot-order-node:latest bot-order-node:pre-postgres
+  git rev-parse HEAD    # note this commit SHA somewhere durable — it's the
+                         # exact pre-migration code `pre-postgres` was built from
+  ```
+
+  Section 9's rollback restores this tag if the migration needs to be
+  reverted after cutover.
 
 - **Expected downtime (freeze-to-cutover window).** The real validation runs
   in this worktree (Tasks 5–7, against a full production snapshot — 124
@@ -139,6 +157,31 @@ restores from if anything goes wrong.
 
 This step never touches or modifies the original `data/bot.db` — it only
 reads it to produce the snapshot in `data/backups/`.
+
+---
+
+## 3a. Build the application image for this branch
+
+Sections 4–8 below all run schema pushes, the data migration, and the
+reconciliation gate through `docker compose ... run --rm server ...` (and,
+for section 8, `up -d`) — every one of those needs THIS branch's code
+already baked into the image: the Postgres-provider Prisma client, and the
+`node:sqlite`-based migration/reconciliation scripts. Build it now, before
+any of those steps run, so you don't accidentally run them against the stale
+pre-migration image you just tagged `pre-postgres` in section 1:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+```
+
+This overwrites the local `bot-order-node:latest` tag with an image built
+from this branch's `Dockerfile` — which is exactly why section 1 had you
+preserve the old image under a different tag first. `docker compose up -d`
+does **not** rebuild on its own when an image tag already exists locally
+(`docker-compose.yml`'s `server` service declares both `build:` and
+`image: bot-order-node:latest`), so skipping this step is how an operator
+ends up cutting over onto stale, still-SQLite-provider code without any
+error message telling them so.
 
 ---
 
@@ -302,8 +345,14 @@ clean this time (no P2021 crash-loop, since the schema and data already
 exist):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 ```
+
+The `--build` here is a safety net, not the primary build step — section 3a
+already built this branch's image before sections 4–7 ran (they needed it
+too). Keeping `--build` on this command means cutover can never silently run
+stale code even if something changed on disk between 3a and now (e.g. you
+rehearsed this runbook, made a code fix, and are now doing the real run).
 
 Confirm it's healthy the same way Task 7's validation did — `server`'s own
 Docker healthcheck hits `/healthz` internally, but check it directly too:
@@ -322,8 +371,72 @@ Expect `Up ... (healthy)` from `ps`, and `HTTP/1.1 200 OK` with body
 public surface), so run these `curl`s from the VPS itself, not remotely.
 
 Once both `/healthz` checks pass, the stack is live on Postgres. Proceed to
-section 10 for what to watch next — do not consider the migration finished
-yet.
+section 8a, then section 10, for what to do and watch next — do not consider
+the migration finished yet.
+
+---
+
+## 8a. Replace the SQLite backup cron with a Postgres backup
+
+**Do this now, right after a healthy cutover — before section 10, and before
+you'd ever need section 9.** `deploy/backup/README.md` documents a 6-hourly
+cron running `deploy/backup/backup.sh` against `data/bot.db`. After cutover,
+nothing writes to that file any more, but the cron will keep running and
+keep exiting 0 — a false-positive "backups are fine" signal while the actual
+live database (Postgres) has zero backup coverage. That's a silent
+data-loss exposure for a financial application, so close it now rather than
+discovering it during an incident.
+
+This is deliberately the minimum responsible thing, not a new backup
+subsystem — retention policy, WAL archiving, and off-box shipping for
+Postgres are out of scope for this migration, same as they were for the
+SQLite-era tooling this replaces (see `deploy/backup/README.md`'s own
+off-box note, which applies equally here).
+
+1. **Disable the old SQLite cron.** On the VPS:
+
+   ```bash
+   crontab -e
+   ```
+
+   Remove (or comment out) the line calling `deploy/backup/backup.sh`
+   (`deploy/backup/README.md`'s documented schedule looks like
+   `0 */6 * * * DB=/srv/app/data/bot.db DEST=/srv/backups
+   /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1`) — it is
+   backing up a file nothing writes to any more.
+
+2. **Add a Postgres backup in its place**, using this branch's actual
+   service names via `docker compose exec`:
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+     exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
+     > /srv/backups/pg-$(date +%Y%m%d-%H%M%S).dump
+   ```
+
+   `-Fc` (custom format) is compressed and restorable with `pg_restore`
+   (including a `--clean`/selective restore, unlike a plain SQL dump). Put
+   this in the crontab entry you just removed the SQLite line from, e.g. the
+   same 6-hourly cadence:
+
+   ```cron
+   0 */6 * * * cd /srv/app && POSTGRES_USER=bot_order POSTGRES_DB=bot_order \
+     docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+     exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
+     > /srv/backups/pg-$(date +\%Y\%m\%d-\%H\%M\%S).dump 2>> /var/log/bot-backup.log
+   ```
+
+   (cron needs `%` escaped as `\%` in `date` format strings — a common
+   gotcha, called out here so the job doesn't silently write a garbled
+   filename.) Substitute your real `POSTGRES_USER`/`POSTGRES_DB` and backup
+   directory.
+
+3. **This is a starting point, not a full backup strategy.** Retention
+   pruning, integrity verification, off-box/3-2-1 copies, and point-in-time
+   recovery (WAL archiving) are all real gaps this minimal `pg_dump` leaves
+   open — consistent with this migration's stated scope boundary (engine
+   swap only), but worth tracking as explicit follow-up work rather than
+   assuming this cron alone is sufficient long-term coverage.
 
 ---
 
@@ -336,6 +449,16 @@ never touched by any step above** — section 6's migration script opens its
 SQLite source `readOnly: true` (confirmed in the script's own source, see
 section 6 above), and every step before section 8 only ever wrote to the new
 Postgres container, never to `./data/bot.db`.
+
+**Order matters below.** The `.env` revert (step 2) and the image restore
+(step 3) must both happen *before* `docker compose up` (step 4) — not after.
+The image currently tagged `bot-order-node:latest` is this branch's
+Postgres-provider build: its generated Prisma client is constructed once at
+process start from whatever `DATABASE_URL_PRISMA` resolves to, and a
+Postgres-provider client rejects a `file:` URL outright. Bringing that image
+up against a reverted SQLite `.env` would crash-loop the container instead
+of restoring service — reverting `.env` alone, as earlier drafts of this
+runbook did, is not a complete rollback.
 
 1. **Bring the Postgres-based stack down:**
 
@@ -364,8 +487,27 @@ Postgres container, never to `./data/bot.db`.
    start `server` still pointed at a Postgres host that is no longer
    running.
 
-3. **Bring the original SQLite-based stack back up.** Since `data/bot.db`
-   was never modified, this is just:
+3. **Restore the pre-migration application image.** `bot-order-node:latest`
+   right now is this branch's Postgres-provider build — per the note above,
+   it will crash-loop against the `file:` URL you just restored in step 2.
+   Restore the image you tagged in section 1, before `docker compose up`
+   runs:
+
+   ```bash
+   docker tag bot-order-node:pre-postgres bot-order-node:latest
+   ```
+
+   This is simpler and more reliable than checking out the pre-migration
+   commit and rebuilding: the tag swap is instant, needs no build step, and
+   has no way to fail partway through. Fall back to checking out the
+   pre-migration commit SHA you noted in section 1 and running
+   `docker compose build` only if `bot-order-node:pre-postgres` is no longer
+   present locally (e.g. pruned by `docker image prune` between the cutover
+   and this rollback).
+
+4. **Bring the original SQLite-based stack back up.** Since `data/bot.db`
+   was never modified, and the image is now the pre-migration one again,
+   this is just:
 
    ```bash
    docker compose up -d
@@ -384,17 +526,18 @@ Postgres container, never to `./data/bot.db`.
    swaps the file, clears stale `-wal`/`-shm` sidecars, verifies
    `integrity_check`, restarts `server`, and smoke-tests `/healthz` itself —
    see `deploy/backup/README.md` for the full step list. **`restore.sh` only
-   swaps the SQLite file — it does not touch `.env`, so step 2 above (the
-   `.env` revert) must already be done before running it**, or `server`
-   will restart still configured for the now-gone Postgres host. Remember to
-   remove the sentinel once you're ready for automatic schema updates again:
+   swaps the SQLite file — it does not touch `.env` or the image, so steps 2
+   and 3 above must already be done before running it**, or `server` will
+   restart still configured for the now-gone Postgres host, or still running
+   the Postgres-provider image, or both. Remember to remove the sentinel
+   once you're ready for automatic schema updates again:
 
    ```bash
    rm ./data/SKIP_AUTO_MIGRATE
    docker compose restart server
    ```
 
-4. **Confirm the rollback is healthy:**
+5. **Confirm the rollback is healthy:**
 
    ```bash
    curl -i http://127.0.0.1:${WEB_PORT:-8000}/healthz

@@ -30,6 +30,21 @@
  *    Decimal-bearing table here has a plain integer `id` primary key, and
  *    Task 5's migration preserved ids verbatim, so joining source and
  *    target rows by id is safe).
+ * 3. FK orphan check (target Postgres only) — Task 5's import runs with
+ *    `SET session_replication_role = replica`, which suppresses FK trigger
+ *    enforcement for the duration of the import transaction. That is by
+ *    design (it removes the need for a topological insert order), but it
+ *    also means an orphan row already present in the SQLite source (a
+ *    `denomination.productId` with no matching `products.id`, say) would
+ *    import into Postgres without complaint even though it violates a real
+ *    FK constraint Postgres enforces on every write from here on. Row
+ *    counts and Decimal values alone can't catch that — an orphan row still
+ *    counts and still carries a correct Decimal value. This check
+ *    enumerates every FK constraint Postgres itself now has on the `public`
+ *    schema (via `information_schema`, not hand-derived from
+ *    schema.prisma's `@relation` fields — the live constraints are the
+ *    source of truth for what Postgres will actually enforce) and runs a
+ *    `LEFT JOIN ... WHERE parent.id IS NULL` orphan query for each one.
  *
  * --- Decimal comparison method — READ THIS BEFORE TOUCHING THIS FILE ---
  * On the SQLite side, the same approach Task 5's migration script uses:
@@ -397,6 +412,75 @@ async function checkDecimalTable(
   return { table: spec.table, checked, mismatches };
 }
 
+interface ForeignKeyInfo {
+  constraintName: string;
+  childTable: string;
+  childColumn: string;
+  parentTable: string;
+  parentColumn: string;
+}
+
+/**
+ * Enumerates every FK constraint Postgres actually enforces on the `public`
+ * schema, via `information_schema` — deliberately not hand-derived from
+ * schema.prisma's `@relation` fields, so this stays correct even if a future
+ * schema change adds/renames a relation without this script being updated in
+ * lockstep; whatever Postgres itself enforces is what gets checked.
+ */
+async function fetchForeignKeys(prisma: PrismaClient): Promise<ForeignKeyInfo[]> {
+  const rows = await prisma.$queryRawUnsafe<
+    {
+      constraint_name: string;
+      child_table: string;
+      child_column: string;
+      parent_table: string;
+      parent_column: string;
+    }[]
+  >(`
+    SELECT
+      tc.constraint_name,
+      tc.table_name AS child_table,
+      kcu.column_name AS child_column,
+      ccu.table_name AS parent_table,
+      ccu.column_name AS parent_column
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+    JOIN information_schema.constraint_column_usage ccu
+      ON tc.constraint_name = ccu.constraint_name AND tc.table_schema = ccu.table_schema
+    WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'
+    ORDER BY tc.table_name, kcu.column_name
+  `);
+  return rows.map((r) => ({
+    constraintName: r.constraint_name,
+    childTable: r.child_table,
+    childColumn: r.child_column,
+    parentTable: r.parent_table,
+    parentColumn: r.parent_column,
+  }));
+}
+
+interface OrphanCheckResult {
+  fk: ForeignKeyInfo;
+  orphanCount: number;
+}
+
+/**
+ * For one FK, counts child rows whose FK column is non-null but has no
+ * matching parent row — i.e. rows that would fail this constraint if it were
+ * re-validated from scratch. Read-only (SELECT + LEFT JOIN), same as every
+ * other Postgres access in this script.
+ */
+async function checkOrphans(prisma: PrismaClient, fk: ForeignKeyInfo): Promise<OrphanCheckResult> {
+  const rows = await prisma.$queryRawUnsafe<{ n: bigint }[]>(`
+    SELECT count(*) AS n
+    FROM "public"."${fk.childTable}" c
+    LEFT JOIN "public"."${fk.parentTable}" p ON c."${fk.childColumn}" = p."${fk.parentColumn}"
+    WHERE c."${fk.childColumn}" IS NOT NULL AND p."${fk.parentColumn}" IS NULL
+  `);
+  return { fk, orphanCount: Number(rows[0]!.n) };
+}
+
 async function main(): Promise<void> {
   const sqlitePath = resolveSqlitePath();
   console.log(`[reconcile] source SQLite: ${sqlitePath} (opened read-only)`);
@@ -464,13 +548,42 @@ async function main(): Promise<void> {
       }
     }
 
+    // --- 3. FK orphan check (target Postgres only) -------------------
+    console.log(`\n=== Foreign-key orphan-row check (target Postgres only) ===`);
+    const foreignKeys = await fetchForeignKeys(prisma);
+    console.log(`Found ${foreignKeys.length} foreign-key constraints in the "public" schema.`);
+    const orphanResults: OrphanCheckResult[] = [];
+    for (const fk of foreignKeys) {
+      const result = await checkOrphans(prisma, fk);
+      orphanResults.push(result);
+      const status = result.orphanCount === 0 ? "OK" : "ORPHANS FOUND";
+      console.log(
+        `  ${fk.childTable}.${fk.childColumn} -> ${fk.parentTable}.${fk.parentColumn}  orphans=${String(result.orphanCount).padStart(4)}  ${status}`,
+      );
+    }
+    const orphanFailures = orphanResults.filter((r) => r.orphanCount > 0);
+    console.log(
+      `\nFK constraints: ${orphanResults.length - orphanFailures.length}/${orphanResults.length} clean.`,
+    );
+    if (orphanFailures.length > 0) {
+      console.log(`Constraints with orphan rows:`);
+      for (const r of orphanFailures) {
+        console.log(
+          `  ${r.fk.childTable}.${r.fk.childColumn} -> ${r.fk.parentTable}.${r.fk.parentColumn}: ${r.orphanCount} orphan row(s)`,
+        );
+      }
+    }
+
     // --- Overall verdict ---------------------------------------------
-    const overallPass = rowCountMismatches.length === 0 && allDecimalMismatches.length === 0;
+    const overallPass =
+      rowCountMismatches.length === 0 && allDecimalMismatches.length === 0 && orphanFailures.length === 0;
     console.log(`\n=== SUMMARY ===`);
     console.log(`Tables checked:        ${rowCounts.length}`);
     console.log(`Row-count matches:     ${rowCounts.length - rowCountMismatches.length}/${rowCounts.length}`);
     console.log(`Decimal values checked: ${totalChecked}`);
     console.log(`Decimal value matches:  ${totalChecked - allDecimalMismatches.length}/${totalChecked}`);
+    console.log(`FK constraints checked: ${orphanResults.length}`);
+    console.log(`FK constraints clean:   ${orphanResults.length - orphanFailures.length}/${orphanResults.length}`);
     console.log(`Overall verdict: ${overallPass ? "PASS" : "FAIL"}`);
 
     if (!overallPass) {

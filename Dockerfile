@@ -11,7 +11,12 @@
 # running against an old schema. See docs/MIGRATIONS.md.
 
 # ---- Stage 1: builder ----
-FROM node:20-slim AS builder
+# node:sqlite (used by scripts/migrate-sqlite-to-postgres.ts,
+# scripts/reconcile-sqlite-postgres.ts, and the pre-existing
+# scripts/migrate-catalog-rename.ts / scripts/backfill-catalog-slugs.ts) needs
+# Node >=22.13 — it does not exist at all on Node 20. 24 is the current Active
+# LTS line (see package.json's engines.node).
+FROM node:24-slim AS builder
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH \
@@ -43,7 +48,7 @@ RUN pnpm --filter @app/storefront-client build
 
 
 # ---- Stage 2: runtime ----
-FROM node:20-slim AS runtime
+FROM node:24-slim AS runtime
 
 ENV NODE_ENV=production \
     PNPM_HOME=/pnpm \

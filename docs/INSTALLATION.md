@@ -9,14 +9,15 @@
 
 | Komponen | Versi | Wajib? |
 |---|---|---|
-| Node.js | ≥ 20 (image Docker: `node:20-slim`) | Ya (non-Docker) |
+| Node.js | ≥ 22.13 (image Docker: `node:24-slim`) | Ya (non-Docker) |
 | pnpm | `9.15.9` (pinned via `packageManager` di `package.json`) | Ya (non-Docker) |
 | Database | SQLite (file tunggal, mode WAL) — **tidak ada server DB terpisah** | Bawaan |
 | Redis | **Tidak dipakai** — tidak ada di stack ini | — |
 | Docker | Engine terbaru, untuk Jalur A | Opsional |
 | OS | Linux (VPS) untuk produksi; Windows/macOS untuk dev lokal | — |
 
-`engines.node` di `package.json` mensyaratkan `>=20`. Versi `prisma`/
+`engines.node` di `package.json` mensyaratkan `>=22.13` (`node:sqlite`, dipakai
+skrip migrasi Postgres, butuh minimal versi ini). Versi `prisma`/
 `@prisma/client` terkunci ke `5.22.0`; `typescript` ke `^5.6.3`; `vitest` ke
 `^2.1.5` — lihat [Root `package.json`](#scripts-root-packagejson) di bawah.
 

@@ -6,7 +6,7 @@ This document outlines the architecture, data flows, components, and constraints
 
 ## 1. Tech Stack & Core Dependencies
 
-The platform is structured as a TypeScript monorepo using `pnpm` workspaces, running on **Node.js (>=20)** and built with modern, lightweight libraries.
+The platform is structured as a TypeScript monorepo using `pnpm` workspaces, running on **Node.js (>=22.13)** and built with modern, lightweight libraries.
 
 ```mermaid
 graph TD

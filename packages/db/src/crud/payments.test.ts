@@ -19,10 +19,11 @@ import { PaymentStatus, PaymentExpiryReason } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect } from "./orders";
+import { createOrderDirect, setOrderPaymentRail } from "./orders";
 import {
   createPaymentAttempt,
   listPaymentAttempts,
+  getPendingPaymentAttempt,
   expirePaymentAttempt,
   confirmPaymentAttempt,
   PAYMENT_LEGAL_TRANSITIONS,
@@ -192,6 +193,29 @@ describe("listPaymentAttempts", () => {
   });
 });
 
+describe("getPendingPaymentAttempt", () => {
+  it("returns the order's live PENDING attempt", async () => {
+    const order = await makeOrder();
+    const attempt = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    expect((await getPendingPaymentAttempt(prisma, order.id))?.id).toBe(attempt.id);
+  });
+
+  it("returns null once that attempt is no longer PENDING, and never sees another order's attempt", async () => {
+    const order = await makeOrder();
+    const other = await makeOrder();
+    const attempt = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+    await createPaymentAttempt(prisma, { orderId: other.id, method: "TOKOPAY", amount: other.totalAmount, currency: other.currency });
+
+    await expirePaymentAttempt(prisma, { paymentId: attempt.id, reason: PaymentExpiryReason.TIMEOUT });
+
+    expect(await getPendingPaymentAttempt(prisma, order.id)).toBeNull();
+    // The terminal row is still on record — only its claim on the
+    // one-PENDING-per-order slot was released.
+    expect(await listPaymentAttempts(prisma, order.id)).toHaveLength(1);
+  });
+});
+
 describe("state machine — PAYMENT_LEGAL_TRANSITIONS", () => {
   it("encodes exactly the documented shape", () => {
     expect(PAYMENT_LEGAL_TRANSITIONS[PaymentStatus.PENDING]!.slice().sort()).toEqual(
@@ -269,6 +293,51 @@ describe("expirePaymentAttempt", () => {
     ).rejects.toThrow(ValidationError);
   });
 
+  it("records the outgoing rail's reference on the retiring row when the caller passes one", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+    expect(payment.reference).toBeNull();
+
+    await expirePaymentAttempt(prisma, {
+      paymentId: payment.id,
+      reason: PaymentExpiryReason.RAIL_CHANGED,
+      reference: "TOKOPAY-INV-9",
+    });
+
+    // Read the PERSISTED row, not the return value — the point of this
+    // argument is that the reference outlives the switch in the database.
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(stored.status).toBe(PaymentStatus.EXPIRED);
+    expect(stored.reference).toBe("TOKOPAY-INV-9");
+  });
+
+  it("never overwrites a reference the attempt already recorded for itself", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: "TOKOPAY",
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "ATTEMPT-OWN-REF",
+    });
+
+    const expired = await expirePaymentAttempt(prisma, {
+      paymentId: payment.id,
+      reason: PaymentExpiryReason.RAIL_CHANGED,
+      reference: "SOMETHING-ELSE",
+    });
+
+    expect(expired.reference).toBe("ATTEMPT-OWN-REF");
+  });
+
+  it("leaves reference null when the caller passes none", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    const expired = await expirePaymentAttempt(prisma, { paymentId: payment.id, reason: PaymentExpiryReason.TIMEOUT });
+    expect(expired.reference).toBeNull();
+  });
+
   const illegalExpireFrom: readonly string[] = [PaymentStatus.CONFIRMED, PaymentStatus.EXPIRED, PaymentStatus.FAILED];
   it.each(illegalExpireFrom)("rejects %s -> EXPIRED as illegal", async (from) => {
     const order = await makeOrder();
@@ -303,6 +372,43 @@ describe("rail-change composition (create -> expire RAIL_CHANGED -> create, same
     const attempts = await listPaymentAttempts(prisma, order.id);
     expect(attempts).toHaveLength(2);
     expect(attempts.every((p) => p.orderId === order.id)).toBe(true);
+  });
+
+  // The reference hand-off, exactly as apps/order-bot/src/handlers/
+  // checkout.ts's changePaymentRail composes it: setOrderPaymentRail clears
+  // Order.paymentRef and returns what it held, and that value lands on the
+  // retiring ledger row instead of being lost. Order.paymentRef is the key
+  // binanceInternal.ts's byRef map, amountMatching.ts's transfer-note match
+  // and nowpaymentsReconcile.ts's invoice-id parse all reconcile against, so
+  // without this a payment arriving on the old rail just after the switch has
+  // nothing left to be attributed to.
+  it("carries the outgoing Order.paymentRef onto the retired attempt instead of discarding it", async () => {
+    const order = await makeOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: "TOKOPAY", paymentRef: "TOKOPAY-INV-42" } });
+    const oldAttempt = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    const { previousPaymentRef } = await setOrderPaymentRail(prisma, {
+      orderId: order.id,
+      method: "PAYDISINI",
+      expectedStatus: order.status,
+    });
+    await expirePaymentAttempt(prisma, {
+      paymentId: oldAttempt.id,
+      reason: PaymentExpiryReason.RAIL_CHANGED,
+      reference: previousPaymentRef,
+    });
+    await createPaymentAttempt(prisma, { orderId: order.id, method: "PAYDISINI", amount: order.totalAmount, currency: order.currency });
+
+    // Cleared on the Order (so the new rail's own claimGatewaySlot starts
+    // from null), preserved on the ledger row that was quoting it.
+    const freshOrder = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(freshOrder.paymentMethod).toBe("PAYDISINI");
+    expect(freshOrder.paymentRef).toBeNull();
+
+    const retired = await prisma.payment.findUniqueOrThrow({ where: { id: oldAttempt.id } });
+    expect(retired.status).toBe(PaymentStatus.EXPIRED);
+    expect(retired.expiryReason).toBe(PaymentExpiryReason.RAIL_CHANGED);
+    expect(retired.reference).toBe("TOKOPAY-INV-42");
   });
 });
 

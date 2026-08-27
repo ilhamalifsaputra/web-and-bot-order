@@ -171,6 +171,18 @@ export function listPaymentAttempts(db: Db, orderId: number) {
 }
 
 /**
+ * The order's live PENDING attempt, or null if it has none. An exact hit on
+ * `Payment.pendingOrderId`'s unique index — which mirrors `orderId` for
+ * precisely as long as the row is PENDING and is null otherwise (see this
+ * file's module comment) — so a caller that only wants the current attempt
+ * doesn't have to list every attempt the order ever made and filter them in
+ * memory.
+ */
+export function getPendingPaymentAttempt(db: Db, orderId: number): Promise<Payment | null> {
+  return db.payment.findUnique({ where: { pendingOrderId: orderId } });
+}
+
+/**
  * Move a Payment attempt PENDING -> EXPIRED: validates the shape against
  * `PAYMENT_LEGAL_TRANSITIONS`, atomically claims the row (`updateMany` with
  * `status: PENDING` in the WHERE clause — same pattern as
@@ -186,12 +198,23 @@ export function listPaymentAttempts(db: Db, orderId: number) {
  * as every other free-text-shaped lifecycle column in this schema (e.g.
  * `Refund.reason`), so a future caller isn't hard-blocked from a new reason
  * without a crud-layer change.
+ *
+ * `reference` lets the caller hand this row the gateway reference the
+ * outgoing rail was quoting, on its way out. The rail-change path needs it:
+ * `setOrderPaymentRail` (packages/db/src/crud/orders.ts) clears
+ * `Order.paymentRef` so the NEW rail can claim its own gateway slot, and
+ * `Order.paymentRef` is the reconciliation matching key every rail's
+ * webhook/poller reads — dropping it would leave a payment that lands on the
+ * old rail moments after the switch with nothing to match against. Written
+ * only onto a row whose `reference` is still null, so an attempt that already
+ * recorded its own reference at creation keeps that one rather than having it
+ * overwritten by whatever `Order` happened to be caching.
  */
 export async function expirePaymentAttempt(
   db: Db,
-  args: { paymentId: number; reason: string; adminId?: number | null },
+  args: { paymentId: number; reason: string; reference?: string | null; adminId?: number | null },
 ): Promise<Payment> {
-  const { paymentId, reason, adminId } = args;
+  const { paymentId, reason, reference, adminId } = args;
 
   // PENDING -> EXPIRED is always legal (PAYMENT_LEGAL_TRANSITIONS above) — no
   // runtime check needed here, unlike transitionRefundStatus, since this
@@ -213,6 +236,15 @@ export async function expirePaymentAttempt(
       from: PaymentStatus.PENDING,
       to: PaymentStatus.EXPIRED,
     });
+  }
+
+  if (reference != null) {
+    // Safe as a second statement: the claim above already moved this row out
+    // of PENDING and into a terminal status nothing else transitions out of,
+    // so no concurrent writer is still competing for it. The `reference: null`
+    // predicate is the preserve-don't-clobber rule from this function's doc
+    // comment, not a concurrency guard.
+    await db.payment.updateMany({ where: { id: paymentId, reference: null }, data: { reference } });
   }
 
   const payment = await db.payment.findUniqueOrThrow({ where: { id: paymentId } });

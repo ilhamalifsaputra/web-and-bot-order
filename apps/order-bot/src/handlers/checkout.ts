@@ -23,7 +23,6 @@ import {
   OrderStatus,
   PaymentExpiryReason,
   PaymentMethod,
-  PaymentStatus,
   UserRole,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -59,9 +58,10 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  setOrderPaymentRail,
   createPaymentAttempt,
   expirePaymentAttempt,
-  listPaymentAttempts,
+  getPendingPaymentAttempt,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -1610,10 +1610,22 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
  * payment-rail handlers to also write to the Payment ledger, most orders will
  * have none yet, which is fine, there's simply nothing to retire — opens a
  * new PENDING Payment attempt for `newMethod` (`createPaymentAttempt`), and
- * updates `Order.paymentMethod`/`paymentRef` to match. Both crud calls and
- * the Order update run in one `$transaction` so a crash between them can
- * never leave the ledger and the Order's own cache fields disagreeing about
- * which rail is current.
+ * updates `Order.paymentMethod`/`paymentRef` to match via
+ * `setOrderPaymentRail` (packages/db/src/crud/orders.ts). All three crud
+ * calls run in one `$transaction` so a crash between them can never leave the
+ * ledger and the Order's own cache fields disagreeing about which rail is
+ * current.
+ *
+ * The status/ownership checks below necessarily run BEFORE that transaction
+ * opens, so they can only ever be advisory: a reconciler confirming payment
+ * in the window between them and the write would leave this function stamping
+ * a rail the buyer never paid onto an order that just settled. What actually
+ * prevents that is `setOrderPaymentRail`'s compare-and-swap on `status` and
+ * `paymentRef` — the pre-checks exist to give the buyer a clean, specific
+ * toast in the common case, not to make the write safe. A lost race surfaces
+ * as a `ValidationError` from the crud layer and lands in the same catch
+ * below, so the buyer sees the same "this order can no longer be paid"
+ * message either way.
  *
  * `Order.paymentMethod`/`paymentRef` deliberately stay the "current/latest
  * attempt" cache after this call — the six existing payment-rail webhook/
@@ -1624,7 +1636,10 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
  * left holding the OLD rail's reference/gateway-claim sentinel) so a
  * subsequent `claimGatewaySlot` call for the NEW rail's own gateway-artifact
  * creation starts from the same null precondition a brand-new order would —
- * see `claimGatewaySlot`'s doc comment (packages/db/src/crud/orders.ts).
+ * see `claimGatewaySlot`'s doc comment (packages/db/src/crud/orders.ts). The
+ * outgoing value is not simply dropped, though: it is the matching key the
+ * rails reconcile against, so it rides along into the retiring ledger row's
+ * `reference` and stays answerable after the switch.
  *
  * Deliberately scoped to a same-currency rail change only (e.g. TOKOPAY <->
  * PAYDISINI, or BINANCE_INTERNAL <-> BYBIT) — it reuses the order's existing
@@ -1669,20 +1684,43 @@ export async function changePaymentRail(
     return;
   }
 
+  // Set inside the transaction, reported after it commits — a rollback must
+  // not leave a warning behind about a switch that never happened.
+  let droppedOldGatewayReference = false;
   try {
     await prisma.$transaction(async (tx) => {
-      const attempts = await listPaymentAttempts(tx, orderId);
-      const currentPending = attempts.find((p) => p.status === PaymentStatus.PENDING);
+      // Guarded Order write FIRST, for two reasons: it fails fast if the
+      // pre-checks above have gone stale (before any ledger row is touched),
+      // and it hands back the reference the outgoing rail was quoting so the
+      // retiring attempt below can keep it.
+      const { previousPaymentRef } = await setOrderPaymentRail(tx, {
+        orderId,
+        method: newMethod,
+        expectedStatus: OrderStatus.PENDING_PAYMENT,
+      });
+
+      const currentPending = await getPendingPaymentAttempt(tx, orderId);
       if (currentPending) {
-        await expirePaymentAttempt(tx, { paymentId: currentPending.id, reason: PaymentExpiryReason.RAIL_CHANGED });
+        await expirePaymentAttempt(tx, {
+          paymentId: currentPending.id,
+          reason: PaymentExpiryReason.RAIL_CHANGED,
+          reference: previousPaymentRef,
+        });
+      } else if (previousPaymentRef !== null) {
+        // The old rail had a live gateway reference but no ledger row to
+        // retire it onto, so it has nowhere to survive. Expected until Task 3
+        // wires the six webhook/poller handlers to open a Payment row for
+        // every attempt they start — flagged for the warning below so the gap
+        // is visible in ops rather than silent.
+        droppedOldGatewayReference = true;
       }
+
       await createPaymentAttempt(tx, {
         orderId,
         method: newMethod,
         amount: order.totalAmount,
         currency: order.currency,
       });
-      await tx.order.update({ where: { id: orderId }, data: { paymentMethod: newMethod, paymentRef: null } });
     });
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -1690,6 +1728,15 @@ export async function changePaymentRail(
       return;
     }
     throw e;
+  }
+
+  if (droppedOldGatewayReference) {
+    // Never the reference itself — it is a payment credential of the same
+    // class as a proof file_id (CLAUDE.md: never log secrets).
+    logger.warn(
+      { orderId, fromMethod: order.paymentMethod, toMethod: newMethod },
+      "Changed an order's payment rail while the previous rail still held a gateway reference, but the order had no pending payment ledger row to carry that reference onto, so it was discarded. A payment landing on the old rail after this point cannot be matched back to the order.",
+    );
   }
 
   if (ctx.callbackQuery) {

@@ -18,17 +18,22 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
 // default) so the M-6 race tests below can override it once to simulate a
 // concurrent claimant — see "doesn't create a second TokoPay transaction
 // when it loses the gateway claim to a concurrent request".
+// getOrder is wrapped the same way, for the changePaymentRail guard test:
+// that handler's status/ownership checks necessarily read the order before
+// its write transaction opens, so overriding this read once is how a test
+// hands it the stale "still awaiting payment" view a real concurrent payment
+// confirmation would leave it holding.
 vi.mock("@app/db", async (orig) => {
   const actual = await orig<typeof import("@app/db")>();
-  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
+  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot), getOrder: vi.fn(actual.getOrder) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -2653,6 +2658,113 @@ describe("checkout handlers", () => {
     const editedText = JSON.stringify(lastEdit.args);
     expect(editedText).toContain(sample.parentProduct.name);
     expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
+  });
+});
+
+// ===========================================================================
+// changePaymentRail (Trustance Phase A Task A2a) — switching an order still
+// awaiting payment to a different rail without creating a second Order.
+//
+// Everything here is about the moment the write actually lands. The handler's
+// status/ownership checks run before its $transaction opens, so they can only
+// ever describe the order as it was; the write itself is guarded by
+// setOrderPaymentRail's compare-and-swap (packages/db/src/crud/orders.ts, with
+// its own crud-level race tests in orders.test.ts). These tests drive the whole
+// handler so the composition is covered end to end: that the guard is really
+// reached from here, and that the outgoing gateway reference survives the
+// switch on the retired ledger row.
+// ===========================================================================
+
+describe("changePaymentRail (Task A2a)", () => {
+  async function pendingTokopayOrder() {
+    const order = await makeOrder();
+    await prisma.order.update({
+      where: { id: order!.id },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, paymentRef: "TP-OLD-REF" },
+    });
+    return order!;
+  }
+
+  it("retires the old attempt with the outgoing paymentRef, opens a new one, and clears paymentRef on the Order", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    // Cleared so the new rail's own claimGatewaySlot starts from null...
+    expect(after!.paymentRef).toBeNull();
+
+    // ...but not lost: the reference the old rail was quoting — the key
+    // binanceInternal.ts/amountMatching.ts/nowpaymentsReconcile.ts match
+    // incoming payments against — is now on the retired ledger row, so a
+    // payment landing on the old rail after the switch is still traceable.
+    const retired = await prisma.payment.findUniqueOrThrow({ where: { id: oldAttempt.id } });
+    expect(retired.status).toBe(PaymentStatus.EXPIRED);
+    expect(retired.expiryReason).toBe(PaymentExpiryReason.RAIL_CHANGED);
+    expect(retired.reference).toBe("TP-OLD-REF");
+
+    const live = await prisma.payment.findMany({ where: { orderId: order.id, status: PaymentStatus.PENDING } });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.method).toBe(PaymentMethod.PAYDISINI);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("Payment method updated for this order.");
+  });
+
+  it("leaves an order that got PAID between its pre-check and its write completely untouched (the crud guard, not the pre-check, is what stops it)", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    // Reproduce the TOCTOU window deterministically: hand the handler's
+    // status/ownership pre-check the still-PENDING_PAYMENT view it would
+    // genuinely read, then land the payment confirmation before its write
+    // transaction opens. The pre-check therefore waves the switch through on
+    // a stale read — exactly what the old unguarded `tx.order.update` acted
+    // on — leaving setOrderPaymentRail's compare-and-swap as the only thing
+    // between that and a PAID order being restamped with a rail the buyer
+    // never paid on. (Overriding one crud call once to stand in for a
+    // concurrent writer is the same technique the M-6 claimGatewaySlot test
+    // above uses. Real overlapping Postgres transactions prove the guard
+    // itself in packages/db/src/crud/orders.test.ts's setOrderPaymentRail
+    // block; what this adds is that the HANDLER is actually gated by it.)
+    vi.mocked(getOrder).mockImplementationOnce(async (db, id) => {
+      const staleSnapshot = await getOrder(db, id); // the once-impl is spent — this is the real read
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAID } });
+      return staleSnapshot;
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    // The handler doesn't throw — it catches the crud layer's ValidationError
+    // and tells the buyer, same as its own pre-check would have.
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.status).toBe(OrderStatus.PAID);
+    expect(after!.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(after!.paymentRef).toBe("TP-OLD-REF");
+
+    // The whole $transaction rolled back with the guard: the old attempt is
+    // still the live one and no PAYDISINI attempt was ever opened.
+    const attempts = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.id).toBe(oldAttempt.id);
+    expect(attempts[0]!.status).toBe(PaymentStatus.PENDING);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("This order can no longer be paid.");
   });
 });
 

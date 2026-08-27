@@ -25,7 +25,7 @@
  * --- What this checks ---------------------------------------------------
  * 1. Row-count comparison for all 36 tables (SELECT COUNT(*) on each side).
  * 2. Decimal spot-check — EVERY row's value for EVERY Decimal-typed column
- *    in the schema (~28 fields across 15 tables; see DECIMAL_TABLES below),
+ *    in the schema (29 fields across 16 tables; see DECIMAL_TABLES below),
  *    compared as exact strings, keyed by each row's `id` (every
  *    Decimal-bearing table here has a plain integer `id` primary key, and
  *    Task 5's migration preserved ids verbatim, so joining source and
@@ -113,7 +113,7 @@ const TABLES = [
 ] as const;
 
 // Every Decimal-typed column in prisma/schema.prisma (grepped exhaustively;
-// 28 fields across 15 tables), grouped by table. `modelAccessor` is the
+// 29 fields across 16 tables), grouped by table. `modelAccessor` is the
 // generated Prisma Client property name (camelCase model name) used to read
 // the target side through the typed model API — see header comment for why
 // that's required instead of a raw `::text` cast. `sourceColumn` /
@@ -152,6 +152,11 @@ const DECIMAL_TABLES: DecimalTableSpec[] = [
       { sourceColumn: "reseller_price", targetField: "resellerPrice" },
       { sourceColumn: "flash_discount_percent", targetField: "flashDiscountPercent" },
     ],
+  },
+  {
+    table: "product_provider_mappings",
+    modelAccessor: "productProviderMapping",
+    columns: [{ sourceColumn: "provider_cost", targetField: "providerCost" }],
   },
   {
     table: "orders",

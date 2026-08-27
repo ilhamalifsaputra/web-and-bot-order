@@ -346,7 +346,25 @@ Postgres container, never to `./data/bot.db`.
    (Leave off `-v` — do not delete the `postgres_data` volume yet; keep it
    around in case you want to inspect what went wrong before discarding it.)
 
-2. **Bring the original SQLite-based stack back up.** Since `data/bot.db`
+2. **Revert `.env` back to SQLite.** Section 1 switched `DATABASE_URL_PRISMA`
+   from the SQLite `file:../data/bot.db` line to the Postgres
+   `postgresql://...@postgres:5432/...` line. Undo exactly that: in your
+   real `.env`, comment out (or remove) the `DATABASE_URL_PRISMA=postgresql://...`
+   line and uncomment (or re-add) the original:
+
+   ```
+   DATABASE_URL_PRISMA=file:../data/bot.db
+   ```
+
+   so only one `DATABASE_URL_PRISMA` is active — same "isi salah satu...
+   bukan dua-duanya sekaligus" rule from section 1. This step is required:
+   `docker-compose.yml`'s `server` service loads `env_file: .env` on its own
+   (there is no `postgres` service in `docker-compose.yml` without the
+   overlay), so without this revert the plain stack you bring up next would
+   start `server` still pointed at a Postgres host that is no longer
+   running.
+
+3. **Bring the original SQLite-based stack back up.** Since `data/bot.db`
    was never modified, this is just:
 
    ```bash
@@ -365,15 +383,18 @@ Postgres container, never to `./data/bot.db`.
    entrypoint doesn't try to auto-migrate the restored DB forward again),
    swaps the file, clears stale `-wal`/`-shm` sidecars, verifies
    `integrity_check`, restarts `server`, and smoke-tests `/healthz` itself —
-   see `deploy/backup/README.md` for the full step list. Remember to remove
-   the sentinel once you're ready for automatic schema updates again:
+   see `deploy/backup/README.md` for the full step list. **`restore.sh` only
+   swaps the SQLite file — it does not touch `.env`, so step 2 above (the
+   `.env` revert) must already be done before running it**, or `server`
+   will restart still configured for the now-gone Postgres host. Remember to
+   remove the sentinel once you're ready for automatic schema updates again:
 
    ```bash
    rm ./data/SKIP_AUTO_MIGRATE
    docker compose restart server
    ```
 
-3. **Confirm the rollback is healthy:**
+4. **Confirm the rollback is healthy:**
 
    ```bash
    curl -i http://127.0.0.1:${WEB_PORT:-8000}/healthz

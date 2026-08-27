@@ -1,12 +1,12 @@
 /**
- * Test DB helper: spin up an isolated SQLite file, create the schema with
- * `prisma db push`, and hand back a PrismaClient bound to it. Used by
- * unit/integration tests so they never touch the shared dev DB.
+ * Test DB helper: spin up an isolated Postgres schema inside the shared dev
+ * database, create the tables in it with `prisma db push`, and hand back a
+ * PrismaClient bound to it. Used by unit/integration tests so they never
+ * touch each other's data (or the app's own `public` schema).
  */
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { randomBytes } from "node:crypto";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 
@@ -18,12 +18,27 @@ export interface TestDb {
   cleanup: () => Promise<void>;
 }
 
-export async function makeTestDb(): Promise<TestDb> {
-  const dir = mkdtempSync(join(tmpdir(), "botdb-"));
-  const file = join(dir, "test.db");
-  const url = `file:${file.replace(/\\/g, "/")}`;
+// Builds a schema-scoped connection URL, preserving any query params already
+// on the base URL (same care the removed `withConnectionLimit` helper took
+// for SQLite's `?connection_limit=`) rather than naively string-concatenating.
+function withSchema(baseUrl: string, schema: string): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("schema", schema);
+  return url.toString();
+}
 
-  // db push creates all tables in FK-correct order from the canonical schema.
+export async function makeTestDb(): Promise<TestDb> {
+  const baseUrl = process.env.DATABASE_URL_PRISMA;
+  if (!baseUrl) {
+    throw new Error("DATABASE_URL_PRISMA must be set to a Postgres connection string for tests.");
+  }
+
+  const schema = `test_${randomBytes(6).toString("hex")}`;
+  const url = withSchema(baseUrl, schema);
+
+  // db push creates the schema (Postgres creates it implicitly on first use
+  // when it doesn't exist) and all tables in FK-correct order from the
+  // canonical schema.
   execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {
     cwd: ROOT,
     env: { ...process.env, DATABASE_URL_PRISMA: url },
@@ -35,8 +50,8 @@ export async function makeTestDb(): Promise<TestDb> {
   return {
     prisma,
     cleanup: async () => {
+      await prisma.$executeRawUnsafe(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       await prisma.$disconnect();
-      rmSync(dir, { recursive: true, force: true });
     },
   };
 }

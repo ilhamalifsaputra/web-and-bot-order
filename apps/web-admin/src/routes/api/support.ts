@@ -276,9 +276,24 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         recentOrders: recentOrders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
         openTicketCount,
       },
+      // telegramUserId is a Prisma BigInt column (Phase H) — reply.send()'s
+      // JSON serialization throws on a raw BigInt, so it must be stringified
+      // before it reaches the wire (same fix as api/audit.ts, same
+      // convention as apps/web-admin/src/routes/api/users.ts:185). Every
+      // ticket now gets a customer-actor `ticket_create` row with
+      // telegramUserId set (conversations/support.ts), so this route would
+      // 500 on every ticket detail fetch without it.
       timeline: {
-        ticket: ticketTimeline.map((row) => ({ ...row, createdAtDisplay: displayDateTime(row.createdAt) })),
-        order: orderTimeline.map((row) => ({ ...row, createdAtDisplay: displayDateTime(row.createdAt) })),
+        ticket: ticketTimeline.map((row) => ({
+          ...row,
+          telegramUserId: row.telegramUserId != null ? row.telegramUserId.toString() : null,
+          createdAtDisplay: displayDateTime(row.createdAt),
+        })),
+        order: orderTimeline.map((row) => ({
+          ...row,
+          telegramUserId: row.telegramUserId != null ? row.telegramUserId.toString() : null,
+          createdAtDisplay: displayDateTime(row.createdAt),
+        })),
       },
     });
   });

@@ -5,6 +5,13 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { DateInput } from "../components/shared/DateInput";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useAudit } from "../hooks/useAudit";
@@ -14,12 +21,25 @@ interface AuditRow {
   id: number;
   createdAt: string;
   createdAtDisplay: string | null;
-  adminId: string | number;
+  adminId: string | number | null;
+  // "ADMIN" | "CUSTOMER" (Phase H, customer-action audit trail). May be
+  // absent on older/mocked fixtures — treated the same as "ADMIN".
+  actorType?: string;
+  customerId?: number | null;
+  telegramUserId?: string | null;
   action: string;
   targetType: string | null;
   targetId: string | number | null;
   details: string | null;
 }
+
+// This route defaults to actor_type=ADMIN server-side (api/audit.ts) so
+// today's admin-only view is unchanged unless a filter is explicitly
+// requested — "ALL" is the explicit opt-in to see customer activity mixed
+// in, same convention as SupportPage's ALL_STATUSES-style filters.
+const ACTOR_ADMIN = "ADMIN";
+const ACTOR_CUSTOMER = "CUSTOMER";
+const ACTOR_ALL = "ALL";
 
 /**
  * F-005: the raw backend action code (e.g. `denomination_create`) is
@@ -151,11 +171,31 @@ function buildAuditColumns(adminNames: Map<number, string>) {
       ),
     },
     {
-      key: "admin",
-      header: "Admin",
+      key: "actor",
+      header: "Actor",
       render: (r: AuditRow) => {
+        // I-1 (final whole-branch review): a CUSTOMER-actor row has
+        // adminId: null, so falling through to the admin-name lookup below
+        // rendered every customer action as the misleading "Admin #null".
+        // `Customer #<id>` mirrors the existing fallback pattern for a
+        // customer identity elsewhere in web-admin (SearchModal.tsx's
+        // userLabel()); telegramUserId only stands in when customerId itself
+        // is unresolved.
+        if (r.actorType === ACTOR_CUSTOMER) {
+          const label =
+            r.customerId != null
+              ? `Customer #${r.customerId}`
+              : r.telegramUserId
+                ? `Telegram #${r.telegramUserId}`
+                : "Customer";
+          return (
+            <span className="text-sm text-ink" title={`Customer ID ${r.customerId ?? "—"}`}>
+              {label}
+            </span>
+          );
+        }
         const id = typeof r.adminId === "string" ? Number(r.adminId) : r.adminId;
-        const name = Number.isFinite(id) ? adminNames.get(id) : undefined;
+        const name = id != null && Number.isFinite(id) ? adminNames.get(id) : undefined;
         return (
           <span className="text-sm text-ink" title={`Admin ID ${r.adminId}`}>
             {name ?? `Admin #${r.adminId}`}
@@ -204,9 +244,21 @@ export function AuditPage() {
   const [action, setAction] = useState("");
   const [targetType, setTargetType] = useState("");
   const [adminId, setAdminId] = useState("");
+  // Defaults to ADMIN, matching the API's own default (api/audit.ts) — the
+  // page opens on exactly the pre-Phase-H view unless the admin explicitly
+  // switches it.
+  const [actorType, setActorType] = useState(ACTOR_ADMIN);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
-  const [filters, setFilters] = useState({ page: 1, action: "", targetType: "", adminId: "", since: "", until: "" });
+  const [filters, setFilters] = useState({
+    page: 1,
+    action: "",
+    targetType: "",
+    adminId: "",
+    actorType: ACTOR_ADMIN,
+    since: "",
+    until: "",
+  });
 
   const { data, isLoading, isError } = useAudit(filters);
   const adminNames = useAdminNameMap();
@@ -214,7 +266,7 @@ export function AuditPage() {
 
   function applyFilters() {
     setPage(1);
-    setFilters({ page: 1, action, targetType, adminId, since, until });
+    setFilters({ page: 1, action, targetType, adminId, actorType, since, until });
   }
 
   function goPage(n: number) {
@@ -246,6 +298,19 @@ export function AuditPage() {
             onChange={(e) => setAdminId(e.target.value)}
             className="w-32"
           />
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-ink-soft">Actor</label>
+            <Select value={actorType} onValueChange={setActorType}>
+              <SelectTrigger className="w-36" aria-label="Actor filter">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ACTOR_ADMIN}>Admin</SelectItem>
+                <SelectItem value={ACTOR_CUSTOMER}>Customer</SelectItem>
+                <SelectItem value={ACTOR_ALL}>All</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <DateInput
             value={since}
             onChange={(e) => setSince(e.target.value)}

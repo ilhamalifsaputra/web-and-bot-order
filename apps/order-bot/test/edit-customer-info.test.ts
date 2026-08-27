@@ -180,12 +180,18 @@ describe("editCustomerInfoConversation — happy paths", () => {
     expect(JSON.parse(fresh!.customerData!)).toEqual([{ game_id: "NEW-1" }]);
     expect(sentIncludes(sink, fresh!.orderCode)).toBe(true); // viewOrder re-rendered
 
-    // Phase H customer-audit trail.
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: orderId } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: orderId } });
     expect(audit?.customerId).toBe(sample.user.id);
     expect(audit?.action).toBe("order_edit_info");
     expect(audit?.details).toBe("Updated the submitted order information via Telegram.");
+    // I-2 (final whole-branch review): correlationId is the one field that
+    // lets this row be joined back to the exact update that submitted the
+    // new value — assert equality against this test's own ctx, not just
+    // truthiness (editCustomerInfo.ts's logCustomerAction call uses `u`, the
+    // waited ctx, which is `answerMsg` here — the conversation's only wait).
+    expect(audit?.correlationId).toBe(String(answerMsg.update.update_id));
   });
 
   it("re-prompts the SAME field on a validation error, then proceeds once the retry is valid", async () => {

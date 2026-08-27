@@ -2293,13 +2293,21 @@ describe("checkout handlers", () => {
     expect(cached.trxId).toBe("TP-TEST");
 
     // Phase H customer-audit trail: a CUSTOMER-actor row for this exact order.
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    // actorType is filtered in the where-clause (M-6, final whole-branch
+    // review) rather than asserted after the fact — settlePaidOrder and other
+    // paths can also write an ADMIN-actor row against the same target, so an
+    // unfiltered findFirst only passes today by coincidence of ordering.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order.id } });
     expect(audit?.customerId).toBe(sample.user.id);
     expect(audit?.telegramUserId).toBe(42n);
     expect(audit?.channel).toBe("BOT");
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("TokoPay");
+    // I-2 (final whole-branch review): correlationId is the one field
+    // logCheckoutAudit threads specifically so this row can be joined back to
+    // the exact Telegram update that created it — assert equality against
+    // this test's own ctx, not just truthiness.
+    expect(audit?.correlationId).toBe(String(ctx.update.update_id));
   });
 
   // Phase H regression guard: a checkout attempt that ends in
@@ -2477,9 +2485,9 @@ describe("checkout handlers", () => {
     expect(copies).toContain("UID123");
     expect(copies).toContain(order!.paymentRef);
 
-    // Phase H customer-audit trail.
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) — see the TokoPay test above.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("Binance Internal Transfer");
   });
@@ -2500,8 +2508,7 @@ describe("checkout handlers", () => {
     // Phase H customer-audit trail — written inside the same transaction as
     // cancelOrder (mirrors logAdminAction's convention for a self-contained
     // mutation, e.g. conversations/reject.ts).
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id, action: "order_cancel" } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id, action: "order_cancel" } });
     expect(audit?.customerId).toBe(sample.user.id);
     expect(audit?.details).toBe("Cancelled order via Telegram.");
 
@@ -2561,8 +2568,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT);
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("Bybit UID transfer");
   });
@@ -2578,8 +2584,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
 
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT_BSC);
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("Bybit BSC on-chain deposit");
   });
@@ -2594,8 +2599,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.NOWPAYMENTS);
     expect(vi.mocked(mockedCreateNowpaymentsInvoice)).toHaveBeenCalled();
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("NOWPayments");
   });
@@ -2609,8 +2613,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
     expect(order?.paymentMethod).toBe(PaymentMethod.PAYDISINI);
     expect(vi.mocked(mockedCreatePaydisiniTransaction)).toHaveBeenCalled();
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "order", targetId: order!.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("PayDisini");
   });

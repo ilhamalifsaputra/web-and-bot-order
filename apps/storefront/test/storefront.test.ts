@@ -1011,8 +1011,9 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(row.telegramId).toBe(636363n);
 
     // Phase H customer-audit trail (order-bot side channel this route feeds).
-    const audit = await prisma.auditLog.findFirst({ where: { targetType: "user", targetId: row.id } });
-    expect(audit?.actorType).toBe("CUSTOMER");
+    // actorType filtered in the where-clause (M-6, final whole-branch
+    // review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "user", targetId: row.id } });
     expect(audit?.customerId).toBe(row.id);
     expect(audit?.telegramUserId).toBe(636363n);
     expect(audit?.channel).toBe("WEB");

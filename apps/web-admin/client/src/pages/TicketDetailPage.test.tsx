@@ -195,6 +195,38 @@ describe("TicketDetailPage — ticket timeline", () => {
       expect.stringContaining("Replied to ticket #1."),
     ]);
   });
+
+  // I-1 (final whole-branch review): the ticket_create row every ticket now
+  // gets (Phase H, logCustomerAction) has adminId: null, same as a true
+  // system entry — this used to render "System", mislabeling the customer's
+  // own action.
+  it("renders a CUSTOMER-actor timeline row as 'Customer', not 'System' (I-1)", async () => {
+    const detail = {
+      ...BASE_DETAIL,
+      timeline: {
+        ...BASE_DETAIL.timeline,
+        ticket: [
+          {
+            id: 100,
+            adminId: null,
+            actorType: "CUSTOMER",
+            action: "ticket_create",
+            details: "Created a support ticket via Telegram.",
+            createdAt: "2026-06-26T10:00:00.000Z",
+            createdAtDisplay: "2026-06-26 10:00",
+          },
+        ],
+      },
+    };
+    mockFetches(detail);
+    const { container } = render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Created a support ticket via Telegram.")).toBeInTheDocument());
+
+    const rows = within(container).getAllByTestId("timeline-row");
+    const customerRow = rows.find((row) => row.textContent?.includes("Created a support ticket via Telegram."));
+    expect(customerRow?.textContent).toContain("Customer");
+    expect(customerRow?.textContent).not.toContain("System");
+  });
 });
 
 describe("TicketDetailPage — attachments", () => {

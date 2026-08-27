@@ -60,15 +60,6 @@ type Db = PrismaClient | Tx;
  *
  * Note the swallow is per row, not per call: a caller that loops over admins
  * gets exactly the rows whose keys were new.
- *
- * Postgres note: this used to be a plain `create` wrapped in catch-and-continue
- * on a caught UNIQUE violation, which was safe under SQLite (a failed
- * statement mid-transaction doesn't poison the rest of the transaction) but
- * not under Postgres, where ANY constraint violation aborts the whole
- * transaction — so a dedupe-key collision inside a caller's own `tx` (e.g.
- * `enqueueWalletTopupCreditedDm` from `settleWalletTopup`) took the whole
- * settlement down with it. `upsert` never throws on the collision in the
- * first place, so it can't trigger that.
  */
 export async function enqueueNotification(
   db: Db,

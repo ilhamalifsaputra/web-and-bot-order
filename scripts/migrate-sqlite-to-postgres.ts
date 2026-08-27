@@ -51,10 +51,14 @@
  * column without one — confirmed empirically). This was cross-checked
  * against ALL 3201 non-null Decimal values in the staged snapshot: SQLite's
  * `CAST(col AS TEXT)` and a naive JS `String(value)` of the same column
- * produced byte-identical output for every single one, so there is no
- * known precision gap in this dataset either way — the CAST-in-SQL
- * approach is used anyway because it is correct by construction, not by
- * coincidence of this particular dataset.
+ * produced byte-identical output for every single one. The guarantee this
+ * provides is scoped: no round-trip is introduced BY THIS MIGRATION STEP
+ * itself. Any precision loss that may have already occurred when these
+ * values were originally written into SQLite (SQLite's NUMERIC-affinity
+ * TEXT→REAL conversion preserves only ~15 significant digits) is a
+ * pre-existing, unfixable-at-this-point condition that this script cannot
+ * detect or verify. The CAST-in-SQL approach is used because it is correct
+ * by construction, not by coincidence of this particular dataset.
  *
  * --- Generic column-type handling --------------------------------------
  * Rather than a hand-maintained per-model field map (36 models, error-prone

@@ -61,6 +61,7 @@ model User {
   reviews               Review[]
   restockSubscriptions  RestockSubscription[]
   auditLogs             AuditLog[]
+  auditLogsAsCustomer   AuditLog[]            @relation("AuditLogCustomer")
   ticketMessages        TicketMessage[]
   walletTransactions    WalletTransaction[]
   passwordResetTokens   PasswordResetToken[]
@@ -1281,11 +1282,23 @@ model AuditLog {
   targetId   Int?     @map("target_id")
   details    String?
   createdAt  DateTime @default(now()) @map("created_at")
+  /// "ADMIN" | "CUSTOMER" — who initiated this entry. Defaults to "ADMIN" so
+  /// every existing row and every existing logAdminAction call site keeps
+  /// working untouched (Phase H, customer-action audit trail).
+  actorType      String   @default("ADMIN") @map("actor_type")
+  /// "BOT" | "WEB" | null — surface the actor acted from; null for
+  /// admin-side entries that predate this field or don't track it.
+  channel        String?  @map("channel")
+  customerId     Int?     @map("customer_id")
+  telegramUserId BigInt?  @map("telegram_user_id")
+  correlationId  String?  @map("correlation_id")
 
-  admin User? @relation(fields: [adminId], references: [id], onUpdate: NoAction)
+  admin    User? @relation(fields: [adminId], references: [id], onUpdate: NoAction)
+  customer User? @relation("AuditLogCustomer", fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([createdAt], map: "ix_audit_logs_created_at")
   @@index([targetType, targetId], map: "ix_audit_logs_target")
+  @@index([customerId], map: "ix_audit_logs_customer_id")
   @@map("audit_logs")
 }
 

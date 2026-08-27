@@ -633,6 +633,47 @@ describe("enqueueNotification dedupeKey", () => {
       enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, 999_999, { chat_id: 1 }, "k:missing-order"),
     ).rejects.toThrow();
   });
+
+  // PG-migration landmine (see enqueueNotification's doc comment): under
+  // SQLite, a caught UNIQUE violation mid-transaction didn't poison the rest
+  // of the transaction, so catch-and-continue was safe even when the caller
+  // passed `tx`. Under Postgres, ANY constraint violation aborts the whole
+  // transaction (25P02) — every later statement on that `tx` fails, even one
+  // that has nothing to do with the collision. This is reachable on the real
+  // settlement path: enqueueWalletTopupCreditedDm is called from
+  // settleWalletTopup inside prisma.$transaction(...) in all six top-up
+  // rails, so a dedupe-key collision there must not take down the settlement
+  // that triggered it.
+  it("a dedupe-key collision inside an open $transaction does not poison later writes on the same tx", async () => {
+    const orderId = await seedOrder();
+
+    await prisma.$transaction(async (tx) => {
+      await enqueueNotification(tx, NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId, { attempt: "first" }, "dupe-key");
+      // Second call collides on the same dedupeKey — must be swallowed
+      // without leaving the transaction aborted.
+      await enqueueNotification(tx, NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId, { attempt: "second" }, "dupe-key");
+
+      // A later, unrelated write on the SAME tx must still succeed — proves
+      // the transaction was not poisoned by the collision above.
+      await tx.notificationOutbox.create({
+        data: {
+          event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+          orderId,
+          payloadJson: JSON.stringify({ attempt: "unrelated-followup" }),
+          dedupeKey: "dupe-key-followup",
+        },
+      });
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId, event: NotificationEvent.WALLET_TOPUP_CREDITED_DM },
+      orderBy: { id: "asc" },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.dedupeKey).toBe("dupe-key");
+    expect(JSON.parse(rows[0]!.payloadJson).attempt).toBe("first");
+    expect(rows[1]!.dedupeKey).toBe("dupe-key-followup");
+  });
 });
 
 describe("enqueueRestockBroadcast", () => {

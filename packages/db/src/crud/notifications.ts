@@ -20,7 +20,6 @@ import {
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
-import { isUniqueViolation } from "./_types";
 import { resolveAdminIds } from "./admins";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
@@ -30,12 +29,12 @@ type Db = PrismaClient | Tx;
  * Insert one outbox row. Caller's transaction owns the commit.
  *
  * `dedupeKey` is optional and defaults to null. When given, it is written to
- * the UNIQUE `notification_outbox.dedupe_key` column and a UNIQUE violation
- * (P2002) is swallowed: the row already exists, the notification is already
- * queued or sent, and re-enqueueing is a no-op rather than an error. That is
- * the same insert-first-on-unique idiom the payment ledgers use
- * (`isUniqueViolation`, crud/tokopay.ts) — the database, not the placement of
- * the call, is what makes the enqueue happen at most once.
+ * the UNIQUE `notification_outbox.dedupe_key` column via `upsert`: a
+ * collision with an existing key resolves as a no-op update (the row already
+ * exists, the notification is already queued or sent, and re-enqueueing is a
+ * no-op rather than an error) instead of a thrown UNIQUE violation — the
+ * database, not the placement of the call, is what makes the enqueue happen
+ * at most once.
  *
  * Two events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
@@ -57,17 +56,14 @@ type Db = PrismaClient | Tx;
  * Note the swallow is per row, not per call: a caller that loops over admins
  * gets exactly the rows whose keys were new.
  *
- * ⚠ SQLite-specific, and a landmine for the Postgres migration CLAUDE.md
- * anticipates (its trigger is ≥2 concurrent writers). Catching a UNIQUE
- * violation and CONTINUING works here because SQLite tolerates a failed
- * statement mid-transaction — and most callers do pass a `tx`. PostgreSQL
- * does not: a constraint violation aborts the whole transaction, and every
- * later statement in it fails with `25P02 current transaction is aborted`,
- * so a deduped enqueue would take its caller's settlement down with it. The
- * payment ledgers' own `isUniqueViolation` claims share this shape, but they
- * return immediately rather than continuing inside someone else's
- * transaction. On Postgres this needs a SAVEPOINT, or an upsert on the
- * dedupe key instead of catch-and-continue.
+ * Postgres note: this used to be a plain `create` wrapped in catch-and-continue
+ * on a caught UNIQUE violation, which was safe under SQLite (a failed
+ * statement mid-transaction doesn't poison the rest of the transaction) but
+ * not under Postgres, where ANY constraint violation aborts the whole
+ * transaction — so a dedupe-key collision inside a caller's own `tx` (e.g.
+ * `enqueueWalletTopupCreditedDm` from `settleWalletTopup`) took the whole
+ * settlement down with it. `upsert` never throws on the collision in the
+ * first place, so it can't trigger that.
  */
 export async function enqueueNotification(
   db: Db,
@@ -76,26 +72,31 @@ export async function enqueueNotification(
   payload: Record<string, unknown>,
   dedupeKey?: string,
 ): Promise<void> {
-  try {
-    await db.notificationOutbox.create({
-      data: {
-        event,
-        orderId,
-        payloadJson: JSON.stringify(payload),
-        dedupeKey: dedupeKey ?? null,
-      },
+  const payloadJson = JSON.stringify(payload);
+  if (dedupeKey !== undefined) {
+    // Upsert on the UNIQUE dedupeKey: a collision resolves as a no-op update
+    // (keeping the first row's payload) instead of a thrown UNIQUE
+    // violation, so it can never abort an open caller transaction on
+    // Postgres.
+    const row = await db.notificationOutbox.upsert({
+      where: { dedupeKey },
+      create: { event, orderId, payloadJson, dedupeKey },
+      update: {},
+      select: { payloadJson: true },
     });
-  } catch (e) {
-    // Only the dedupe-key collision is a no-op. Anything else — including a
-    // FK violation on orderId — is a real failure and must still throw.
-    if (!(dedupeKey !== undefined && isUniqueViolation(e))) throw e;
-    // Deliberately silent, and NOT a NOTIFICATION_CREATED: no row was
-    // written, so claiming one was created would be a lie, and a line per
-    // swallowed duplicate would be noise — the dedupe key exists precisely
-    // because the caller is expected to try more than once (the NOWPayments
-    // poller re-enters its alert branch every cycle). The row that WAS created
-    // is already logged below.
-    return;
+    if (row.payloadJson !== payloadJson) {
+      // Collision: an earlier call already owns this key and its payload is
+      // what's stored. Deliberately silent, and no NOTIFICATION_CREATED log
+      // below — no row was written by THIS call, so claiming one was created
+      // would be a lie. (If the two payloads happen to be byte-identical,
+      // this falls through to the log below, which is harmless — the stored
+      // row's content genuinely matches what this call asked for.)
+      return;
+    }
+  } else {
+    await db.notificationOutbox.create({
+      data: { event, orderId, payloadJson, dedupeKey: null },
+    });
   }
   // The one line that says a notification now exists for this order. Logged
   // here rather than at each of the dozen enqueue* wrappers because this is

@@ -8,8 +8,10 @@ import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 
-/** Same OR-contains search shape as crud/users.ts's `likeContains`. */
-const likeContains = (q: string) => ({ contains: q });
+/** Same OR-contains search shape as crud/users.ts's `likeContains`, incl.
+ * the Postgres `mode: "insensitive"` (SQLite's `contains` was
+ * case-insensitive by default pre-migration; Postgres needs it explicit). */
+const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const });
 
 /** Reviewer projection for the `user` join on `featuredReviews`/`listReviews`
  * — display-name fields only. These results get spread straight into

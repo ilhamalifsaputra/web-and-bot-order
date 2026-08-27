@@ -2222,7 +2222,7 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
   }
   if (f.userId != null) where.userId = f.userId;
-  if (f.orderCode) where.orderCode = { contains: f.orderCode.trim() };
+  if (f.orderCode) where.orderCode = { contains: f.orderCode.trim(), mode: "insensitive" };
   if (f.paymentMethod) where.paymentMethod = f.paymentMethod;
   if (f.voucherId != null) where.voucherId = f.voucherId;
   if (f.ids != null) where.id = { in: f.ids };
@@ -2235,21 +2235,22 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     const term = f.q.trim();
     const cleanTerm = term.replace(/^#/, "").trim();
     const or: Prisma.OrderWhereInput[] = [
-      { orderCode: { contains: term } },
-      { user: { username: { contains: term } } },
-      { user: { fullName: { contains: term } } },
-      { user: { loginUsername: { contains: term } } },
-      { user: { email: { contains: term } } },
+      { orderCode: { contains: term, mode: "insensitive" } },
+      { user: { username: { contains: term, mode: "insensitive" } } },
+      { user: { fullName: { contains: term, mode: "insensitive" } } },
+      { user: { loginUsername: { contains: term, mode: "insensitive" } } },
+      { user: { email: { contains: term, mode: "insensitive" } } },
       // Guest buyers have no username/fullName/loginUsername/email — only
       // guestEmail — and Task 7 now shows that address in the Customer
       // column, so pasting it back into this search box has to find the
-      // order. Same `contains` shape as the other identity fields above, so
-      // it inherits the same (SQLite-default) case-insensitivity.
-      { user: { guestEmail: { contains: term } } },
-      { items: { some: { product: { name: { contains: term } } } } },
+      // order. Same `contains` shape as the other identity fields above,
+      // explicit `mode: "insensitive"` for Postgres (SQLite's `contains`
+      // was case-insensitive by default; Postgres needs it spelled out).
+      { user: { guestEmail: { contains: term, mode: "insensitive" } } },
+      { items: { some: { product: { name: { contains: term, mode: "insensitive" } } } } },
     ];
     if (cleanTerm !== term) {
-      or.push({ orderCode: { contains: cleanTerm } });
+      or.push({ orderCode: { contains: cleanTerm, mode: "insensitive" } });
     }
     if (/^\d+$/.test(cleanTerm)) {
       const num = Number(cleanTerm);

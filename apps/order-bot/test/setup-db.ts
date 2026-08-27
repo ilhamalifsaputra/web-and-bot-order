@@ -1,24 +1,18 @@
 /**
  * Behavioural-test bootstrap — MUST be the first import in every order-bot
- * behaviour test file. Sets env + creates an isolated temp SQLite via
- * `prisma db push` BEFORE any `@app/*` module loads, so the `@app/db` prisma
- * singleton (which binds DATABASE_URL_PRISMA at construction) points at it.
+ * behaviour test file. Sets env + creates an isolated Postgres schema
+ * (inside the shared dev container) via `prisma db push` BEFORE any
+ * `@app/*` module loads, so the `@app/db` prisma singleton (which binds
+ * DATABASE_URL_PRISMA at construction) points at it.
  *
  * No `@app/*` imports here, so ESM evaluates these side effects first.
- * Mirrors apps/web-admin/test/setup-env.ts.
+ * Mirrors apps/web-admin/test/setup-env.ts. The provisioned schema is
+ * dropped automatically in a self-registered `afterAll` — no per-test-file
+ * cleanup call needed.
  */
-import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { afterAll } from "vitest";
+import { provisionPgTestSchema } from "../../../tests/helpers/pgTestSchema";
 
-const dir = mkdtempSync(join(tmpdir(), "orderbot-"));
-const file = join(dir, "test.db");
-export const DB_URL = `file:${file.replace(/\\/g, "/")}`;
-export const TMP_DIR = dir;
-
-process.env.DATABASE_URL_PRISMA = DB_URL;
 process.env.BOT_TOKEN = "123:ABCDEFGHIJKLMNOPQRSTUVWXYZ-test";
 process.env.BOT_USERNAME = "TestBot";
 process.env.BINANCE_PAY_ID = "111222333";
@@ -35,13 +29,13 @@ process.env.BYBIT_DEPOSIT_ADDRESS = "";
 process.env.BYBIT_API_KEY = "";
 process.env.BYBIT_API_SECRET = "";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {
-  cwd: ROOT,
-  env: { ...process.env, DATABASE_URL_PRISMA: DB_URL },
-  stdio: "ignore",
-});
+const schemaEnv = provisionPgTestSchema("orderbot");
+export const DB_URL = schemaEnv.url;
+process.env.DATABASE_URL_PRISMA = DB_URL;
 
-export function cleanupTestDb(): void {
-  rmSync(TMP_DIR, { recursive: true, force: true });
+afterAll(schemaEnv.cleanup);
+
+/** @deprecated kept for callers that still invoke it explicitly; cleanup now also runs automatically via afterAll above. */
+export function cleanupTestDb(): Promise<void> {
+  return schemaEnv.cleanup();
 }

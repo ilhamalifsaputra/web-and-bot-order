@@ -466,7 +466,10 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
   const q = query.trim();
   if (!q) return Promise.resolve([]);
   return db.denomination.findMany({
-    where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+    where: {
+      isActive: true,
+      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
+    },
     include: { product: true },
     take: limit,
   });
@@ -659,7 +662,7 @@ export function searchCatalog(db: Db, query: string, limit = 24): Promise<Catalo
       isActive: true,
       isArchived: false,
       denominations: { some: { isActive: true, price: { gt: 0 } } },
-      OR: [{ name: { contains: q } }, { description: { contains: q } }],
+      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
     },
     include: {
       category: true,

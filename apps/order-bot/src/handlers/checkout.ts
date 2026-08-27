@@ -16,7 +16,16 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import {
+  DeliveryType,
+  NotificationEvent,
+  OrderCurrency,
+  OrderStatus,
+  PaymentExpiryReason,
+  PaymentMethod,
+  PaymentStatus,
+  UserRole,
+} from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -50,6 +59,9 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  createPaymentAttempt,
+  expirePaymentAttempt,
+  listPaymentAttempts,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -1583,6 +1595,108 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   await customer.browseDenomination(ctx, denominationId, 1, {
     noticePrefix: t(ctx, "checkout.cancelled_prefix"),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Change payment rail (Trustance Phase A Task A2a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Switch an order still awaiting payment to a DIFFERENT payment rail, without
+ * creating a whole new Order the way every buyNow<Rail> function above does
+ * for a brand-new checkout attempt. Retires whatever Payment attempt is
+ * currently PENDING for this order (`expirePaymentAttempt`, reason
+ * `RAIL_CHANGED`) — if any; today, before Task 3 wires the six existing
+ * payment-rail handlers to also write to the Payment ledger, most orders will
+ * have none yet, which is fine, there's simply nothing to retire — opens a
+ * new PENDING Payment attempt for `newMethod` (`createPaymentAttempt`), and
+ * updates `Order.paymentMethod`/`paymentRef` to match. Both crud calls and
+ * the Order update run in one `$transaction` so a crash between them can
+ * never leave the ledger and the Order's own cache fields disagreeing about
+ * which rail is current.
+ *
+ * `Order.paymentMethod`/`paymentRef` deliberately stay the "current/latest
+ * attempt" cache after this call — the six existing payment-rail webhook/
+ * poller handlers (binance_internal.ts, bybit_deposit.ts,
+ * bybit_bsc_deposit.ts, nowpaymentsReconcile.ts, tokopayReconcile.ts,
+ * paydisiniReconcile.ts) read those fields directly and are NOT touched by
+ * this task (that wiring is Task 3). `paymentRef` is reset to `null` (not
+ * left holding the OLD rail's reference/gateway-claim sentinel) so a
+ * subsequent `claimGatewaySlot` call for the NEW rail's own gateway-artifact
+ * creation starts from the same null precondition a brand-new order would —
+ * see `claimGatewaySlot`'s doc comment (packages/db/src/crud/orders.ts).
+ *
+ * Deliberately scoped to a same-currency rail change only (e.g. TOKOPAY <->
+ * PAYDISINI, or BINANCE_INTERNAL <-> BYBIT) — it reuses the order's existing
+ * `currency`/`totalAmount` as-is rather than re-deriving them the way
+ * `finalizeOrderPayment` (packages/db/src/crud/pricing.ts) does per-rail at
+ * order-creation time. A cross-currency switch (IDR <-> USDT) would need that
+ * same re-derivation (fxRate, uniqueCents, a fresh totalAmount) repeated
+ * here, which is out of scope for this minimal entry point; attempting one
+ * anyway is safely rejected by `createPaymentAttempt`'s own currency-mismatch
+ * check rather than silently mis-billing the buyer.
+ *
+ * This function does NOT create a new gateway artifact (QR code, deposit
+ * address, hosted invoice) for the new rail — that per-rail work is exactly
+ * what each buyNow<Rail> function above already does for a brand-new order,
+ * and is deliberately not duplicated here. Wiring an actual "pick a new
+ * rail" UI button to this function (and rendering the new rail's own
+ * instructions afterward) is left to the follow-up task that also wires the
+ * six webhook/poller handlers to this ledger — this function is the crud-
+ * level plumbing that follow-up work will call.
+ */
+export async function changePaymentRail(
+  ctx: MyContext,
+  orderId: number,
+  newMethod: PaymentMethod,
+): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+
+  const order = await getOrder(prisma, orderId);
+  if (!order || order.userId !== info.id) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  if (order.status !== OrderStatus.PENDING_PAYMENT) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_pending"), show_alert: true });
+    return;
+  }
+  if (order.paymentMethod === newMethod) {
+    // Already on this rail — nothing to change. Answer and stop rather than
+    // expiring+recreating a Payment attempt for no reason.
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.rail_changed_toast") });
+    return;
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const attempts = await listPaymentAttempts(tx, orderId);
+      const currentPending = attempts.find((p) => p.status === PaymentStatus.PENDING);
+      if (currentPending) {
+        await expirePaymentAttempt(tx, { paymentId: currentPending.id, reason: PaymentExpiryReason.RAIL_CHANGED });
+      }
+      await createPaymentAttempt(tx, {
+        orderId,
+        method: newMethod,
+        amount: order.totalAmount,
+        currency: order.currency,
+      });
+      await tx.order.update({ where: { id: orderId }, data: { paymentMethod: newMethod, paymentRef: null } });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });
+      return;
+    }
+    throw e;
+  }
+
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.rail_changed_toast") });
+  } else {
+    await smartEdit(ctx, t(ctx, "checkout.rail_changed_toast"), ckb.backToMain(lang));
+  }
 }
 
 // ---------------------------------------------------------------------------

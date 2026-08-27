@@ -438,6 +438,73 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
   });
 });
 
+// Postgres migration verification (Task 4): true-concurrency regression for
+// the trxId idempotency claim above (`db.processedTokopayTx.create`, gated by
+// the `trx_id` UNIQUE constraint). Every "duplicate trx" test elsewhere in
+// this file — and in payment-idempotency-matrix.test.ts's "10 refreshes + 5
+// webhook retries..." acceptance suite — calls deliverPaidTokopayOrder
+// sequentially, one `await` at a time. SQLite's single-writer serialization
+// made that indistinguishable from "the claim is race-safe" — there was never
+// more than one writer to actually race. This fires 3 concurrent calls with
+// the IDENTICAL trxId/amount/orderId via Promise.allSettled against the real
+// dev Postgres and asserts the guard still allows exactly one winner. A
+// WALLET_TOPUP order is used because it is the one kind that flows through
+// settleWalletTopup's own `prisma.$transaction(...)` — the exact code path
+// Task 2 fixed a dedupe-key landmine in.
+describe("deliverPaidTokopayOrder — true concurrency (Postgres regression, Task 4)", () => {
+  it("3 concurrent calls with the same trxId: none throw, exactly one ledger row, wallet credited exactly once, exactly one DM", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    const trxId = "trx-concurrent-topup-1";
+
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(before.walletBalance).equals(0)).toBe(true);
+
+    const results = await Promise.allSettled([
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+    ]);
+
+    // The guard is DESIGNED to return {status: "already_processed"} for the
+    // losers, never throw — assert every call actually resolved, don't just
+    // filter for the ones that did.
+    const rejectedReasons = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+    expect(rejectedReasons).toEqual([]);
+
+    const statuses = (
+      results as PromiseFulfilledResult<Awaited<ReturnType<typeof deliverPaidTokopayOrder>>>[]
+    ).map((r) => r.value.status);
+    expect(statuses.filter((s) => s === "delivered").length).toBe(1);
+    expect(statuses.filter((s) => s === "already_processed").length).toBe(2);
+
+    const ledgerRows = await prisma.processedTokopayTx.findMany({ where: { trxId } });
+    expect(ledgerRows.length).toBe(1);
+    expect(ledgerRows[0]!.outcome).toBe("matched");
+    expect(ledgerRows[0]!.orderId).toBe(order.id);
+
+    // Exactly one order's worth credited — not 2x or 3x.
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(after.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    // adjustWallet's ledger effect happened exactly once, not once per winner attempt.
+    const credits = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(credits.length).toBe(1);
+
+    // Exactly one buyer DM — settleWalletTopup's own enqueue guard, exercised
+    // under real concurrent callers rather than sequential retries.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows.length).toBe(1);
+
+    // Settled exactly once — not re-processed into an inconsistent state.
+    const finalOrder = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(finalOrder.status).toBe(OrderStatus.DELIVERED);
+  });
+});
+
 describe("recordUnmatchedTokopayTx", () => {
   it("first insert returns true", async () => {
     const ok = await recordUnmatchedTokopayTx(prisma, { trxId: "trx-unmatched-1", amount: new Decimal("10000") });

@@ -11,7 +11,7 @@ Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
 tanpa cek manual.
 
 Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
-toko web berbagi **satu database SQLite** — tanpa server database terpisah.
+toko web berbagi **satu database PostgreSQL**.
 
 > 📌 Panduan ini ramah pemula: ikuti dari atas ke bawah. Alur cepat:
 > **Sebelum Mulai → pilih satu Jalur Instalasi → Buat Admin Pertama**.
@@ -270,20 +270,23 @@ pm2 restart bot-order
 > ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
 > ini.
 
-**Backup database** (rutin — semua data di satu file SQLite):
+**Backup database** (rutin — database live sekarang PostgreSQL):
 
-> ⚠️ Database memakai mode **WAL**, jadi transaksi terbaru bisa masih ada di
-> `bot.db-wal` yang belum di-checkpoint. **Jangan `cp data/bot.db`** saat layanan
-> jalan — bisa kehilangan data. Pakai online backup `sqlite3 .backup` yang
-> mengambil snapshot konsisten (sudah disediakan skripnya):
+> Sejak migrasi engine-swap, `data/bot.db` (SQLite) tidak lagi ditulis oleh
+> aplikasi — `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) di
+> bawah ini adalah tooling **legacy** untuk checkout dari sebelum migrasi.
+> Untuk backup Postgres yang sungguhan dipakai sekarang (perintah `pg_dump`,
+> jadwal cron pengganti), lihat **bagian 8a** di
+> [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md) — itu satu-satunya
+> mekanisme backup yang berlaku untuk deployment ini.
 
 ```bash
+# Tooling SQLite legacy (checkout pra-migrasi saja):
 deploy/backup/backup.sh        # .backup + integrity_check + gzip + retensi
-# restore (rollback): stop writer → swap → integrity → restart → smoke /healthz
 deploy/backup/restore.sh data/backups/bot-<stamp>.db
 ```
 
-Detail (cron tiap 6 jam, RTO/RPO, off-box, uji restore): **`deploy/backup/README.md`**.
+Detail tooling SQLite legacy: **`deploy/backup/README.md`**.
 
 **Kelola stok** (panel admin → Stock → pilih produk): tambah stok (satu baris per
 akun, `email:password`), lihat status item, download sisa stok `.txt`, hapus /
@@ -343,6 +346,19 @@ pnpm test           # seluruh tes (Vitest)
 
 `pnpm typecheck` dan `pnpm test` harus selalu hijau sebelum commit.
 
+> **Perlu Postgres yang jalan.** Skema sekarang `postgresql`-only, jadi
+> `pnpm test` (dan `pretest`-nya, cek drift migrasi) butuh `DATABASE_URL_PRISMA`
+> menunjuk ke Postgres yang benar-benar reachable — setiap test membuat
+> schema-nya sendiri di dalamnya (`tests/helpers/pgTestSchema.ts`). Nyalakan
+> dulu container dev-nya:
+>
+> ```bash
+> docker compose -f docker-compose.postgres.yml up -d
+> ```
+>
+> lalu pastikan `.env` punya `DATABASE_URL_PRISMA=postgresql://...` yang cocok
+> (lihat `.env.example`), baru jalankan `pnpm test`.
+
 **Skrip diagnostik & pemeliharaan:**
 
 | Skrip | Kegunaan |
@@ -369,7 +385,7 @@ packages/
   db/               Prisma client + CRUD per-domain (+ tes Vitest)
   outbox-dispatcher/ Pengirim notifikasi (drain notification_outbox → Telegram)
   web-ui/           Tema & template bersama
-prisma/schema.prisma   Skema database (SQLite, WAL)
+prisma/schema.prisma   Skema database (PostgreSQL)
 data/bot.db            Database (di-gitignore)
 ```
 

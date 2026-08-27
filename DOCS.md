@@ -27,7 +27,8 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 ## 1. Arsitektur
 
 Monorepo pnpm: lima workspace `apps/*` + tiga `packages/*`, berbagi **satu
-database SQLite** (`data/bot.db`, mode WAL).
+database PostgreSQL** (schema `public`; lihat `docs/POSTGRES_MIGRATION.md`
+untuk runbook deploy produksi).
 
 | Workspace | Peran |
 |---|---|
@@ -48,7 +49,9 @@ database SQLite** (`data/bot.db`, mode WAL).
 - **Decimal untuk semua uang** (`@app/core/money`), tidak pernah `float`.
 - **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, dispatcher
   outbox (`@app/outbox-dispatcher`, in-process di `apps/server`) yang mengirim.
-- **SQLite single-writer** — tiap `$transaction` dijaga pendek.
+- **PostgreSQL menangani konkurensi sendiri** (bukan lagi single-writer
+  seperti SQLite era sebelumnya) — tiap `$transaction` tetap dijaga pendek
+  sebagai praktik baik, bukan lagi workaround khusus SQLite.
 - **Katalog 3-tier: Category → Product → Denomination.** `Product` (mis.
   "Netflix") adalah satu-satunya kartu di grid (home, kategori `/c/:slug`,
   search) — TIDAK punya harga/stok sendiri. Tiap Product punya satu/lebih
@@ -561,11 +564,15 @@ nginx -t && systemctl reload nginx
 
 ### Backup & batas
 
-- **Backup per instance**: satu cron per toko memakai `deploy/backup/backup.sh`
-  dengan path DB berbeda (`/opt/shop-a/data/bot.db`, …). WAL-safe via
-  `sqlite3 .backup`; lihat `deploy/backup/README.md`.
-- **Single-writer SQLite tetap aman**: tiap instance menulis ke DB-nya **sendiri**
-  (bukan beberapa writer ke satu DB), jadi tidak memicu kebutuhan pindah Postgres.
+- **Backup per instance**: satu `pg_dump` per toko (lihat bagian 8a
+  `docs/POSTGRES_MIGRATION.md`) — tiap direktori repo/instance punya container
+  `postgres` dan volume data sendiri (`docker-compose.postgres.prod.yml`'s own
+  header comment: Compose otomatis prefix nama volume dengan
+  `COMPOSE_PROJECT_NAME`, jadi dua toko independen tidak berbagi data
+  Postgres apa pun).
+- **Tiap instance punya database Postgres sendiri** (bukan beberapa writer ke
+  satu DB yang sama), jadi isolasi antar-toko tetap terjaga sama seperti era
+  SQLite sebelumnya.
 - **Batas praktis**: N toko = 4×N container; yang membatasi adalah RAM/CPU VPS
   (kira-kira ~1 GB per toko), bukan arsitektur DB.
 

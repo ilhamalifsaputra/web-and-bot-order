@@ -216,8 +216,11 @@ checklist for the task list.
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).
 - **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
 - **Audit every state change** with the acting admin id (`logAdminAction`).
-- **Shared SQLite is single-writer** — keep each `$transaction` short; the trigger
-  to move to Postgres is ≥2 concurrent writers.
+- **The database is PostgreSQL** (engine-swap, merged 2026-08-27) — the old
+  "shared SQLite is single-writer" constraint no longer applies; Postgres
+  handles concurrent writers itself (`packages/db/src/client.ts`'s own header
+  comment). Still keep each `$transaction` short — that's just good practice
+  under any engine, not a SQLite-specific workaround anymore.
 - **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.

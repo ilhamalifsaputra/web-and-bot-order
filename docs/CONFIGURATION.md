@@ -43,7 +43,8 @@ satu app dijalankan dengan `cwd` workspace-nya sendiri
 ## Profil Development
 
 ```ini
-DATABASE_URL_PRISMA=file:../data/bot.db
+DATABASE_URL_PRISMA=postgresql://bot_order:ganti-dengan-password-acak-yang-kuat@localhost:5432/bot_order
+                                     # docker compose -f docker-compose.postgres.yml up -d dulu (§9 README.md)
 BOT_TOKEN=                          # kosongkan, isi dari wizard setup
 ADMIN_IDS=12345678
 WEB_COOKIE_SECRET=dev-only-not-for-production-min-32-chars
@@ -57,7 +58,8 @@ DEFAULT_LANGUAGE=id
 ## Profil Produksi
 
 ```ini
-DATABASE_URL_PRISMA=file:/app/data/bot.db    # path absolut (Docker)
+DATABASE_URL_PRISMA=postgresql://bot_order:ganti-dengan-password-acak-yang-kuat@postgres:5432/bot_order
+                                              # host WAJIB "postgres" (nama service Docker), bukan localhost
 BOT_TOKEN=123456:token-asli
 ADMIN_IDS=12345678
 WEB_COOKIE_SECRET=<openssl rand -hex 32>     # WAJIB unik & rahasia

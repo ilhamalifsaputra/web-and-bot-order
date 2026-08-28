@@ -57,7 +57,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `DATABASE_URL_PRISMA` | `file:../data/bot.db` | URL Prisma (SQLite). Docker: path **absolut** (`file:/app/data/bot.db`). |
+| `DATABASE_URL_PRISMA` | **wajib, tidak ada default** | Connection string Postgres (`postgresql://user:password@host:port/db`) — proses **refuse to start** jika tidak diisi atau bukan `postgresql://`. Docker: host **wajib** nama service `postgres` (jaringan internal Compose), bukan `localhost`/`127.0.0.1`. Lihat [`../.env.example`](../.env.example) dan [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md). |
 
 ## Behaviour / Tuning
 

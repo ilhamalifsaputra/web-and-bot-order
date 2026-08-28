@@ -142,8 +142,12 @@ backup_postgres() {
   SIZE="$(du -h "$OUT" | cut -f1)"
   echo "OK  backup=$OUT (${SIZE}, pg_restore --list=ok)"
 
-  # Retention: keep the newest $RETENTION *.dump; prune the rest.
-  mapfile -t OLD < <(ls -1t "${DEST}"/pg-*.dump 2>/dev/null | tail -n +"$((RETENTION + 1))")
+  # Retention: keep the newest $RETENTION *.dump; prune the rest. Glob is
+  # anchored to pg-<digits>... (real backup filenames start with the year,
+  # e.g. pg-2026-08-28-153000.dump) so it can never match restore.sh's
+  # pg-pre-restore-<stamp>.dump safety copy, which would otherwise compete
+  # for this same retention budget/namespace when it lands in $DEST.
+  mapfile -t OLD < <(ls -1t "${DEST}"/pg-[0-9]*.dump 2>/dev/null | tail -n +"$((RETENTION + 1))")
   for f in "${OLD[@]:-}"; do
     [ -n "$f" ] || continue
     rm -f "$f"

@@ -46,8 +46,11 @@ saat service jalan **bisa kehilangan data**. `backup.sh` memakai `sqlite3
 ⇒ backup dihapus, tidak pernah menyimpan backup yang rusak), dikompres
 `gzip -k`, dan dipangkas sesuai retensi (default 28 backup terbaru).
 
-**Prasyarat host:** `sqlite3` tidak ada di image Docker runtime — skrip
-jalan di **host** (tempat `./data` di-bind-mount):
+**Prasyarat host:** `sqlite3` juga sudah ada di image Docker runtime (dipasang
+di `Dockerfile`, dipakai `docker-entrypoint.sh` untuk snapshot wajib sebelum
+menerapkan perubahan skema) — tapi itu kebutuhan terpisah. `backup.sh`/
+`restore.sh` sendiri dijalankan operator di **host** (tempat `./data`
+di-bind-mount), jadi `sqlite3` juga harus terpasang di sana:
 ```bash
 sudo apt-get update && sudo apt-get install -y sqlite3
 ```
@@ -69,7 +72,9 @@ container, bukan kredensial di jaringan/log/skrip. Diverifikasi dengan
 `pg_restore --list` (padanan `integrity_check` untuk Postgres), lalu
 dipangkas sesuai retensi (pola nama `pg-<stamp>.dump`).
 
-**Prasyarat host:** `pg_restore` (paket `postgresql-client`):
+**Prasyarat host:** `docker` (dipakai `docker compose exec` — dump/restore
+sungguhan berjalan di dalam container `postgres`) dan `pg_restore` (paket
+`postgresql-client`, dipakai untuk memverifikasi dump):
 ```bash
 sudo apt-get update && sudo apt-get install -y postgresql-client
 ```

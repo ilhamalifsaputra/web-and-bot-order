@@ -22,6 +22,8 @@ import {
   prisma,
   getOrder,
   getDenomination,
+  getDenominationWithProduct,
+  buildNicknameProviderEntries,
   countAvailableStock,
   getBulkPricingForDenomination,
   getVoucherByCode,
@@ -366,6 +368,45 @@ export async function showOrderConfirmation(
     ctx.session.scratch.pendingInfoQuantity = quantity;
     await ctx.conversation.enter("customerInfo");
     return;
+  }
+
+  // Game Top-Up nickname-check gate — parallel to the manual_with_info gate
+  // above: for an AUTO SKU whose linked Game supports nickname checks
+  // (Game.nicknameSupported) AND resolves to at least one credentialed
+  // provider mapping (buildNicknameProviderEntries, Trustance reconciliation
+  // Phase B Task 1), the buyer's target account must be verified BEFORE
+  // payment. Same re-entry guard (scratch.customerData unset) and the same
+  // one-shot semantics as the manual_with_info gate: nicknameCheck.ts
+  // stashes its result into scratch.customerData and re-enters here via
+  // renderOrderConfirmation, so this branch doesn't fire again for the same
+  // checkout attempt.
+  //
+  // Deliberately scoped to AUTO only — MANUAL_WITH_INFO has its own gate
+  // above and is mutually exclusive by deliveryType. The vast majority of
+  // AUTO products have neither a linked Game nor nicknameCheckGameCode, so
+  // the extra getDenominationWithProduct join below is the ONLY added cost
+  // for them, and buildNicknameProviderEntries is never even called (see the
+  // `if (gameId || legacyGameCode)` short-circuit): zero behavior change,
+  // by construction, for every unconfigured product.
+  if (product.deliveryType === DeliveryType.AUTO && !ctx.session.scratch.customerData) {
+    const withGame = await getDenominationWithProduct(prisma, productId);
+    const linkedGame = withGame?.product?.game ?? null;
+    const rawGameId = withGame?.product?.gameId ?? null;
+    // Same rule as the storefront's own gate (apiTopup.ts POST
+    // /topup/check-account, final-review Finding 3): a gameId link only
+    // counts when the linked Game row is loaded AND still active AND still
+    // supports nickname checks.
+    const gameId = rawGameId != null && linkedGame?.isActive && linkedGame.nicknameSupported ? rawGameId : null;
+    const legacyGameCode = withGame?.nicknameCheckGameCode ?? null;
+    if (gameId || legacyGameCode) {
+      const entries = await buildNicknameProviderEntries(prisma, { gameId, legacyGameCode });
+      if (entries.length > 0) {
+        ctx.session.scratch.pendingNicknameProductId = productId;
+        ctx.session.scratch.pendingNicknameQuantity = quantity;
+        await ctx.conversation.enter("nicknameCheck");
+        return;
+      }
+    }
   }
 
   const rate = await currentUsdtRate();

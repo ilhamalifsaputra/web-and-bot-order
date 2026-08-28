@@ -286,13 +286,21 @@ export async function deliverPaidBybitOrder(
       // confirm it once delivery actually succeeds. May legitimately be null
       // — orders created before this ledger was wired up, or a rail change
       // that left no PENDING row — and that is never treated as an error.
-      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch(() => null);
+      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — proceeding without ledger confirmation; the order settlement itself is unaffected`);
+        return null;
+      });
       if (order.kind === OrderKind.WALLET_TOPUP) {
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
         if (pendingPayment) {
-          // Best-effort, never blocking: the wallet credit above already
-          // committed, so a ledger-only failure here must not roll back a
-          // real settlement. See this file's Task A2b comments for why.
+          // Best-effort: swallows the benign race where a concurrent
+          // poller/webhook already confirmed this same Payment row
+          // (ValidationError, count!==1) — expected and harmless. A genuine
+          // database error here still aborts this whole transaction
+          // regardless of this .catch, since Postgres poisons an
+          // interactive transaction on any failed statement; this call
+          // cannot rescue the settlement from that, it only prevents the
+          // benign race from doing so.
           await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
             logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
           );
@@ -330,7 +338,7 @@ export async function deliverPaidBybitOrder(
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
       if (pendingPayment) {
-        // Best-effort, never blocking — see the WALLET_TOPUP branch above.
+        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
         await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
           logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
         );

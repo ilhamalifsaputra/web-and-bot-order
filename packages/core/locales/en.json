@@ -226,6 +226,7 @@
   "error.refund_exceeds_item_subtotal": "This refund would exceed the order item's subtotal ({subtotal} {currency}) — {alreadyRefunded} already refunded, {attempted} attempted.",
   "error.refund_item_exceeds_refund_amount": "This refund item would exceed the refund's own total amount ({refundAmount} {currency}) — {alreadyOnRefund} already on this refund, {attempted} attempted.",
   "error.illegal_refund_status_transition": "This refund's status cannot move from {from} to {to}.",
+  "error.illegal_ticket_status_transition": "This ticket's status cannot move from {from} to {to}.",
   "error.refund_completed_requires_payout_acknowledgement": "Completing a refund through this path does not pay the buyer — pass acknowledgeNoPayout to confirm you understand this, or use the dedicated payout path instead.",
   "error.refund_amount_invalid": "The refund amount must be a valid, finite number greater than zero.",
   "error.refund_item_on_terminal_refund": "Cannot add a refund item to a refund that is already {status}.",

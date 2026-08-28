@@ -2,16 +2,78 @@
  * Support tickets + ticket messages — port of those sections of Python crud.py.
  */
 import { Prisma } from "@prisma/client";
+import type { SupportTicket } from "@prisma/client";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
 import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
+import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
+import { isUniqueViolation } from "./_types";
 import { enqueueOwnerNewTicketEmail, enqueueOwnerTicketReplyEmail } from "./notifications";
+import { logAdminAction } from "./audit";
 
-/** Creates the ticket, then enqueues the shop owner's "new ticket" email
- * (no-op unless owner-email is configured — see enqueueOwnerNewTicketEmail).
- * Covers both the storefront and the bot's ticket-creation paths from this
- * one call site — `category` is always null here since it's an admin-set
- * triage field (classifyTicket), never set at creation time. */
+/**
+ * Mint a `ticketNumber` candidate: `TCK-YYYYMMDD-NNNNN` (current UTC date +
+ * today's ticket count so far + 1, 5-digit zero-padded) — sequential, unlike
+ * `Order.orderCode`'s random 4-char suffix (`generateOrderCode`/
+ * `uniqueOrderCode`, packages/db/src/crud/orders.ts and packages/core/src/
+ * formatters.ts), because that's the format this task's brief specifies.
+ *
+ * Exported (mirroring `uniqueOrderCode`'s own "exported so another crud file
+ * can reuse it" precedent) so a future caller minting a preview candidate
+ * outside `createTicket`'s own retry loop can reuse the same date/count
+ * logic without duplicating it.
+ *
+ * On its own this does NOT guarantee uniqueness under concurrent writers — a
+ * `count`-then-format candidate can race with a concurrent `createTicket`
+ * call between this function's read and the caller's insert. That is fine:
+ * `createTicket` is the only production caller, and it treats this as a
+ * candidate to attempt, not a guarantee — see its own doc comment for the
+ * actual safety net (retry-on-unique-constraint-violation, the same
+ * `isUniqueViolation`-catch-and-retry shape `registerUser`/`generateReferralCode`
+ * already use in users.ts, adapted here because a *sequential* number can't
+ * just re-roll a fresh random string on collision the way a referral code
+ * can — it has to re-derive the candidate from the now-updated count).
+ */
+export async function uniqueTicketNumberCandidate(db: Db, now: Date = new Date()): Promise<string> {
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(now.getUTCDate()).padStart(2, "0");
+  const prefix = `TCK-${y}${m}${d}-`;
+  const countSoFar = await db.supportTicket.count({
+    where: { ticketNumber: { startsWith: prefix } },
+  });
+  return `${prefix}${String(countSoFar + 1).padStart(5, "0")}`;
+}
+
+// Bounded generously above realistic contention (a burst of concurrent
+// ticket creations arriving in the same UTC day) — see createTicket's doc
+// comment for why a plain fixed retry count needs the jitter below to
+// actually converge at this kind of concurrency, not just a bigger number.
+const MAX_TICKET_NUMBER_ATTEMPTS = 25;
+
+/** Creates the ticket (minting a unique `ticketNumber`, see
+ * `uniqueTicketNumberCandidate`), then enqueues the shop owner's "new
+ * ticket" email (no-op unless owner-email is configured — see
+ * enqueueOwnerNewTicketEmail). Covers both the storefront and the bot's
+ * ticket-creation paths from this one call site — `category` is always null
+ * here since it's an admin-set triage field (classifyTicket), never set at
+ * creation time.
+ *
+ * `ticketNumber` generation retries on a genuine unique-constraint collision
+ * (concurrent callers racing for the same candidate) up to
+ * `MAX_TICKET_NUMBER_ATTEMPTS` times, re-deriving a fresh candidate from the
+ * DB's current count each attempt — see `uniqueTicketNumberCandidate`'s doc
+ * comment for why a fresh `count` read (not a fixed offset) is what makes the
+ * retry converge at all. A losing attempt also waits a small RANDOMIZED
+ * backoff before retrying: without it, N callers that collided on the same
+ * candidate would all re-read the same (now-updated) count and race for the
+ * SAME next candidate again, converging only one-at-a-time per round instead
+ * of spreading out — verified empirically against a 20-way concurrent
+ * `Promise.all` burst in support.test.ts ("every ticket gets a UNIQUE
+ * ticketNumber even when many are created concurrently"), which is what
+ * surfaced the need for both the higher bound and the jitter (a fixed
+ * retry-5 pre-check, mirroring `uniqueOrderCode`'s shape verbatim, reliably
+ * failed that test). */
 export async function createTicket(
   db: Db,
   userId: number,
@@ -20,9 +82,23 @@ export async function createTicket(
   attachmentUrls: string | null = null,
   orderId: number | null = null,
 ) {
-  const ticket = await db.supportTicket.create({
-    data: { userId, message, photoFileIds, attachmentUrls, orderId },
-  });
+  let ticket: SupportTicket | undefined;
+  for (let attempt = 0; attempt < MAX_TICKET_NUMBER_ATTEMPTS; attempt++) {
+    const ticketNumber = await uniqueTicketNumberCandidate(db);
+    try {
+      ticket = await db.supportTicket.create({
+        data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber },
+      });
+      break;
+    } catch (e) {
+      if (isUniqueViolation(e) && attempt < MAX_TICKET_NUMBER_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 25)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  if (!ticket) throw new Error("Could not generate a unique ticket number");
   await enqueueOwnerNewTicketEmail(db, { ticketId: ticket.id, userId, category: null, message });
   return ticket;
 }
@@ -207,7 +283,26 @@ export async function replyToTicket(
   return user ? user.telegramId : null;
 }
 
-/** Add a thread message and update the ticket's status accordingly. */
+/** Add a thread message and update the ticket's status accordingly.
+ *
+ * `internal` (Task 1): when `true`, this message is an admin-only note.
+ * Internal notes:
+ *  - are stored with `TicketMessage.internal = true`, so `listTicketMessages`
+ *    excludes them by default (see that function's `includeInternal` option)
+ *    — an internal note must never appear in a customer-facing thread view;
+ *  - never advance the ticket's customer-visible state: the ADMIN branch's
+ *    `status -> REPLIED` / `repliedAt` / `firstResponseAt` writes are SKIPPED
+ *    for an internal note, because those fields exist to tell the customer
+ *    "an admin responded to you", which an internal note is not;
+ *  - are still audited (`logAdminAction`) — adding an internal note is new,
+ *    admin-only, ticket-affecting capability, so it gets its own audit
+ *    action distinct from `ticket_reply` (which the route already logs)
+ *    rather than trying to retrofit an existing action, and distinct from
+ *    the caller possibly not touching audit itself at all today.
+ * Only meaningful when `senderType` is `ADMIN` — a customer can never write
+ * an internal note (the USER branch below never reads `internal`). Defaults
+ * to `false`, so every existing call site's behavior is byte-for-byte
+ * unchanged. */
 export async function addTicketMessage(
   db: Db,
   args: {
@@ -226,8 +321,12 @@ export async function addTicketMessage(
      * second "customer replied" email for it. Every genuine reply call site
      * omits this (defaults to `true`, i.e. notify as before). */
     notifyOwner?: boolean;
+    /** Admin-only note — see this function's own doc comment. Defaults to
+     * `false` (an ordinary customer-visible message, today's behavior). */
+    internal?: boolean;
   },
 ) {
+  const internal = args.internal ?? false;
   const msg = await db.ticketMessage.create({
     data: {
       ticketId: args.ticketId,
@@ -236,6 +335,7 @@ export async function addTicketMessage(
       content: args.content,
       photoFileIds: args.photoFileIds ?? null,
       attachmentUrls: args.attachmentUrls ?? null,
+      internal,
     },
   });
   const ticket = await db.supportTicket.findUnique({
@@ -261,7 +361,11 @@ export async function addTicketMessage(
           message: args.content,
         });
       }
-    } else {
+    } else if (!internal) {
+      // Customer-visible admin reply — unchanged from before `internal`
+      // existed. An internal note (else branch below) skips all of this: no
+      // status flip, no repliedAt/firstResponseAt advance, because none of
+      // that is true of a note the customer never sees.
       await db.supportTicket.update({
         where: { id: args.ticketId },
         data: {
@@ -273,18 +377,196 @@ export async function addTicketMessage(
           firstResponseAt: ticket.firstResponseAt ?? now,
         },
       });
+    } else {
+      await logAdminAction(db, {
+        adminId: args.senderId,
+        action: "ticket_internal_note",
+        targetType: "ticket",
+        targetId: args.ticketId,
+        details: `Added an internal note to ticket #${args.ticketId} (not visible to the customer).`,
+      });
     }
   }
   return msg;
 }
 
 /** Assign (or, with `adminId: null`, unassign) a ticket to an admin. Does
- * not touch `status` — assignment and reply/close are independent actions. */
+ * not touch `status` — assignment and reply/close are independent actions.
+ * Does not touch `assignedAt`/`assignedBy` either — this is the original,
+ * un-audited assign path used today by apps/web-admin's `/api/support/
+ * :ticketId/assign` route (which logs its own `ticket_assign` audit entry
+ * around this call). Left byte-for-byte unchanged so that route and its
+ * tests keep working: `assignTicketWithAudit` below is the NEW, separate
+ * function that also stamps the assignedAt/assignedBy audit trail — added
+ * alongside rather than grafted onto this one so no existing caller's
+ * behavior/signature changes under it. */
 export function assignTicket(db: Db, ticketId: number, adminId: number | null) {
   return db.supportTicket.update({
     where: { id: ticketId },
     data: { adminId },
   });
+}
+
+/**
+ * Assign (or, with `adminId: null`, unassign) a ticket to an admin AND
+ * record who performed that assignment — `assignedAt`/`assignedBy`, distinct
+ * from `adminId` (do not conflate the two): `adminId` is who is currently
+ * working the ticket, `assignedBy` is who made that specific assignment
+ * decision. E.g. a lead admin (`assignedByAdminId`) assigns a ticket to a
+ * junior admin (`adminId`) — after this call, `adminId` is the junior
+ * admin's id and `assignedBy` is the lead admin's id.
+ *
+ * On unassign (`adminId: null`), `assignedAt`/`assignedBy` are cleared back
+ * to null too — there is no "assignment" left to attribute once nobody is
+ * assigned, so leaving a stale assignedBy/assignedAt pointing at a past
+ * assignment after the ticket is explicitly unassigned would be misleading.
+ *
+ * Audits the action via `logAdminAction` with a natural-language `details`
+ * string (docs/LOGGING.md), same pattern `transitionRefundStatus`/
+ * `transitionTicketStatus` use for their own state changes — CLAUDE.md:
+ * "Audit every state change with the acting admin id".
+ */
+export async function assignTicketWithAudit(
+  db: Db,
+  ticketId: number,
+  adminId: number | null,
+  assignedByAdminId: number,
+): Promise<SupportTicket> {
+  const now = new Date();
+  const ticket = await db.supportTicket.update({
+    where: { id: ticketId },
+    data:
+      adminId !== null
+        ? { adminId, assignedAt: now, assignedBy: assignedByAdminId }
+        : { adminId: null, assignedAt: null, assignedBy: null },
+  });
+
+  const assigneeLabel = adminId !== null ? `admin ${adminId}` : "nobody (unassigned)";
+  await logAdminAction(db, {
+    adminId: assignedByAdminId,
+    action: "ticket_assign",
+    targetType: "ticket",
+    targetId: ticketId,
+    details: `Assigned ticket #${ticketId} to ${assigneeLabel}.`,
+  });
+
+  return ticket;
+}
+
+/**
+ * Legal `TicketStatus` transitions — mirrors `REFUND_LEGAL_TRANSITIONS`'s
+ * shape (packages/db/src/crud/refunds.ts): a lookup table
+ * `transitionTicketStatus` validates against before attempting its atomic
+ * claim.
+ *
+ * `OPEN`/`REPLIED` (the legacy pair) and `WAITING_ADMIN`/`WAITING_CUSTOMER`
+ * (the new pair — see `TicketStatus`'s own doc comment in
+ * @app/core/enums for why both pairs exist) are treated as interchangeable
+ * "waiting on admin" / "waiting on customer" source states: either half of
+ * either pair can reach either half of the other pair, which is exactly the
+ * `WAITING_ADMIN <-> WAITING_CUSTOMER` edge this task's brief specifies
+ * (customer reply -> `WAITING_ADMIN`, admin reply -> `WAITING_CUSTOMER`)
+ * generalized to also accept/produce the legacy vocabulary. `RESOLVED`/
+ * `CLOSED` reachability mirrors the ACTUAL guards `resolveTicket`/
+ * `closeTicket` already enforce today (any non-terminal status may resolve
+ * or close), and `CLOSED -> OPEN` mirrors `reopenTicket`/`reopenTicketAdmin`
+ * exactly (the only two functions that move a ticket OUT of CLOSED today).
+ * `RESOLVED` has no outgoing edge back to an active state because no current
+ * crud function reopens a RESOLVED ticket without closing it first — that
+ * gap is left for a future task if such an action is ever added.
+ *
+ * NOTE: nothing in this file's existing status-changing functions
+ * (`addTicketMessage`, `replyToTicket`, `resolveTicket`, `closeTicket`,
+ * `reopenTicket`/`reopenTicketAdmin`) routes through this table today — they
+ * keep their own existing atomic-claim guards unchanged (see each function's
+ * own comment). This table + `transitionTicketStatus` is new, additive
+ * infrastructure for the `WAITING_ADMIN`/`WAITING_CUSTOMER` pair, not a
+ * restructuring of support.ts's existing transitions — see `TicketStatus`'s
+ * doc comment in @app/core/enums for why rewiring existing callers onto it
+ * is explicitly out of this task's scope.
+ */
+export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
+  [TicketStatus.OPEN]: [
+    TicketStatus.REPLIED,
+    TicketStatus.WAITING_CUSTOMER,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ],
+  [TicketStatus.WAITING_ADMIN]: [
+    TicketStatus.REPLIED,
+    TicketStatus.WAITING_CUSTOMER,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ],
+  [TicketStatus.REPLIED]: [
+    TicketStatus.OPEN,
+    TicketStatus.WAITING_ADMIN,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ],
+  [TicketStatus.WAITING_CUSTOMER]: [
+    TicketStatus.OPEN,
+    TicketStatus.WAITING_ADMIN,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ],
+  [TicketStatus.RESOLVED]: [TicketStatus.CLOSED],
+  [TicketStatus.CLOSED]: [TicketStatus.OPEN],
+};
+
+/**
+ * Move a SupportTicket from `from` to `to`: validates the shape against
+ * `TICKET_LEGAL_TRANSITIONS`, atomically claims the row (`updateMany` with
+ * the expected current status in the WHERE clause — same pattern as
+ * `transitionRefundStatus`/`transitionOrderStatus`) so a stale/duplicate
+ * caller fails safely instead of overwriting a ticket that already moved on,
+ * stamps `resolvedAt`/`closedAt` the moment the row reaches that specific
+ * status (mirroring `resolveTicket`/`closeTicket`'s own stamps), and audits
+ * the move via `logAdminAction` with a natural-language sentence
+ * (docs/LOGGING.md).
+ *
+ * New, additive infrastructure (Task 1) — see `TICKET_LEGAL_TRANSITIONS`'s
+ * doc comment for why no EXISTING support.ts function calls this yet.
+ */
+export async function transitionTicketStatus(
+  db: Db,
+  args: { ticketId: number; from: string; to: string; adminId: number; meta?: string | null },
+): Promise<SupportTicket> {
+  const { ticketId, from, to, adminId, meta } = args;
+
+  if (!TICKET_LEGAL_TRANSITIONS[from]?.includes(to)) {
+    throw new ValidationError("error.illegal_ticket_status_transition", { from, to });
+  }
+
+  const now = new Date();
+  const claim = await db.supportTicket.updateMany({
+    where: { id: ticketId, status: from },
+    data: {
+      status: to,
+      lastStatusChangeAt: now,
+      ...(to === TicketStatus.RESOLVED ? { resolvedAt: now } : {}),
+      ...(to === TicketStatus.CLOSED ? { closedAt: now } : {}),
+    },
+  });
+  if (claim.count !== 1) {
+    // Either the ticket doesn't exist, or its actual current status no
+    // longer matches `from` (race/staleness) — same error either way, since
+    // both mean "this transition cannot be applied as requested" (mirrors
+    // transitionRefundStatus's own reasoning).
+    throw new ValidationError("error.illegal_ticket_status_transition", { from, to });
+  }
+
+  const ticket = await db.supportTicket.findUniqueOrThrow({ where: { id: ticketId } });
+
+  await logAdminAction(db, {
+    adminId,
+    action: "ticket_status_change",
+    targetType: "ticket",
+    targetId: ticketId,
+    details: `Ticket #${ticketId} moved from ${from} to ${to}${meta ? ` (${meta})` : ""}.`,
+  });
+
+  return ticket;
 }
 
 /** Set a single ticket's priority. Task 2 only added the bulk version
@@ -297,10 +579,31 @@ export function setTicketPriority(db: Db, ticketId: number, priority: TicketPrio
   });
 }
 
-/** Last N messages for a ticket, chronological order. */
-export async function listTicketMessages(db: Db, ticketId: number, limit = 10) {
+/**
+ * Last N messages for a ticket, chronological order.
+ *
+ * `includeInternal` defaults to `false` — SAFE BY DEFAULT: an internal note
+ * (`TicketMessage.internal = true`, see `addTicketMessage`'s doc comment) is
+ * excluded unless the caller explicitly opts in. This function is the one
+ * both the customer-facing views (apps/order-bot's ticket detail handler,
+ * apps/storefront's account/ticket API route) AND the admin-facing view
+ * (apps/web-admin's ticket detail route) currently call with identical
+ * semantics — defaulting to exclude means every existing call site stays
+ * customer-safe automatically, INCLUDING the admin route, until it's
+ * explicitly updated to pass `includeInternal: true` (expected follow-up
+ * work for whichever task wires the internal-note toggle into the admin UI,
+ * since surfacing internal notes to admins is a UI concern, not a change to
+ * this shared query's default). A customer-facing call site must NEVER pass
+ * `includeInternal: true`.
+ */
+export async function listTicketMessages(
+  db: Db,
+  ticketId: number,
+  limit = 10,
+  opts: { includeInternal?: boolean } = {},
+) {
   const rows = await db.ticketMessage.findMany({
-    where: { ticketId },
+    where: { ticketId, ...(opts.includeInternal ? {} : { internal: false }) },
     orderBy: { createdAt: "desc" },
     take: limit,
   });

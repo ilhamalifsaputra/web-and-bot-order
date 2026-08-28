@@ -312,9 +312,61 @@ export const VoucherScope = {
 export type VoucherScope = (typeof VoucherScope)[keyof typeof VoucherScope];
 export const zVoucherScope = z.nativeEnum(VoucherScope);
 
+/**
+ * SupportTicket.status. Trustance Phase C Task 1 expanded this from
+ * `OPEN|REPLIED|RESOLVED|CLOSED` to also carry `WAITING_ADMIN`/
+ * `WAITING_CUSTOMER` — a more explicit vocabulary for "whose turn it is to
+ * respond" than the original OPEN/REPLIED pair (which conflated "brand new,
+ * nobody has looked at it" and "customer replied, waiting on admin again"
+ * into the same OPEN value).
+ *
+ * ## `REPLIED` is KEPT, not retired
+ *
+ * Checked every usage of `TicketStatus.REPLIED` across the codebase before
+ * deciding: it is load-bearing in apps/order-bot (keyboards, handlers,
+ * `listStaleRepliedTickets`'s auto-close job, `conversations.test.ts`/
+ * `jobs.test.ts`) and apps/web-admin (status badges, filters, `SupportPage`/
+ * `TicketDetailPage`, their `.test.tsx` files) — none of which this task may
+ * touch (Phase C splits ticketing work across 4 tasks; UI/bot wiring is
+ * Task 2/3/4's territory, not this one's). Removing `REPLIED` here would
+ * break every one of those call sites' typecheck AND silently reinterpret
+ * every historical ticket row already sitting at `status = 'REPLIED'` in
+ * production (this is a plain `String` column, not a native Postgres enum —
+ * see this file's header comment — so existing rows keep whatever string
+ * they were written with regardless of what this const object declares).
+ * Keeping `REPLIED` avoids both.
+ *
+ * ## `WAITING_ADMIN`/`WAITING_CUSTOMER` are additive, not yet wired
+ *
+ * Nothing in `packages/db/src/crud/support.ts` writes these two values today
+ * — `createTicket` still starts tickets at `OPEN` (the schema default), and
+ * `addTicketMessage`/`replyToTicket` still flip between `OPEN` and `REPLIED`
+ * exactly as before. `TICKET_LEGAL_TRANSITIONS` (support.ts) documents the
+ * intended `WAITING_ADMIN <-> WAITING_CUSTOMER` edges (customer reply ->
+ * `WAITING_ADMIN`, admin reply -> `WAITING_CUSTOMER`) and
+ * `transitionTicketStatus` enforces them for whichever future caller
+ * (Task 3 or later) starts actually moving tickets through this pair — but
+ * rewiring the existing OPEN/REPLIED write paths to use these instead would
+ * be exactly the kind of cross-cutting behavior change (affecting overdue
+ * calculation, `getTicketStats`, the auto-close job, every OPEN/REPLIED
+ * label in the bot and web-admin UI) this task's brief explicitly warned
+ * against ("choose the option that doesn't silently break existing
+ * tickets/tests"). This mirrors an established pattern already in this
+ * file — see `OrderStatus.PARTIALLY_DELIVERED` and `OrderItemStatus`'s own
+ * "shadow, not yet a source of truth" doc comments below.
+ */
 export const TicketStatus = {
   OPEN: "OPEN",
   REPLIED: "REPLIED",
+  /** New (Task 1): ticket needs admin attention — the customer has replied,
+   * or the ticket was just created, under the more explicit vocabulary.
+   * Not written by any current code path — see this const's doc comment. */
+  WAITING_ADMIN: "WAITING_ADMIN",
+  /** New (Task 1): an admin has responded and the ticket is waiting on the
+   * customer's next message — the `WAITING_ADMIN`-vocabulary counterpart of
+   * `REPLIED`. Not written by any current code path — see this const's doc
+   * comment. */
+  WAITING_CUSTOMER: "WAITING_CUSTOMER",
   RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",
 } as const;
@@ -330,12 +382,29 @@ export const TicketPriority = {
 export type TicketPriority = (typeof TicketPriority)[keyof typeof TicketPriority];
 export const zTicketPriority = z.nativeEnum(TicketPriority);
 
+/** SupportTicket.category — admin-set triage field, null until classified
+ * (`classifyTicket`). Trustance Phase C Task 1 added `DELIVERY`/
+ * `GAME_TOPUP`/`REFUND`/`TECHNICAL` alongside the original 5 values for
+ * finer-grained triage; existing rows keep whatever category (or null) they
+ * already had — this is a plain `String` column, not a native Postgres enum
+ * (see this file's header comment), so widening this const object needs no
+ * migration and cannot itself invalidate a stored value. */
 export const TicketCategory = {
   ORDER: "ORDER",
   PAYMENT: "PAYMENT",
   ACCOUNT: "ACCOUNT",
   PRODUCT: "PRODUCT",
   OTHER: "OTHER",
+  /** Order paid but the item didn't arrive / arrived wrong. */
+  DELIVERY: "DELIVERY",
+  /** Game top-up specific issue (wrong game id/server, top-up didn't land in
+   * the game account) — narrower than the general `PRODUCT`/`ORDER`. */
+  GAME_TOPUP: "GAME_TOPUP",
+  /** Ticket is about a refund request/status, distinct from a general
+   * `PAYMENT` question. */
+  REFUND: "REFUND",
+  /** Bot/site bug reports, login issues, etc. — not about a specific order. */
+  TECHNICAL: "TECHNICAL",
 } as const;
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 export const zTicketCategory = z.nativeEnum(TicketCategory);

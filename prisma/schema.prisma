@@ -68,6 +68,7 @@ model User {
   referralsAsReferrer   Referral[]            @relation("ReferralReferrer")
   ticketsAsUser         SupportTicket[]       @relation("TicketUser")
   ticketsAsAdmin        SupportTicket[]       @relation("TicketAdmin")
+  ticketsAssignedBy     SupportTicket[]       @relation("TicketAssignedBy")
   voucherRedemptions    VoucherRedemption[]
   reviewsRepliedAsAdmin Review[]              @relation("ReviewRepliedByAdmin")
   adminTasksAssigned    AdminTask[]           @relation("AdminTaskAssignee")
@@ -1133,6 +1134,24 @@ model SupportTicket {
   category       String?   @map("category")
   adminReply     String?   @map("admin_reply")
   adminId        Int?      @map("admin_id")
+  /// TCK-YYYYMMDD-NNNNN, minted once at creation (createTicket/
+  /// uniqueTicketNumberCandidate) — nullable because `db push` never
+  /// backfills historical rows created before this column existed (same
+  /// reasoning as OrderItem.deliveryTypeSnapshot / this model's own
+  /// lastStatusChangeAt above). Admin UI must fall back to `#id` for rows
+  /// where this is null.
+  ticketNumber   String?   @unique @map("ticket_number")
+  /// Set together with `assignedBy` by the assignment-with-audit-trail path
+  /// (see `assignedBy`'s own comment) — when this ticket's `adminId` (the
+  /// admin CURRENTLY working it) was last explicitly assigned.
+  assignedAt     DateTime? @map("assigned_at")
+  /// The admin who PERFORMED an assignment action — distinct from `adminId`
+  /// (who the ticket is assigned TO / is currently working it). E.g. a lead
+  /// admin assigns a ticket to a junior admin: `adminId` becomes the junior
+  /// admin's id, `assignedBy` stays the lead admin's id. Nullable: most
+  /// existing tickets were never assigned through this audited path (the
+  /// plain `adminId`-only assign predates it).
+  assignedBy     Int?      @map("assigned_by")
   createdAt      DateTime  @default(now()) @map("created_at")
   repliedAt      DateTime? @map("replied_at")
   /// Set once, the first time an admin message lands on the ticket — true
@@ -1188,10 +1207,16 @@ model SupportTicket {
   /// lastStatusChangeAt + the FK.
   closedAt       DateTime? @map("closed_at")
 
-  user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  order    Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
-  messages TicketMessage[]
+  user            User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  admin           User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // Same "who acted, not who this row is about" reasoning as TicketAdmin
+  // above (and AdminTask.assignee / Review.repliedByAdmin) — NoAction on
+  // delete, not Restrict: losing the assigner pointer if that admin's User
+  // row were ever removed is not the same category of data loss as losing
+  // the order/customer this ticket is about.
+  assignedByAdmin User?           @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  order           Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  messages        TicketMessage[]
 
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
@@ -1209,6 +1234,13 @@ model TicketMessage {
   content        String
   photoFileIds   String?  @map("photo_file_ids")
   attachmentUrls String?  @map("attachment_urls")
+  /// Admin-only note — never rendered to the customer and never triggers a
+  /// customer-visible ticket-status/notification side effect (see
+  /// `addTicketMessage`'s `internal` parameter in packages/db/src/crud/
+  /// support.ts). Defaults false so every existing message (and every
+  /// caller that hasn't been updated to pass `internal` explicitly) keeps
+  /// today's customer-visible behavior unchanged.
+  internal       Boolean  @default(false)
   createdAt      DateTime @default(now()) @map("created_at")
 
   ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)

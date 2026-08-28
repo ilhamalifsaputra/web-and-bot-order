@@ -226,6 +226,7 @@
   "error.refund_exceeds_item_subtotal": "Refund ini akan melebihi subtotal item pesanan ({subtotal} {currency}) — {alreadyRefunded} sudah direfund, {attempted} yang dicoba.",
   "error.refund_item_exceeds_refund_amount": "Item refund ini akan melebihi total jumlah refund itu sendiri ({refundAmount} {currency}) — {alreadyOnRefund} sudah tercatat pada refund ini, {attempted} yang dicoba.",
   "error.illegal_refund_status_transition": "Status refund ini tidak dapat berubah dari {from} ke {to}.",
+  "error.illegal_ticket_status_transition": "Status tiket ini tidak dapat berubah dari {from} ke {to}.",
   "error.refund_completed_requires_payout_acknowledgement": "Menyelesaikan refund lewat jalur ini tidak membayar pembeli — sertakan acknowledgeNoPayout untuk mengonfirmasi Anda memahami hal ini, atau gunakan jalur pembayaran khusus.",
   "error.refund_amount_invalid": "Jumlah refund harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
   "error.refund_item_on_terminal_refund": "Tidak bisa menambahkan item refund ke refund yang statusnya sudah {status}.",

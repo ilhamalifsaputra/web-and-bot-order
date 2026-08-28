@@ -34,10 +34,19 @@ import {
 } from "@app/db";
 import { ProductType, OrderStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
+import {
+  makeCtx,
+  FakeConversation,
+  calls,
+  sentIncludes,
+  captureExternalResults,
+  assertNoFunctionProps,
+  type SentCall,
+} from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { t } from "../src/util/i18n";
+import { logger } from "@app/core/logger";
 import * as checkout from "../src/handlers/checkout";
 import { nicknameCheckConversation } from "../src/conversations/nicknameCheck";
 import * as ckb from "../src/keyboards/customer";
@@ -489,6 +498,80 @@ describe("nicknameCheckConversation", () => {
     expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
     // The wizard was unaffected — it kept waiting and completed normally.
     expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([{ target: "id-1", nickname: "StaleTestPlayer" }]);
+  });
+
+  it("a definitive not-found offers 'Continue anyway', which stores the typed target unverified, reaches confirmation, and emits a diagnostic log (final-review Important #2)", async () => {
+    const { denom } = await makeGameDenom({ withMapping: true });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null }); // -> not_found, definitive: true
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const badTarget = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "typo-id" }).ctx;
+    const continueTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "continue"),
+    }).ctx;
+    const conv = new FakeConversation([badTarget, continueTap]);
+    const infoSpy = vi.spyOn(logger, "info");
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    // Reaches the confirm/pay screen with the last-typed target stored,
+    // unverified (no `nickname` field) — never re-loops or dead-ends.
+    expect(JSON.parse(continueTap.session.scratch.customerData as string)).toEqual([{ target: "typo-id" }]);
+    expect(continueTap.session.scratch.pendingNicknameProductId).toBeUndefined();
+    expect(continueTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
+    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+    // Diagnostic log so an admin can spot a misconfigured providerGameCode —
+    // mirrors apiTopup.ts:572-579's logger.info shape.
+    expect(
+      infoSpy.mock.calls.some(
+        ([meta, msg]) =>
+          typeof msg === "string" &&
+          msg.toLowerCase().includes("not-found") &&
+          (meta as Record<string, unknown>)?.productId === denom.id,
+      ),
+    ).toBe(true);
+    infoSpy.mockRestore();
+  });
+
+  it("every conversation.external() call returns only JSON-serializable POJOs with no function-typed properties (final-review Important #3)", async () => {
+    const { denom } = await makeGameDenom({ withMapping: true });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "PojoPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "pojo-id" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const fake = new FakeConversation([targetMsg, confirmTap]);
+    const { conversation, results } = captureExternalResults(fake);
+
+    await nicknameCheckConversation(conversation, entry);
+
+    // Three external() calls in this run: the config resolve, the
+    // providersConfigured pre-check, and the checkNickname lookup — every one
+    // of them must be a plain value (no NicknameServiceProviderEntry[]
+    // closures, no raw Prisma Decimal/Date-carrying rows).
+    expect(results.length).toBe(3);
+    for (const result of results) {
+      assertNoFunctionProps(result);
+      expect(() => JSON.parse(JSON.stringify(result))).not.toThrow();
+    }
   });
 });
 

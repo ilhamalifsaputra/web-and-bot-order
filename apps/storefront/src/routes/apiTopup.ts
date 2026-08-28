@@ -88,6 +88,7 @@ import {
   getKokinpayCreds,
   getVipResellerCreds,
   buildNicknameProviderEntries,
+  resolveNicknameGate,
   findIdempotentResponse,
   saveIdempotentResponse,
   hashIdempotentRequest,
@@ -492,17 +493,17 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // rest of this handler. Note this does NOT gate the region-check block
       // below, which has its own independent prerequisite
       // (`expectedRegionCode && nicknameCheckGameCode`, still legacy-only).
-      // Final-review fix, Finding 3: a `gameId` link only counts when the
-      // linked Game row is loaded AND still active AND still supports
+      // Final-review fix, Finding 3 (and later hardened against drift by
+      // Phase B final-review Important #4): a `gameId` link only counts when
+      // the linked Game row is loaded AND still active AND still supports
       // nickname checks. Any of those failing degrades EXACTLY as if
       // `gameId` were unset for this request — falls through to
       // `legacyGameCode` below if set, else stays `{ available: false }`.
-      // No throw, per this handler's silent-degrade discipline.
-      const rawGameId = denomination?.product?.gameId ?? null;
-      const linkedGame = denomination?.product?.game ?? null;
-      const gameId =
-        rawGameId != null && linkedGame && linkedGame.isActive && linkedGame.nicknameSupported ? rawGameId : null;
-      const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
+      // No throw, per this handler's silent-degrade discipline. The rule
+      // itself now lives in resolveNicknameGate (packages/db/src/crud/nickname.ts)
+      // so this route, checkout.ts's gate, and nicknameCheck.ts's own
+      // defensive re-check can never drift apart again.
+      const { gameId, legacyGameCode } = resolveNicknameGate(denomination);
       if (!denomination || (!gameId && !legacyGameCode)) return reply.send(NOT_AVAILABLE);
 
       const server = typeof req.body?.server === "string" ? req.body.server.trim() || undefined : undefined;

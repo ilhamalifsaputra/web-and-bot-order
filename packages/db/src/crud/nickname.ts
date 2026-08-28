@@ -36,6 +36,7 @@ import { getEnabledProviderMappingsForGame } from "./games";
 import { getKokinpayCreds } from "./kokinpay";
 import { getVipResellerCreds } from "./vipreseller";
 import { getMelostoreCreds } from "./melostore";
+import type { getDenominationWithProduct } from "./catalog";
 
 /**
  * Resolve the ordered `NicknameServiceProviderEntry[]` for one nickname
@@ -90,4 +91,37 @@ export async function buildNicknameProviderEntries(
   }
 
   return [];
+}
+
+/** The exact shape `getDenominationWithProduct` returns — `resolveNicknameGate`
+ * takes this directly so every call site can pass what it already has in
+ * scope, with no extra DB read. */
+type DenominationForNicknameGate = Awaited<ReturnType<typeof getDenominationWithProduct>>;
+
+/**
+ * The nickname-check opt-in rule — whether a checkout attempt for this
+ * denomination should be diverted through a nickname/target-account
+ * verification step before payment, and if so, which `buildNicknameProviderEntries`
+ * input to resolve it with.
+ *
+ * Shared by all 3 call sites that used to spell this out independently
+ * (Trustance reconciliation Phase B final-review Important #4):
+ * `apps/storefront/src/routes/apiTopup.ts`'s POST /topup/check-account,
+ * `apps/order-bot/src/handlers/checkout.ts`'s showOrderConfirmation gate, and
+ * `apps/order-bot/src/conversations/nicknameCheck.ts`'s own defensive
+ * re-check. A `gameId` link only counts when the linked `Game` row is loaded
+ * AND still active AND still supports nickname checks — any of those failing
+ * degrades exactly as if `gameId` were unset, falling through to
+ * `legacyGameCode` when set. `gameId`, when non-null, always takes precedence
+ * over `legacyGameCode` in `buildNicknameProviderEntries` itself; this
+ * function just decides which (if either) is in play.
+ */
+export function resolveNicknameGate(
+  denomination: DenominationForNicknameGate | null | undefined,
+): { gameId: number | null; legacyGameCode: string | null } {
+  const rawGameId = denomination?.product?.gameId ?? null;
+  const linkedGame = denomination?.product?.game ?? null;
+  const gameId = rawGameId != null && linkedGame?.isActive && linkedGame.nicknameSupported ? rawGameId : null;
+  const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
+  return { gameId, legacyGameCode };
 }

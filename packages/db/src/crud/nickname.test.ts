@@ -19,6 +19,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
 import {
   buildNicknameProviderEntries,
+  resolveNicknameGate,
   createGame,
   upsertProviderGameMapping,
   setSetting,
@@ -158,5 +159,65 @@ describe("buildNicknameProviderEntries — legacyGameCode fallback", () => {
     const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id, legacyGameCode: "legacy-fallback-code" });
 
     expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["kokinpay", "legacy-fallback-code"]]);
+  });
+});
+
+// ===========================================================================
+// resolveNicknameGate — the single opt-in rule shared by all 3 call sites
+// (apps/storefront/src/routes/apiTopup.ts, apps/order-bot/src/handlers/
+// checkout.ts, apps/order-bot/src/conversations/nicknameCheck.ts) after
+// Trustance reconciliation Phase B final-review Important #4. This fixture
+// matrix is the "insurance against drift" the reviewer asked for: each call
+// site now just destructures this function's return, so pinning the
+// function itself pins all 3 call sites to the same rule structurally —
+// there is no longer a second copy of the rule for a fixture to disagree
+// with.
+// ===========================================================================
+
+describe("resolveNicknameGate — shared opt-in rule fixture matrix", () => {
+  type Fixture = Parameters<typeof resolveNicknameGate>[0];
+
+  it("game-linked + active + nicknameSupported: gameId wins, legacyGameCode carried but subordinate", () => {
+    const denomination = {
+      nicknameCheckGameCode: "legacy-code",
+      product: { gameId: 7, game: { isActive: true, nicknameSupported: true } },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameId: 7, legacyGameCode: "legacy-code" });
+  });
+
+  it("game-linked but soft-disabled (isActive:false): gameId is unset, falls through to legacyGameCode", () => {
+    const denomination = {
+      nicknameCheckGameCode: "legacy-code",
+      product: { gameId: 7, game: { isActive: false, nicknameSupported: true } },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+  });
+
+  it("game-linked but nicknameSupported:false: gameId is unset, falls through to legacyGameCode", () => {
+    const denomination = {
+      nicknameCheckGameCode: "legacy-code",
+      product: { gameId: 7, game: { isActive: true, nicknameSupported: false } },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+  });
+
+  it("no game link at all: gameId is null, legacyGameCode passes through unchanged", () => {
+    const denomination = { nicknameCheckGameCode: "legacy-code", product: { gameId: null, game: null } } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+  });
+
+  it("legacy-fallback only (no game link, no nicknameCheckGameCode is also handled): neither set yields both null", () => {
+    const denomination = { nicknameCheckGameCode: null, product: { gameId: null, game: null } } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: null });
+  });
+
+  it("null/undefined denomination degrades to both unset, never throws", () => {
+    expect(resolveNicknameGate(null)).toEqual({ gameId: null, legacyGameCode: null });
+    expect(resolveNicknameGate(undefined)).toEqual({ gameId: null, legacyGameCode: null });
   });
 });

@@ -157,6 +157,7 @@
   "checkout.nickname_not_found": "Akun tidak ditemukan untuk ID tersebut. Periksa kembali lalu coba lagi.",
   "checkout.nickname_confirm_btn": "✓ Ya, ini akun saya",
   "checkout.nickname_retry_btn": "↻ Coba Lagi",
+  "checkout.nickname_continue_btn": "Tetap Lanjutkan",
   "checkout.nowpayments_instructions": "<b>USDT via NOWPayments (konfirmasi otomatis)</b>\n\nOrder: <code>{code}</code>\nJumlah: <b>{amount}</b>\n\nTap tombol di bawah untuk membuka halaman pembayaran dan bayar dengan kripto yang didukung.\n\n⏳ Bayar sebelum <b>{expiry}</b>. Pengiriman otomatis setelah pembayaran terkonfirmasi — tanpa screenshot.",
   "checkout.nowpayments_open_invoice": "🔗 Buka Halaman Pembayaran",
   "checkout.pay_bybit_btn": "Bybit",

@@ -321,6 +321,56 @@ export class FakeConversation {
   }
 }
 
+/**
+ * Wraps a FakeConversation so every conversation.external() result is
+ * captured for inspection — FakeConversation itself runs external() ops
+ * inline and never exercises grammY's real replay/storage layer, so it can't
+ * catch a closure-carrying result on its own (Trustance reconciliation Phase
+ * B final-review Important #3: @grammyjs/conversations stores every
+ * external() result in the session op log and returns it on replay; only
+ * primitive values or POJOs survive that trip). Pair with
+ * assertNoFunctionProps to assert every captured result is safe to cross
+ * that boundary.
+ */
+export function captureExternalResults(conv: FakeConversation): { conversation: MyConversation; results: unknown[] } {
+  const results: unknown[] = [];
+  const wrapper = {
+    wait: () => conv.wait(),
+    waitFor: (q?: unknown) => conv.waitFor(q),
+    waitForHears: (t?: unknown) => conv.waitForHears(t),
+    waitUntil: (p?: unknown) => conv.waitUntil(p),
+    external: async <T>(op: Parameters<FakeConversation["external"]>[0]) => {
+      const result = await conv.external(op);
+      results.push(result);
+      return result as T;
+    },
+  };
+  return { conversation: wrapper as unknown as MyConversation, results };
+}
+
+/**
+ * Recursively asserts `value` carries no function-typed property anywhere —
+ * the specific failure mode when a closure-carrying object (e.g. a
+ * NicknameServiceProviderEntry's `provider.checkNickname`) crosses grammY's
+ * conversation.external() boundary. Throws with the offending path on
+ * failure so a test failure points straight at the bad field.
+ */
+export function assertNoFunctionProps(value: unknown, path = "$"): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === "function") {
+    throw new Error(`assertNoFunctionProps: found a function at ${path} — external() results must be plain JSON-serializable values`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoFunctionProps(v, `${path}[${i}]`));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      assertNoFunctionProps(v, `${path}.${k}`);
+    }
+  }
+}
+
 /** Find the calls of a given method in the sink. */
 export function calls(sink: SentCall[], method: string): SentCall[] {
   return sink.filter((c) => c.method === method);

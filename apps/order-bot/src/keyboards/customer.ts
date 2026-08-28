@@ -731,6 +731,21 @@ export function nicknameConfirmKb(productId: number, qty: number, lang: string):
   ]);
 }
 
+/** Shown alongside nicknameCheck.ts's re-prompt after a DEFINITIVE
+ * "account not found" answer (final-review Important #2). The buyer can
+ * either just type a new target (unchanged typo-fix path — the prompt bubble
+ * still waits for text) or tap 'Continue anyway' to proceed to
+ * confirm/pay with their last-typed target stored unverified, matching the
+ * storefront's own non-blocking degrade posture instead of hard-stopping the
+ * checkout on a possibly-misconfigured product. 'Cancel' abandons exactly
+ * like voucherCancelKb/nicknameConfirmKb. */
+export function nicknameNotFoundKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.nickname_continue_btn", lang), data: cb("nick", "continue") }],
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
 /**
  * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves

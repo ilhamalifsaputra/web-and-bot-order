@@ -24,6 +24,7 @@ import {
   getDenomination,
   getDenominationWithProduct,
   buildNicknameProviderEntries,
+  resolveNicknameGate,
   countAvailableStock,
   getBulkPricingForDenomination,
   getVoucherByCode,
@@ -390,14 +391,11 @@ export async function showOrderConfirmation(
   // by construction, for every unconfigured product.
   if (product.deliveryType === DeliveryType.AUTO && !ctx.session.scratch.customerData) {
     const withGame = await getDenominationWithProduct(prisma, productId);
-    const linkedGame = withGame?.product?.game ?? null;
-    const rawGameId = withGame?.product?.gameId ?? null;
     // Same rule as the storefront's own gate (apiTopup.ts POST
-    // /topup/check-account, final-review Finding 3): a gameId link only
-    // counts when the linked Game row is loaded AND still active AND still
-    // supports nickname checks.
-    const gameId = rawGameId != null && linkedGame?.isActive && linkedGame.nicknameSupported ? rawGameId : null;
-    const legacyGameCode = withGame?.nicknameCheckGameCode ?? null;
+    // /topup/check-account, final-review Finding 3) — shared via
+    // resolveNicknameGate (Phase B final-review Important #4) so this gate
+    // can never drift from the storefront's or nicknameCheck.ts's own copy.
+    const { gameId, legacyGameCode } = resolveNicknameGate(withGame);
     if (gameId || legacyGameCode) {
       const entries = await buildNicknameProviderEntries(prisma, { gameId, legacyGameCode });
       if (entries.length > 0) {

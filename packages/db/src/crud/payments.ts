@@ -146,7 +146,12 @@ export async function createPaymentAttempt(
     });
   } catch (e) {
     if (isUniqueViolation(e)) {
-      throw new ValidationError("error.payment_already_pending", { orderId: args.orderId });
+      // No format args: `error.payment_already_pending` has no placeholder in
+      // en.json/id.json, and it must not grow one — this string is rendered
+      // straight into a buyer-facing toast, so an {orderId} placeholder would
+      // leak an internal database id to the buyer. The order id belongs in the
+      // logs/structured metadata, not in the copy.
+      throw new ValidationError("error.payment_already_pending");
     }
     throw e;
   }

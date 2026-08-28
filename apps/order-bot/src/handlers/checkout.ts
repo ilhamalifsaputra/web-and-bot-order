@@ -1527,6 +1527,13 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
   const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
+  // This rail needs the atomic guard more than the six gateway rails do: it
+  // creates, settles and delivers in one transaction, so its order is never
+  // left PENDING_PAYMENT and refuseDuplicateCheckout's pre-check above can
+  // never match a double-tap here. The unique index is the only thing standing
+  // between a double-tap and two wallet debits with two delivered items.
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
 
   let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
   try {
@@ -1544,9 +1551,14 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
         currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
         rate: rate ?? undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;

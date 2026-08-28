@@ -2598,6 +2598,61 @@ describe("checkout handlers", () => {
     expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
   });
 
+  // Final whole-branch review (Important #1): completeOrderWithWallet is the
+  // SEVENTH order-creating path on this same confirm bubble, and the only one
+  // refuseDuplicateCheckout structurally cannot cover — it creates, settles AND
+  // delivers in one transaction, so its order is never PENDING_PAYMENT and that
+  // pre-check's `status: PENDING_PAYMENT` filter can never match. The buyer here
+  // holds 10.00 credit against a 5.00 product, i.e. enough for BOTH taps, so
+  // error.insufficient_wallet cannot be what refuses the second one either —
+  // only the atomic checkoutIntentId catch can be. Same shape as the buyNow*
+  // tests above: the colliding order is for a DIFFERENT product.
+  it("completeOrderWithWallet converts an atomic checkoutIntentId collision into the same friendly duplicate toast — no second order, debit, or delivery (A1)", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-wallet@x.com:pw"]);
+    const checkoutIntentId = "55555555-5555-5555-5555-555555555555";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const balanceBefore = (await getUser(prisma, sample.user.id))!.walletBalance;
+
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true, checkoutIntentId } },
+    });
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    // No second order…
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // …no second wallet debit (the whole transaction rolled back, and the
+    // colliding INSERT happens before adjustWallet is ever reached)…
+    expect(Number((await getUser(prisma, sample.user.id))!.walletBalance)).toBeCloseTo(Number(balanceBefore));
+    // …and nothing was delivered: no credentials DM, and the only SOLD stock
+    // item in the DB is none at all (the pre-existing colliding order is still
+    // PENDING_PAYMENT, so its stock is RESERVED, not SOLD).
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+    expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(0);
+    // Same alert copy every other rail uses, not error.generic or a throw.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
   it("buyNowInternal's screen carries native copy-to-clipboard buttons for the Binance UID and unique payment code", async () => {
     // Pins the real call site (checkout.ts's buyNowInternal → proofCancelKb(..., copy)),
     // not just the keyboard builder in isolation — nothing else would catch

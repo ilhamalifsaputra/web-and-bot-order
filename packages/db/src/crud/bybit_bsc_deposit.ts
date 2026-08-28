@@ -532,7 +532,7 @@ export async function deliverPaidBybitBscOrder(
       // — orders created before this ledger was wired up, or a rail change
       // that left no PENDING row — and that is never treated as an error.
       const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
-        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — proceeding without ledger confirmation; the order settlement itself is unaffected`);
+        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
         return null;
       });
       if (order.kind === OrderKind.WALLET_TOPUP) {

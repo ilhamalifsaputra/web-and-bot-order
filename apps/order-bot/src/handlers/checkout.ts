@@ -1563,6 +1563,18 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
     }
+    // A genuine double-tap here can also surface as a Prisma P2028 (write-
+    // conflict wait timeout, packages/db/src/client.ts's transactionOptions:
+    // maxWait 5s / timeout 10s) instead of DuplicateCheckoutIntentError, since
+    // this transaction is unusually long (create + settle + deliver all
+    // before commit) and the loser can block on the checkoutIntentId unique
+    // index past that window. Money-safe either way — the loser's INSERT is
+    // the transaction's first write, so nothing has been reserved/spent yet
+    // and it rolls back cleanly — but the buyer sees a generic error instead
+    // of the friendly duplicate-checkout toast. bot.catch (main.ts) handles
+    // the rethrow, and checkoutIntentId survives in session (not cleared on
+    // this path), so their next tap collides against the now-committed order
+    // and gets the friendly toast instead.
     throw e;
   }
 

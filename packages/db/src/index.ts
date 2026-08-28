@@ -46,6 +46,7 @@ export * from "./crud/ownerEmail";
 export * from "./crud/integrity";
 export * from "./crud/storageMaintenance";
 export * from "./crud/games";
+export * from "./crud/nickname";
 export * from "./crud/productProviderMappings";
 export * from "./crud/refunds";
 export * from "./crud/adminTasks";

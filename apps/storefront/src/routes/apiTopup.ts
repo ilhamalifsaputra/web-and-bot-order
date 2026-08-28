@@ -87,8 +87,7 @@ import {
   getDenominationWithProduct,
   getKokinpayCreds,
   getVipResellerCreds,
-  getMelostoreCreds,
-  getEnabledProviderMappingsForGame,
+  buildNicknameProviderEntries,
   findIdempotentResponse,
   saveIdempotentResponse,
   hashIdempotentRequest,
@@ -97,10 +96,7 @@ import {
 } from "@app/db";
 import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 import { checkGameRegion } from "@app/core/suppliers/vipreseller";
-import { NicknameService, type NicknameServiceProviderEntry } from "@app/core/nickname/service";
-import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvider";
-import { createVipResellerNicknameProvider } from "@app/core/nickname/vipresellerProvider";
-import { createMelostoreNicknameProvider } from "@app/core/nickname/melostoreProvider";
+import { NicknameService } from "@app/core/nickname/service";
 import { logger } from "@app/core/logger";
 import { OrderCurrency } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -525,25 +521,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         // even added to `entries` — that's a config gap, not a lookup
         // failure, so it shouldn't count against the provider's turn. ---
         try {
-          const mappings = await getEnabledProviderMappingsForGame(prisma, gameId);
-          const entries: NicknameServiceProviderEntry[] = [];
-          for (const mapping of mappings) {
-            let provider: NicknameServiceProviderEntry["provider"] | null = null;
-            if (mapping.provider === "kokinpay") {
-              const creds = await getKokinpayCreds(prisma);
-              if (creds) provider = createKokinpayNicknameProvider(creds);
-            } else if (mapping.provider === "vipreseller") {
-              const creds = await getVipResellerCreds(prisma);
-              if (creds) provider = createVipResellerNicknameProvider(creds);
-            } else if (mapping.provider === "melostore") {
-              const creds = await getMelostoreCreds(prisma);
-              if (creds) provider = createMelostoreNicknameProvider(creds);
-            }
-            // An unrecognized `mapping.provider` string (shouldn't happen —
-            // admin UI only writes the three known values) is silently
-            // skipped, same as a mapping with no credentials configured.
-            if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
-          }
+          // Mapping/credential resolution extracted to
+          // buildNicknameProviderEntries (packages/db/src/crud/nickname.ts,
+          // Trustance reconciliation Phase B Task 1) — byte-for-byte the same
+          // DB reads/skip rules this block used to perform inline. Only
+          // `gameId` is passed: this branch is reached exactly when `gameId`
+          // is set, so the function's `legacyGameCode` fallback never
+          // applies here (see that function's own doc comment for why the
+          // storefront's separate legacy block below is deliberately NOT
+          // rewired through it).
+          const entries = await buildNicknameProviderEntries(prisma, { gameId });
           const result = await new NicknameService(entries).checkNickname({ target: accountId, server });
           if (result.status === "found") {
             response.available = true;

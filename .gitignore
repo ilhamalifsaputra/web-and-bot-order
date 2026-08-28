@@ -60,8 +60,18 @@ apps/storefront/static/shop-app/
 graphify-out/.update.lock
 graphify-out/.update.log
 
+# --- graphify dated snapshot dirs are an accidental byproduct of the
+#     auto-update hook, not intentional history (~55MB across 5 dirs found
+#     2026-08-28) — only the root graphify-out/ contents are meant to be
+#     committed. ---
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+
 # --- skill copies the ui-ux-pro-max installer fans out to other agent/editor
-#     tools (~4.5 MB each). We use the .claude/skills/ copy; these are noise. ---
+#     tools (~4.5 MB each). We use the .claude/skills/ copy; these are noise.
+#     (.agents/rules/graphify.md and .agents/workflows/graphify.md are already
+#     tracked from before this rule existed and are unrelated legit content —
+#     gitignore doesn't apply retroactively, and that's intentional here, not
+#     leftover noise to clean up.) ---
 /.agents/
 /.augment/
 /.codebuddy/
@@ -79,6 +89,11 @@ graphify-out/.update.log
 /.trae/
 /.warp/
 /.windsurf/
+
+# --- external/scratch reference docs dumped at repo root (not part of this
+#     repo's own docs — keep them local, don't commit) ---
+/CHECKOUT-FLOW.md
+/trustance-*.md
 
 # --- OS / editor ---
 .DS_Store

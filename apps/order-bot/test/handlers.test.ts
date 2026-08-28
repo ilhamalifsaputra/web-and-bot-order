@@ -2643,7 +2643,7 @@ describe("checkout handlers", () => {
       price: "160000.00",
       warrantyDays: 30,
     });
-    await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"], 1);
+    await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"]);
 
     const { ctx } = customerCtx();
     await checkout.buyNowInternal(ctx, denom.id, 1);

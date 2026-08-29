@@ -210,6 +210,76 @@ describe("commerceGate — blanket private-chat guard", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
+  // Phase D final whole-branch review, Important #1: the bot's third input
+  // channel — plain text, routed by main.ts's message:text handler into
+  // customer.handleProductNumber — was entirely unguarded, so a group chat
+  // could still reach browse/wallet/orders/tickets/referral and a typed
+  // catalog number even though commands and callbacks were blocked.
+  describe("commerce-surface typed text (persistent-keyboard labels + catalog numbers)", () => {
+    it("private chat: a persistent-label tap (English 'Browse') passes through to next()", async () => {
+      const { ctx } = makeCtx({ chatType: "private", text: ckb.persistentLabel("browse", "en") });
+      const next = vi.fn(async () => {});
+      await commerceGate(ctx, next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    for (const chatType of NON_PRIVATE_TYPES) {
+      it(`${chatType} chat: blocks the "Browse" persistent-label text — never calls next(), never replies`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: ckb.persistentLabel("browse", "en") });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
+
+      it(`${chatType} chat: blocks the "Wallet" persistent-label text (would render a balance into the group)`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: ckb.persistentLabel("wallet", "en") });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
+
+      it(`${chatType} chat: blocks an Indonesian-language persistent-label text ("Pesanan Saya")`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: ckb.persistentLabel("orders", "id") });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
+
+      it(`${chatType} chat: blocks a bare 1-4 digit catalog-number reply ("3")`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: "3" });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
+
+      it(`${chatType} chat: blocks a 4-digit catalog-number reply ("1234")`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: "1234" });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
+    }
+
+    it("a 5-digit string (too long to be a catalog number) is not treated as commerce text and passes through", async () => {
+      const { ctx } = makeCtx({ chatType: "group", text: "12345" });
+      const next = vi.fn(async () => {});
+      await commerceGate(ctx, next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it("free text that happens to start with digits but isn't a bare number still passes through (e.g. a support message)", async () => {
+      const { ctx } = makeCtx({ chatType: "group", text: "3 items arrived damaged" });
+      const next = vi.fn(async () => {});
+      await commerceGate(ctx, next);
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("my_chat_member status-change update in a non-private chat passes through (no command/callback to block)", async () => {
     const { ctx } = makeCtx({ chatType: "supergroup", myChatMember: true });
     const next = vi.fn(async () => {});

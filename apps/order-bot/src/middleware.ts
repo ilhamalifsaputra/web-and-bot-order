@@ -12,9 +12,10 @@
  *  - adminOnly    : guard a composer/handler to ADMIN_IDS (@admin_only).
  *  - joinGate     : block every interaction until the configured join-gate
  *    channel/group have been joined.
- *  - commerceGate : block every commerce-surface command/callback
- *    (browse/buy/checkout, every `v1:`-prefixed callback) unless the update
- *    is from a private 1:1 chat — unconditional, unlike joinGate.
+ *  - commerceGate : block every commerce-surface command/callback/typed-text
+ *    (browse/buy/checkout, every `v1:`-prefixed callback, every persistent-
+ *    keyboard label, every typed catalog number) unless the update is from a
+ *    private 1:1 chat — unconditional, unlike joinGate.
  *
  * @safe_handler (per-handler try/except) becomes the global `bot.catch`.
  */
@@ -338,10 +339,33 @@ function isCommerceCallback(ctx: MyContext): boolean {
 }
 
 /**
- * Blanket guard: short-circuits any commerce-surface command or callback
- * (browse, buy, checkout, every `v1:`-prefixed callback — see
- * COMMERCE_CALLBACK_RE above) whenever the update didn't originate in a
- * private 1:1 chat with the bot.
+ * The bot's third way in, besides commands and callbacks: plain typed text.
+ * `main.ts`'s `message:text` handler routes every non-"/" text update into
+ * `customer.handleProductNumber`, which resolves it two ways —
+ * `ckb.matchPersistentLabel` for a tapped reply-keyboard button (Browse,
+ * Wallet, My Orders, My Tickets, Referral, ...) and a bare 1-4 digit string
+ * for a typed catalog-list number — and dispatches straight into the
+ * commerce surface with no chat-type check anywhere downstream (confirmed:
+ * `isPrivateChat`'s only other call site is `joinGate`). Without this check,
+ * `commerceGate` blocked slash commands and `v1:` callbacks but left this
+ * whole channel open — the guard needs to mirror exactly the two predicates
+ * `handleProductNumber` itself keys off, not reinvent them, or the two can
+ * drift apart again.
+ */
+function isCommerceText(ctx: MyContext): boolean {
+  const text = ctx.message?.text;
+  if (!text || text.startsWith("/")) return false;
+  const trimmed = text.trim();
+  if (ckb.isPersistentLabel(trimmed)) return true;
+  return /^\d{1,4}$/.test(trimmed);
+}
+
+/**
+ * Blanket guard: short-circuits any commerce-surface command, callback, or
+ * typed text (browse, buy, checkout, every `v1:`-prefixed callback, every
+ * persistent-keyboard label, every typed catalog number — see
+ * COMMERCE_CALLBACK_RE and isCommerceText above) whenever the update didn't
+ * originate in a private 1:1 chat with the bot.
  *
  * Closes a gap `joinGate` above never covered: joinGate's own
  * `!isPrivateChat` check only runs once the join gate is actually
@@ -356,10 +380,12 @@ function isCommerceCallback(ctx: MyContext): boolean {
  * mirroring joinGate's own non-private handling and for the same reason:
  * replying into an arbitrary group/channel the bot happens to be a member
  * of would spam it every time anyone taps a stale button or fat-fingers a
- * command there.
+ * command there. Ordinary free text (anything not a persistent-label match
+ * or a bare short number) still passes through untouched — that's the
+ * channel a group-usable flow like ticket support relies on.
  */
 export const commerceGate: MiddlewareFn<MyContext> = (ctx, next) => {
   if (isPrivateChat(ctx)) return next();
-  if (isCommerceCommand(ctx) || isCommerceCallback(ctx)) return; // silently drop
+  if (isCommerceCommand(ctx) || isCommerceCallback(ctx) || isCommerceText(ctx)) return; // silently drop
   return next();
 };

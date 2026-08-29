@@ -47,6 +47,7 @@
  * each one is a reliable "checkout draft is active" signal.
  */
 import type { StorageAdapter } from "grammy";
+import { config } from "@app/core/config";
 import { prisma, readBotSession, writeBotSession, deleteBotSession, type BotSessionKind } from "@app/db";
 import type { SessionData } from "../context";
 
@@ -55,13 +56,35 @@ import type { SessionData } from "../context";
  * tap re-renders from scratch, same as today's LRU eviction. */
 export const NAV_TTL_MS = 24 * 3_600_000;
 
+/**
+ * Longest payment window across every rail this bot settles, in minutes.
+ * `PAYMENT_WINDOW_MINUTES` (QRIS/TokoPay/PayDisini's shared default, 30) is
+ * the usual ceiling, but a deployment can raise any single rail's own
+ * window above it, so all of them are considered rather than assuming which
+ * one is largest.
+ */
+const LONGEST_PAYMENT_WINDOW_MINUTES = Math.max(
+  config.PAYMENT_WINDOW_MINUTES,
+  config.INTERNAL_PAYMENT_WINDOW_MINUTES,
+  config.BYBIT_PAYMENT_WINDOW_MINUTES,
+  config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES,
+  config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES,
+);
+
 /** An in-progress checkout draft (payment anchor, applied voucher, an
- * awaited free-text reply, ...) expires much sooner: abandoned checkout
- * state has real (if minor) consequences if it lingers — see
- * `util/paymentAnchor.ts`'s header comment on `paymentAnchorMsgId` — and 15
- * minutes is far longer than any buyer plausibly needs mid-checkout, so this
- * never truncates a live purchase, only a genuinely abandoned one. */
-export const CHECKOUT_TTL_MS = 15 * 60_000;
+ * awaited free-text reply, ...) expires once the LONGEST configured payment
+ * window across every rail has passed, plus a 5-minute margin — never
+ * shorter than the window a still-legitimately-pending payment is entitled
+ * to. A fixed 15-minute value here previously sat UNDER
+ * `PAYMENT_WINDOW_MINUTES`'s 30-minute default, so a buyer idle mid-payment
+ * (the single most likely reason to be idle mid-checkout) lost the session
+ * row while their payment was still valid: `qrMsgId` gone means
+ * `handlers/checkout.ts`'s stale-QR cleanup can never fire (the photo stays
+ * in the chat forever), `paymentAnchorMsgId` gone reopens the leak
+ * `paymentAnchor.ts`'s header comment describes, and an in-flight
+ * `customerInfo` conversation is destroyed silently mid-reply (Phase D final
+ * whole-branch review, Important #2). */
+export const CHECKOUT_TTL_MS = (LONGEST_PAYMENT_WINDOW_MINUTES + 5) * 60_000;
 
 /** Scratch keys that exist ONLY for the duration of an active checkout
  * draft, and are unconditionally cleared the moment it completes or is

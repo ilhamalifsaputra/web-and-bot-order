@@ -1371,9 +1371,15 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
   }
   const messages = await listTicketMessages(prisma, ticketId, 10);
 
+  // Task 1 fix: WAITING_ADMIN/WAITING_CUSTOMER are now live values (see
+  // TicketStatus's own doc comment, @app/core/enums) — labeled under the
+  // same bucket as their OPEN/REPLIED counterpart so a ticket doesn't show
+  // a raw enum string once it's been replied to more than once.
   const statusLabels: Record<string, string> = {
     [TicketStatus.OPEN]: "Open",
+    [TicketStatus.WAITING_ADMIN]: "Open",
     [TicketStatus.REPLIED]: "Replied",
+    [TicketStatus.WAITING_CUSTOMER]: "Replied",
     [TicketStatus.RESOLVED]: "Resolved",
     [TicketStatus.CLOSED]: "Closed",
   };

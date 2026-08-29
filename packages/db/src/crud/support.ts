@@ -256,7 +256,23 @@ export function classifyTicket(
   return db.supportTicket.update({ where: { id: ticketId }, data });
 }
 
-/** Save admin reply; return customer's telegram_id (to DM) or null. */
+/** Save admin reply; return customer's telegram_id (to DM) or null.
+ *
+ * Task 1 fix (review Finding 1/2): writes `WAITING_CUSTOMER`, not the
+ * retired `REPLIED` — see `TICKET_LEGAL_TRANSITIONS`'s doc comment for the
+ * full OPEN/REPLIED-vs-WAITING_ADMIN/WAITING_CUSTOMER resolution. This is a
+ * bare, unconditional write, same shape as before (never gated by
+ * `TICKET_LEGAL_TRANSITIONS` — it wasn't before this fix either): its one
+ * production caller (`apps/order-bot/src/conversations/admin.ts`) always
+ * calls `addTicketMessage` immediately afterward in the SAME transaction, so
+ * whatever this write leaves the ticket at is a transient, never-externally-
+ * visible intermediate state — `addTicketMessage`'s own ADMIN branch is what
+ * performs the real, audited, legality-checked transition (and recognizes
+ * "already at WAITING_CUSTOMER" as a no-op refresh rather than an error —
+ * see that function's own comment). Kept deliberately un-gated/standalone
+ * (M-29) so this function's repliedAt/firstResponseAt/lastStatusChangeAt
+ * stamps stay correct even if called on its own, without `addTicketMessage`.
+ */
 export async function replyToTicket(
   db: Db,
   args: { ticketId: number; reply: string; adminDbId: number },
@@ -271,7 +287,7 @@ export async function replyToTicket(
     data: {
       adminReply: args.reply,
       adminId: args.adminDbId,
-      status: TicketStatus.REPLIED,
+      status: TicketStatus.WAITING_CUSTOMER,
       repliedAt: now,
       lastStatusChangeAt: now,
       // Set once — true first-response time, unlike repliedAt (overwritten
@@ -302,7 +318,33 @@ export async function replyToTicket(
  * Only meaningful when `senderType` is `ADMIN` — a customer can never write
  * an internal note (the USER branch below never reads `internal`). Defaults
  * to `false`, so every existing call site's behavior is byte-for-byte
- * unchanged. */
+ * unchanged.
+ *
+ * Task 1 FIX (review Finding 1): this is the single universal choke point
+ * for every real reply in the system (bot conversations, web-admin's reply
+ * route, storefront's reply route) — so it's the one place that wires the
+ * customer-reply -> `WAITING_ADMIN` / admin-reply -> `WAITING_CUSTOMER`
+ * transitions via `transitionTicketStatus`, instead of the old hardcoded
+ * `OPEN`/`REPLIED` bare writes. See `TICKET_LEGAL_TRANSITIONS`'s doc comment
+ * for the full OPEN/REPLIED-vs-WAITING_ADMIN/WAITING_CUSTOMER resolution.
+ * Each branch below carves out two cases that do NOT go through
+ * `transitionTicketStatus`:
+ *  - the ticket is already at the target status (WAITING_ADMIN for a second
+ *    customer message before any admin responds; WAITING_CUSTOMER for a
+ *    second consecutive admin reply, or because `replyToTicket` — this
+ *    function's paired caller in the bot's admin-reply flow — already moved
+ *    it there earlier in the SAME transaction): a same-status "transition"
+ *    isn't a real state move, so it's a plain field refresh (wait-clock /
+ *    reply timestamps only), not an audited transition. This is also why
+ *    `TICKET_LEGAL_TRANSITIONS` deliberately has NO self-edges for these two
+ *    states — adding one would make `OPEN`'s and `WAITING_ADMIN`'s (or
+ *    `REPLIED`'s and `WAITING_CUSTOMER`'s) target lists byte-identical
+ *    again, exactly Finding 2's redundancy.
+ *  - the ticket is already `RESOLVED`/`CLOSED`: explicitly out of this fix's
+ *    scope (brief: "CLOSED/RESOLVED handling ... unaffected") — a reply
+ *    here still unconditionally reopens it via the OLD literal values
+ *    (`OPEN`/`REPLIED`), byte-for-byte the pre-fix behavior, since neither
+ *    of those two states' entries in `TICKET_LEGAL_TRANSITIONS` changed. */
 export async function addTicketMessage(
   db: Db,
   args: {
@@ -344,10 +386,35 @@ export async function addTicketMessage(
   if (ticket) {
     const now = new Date();
     if (args.senderType === SenderType.USER) {
-      await db.supportTicket.update({
-        where: { id: args.ticketId },
-        data: { status: TicketStatus.OPEN, lastStatusChangeAt: now },
-      });
+      // `notifyOwner === false` marks the bot's ticket-creation mirror call
+      // (see that field's own doc comment) — NOT a real reply, so it must
+      // not move the ticket off whatever createTicket left it at (OPEN).
+      const isOpeningMirror = args.notifyOwner === false;
+      if (!isOpeningMirror) {
+        if (ticket.status === TicketStatus.RESOLVED || ticket.status === TicketStatus.CLOSED) {
+          // Out of this fix's scope — see this function's own doc comment.
+          await db.supportTicket.update({
+            where: { id: args.ticketId },
+            data: { status: TicketStatus.OPEN, lastStatusChangeAt: now },
+          });
+        } else if (ticket.status === TicketStatus.WAITING_ADMIN) {
+          // Already waiting on admin — no real state move, just refresh the
+          // wait-clock (see this function's own doc comment for why this
+          // isn't a TICKET_LEGAL_TRANSITIONS self-edge instead).
+          await db.supportTicket.update({
+            where: { id: args.ticketId },
+            data: { lastStatusChangeAt: now },
+          });
+        } else {
+          await transitionTicketStatus(db, {
+            ticketId: args.ticketId,
+            from: ticket.status,
+            to: TicketStatus.WAITING_ADMIN,
+            adminId: null, // customer-driven — no acting admin (system actor)
+            meta: "customer replied",
+          });
+        }
+      }
       // Owner "customer replied" email — ONLY for the customer's own
       // messages. An admin's own reply (the `else` branch below) must never
       // reach this: that would mail the owner about their own admin's
@@ -362,21 +429,37 @@ export async function addTicketMessage(
         });
       }
     } else if (!internal) {
-      // Customer-visible admin reply — unchanged from before `internal`
-      // existed. An internal note (else branch below) skips all of this: no
-      // status flip, no repliedAt/firstResponseAt advance, because none of
-      // that is true of a note the customer never sees.
-      await db.supportTicket.update({
-        where: { id: args.ticketId },
-        data: {
-          status: TicketStatus.REPLIED,
-          repliedAt: now,
-          lastStatusChangeAt: now,
-          // Set once — true first-response time, unlike repliedAt (overwritten
-          // on every admin reply).
-          firstResponseAt: ticket.firstResponseAt ?? now,
-        },
-      });
+      // Customer-visible admin reply. repliedAt/firstResponseAt are stamped
+      // in every branch below exactly as before `internal`/this fix existed;
+      // an internal note (else branch below) skips all of this: no status
+      // flip, no repliedAt/firstResponseAt advance, because none of that is
+      // true of a note the customer never sees.
+      const replyStamps = { repliedAt: now, firstResponseAt: ticket.firstResponseAt ?? now };
+      if (ticket.status === TicketStatus.RESOLVED || ticket.status === TicketStatus.CLOSED) {
+        // Out of this fix's scope — see this function's own doc comment.
+        await db.supportTicket.update({
+          where: { id: args.ticketId },
+          data: { status: TicketStatus.REPLIED, lastStatusChangeAt: now, ...replyStamps },
+        });
+      } else if (ticket.status === TicketStatus.WAITING_CUSTOMER) {
+        // Already waiting on customer (a second consecutive admin reply, or
+        // `replyToTicket` already moved it here earlier in this same
+        // transaction — see this function's own doc comment) — no real
+        // state move, just refresh the reply timestamps/wait-clock.
+        await db.supportTicket.update({
+          where: { id: args.ticketId },
+          data: { lastStatusChangeAt: now, ...replyStamps },
+        });
+      } else {
+        await transitionTicketStatus(db, {
+          ticketId: args.ticketId,
+          from: ticket.status,
+          to: TicketStatus.WAITING_CUSTOMER,
+          adminId: args.senderId,
+          meta: "admin replied",
+          extraData: replyStamps,
+        });
+      }
     } else {
       await logAdminAction(db, {
         adminId: args.senderId,
@@ -459,31 +542,67 @@ export async function assignTicketWithAudit(
  * `transitionTicketStatus` validates against before attempting its atomic
  * claim.
  *
- * `OPEN`/`REPLIED` (the legacy pair) and `WAITING_ADMIN`/`WAITING_CUSTOMER`
- * (the new pair — see `TicketStatus`'s own doc comment in
- * @app/core/enums for why both pairs exist) are treated as interchangeable
- * "waiting on admin" / "waiting on customer" source states: either half of
- * either pair can reach either half of the other pair, which is exactly the
- * `WAITING_ADMIN <-> WAITING_CUSTOMER` edge this task's brief specifies
- * (customer reply -> `WAITING_ADMIN`, admin reply -> `WAITING_CUSTOMER`)
- * generalized to also accept/produce the legacy vocabulary. `RESOLVED`/
- * `CLOSED` reachability mirrors the ACTUAL guards `resolveTicket`/
+ * ## Task 1 FIX (review Findings 1 & 2) — OPEN/REPLIED vs WAITING_ADMIN/WAITING_CUSTOMER
+ *
+ * The original Task 1 commit added `WAITING_ADMIN`/`WAITING_CUSTOMER` to
+ * this table but left them unreachable by any real code path, and their
+ * target lists were byte-for-byte identical to `OPEN`'s/`REPLIED`'s — two
+ * exactly-synonymous pairs (review Findings 1 and 2). This fix wires
+ * `addTicketMessage` (the single choke point for every real reply in the
+ * system) to actually produce `WAITING_ADMIN`/`WAITING_CUSTOMER`, and
+ * resolves the redundancy as follows — **investigated every existing usage
+ * of `OPEN`/`REPLIED` across the codebase first** (bot keyboards/handlers,
+ * web-admin filters/badges/resolve-reopen visibility, the
+ * `listStaleRepliedTickets` auto-close job, every `.test.ts`/`.test.tsx`
+ * touching them):
+ *
+ *  - `OPEN` is kept as the state for a genuinely NEW ticket with zero real
+ *    messages yet (written only by `createTicket`, and by
+ *    `reopenTicket`/`reopenTicketAdmin` — unaffected, out of this fix's
+ *    scope). A customer's FIRST-EVER follow-up (the second real message on
+ *    the ticket) now moves it to `WAITING_ADMIN` instead of re-asserting
+ *    `OPEN` — that's the new `OPEN -> WAITING_ADMIN` edge below. This is
+ *    what genuinely differentiates `OPEN` from `WAITING_ADMIN` (Finding 2):
+ *    `OPEN` is a strictly one-way "entry" state nothing but ticket
+ *    creation/reopen ever produces; `WAITING_ADMIN` is the recurring
+ *    "needs admin attention" state every subsequent customer reply produces.
+ *  - `REPLIED` is RETIRED as a normal write target — `addTicketMessage`'s
+ *    ADMIN branch and `replyToTicket` now write `WAITING_CUSTOMER` instead,
+ *    since the review confirmed they mean exactly the same thing and only
+ *    one should be live. `REPLIED` is NOT removed from the enum or this
+ *    table: historical rows already sitting at `REPLIED` in production must
+ *    keep working (this is a plain `String` column, not a native enum — see
+ *    @app/core/enums's header comment — existing rows never get rewritten),
+ *    `listStaleRepliedTickets`/`getTicketStats`/`isTicketOverdue`/
+ *    `buildTicketConditions` (this file) all now match `WAITING_CUSTOMER`
+ *    ALONGSIDE `REPLIED` rather than replacing it, and `addTicketMessage`'s
+ *    ADMIN branch still writes the literal `REPLIED` in exactly one
+ *    preserved edge case (replying to an already-RESOLVED/CLOSED ticket —
+ *    see that function's own doc comment for why that edge is intentionally
+ *    unchanged). The new `REPLIED -> WAITING_CUSTOMER` edge below exists so
+ *    a fresh admin reply landing on one of those historical `REPLIED` rows
+ *    (or a doubled-up admin reply — see `addTicketMessage`'s own comment)
+ *    can still legally move forward under the modern vocabulary.
+ *
+ * `WAITING_ADMIN`/`WAITING_CUSTOMER` deliberately have NO self-edges (e.g.
+ * no `WAITING_ADMIN -> WAITING_ADMIN`) even though `addTicketMessage` can
+ * hit that exact "already there" case (a second customer message, or a
+ * second admin reply, before the other side responds) — adding one would
+ * make `OPEN`'s/`REPLIED`'s target lists byte-identical to `WAITING_ADMIN`'s/
+ * `WAITING_CUSTOMER`'s again, the very redundancy Finding 2 flagged.
+ * `addTicketMessage` handles that case itself as a plain field refresh
+ * instead of a `transitionTicketStatus` call — see its own doc comment.
+ *
+ * `RESOLVED`/`CLOSED` reachability mirrors the ACTUAL guards `resolveTicket`/
  * `closeTicket` already enforce today (any non-terminal status may resolve
  * or close), and `CLOSED -> OPEN` mirrors `reopenTicket`/`reopenTicketAdmin`
  * exactly (the only two functions that move a ticket OUT of CLOSED today).
  * `RESOLVED` has no outgoing edge back to an active state because no current
  * crud function reopens a RESOLVED ticket without closing it first — that
- * gap is left for a future task if such an action is ever added.
- *
- * NOTE: nothing in this file's existing status-changing functions
- * (`addTicketMessage`, `replyToTicket`, `resolveTicket`, `closeTicket`,
- * `reopenTicket`/`reopenTicketAdmin`) routes through this table today — they
- * keep their own existing atomic-claim guards unchanged (see each function's
- * own comment). This table + `transitionTicketStatus` is new, additive
- * infrastructure for the `WAITING_ADMIN`/`WAITING_CUSTOMER` pair, not a
- * restructuring of support.ts's existing transitions — see `TicketStatus`'s
- * doc comment in @app/core/enums for why rewiring existing callers onto it
- * is explicitly out of this task's scope.
+ * gap is left for a future task if such an action is ever added. Per this
+ * fix's own brief, `RESOLVED`/`CLOSED` handling is UNAFFECTED — see
+ * `addTicketMessage`'s doc comment for the one deliberate carve-out where a
+ * reply lands on an already-RESOLVED/CLOSED ticket.
  */
 export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   [TicketStatus.OPEN]: [
@@ -491,6 +610,7 @@ export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     TicketStatus.WAITING_CUSTOMER,
     TicketStatus.RESOLVED,
     TicketStatus.CLOSED,
+    TicketStatus.WAITING_ADMIN,
   ],
   [TicketStatus.WAITING_ADMIN]: [
     TicketStatus.REPLIED,
@@ -503,6 +623,7 @@ export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     TicketStatus.WAITING_ADMIN,
     TicketStatus.RESOLVED,
     TicketStatus.CLOSED,
+    TicketStatus.WAITING_CUSTOMER,
   ],
   [TicketStatus.WAITING_CUSTOMER]: [
     TicketStatus.OPEN,
@@ -525,14 +646,31 @@ export const TICKET_LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
  * the move via `logAdminAction` with a natural-language sentence
  * (docs/LOGGING.md).
  *
- * New, additive infrastructure (Task 1) — see `TICKET_LEGAL_TRANSITIONS`'s
- * doc comment for why no EXISTING support.ts function calls this yet.
+ * Task 1 fix: now called by `addTicketMessage` for the real
+ * customer-reply/admin-reply transitions — see `TICKET_LEGAL_TRANSITIONS`'s
+ * and `addTicketMessage`'s own doc comments.
  */
 export async function transitionTicketStatus(
   db: Db,
-  args: { ticketId: number; from: string; to: string; adminId: number; meta?: string | null },
+  args: {
+    ticketId: number;
+    from: string;
+    to: string;
+    /** Acting admin id, or `null` for a system/customer-driven transition
+     * (e.g. `addTicketMessage`'s own customer-reply -> `WAITING_ADMIN`
+     * move) — same `adminId: null` = system-actor convention already used
+     * elsewhere for non-admin-initiated audit rows (see digiflazz.ts/
+     * orders.ts/wallet_topup.ts in this same directory). */
+    adminId: number | null;
+    meta?: string | null;
+    /** Extra fields to stamp in the SAME atomic update as the status move —
+     * e.g. `addTicketMessage`'s ADMIN branch also needs `repliedAt`/
+     * `firstResponseAt` written in lockstep with the status flip, not as a
+     * second, unguarded write after the claim already succeeded. */
+    extraData?: { repliedAt?: Date; firstResponseAt?: Date };
+  },
 ): Promise<SupportTicket> {
-  const { ticketId, from, to, adminId, meta } = args;
+  const { ticketId, from, to, adminId, meta, extraData } = args;
 
   if (!TICKET_LEGAL_TRANSITIONS[from]?.includes(to)) {
     throw new ValidationError("error.illegal_ticket_status_transition", { from, to });
@@ -546,6 +684,7 @@ export async function transitionTicketStatus(
       lastStatusChangeAt: now,
       ...(to === TicketStatus.RESOLVED ? { resolvedAt: now } : {}),
       ...(to === TicketStatus.CLOSED ? { closedAt: now } : {}),
+      ...(extraData ?? {}),
     },
   });
   if (claim.count !== 1) {
@@ -618,11 +757,15 @@ export function listUserTickets(db: Db, userId: number, limit = 10) {
   });
 }
 
-/** REPLIED tickets whose replied_at is older than cutoff (auto-close job). */
+/** REPLIED/WAITING_CUSTOMER tickets whose replied_at is older than cutoff
+ * (auto-close job). Task 1 fix: matches BOTH values — `REPLIED` for
+ * historical rows, `WAITING_CUSTOMER` for every admin reply going forward
+ * (see `TICKET_LEGAL_TRANSITIONS`'s doc comment) — so a ticket that goes
+ * stale after this fix ships is still caught. */
 export function listStaleRepliedTickets(db: Db, cutoff: Date) {
   return db.supportTicket.findMany({
     where: {
-      status: TicketStatus.REPLIED,
+      status: { in: [TicketStatus.REPLIED, TicketStatus.WAITING_CUSTOMER] },
       repliedAt: { not: null, lt: cutoff },
     },
   });
@@ -682,12 +825,21 @@ export function overdueCutoff(now: Date = new Date()): Date {
  * than `repliedAt`/`createdAt`. A customer follow-up on an already-answered
  * ticket flips it back to OPEN via `addTicketMessage` WITHOUT clearing
  * `repliedAt`, so the old `repliedAt IS NULL` term made such tickets
- * invisible here forever. */
+ * invisible here forever.
+ *
+ * Task 1 fix: also matches `WAITING_ADMIN` (see `TICKET_LEGAL_TRANSITIONS`'s
+ * doc comment) — a ticket sitting on the "needs admin attention" side of the
+ * modern vocabulary is exactly as overdue-eligible as one sitting at `OPEN`.
+ * `buildTicketConditions`'s `{overdue: true}` branch below mirrors this
+ * exact predicate — keep the two in sync (see that function's own comment). */
 export function isTicketOverdue(
   ticket: { status: string; lastStatusChangeAt: Date },
   cutoff: Date,
 ): boolean {
-  return ticket.status === TicketStatus.OPEN && ticket.lastStatusChangeAt < cutoff;
+  return (
+    (ticket.status === TicketStatus.OPEN || ticket.status === TicketStatus.WAITING_ADMIN) &&
+    ticket.lastStatusChangeAt < cutoff
+  );
 }
 
 /** One `{ prisma, raw }` pair per active filter term — the single place a new
@@ -751,8 +903,14 @@ function buildTicketConditions(
   if (f.overdue) {
     // AND'd as two independent conditions (not an overwrite) — combines
     // correctly with an explicit `f.status` filter above instead of silently
-    // replacing it. See this function's doc comment (M-36).
-    conditions.push({ prisma: { status: TicketStatus.OPEN }, raw: Prisma.sql`status = ${TicketStatus.OPEN}` });
+    // replacing it. See this function's doc comment (M-36). Task 1 fix:
+    // OPEN-or-WAITING_ADMIN, mirroring isTicketOverdue's own predicate
+    // exactly (see that function's doc comment) — keep both in sync.
+    const overdueStatuses = [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN];
+    conditions.push({
+      prisma: { status: { in: overdueStatuses } },
+      raw: Prisma.sql`status IN (${Prisma.join(overdueStatuses)})`,
+    });
     conditions.push({
       prisma: { lastStatusChangeAt: { lt: cutoff } },
       raw: Prisma.sql`last_status_change_at < ${cutoff}`,
@@ -869,7 +1027,12 @@ export function countTickets(db: Db, opts: TicketFilter = {}) {
 }
 
 /** Five KPI counts for the Support/Tickets page header — each a real
- * `where`-clause count (not fetch-then-filter). */
+ * `where`-clause count (not fetch-then-filter).
+ *
+ * Task 1 fix: `open` and `waitingCustomer` each match BOTH halves of their
+ * pair (`OPEN`+`WAITING_ADMIN`, `REPLIED`+`WAITING_CUSTOMER`) — see
+ * `TICKET_LEGAL_TRANSITIONS`'s doc comment for why both halves of each pair
+ * are still live/readable values. */
 export async function getTicketStats(
   db: Db,
   now: Date = new Date(),
@@ -879,8 +1042,8 @@ export async function getTicketStats(
   const todayEnd = startOfDayUtc(addDays(now, 1));
 
   const [open, waitingCustomer, overdue, unassigned, resolvedToday] = await Promise.all([
-    db.supportTicket.count({ where: { status: TicketStatus.OPEN } }),
-    db.supportTicket.count({ where: { status: TicketStatus.REPLIED } }),
+    db.supportTicket.count({ where: { status: { in: [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN] } } }),
+    db.supportTicket.count({ where: { status: { in: [TicketStatus.REPLIED, TicketStatus.WAITING_CUSTOMER] } } }),
     // Routed through ticketWhere (the same function the {overdue:true} filter
     // path uses) rather than repeating the predicate inline — this is what
     // makes "overdue" an actual single source of truth instead of two copies

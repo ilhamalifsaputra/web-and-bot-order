@@ -320,52 +320,55 @@ export const zVoucherScope = z.nativeEnum(VoucherScope);
  * nobody has looked at it" and "customer replied, waiting on admin again"
  * into the same OPEN value).
  *
- * ## `REPLIED` is KEPT, not retired
+ * ## Task 1 FIX (post-review): wired and resolved
  *
- * Checked every usage of `TicketStatus.REPLIED` across the codebase before
- * deciding: it is load-bearing in apps/order-bot (keyboards, handlers,
- * `listStaleRepliedTickets`'s auto-close job, `conversations.test.ts`/
- * `jobs.test.ts`) and apps/web-admin (status badges, filters, `SupportPage`/
- * `TicketDetailPage`, their `.test.tsx` files) — none of which this task may
- * touch (Phase C splits ticketing work across 4 tasks; UI/bot wiring is
- * Task 2/3/4's territory, not this one's). Removing `REPLIED` here would
- * break every one of those call sites' typecheck AND silently reinterpret
- * every historical ticket row already sitting at `status = 'REPLIED'` in
- * production (this is a plain `String` column, not a native Postgres enum —
- * see this file's header comment — so existing rows keep whatever string
- * they were written with regardless of what this const object declares).
- * Keeping `REPLIED` avoids both.
+ * The original Task 1 commit shipped `WAITING_ADMIN`/`WAITING_CUSTOMER`
+ * unreachable by any real code path, with target lists in
+ * `TICKET_LEGAL_TRANSITIONS` byte-for-byte identical to `OPEN`'s/`REPLIED`'s
+ * — two exactly-synonymous pairs (task-scoped review Findings 1 and 2). A
+ * follow-up fix wired `addTicketMessage` (packages/db/src/crud/support.ts —
+ * the single choke point for every real reply in bot/web-admin/storefront)
+ * to actually produce them, and resolved the redundancy:
  *
- * ## `WAITING_ADMIN`/`WAITING_CUSTOMER` are additive, not yet wired
+ *  - `OPEN` is KEPT — narrowed to mean "genuinely new, zero real messages
+ *    yet" (written only by `createTicket` and the reopen functions). A
+ *    customer's first follow-up now moves the ticket to `WAITING_ADMIN`
+ *    instead of re-asserting `OPEN`.
+ *  - `REPLIED` is KEPT in the enum/schema (existing `String` column, never
+ *    rewrites historical rows — see this file's header comment) but RETIRED
+ *    as a normal write target: `addTicketMessage`'s ADMIN branch and
+ *    `replyToTicket` now write `WAITING_CUSTOMER` instead, since the review
+ *    confirmed the two meant exactly the same thing. Every read-side
+ *    consumer that used to check `REPLIED` alone (`listStaleRepliedTickets`,
+ *    `getTicketStats`, `isTicketOverdue`/`buildTicketConditions`'s overdue
+ *    predicate, bot keyboards/handlers, web-admin badges/filters/
+ *    resolve-reopen visibility) was updated to match `WAITING_CUSTOMER`
+ *    ALONGSIDE `REPLIED`, not instead of it.
+ *  - `WAITING_ADMIN`/`WAITING_CUSTOMER` are now genuinely differentiated
+ *    from `OPEN`/`REPLIED` (Finding 2), not just renamed: see
+ *    `TICKET_LEGAL_TRANSITIONS`'s doc comment (support.ts) for the exact
+ *    transition-table shape and why each new edge exists.
  *
- * Nothing in `packages/db/src/crud/support.ts` writes these two values today
- * — `createTicket` still starts tickets at `OPEN` (the schema default), and
- * `addTicketMessage`/`replyToTicket` still flip between `OPEN` and `REPLIED`
- * exactly as before. `TICKET_LEGAL_TRANSITIONS` (support.ts) documents the
- * intended `WAITING_ADMIN <-> WAITING_CUSTOMER` edges (customer reply ->
- * `WAITING_ADMIN`, admin reply -> `WAITING_CUSTOMER`) and
- * `transitionTicketStatus` enforces them for whichever future caller
- * (Task 3 or later) starts actually moving tickets through this pair — but
- * rewiring the existing OPEN/REPLIED write paths to use these instead would
- * be exactly the kind of cross-cutting behavior change (affecting overdue
- * calculation, `getTicketStats`, the auto-close job, every OPEN/REPLIED
- * label in the bot and web-admin UI) this task's brief explicitly warned
- * against ("choose the option that doesn't silently break existing
- * tickets/tests"). This mirrors an established pattern already in this
- * file — see `OrderStatus.PARTIALLY_DELIVERED` and `OrderItemStatus`'s own
- * "shadow, not yet a source of truth" doc comments below.
+ * This mirrors an established pattern already in this file — see
+ * `OrderStatus.PARTIALLY_DELIVERED` and `OrderItemStatus`'s own "shadow, not
+ * yet a source of truth" doc comments below, except this pair has since
+ * graduated from shadow to live.
  */
 export const TicketStatus = {
   OPEN: "OPEN",
+  /** Retired as a normal write target (see this const's doc comment) —
+   * `WAITING_CUSTOMER` is now written instead. Kept for historical rows and
+   * one deliberate carve-out (`addTicketMessage`'s ADMIN branch replying to
+   * an already-RESOLVED/CLOSED ticket — see that function's own comment). */
   REPLIED: "REPLIED",
-  /** New (Task 1): ticket needs admin attention — the customer has replied,
-   * or the ticket was just created, under the more explicit vocabulary.
-   * Not written by any current code path — see this const's doc comment. */
+  /** Ticket needs admin attention — a customer reply (after the ticket's
+   * first-ever message) moves it here via `addTicketMessage` ->
+   * `transitionTicketStatus`. See this const's doc comment. */
   WAITING_ADMIN: "WAITING_ADMIN",
-  /** New (Task 1): an admin has responded and the ticket is waiting on the
-   * customer's next message — the `WAITING_ADMIN`-vocabulary counterpart of
-   * `REPLIED`. Not written by any current code path — see this const's doc
-   * comment. */
+  /** An admin has responded and the ticket is waiting on the customer's next
+   * message — the live replacement for `REPLIED`, written by
+   * `addTicketMessage`'s ADMIN branch and `replyToTicket`. See this const's
+   * doc comment. */
   WAITING_CUSTOMER: "WAITING_CUSTOMER",
   RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",

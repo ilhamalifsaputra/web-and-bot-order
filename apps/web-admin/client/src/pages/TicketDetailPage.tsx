@@ -275,7 +275,11 @@ export function TicketDetailPage() {
                 ))}
               </SelectContent>
             </Select>
-            {(ticket.status === "OPEN" || ticket.status === "REPLIED") && (
+            {/* Task 1 fix: mirrors the backend's actual resolveTicket guard (status
+                NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED whitelist —
+                WAITING_ADMIN/WAITING_CUSTOMER tickets are now real and were
+                silently losing this button under the old check. */}
+            {ticket.status !== "RESOLVED" && ticket.status !== "CLOSED" && (
               <Button variant="outline" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
                 <CheckCircle2 className="h-4 w-4" />
                 Resolve

@@ -31,6 +31,7 @@ import {
   assignTicketWithAudit,
   TICKET_LEGAL_TRANSITIONS,
   transitionTicketStatus,
+  listStaleRepliedTickets,
 } from "./support";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -295,7 +296,9 @@ describe("replyToTicket", () => {
 
     expect(tgId).toBe(930n);
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix: writes WAITING_CUSTOMER now, not the retired REPLIED — see
+    // TICKET_LEGAL_TRANSITIONS' doc comment.
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(fresh!.repliedAt).not.toBeNull();
     expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(ticket.lastStatusChangeAt.getTime());
     expect(fresh!.firstResponseAt).not.toBeNull();
@@ -412,7 +415,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     void fresh;
   });
 
-  it("M-31: a customer follow-up on an already-answered ticket (status flips back to OPEN, repliedAt NOT cleared) becomes overdue once its wait-clock passes the cutoff — invisible under the old repliedAt-IS-NULL predicate", async () => {
+  it("M-31: a customer follow-up on an already-answered ticket (status flips to WAITING_ADMIN, repliedAt NOT cleared) becomes overdue once its wait-clock passes the cutoff — invisible under the old repliedAt-IS-NULL predicate", async () => {
     const user = await makeUser(1051n);
     const admin = await makeAdmin();
 
@@ -420,12 +423,14 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     const ticket = await createTicket(prisma, user.id, "still broken?");
     await replyToTicket(prisma, { ticketId: ticket.id, reply: "try again", adminDbId: admin.id });
     const afterReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(afterReply!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix: writes WAITING_CUSTOMER now, not the retired REPLIED — see
+    // TICKET_LEGAL_TRANSITIONS' doc comment.
+    expect(afterReply!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(afterReply!.repliedAt).not.toBeNull();
 
-    // Customer follows up ("still not fixed") — addTicketMessage flips status
-    // back to OPEN and resets lastStatusChangeAt (Task 38), but deliberately
-    // does NOT clear repliedAt.
+    // Customer follows up ("still not fixed") — addTicketMessage now moves
+    // status to WAITING_ADMIN (Task 1 fix — was OPEN pre-fix) and resets
+    // lastStatusChangeAt (Task 38), but deliberately does NOT clear repliedAt.
     await addTicketMessage(prisma, {
       ticketId: ticket.id,
       senderType: SenderType.USER,
@@ -433,7 +438,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
       content: "still not fixed",
     });
     const afterFollowUp = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(afterFollowUp!.status).toBe(TicketStatus.OPEN);
+    expect(afterFollowUp!.status).toBe(TicketStatus.WAITING_ADMIN);
     expect(afterFollowUp!.repliedAt).not.toBeNull(); // NOT cleared — this is the bug's precondition
 
     // Age it past the overdue cutoff relative to lastStatusChangeAt (the
@@ -453,9 +458,10 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     expect(viaRawSql.map((t) => t.id)).toEqual([ticket.id]);
 
     // Companion case: a ticket that's genuinely still just "answered, no
-    // follow-up yet" (REPLIED, repliedAt old) must stay excluded — replying
-    // resets the wait-clock, so it's not overdue even though repliedAt itself
-    // is old. Proves the fix isn't simply "always OPEN-or-REPLIED".
+    // follow-up yet" (WAITING_CUSTOMER, repliedAt old) must stay excluded —
+    // replying resets the wait-clock, so it's not overdue even though
+    // repliedAt itself is old. Proves the fix isn't simply "always
+    // OPEN/WAITING_ADMIN-or-REPLIED/WAITING_CUSTOMER".
     const answeredNoFollowUp = await createTicket(prisma, user.id, "answered, no reply from customer yet");
     await replyToTicket(prisma, { ticketId: answeredNoFollowUp.id, reply: "here's the fix", adminDbId: admin.id });
     await prisma.supportTicket.update({
@@ -463,7 +469,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
       data: { repliedAt: addMinutes(new Date(), -300), lastStatusChangeAt: addMinutes(new Date(), -300) },
     });
     const stillExcluded = await prisma.supportTicket.findUnique({ where: { id: answeredNoFollowUp.id } });
-    expect(stillExcluded!.status).toBe(TicketStatus.REPLIED); // not OPEN → excluded regardless of age
+    expect(stillExcluded!.status).toBe(TicketStatus.WAITING_CUSTOMER); // not OPEN/WAITING_ADMIN → excluded regardless of age
 
     const finalOverdue = await listTicketsPaged(prisma, { overdue: true });
     expect(finalOverdue.map((t) => t.id)).toEqual([ticket.id]);
@@ -572,11 +578,23 @@ describe("getTicketStats", () => {
       data: { lastStatusChangeAt: addMinutes(now, -300) },
     });
 
-    // waiting on customer (REPLIED), assigned
+    // waiting on customer (REPLIED — legacy value, still counted), assigned
     const repliedTicket = await createTicket(prisma, user.id, "replied");
     await prisma.supportTicket.update({
       where: { id: repliedTicket.id },
       data: { status: TicketStatus.REPLIED, repliedAt: now, adminId: admin.id },
+    });
+
+    // waiting on customer (WAITING_CUSTOMER — Task 1 fix's live value)
+    const waitingCustomerTicket = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomerTicket.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: now },
+    });
+
+    // open, unassigned, not overdue (WAITING_ADMIN — Task 1 fix's live value)
+    await prisma.supportTicket.create({
+      data: { userId: user.id, message: "waiting admin", status: TicketStatus.WAITING_ADMIN },
     });
 
     // closed today
@@ -592,10 +610,16 @@ describe("getTicketStats", () => {
     });
 
     const stats = await getTicketStats(prisma, now);
-    expect(stats.open).toBe(2); // fresh open + stale open
-    expect(stats.waitingCustomer).toBe(1); // repliedTicket
+    // Task 1 fix: `open`/`waitingCustomer` each match BOTH halves of their
+    // pair (OPEN+WAITING_ADMIN, REPLIED+WAITING_CUSTOMER) — see
+    // getTicketStats' own doc comment.
+    expect(stats.open).toBe(3); // fresh open + stale open + the WAITING_ADMIN ticket
+    expect(stats.waitingCustomer).toBe(2); // repliedTicket + waitingCustomerTicket
     expect(stats.overdue).toBe(1); // stale open only
-    expect(stats.unassigned).toBe(2); // fresh open + stale open (repliedTicket is assigned, closed ones excluded)
+    // unassigned counts ANY non-CLOSED status with adminId null: fresh open +
+    // stale open + waitingCustomerTicket + the WAITING_ADMIN ticket
+    // (repliedTicket is assigned, closed ones excluded).
+    expect(stats.unassigned).toBe(4);
     expect(stats.resolvedToday).toBe(1); // closedToday only
   });
 
@@ -1045,10 +1069,11 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(before);
-    // The ticket's status transition (OPEN/REPLIED) is untouched by this
-    // gate — confirm the ADMIN branch still flips the ticket to REPLIED.
+    // The ticket's status transition (WAITING_ADMIN/WAITING_CUSTOMER) is
+    // untouched by this gate — confirm the ADMIN branch still flips the
+    // ticket to WAITING_CUSTOMER (Task 1 fix — was REPLIED pre-fix).
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
   });
 
   it("addTicketMessage with senderType USER enqueues nothing when owner-email is not configured", async () => {
@@ -1086,6 +1111,11 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(before);
+    // Task 1 fix: the opening-message mirror must NOT trigger a status
+    // transition either — the ticket stays exactly where createTicket left
+    // it (OPEN), not WAITING_ADMIN.
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.OPEN);
   });
 
   it("addTicketMessage with notifyOwner: true (explicit) behaves the same as omitting it — still enqueues one row", async () => {
@@ -1251,7 +1281,7 @@ describe("addTicketMessage — internal notes (Task 1)", () => {
     expect(fresh!.firstResponseAt).toBeNull();
   });
 
-  it("a NON-internal admin reply still flips the ticket to REPLIED (regression: internal support doesn't change existing behavior)", async () => {
+  it("a NON-internal admin reply still flips the ticket to WAITING_CUSTOMER (Task 1 fix — was REPLIED pre-fix; regression: internal support doesn't change existing behavior)", async () => {
     const user = await makeUser(9105n);
     const admin = await makeAdmin();
     const ticket = await createTicket(prisma, user.id, "help");
@@ -1264,7 +1294,7 @@ describe("addTicketMessage — internal notes (Task 1)", () => {
     });
 
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(fresh!.repliedAt).toBeInstanceOf(Date);
     expect(fresh!.firstResponseAt).toBeInstanceOf(Date);
   });
@@ -1377,17 +1407,204 @@ describe("assignTicket (legacy) vs assignTicketWithAudit (Task 1)", () => {
   });
 });
 
+// Task 1 FIX (review Finding 1) — the load-bearing test for the whole fix:
+// proves a REAL reply through addTicketMessage (the single choke point every
+// bot/web-admin/storefront reply path calls) genuinely persists the new
+// WAITING_ADMIN/WAITING_CUSTOMER statuses to the SupportTicket.status column
+// — not just that the call doesn't throw. Complements the individual
+// assertions already sprinkled through this file (e.g. the M-31 test, "a
+// NON-internal admin reply..." above) with one focused, easy-to-find test
+// covering both directions and the audit trail they now produce.
+describe("addTicketMessage — automatic WAITING_ADMIN/WAITING_CUSTOMER transitions (Task 1 fix)", () => {
+  it("a genuine customer reply transitions OPEN -> WAITING_ADMIN, audited with a null (system) actor", async () => {
+    const user = await makeUser(9401n);
+    const ticket = await createTicket(prisma, user.id, "help, my order is missing");
+    expect(ticket.status).toBe(TicketStatus.OPEN);
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "still no update?",
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_ADMIN);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { action: "ticket_status_change", targetId: ticket.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.adminId).toBeNull(); // customer-driven — no acting admin
+    expect(rows[0]!.details).toContain("OPEN");
+    expect(rows[0]!.details).toContain("WAITING_ADMIN");
+  });
+
+  it("a genuine admin reply transitions OPEN -> WAITING_CUSTOMER, audited with the replying admin's id", async () => {
+    const user = await makeUser(9402n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help, my order is missing");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "checking on it now",
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { action: "ticket_status_change", targetId: ticket.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.adminId).toBe(admin.id);
+    expect(rows[0]!.details).toContain("OPEN");
+    expect(rows[0]!.details).toContain("WAITING_CUSTOMER");
+  });
+
+  it("a second customer message before any admin responds (already WAITING_ADMIN) refreshes the wait-clock without a redundant audit row", async () => {
+    const user = await makeUser(9403n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "msg 1" });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterFirst!.status).toBe(TicketStatus.WAITING_ADMIN);
+
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "msg 2, still waiting" });
+
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterSecond!.status).toBe(TicketStatus.WAITING_ADMIN); // unchanged, not an error
+    expect(afterSecond!.lastStatusChangeAt.getTime()).toBeGreaterThanOrEqual(afterFirst!.lastStatusChangeAt.getTime());
+
+    // Exactly ONE ticket_status_change row — the second (self) reply is a
+    // plain field refresh, not a second audited transition.
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a second admin reply before the customer responds (already WAITING_CUSTOMER) refreshes repliedAt without a redundant audit row", async () => {
+    const user = await makeUser(9404n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reply 1" });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterFirst!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reply 2, following up" });
+
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterSecond!.status).toBe(TicketStatus.WAITING_CUSTOMER); // unchanged, not an error
+    expect(afterSecond!.repliedAt!.getTime()).toBeGreaterThan(afterFirst!.repliedAt!.getTime());
+    expect(afterSecond!.firstResponseAt!.getTime()).toBe(afterFirst!.firstResponseAt!.getTime()); // still set once
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("RESOLVED/CLOSED handling is unaffected: a reply to an already-RESOLVED ticket still silently reopens it via the old OPEN/REPLIED literals, no throw", async () => {
+    const user = await makeUser(9405n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await resolveTicket(prisma, ticket.id);
+    const resolved = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(resolved!.status).toBe(TicketStatus.RESOLVED);
+
+    // Customer reply on a RESOLVED ticket -> OPEN (byte-for-byte pre-fix behavior).
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "actually still broken" });
+    const afterCustomerReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterCustomerReply!.status).toBe(TicketStatus.OPEN);
+
+    // Re-resolve, then admin reply on a RESOLVED ticket -> REPLIED (byte-for-byte pre-fix behavior).
+    await resolveTicket(prisma, ticket.id);
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reopening for you" });
+    const afterAdminReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterAdminReply!.status).toBe(TicketStatus.REPLIED);
+
+    // Neither carve-out goes through transitionTicketStatus, so neither audits.
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("the real bot admin-reply flow (replyToTicket + addTicketMessage in one transaction) lands on WAITING_CUSTOMER without throwing", async () => {
+    // Mirrors apps/order-bot/src/conversations/admin.ts's ticketReplyConversation
+    // exactly: both functions called in the same $transaction, replyToTicket
+    // first. This is the scenario that made the "already there" self-case
+    // necessary — see addTicketMessage's own doc comment.
+    const user = await makeUser(9406n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    const customerTgId = await prisma.$transaction(async (tx) => {
+      const tgId = await replyToTicket(tx, { ticketId: ticket.id, reply: "here's the fix", adminDbId: admin.id });
+      await addTicketMessage(tx, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "here's the fix" });
+      return tgId;
+    });
+
+    expect(customerTgId).toBe(9406n);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+  });
+});
+
+describe("listStaleRepliedTickets (Task 1 fix: matches REPLIED and WAITING_CUSTOMER)", () => {
+  it("returns tickets at REPLIED (legacy) and WAITING_CUSTOMER (live) alike, past the cutoff", async () => {
+    const user = await makeUser(9410n);
+    const cutoff = addMinutes(new Date(), -48 * 60);
+
+    const legacyStale = await createTicket(prisma, user.id, "legacy stale");
+    await prisma.supportTicket.update({
+      where: { id: legacyStale.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: addMinutes(new Date(), -49 * 60) },
+    });
+
+    const modernStale = await createTicket(prisma, user.id, "modern stale");
+    await prisma.supportTicket.update({
+      where: { id: modernStale.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: addMinutes(new Date(), -50 * 60) },
+    });
+
+    const notStale = await createTicket(prisma, user.id, "just replied");
+    await prisma.supportTicket.update({
+      where: { id: notStale.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: new Date() },
+    });
+
+    const stale = await listStaleRepliedTickets(prisma, cutoff);
+    expect(new Set(stale.map((t) => t.id))).toEqual(new Set([legacyStale.id, modernStale.id]));
+  });
+});
+
 describe("TICKET_LEGAL_TRANSITIONS / transitionTicketStatus — state machine (Task 1)", () => {
   it("TICKET_LEGAL_TRANSITIONS encodes exactly the documented shape", () => {
+    // Task 1 fix (review Findings 1 & 2): OPEN's/REPLIED's target lists are
+    // no longer byte-identical to WAITING_ADMIN's/WAITING_CUSTOMER's — each
+    // carries one extra "modernization" edge into its own live-vocabulary
+    // counterpart (OPEN -> WAITING_ADMIN, REPLIED -> WAITING_CUSTOMER). See
+    // TICKET_LEGAL_TRANSITIONS' own doc comment for why.
     const adminReplyTargets = [TicketStatus.REPLIED, TicketStatus.WAITING_CUSTOMER, TicketStatus.RESOLVED, TicketStatus.CLOSED];
     const customerReplyTargets = [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN, TicketStatus.RESOLVED, TicketStatus.CLOSED];
 
-    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.OPEN]!.slice().sort()).toEqual(adminReplyTargets.slice().sort());
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.OPEN]!.slice().sort()).toEqual(
+      [...adminReplyTargets, TicketStatus.WAITING_ADMIN].sort(),
+    );
     expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_ADMIN]!.slice().sort()).toEqual(adminReplyTargets.slice().sort());
-    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.REPLIED]!.slice().sort()).toEqual(customerReplyTargets.slice().sort());
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.REPLIED]!.slice().sort()).toEqual(
+      [...customerReplyTargets, TicketStatus.WAITING_CUSTOMER].sort(),
+    );
     expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_CUSTOMER]!.slice().sort()).toEqual(customerReplyTargets.slice().sort());
     expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.RESOLVED]).toEqual([TicketStatus.CLOSED]);
     expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.CLOSED]).toEqual([TicketStatus.OPEN]);
+
+    // OPEN's and WAITING_ADMIN's (and REPLIED's and WAITING_CUSTOMER's)
+    // target lists must NOT be identical — the exact redundancy Finding 2
+    // flagged. This is the direct regression guard for that finding.
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.OPEN]!.slice().sort()).not.toEqual(
+      TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_ADMIN]!.slice().sort(),
+    );
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.REPLIED]!.slice().sort()).not.toEqual(
+      TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_CUSTOMER]!.slice().sort(),
+    );
   });
 
   // Exhaustive matrix over every ordered pair of the 6 states — derived
@@ -1416,8 +1633,8 @@ describe("TICKET_LEGAL_TRANSITIONS / transitionTicketStatus — state machine (T
   }
 
   it("the generated matrix actually covers both legal and illegal cases (sanity check on the generation above)", () => {
-    expect(legalCases.length).toBe(18);
-    expect(illegalCases.length).toBe(12);
+    expect(legalCases.length).toBe(20);
+    expect(illegalCases.length).toBe(10);
     expect(legalCases.length + illegalCases.length).toBe(ALL_TICKET_STATUSES.length * (ALL_TICKET_STATUSES.length - 1));
   });
 

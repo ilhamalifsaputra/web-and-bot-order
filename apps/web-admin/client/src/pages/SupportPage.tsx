@@ -839,7 +839,11 @@ export function SupportPage() {
                         ))}
                       </DropdownMenuSubContent>
                     </DropdownMenuSub>
-                    {(row.status === "OPEN" || row.status === "REPLIED") && (
+                    {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
+                        (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
+                        whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
+                        and were silently losing this button under the old check. */}
+                    {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
                       <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
                         <CheckCircle2 className="h-4 w-4" />
                         Resolve

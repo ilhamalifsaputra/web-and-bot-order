@@ -976,7 +976,11 @@ describe("admin conversations", () => {
     await ticketReplyConversation(conv.asMyConversation(), entry);
 
     const after = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(after!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix (packages/db/src/crud/support.ts): the real flow calls
+    // replyToTicket then addTicketMessage in one transaction, landing on
+    // WAITING_CUSTOMER (was REPLIED pre-fix) — see TICKET_LEGAL_TRANSITIONS'
+    // doc comment.
+    expect(after!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id, senderType: SenderType.ADMIN } })).toBe(1);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // customer DM
   });

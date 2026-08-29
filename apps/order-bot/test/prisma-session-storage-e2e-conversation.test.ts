@@ -279,7 +279,8 @@ describe("end-to-end: customerInfoConversation through the REAL Prisma session a
     expect(dataAfterAnswer.scratch.pendingInfoQuantity).toBeUndefined();
 
     // Still mid-checkout (customerData set, order not yet created) — TTL
-    // split correctly keeps this in the 15-minute bucket, not the 24h one.
+    // split correctly keeps this in the shorter "checkout" bucket, not the
+    // 24h "nav" one.
     expect(rowAfterAnswer!.kind).toBe("checkout");
 
     // The conversation actually continued to completion and rendered the

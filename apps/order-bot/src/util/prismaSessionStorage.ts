@@ -36,7 +36,7 @@
  * silently rather than throwing — so it stays a correctness contract at the
  * conversation call sites, not something this storage layer enforces.
  *
- * ## TTL split (24h nav / 15min checkout)
+ * ## TTL split (24h nav / longest payment window + 5min checkout)
  *
  * `classifySessionKind` decides "nav" vs. "checkout" per write, purely from
  * the session's own content — this bot's session shape has no dedicated
@@ -75,16 +75,24 @@ const LONGEST_PAYMENT_WINDOW_MINUTES = Math.max(
  * awaited free-text reply, ...) expires once the LONGEST configured payment
  * window across every rail has passed, plus a 5-minute margin — never
  * shorter than the window a still-legitimately-pending payment is entitled
- * to. A fixed 15-minute value here previously sat UNDER
- * `PAYMENT_WINDOW_MINUTES`'s 30-minute default, so a buyer idle mid-payment
- * (the single most likely reason to be idle mid-checkout) lost the session
- * row while their payment was still valid: `qrMsgId` gone means
+ * to. The margin isn't load-bearing for the payment itself (the session TTL
+ * slides forward on every write, so it already outlives a payment stamped
+ * once at order creation); it exists to cover the reconcile-poller/
+ * settled-bubble tail that still touches the anchor for a few minutes after
+ * a payment window closes. `Math.min` against `NAV_TTL_MS` keeps this
+ * clamped below the "just browsing" TTL even if a deployment misconfigures a
+ * rail's window absurdly high — checkout state must never outlive nav
+ * state, or the TTL split's whole point (bound the riskier, statefuller
+ * bucket tighter) is defeated. A fixed 15-minute value here previously sat
+ * UNDER `PAYMENT_WINDOW_MINUTES`'s 30-minute default, so a buyer idle
+ * mid-payment (the single most likely reason to be idle mid-checkout) lost
+ * the session row while their payment was still valid: `qrMsgId` gone means
  * `handlers/checkout.ts`'s stale-QR cleanup can never fire (the photo stays
  * in the chat forever), `paymentAnchorMsgId` gone reopens the leak
  * `paymentAnchor.ts`'s header comment describes, and an in-flight
  * `customerInfo` conversation is destroyed silently mid-reply (Phase D final
  * whole-branch review, Important #2). */
-export const CHECKOUT_TTL_MS = (LONGEST_PAYMENT_WINDOW_MINUTES + 5) * 60_000;
+export const CHECKOUT_TTL_MS = Math.min(NAV_TTL_MS, (LONGEST_PAYMENT_WINDOW_MINUTES + 5) * 60_000);
 
 /** Scratch keys that exist ONLY for the duration of an active checkout
  * draft, and are unconditionally cleared the moment it completes or is

@@ -1505,10 +1505,13 @@ model IdempotencyRecord {
 ///
 /// `kind` ("nav" | "checkout") implements the plan's TTL split — a session
 /// mid-checkout (payment anchor set, a voucher applied, info-collection in
-/// progress, ...) expires after 15 minutes of inactivity instead of the 24h
-/// a "just browsing" session gets, so an abandoned checkout's stale state
-/// (e.g. a payment-message anchor pointing at a bubble the buyer walked away
-/// from) doesn't linger a full day. See prismaSessionStorage.ts's
+/// progress, ...) expires after the longest configured payment window across
+/// every rail plus a 5-minute margin (35 minutes at default config, clamped
+/// to never exceed it), instead of the 24h a "just browsing" session gets —
+/// so an abandoned checkout's stale state (e.g. a payment-message anchor
+/// pointing at a bubble the buyer walked away from) doesn't linger a full
+/// day, while never expiring under a payment that's still legitimately
+/// pending. See prismaSessionStorage.ts's
 /// `classifySessionKind` for the exact rule. `expiresAt` is recomputed and
 /// re-stamped on every write (a still-active session keeps sliding its own
 /// expiry forward); the index below backs the daily prune sweep

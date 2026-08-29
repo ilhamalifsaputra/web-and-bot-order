@@ -263,6 +263,14 @@ describe("commerceGate — blanket private-chat guard", () => {
         expect(next).not.toHaveBeenCalled();
         expect(sink).toHaveLength(0);
       });
+
+      it(`${chatType} chat: blocks a whitespace-padded catalog number (" 3 ") — proves the trim matches handleProductNumber's own`, async () => {
+        const { ctx, sink } = makeCtx({ chatType, text: " 3 " });
+        const next = vi.fn(async () => {});
+        await commerceGate(ctx, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(sink).toHaveLength(0);
+      });
     }
 
     it("a 5-digit string (too long to be a catalog number) is not treated as commerce text and passes through", async () => {

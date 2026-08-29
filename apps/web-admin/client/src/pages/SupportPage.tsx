@@ -64,6 +64,7 @@ interface TicketUser {
 // the bug this rewrite fixes).
 interface TicketRow {
   id: number;
+  ticketNumber: string | null;
   userId: number;
   message: string;
   status: string;
@@ -142,6 +143,14 @@ const DEFAULT_SORT = "newest";
 
 function categoryLabel(category: string): string {
   return category.charAt(0) + category.slice(1).toLowerCase();
+}
+
+/** Task 3: `ticketNumber` (Task 1) is null for every ticket created before
+ * that migration shipped — historical rows fall back to the old `#id`
+ * label so they never render blank. Mirrors TicketDetailPage.tsx's own
+ * ticketDisplayLabel. */
+function ticketDisplayLabel(row: { id: number; ticketNumber: string | null }): string {
+  return row.ticketNumber ?? `#${row.id}`;
 }
 
 function useTickets(q: string, filters: Filters) {
@@ -707,7 +716,7 @@ export function SupportPage() {
                     onMouseEnter={() => setHoveredMessageId(row.id)}
                     onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
                   >
-                    <span className="font-mono text-xs text-ink-soft">#{row.id}</span>
+                    <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
                     {/* `items-start` (no cross-axis stretch) would let this span grow to its
                         unwrapped content width and overflow past 240px into neighboring
                         columns — line-clamp can only truncate a width-CONSTRAINED box. */}

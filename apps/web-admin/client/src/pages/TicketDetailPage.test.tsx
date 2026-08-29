@@ -32,6 +32,7 @@ const ADMIN_ROW = { id: 7, telegramId: 555, name: "Rina" };
 
 const BASE_TICKET = {
   id: 1,
+  ticketNumber: null,
   userId: 10,
   message: "Order tidak sampai, mohon bantuannya",
   photoFileIds: null,
@@ -39,6 +40,9 @@ const BASE_TICKET = {
   priority: "HIGH",
   category: null,
   adminId: null,
+  assignedAt: null,
+  assignedAtDisplay: null,
+  assignedBy: null,
   createdAt: "2026-06-26T10:00:00.000Z",
   createdAtDisplay: "2026-06-26 10:00",
   orderId: null,
@@ -48,7 +52,7 @@ const BASE_TICKET = {
 const BASE_DETAIL = {
   ticket: BASE_TICKET,
   messages: [
-    { id: 1, content: "Halo, order saya belum sampai", senderType: "USER", createdAt: "2026-06-26T10:00:00.000Z", createdAtDisplay: "2026-06-26 10:00", photoFileIds: null },
+    { id: 1, content: "Halo, order saya belum sampai", senderType: "USER", internal: false, createdAt: "2026-06-26T10:00:00.000Z", createdAtDisplay: "2026-06-26 10:00", photoFileIds: null },
   ],
   user: { id: 10, fullName: "Budi", username: null },
   customer: { totalSpent: { idr: "500000", usdt: "0" }, orderCount: 3, openTicketCount: 1 },
@@ -281,5 +285,139 @@ describe("TicketDetailPage — resolve/reopen", () => {
     await user.click(screen.getByRole("button", { name: /reopen/i }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/reopen", {}));
+  });
+});
+
+describe("TicketDetailPage — ticket number display (Task 3)", () => {
+  it("shows the ticketNumber prominently when present", async () => {
+    const detail = { ...BASE_DETAIL, ticket: { ...BASE_TICKET, ticketNumber: "TCK-20260828-00001" } };
+    mockFetches(detail);
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket TCK-20260828-00001")).toBeInTheDocument());
+  });
+
+  it("falls back to #id for a historical ticket with no ticketNumber", async () => {
+    mockFetches(BASE_DETAIL); // BASE_TICKET.ticketNumber is null
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Ticket #1")).toBeInTheDocument());
+  });
+});
+
+describe("TicketDetailPage — internal note toggle (Task 3)", () => {
+  it("checking the toggle sends internal: true and switches the button to Save Internal Note", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches(BASE_DETAIL);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText(/write a reply/i), "Checked with the courier.");
+    await user.click(screen.getByRole("checkbox", { name: /internal note/i }));
+    expect(screen.getByRole("button", { name: /save internal note/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /save internal note/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", {
+        content: "Checked with the courier.",
+        internal: true,
+      }),
+    );
+  });
+
+  it("leaves the toggle unchecked by default, sending internal: false for an ordinary reply", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches(BASE_DETAIL);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText(/write a reply/i), "We're checking.");
+    await user.click(screen.getByRole("button", { name: /^send reply$/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/support/1/reply", {
+        content: "We're checking.",
+        internal: false,
+      }),
+    );
+  });
+
+  it("renders an internal-note message in a dashed, badge-marked bubble distinct from a customer-visible message", async () => {
+    const detail = {
+      ...BASE_DETAIL,
+      messages: [
+        ...BASE_DETAIL.messages,
+        {
+          id: 2,
+          content: "Waiting on courier confirmation before replying.",
+          senderType: "ADMIN",
+          internal: true,
+          createdAt: "2026-06-26T12:00:00.000Z",
+          createdAtDisplay: "2026-06-26 12:00",
+          photoFileIds: null,
+        },
+      ],
+    };
+    mockFetches(detail);
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() =>
+      expect(screen.getByText("Waiting on courier confirmation before replying.")).toBeInTheDocument(),
+    );
+
+    expect(screen.getByText("Internal note")).toBeInTheDocument();
+    const internalBubble = screen
+      .getByText("Waiting on courier confirmation before replying.")
+      .closest('[data-testid="ticket-message"]');
+    expect(internalBubble).toHaveClass("border-dashed");
+
+    // The ordinary customer message must NOT be tagged as an internal note.
+    const customerBubble = screen.getByText("Halo, order saya belum sampai").closest('[data-testid="ticket-message"]');
+    expect(customerBubble).not.toHaveClass("border-dashed");
+  });
+});
+
+describe("TicketDetailPage — assignment picker (Task 3)", () => {
+  it("shows Unassigned and 'Not yet assigned' for a ticket with no assignee", async () => {
+    mockFetches(BASE_DETAIL, { admins: [ADMIN_ROW] });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    const trigger = screen.getByRole("combobox", { name: "Ticket assignee" });
+    expect(trigger).toHaveTextContent("Unassigned");
+    expect(screen.getByText("Not yet assigned.")).toBeInTheDocument();
+  });
+
+  it("surfaces assignedAt/assignedBy alongside the current adminId indicator", async () => {
+    const detail = {
+      ...BASE_DETAIL,
+      ticket: {
+        ...BASE_TICKET,
+        adminId: 7,
+        assignedAt: "2026-06-26T09:00:00.000Z",
+        assignedAtDisplay: "2026-06-26 09:00",
+        assignedBy: 7,
+      },
+    };
+    mockFetches(detail, { admins: [ADMIN_ROW] });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    const trigger = screen.getByRole("combobox", { name: "Ticket assignee" });
+    expect(trigger).toHaveTextContent("Rina");
+    expect(screen.getByText("Assigned by Rina on 2026-06-26 09:00")).toBeInTheDocument();
+  });
+
+  it("reassigning via the picker posts the new adminId to POST /api/support/:ticketId/assign", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches(BASE_DETAIL, { admins: [ADMIN_ROW, { id: 9, telegramId: 111, name: null }] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Ticket assignee" }));
+    await user.click(await screen.findByRole("option", { name: "Telegram ID 111" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/assign", { adminId: 9 }));
   });
 });

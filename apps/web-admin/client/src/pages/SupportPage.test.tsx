@@ -223,6 +223,23 @@ describe("SupportPage", () => {
     expect(within(rowFor("#2")!).queryByText("Overdue")).not.toBeInTheDocument();
   });
 
+  // Task 3: ticketNumber (Task 1) displayed prominently in the Ticket cell,
+  // falling back to the old #id label for historical rows where it's null
+  // (every fixture above omits ticketNumber, which already exercises that
+  // fallback — this test covers the other half, a ticket that HAS one).
+  it("shows the ticketNumber in the Ticket cell when present, instead of #id", async () => {
+    mockFetchRouter({
+      support: supportData([{ ...TICKET_OPEN, ticketNumber: "TCK-20260828-00001" }, TICKET_REPLIED]),
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    expect(screen.getByText("TCK-20260828-00001")).toBeInTheDocument();
+    expect(screen.queryByText("#1")).not.toBeInTheDocument();
+    // TICKET_REPLIED has no ticketNumber — still falls back to #id.
+    expect(screen.getByText("#2")).toBeInTheDocument();
+  });
+
   it("shows the full message text in a popover on hovering the Ticket cell", async () => {
     const longMessage = "Order saya belum sampai setelah lebih dari seminggu, bisa tolong dicek statusnya?";
     mockFetchRouter({ support: supportData([{ ...TICKET_OPEN, message: longMessage }]) });

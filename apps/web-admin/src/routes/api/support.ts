@@ -14,7 +14,7 @@ import {
   getUser,
   addTicketMessage,
   closeTicket,
-  assignTicket,
+  assignTicketWithAudit,
   setTicketPriority,
   bulkAssignTickets,
   bulkSetTicketPriority,
@@ -234,7 +234,13 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     const cutoff = overdueCutoff();
 
     const [messages, ticketUser, totalSpent, orderCount, recentOrders, openTicketCount] = await Promise.all([
-      listTicketMessages(prisma, ticketId, 100),
+      // Task 3: the admin-facing ticket detail view must include internal
+      // notes (Task 1's `internal` flag) — this is the ONLY route that reads
+      // messages for an admin's eyes, so `includeInternal: true` here is what
+      // actually makes internal notes reachable in the UI (Task 1's own
+      // report flagged this: every existing caller defaults to the
+      // customer-safe exclusion).
+      listTicketMessages(prisma, ticketId, 100, { includeInternal: true }),
       getUser(prisma, ticket.userId),
       userTotalSpent(prisma, ticket.userId),
       countUserOrders(prisma, ticket.userId),
@@ -266,6 +272,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         isOverdue: isTicketOverdue(ticket, cutoff),
         firstResponseAtDisplay: displayDateTime(ticket.firstResponseAt),
         resolvedAtDisplay: displayDateTime(ticket.resolvedAt),
+        // Task 3: assignedAt is a raw UTC timestamp on the ticket row (Task
+        // 1) — same "UTC in DB, TIMEZONE on display" rule as every other
+        // *Display field on this route; the assignment picker must not
+        // render assignedAt itself or two admins in different timezones
+        // would see different times for the same assignment.
+        assignedAtDisplay: displayDateTime(ticket.assignedAt),
         order: ticket.order ? { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) } : null,
       },
       messages: messages.map((m) => ({ ...m, createdAtDisplay: displayDateTime(m.createdAt) })),
@@ -285,7 +297,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
   app.post("/api/support/:ticketId/reply", { preHandler: csrfProtect }, async (req, reply) => {
     const ticketId = Number((req.params as { ticketId: string }).ticketId);
-    const content = ((req.body as Record<string, string>).content ?? "").trim();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const content = (typeof body.content === "string" ? body.content : "").trim();
+    // Task 3: admin-only internal note toggle. Defaults to false so every
+    // existing caller (including the reply tests written before this field
+    // existed) is unaffected.
+    const internal = body.internal === true;
     if (!content) return reply.code(400).send({ error: "Reply cannot be empty." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
     await addTicketMessage(prisma, {
@@ -293,14 +310,22 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       senderType: SenderType.ADMIN,
       senderId: req.admin!.userId,
       content,
+      internal,
     });
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "ticket_reply",
-      targetType: "ticket",
-      targetId: ticketId,
-      details: `Replied to ticket #${ticketId}.`,
-    });
+    // addTicketMessage's internal branch already writes its own
+    // "ticket_internal_note" audit row (packages/db/src/crud/support.ts) —
+    // logging "ticket_reply" here too would double-audit the same action
+    // under two different action names with a misleading "Replied to
+    // ticket" sentence for something the customer never saw.
+    if (!internal) {
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "ticket_reply",
+        targetType: "ticket",
+        targetId: ticketId,
+        details: `Replied to ticket #${ticketId}.`,
+      });
+    }
     return reply.send({ ok: true });
   });
 
@@ -331,18 +356,20 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
     const resolved = await resolveAssigneeName(adminId);
     if (!resolved.ok) return reply.code(400).send({ error: "Admin not found." });
-    const adminName = resolved.name;
 
-    await assignTicket(prisma, ticketId, adminId);
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "ticket_assign",
-      targetType: "ticket",
-      targetId: ticketId,
-      details: adminId !== null
-        ? `Assigned ticket #${ticketId} to "${adminName}".`
-        : `Unassigned ticket #${ticketId}.`,
-    });
+    // Task 3: migrated from `assignTicket` + a route-local `logAdminAction`
+    // call to `assignTicketWithAudit` (packages/db/src/crud/support.ts) so
+    // this one shared endpoint — used by both SupportPage's per-row/bulk-ish
+    // picker and TicketDetailPage's new Assignment card — actually stamps
+    // `assignedAt`/`assignedBy`, not just `adminId`. Without this, those two
+    // new columns would stay permanently null no matter what an admin does
+    // in the UI (task-1-report.md's own "Concerns for Task 3" section left
+    // this migration decision to this task). Trade-off accepted: this
+    // function's own audit line reads "to admin {id}" rather than the
+    // resolved display name the old route-local line used — its message
+    // format isn't parameterizable without editing Task 1's crud file, which
+    // is out of this task's territory.
+    await assignTicketWithAudit(prisma, ticketId, adminId, req.admin!.userId);
     return reply.send({ ok: true });
   });
 

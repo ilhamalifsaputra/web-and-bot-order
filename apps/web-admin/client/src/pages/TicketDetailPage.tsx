@@ -10,6 +10,8 @@ import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -19,7 +21,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { Send, CircleX, CheckCircle2, RotateCcw } from "lucide-react";
+import { Send, CircleX, CheckCircle2, RotateCcw, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
@@ -28,9 +30,17 @@ import { ticketPriorityLabel } from "../lib/ticketPriority";
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
 const UNCATEGORIZED = "_uncategorized_";
+const UNASSIGNED = "_unassigned_";
 
 function categoryLabel(category: string): string {
   return category.charAt(0) + category.slice(1).toLowerCase();
+}
+
+/** Task 3: `ticketNumber` (Task 1) is null for every ticket created before
+ * that migration shipped — historical rows fall back to the old `#id`
+ * label so they never render blank. */
+function ticketDisplayLabel(ticket: { id: number; ticketNumber: string | null }): string {
+  return ticket.ticketNumber ?? `#${ticket.id}`;
 }
 
 interface TicketOrderItem {
@@ -54,6 +64,7 @@ interface TicketOrder {
 // in `messages` below.
 interface Ticket {
   id: number;
+  ticketNumber: string | null;
   userId: number;
   message: string;
   photoFileIds: string | null;
@@ -61,6 +72,9 @@ interface Ticket {
   priority: string;
   category: string | null;
   adminId: number | null;
+  assignedAt: string | null;
+  assignedAtDisplay: string | null;
+  assignedBy: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
   orderId: number | null;
@@ -71,6 +85,7 @@ interface TicketMessageRow {
   id: number;
   content: string;
   senderType: string;
+  internal: boolean;
   createdAt: string;
   createdAtDisplay: string | null;
   photoFileIds: string | null;
@@ -150,6 +165,7 @@ export function TicketDetailPage() {
   const { data, isError } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
   const [reply, setReply] = useState("");
+  const [internal, setInternal] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
   const [previewFileId, setPreviewFileId] = useState<string | null>(null);
 
@@ -161,15 +177,32 @@ export function TicketDetailPage() {
     if (adminId === null) return "System";
     return adminNameById.get(adminId) ?? `Admin #${adminId}`;
   }
+  const assignableAdmins = (adminsData?.admins ?? []).filter(
+    (a): a is AdminOption & { id: number } => a.id !== null,
+  );
 
   const sendReply = useMutation({
-    mutationFn: () => apiPost(`/api/support/${ticketId}/reply`, { content: reply }),
+    mutationFn: () => apiPost(`/api/support/${ticketId}/reply`, { content: reply, internal }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       setReply("");
+      setInternal(false);
       setReplyError(null);
     },
     onError: (e: Error) => setReplyError(e.message),
+  });
+
+  // Task 3: assignment picker — wired to the same POST /api/support/:ticketId/assign
+  // route SupportPage's own assignee Select posts to, now migrated (Task 3) to
+  // call assignTicketWithAudit so both surfaces stamp assignedAt/assignedBy.
+  const assign = useMutation({
+    mutationFn: (nextAdminId: number | null) =>
+      apiPost(`/api/support/${ticketId}/assign`, { adminId: nextAdminId }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
+      toast.success("Ticket assigned.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const close = useMutation({
@@ -230,9 +263,9 @@ export function TicketDetailPage() {
   const ticketPhotoIds = parsePhotoIds(ticket.photoFileIds);
 
   return (
-    <PageLayout title={`Ticket #${ticket.id}`}>
+    <PageLayout title={`Ticket ${ticketDisplayLabel(ticket)}`}>
       <PageHeader
-        title={`Ticket #${ticket.id}`}
+        title={`Ticket ${ticketDisplayLabel(ticket)}`}
         description={ticket.message}
         breadcrumb={[{ label: "Support", href: "/support" }]}
         actions={
@@ -372,6 +405,41 @@ export function TicketDetailPage() {
         </Card>
       </div>
 
+      {/* Assignment — Task 3: surfaces assignedAt/assignedBy (Task 1)
+          alongside the working-admin (adminId) picker. Posts to the same
+          POST /api/support/:ticketId/assign route SupportPage's own
+          per-row Select uses (Task 3 migrated that route to
+          assignTicketWithAudit so both surfaces stamp the audit trail). */}
+      <Card className="mb-6">
+        <CardHeader><CardTitle>Assignment</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <Select
+            value={ticket.adminId !== null ? String(ticket.adminId) : UNASSIGNED}
+            onValueChange={(v) => assign.mutate(v === UNASSIGNED ? null : Number(v))}
+            disabled={assign.isPending}
+          >
+            <SelectTrigger className="w-56" aria-label="Ticket assignee">
+              <SelectValue>
+                {ticket.adminId !== null ? adminLabel(ticket.adminId) : "Unassigned"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
+              {assignableAdmins.map((a) => (
+                <SelectItem key={a.id} value={String(a.id)}>
+                  {a.name ?? `Telegram ID ${a.telegramId}`}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-sm text-ink-soft">
+            {ticket.assignedAt
+              ? `Assigned by ${adminLabel(ticket.assignedBy)} on ${ticket.assignedAtDisplay ?? "—"}`
+              : "Not yet assigned."}
+          </span>
+        </CardContent>
+      </Card>
+
       {/* Ticket timeline */}
       <Card className="mb-6">
         <CardHeader><CardTitle>Timeline</CardTitle></CardHeader>
@@ -412,17 +480,33 @@ export function TicketDetailPage() {
       <div className="flex flex-col gap-3 mb-6">
         {messages.map(m => {
           const messagePhotoIds = parsePhotoIds(m.photoFileIds);
+          // Task 3: internal notes (Task 1's TicketMessage.internal) must be
+          // visually distinct from customer-visible messages — dashed border,
+          // no colored fill (unlike the solid pine/sand ADMIN/CUSTOMER tints
+          // above, which both mean "the customer can see this"), plus an
+          // explicit "Internal note" badge so it can't be mistaken for a real
+          // reply at a glance.
+          const isInternal = m.internal === true;
           return (
             <div
               key={m.id}
+              data-testid="ticket-message"
               className={`rounded-lg border-l-2 px-4 py-3 ${
-                m.senderType === "ADMIN"
-                  ? "border-pine bg-pine-tint"
-                  : "border-line bg-sand"
+                isInternal
+                  ? "border-dashed border-ink-faint bg-paper"
+                  : m.senderType === "ADMIN"
+                    ? "border-pine bg-pine-tint"
+                    : "border-line bg-sand"
               }`}
             >
-              <div className="mb-1 text-xs text-ink-soft">
-                {m.senderType === "ADMIN" ? "Admin" : "Customer"} — {m.createdAtDisplay ?? "—"}
+              <div className="mb-1 flex items-center gap-1.5 text-xs text-ink-soft">
+                {isInternal && (
+                  <Badge variant="secondary" className="gap-1">
+                    <Lock className="h-3 w-3" />
+                    Internal note
+                  </Badge>
+                )}
+                <span>{m.senderType === "ADMIN" ? "Admin" : "Customer"} — {m.createdAtDisplay ?? "—"}</span>
               </div>
               {/* pre-wrap preserves long unbroken runs, so a pasted URL or
                   token overflows the bubble without break-words. */}
@@ -459,10 +543,23 @@ export function TicketDetailPage() {
               placeholder="Write a reply…"
               rows={4}
             />
+            {/* Task 3: internal-note toggle. When checked, the reply is
+                created with internal: true (Task 1's addTicketMessage) —
+                stored, audited, and rendered in the timeline above as a
+                dashed "Internal note" bubble instead of a customer-visible
+                Admin reply; it never advances the ticket's status. */}
+            <label className="flex items-center gap-2">
+              <Checkbox
+                checked={internal}
+                onCheckedChange={(c) => setInternal(c === true)}
+                aria-label="Internal note (not visible to the customer)"
+              />
+              <span className="text-sm text-ink">Internal note (not visible to the customer)</span>
+            </label>
             <div className="flex gap-2">
               <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
-                <Send className="h-4 w-4" />
-                {sendReply.isPending ? "Saving…" : "Send Reply"}
+                {internal ? <Lock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+                {sendReply.isPending ? "Saving…" : internal ? "Save Internal Note" : "Send Reply"}
               </Button>
               <ConfirmDialog
                 trigger={<Button variant="destructive"><CircleX className="h-4 w-4" />Close Ticket</Button>}

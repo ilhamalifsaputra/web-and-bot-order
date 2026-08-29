@@ -175,7 +175,13 @@ describe("support + reject conversations", () => {
     const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
     expect(ticket).toBeTruthy();
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
+    // Task 2 (Phase C): the admin forward is now enqueued as an
+    // ADMIN_NEW_TICKET notification_outbox row (setup-db.ts sets
+    // ADMIN_IDS=999,1000, so both resolve as targets) rather than a direct
+    // ctx.api.sendMessage() — asserted on the outbox row instead of the
+    // sink's captured sendMessage calls.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 999)).toBe(true); // forwarded
   });
 
   it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {
@@ -982,6 +988,11 @@ describe("admin conversations", () => {
     // doc comment.
     expect(after!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id, senderType: SenderType.ADMIN } })).toBe(1);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // customer DM
+    // Task 2 (Phase C): the customer DM is now enqueued as a TICKET_REPLY_DM
+    // notification_outbox row rather than a direct ctx.api.sendMessage() —
+    // asserted on the outbox row instead of the sink's captured sendMessage
+    // calls. sample.user's telegramId is 42.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_REPLY_DM } });
+    expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 42)).toBe(true); // customer DM queued
   });
 });

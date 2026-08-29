@@ -43,16 +43,16 @@ import {
   replyToTicket,
   addTicketMessage,
   resolveSegmentRecipients,
+  enqueueTicketReplyDm,
 } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
-import { coreT, t } from "../util/i18n";
+import { t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
-import { ticketResolvedKb } from "../keyboards/customer";
 import { adminCommand, notifyRestockSubscribers, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
 
@@ -1163,14 +1163,14 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
     akb.backToAdminKb(lang),
   );
 
+  // Task 2 (Phase C): routed through notification_outbox instead of a direct
+  // ctx.api.sendMessage() — placed after the $transaction above commits,
+  // same position the direct send it replaces already had: the DB write
+  // (replyToTicket + addTicketMessage) stays inside the transaction, the
+  // notification enqueue stays a separate step outside it. The dispatcher's
+  // TICKET_REPLY_DM branch renders the exact same text/keyboard this used to
+  // send directly.
   if (customerTgId) {
-    try {
-      await ctx.api.sendMessage(Number(customerTgId), coreT("support.admin_reply", "en", { message: esc(replyText) }), {
-        parse_mode: "HTML",
-        reply_markup: ticketResolvedKb(ticketId),
-      });
-    } catch (err) {
-      logger.error({ err }, `Failed to DM customer ${customerTgId} with the admin's reply to ticket ${ticketId} — reply is saved in the DB, but the customer won't be notified`);
-    }
+    await enqueueTicketReplyDm(prisma, { ticketId, chatId: Number(customerTgId), message: replyText });
   }
 }

@@ -641,6 +641,34 @@ export const NotificationEvent = {
   // sharp_changes/considered_rows (plain counts only, never a SKU/price
   // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
   ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin/support-group DM (fan-out — one row per resolved target, same
+  // per-recipient shape as ADMIN_MANUAL_ORDER_QUEUED/ADMIN_STALE_PAYMENT):
+  // forwards a newly-opened support ticket for triage. Enqueued from the
+  // bot's own ticket-creation flow (conversations/support.ts) — the
+  // storefront's ticket-creation path has no Telegram equivalent, it only
+  // triggers OWNER_EMAIL_NEW_TICKET. Targets are `config.SUPPORT_GROUP_ID`
+  // when set, else every resolved admin id (`resolveAdminIds`) — the same
+  // fallback the pre-outbox direct send used. payload carries `chat_id` plus
+  // ticket_id/from_user_id/from_username/message/photo_file_ids (Telegram
+  // file ids only, never binary — the dispatcher re-sends them via
+  // sendMediaGroup right after the text). NOT order-scoped (orderId: null)
+  // — tickets have no order.
+  ADMIN_NEW_TICKET: "ADMIN_NEW_TICKET",
+  // Buyer DM (not a channel post): an admin replied to the buyer's support
+  // ticket (conversations/admin.ts's ticketReplyConversation). Always
+  // rendered in English — mirrors the pre-outbox direct send, which
+  // hardcoded language "en" rather than the buyer's own stored language
+  // (unlike TICKET_CLOSED_DM below, which does use it); preserved exactly
+  // as-is, not a bug this event fixes. payload carries `chat_id` plus
+  // ticket_id and the admin's reply text, NOT order-scoped (orderId: null).
+  TICKET_REPLY_DM: "TICKET_REPLY_DM",
+  // Buyer DM (not a channel post): an admin closed the buyer's support
+  // ticket from the bot's admin panel (handlers/admin.ts's
+  // closeTicketAdmin). Rendered in the buyer's own stored language
+  // (payload.buyer_language), unlike TICKET_REPLY_DM above. payload carries
+  // `chat_id` plus ticket_id and buyer_language, NOT order-scoped
+  // (orderId: null).
+  TICKET_CLOSED_DM: "TICKET_CLOSED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

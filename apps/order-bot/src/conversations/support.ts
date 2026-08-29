@@ -3,20 +3,15 @@
  * User: /support → describe issue → optionally attach up to 3 photos → submit.
  * The ticket is persisted and forwarded to the support group / admin DMs.
  */
-import { InputMediaBuilder } from "grammy";
-import { config } from "@app/core/config";
-import { adminIds } from "@app/core/runtime";
 import { SenderType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
-import { logger } from "@app/core/logger";
-import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders } from "@app/db";
+import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders, enqueueAdminNewTicketDm } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit, menuAnchor } from "../util/chat";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
 import * as ckb from "../keyboards/customer";
-import * as akb from "../keyboards/admin";
 import { startCommand, handleProductNumber } from "../handlers/customer";
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
@@ -157,25 +152,17 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
 
   await menuAnchor(lastCtx, t(lastCtx, "support.received"), ckb.backToMain(lang));
 
-  const photoNote = photos.length ? `\n📎 ${photos.length} photo(s) attached` : "";
-  const forwardText =
-    `🆘 <b>New support ticket #${ticket.id}</b>\n` +
-    `From: <code>${ctx.from!.id}</code> (@${esc(ctx.from!.username ?? "")})${photoNote}\n\n` +
-    `${esc(body)}`;
-
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : adminIds();
-  for (const chatId of targets) {
-    if (!chatId) continue;
-    try {
-      await ctx.api.sendMessage(chatId, forwardText, {
-        parse_mode: "HTML",
-        reply_markup: akb.ticketReplyKb(ticket.id, "en"),
-      });
-      if (photos.length) {
-        await ctx.api.sendMediaGroup(chatId, photos.map((fid) => InputMediaBuilder.photo(fid)));
-      }
-    } catch (err) {
-      logger.error({ err }, `Failed to forward ticket ${ticket.id} to admin chat ${chatId} — that chat won't see the new ticket unless another admin chat in the list got it`);
-    }
-  }
+  // Task 2 (Phase C): routed through notification_outbox instead of a direct
+  // ctx.api.sendMessage() loop — the dispatcher (packages/outbox-dispatcher)
+  // now owns delivery/retry, resolves the same support-group-or-admin-ids
+  // target list, and HTML-escapes these raw values itself at render time
+  // (see ADMIN_NEW_TICKET's dispatcher branch), so `body`/username ride the
+  // payload unescaped, same convention every other enqueue call site follows.
+  await enqueueAdminNewTicketDm(prisma, {
+    ticketId: ticket.id,
+    fromUserId: ctx.from!.id,
+    fromUsername: ctx.from!.username ?? null,
+    message: body,
+    photoFileIds: photos,
+  });
 }

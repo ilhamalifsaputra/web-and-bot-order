@@ -196,6 +196,10 @@ interface AdminDigiflazzResyncAbortedPayload {
   considered_rows?: unknown;
 }
 
+interface TicketClosedPayload {
+  buyer_language?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -210,8 +214,26 @@ export function render(
     BulkPurchaseBroadcastPayload &
     AdminStalePaymentPayload &
     WalletTopupCreditedPayload &
-    AdminDigiflazzResyncAbortedPayload,
+    AdminDigiflazzResyncAbortedPayload &
+    TicketClosedPayload,
 ): string {
+  if (event === NotificationEvent.TICKET_CLOSED_DM) {
+    // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored
+    // language — a single-locale pick, not the bilingual EN+ID pattern most
+    // of this file's other DM templates use — mirroring exactly what
+    // handlers/admin.ts's closeTicketAdmin sent directly before this event
+    // existed (coreT("support.ticket_closed", buyerLang)). ADMIN_NEW_TICKET
+    // and TICKET_REPLY_DM (the other two ticket events from the same task)
+    // are NOT rendered here — they need a reply_markup keyboard (and, for
+    // ADMIN_NEW_TICKET, a photo media-group send) that this plain-text
+    // render() has no way to carry, so dispatcher.ts builds and sends their
+    // text itself, the same way it already does for
+    // ORDER_DELIVERED_DM/ORDER_MANUAL_DELIVERED_DM.
+    const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : "en";
+    return lang === "id"
+      ? "Tiket ditutup. Buka tiket baru jika masih butuh bantuan."
+      : "Your ticket has been closed. Open a new one if you need further help.";
+  }
   if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
     // Buyer DM: the single producer for a wallet top-up's success message
     // across ALL SIX top-up rails — enqueued exactly once, from inside

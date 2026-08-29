@@ -28,7 +28,7 @@ import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -3497,18 +3497,23 @@ describe("admin handlers", () => {
     expect(audit!.details).toContain(String(ticket.id));
   });
 
-  it("a double-tap ticket close never sends a second buyer DM (Bot-3 fix)", async () => {
+  it("a double-tap ticket close never enqueues a second buyer DM (Bot-3 fix)", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "help" } });
-    const { ctx: ctx1, sink: sink1 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    const { ctx: ctx1 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx1, `v1:adm:ticket:close:${ticket.id}`.split(":"));
-    const { ctx: ctx2, sink: sink2 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    const { ctx: ctx2 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx2, `v1:adm:ticket:close:${ticket.id}`.split(":"));
 
-    // sample.user has a telegramId, so the first close DMs them; the second
-    // (already-closed) close must NOT — closeTicket's atomic guard returns
-    // null, so handleAdminCallback's customerTgId check skips the DM.
-    expect(calls(sink1, "sendMessage").length).toBe(1);
-    expect(calls(sink2, "sendMessage").length).toBe(0);
+    // sample.user has a telegramId, so the first close enqueues a
+    // TICKET_CLOSED_DM notification_outbox row; the second (already-closed)
+    // close must NOT — closeTicket's atomic guard returns null, so
+    // handleAdminCallback's customerTgId check skips the enqueue. Task 2
+    // (Phase C) routed this through the outbox instead of a direct
+    // ctx.api.sendMessage() — asserted here on the outbox row count instead
+    // of the sink's captured sendMessage calls.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticket.id);
+    expect(matching).toHaveLength(1);
   });
 
   it("mark stock dead flips the status and writes an audit row (Bot-4 fix)", async () => {

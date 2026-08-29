@@ -7,8 +7,9 @@
  * TELEGRAM lane — two kinds of rows:
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
  *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET,
- *    WALLET_TOPUP_CREDITED_DM. These deliver regardless of whether a public
- *    channel is configured — the loop runs whenever a bot token is available.
+ *    WALLET_TOPUP_CREDITED_DM, ADMIN_NEW_TICKET, TICKET_REPLY_DM,
+ *    TICKET_CLOSED_DM. These deliver regardless of whether a public channel
+ *    is configured — the loop runs whenever a bot token is available.
  *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
  *    no channel is configured they are left PENDING (skipped) so they post once
  *    a channel is set, rather than being failed away.
@@ -19,6 +20,14 @@
  * delivery flows) as the admin-typed `Order.deliveredContent` sent as one or
  * more plain messages. Credentials/content NEVER ride in the outbox payload
  * (CLAUDE.md).
+ *
+ * ADMIN_NEW_TICKET and TICKET_REPLY_DM (Task 2, Phase C) are also handled by
+ * their own dedicated branches, but for a different reason than the two
+ * above: nothing is read live from the DB, they just need a reply_markup
+ * inline keyboard (and, for ADMIN_NEW_TICKET, a follow-up `sendMediaGroup` of
+ * the buyer's attached photo file ids) that the generic render()+sendMessage
+ * path below has no way to carry. TICKET_CLOSED_DM has no keyboard, so it
+ * goes through the generic path like any other simple DM.
  *
  * Payment-bubble flush hook (Task E3): right before sending
  * ORDER_DELIVERED_DM, ORDER_MANUAL_DELIVERED_DM, WALLET_TOPUP_CREDITED_DM or
@@ -53,7 +62,7 @@
  * (429/RetryAfter) backs off and bails out of the tick; Forbidden (403) fails
  * the row at once.
  */
-import { Bot, GrammyError, InputFile } from "grammy";
+import { Bot, GrammyError, InputFile, InlineKeyboard, InputMediaBuilder } from "grammy";
 import {
   prisma,
   fetchPendingNotifications,
@@ -97,6 +106,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, // admin DM (gateway says paid but sent no transaction id — needs a human before the order auto-cancels)
   NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, // admin DM (hourly Digiflazz catalog resync tripped its own blast-radius circuit breaker and wrote nothing — needs a human to check the supplier connection)
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
+  NotificationEvent.TICKET_CLOSED_DM, // buyer DM (Task 2: an admin closed the buyer's support ticket)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */
@@ -275,6 +285,25 @@ export async function drainBatch(bot: Bot): Promise<number> {
     if (row.event === NotificationEvent.ORDER_MANUAL_DELIVERED_DM) {
       await flushBubbleBeforeDm(row.orderId);
       if ((await deliverManualContentDm(bot, row, payload)) === "ratelimited") return pending.length;
+      continue;
+    }
+
+    // Admin/support-group DM: a new ticket was opened. Needs a reply_markup
+    // keyboard (Reply/Close) and, when the buyer attached photos, a follow-up
+    // sendMediaGroup — neither of which the generic render() + plain
+    // sendMessage path below can carry, so this gets its own branch (Task 2),
+    // same reason ORDER_DELIVERED_DM/ORDER_MANUAL_DELIVERED_DM do. No payment
+    // bubble to flush — tickets aren't order-scoped settlement DMs.
+    if (row.event === NotificationEvent.ADMIN_NEW_TICKET) {
+      if ((await deliverAdminNewTicketDm(bot, row, payload)) === "ratelimited") return pending.length;
+      continue;
+    }
+
+    // Buyer DM: an admin replied to their ticket. Needs a reply_markup
+    // keyboard ("Mark as Resolved") the generic path can't carry — same
+    // reason as ADMIN_NEW_TICKET above.
+    if (row.event === NotificationEvent.TICKET_REPLY_DM) {
+      if ((await deliverTicketReplyDm(bot, row, payload)) === "ratelimited") return pending.length;
       continue;
     }
 
@@ -471,6 +500,96 @@ async function deliverManualContentDm(
       await bot.api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
     }
   });
+}
+
+/** Callback-data convention mirrored from apps/order-bot's own
+ * keyboards/admin.ts (`ticketReplyKb`) and keyboards/customer.ts (`cb`) — the
+ * versioned `v1:` prefix followed by a colon-separated path. This package
+ * must not depend on apps/order-bot (see `withTimeout`'s doc comment above
+ * for the same rule applied to a different helper), so the two ticket
+ * keyboards below build their `InlineKeyboard`s directly rather than
+ * importing those helpers; keep the literal strings here in sync with
+ * keyboards/admin.ts/customer.ts if either ticket callback's shape ever
+ * changes. */
+
+/**
+ * Deliver the "new support ticket" forward to an admin/support-group chat
+ * (Task 2). Unlike `deliverAccountDm`/`deliverManualContentDm`, nothing here
+ * is read live from the DB — every field the message needs already rode in
+ * the outbox payload (`enqueueAdminNewTicketDm`, packages/db/src/crud/
+ * notifications.ts) — this function only needs its own branch because the
+ * send itself is more than the generic path's plain `sendMessage`: a
+ * Reply/Close inline keyboard, and — when the buyer attached photos — a
+ * follow-up `sendMediaGroup` of their file ids (never binary; see this
+ * event's own doc comment, @app/core/enums).
+ */
+async function deliverAdminNewTicketDm(
+  bot: Bot,
+  row: PendingRow,
+  payload: Record<string, unknown>,
+): Promise<"ok" | "ratelimited"> {
+  const chatId = Number(payload.chat_id);
+  if (!Number.isFinite(chatId)) {
+    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    return "ok";
+  }
+  const ticketId = Number(payload.ticket_id);
+  const fromUserId = escape(String(payload.from_user_id ?? ""));
+  const fromUsername = escape(typeof payload.from_username === "string" ? payload.from_username : "");
+  const message = escape(String(payload.message ?? ""));
+  const photoFileIds = Array.isArray(payload.photo_file_ids)
+    ? payload.photo_file_ids.filter((f): f is string => typeof f === "string")
+    : [];
+  const photoNote = photoFileIds.length ? `\n📎 ${photoFileIds.length} photo(s) attached` : "";
+  // Mirrors conversations/support.ts's pre-outbox forwardText exactly.
+  const text =
+    `🆘 <b>New support ticket #${ticketId}</b>\n` +
+    `From: <code>${fromUserId}</code> (@${fromUsername})${photoNote}\n\n` +
+    `${message}`;
+  const keyboard = new InlineKeyboard()
+    .text("💬 Reply", `v1:adm:ticket:reply:${ticketId}`)
+    .text("🔒 Close", `v1:adm:ticket:close:${ticketId}`);
+
+  return trySend(bot, row, async () => {
+    // Both sends happen inside this one trySend callback so SENT/FAILED/
+    // rate-limit bookkeeping happens exactly once for the pair — mirrors
+    // deliverManualContentDm's multi-chunk send above. If a rate-limit hits
+    // between them, the text already went out and can't be un-sent; the
+    // retry resends both, so admins could rarely see the text duplicated —
+    // same accepted tradeoff as the multi-chunk case.
+    await bot.api.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup: keyboard });
+    if (photoFileIds.length) {
+      await bot.api.sendMediaGroup(chatId, photoFileIds.map((fid) => InputMediaBuilder.photo(fid)));
+    }
+  });
+}
+
+/**
+ * Deliver the buyer's "admin replied to your ticket" DM (Task 2). Always
+ * English — see `NotificationEvent.TICKET_REPLY_DM`'s own doc comment for
+ * why. Needs its own branch (not the generic render() path) for the same
+ * reason as `deliverAdminNewTicketDm`: a reply_markup keyboard ("Mark as
+ * Resolved") the generic plain `sendMessage` can't carry.
+ */
+async function deliverTicketReplyDm(
+  bot: Bot,
+  row: PendingRow,
+  payload: Record<string, unknown>,
+): Promise<"ok" | "ratelimited"> {
+  const chatId = Number(payload.chat_id);
+  if (!Number.isFinite(chatId)) {
+    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    return "ok";
+  }
+  const ticketId = Number(payload.ticket_id);
+  const message = escape(String(payload.message ?? ""));
+  // Mirrors conversations/admin.ts's pre-outbox coreT("support.admin_reply", "en", …) exactly.
+  const text =
+    `<b>Reply from support:</b>\n\n${message}\n\n` +
+    `<i>If your issue is resolved, tap the button below to close this ticket.</i>`;
+  const keyboard = new InlineKeyboard().text("✅ Mark as Resolved", `v1:ticket:close:${ticketId}`);
+
+  return trySend(bot, row, () => bot.api.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup: keyboard }));
 }
 
 /**

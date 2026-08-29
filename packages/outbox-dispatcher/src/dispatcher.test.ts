@@ -56,7 +56,7 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  * no real Telegram/HTTP is involved).
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import type { Bot } from "grammy";
+import type { Bot, InlineKeyboard } from "grammy";
 import {
   prisma,
   enqueueAdminPasswordReset,
@@ -84,6 +84,9 @@ import {
   SMTP_FROM_KEY,
   createTicket,
   getPollHealth,
+  enqueueAdminNewTicketDm,
+  enqueueTicketReplyDm,
+  enqueueTicketClosedDm,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -840,6 +843,224 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     });
     expect(row!.status).toBe("FAILED"); // markNotificationFailed(..., maxAttempts=1) fails immediately
     expect(row!.lastError).toContain("order not found");
+  });
+});
+
+/**
+ * Task 2 (Phase C): the three ticket-notification events that used to call
+ * ctx.api.sendMessage() directly from apps/order-bot (conversations/
+ * support.ts, conversations/admin.ts, handlers/admin.ts) — now routed
+ * through notification_outbox like every other buyer/admin DM. Each test
+ * goes through the real `enqueue*` crud helper (packages/db/src/crud/
+ * notifications.ts), then the real `drainBatch`, and asserts on both the
+ * rendered payload/text/keyboard AND the row's terminal SENT status — not
+ * just "doesn't throw".
+ */
+describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)", () => {
+  /** Fake Bot that also stubs sendMediaGroup — the call ADMIN_NEW_TICKET
+   *  makes when the buyer attached photos. */
+  function fakeMediaBot() {
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+    const sendMediaGroup = vi.fn().mockResolvedValue([{ message_id: 2 }]);
+    const bot = { api: { sendMessage, sendMediaGroup, sendDocument: vi.fn() } } as unknown as Bot;
+    return { bot, sendMessage, sendMediaGroup };
+  }
+
+  it("ADMIN_NEW_TICKET fans out to every resolved admin with the Reply/Close keyboard, and forwards attached photos as a media group", async () => {
+    await addAdminIdToDb(prisma, 910_100_001);
+    await addAdminIdToDb(prisma, 910_100_002);
+    const user = await upsertUser(prisma, { telegramId: 610_001, username: "ticketuser1", fullName: "Ticket User 1" });
+    const ticket = await createTicket(prisma, user.id, "I need help with my order");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_001,
+      fromUsername: "ticketuser1",
+      message: "I need help with my order",
+      photoFileIds: ["photo_a", "photo_b"],
+    });
+
+    const { bot, sendMessage, sendMediaGroup } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call1 = sendMessage.mock.calls.find((c) => c[0] === 910_100_001);
+    const call2 = sendMessage.mock.calls.find((c) => c[0] === 910_100_002);
+    expect(call1).toBeDefined();
+    expect(call2).toBeDefined();
+    const [, text, opts] = call1! as [number, string, { reply_markup: InlineKeyboard; parse_mode: string }];
+    expect(text).toContain(`New support ticket #${ticket.id}`);
+    expect(text).toContain("610001");
+    expect(text).toContain("I need help with my order");
+    expect(text).toContain("2 photo(s) attached");
+    expect(opts.reply_markup.inline_keyboard[0]).toEqual([
+      { text: "💬 Reply", callback_data: `v1:adm:ticket:reply:${ticket.id}` },
+      { text: "🔒 Close", callback_data: `v1:adm:ticket:close:${ticket.id}` },
+    ]);
+
+    // resolveAdminIds is the UNION of every admin id ever added by an earlier
+    // test in this file (shared DB, no per-test reset — same caveat the
+    // ADMIN_STALE_PAYMENT/ADMIN_MANUAL_ORDER_QUEUED describe blocks document
+    // above), so this fan-out isn't necessarily exactly these two targets —
+    // isolate each assertion to OUR two admin ids among however many fired,
+    // the same technique those earlier blocks use.
+    const mediaCall1 = sendMediaGroup.mock.calls.find((c) => c[0] === 910_100_001);
+    const mediaCall2 = sendMediaGroup.mock.calls.find((c) => c[0] === 910_100_002);
+    expect(mediaCall1).toBeDefined();
+    expect(mediaCall2).toBeDefined();
+    expect(mediaCall1![1]).toHaveLength(2);
+    expect(mediaCall1![1][0]).toMatchObject({ type: "photo", media: "photo_a" });
+    expect(mediaCall1![1][1]).toMatchObject({ type: "photo", media: "photo_b" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_NEW_TICKET, orderId: null },
+    });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticket.id);
+    const chatIds = matching.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id);
+    expect(chatIds).toContain(910_100_001);
+    expect(chatIds).toContain(910_100_002);
+    for (const r of matching) expect(r.status).toBe("SENT"); // every fanned-out row, not just ours
+  });
+
+  it("ADMIN_NEW_TICKET sends no media group and no photo note when the ticket has no photos", async () => {
+    await addAdminIdToDb(prisma, 910_100_003);
+    const user = await upsertUser(prisma, { telegramId: 610_002, username: null, fullName: "Ticket User 2" });
+    const ticket = await createTicket(prisma, user.id, "Second ticket, no photos");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_002,
+      fromUsername: null,
+      message: "Second ticket, no photos",
+      photoFileIds: [],
+    });
+
+    const { bot, sendMessage, sendMediaGroup } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 910_100_003);
+    expect(call).toBeDefined();
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("photo(s) attached");
+    expect(sendMediaGroup).not.toHaveBeenCalled();
+  });
+
+  it("HTML-escapes ADMIN_NEW_TICKET's message and username", async () => {
+    await addAdminIdToDb(prisma, 910_100_004);
+    const user = await upsertUser(prisma, { telegramId: 610_007, username: null, fullName: "Ticket User 7" });
+    const ticket = await createTicket(prisma, user.id, "<script>alert(1)</script>");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_007,
+      fromUsername: "<b>evil</b>",
+      message: "<script>alert(1)</script>",
+      photoFileIds: [],
+    });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 910_100_004);
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("<script>");
+    expect(text).not.toContain("<b>evil</b>");
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text).toContain("&lt;b&gt;evil&lt;/b&gt;");
+  });
+
+  it("fails an ADMIN_NEW_TICKET row without sending when chat_id is missing", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_NEW_TICKET,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          ticket_id: 999_999,
+          from_user_id: 1,
+          from_username: null,
+          message: "x",
+          photo_file_ids: [],
+        }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.ADMIN_NEW_TICKET, payloadJson: { contains: "999999" } },
+    });
+    expect(row!.status).toBe("FAILED");
+    expect(row!.lastError).toContain("missing chat_id");
+  });
+
+  it("TICKET_REPLY_DM sends the admin's reply in English with a Mark-as-Resolved keyboard", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_003, username: "ticketuser3", fullName: "Ticket User 3" });
+    const ticket = await createTicket(prisma, user.id, "Reply test ticket");
+    await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_003, message: "We refunded your order." });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_003);
+    expect(call).toBeDefined();
+    const [, text, opts] = call! as [number, string, { reply_markup: InlineKeyboard }];
+    expect(text).toContain("Reply from support:");
+    expect(text).toContain("We refunded your order.");
+    expect(text).toContain("tap the button below to close this ticket");
+    expect(opts.reply_markup.inline_keyboard[0]).toEqual([
+      { text: "✅ Mark as Resolved", callback_data: `v1:ticket:close:${ticket.id}` },
+    ]);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_REPLY_DM, payloadJson: { contains: `"ticket_id":${ticket.id},` } },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("HTML-escapes TICKET_REPLY_DM's message", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_004, username: "ticketuser4", fullName: "Ticket User 4" });
+    const ticket = await createTicket(prisma, user.id, "Escape test ticket");
+    await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_004, message: "<script>alert(1)</script>" });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_004);
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("<script>");
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("TICKET_CLOSED_DM sends the buyer's own-language closed message with no keyboard", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_005, username: "ticketuser5", fullName: "Ticket User 5" });
+    const ticket = await createTicket(prisma, user.id, "Closed test ticket");
+    await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_005, buyerLanguage: "id" });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_005);
+    expect(call).toBeDefined();
+    const [, text, opts] = call! as [number, string, { reply_markup?: unknown }];
+    expect(text).toBe("Tiket ditutup. Buka tiket baru jika masih butuh bantuan.");
+    expect(opts.reply_markup).toBeUndefined();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: `"ticket_id":${ticket.id},` } },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("TICKET_CLOSED_DM defaults to English when buyerLanguage is null", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_006, username: "ticketuser6", fullName: "Ticket User 6" });
+    const ticket = await createTicket(prisma, user.id, "Closed test ticket 2");
+    await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_006, buyerLanguage: null });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_006);
+    expect(call).toBeDefined();
+    const [, text] = call! as [number, string];
+    expect(text).toBe("Your ticket has been closed. Open a new one if you need further help.");
   });
 });
 

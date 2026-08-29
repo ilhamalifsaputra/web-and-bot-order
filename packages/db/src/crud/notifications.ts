@@ -791,10 +791,20 @@ export function notificationBackoffMs(attempts: number): number {
 }
 
 /**
- * Increment attempts and record the error (truncated to 500 chars). Flip to
- * FAILED only once attempts >= maxAttempts; otherwise back to PENDING with an
- * exponential-backoff `nextRetryAt`, for a later retry. No-op if the row is
- * gone.
+ * Increment attempts and record the error (truncated to 500 chars). Once
+ * attempts >= maxAttempts the row goes terminal (nextRetryAt cleared);
+ * otherwise it goes back to PENDING with an exponential-backoff
+ * `nextRetryAt`, for a later retry. No-op if the row is gone.
+ *
+ * The terminal status depends on whether the row was ever actually eligible
+ * for retry:
+ * - `maxAttempts > 1`: the row went through real exponential-backoff retries
+ *   and still exhausted them all → DEAD_LETTER ("retried to the ceiling,
+ *   still failing" — worth paging an operator about).
+ * - `maxAttempts <= 1`: the row was terminal on its very first and only
+ *   call — a permanently invalid row (malformed payload, missing template,
+ *   missing chat_id, etc.) that retrying would never fix → FAILED, same as
+ *   before this split existed.
  */
 export async function markNotificationFailed(
   db: Db,
@@ -806,15 +816,16 @@ export async function markNotificationFailed(
   const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
   if (!row) return;
   const attempts = row.attempts + 1;
-  const failed = attempts >= maxAttempts;
+  const terminal = attempts >= maxAttempts;
+  const terminalStatus = maxAttempts > 1 ? NotificationStatus.DEAD_LETTER : NotificationStatus.FAILED;
   await db.notificationOutbox.update({
     where: { id: notifId },
     data: {
       attempts,
       lastError: error.slice(0, 500),
       claimedAt: null,
-      status: failed ? NotificationStatus.FAILED : NotificationStatus.PENDING,
-      nextRetryAt: failed ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
+      status: terminal ? terminalStatus : NotificationStatus.PENDING,
+      nextRetryAt: terminal ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
     },
   });
 }

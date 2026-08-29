@@ -1036,7 +1036,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(row!.status).toBe("SENT");
   });
 
-  it("marks an EMAIL row FAILED once sendMail failures reach NOTIF_MAX_ATTEMPTS, backing off between each attempt like the Telegram generic-failure path", async () => {
+  it("marks an EMAIL row DEAD_LETTER once sendMail failures reach NOTIF_MAX_ATTEMPTS, backing off between each attempt like the Telegram generic-failure path", async () => {
     // SMTP is already configured by the previous test (persists — no
     // per-test DB reset in this file).
     vi.mocked(sendMail).mockRejectedValue(new Error("smtp connection refused"));
@@ -1073,7 +1073,10 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     }
 
     const final = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
-    expect(final!.status).toBe("FAILED");
+    // This call site passes config.NOTIF_MAX_ATTEMPTS (> 1), so the row was
+    // genuinely retried with backoff up to the ceiling — DEAD_LETTER, not
+    // FAILED (which is reserved for maxAttempts<=1 one-shot invalid rows).
+    expect(final!.status).toBe("DEAD_LETTER");
     expect(final!.attempts).toBe(config.NOTIF_MAX_ATTEMPTS);
     expect(final!.lastError).toContain("smtp connection refused");
   });

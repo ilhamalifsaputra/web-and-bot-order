@@ -305,8 +305,28 @@ describe("SupportPage", () => {
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/support?status=REPLIED&priority=HIGH&assigned=unassigned&sort=priority",
+        "/api/support?status=REPLIED%2CWAITING_CUSTOMER&priority=HIGH&assigned=unassigned&sort=priority",
       ),
+    );
+  });
+
+  // Task 1 fix review (Important finding): selecting "Open" must query both
+  // OPEN and WAITING_ADMIN, or a ticket that already advanced through the
+  // Task 1 fix's automatic transition would silently vanish from this filter
+  // while still counting toward the (correctly {in:[...]}-based) KPI tiles.
+  it("queries both statuses in the Open/Waiting Admin pair when 'Open' is selected", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Status filter" }));
+    await user.click(await screen.findByRole("option", { name: "Open" }));
+
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/support?status=OPEN%2CWAITING_ADMIN&sort=newest"),
     );
   });
 

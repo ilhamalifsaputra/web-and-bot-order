@@ -122,6 +122,20 @@ const ALL_PRIORITIES = "_all_";
 const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
 const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
+/** Task 1 fix review (Important finding): the dropdown still shows the 4
+ *  legacy buckets — matching ticketStatusLabel's OPEN/WAITING_ADMIN and
+ *  REPLIED/WAITING_CUSTOMER pairing — but each selection must query BOTH
+ *  statuses in its pair, or filtering by "Open"/"Waiting Customer" would
+ *  silently under-report every ticket that has already gone through the
+ *  Task 1 fix's automatic WAITING_ADMIN/WAITING_CUSTOMER transition. The
+ *  server's `parseCsvFilter` (apps/web-admin/src/routes/api/support.ts)
+ *  already accepts a comma-separated status list, same as the KPI tiles use. */
+const STATUS_FILTER_QUERY: Record<string, string> = {
+  OPEN: "OPEN,WAITING_ADMIN",
+  REPLIED: "REPLIED,WAITING_CUSTOMER",
+  RESOLVED: "RESOLVED",
+  CLOSED: "CLOSED",
+};
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
 const DEFAULT_SORT = "newest";
@@ -390,7 +404,7 @@ export function SupportPage() {
   function applyFilters() {
     setFilters((f) => ({
       ...f,
-      status: draft.status,
+      status: draft.status ? (STATUS_FILTER_QUERY[draft.status] ?? draft.status) : "",
       priority: draft.priority,
       category: draft.category,
       assigned: draft.assigned,

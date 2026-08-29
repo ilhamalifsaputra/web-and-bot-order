@@ -514,6 +514,14 @@ export async function assignTicketWithAudit(
   ticketId: number,
   adminId: number | null,
   assignedByAdminId: number,
+  // Task 3 review fix: the caller (the shared /assign route) already resolves
+  // the assignee's display name via resolveAssigneeName for its own response
+  // body — passing it through here means the audit log reads "Assigned
+  // ticket #N to "Rina"." instead of a bare, developer-only "admin 7.",
+  // matching docs/LOGGING.md's shop-admin-readability requirement. Optional
+  // and defaults to the old bare-id wording so this stays backward-compatible
+  // with any other/future caller that hasn't resolved a name.
+  assigneeName?: string | null,
 ): Promise<SupportTicket> {
   const now = new Date();
   const ticket = await db.supportTicket.update({
@@ -524,7 +532,8 @@ export async function assignTicketWithAudit(
         : { adminId: null, assignedAt: null, assignedBy: null },
   });
 
-  const assigneeLabel = adminId !== null ? `admin ${adminId}` : "nobody (unassigned)";
+  const assigneeLabel =
+    adminId !== null ? `"${assigneeName ?? `admin ${adminId}`}"` : "nobody (unassigned)";
   await logAdminAction(db, {
     adminId: assignedByAdminId,
     action: "ticket_assign",

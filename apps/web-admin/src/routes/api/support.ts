@@ -364,12 +364,11 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     // `assignedAt`/`assignedBy`, not just `adminId`. Without this, those two
     // new columns would stay permanently null no matter what an admin does
     // in the UI (task-1-report.md's own "Concerns for Task 3" section left
-    // this migration decision to this task). Trade-off accepted: this
-    // function's own audit line reads "to admin {id}" rather than the
-    // resolved display name the old route-local line used — its message
-    // format isn't parameterizable without editing Task 1's crud file, which
-    // is out of this task's territory.
-    await assignTicketWithAudit(prisma, ticketId, adminId, req.admin!.userId);
+    // this migration decision to this task). Review fix: `resolved.name`
+    // (already computed above for this same request) is now passed through
+    // so the audit line keeps the resolved display name rather than
+    // regressing to a bare internal id.
+    await assignTicketWithAudit(prisma, ticketId, adminId, req.admin!.userId, resolved.name);
     return reply.send({ ok: true });
   });
 

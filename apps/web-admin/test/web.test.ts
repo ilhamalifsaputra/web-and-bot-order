@@ -4626,12 +4626,10 @@ describe("support", () => {
       expect(audit).toBeTruthy();
       expect(audit?.targetType).toBe("ticket");
       expect(audit?.adminId).toBe(seed.adminId);
-      // Task 3: message format changed from the old route-local
-      // `Assigned ticket #N to "<name>".` to assignTicketWithAudit's own
-      // `Assigned ticket #N to admin <id>.` — see support.ts's route
-      // comment for why the friendlier name couldn't be preserved without
-      // touching Task 1's crud file.
-      expect(audit?.details).toBe(`Assigned ticket #${tid} to admin ${second.id}.`);
+      // Task 3 review fix: assignTicketWithAudit now accepts the caller's
+      // already-resolved display name, so this keeps the same friendly
+      // wording the old route-local logAdminAction call used.
+      expect(audit?.details).toBe(`Assigned ticket #${tid} to "Second Admin".`);
     });
 
     it("unassign (adminId: null) clears the assignment (incl. assignedAt/assignedBy) and audits", async () => {

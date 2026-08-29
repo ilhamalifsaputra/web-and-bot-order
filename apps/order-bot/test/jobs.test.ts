@@ -1578,7 +1578,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
     //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog,
     //  tokopayPollWatchdog, paydisiniPollWatchdog, nowpaymentsPollWatchdog,
     //  drainBroadcasts, announceStartedFlashSales, storageCleanupJob,
-    //  cleanupProcessedTelegramUpdatesJob].
+    //  cleanupProcessedTelegramUpdatesJob, cleanupExpiredBotSessionsJob].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
@@ -1630,13 +1630,20 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // any other registered job.
       expect(crons[12]!.getPattern()).toBe("10 16 3 * * *");
       expect(crons[12]!.options.protect).toBe(true);
+      // cleanupExpiredBotSessionsJob (Task 2, Phase D) — same daily off-peak
+      // slot, on second 45 (NOT 20 — drainBroadcasts already fires every
+      // minute at :20, so that second would be a genuine collision at
+      // 03:16:20, not just a test-flagged one) so it never shares a firing
+      // second with any other registered job.
+      expect(crons[13]!.getPattern()).toBe("45 16 3 * * *");
+      expect(crons[13]!.options.protect).toBe(true);
       // sweepPaidOrderBubbles (T2-E) — every minute, but on second 25: it
       // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing rows back to back,
       // exactly the profile behind the P1008/P2028 write-lock pile-up on
       // second 0 (2026-07-20). :25 is ≥5s clear of every other second in this
-      // list (0, 5/20/35/50, 40, 15/17/19, 30, 10).
-      expect(crons[13]!.getPattern()).toBe("25 * * * * *");
-      expect(crons[13]!.options.protect).toBe(true);
+      // list (0, 5/20/35/50, 40, 15/17/19, 30, 10, 45).
+      expect(crons[14]!.getPattern()).toBe("25 * * * * *");
+      expect(crons[14]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second

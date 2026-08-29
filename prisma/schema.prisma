@@ -1490,3 +1490,36 @@ model IdempotencyRecord {
   @@unique([key, endpoint], map: "ix_idempotency_record_key_endpoint")
   @@map("idempotency_records")
 }
+
+/// grammY session storage — replaces the old in-memory `boundedSessionStorage`
+/// (an LRU `Map`, lost on every restart) with a real StorageAdapter<SessionData>
+/// backed by this table (`apps/order-bot/src/util/prismaSessionStorage.ts`).
+/// `key` is grammY's session key — this bot uses the default `getSessionKey`,
+/// one row per chat id. `data` is `ctx.session` JSON.stringify'd; every value
+/// that reaches this column MUST already be a plain JSON-serializable object —
+/// see prismaSessionStorage.ts's header comment for the Phase B landmine
+/// (a `conversation.external()` result carrying a function/closure survived
+/// only because the old storage was an in-memory `Map`; a real serialization
+/// boundary like this table would silently corrupt it) this migration's
+/// conversation.external() audit exists to guard against.
+///
+/// `kind` ("nav" | "checkout") implements the plan's TTL split — a session
+/// mid-checkout (payment anchor set, a voucher applied, info-collection in
+/// progress, ...) expires after 15 minutes of inactivity instead of the 24h
+/// a "just browsing" session gets, so an abandoned checkout's stale state
+/// (e.g. a payment-message anchor pointing at a bubble the buyer walked away
+/// from) doesn't linger a full day. See prismaSessionStorage.ts's
+/// `classifySessionKind` for the exact rule. `expiresAt` is recomputed and
+/// re-stamped on every write (a still-active session keeps sliding its own
+/// expiry forward); the index below backs the daily prune sweep
+/// (`cleanupExpiredBotSessionsJob`, jobs/index.ts) — grammY's own read/write
+/// only ever queries by `key`.
+model BotSession {
+  key       String   @id
+  data      String
+  kind      String
+  expiresAt DateTime @map("expires_at")
+
+  @@index([expiresAt], map: "ix_bot_session_expires_at")
+  @@map("bot_sessions")
+}

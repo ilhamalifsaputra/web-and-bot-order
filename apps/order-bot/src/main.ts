@@ -28,7 +28,7 @@ import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
-import { boundedSessionStorage } from "./util/boundedSessionStorage";
+import { prismaSessionStorage } from "./util/prismaSessionStorage";
 import { htmlDefaultsTransformer } from "./util/apiDefaults";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
@@ -95,7 +95,7 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.use(
     session({
       initial: initialSession,
-      storage: boundedSessionStorage(config.SESSION_CACHE_MAX_ENTRIES),
+      storage: prismaSessionStorage(),
     }),
   );
   bot.use(conversations());

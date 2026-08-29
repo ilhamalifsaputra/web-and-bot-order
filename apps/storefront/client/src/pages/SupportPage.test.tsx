@@ -62,7 +62,7 @@ describe("SupportPage", () => {
   it("creates a new ticket and refetches", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
@@ -80,7 +80,7 @@ describe("SupportPage", () => {
     }));
     await screen.findByRole("link", { name: "#1" });
     fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "help with this order" } });
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), { target: { value: "help with this order" } });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 42 });
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
     await waitFor(() =>
@@ -96,7 +96,7 @@ describe("SupportPage", () => {
   it("shows a 'Ticket #N created' toast on successful submission", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
@@ -130,17 +130,31 @@ describe("SupportPage", () => {
     expect(screen.queryByText("No support tickets yet.")).not.toBeInTheDocument();
   });
 
-  it("pre-fills the new-ticket textarea with a template skeleton", async () => {
+  // Regression: order selection used to be asked twice — a literal "Order
+  // number:" line the customer typed over in the textarea, plus this
+  // dropdown. The dropdown is now the only place order selection happens.
+  it("starts the new-ticket textarea empty, with no order-number line to type over", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    const textarea = screen.getByPlaceholderText("Tell us what's wrong…") as HTMLTextAreaElement;
-    expect(textarea.value).toContain("Order number:");
+    const textarea = screen.getByPlaceholderText(/Tell us what's wrong/) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+    expect(textarea.placeholder).not.toContain("Order number:");
+  });
+
+  it("clears the textarea back to empty (not a re-filled template) after a successful submission", async () => {
+    renderSupport();
+    await screen.findByRole("link", { name: "#1" });
+    const textarea = screen.getByPlaceholderText(/Tell us what's wrong/) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "New issue" } });
+    (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => expect(textarea.value).toBe(""));
   });
 
   it("attaches a file and submits via apiPostFormWithProgress instead of apiPost", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     const file = new File(["fake image bytes"], "evidence.png", { type: "image/png" });
@@ -158,7 +172,7 @@ describe("SupportPage", () => {
   it("shows a progress bar reflecting upload progress while an attachment is uploading", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     const file = new File(["fake image bytes"], "evidence.png", { type: "image/png" });

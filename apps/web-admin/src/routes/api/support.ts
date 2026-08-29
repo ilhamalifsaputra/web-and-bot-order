@@ -480,7 +480,12 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       const resolved = await resolveAssigneeName(adminId);
       if (!resolved.ok) return reply.code(400).send({ error: "Admin not found." });
       const adminName = resolved.name;
-      const result = await bulkAssignTickets(prisma, ids, adminId);
+      // Phase C whole-branch review fix: pass the acting admin through so
+      // assignedAt/assignedBy get stamped the same way the single-ticket
+      // /assign route already does via assignTicketWithAudit — without
+      // this, a bulk-assigned ticket's detail page would show a named
+      // assignee while its own "Assigned by" line read "Not yet assigned."
+      const result = await bulkAssignTickets(prisma, ids, adminId, req.admin!.userId);
       const summary =
         adminId !== null
           ? `Assigned ${result.succeeded.length} ${pluralTicket(result.succeeded.length)} to "${adminName}"`

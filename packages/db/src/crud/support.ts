@@ -1093,10 +1093,25 @@ export async function bulkAssignTickets(
   db: Db,
   ids: number[],
   adminId: number | null,
+  // Phase C whole-branch review fix: without this, a bulk assignment left
+  // assignedAt/assignedBy permanently null — the same columns
+  // assignTicketWithAudit (the single-ticket path) stamps — so the detail
+  // page showed a named assignee in the picker while its own "Assigned by"
+  // line read "Not yet assigned." for the exact same ticket. Optional and
+  // defaults to leaving the columns untouched, matching the pre-fix
+  // behavior for any caller that doesn't pass it.
+  assignedByAdminId?: number,
 ): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
   const { succeeded, failed } = await splitExistingTicketIds(db, ids);
   if (succeeded.length > 0) {
-    await db.supportTicket.updateMany({ where: { id: { in: succeeded } }, data: { adminId } });
+    const stamp = assignedByAdminId !== undefined;
+    await db.supportTicket.updateMany({
+      where: { id: { in: succeeded } },
+      data:
+        adminId !== null
+          ? { adminId, ...(stamp ? { assignedAt: new Date(), assignedBy: assignedByAdminId } : {}) }
+          : { adminId: null, ...(stamp ? { assignedAt: null, assignedBy: null } : {}) },
+    });
   }
   return { succeeded, failed };
 }

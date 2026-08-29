@@ -34,7 +34,14 @@ const STATUS_LABEL_KEY: Record<string, string> = {
   reserved: "web.status_chip_reserved",
   processing: "web.order_processing_title",
   open: "web.status_chip_open",
+  // Phase C whole-branch review fix: the real live values a ticket takes
+  // after its first reply (Task 1's automatic WAITING_ADMIN/WAITING_CUSTOMER
+  // transition) — without these, the fallback title-cases the raw enum
+  // ("Waiting Admin") in untranslated English and drops out of the AMBER
+  // tone set below into neutral sand.
+  waiting_admin: "web.status_chip_open",
   replied: "web.status_chip_replied",
+  waiting_customer: "web.status_chip_replied",
   pending: "web.status_chip_pending",
   pending_payment: "web.status_chip_pending_payment",
   underpaid: "web.status_chip_underpaid",
@@ -52,7 +59,9 @@ const AMBER = new Set([
   "pending_verification",
   "reserved",
   "open",
+  "waiting_admin",
   "replied",
+  "waiting_customer",
   "pending",
   "underpaid",
   "processing",

@@ -52,6 +52,7 @@ import {
   clearOrderPaymentMessage,
   resyncDigiflazzCatalog,
   dispatchPendingDigiflazzOrders,
+  pruneProcessedTelegramUpdates,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -1397,6 +1398,27 @@ export async function storageCleanupJob(): Promise<void> {
   );
 }
 
+/** Retention window for the update_id dedup ledger (`bindUpdateId`,
+ * middleware.ts) — generous relative to how long Telegram could plausibly
+ * still redeliver the same update_id (minutes, not days), but small enough
+ * that keeping it doesn't cost anything. */
+const PROCESSED_TELEGRAM_UPDATE_RETENTION_MS = 3 * 24 * 3_600_000; // 3 days
+
+/**
+ * Daily retention sweep for the update_id dedup ledger
+ * (ProcessedTelegramUpdate, claimed by `bindUpdateId` in middleware.ts) —
+ * deletes rows past their retention window so the table stays small. Unlike
+ * the payment Processed*Tx ledgers (crud/storageMaintenance.ts deliberately
+ * leaves those alone — see its own module doc comment), a row here carries
+ * no double-payment risk if pruned early: Telegram's own redelivery window
+ * is on the order of minutes, nowhere near this job's 3-day cutoff.
+ */
+export async function cleanupProcessedTelegramUpdatesJob(): Promise<void> {
+  const cutoff = new Date(Date.now() - PROCESSED_TELEGRAM_UPDATE_RETENTION_MS);
+  const removed = await pruneProcessedTelegramUpdates(prisma, cutoff);
+  logger.info(`Update-id dedup ledger cleanup finished — pruned ${removed} row(s) older than ${PROCESSED_TELEGRAM_UPDATE_RETENTION_MS / 3_600_000}h.`);
+}
+
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
 /**
  * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
@@ -1554,6 +1576,11 @@ export function scheduleJobs(api: Api): Cron[] {
     // minutely/hourly ticks, and unlike those it's a single sweep rather
     // than something that needs to run often.
     new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
+    // Same daily off-peak slot, one minute later — second 10, not 15/17/19/25
+    // (already used above by the QRIS watchdogs / sweepPaidOrderBubbles) and
+    // not 30 (storageCleanupJob itself), so it never shares a firing second
+    // with any other registered job.
+    new Cron("10 16 3 * * *", { protect: true }, wrap("cleanupProcessedTelegramUpdatesJob", cleanupProcessedTelegramUpdatesJob)),
     // Second 25, NOT "*/1 * * * *" (which would fire on second 0): this sweep
     // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
     // every tick — precisely the profile behind the P1008/P2028 write-lock

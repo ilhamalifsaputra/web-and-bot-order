@@ -1445,6 +1445,29 @@ model ProcessedNowpaymentsTx {
   @@map("processed_nowpayments_tx")
 }
 
+/// Idempotency ledger for Telegram update_id redelivery — same insert-first-
+/// on-unique pattern as the Processed*Tx ledgers above, but for a different
+/// kind of duplicate: Telegram's long-polling `getUpdates` offset only
+/// advances once a batch is fully acknowledged, so a crash mid-processing
+/// (before the next poll) — or a flaky connection — redelivers the same
+/// update_id on restart/retry. `bindUpdateId` (apps/order-bot/src/middleware.ts)
+/// claims a row here before running the rest of the update's middleware
+/// chain, so a redelivered update short-circuits instead of re-running a
+/// side effect (charging a wallet, sending a duplicate DM, ...) a second
+/// time. Short-lived by design — unlike the payment ledgers above (which
+/// storageMaintenance.ts deliberately leaves alone), a row here is only ever
+/// useful for as long as Telegram might still redeliver the same update_id
+/// (minutes, not months) — see pruneProcessedTelegramUpdates
+/// (packages/db/src/crud/telegramUpdates.ts) and its daily cron
+/// (jobs/index.ts) for the retention sweep that keeps this table small.
+model ProcessedTelegramUpdate {
+  id          Int      @id @default(autoincrement())
+  updateId    BigInt   @unique(map: "ix_processed_telegram_update_update_id") @map("update_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_telegram_updates")
+}
+
 /// Client-side idempotency ledger for checkout/refund-style mutations — a
 /// DIFFERENT mechanism from the Processed*Tx ledgers above (those dedupe an
 /// inbound payment-gateway webhook callback; this dedupes a double-tapped or

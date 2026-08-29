@@ -2,13 +2,19 @@
  * Cross-cutting middleware — port of bot/utils/decorators.py + main.py's
  * group -2 update_id binder.
  *
- *  - bindUpdateId : run the rest of the update under the logging contextvar.
+ *  - bindUpdateId : run the rest of the update under the logging contextvar,
+ *    after atomically claiming its update_id in the ProcessedTelegramUpdate
+ *    ledger so a Telegram redelivery (or a crash mid-processing) can't
+ *    re-run a handler a second time.
  *  - registeredUser: upsert the User row, cache a snapshot on the session,
  *    sync session.lang, and block banned users (mirrors @registered_user).
  *  - rateLimit    : per-user sliding-window guard (@rate_limit).
  *  - adminOnly    : guard a composer/handler to ADMIN_IDS (@admin_only).
  *  - joinGate     : block every interaction until the configured join-gate
  *    channel/group have been joined.
+ *  - commerceGate : block every commerce-surface command/callback
+ *    (browse/buy/checkout, every `v1:`-prefixed callback) unless the update
+ *    is from a private 1:1 chat — unconditional, unlike joinGate.
  *
  * @safe_handler (per-handler try/except) becomes the global `bot.catch`.
  */
@@ -18,14 +24,39 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger, withUpdateId } from "@app/core/logger";
-import { prisma, upsertUser, peekWarmUser, primeWarmUser, getSetting, type WarmUserSnap } from "@app/db";
+import { prisma, upsertUser, peekWarmUser, primeWarmUser, getSetting, claimTelegramUpdate, type WarmUserSnap } from "@app/db";
 import type { MyContext } from "./context";
 import { t } from "./util/i18n";
 import * as ckb from "./keyboards/customer";
 
-/** group -2: bind update_id into the logging context for this update. */
+/**
+ * group -2: bind update_id into the logging context for this update, and
+ * atomically claim it in the ProcessedTelegramUpdate ledger before anything
+ * else runs.
+ *
+ * Telegram's long-polling `getUpdates` offset only advances once a batch is
+ * fully acknowledged, so a crash mid-processing (before the next poll) — or
+ * a flaky connection forcing a retry — redelivers the same update_id on
+ * restart. Without this guard a redelivered update would re-run whatever
+ * handler it maps to a second time, including any side effect that handler
+ * has (debiting a wallet, sending a DM, ...). The claim happens first, so a
+ * duplicate delivery short-circuits here and never reaches `next()` at all.
+ *
+ * See packages/db/src/crud/telegramUpdates.ts for the claim/prune pair this
+ * uses, and jobs/index.ts's `cleanupProcessedTelegramUpdatesJob` for the
+ * retention sweep that keeps the ledger from growing unbounded — a claimed
+ * row is only ever useful for as long as Telegram might still redeliver the
+ * same update_id (minutes, not months).
+ */
 export const bindUpdateId: MiddlewareFn<MyContext> = (ctx, next) =>
-  withUpdateId(ctx.update.update_id, next);
+  withUpdateId(ctx.update.update_id, async () => {
+    const claimed = await claimTelegramUpdate(prisma, ctx.update.update_id);
+    if (!claimed) {
+      logger.info(`Update ${ctx.update.update_id} was already processed — skipped as a duplicate delivery (Telegram redelivery, or a crash mid-processing before the long-polling offset advanced)`);
+      return;
+    }
+    return next();
+  });
 
 /** Matches a `/start ref_<code>` deep link, tolerating a `@botname` suffix
  * (e.g. `/start@shopbot ref_ABC123`) the way grammY's own command matching
@@ -140,6 +171,16 @@ export const adminOnly: MiddlewareFn<MyContext> = async (ctx, next) => {
   return next();
 };
 
+// --- shared chat-type helper (join gate + commerce gate below) ------------
+
+/** True when this update originated in a 1:1 private chat with the bot, as
+ * opposed to a group/supergroup/channel. Shared by `joinGate` and
+ * `commerceGate` below — both need to tell a customer's own DM apart from a
+ * group/channel the bot happens to be a member of. */
+function isPrivateChat(ctx: MyContext): boolean {
+  return ctx.chat?.type === "private";
+}
+
 // --- join gate (block until the configured channel/group are joined) ------
 
 interface GateCacheEntry {
@@ -210,7 +251,7 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
   // Only reachable once the gate is actually active. Never reply into a
   // group/channel (would spam it); also blocks any group-originated command
   // from bypassing the gate.
-  if (ctx.chat?.type !== "private") return;
+  if (!isPrivateChat(ctx)) return;
 
   const forceFresh = ctx.callbackQuery?.data === ckb.cb("menu", "main");
   const cached = joinGateCache.get(from.id);
@@ -256,4 +297,69 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
   );
   const text = t(ctx, "gate.header") + "\n" + lines.join("\n") + t(ctx, "gate.footer");
   await ctx.reply(text, { reply_markup: kb });
+};
+
+// --- commerce gate (blanket private-chat-only guard) -----------------------
+
+/** Slash commands that ARE a customer commerce action in their own right —
+ * open the main menu / browse products — as opposed to informational or
+ * utility commands (language, faq, terms, howtopay, cancel, support) that
+ * stay usable everywhere, group chats included. Matched directly off
+ * `ctx.message.text`, the same way START_REF_RE above reads a `/start`
+ * deep link: this middleware runs before grammY's own command router
+ * populates `ctx.match`, so it can't rely on that either. */
+const COMMERCE_COMMANDS: readonly string[] = ["start", "menu", "listproduk", "search"];
+const COMMAND_RE = /^\/([a-zA-Z0-9_]+)(?:@\S+)?/;
+
+function isCommerceCommand(ctx: MyContext): boolean {
+  const text = ctx.message?.text;
+  if (!text) return false;
+  const m = text.match(COMMAND_RE);
+  return m !== null && COMMERCE_COMMANDS.includes(m[1]!.toLowerCase());
+}
+
+/**
+ * Every commerce callback this bot ever posts an inline button under — the
+ * customer flows (`v1:browse:*`, `v1:buy:*`, checkout, ...) AND the admin
+ * panel (`v1:adm:*`, keyboards/admin.ts's own doc comment: "all admin
+ * callbacks use the v1:adm:* prefix to keep them separate from customer
+ * callbacks") — shares the single `v1:` namespace keyboards/customer.ts
+ * defines (`CB_PREFIX`) and main.ts's callback router matches wholesale
+ * (`bot.callbackQuery(/^v1:/, routeCallback)`). No legitimate flow ever
+ * posts one of these buttons into a non-private chat: every admin
+ * notification is sent as a direct `api.sendMessage(adminId, ...)` DM, never
+ * to a group. Blocking the whole namespace here is therefore a safe, total
+ * block — not just the customer-facing slice. */
+const COMMERCE_CALLBACK_RE = new RegExp(`^${ckb.CB_PREFIX}:`);
+
+function isCommerceCallback(ctx: MyContext): boolean {
+  const data = ctx.callbackQuery?.data;
+  return data !== undefined && COMMERCE_CALLBACK_RE.test(data);
+}
+
+/**
+ * Blanket guard: short-circuits any commerce-surface command or callback
+ * (browse, buy, checkout, every `v1:`-prefixed callback — see
+ * COMMERCE_CALLBACK_RE above) whenever the update didn't originate in a
+ * private 1:1 chat with the bot.
+ *
+ * Closes a gap `joinGate` above never covered: joinGate's own
+ * `!isPrivateChat` check only runs once the join gate is actually
+ * configured (it returns early otherwise) — so a shop with no join gate set
+ * up had every commerce action reachable from any group/supergroup/channel
+ * the bot was added to, with nothing blocking it. This middleware is
+ * unconditional (no configuration gate) and — unlike joinGate — carries no
+ * admin exemption either: see COMMERCE_CALLBACK_RE's own comment for why an
+ * admin bypass isn't needed here.
+ *
+ * Silently drops the update (no reply, no toast) rather than answering it,
+ * mirroring joinGate's own non-private handling and for the same reason:
+ * replying into an arbitrary group/channel the bot happens to be a member
+ * of would spam it every time anyone taps a stale button or fat-fingers a
+ * command there.
+ */
+export const commerceGate: MiddlewareFn<MyContext> = (ctx, next) => {
+  if (isPrivateChat(ctx)) return next();
+  if (isCommerceCommand(ctx) || isCommerceCallback(ctx)) return; // silently drop
+  return next();
 };

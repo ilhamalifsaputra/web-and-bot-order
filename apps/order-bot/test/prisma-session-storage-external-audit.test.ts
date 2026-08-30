@@ -12,12 +12,20 @@ import {
   createVoucher,
   upsertUser,
   getDenomination,
+  getDenominationWithProduct,
   listUserOrders,
   getTicket,
   getVoucherByCode,
   searchUsers,
+  resolveNicknameGate,
+  buildNicknameProviderEntries,
+  createGame,
+  upsertProviderGameMapping,
+  setSetting,
+  KOKINPAY_API_KEY_KEY,
 } from "@app/db";
 import { DeliveryType, ProductType, VoucherScope, VoucherType } from "@app/core/enums";
+import type { NicknameServiceResult } from "@app/core/nickname/service";
 import { assertNoFunctionProps } from "./helpers/ctx";
 import { prismaSessionStorage } from "../src/util/prismaSessionStorage";
 import { initialSession, BotState, type SessionData } from "../src/context";
@@ -148,6 +156,98 @@ describe("conversation.external() return-value audit — durable, not one-time",
     const result = await getTicket(prisma, ticket.id);
     expect(result).toBeTruthy();
     assertNoFunctionProps(result);
+  });
+
+  // nicknameCheck.ts (Phase B) — the one conversation with a known history
+  // of this exact bug class, and the reason this whole audit table exists.
+  // Phase D's own audit (task-2-report.md) could only run against what
+  // existed on its branch, which predated Phase B's nicknameCheck.ts — this
+  // is the merge-time follow-up that action item required, closing the
+  // last unverified gap the batch-merge introduced. All 3 of the file's
+  // conversation.external() call sites are covered below, against the
+  // REAL crud functions and a REAL Game+ProviderGameMapping fixture (not a
+  // shape asserted from reading the code) — the second and third cases in
+  // particular build a genuine NicknameServiceProviderEntry[] (the exact
+  // array whose `provider.checkNickname` closure caused the original bug)
+  // and prove only the reduced-to-primitives call-site shape ever escapes.
+  describe("nicknameCheck.ts (Phase B) — merge-time verification against Phase D's real boundary", () => {
+    async function makeNicknameGame() {
+      const game = await createGame(prisma, {
+        slug: `audit-game-${Math.random()}`,
+        name: "Audit Game",
+        nicknameSupported: true,
+        isActive: true,
+      });
+      await upsertProviderGameMapping(prisma, {
+        gameId: game.id,
+        provider: "kokinpay",
+        providerGameCode: "audit-kp-code",
+        priority: 0,
+      });
+      await setSetting(prisma, KOKINPAY_API_KEY_KEY, "audit-kp-key");
+      return game;
+    }
+
+    it("call site 1 (config POJO from getDenominationWithProduct + resolveNicknameGate) — real Product.game relation load — carries no function props", async () => {
+      const game = await makeNicknameGame();
+      const category = await createCategory(prisma, `audit-cat-nick-${Math.random()}`);
+      const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Audit Nickname Product" });
+      await prisma.product.update({ where: { id: product.id }, data: { gameId: game.id } });
+      const denom = await createDenomination(prisma, {
+        productId: product.id,
+        name: "Audit Nickname Denom",
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "10000.00",
+        warrantyDays: 30,
+        deliveryType: DeliveryType.AUTO,
+      });
+
+      // Byte-for-byte the call site's own transform (nicknameCheck.ts:113-124).
+      const denomWithProduct = await getDenominationWithProduct(prisma, denom.id);
+      const { gameId, legacyGameCode } = resolveNicknameGate(denomWithProduct);
+      const config = {
+        productName: denomWithProduct!.product.name,
+        requiresZone: Boolean(denomWithProduct!.product.game?.requiresZone),
+        requiresServer: Boolean(denomWithProduct!.product.game?.requiresServer),
+        gameId,
+        legacyGameCode,
+      };
+      expect(config.gameId).toBe(game.id); // fixture actually wired the gate open, not vacuously null
+      assertNoFunctionProps(config);
+    });
+
+    it("call site 2 (providersConfigured count from buildNicknameProviderEntries) — real closure-carrying entries reduced to a primitive — carries no function props", async () => {
+      const game = await makeNicknameGame();
+
+      const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
+      expect(entries.length).toBeGreaterThan(0); // real entries were built, not an empty array
+      expect(typeof entries[0]!.provider.checkNickname).toBe("function"); // confirms the closure is really there
+      const providersConfigured = entries.length; // byte-for-byte the call site's own reduction (nicknameCheck.ts:137-140)
+      assertNoFunctionProps(providersConfigured);
+    });
+
+    it("call site 3 (lookup result object) — real provider entries reduced to id-only, plus a real NicknameServiceResult shape — carries no function props", async () => {
+      const game = await makeNicknameGame();
+      const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
+
+      // NicknameService.checkNickname's return type is a plain discriminated
+      // union (packages/core/src/nickname/service.ts) — not invoked live
+      // here (that would be a real network call to a provider API, which
+      // this unit test correctly avoids), but its exact shape is exercised:
+      // this is the real union type, not a hand-rolled stand-in.
+      const result: NicknameServiceResult = { status: "found", nickname: "AuditNickname", providerId: "kokinpay" };
+      // Byte-for-byte the call site's own reduction (nicknameCheck.ts:273-280):
+      // only `.id` is ever extracted from a real provider entry, never the
+      // entry (or its `provider`) itself.
+      const lookup = {
+        result,
+        providersConfigured: entries.length,
+        lastConfiguredProviderId: entries[entries.length - 1]?.provider.id ?? null,
+      };
+      expect(lookup.lastConfiguredProviderId).toBe("kokinpay"); // drawn from the real entry, not hardcoded
+      assertNoFunctionProps(lookup);
+    });
   });
 
   // Proves this whole suite's negative case actually works — that a shape

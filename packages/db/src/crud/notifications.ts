@@ -1258,6 +1258,36 @@ export function countNotifications(db: Db, opts: { status?: string | null } = {}
   return db.notificationOutbox.count({ where: opts.status ? { status: opts.status } : {} });
 }
 
+/**
+ * Age in seconds of the single oldest unsent outbox row — "unsent" meaning
+ * PENDING, or SENDING with a claim older than STALE_CLAIM_MS (an abandoned
+ * claim from a dispatcher that died mid-send effectively never sent, exactly
+ * like fetchPendingNotifications/claimNotification already treat it
+ * elsewhere in this file). Drives the /metrics `outbox_oldest_unsent_age_seconds`
+ * gauge (apps/web-admin/src/routes/metrics.ts). A single query — `MIN(createdAt)`
+ * over that set via `findFirst`/`orderBy` — not a fetch-then-compute-in-app-code.
+ *
+ * Returns `null` when no such row exists (an empty/healthy outbox) rather
+ * than `0`: a Prometheus gauge should simply not report a sample in that
+ * case, since `0` would misleadingly read as "a row aged out at exactly this
+ * instant."
+ */
+export async function oldestUnsentNotificationAge(db: Db, now: Date = new Date()): Promise<number | null> {
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
+  const row = await db.notificationOutbox.findFirst({
+    where: {
+      OR: [
+        { status: NotificationStatus.PENDING },
+        { status: NotificationStatus.SENDING, claimedAt: { lt: staleCutoff } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
+  if (!row) return null;
+  return Math.floor((now.getTime() - row.createdAt.getTime()) / 1000);
+}
+
 /** Count of outbox rows per status — drives the summary cards. */
 export async function outboxStatusCounts(db: Db): Promise<Record<string, number>> {
   const grouped = await db.notificationOutbox.groupBy({ by: ["status"], _count: { _all: true } });

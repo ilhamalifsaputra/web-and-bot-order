@@ -35,6 +35,7 @@ import {
   retryNotification,
   getNotification,
   outboxStatusCounts,
+  oldestUnsentNotificationAge,
   STALE_CLAIM_MS,
   notificationBackoffMs,
   NOTIF_RETRY_BASE_MS,
@@ -72,6 +73,118 @@ async function seedOrder(): Promise<number> {
   });
   return order.id;
 }
+
+// This describe block MUST run first in the file (Vitest executes tests
+// within a file sequentially, top-to-bottom, by default — no
+// test.concurrent/shuffle is configured here): the "empty outbox" case needs
+// a genuinely empty notification_outbox, and every other describe block
+// below enqueues rows into the same shared schema-per-file `prisma` without
+// cleaning up afterward (see the "fetchPendingNotifications priority"
+// block's comment further down for the same shared-DB caveat). Each
+// subsequent case here deliberately inserts a row OLDER than anything
+// already in the table so its assertion holds regardless of run order among
+// ITS OWN cases.
+//
+// Unlike every other describe block in this file, the rows created here are
+// explicitly deleted in this block's own `afterAll` (below) rather than left
+// for the rest of the file to accumulate: several later tests (e.g. "outbox
+// CRUD > enqueue → stored PENDING with JSON payload" and "nextRetryAt
+// backoff > a backed-off row is excluded ... until its window passes")
+// assert an EXACT claimable-row count from fetchPendingNotifications, which
+// would be thrown off by a genuinely-PENDING (or stale-SENDING, which
+// fetchPendingNotifications treats as equally claimable) row left behind by
+// this block — a real regression caught by running the full file, not just
+// this block's own cases, before considering this task done.
+describe("oldestUnsentNotificationAge", () => {
+  const createdIds: number[] = [];
+
+  afterAll(async () => {
+    await prisma.notificationOutbox.deleteMany({ where: { id: { in: createdIds } } });
+  });
+
+  it("returns null on an empty outbox", async () => {
+    expect(await oldestUnsentNotificationAge(prisma)).toBeNull();
+  });
+
+  it("returns the age of a single PENDING row", async () => {
+    const orderId = await seedOrder();
+    const createdAt = new Date(Date.now() - 120_000); // 120s old
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "PENDING",
+        createdAt,
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(120);
+    expect(age!).toBeLessThanOrEqual(135); // generous tolerance for test runtime
+  });
+
+  it("ignores a fresh (non-stale) SENDING row even if its createdAt is much older", async () => {
+    const orderId = await seedOrder();
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: new Date(), // fresh claim — actively being sent right now
+        createdAt: new Date(Date.now() - 3_600_000), // 1h old, but must be excluded
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    // Still reflects the ~120s PENDING row from the previous case, NOT the
+    // 1h-old fresh-SENDING row — proves a fresh claim is excluded.
+    expect(age!).toBeLessThan(300);
+  });
+
+  it("counts a SENDING row whose claim is older than STALE_CLAIM_MS, like a PENDING row", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 10_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 400_000), // 400s old — older than any prior row
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(400);
+    expect(age!).toBeLessThanOrEqual(415);
+  });
+
+  it("returns the OLDEST qualifying row's age across a mix of PENDING and stale SENDING rows", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 20_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 500_000), // 500s old — older than the 400s row above
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(500);
+    expect(age!).toBeLessThanOrEqual(515);
+  });
+});
 
 describe("outbox CRUD", () => {
   it("enqueue → stored PENDING with JSON payload", async () => {

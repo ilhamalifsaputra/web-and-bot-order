@@ -15,6 +15,7 @@ import { logger } from "@app/core/logger";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import authRoutes from "./routes/auth";
+import metricsRoutes from "./routes/metrics";
 import unauthShellRoutes from "./routes/unauthShell";
 import setupRoutes from "./routes/setup";
 import setupShellRoutes from "./routes/setupShell";
@@ -125,6 +126,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(authRoutes);
+  await app.register(metricsRoutes);
   await app.register(unauthShellRoutes);
   await app.register(setupRoutes);
   await app.register(setupShellRoutes);

@@ -940,6 +940,16 @@ export function orderPickerKb(orders: OrderPickerLike[], lang: string): InlineKe
   return ik(rows);
 }
 
+/** Shown when a customer tries to link a new ticket to an order that
+ * already has one open — "view the existing ticket" instead of filing a
+ * duplicate. */
+export function ticketDuplicateKb(ticketId: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("support.duplicate_open_ticket_view_btn", lang), data: cb("ticket", "view", ticketId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
 /** Shown while user is in AWAITING_PHOTOS state. */
 export function supportPhotoPromptKb(photoCount: number, lang = "en"): InlineKeyboard {
   const label =

@@ -363,6 +363,8 @@
   "support.btn_submit_photos": "✅ Submit ({count}/3 photos)",
   "support.ask_order": "Is this ticket about a specific order? Pick one below, or skip for a general question.",
   "support.order_linked_toast": "Linked to order #{code}.",
+  "support.duplicate_open_ticket": "You already have an open ticket (#{id}) for this order #{code}. Please continue there instead of opening a new one.",
+  "support.duplicate_open_ticket_view_btn": "🔎 View Ticket",
   "support.order_picker_skip": "⏭ General question (skip)",
   "support.ask_photos": "Description received.\n\nYou may attach up to <b>3 photos</b> as evidence (optional).\nSend photos one by one, or tap the button below to submit.",
   "support.intro": "<b>Support</b>\n\nDescribe your issue below. An admin will reply here.",

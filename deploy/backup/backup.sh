@@ -18,12 +18,15 @@
 # already compressed and restorable with `pg_restore`) run *inside* the
 # `postgres` container via `docker compose exec`, since the prod compose
 # overlay deliberately does not publish Postgres's port to the host
-# (docker-compose.postgres.prod.yml). Requires docker on the host, and
-# pg_restore (postgresql-client) on the host for dump verification.
+# (docker-compose.postgres.prod.yml). The dump is also VERIFIED inside that
+# same container, so the only host requirement on this path is `docker` — no
+# host-side postgresql-client/pg_restore is needed (and a host client older
+# than the server would in fact reject a perfectly good PG16 dump).
 #
 # Run on the HOST (the SQLite DB lives in the bind-mounted ./data; the
-# `postgres` container's data lives in its own named volume) from the repo
-# root, same as any other `docker compose` command for this stack.
+# `postgres` container's data lives in its own named volume). The script
+# `cd`s to the repo root itself (see below), so it can be invoked from any
+# directory — including cron, whose working directory is $HOME.
 #
 # Usage:
 #   deploy/backup/backup.sh                 # uses defaults below
@@ -35,6 +38,22 @@
 # Cron (every 6h, log to file) — `crontab -e`:
 #   0 */6 * * * DB=/srv/app/data/bot.db DEST=/srv/backups /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1
 set -euo pipefail
+
+# Make the script self-locating: the Postgres path runs `docker compose -f
+# docker-compose.yml -f docker-compose.postgres.prod.yml ...` with RELATIVE
+# compose-file paths, which only resolve from the repo root. Cron runs jobs
+# with the working directory set to $HOME, so without this the Postgres path
+# would fail on every scheduled run with "no configuration file provided".
+# deploy/backup/ -> ../.. is the repo root. Harmless for the SQLite path: its
+# documented production invocation passes absolute DB=/DEST=, and its relative
+# defaults (./data/bot.db, ./data/backups) are *meant* to be repo-root
+# relative anyway — which is exactly what they now always are. NOTE: as a
+# result, relative DB=/DEST= values are interpreted relative to the repo root,
+# not to the directory you invoked the script from.
+cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." || {
+  echo "ERROR: could not cd to the repo root from $(dirname "${BASH_SOURCE[0]:-$0}")" >&2
+  exit 1
+}
 
 DEST="${DEST:-./data/backups}"
 RETENTION="${RETENTION:-28}"          # how many timestamped backups to keep
@@ -117,10 +136,6 @@ backup_postgres() {
     echo "ERROR: docker not found. This script must run on the host with docker compose available." >&2
     exit 1
   fi
-  if ! command -v pg_restore >/dev/null 2>&1; then
-    echo "ERROR: pg_restore not found. Install it: sudo apt-get install -y postgresql-client" >&2
-    exit 1
-  fi
 
   mkdir -p "$DEST"
 
@@ -128,13 +143,36 @@ backup_postgres() {
   # works whether or not Postgres's port is published to the host — the prod
   # overlay deliberately doesn't publish it, so this runs *inside* the
   # postgres container via `exec`, not against a host-side pg_dump.
-  "${COMPOSE[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > "$OUT"
+  #
+  # The redirection creates/truncates $OUT before `docker` even starts, so a
+  # failing dump would otherwise leave a zero-byte file behind — and `set -e`
+  # would abort before the verify-and-delete step below could clean it up.
+  # Those stubs are worse than nothing: retention pruning is purely
+  # timestamp-ordered, so on a later run the newest (zero-byte) files are the
+  # ones it keeps, and it prunes real backups instead. Delete it explicitly.
+  if ! "${COMPOSE[@]}" exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" > "$OUT"; then
+    rm -f "$OUT"
+    echo "ERROR: pg_dump failed (see the error above); removed the partial file $OUT." >&2
+    exit 1
+  fi
 
   # Verify the dump's table of contents parses before we trust/rotate it — the
   # closest analogue to PRAGMA integrity_check that doesn't require restoring
   # into a scratch database.
-  if ! pg_restore --list "$OUT" >/dev/null 2>&1; then
-    echo "ERROR: pg_restore --list failed on $OUT — dump looks corrupt." >&2
+  #
+  # Run INSIDE the postgres container (dump piped back in over stdin) rather
+  # than with a host `pg_restore`: the server is postgres:16-alpine, and a
+  # host client older than the server (what plain `apt-get install
+  # postgresql-client` gives on several distros) rejects a PG16 -Fc dump with
+  # "unsupported version ... in file header". With a host binary that
+  # false negative would delete a perfectly good backup on EVERY run. The
+  # container's own client always matches its server.
+  #
+  # stderr is captured, not discarded, so a real failure prints the actual
+  # diagnostic — the same way the SQLite path surfaces integrity_check output.
+  if ! VERIFY_ERR="$("${COMPOSE[@]}" exec -T postgres pg_restore --list < "$OUT" 2>&1 >/dev/null)"; then
+    echo "ERROR: pg_restore --list failed on $OUT — dump looks corrupt:" >&2
+    echo "$VERIFY_ERR" >&2
     rm -f "$OUT"
     exit 1
   fi

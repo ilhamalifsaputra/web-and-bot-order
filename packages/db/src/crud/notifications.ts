@@ -805,6 +805,15 @@ export function notificationBackoffMs(attempts: number): number {
  *   call — a permanently invalid row (malformed payload, missing template,
  *   missing chat_id, etc.) that retrying would never fix → FAILED, same as
  *   before this split existed.
+ *
+ * Worst-case time-to-DEAD_LETTER under the current default
+ * (`NOTIF_MAX_ATTEMPTS=10`, `NOTIF_RETRY_BASE_MS=30s` doubling, capped at
+ * `NOTIF_RETRY_MAX_MS=10min`) is ~55.5 minutes (30+60+120+240+480+600×4) —
+ * up from ~7.5 minutes under the old default of 5. The row stays visible via
+ * the `/metrics` `outbox_backlog_size`/`outbox_oldest_unsent_age_seconds`
+ * gauges throughout that window, so an operator alerting only on
+ * `outbox_dead_letter_count` should also watch those two for an earlier
+ * signal.
  */
 export async function markNotificationFailed(
   db: Db,

@@ -62,20 +62,21 @@ beforeEach(async () => {
 });
 
 describe("pruneSentOutbox", () => {
-  it("deletes terminal (SENT/FAILED) rows older than cutoff, keeps everything else", async () => {
+  it("deletes terminal (SENT/FAILED/DEAD_LETTER) rows older than cutoff, keeps everything else", async () => {
     const cutoff = daysAgo(30);
     await prisma.notificationOutbox.createMany({
       data: [
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SENT", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SENT", createdAt: daysAgo(5) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "FAILED", createdAt: daysAgo(40) },
+        { event: "ORDER_DELIVERED", payloadJson: "{}", status: "DEAD_LETTER", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "PENDING", createdAt: daysAgo(40) },
       ],
     });
 
     const count = await pruneSentOutbox(prisma, cutoff);
 
-    expect(count).toBe(2);
+    expect(count).toBe(3);
     const remaining = await prisma.notificationOutbox.findMany({ orderBy: { id: "asc" } });
     expect(remaining).toHaveLength(2);
     expect(remaining.map((r) => r.status).sort()).toEqual(["PENDING", "SENT"]);

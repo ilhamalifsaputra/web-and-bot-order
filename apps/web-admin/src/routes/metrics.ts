@@ -2,7 +2,7 @@
  * GET /metrics — Prometheus exposition-format scrape endpoint for the
  * notification outbox (packages/db/src/crud/notifications.ts). Unauthenticated
  * (no `preHandler`), the same tier as `/healthz` (routes/auth.ts): a
- * Prometheus scraper has no session cookie to present, and these three
+ * Prometheus scraper has no session cookie to present, and these four
  * gauges expose only aggregate counts/ages — no PII or secrets, consistent
  * with `/healthz`'s existing exposure level.
  *
@@ -47,12 +47,19 @@ const deadLetterCountGauge = new Gauge({
   registers: [registry],
 });
 
+const failedCountGauge = new Gauge({
+  name: "outbox_failed_count",
+  help: "Count of FAILED notification outbox rows (permanently invalid — malformed payload, missing template, or similar — never eligible for retry). May include benign cases like a customer blocking the bot; not itself an alert-worthy signal without downstream filtering.",
+  registers: [registry],
+});
+
 export default async function metricsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/metrics", async (_req, reply) => {
-    const [oldestUnsentAge, backlogSize, deadLetterCount] = await Promise.all([
+    const [oldestUnsentAge, backlogSize, deadLetterCount, failedCount] = await Promise.all([
       oldestUnsentNotificationAge(prisma),
       countNotifications(prisma, { status: NotificationStatus.PENDING }),
       countNotifications(prisma, { status: NotificationStatus.DEAD_LETTER }),
+      countNotifications(prisma, { status: NotificationStatus.FAILED }),
     ]);
 
     // A label-less prom-client Gauge is NOT bare/absent by default: its base
@@ -77,6 +84,7 @@ export default async function metricsRoutes(app: FastifyInstance): Promise<void>
     }
     backlogSizeGauge.set(backlogSize);
     deadLetterCountGauge.set(deadLetterCount);
+    failedCountGauge.set(failedCount);
 
     reply.header("Content-Type", registry.contentType);
     return registry.metrics();

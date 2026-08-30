@@ -150,17 +150,25 @@ Diverifikasi lewat test (`emailTemplates.test.ts`).
 | Sukses kirim | `markNotificationSent` — `status=SENT`, `claimedAt=null` |
 | `GrammyError` dengan `retry_after` (flood control Telegram) | `sleep(retry_after+1)`, `releaseNotificationClaim` (BUKAN dihitung gagal — transient, bukan salah baris ini), **bailout tick** (baris sisanya tunggu tick berikutnya) |
 | `GrammyError` 403 Forbidden (bot diblokir/bukan admin channel) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
-| Error lain | `markNotificationFailed` dengan `config.NOTIF_MAX_ATTEMPTS` (default 5) — backoff eksponensial sampai mencapai limit |
+| Error lain | `markNotificationFailed` dengan `config.NOTIF_MAX_ATTEMPTS` (default 10) — backoff eksponensial sampai mencapai limit, lalu status terminal `DEAD_LETTER` (bukan `FAILED` seperti baris-baris lain di tabel ini — baris ini yang benar-benar melewati retry) |
 | (Jalur email) `renderEmail` mengembalikan `null` (event tanpa template) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 | (Jalur email) `payload.to` hilang/bukan string | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 
 ## Memantau & operasi manual
 
-Panel admin **`/outbox`** (`apps/web-admin/src/routes/outbox.ts`) —
+Panel admin **`/outbox`** (`apps/web-admin/src/routes/api/outbox.ts`) —
 `listNotifications`/`outboxStatusCounts` untuk monitoring, tombol **Retry**
 (`POST /outbox/:id/retry` → `retryNotification`) untuk requeue baris
-`FAILED`/stuck: reset `attempts=0`, hapus `lastError`/`sentAt`/`nextRetryAt`,
-`status=PENDING`.
+`FAILED`/`DEAD_LETTER`/stuck: reset `attempts=0`, hapus
+`lastError`/`sentAt`/`nextRetryAt`, `status=PENDING`.
+
+### `/metrics` (scrape Prometheus)
+
+`GET /metrics` (`apps/web-admin/src/routes/metrics.ts`) meng-expose tiga
+gauge tentang outbox: `outbox_oldest_unsent_age_seconds`,
+`outbox_backlog_size`, dan `outbox_dead_letter_count`. Endpoint ini tidak
+diautentikasi — tier yang sama dengan `/healthz` — dan setiap nilai dihitung
+ulang dari query live pada setiap scrape (tidak ada cache polling).
 
 ## Kapan baris outbox tidak terkirim — diagnosis cepat
 

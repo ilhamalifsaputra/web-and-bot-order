@@ -18,9 +18,13 @@ import { unlink } from "node:fs/promises";
 import { NotificationStatus, TicketStatus } from "@app/core/enums";
 import type { Db } from "./_types";
 
-const TERMINAL_OUTBOX_STATUSES: string[] = [NotificationStatus.SENT, NotificationStatus.FAILED];
+const TERMINAL_OUTBOX_STATUSES: string[] = [
+  NotificationStatus.SENT,
+  NotificationStatus.FAILED,
+  NotificationStatus.DEAD_LETTER,
+];
 
-/** Delete SENT/FAILED outbox rows older than `cutoff`. Returns the count removed. */
+/** Delete SENT/FAILED/DEAD_LETTER outbox rows older than `cutoff`. Returns the count removed. */
 export async function pruneSentOutbox(db: Db, cutoff: Date): Promise<number> {
   const { count } = await db.notificationOutbox.deleteMany({
     where: { status: { in: TERMINAL_OUTBOX_STATUSES }, createdAt: { lt: cutoff } },

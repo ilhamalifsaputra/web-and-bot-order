@@ -19,6 +19,9 @@ const TONE: Record<string, Tone> = {
   CANCELLED: "danger",
   REJECTED: "danger",
   FAILED: "danger",
+  // DEAD_LETTER (OutboxPage) — worse than FAILED (genuinely retried and still
+  // failing), same danger tone.
+  DEAD_LETTER: "danger",
   BANNED: "danger",
   NEW_CUSTOMER: "success",
   OUT_OF_STOCK: "danger",

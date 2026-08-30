@@ -20,7 +20,12 @@ beforeEach(async () => {
   await resetDb(prisma);
 });
 
-const METRIC_NAMES = ["outbox_oldest_unsent_age_seconds", "outbox_backlog_size", "outbox_dead_letter_count"];
+const METRIC_NAMES = [
+  "outbox_oldest_unsent_age_seconds",
+  "outbox_backlog_size",
+  "outbox_dead_letter_count",
+  "outbox_failed_count",
+];
 
 describe("GET /metrics", () => {
   it("returns 200 with no auth cookie (unauthenticated, same tier as /healthz)", async () => {
@@ -28,7 +33,7 @@ describe("GET /metrics", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("returns valid Prometheus exposition text with HELP/TYPE lines for all three gauges", async () => {
+  it("returns valid Prometheus exposition text with HELP/TYPE lines for all four gauges", async () => {
     const res = await app.inject({ method: "GET", url: "/metrics" });
     const body = res.body;
     for (const name of METRIC_NAMES) {
@@ -61,6 +66,14 @@ describe("GET /metrics", () => {
     });
     const res = await app.inject({ method: "GET", url: "/metrics" });
     expect(res.body).toContain("outbox_dead_letter_count 1");
+  });
+
+  it("seeding a FAILED row changes outbox_failed_count's reported value", async () => {
+    await prisma.notificationOutbox.create({
+      data: { event: "ORDER_DELIVERED", payloadJson: JSON.stringify({}), status: "FAILED" },
+    });
+    const res = await app.inject({ method: "GET", url: "/metrics" });
+    expect(res.body).toContain("outbox_failed_count 1");
   });
 
   it("omits a sample line for outbox_oldest_unsent_age_seconds when the outbox has no unsent row", async () => {

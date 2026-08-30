@@ -354,11 +354,32 @@ export function captureExternalResults(conv: FakeConversation): { conversation: 
  * NicknameServiceProviderEntry's `provider.checkNickname`) crosses grammY's
  * conversation.external() boundary. Throws with the offending path on
  * failure so a test failure points straight at the bad field.
+ *
+ * `toJSON()`-aware, matching what a REAL `JSON.stringify()` actually does:
+ * if a value exposes `toJSON`, that method's return value is what crosses
+ * the wire, not the object's raw internal fields — so this walks the
+ * `toJSON()` result instead of the object itself. Without this, a Prisma
+ * `Decimal` (whose own internal fields are irrelevant since `toJSON()`
+ * reduces it to a plain string) would false-positive on its own
+ * implementation details, which this check must not confuse with an
+ * actual closure crossing the boundary.
+ *
+ * Task 2 (Phase D) note: added as durable regression protection after this
+ * task's own external() audit found the class of bug this guards against
+ * has already occurred once (Phase B's nicknameCheck.ts) — see
+ * prisma-session-storage-external-audit.test.ts, which runs this against
+ * every conversation.external() call site's real return shape.
  */
 export function assertNoFunctionProps(value: unknown, path = "$"): void {
   if (value === null || value === undefined) return;
   if (typeof value === "function") {
     throw new Error(`assertNoFunctionProps: found a function at ${path} — external() results must be plain JSON-serializable values`);
+  }
+  if (typeof value === "object" && typeof (value as { toJSON?: unknown }).toJSON === "function") {
+    // Mirror JSON.stringify's own behavior: serialize via toJSON(), then
+    // check THAT result — the object's own raw fields never cross the wire.
+    assertNoFunctionProps((value as { toJSON: () => unknown }).toJSON(), path);
+    return;
   }
   if (Array.isArray(value)) {
     value.forEach((v, i) => assertNoFunctionProps(v, `${path}[${i}]`));

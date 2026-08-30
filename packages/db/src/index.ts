@@ -51,3 +51,5 @@ export * from "./crud/productProviderMappings";
 export * from "./crud/refunds";
 export * from "./crud/adminTasks";
 export * from "./crud/payments";
+export * from "./crud/telegramUpdates";
+export * from "./crud/botSession";

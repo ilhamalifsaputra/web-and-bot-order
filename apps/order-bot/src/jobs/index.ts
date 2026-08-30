@@ -52,6 +52,8 @@ import {
   clearOrderPaymentMessage,
   resyncDigiflazzCatalog,
   dispatchPendingDigiflazzOrders,
+  pruneProcessedTelegramUpdates,
+  pruneExpiredBotSessions,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -1397,6 +1399,44 @@ export async function storageCleanupJob(): Promise<void> {
   );
 }
 
+/** Retention window for the update_id dedup ledger (`bindUpdateId`,
+ * middleware.ts) — generous relative to how long Telegram could plausibly
+ * still redeliver the same update_id (minutes, not days), but small enough
+ * that keeping it doesn't cost anything. */
+const PROCESSED_TELEGRAM_UPDATE_RETENTION_MS = 3 * 24 * 3_600_000; // 3 days
+
+/**
+ * Daily retention sweep for the update_id dedup ledger
+ * (ProcessedTelegramUpdate, claimed by `bindUpdateId` in middleware.ts) —
+ * deletes rows past their retention window so the table stays small. Unlike
+ * the payment Processed*Tx ledgers (crud/storageMaintenance.ts deliberately
+ * leaves those alone — see its own module doc comment), a row here carries
+ * no double-payment risk if pruned early: Telegram's own redelivery window
+ * is on the order of minutes, nowhere near this job's 3-day cutoff.
+ */
+export async function cleanupProcessedTelegramUpdatesJob(): Promise<void> {
+  const cutoff = new Date(Date.now() - PROCESSED_TELEGRAM_UPDATE_RETENTION_MS);
+  const removed = await pruneProcessedTelegramUpdates(prisma, cutoff);
+  logger.info(`Update-id dedup ledger cleanup finished — pruned ${removed} row(s) older than ${PROCESSED_TELEGRAM_UPDATE_RETENTION_MS / 3_600_000}h.`);
+}
+
+/**
+ * Daily retention sweep for the `BotSession` table
+ * (`util/prismaSessionStorage.ts`, wired into `session()` in main.ts). Each
+ * row already carries its own `expiresAt` (24h nav / 15min checkout, per
+ * `classifySessionKind`) and `prismaSessionStorage.ts`'s `read()` lazily
+ * deletes an expired row the next time that key is looked up — this sweep
+ * only exists to reclaim rows for chats that never come back and so are
+ * never looked up again. Unlike the update-id ledger above (insert-only, one
+ * row per Telegram update), `bot_sessions` is upserted in place (one row per
+ * active chat), so it does not grow unbounded the way that ledger would
+ * without pruning — this job is hygiene, not a leak fix.
+ */
+export async function cleanupExpiredBotSessionsJob(): Promise<void> {
+  const removed = await pruneExpiredBotSessions(prisma, new Date());
+  logger.info(`Session storage cleanup finished — pruned ${removed} expired BotSession row(s).`);
+}
+
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
 /**
  * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
@@ -1554,6 +1594,17 @@ export function scheduleJobs(api: Api): Cron[] {
     // minutely/hourly ticks, and unlike those it's a single sweep rather
     // than something that needs to run often.
     new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
+    // Same daily off-peak slot, one minute later — second 10, not 15/17/19/25
+    // (already used above by the QRIS watchdogs / sweepPaidOrderBubbles) and
+    // not 30 (storageCleanupJob itself), so it never shares a firing second
+    // with any other registered job.
+    new Cron("10 16 3 * * *", { protect: true }, wrap("cleanupProcessedTelegramUpdatesJob", cleanupProcessedTelegramUpdatesJob)),
+    // Same daily off-peak slot, on second 45 — NOT second 20 (drainBroadcasts
+    // already fires every minute at :20, including 03:16:20, so that second
+    // is a genuine, not just test-flagged, collision risk). 45 is clear of
+    // every other registered job's second (0, 5/20/35/50, 10, 15/17/19, 25,
+    // 30, 40).
+    new Cron("45 16 3 * * *", { protect: true }, wrap("cleanupExpiredBotSessionsJob", cleanupExpiredBotSessionsJob)),
     // Second 25, NOT "*/1 * * * *" (which would fire on second 0): this sweep
     // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
     // every tick — precisely the profile behind the P1008/P2028 write-lock

@@ -8,9 +8,9 @@
  *
  * Middleware order mirrors the PTB handler groups:
  *   bindUpdateId → sequentialize(per-chat) → session → conversations() →
- *   registeredUser → rateLimit → joinGate → (conversation resumes) →
- *   conversation entry triggers → commands → callback router →
- *   product-number message handler.
+ *   registeredUser → rateLimit → commerceGate → joinGate →
+ *   (conversation resumes) → conversation entry triggers → commands →
+ *   callback router → product-number message handler.
  *
  * The conversations plugin resumes an active conversation and consumes the
  * update before the entry triggers / router run, so an in-flight conversation
@@ -27,8 +27,8 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
-import { bindUpdateId, registeredUser, rateLimit, adminOnly, joinGate } from "./middleware";
-import { boundedSessionStorage } from "./util/boundedSessionStorage";
+import { bindUpdateId, registeredUser, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
+import { prismaSessionStorage } from "./util/prismaSessionStorage";
 import { htmlDefaultsTransformer } from "./util/apiDefaults";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
@@ -95,12 +95,13 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.use(
     session({
       initial: initialSession,
-      storage: boundedSessionStorage(config.SESSION_CACHE_MAX_ENTRIES),
+      storage: prismaSessionStorage(),
     }),
   );
   bot.use(conversations());
   bot.use(registeredUser); // upsert user, sync session.lang, block bans
   bot.use(rateLimit);
+  bot.use(commerceGate); // block every commerce command/callback from a non-private chat (unconditional)
   bot.use(joinGate); // block every interaction until required channel/group are joined (if configured)
 
   // --- Conversations (resume first; consume the update if one is active) ---

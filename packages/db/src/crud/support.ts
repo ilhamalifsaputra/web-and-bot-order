@@ -148,6 +148,16 @@ export function getTicketWithOrder(db: Db, ticketId: number) {
   });
 }
 
+/** Returns the most recent open ticket for an order (status OPEN or REPLIED),
+ * or null if none exists. Used to detect duplicate ticket attempts — a customer
+ * cannot open a second ticket for an order that already has one being worked on. */
+export function getOpenTicketForOrder(db: Db, orderId: number) {
+  return db.supportTicket.findFirst({
+    where: { orderId, status: { in: [TicketStatus.OPEN, TicketStatus.REPLIED] } },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
 /** All non-closed tickets (OPEN + REPLIED), newest first. Used by
  * apps/order-bot's admin ticket list — do not change its shape/behavior,
  * the web-admin queue uses `listTickets` instead. */

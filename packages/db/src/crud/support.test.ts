@@ -12,6 +12,7 @@ import {
   createTicket,
   addTicketMessage,
   getTicketWithOrder,
+  getOpenTicketForOrder,
   closeTicketByUser,
   reopenTicket,
   reopenTicketAdmin,
@@ -76,6 +77,34 @@ async function makeUser(
 async function makeAdmin() {
   return prisma.user.create({
     data: { referralCode: `a${Math.random()}`, role: "ADMIN" },
+  });
+}
+
+async function makeOrder(userId: number) {
+  const category = await prisma.category.create({
+    data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+  });
+  const product = await prisma.product.create({
+    data: { categoryId: category.id, name: "Test Product", slug: `prod-${Math.random()}` },
+  });
+  const denom = await prisma.denomination.create({
+    data: {
+      productId: product.id,
+      name: "Test Denomination",
+      slug: `denom-${Math.random()}`,
+      type: "auto",
+      durationLabel: "test",
+      price: "10000",
+    },
+  });
+  return prisma.order.create({
+    data: {
+      orderCode: `ORD-${Math.random()}`,
+      userId,
+      subtotalAmount: "10000",
+      totalAmount: "10000",
+      status: "DELIVERED",
+    },
   });
 }
 
@@ -946,6 +975,93 @@ describe("listTicketsPaged / countTickets — unified predicate (M-36)", () => {
 
     const sorted = await listTicketsPaged(prisma, { sort: "priority" });
     expect(sorted.map((t) => t.id)).toEqual([urgent.id, high.id, medium.id, low.id]);
+  });
+});
+
+describe("getOpenTicketForOrder", () => {
+  it("returns a ticket with status: OPEN linked to the order", async () => {
+    const user = await makeUser(1400n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    expect(ticket.status).toBe(TicketStatus.OPEN);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+  });
+
+  it("returns a ticket with status: REPLIED linked to the order", async () => {
+    const user = await makeUser(1401n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.REPLIED);
+  });
+
+  it("returns null for a ticket with status: RESOLVED linked to the order", async () => {
+    const user = await makeUser(1402n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.RESOLVED, resolvedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns null for a ticket with status: CLOSED linked to the order", async () => {
+    const user = await makeUser(1403n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await closeTicket(prisma, ticket.id);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns null when no ticket is linked to the order", async () => {
+    // Create an order but don't link any tickets to it
+    const user = await makeUser(1405n);
+    const order = await makeOrder(user.id);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns the most recent open ticket when multiple tickets exist with mixed statuses", async () => {
+    const user = await makeUser(1404n);
+    const order = await makeOrder(user.id);
+
+    // Create three tickets linked to the same order
+    const t1 = await createTicket(prisma, user.id, "first ticket", null, null, order.id);
+
+    // Wait a tiny bit to ensure different createdAt timestamps
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = await createTicket(prisma, user.id, "second ticket", null, null, order.id);
+    // Mark t2 as CLOSED
+    await closeTicket(prisma, t2.id);
+
+    await new Promise((r) => setTimeout(r, 5));
+    const t3 = await createTicket(prisma, user.id, "third ticket", null, null, order.id);
+    // Mark t3 as REPLIED
+    await prisma.supportTicket.update({
+      where: { id: t3.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date() },
+    });
+
+    // Should return t3 (most recent open/replied ticket), not t1 or t2
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(t3.id);
   });
 });
 

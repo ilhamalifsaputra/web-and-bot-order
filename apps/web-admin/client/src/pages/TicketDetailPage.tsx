@@ -189,6 +189,15 @@ export function TicketDetailPage() {
     if (row.adminId === null) return "System";
     return adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`;
   }
+  // Task 3 (Phase C): plain admin-id → display-name resolution for the
+  // Assignment card's `ticket.adminId`/`ticket.assignedBy` fields — always a
+  // genuine admin id (or null meaning "unset"), never a CUSTOMER actor, so
+  // this doesn't need actorLabel's AuditLogRow-shaped CUSTOMER check above.
+  // Reuses the same adminNameById lookup so both helpers stay in sync.
+  function adminLabel(adminId: number | null): string {
+    if (adminId === null) return "System";
+    return adminNameById.get(adminId) ?? `Admin #${adminId}`;
+  }
   const assignableAdmins = (adminsData?.admins ?? []).filter(
     (a): a is AdminOption & { id: number } => a.id !== null,
   );

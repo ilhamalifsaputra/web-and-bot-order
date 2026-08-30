@@ -21,10 +21,17 @@ valid sebagai mitigasi cepat sebelum revert resmi disiapkan.
 
 **Database tidak punya "undo" granular** (tidak ada migration history
 formal — lihat [MIGRATIONS.md](MIGRATIONS.md)). Satu-satunya jalur rollback
-DB adalah **restore dari backup**:
+DB adalah **restore dari backup**, lewat skrip yang sama untuk kedua engine
+— `restore.sh` mendeteksi jalur otomatis dari ekstensi file backup yang
+diberikan (`.db`/`.db.gz` = SQLite, `.dump` = Postgres; detail penuh di
+[deploy/backup/README.md](../deploy/backup/README.md)):
 
 ```bash
+# Jalur SQLite (pre-cutover)
 deploy/backup/restore.sh data/backups/bot-<stamp-sebelum-masalah>.db
+
+# Jalur Postgres (pasca-cutover)
+deploy/backup/restore.sh data/backups/pg-<stamp-sebelum-masalah>.dump
 ```
 
 Ini mengembalikan **seluruh** isi DB ke titik backup — termasuk order/
@@ -62,10 +69,17 @@ itu sendiri dan di [UPDATE_GUIDE.md](UPDATE_GUIDE.md)).
 deploy/backup/restore.sh <path-backup>
 ```
 
-Otomatis: integrity-check backup → stop writer → simpan DB saat ini sebagai
-`bot.db.pre-restore-<stamp>` (restore sendiri reversibel) → swap file →
-hapus `-wal`/`-shm` basi → integrity-check hasil → start → smoke-test
-`/healthz`. Detail penuh: [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
+Jalur dipilih otomatis dari ekstensi file (`.db`/`.db.gz` = SQLite, `.dump` =
+Postgres — sama seperti bagian "Rollback database" di atas). Otomatis di
+kedua jalur: verifikasi backup (`integrity_check`/`pg_restore --list`) →
+stop writer → simpan DB saat ini sebagai salinan pengaman pra-restore
+(`bot.db.pre-restore-<stamp>` / `pg-pre-restore-<stamp>.dump`, restore
+sendiri reversibel) → terapkan backup ke DB live (SQLite: swap file + hapus
+`-wal`/`-shm` basi; Postgres: `pg_restore --clean --if-exists
+--single-transaction`, atomik — gagal ⇒ DB kembali ke keadaan sebelum
+restore) →
+integrity-check hasil (SQLite) → start → smoke-test `/healthz`. Detail
+penuh: [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
 
 ## Recovery dari deployment yang gagal
 

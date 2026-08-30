@@ -10,12 +10,18 @@ istilah-istilah generik sering diasumsikan ada padahal tidak:
 
 - **Tidak ada Redis** atau cache layer eksternal apa pun.
 - **Tidak ada job-queue terpisah** (Bull/BullMQ/Sidekiq-style) — antrian
-  notifikasi adalah satu tabel SQLite yang di-poll in-process, lihat
+  notifikasi adalah satu tabel database yang di-poll in-process, lihat
   [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md).
 - **Tidak ada WebSocket.** Update status pembayaran live di storefront
   memakai **HTMX polling** (`GET /checkout/:code/status` setiap ~5 detik),
   bukan koneksi persisten.
-- **Tidak ada server database terpisah** — SQLite satu file, mode WAL.
+- **Server database terpisah — tergantung status cutover toko:** instance
+  yang masih di engine lama tidak punya server DB terpisah (SQLite satu file
+  `data/bot.db`, mode WAL, diakses langsung dalam proses). Instance yang
+  sudah cutover ke **PostgreSQL** (target skema `datasource` sejak
+  engine-swap 2026-08-27) menjalankan Postgres sebagai proses/container
+  server sendiri — lihat [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md)
+  untuk status cutover per toko.
 - **Tidak ada API publik (REST/GraphQL)** untuk pihak ketiga — server-rendered
   HTML penuh, lihat [API_REFERENCE.md](API_REFERENCE.md).
 
@@ -38,7 +44,9 @@ HTML yang di-render server.
 
 `apps/server/src/index.ts` adalah **composition root** — satu proses Node
 yang:
-1. `initDb()` — buka koneksi SQLite, aktifkan WAL + `busy_timeout`.
+1. `initDb()` — no-op di skema Postgres saat ini (Postgres tidak butuh setup
+   per-koneksi); dulu mengaktifkan PRAGMA SQLite (WAL + `busy_timeout`),
+   dipertahankan sebagai fungsi kosong supaya caller lama tidak perlu diubah.
 2. Resolve token bot/admin ids/cookie secret (DB menang atas `.env` — lihat
    [CONFIGURATION.md](CONFIGURATION.md)).
 3. Boot instance Fastify untuk admin + storefront.
@@ -57,7 +65,7 @@ graph TD
         Pollers[Payment pollers<br/>Binance/Bybit/TokoPay/PayDisini/NOWPayments]
         Cron[Cron jobs<br/>croner — auto-cancel, auto-close, FX refresh]
     end
-    DB[(SQLite data/bot.db<br/>WAL, satu PrismaClient)]
+    DB[(PostgreSQL - target skema<br/>satu PrismaClient; instance pre-cutover: SQLite data/bot.db)]
     TG[Telegram Bot API]
     GW[Payment Gateway APIs]
 
@@ -98,12 +106,15 @@ sendiri (mis. tick lambat bertemu tick berikutnya) — mencegah double-send.
 
 ## Database
 
-Satu file SQLite, mode WAL, satu `PrismaClient` singleton dibagi semua
-komponen di atas. Detail model/relasi: [DATABASE.md](DATABASE.md).
+**PostgreSQL** — target skema `datasource` sejak engine-swap 2026-08-27 —
+satu `PrismaClient` singleton dibagi semua komponen di atas. Instance toko
+yang belum menjalankan runbook
+[`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) masih di SQLite satu file,
+mode WAL. Detail model/relasi: [DATABASE.md](DATABASE.md).
 
 ## Sistem antrian (bukan queue eksternal)
 
-`notification_outbox` adalah tabel SQLite yang berfungsi sebagai antrian
+`notification_outbox` adalah tabel database yang berfungsi sebagai antrian
 job — diisi (`enqueueNotification`) oleh request handler mana pun yang perlu
 mengirim Telegram, dikonsumsi oleh dispatcher poll. Detail klaim
 atomik/backoff/stale-reaper: [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md).
@@ -173,8 +184,14 @@ Tidak ada socket persisten. Dua mekanisme live-update:
 - **Rate-limit in-memory** — reset saat restart, tidak terbagi antar proses
   (tapi hanya ada satu proses, jadi ini bukan masalah horizontal-scaling
   hari ini).
-- **Single-writer SQLite** — `apps/server` SATU proses adalah jaminan
-  keamanan-nya; jangan jalankan dua instance menulis ke `bot.db` yang sama.
-  Trigger migrasi ke Postgres: ≥2 *concurrent writer* yang sungguhan
-  dibutuhkan (lihat catatan lintas-domain di
+- **Single-writer SQLite (instance pre-cutover saja)** — skema Prisma sudah
+  postgres-only sejak engine-swap 2026-08-27, jadi ini bukan lagi constraint
+  arsitektur yang berlaku untuk skema itu sendiri. Constraint-nya masih
+  berlaku untuk toko yang **belum** menjalankan runbook
+  [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md): `apps/server` SATU
+  proses adalah jaminan keamanan-nya di sana, jadi jangan jalankan dua
+  instance menulis ke `bot.db` yang sama. Setelah cutover ke Postgres,
+  concurrent writer ditangani native oleh database — unifikasi proses
+  `apps/server` tetap dipertahankan untuk alasan lain (routing by-hostname),
+  bukan lagi syarat korektnes tulis-data (lihat catatan lintas-domain di
   `docs/audit-security-2026-06-23.md`).

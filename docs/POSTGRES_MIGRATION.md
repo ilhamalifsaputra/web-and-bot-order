@@ -123,10 +123,13 @@ avoid the habit regardless; the Postgres layer's `postgres_data` volume
 
 ## 3. Back up the real production SQLite database
 
-Use the repo's existing SQLite backup tooling (`deploy/backup/backup.sh`) —
-do **not** build new Postgres backup tooling; the target is empty at this
-point in the runbook, there is nothing to back up there yet, and a Postgres
-backup mechanism is explicitly out of scope for this migration.
+Use the repo's existing backup tooling (`deploy/backup/backup.sh`) — as of
+this branch it is engine-aware and also handles Postgres backups (see
+`deploy/backup/README.md` for the full explanation of both paths). Section 3
+here still uses its SQLite path, and that's intentional, not a leftover
+scope gap: at this point in the runbook the source database being backed up
+is still SQLite — the Postgres container doesn't exist yet (section 4 hasn't
+run), so there is nothing to back up on the Postgres side regardless.
 
 `backup.sh` takes an **online, WAL-safe** snapshot via SQLite's own
 `.backup` API (folds in any un-checkpointed `-wal` contents), so it is safe
@@ -376,75 +379,64 @@ the migration finished yet.
 
 ---
 
-## 8a. Replace the SQLite backup cron with a Postgres backup
+## 8a. Point the backup cron at Postgres
 
 **Do this now, right after a healthy cutover — before section 10, and before
-you'd ever need section 9.** `deploy/backup/README.md` documents a 6-hourly
-cron running `deploy/backup/backup.sh` against `data/bot.db`. After cutover,
-nothing writes to that file any more, but the cron will keep running and
-keep exiting 0 — a false-positive "backups are fine" signal while the actual
-live database (Postgres) has zero backup coverage. That's a silent
-data-loss exposure for a financial application, so close it now rather than
-discovering it during an incident.
+you'd ever need section 9.** `deploy/backup/backup.sh` and
+`deploy/backup/restore.sh` are engine-aware (see `deploy/backup/README.md`
+for the full explanation) — the SAME script that has been backing up
+`data/bot.db` all along already knows how to back up Postgres too, picked
+automatically from `DATABASE_URL_PRISMA`. After cutover, nothing writes to
+`data/bot.db` any more, but a cron line still invoking it with the old
+SQLite-flavored env vars will keep exiting 0 — a false-positive "backups are
+fine" signal while the actual live database (Postgres) has zero backup
+coverage. That's a silent data-loss exposure for a financial application, so
+fix the cron line now rather than discovering it during an incident.
 
-This is deliberately the minimum responsible thing, not a new backup
-subsystem — retention policy, WAL archiving, and off-box shipping for
-Postgres are out of scope for this migration, same as they were for the
-SQLite-era tooling this replaces (see `deploy/backup/README.md`'s own
-off-box note, which applies equally here).
+No new tooling or cron slot is needed — just swap the env vars in front of
+`backup.sh` on the existing line:
 
-1. **Disable the old SQLite cron.** On the VPS:
+1. On the VPS:
 
    ```bash
    crontab -e
    ```
 
-   Remove (or comment out) the line calling `deploy/backup/backup.sh`
-   (`deploy/backup/README.md`'s documented schedule looks like
-   `0 */6 * * * DB=/srv/app/data/bot.db DEST=/srv/backups
-   /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1`) — it is
-   backing up a file nothing writes to any more.
-
-2. **Add a Postgres backup in its place**, using this branch's actual
-   service names via `docker compose exec`:
-
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
-     exec -T postgres pg_dump -U "$POSTGRES_USER" -Fc "$POSTGRES_DB" \
-     > /srv/backups/pg-$(date +%Y%m%d-%H%M%S).dump
-   ```
-
-   `-Fc` (custom format) is compressed and restorable with `pg_restore`
-   (including a `--clean`/selective restore, unlike a plain SQL dump). Put
-   this in the crontab entry you just removed the SQLite line from, e.g. the
-   same 6-hourly cadence:
+2. Replace the SQLite-flavored line (`deploy/backup/README.md`'s documented
+   schedule looks like `0 */6 * * * DB=/srv/app/data/bot.db DEST=/srv/backups
+   /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1`) with a
+   Postgres-flavored one, same script, same slot:
 
    ```cron
-   0 */6 * * * cd /srv/app && docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml exec -T postgres pg_dump -U bot_order -Fc bot_order > /srv/backups/pg-$(date +\%Y\%m\%d-\%H\%M\%S).dump 2>> /var/log/bot-backup.log
+   0 */6 * * * DATABASE_URL_PRISMA=postgresql://engine-marker DEST=/srv/backups /srv/app/deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1
    ```
 
-   This has to be a single crontab line: Vixie cron's command field ends at
-   end-of-line, it does **not** support backslash line-continuation, so a
-   "multi-line" entry silently becomes several malformed crontab lines
-   (syntax error, job never runs). The `POSTGRES_USER`/`POSTGRES_DB` values
-   are also inlined literally here (shown as the `.env.example` defaults,
-   `bot_order`/`bot_order`) rather than referenced as `$POSTGRES_USER`/
-   `$POSTGRES_DB` — a leading `VAR=value` assignment prefix on a cron command
-   does not propagate into that same command's `$VAR` expansion, so
-   `pg_dump -U "$POSTGRES_USER" ...` would resolve to `pg_dump -U "" ...`
-   and fail, while the `>` redirect still creates a zero-byte "backup" file
-   with no visible error. (cron also needs `%` escaped as `\%` in `date`
-   format strings — a separate gotcha, called out so the job doesn't
-   silently write a garbled filename.) Substitute your real
-   `POSTGRES_USER`/`POSTGRES_DB` and backup directory as literal text, not
-   shell variables, if they differ from the defaults shown here.
+   This is a single crontab line — Vixie cron's command field ends at
+   end-of-line, it does **not** support backslash line-continuation, so do
+   not try to wrap it. It needs no `cd /srv/app &&` prefix either:
+   `backup.sh` `cd`s to the repo root itself, based on its own location, so
+   the `docker compose -f docker-compose.yml -f
+   docker-compose.postgres.prod.yml` call on the Postgres path finds its
+   compose files even though cron runs jobs from `$HOME`.
 
-3. **This is a starting point, not a full backup strategy.** Retention
-   pruning, integrity verification, off-box/3-2-1 copies, and point-in-time
-   recovery (WAL archiving) are all real gaps this minimal `pg_dump` leaves
-   open — consistent with this migration's stated scope boundary (engine
-   swap only), but worth tracking as explicit follow-up work rather than
-   assuming this cron alone is sufficient long-term coverage.
+   `backup.sh` only inspects `DATABASE_URL_PRISMA`'s prefix to pick the
+   Postgres path; the value itself is never used to connect (`pg_dump` runs
+   inside the `postgres` container via `docker compose exec`, so
+   `$POSTGRES_PASSWORD` and a full connection string are never needed or
+   read here) — a placeholder like `postgresql://engine-marker` is
+   sufficient. `POSTGRES_USER`/`POSTGRES_DB` default to `bot_order`/
+   `bot_order`; add them as further `VAR=value` prefixes on the same line
+   only if your production values differ from that default.
+
+3. Confirm the next scheduled run's log line reports a `pg-<stamp>.dump`
+   file, not a `bot-<stamp>.db` one — see `deploy/backup/README.md`'s
+   "Backup — Postgres" section for the full output, retention, and
+   verification details (`backup.sh` already handles retention pruning,
+   `pg_restore --list` verification, and off-box copying for this path the
+   same way it does for SQLite). Point-in-time recovery via continuous WAL
+   archiving is the one thing this periodic-snapshot approach still doesn't
+   give you — out of scope here, consistent with this migration's stated
+   scope boundary (engine swap only).
 
 ---
 

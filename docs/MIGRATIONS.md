@@ -540,14 +540,14 @@ reconcile gateway terkait. Detail diagnosis di
 
 `apps/server/src/index.ts` (sekitar baris 199-214) menjalankan `missingTables`
 (`packages/db/src/crud/integrity.ts`) saat boot, membandingkan
-`PAYMENT_LEDGER_TABLES` terhadap `sqlite_master` dan **fail-loud** (log error +
+`PAYMENT_LEDGER_TABLES` terhadap `information_schema.tables` dan **fail-loud** (log error +
 DM ke semua admin) kalau ada tabel ledger pembayaran yang hilang. Ini menutup
 skenario "tabel belum pernah dibuat" (mis. lupa `db push` setelah migrasi yang
 menambah tabel baru seperti `order_status_history`).
 
 **Yang TIDAK dicek:** kolom baru pada tabel yang SUDAH ada — `missingTables`
-hanya query `SELECT name FROM sqlite_master WHERE type='table'`, tidak pernah
-`PRAGMA table_info` per tabel. Jadi migrasi column-only (mis.
+hanya query `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY($1)`, tidak pernah
+memeriksa kolom per tabel. Jadi migrasi column-only (mis.
 `orders.network`/`confirmations`/`required_confirmations`/`first_detected_at`/
 `confirmed_at` dari `20260624160712_add_order_status_history`, atau
 `broadcasts.web_image_url`/`image_file_id` dari `20260706120000_broadcast_image`)

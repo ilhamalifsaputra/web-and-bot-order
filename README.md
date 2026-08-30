@@ -275,23 +275,27 @@ pm2 restart bot-order
 > ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
 > ini.
 
-**Backup database** (rutin — database live sekarang PostgreSQL):
+**Backup database** (rutin — jalur SQLite/Postgres terdeteksi otomatis sesuai status cutover toko ini):
 
-> Sejak migrasi engine-swap, `data/bot.db` (SQLite) tidak lagi ditulis oleh
-> aplikasi — `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) di
-> bawah ini adalah tooling **legacy** untuk checkout dari sebelum migrasi.
-> Untuk backup Postgres yang sungguhan dipakai sekarang (perintah `pg_dump`,
-> jadwal cron pengganti), lihat **bagian 8a** di
-> [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md) — itu satu-satunya
-> mekanisme backup yang berlaku untuk deployment ini.
+> `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) **engine-aware**:
+> satu skrip yang sama menangani SQLite maupun PostgreSQL, jalurnya dideteksi
+> otomatis — `backup.sh` dari prefix `DATABASE_URL_PRISMA`, `restore.sh` dari
+> ekstensi file backup. Jadi setelah engine-swap tidak ada skrip atau entri
+> cron yang perlu diganti; yang berubah hanya env var di depan pemanggilannya.
+> Sumber kebenaran untuk backup/restore: **[`deploy/backup/README.md`](deploy/backup/README.md)**.
+> Langkah memindahkan entri cron produksi dari varian SQLite ke varian Postgres
+> setelah cutover ada di **bagian 8a**
+> [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md).
 
 ```bash
-# Tooling SQLite legacy (checkout pra-migrasi saja):
+# Jalur Postgres (deployment yang sudah cutover):
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
+deploy/backup/restore.sh data/backups/pg-<stamp>.dump
+
+# Jalur SQLite (checkout pra-migrasi):
 deploy/backup/backup.sh        # .backup + integrity_check + gzip + retensi
 deploy/backup/restore.sh data/backups/bot-<stamp>.db
 ```
-
-Detail tooling SQLite legacy: **`deploy/backup/README.md`**.
 
 **Kelola stok** (panel admin → Stock → pilih produk): tambah stok (satu baris per
 akun, `email:password`), lihat status item, download sisa stok `.txt`, hapus /

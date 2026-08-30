@@ -37,11 +37,11 @@ langkah opsional setelahnya.
   `20260623174936_add_notification_next_retry_at/`) DAN mengubah
   `packages/db/src/crud/notifications.ts` untuk memakai kolom itu di setiap
   `create()`/`update()`. Tapi `pnpm exec prisma db push` tidak dijalankan
-  ulang ke `data/bot.db` yang sungguhan sebelum kode baru jalan — *schema
+  ulang ke database Postgres yang sungguhan sebelum kode baru jalan — *schema
   drift* klasik (lihat [MIGRATIONS.md](MIGRATIONS.md) "Kegagalan umum").
 - **Files changed:** Tidak ada perubahan KODE untuk fix ini — kode sudah
-  benar sejak commit `c4778c8`. Yang berubah hanya state DB
-  (`data/bot.db`, via `db push`).
+  benar sejak commit `c4778c8`. Yang berubah hanya state DB (database
+  Postgres, via `db push`).
 - **Database changes:** Kolom `claimed_at` (`DATETIME`, nullable) dan
   `next_retry_at` (`DATETIME`, nullable) ditambahkan ke `notification_outbox`.
   Keduanya nullable tanpa default — additive, tidak ada risiko data loss.
@@ -52,8 +52,10 @@ langkah opsional setelahnya.
   `c4778c8` karena alasan lain: kolom baru di DB tidak mengganggu kode lama
   (kode lama cukup tidak membaca kolom itu) — aman dibiarkan ada.
 - **Testing steps:**
-  1. `sqlite3 data/bot.db "PRAGMA table_info(notification_outbox);"` —
-     konfirmasi `claimed_at`/`next_retry_at` ADA sebelum klaim fix selesai.
+  1. `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml
+     exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c
+     "\d notification_outbox"` — konfirmasi `claimed_at`/`next_retry_at` ADA
+     sebelum klaim fix selesai.
   2. Restart proses (`pnpm start` ulang / `docker compose restart server`).
   3. Trigger satu order test sampai `DELIVERED` → konfirmasi baris
      `notification_outbox` baru ter-`INSERT` tanpa error di log.

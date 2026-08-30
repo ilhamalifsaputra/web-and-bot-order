@@ -1,13 +1,31 @@
 # Database
 
-Satu skema Prisma (`prisma/schema.prisma`), satu file SQLite (`data/bot.db`,
-mode **WAL**), dipakai bersama oleh `apps/order-bot`, `apps/web-admin`,
-`apps/storefront`, dan `apps/server`. **28 model** (termasuk `OrderStatusHistory`,
-migrasi `20260624160712_add_order_status_history`). Tidak ada server database
-terpisah, tidak ada Postgres/MySQL/Redis di stack ini saat ini (trigger resmi
-untuk migrasi ke Postgres: ≥2 *concurrent writer* — lihat catatan di
-`docs/audit-security-2026-06-23.md` bagian "Ketergantungan implisit pada
-`BEGIN IMMEDIATE` SQLite").
+Satu skema Prisma (`prisma/schema.prisma`), dipakai bersama oleh
+`apps/order-bot`, `apps/web-admin`, `apps/storefront`, dan `apps/server`.
+**28 model** (termasuk `OrderStatusHistory`, migrasi
+`20260624160712_add_order_status_history`).
+
+**Engine: PostgreSQL.** Sejak engine-swap, `datasource` block di
+`schema.prisma` sudah Postgres-only:
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL_PRISMA")
+}
+```
+
+Ini bukan lagi hipotesis/opsi — provider `postgresql` menolak keras `url`
+bertipe `file:...`, jadi kode di repo ini tidak lagi bisa jalan di atas
+SQLite. **Yang bisa berbeda per toko adalah status cutover instance
+produksinya**: toko yang belum menjalankan proses migrasi masih menjalankan
+database live-nya di SQLite lama (`data/bot.db`, mode **WAL**) sampai
+operatornya menjalankan runbook
+[`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md). Sebelum cutover itu
+selesai untuk toko tersebut, jangan campur "skema di repo" (selalu
+Postgres-only sejak commit engine-swap) dengan "database yang sedang jalan
+di produksi toko itu" (bisa saja masih SQLite). Backup/restore untuk kedua
+kondisi ini dijelaskan di [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md).
 
 > ⚠️ **Jangan ubah nama kolom/tabel** tanpa migrasi — setiap `@map`/`@@map`
 > mempertahankan nama kolom apa adanya dari skema lama (lihat komentar header
@@ -143,8 +161,10 @@ erDiagram
 ### Idempotency ledger pembayaran
 
 5 tabel identik secara struktur, satu per gateway — `UNIQUE` pada id
-transaksi gateway adalah satu-satunya kunci anti-double-delivery (SQLite
-tidak punya row lock; insert-first-on-unique adalah gerbang konkurensi):
+transaksi gateway adalah satu-satunya kunci anti-double-delivery:
+insert-first-on-unique sebagai gerbang konkurensi (pola ini awalnya dipilih
+karena SQLite tidak punya row lock, tapi tetap dipertahankan apa adanya
+setelah engine-swap ke PostgreSQL — polanya valid di kedua engine):
 
 | Model | Tabel | Kolom unik | outcome yang mungkin |
 |---|---|---|---|

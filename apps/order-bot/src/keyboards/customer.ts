@@ -717,6 +717,35 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
   ]);
 }
 
+/** Shown after nicknameCheck.ts's lookup finds an account: 'Yes, that's me'
+ * locks in the buyer's typed target + confirmed nickname (the conversation
+ * writes scratch.customerData and re-renders confirmation); 'Try Again'
+ * resets the wizard back to the target-id prompt (a typo fix); 'Cancel'
+ * abandons exactly like voucherCancelKb (routes to v1:buy, same re-entry
+ * contract as every other checkout wizard). */
+export function nicknameConfirmKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.nickname_confirm_btn", lang), data: cb("nick", "confirm") }],
+    [{ text: coreT("checkout.nickname_retry_btn", lang), data: cb("nick", "retry") }],
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
+/** Shown alongside nicknameCheck.ts's re-prompt after a DEFINITIVE
+ * "account not found" answer (final-review Important #2). The buyer can
+ * either just type a new target (unchanged typo-fix path — the prompt bubble
+ * still waits for text) or tap 'Continue anyway' to proceed to
+ * confirm/pay with their last-typed target stored unverified, matching the
+ * storefront's own non-blocking degrade posture instead of hard-stopping the
+ * checkout on a possibly-misconfigured product. 'Cancel' abandons exactly
+ * like voucherCancelKb/nicknameConfirmKb. */
+export function nicknameNotFoundKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.nickname_continue_btn", lang), data: cb("nick", "continue") }],
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
 /**
  * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves

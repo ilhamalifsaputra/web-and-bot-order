@@ -116,8 +116,8 @@ describe("order-bot wiring", () => {
     }).not.toThrow();
   });
 
-  it("registers exactly the 16 expected conversations with unique names", () => {
-    expect(CONVERSATIONS).toHaveLength(16);
+  it("registers exactly the 17 expected conversations with unique names", () => {
+    expect(CONVERSATIONS).toHaveLength(17);
     const names = CONVERSATIONS.map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(
@@ -125,6 +125,7 @@ describe("order-bot wiring", () => {
         "ticketUserReply",
         "voucher",
         "customerInfo",
+        "nicknameCheck",
         "editCustomerInfo",
         "support",
         "reject",
@@ -142,13 +143,15 @@ describe("order-bot wiring", () => {
     );
   });
 
-  // "customerInfo" and "editCustomerInfo" are the deliberate exceptions:
-  // both are entered programmatically (checkout.ts's showOrderConfirmation
-  // calls ctx.conversation.enter("customerInfo") for a manual_with_info SKU;
-  // callbacks.ts's dispatchOrder calls ctx.conversation.enter("editCustomerInfo")
-  // for a v1:order:editinfo:<id> tap), not from a callback/command/hears
-  // match, so neither has a trigger by design.
-  const NO_TRIGGER_BY_DESIGN = new Set(["customerInfo", "editCustomerInfo"]);
+  // "customerInfo", "nicknameCheck" and "editCustomerInfo" are the deliberate
+  // exceptions: all three are entered programmatically (checkout.ts's
+  // showOrderConfirmation calls ctx.conversation.enter("customerInfo") for a
+  // manual_with_info SKU and ctx.conversation.enter("nicknameCheck") for an
+  // AUTO SKU with nickname-check configured; callbacks.ts's dispatchOrder
+  // calls ctx.conversation.enter("editCustomerInfo") for a
+  // v1:order:editinfo:<id> tap), not from a callback/command/hears match, so
+  // none of the three has a trigger by design.
+  const NO_TRIGGER_BY_DESIGN = new Set(["customerInfo", "nicknameCheck", "editCustomerInfo"]);
 
   it("every conversation spec has a handler fn, and an entry trigger unless it's deliberately programmatic-entry-only", () => {
     for (const spec of CONVERSATIONS) {

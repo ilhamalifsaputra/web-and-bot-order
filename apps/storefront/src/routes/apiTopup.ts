@@ -87,8 +87,8 @@ import {
   getDenominationWithProduct,
   getKokinpayCreds,
   getVipResellerCreds,
-  getMelostoreCreds,
-  getEnabledProviderMappingsForGame,
+  buildNicknameProviderEntries,
+  resolveNicknameGate,
   findIdempotentResponse,
   saveIdempotentResponse,
   hashIdempotentRequest,
@@ -97,10 +97,7 @@ import {
 } from "@app/db";
 import { checkGameNickname } from "@app/core/suppliers/kokinpay";
 import { checkGameRegion } from "@app/core/suppliers/vipreseller";
-import { NicknameService, type NicknameServiceProviderEntry } from "@app/core/nickname/service";
-import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvider";
-import { createVipResellerNicknameProvider } from "@app/core/nickname/vipresellerProvider";
-import { createMelostoreNicknameProvider } from "@app/core/nickname/melostoreProvider";
+import { NicknameService } from "@app/core/nickname/service";
 import { logger } from "@app/core/logger";
 import { OrderCurrency } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -496,17 +493,17 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // rest of this handler. Note this does NOT gate the region-check block
       // below, which has its own independent prerequisite
       // (`expectedRegionCode && nicknameCheckGameCode`, still legacy-only).
-      // Final-review fix, Finding 3: a `gameId` link only counts when the
-      // linked Game row is loaded AND still active AND still supports
+      // Final-review fix, Finding 3 (and later hardened against drift by
+      // Phase B final-review Important #4): a `gameId` link only counts when
+      // the linked Game row is loaded AND still active AND still supports
       // nickname checks. Any of those failing degrades EXACTLY as if
       // `gameId` were unset for this request — falls through to
       // `legacyGameCode` below if set, else stays `{ available: false }`.
-      // No throw, per this handler's silent-degrade discipline.
-      const rawGameId = denomination?.product?.gameId ?? null;
-      const linkedGame = denomination?.product?.game ?? null;
-      const gameId =
-        rawGameId != null && linkedGame && linkedGame.isActive && linkedGame.nicknameSupported ? rawGameId : null;
-      const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
+      // No throw, per this handler's silent-degrade discipline. The rule
+      // itself now lives in resolveNicknameGate (packages/db/src/crud/nickname.ts)
+      // so this route, checkout.ts's gate, and nicknameCheck.ts's own
+      // defensive re-check can never drift apart again.
+      const { gameId, legacyGameCode } = resolveNicknameGate(denomination);
       if (!denomination || (!gameId && !legacyGameCode)) return reply.send(NOT_AVAILABLE);
 
       const server = typeof req.body?.server === "string" ? req.body.server.trim() || undefined : undefined;
@@ -525,25 +522,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         // even added to `entries` — that's a config gap, not a lookup
         // failure, so it shouldn't count against the provider's turn. ---
         try {
-          const mappings = await getEnabledProviderMappingsForGame(prisma, gameId);
-          const entries: NicknameServiceProviderEntry[] = [];
-          for (const mapping of mappings) {
-            let provider: NicknameServiceProviderEntry["provider"] | null = null;
-            if (mapping.provider === "kokinpay") {
-              const creds = await getKokinpayCreds(prisma);
-              if (creds) provider = createKokinpayNicknameProvider(creds);
-            } else if (mapping.provider === "vipreseller") {
-              const creds = await getVipResellerCreds(prisma);
-              if (creds) provider = createVipResellerNicknameProvider(creds);
-            } else if (mapping.provider === "melostore") {
-              const creds = await getMelostoreCreds(prisma);
-              if (creds) provider = createMelostoreNicknameProvider(creds);
-            }
-            // An unrecognized `mapping.provider` string (shouldn't happen —
-            // admin UI only writes the three known values) is silently
-            // skipped, same as a mapping with no credentials configured.
-            if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
-          }
+          // Mapping/credential resolution extracted to
+          // buildNicknameProviderEntries (packages/db/src/crud/nickname.ts,
+          // Trustance reconciliation Phase B Task 1) — byte-for-byte the same
+          // DB reads/skip rules this block used to perform inline. Only
+          // `gameId` is passed: this branch is reached exactly when `gameId`
+          // is set, so the function's `legacyGameCode` fallback never
+          // applies here (see that function's own doc comment for why the
+          // storefront's separate legacy block below is deliberately NOT
+          // rewired through it).
+          const entries = await buildNicknameProviderEntries(prisma, { gameId });
           const result = await new NicknameService(entries).checkNickname({ target: accountId, server });
           if (result.status === "found") {
             response.available = true;

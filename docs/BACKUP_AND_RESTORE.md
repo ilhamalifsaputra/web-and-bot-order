@@ -69,15 +69,24 @@ berawalan `postgres(ql)://` — tidak ada flag terpisah. `pg_dump -Fc`
 compose exec` — ini juga cara skrip menghindari perlu membaca
 `POSTGRES_PASSWORD` sama sekali, autentikasi terjadi lewat socket lokal
 container, bukan kredensial di jaringan/log/skrip. Diverifikasi dengan
-`pg_restore --list` (padanan `integrity_check` untuk Postgres), lalu
-dipangkas sesuai retensi (pola nama `pg-<stamp>.dump`).
+`pg_restore --list` (padanan `integrity_check` untuk Postgres) — juga
+dijalankan **di dalam container** — lalu dipangkas sesuai retensi (pola nama
+`pg-<stamp>.dump`).
 
-**Prasyarat host:** `docker` (dipakai `docker compose exec` — dump/restore
-sungguhan berjalan di dalam container `postgres`) dan `pg_restore` (paket
-`postgresql-client`, dipakai untuk memverifikasi dump):
-```bash
-sudo apt-get update && sudo apt-get install -y postgresql-client
-```
+**Prasyarat host:** cukup `docker`. Dump, restore, dan verifikasi dump
+semuanya berjalan di dalam container `postgres` lewat `docker compose exec`,
+jadi **tidak perlu memasang `postgresql-client` di host**. Itu disengaja:
+server-nya `postgres:16-alpine`, dan client host yang lebih tua (PG14/PG15,
+yang masih diberikan `apt-get install postgresql-client` di sebagian distro)
+akan menolak dump `-Fc` buatan PG16 dengan `unsupported version ... in file
+header` — `backup.sh` akan salah menyimpulkan dump-nya rusak lalu
+**menghapus backup yang sebenarnya sehat**. Client di dalam container selalu
+seversi dengan servernya.
+
+Kedua skrip juga **self-locating** (`cd` ke root repo berdasarkan lokasi
+skripnya sendiri), sehingga bisa dipanggil dari direktori mana pun —
+termasuk cron, yang working directory-nya `$HOME`. Ini yang membuat jalur
+Postgres bisa menemukan file `docker-compose*.yml`-nya.
 
 ### Jadwal (cron, tiap 6 jam)
 
@@ -95,7 +104,10 @@ yang beda:
 `postgresql://engine-marker` cukup sebagai penanda prefix — nilainya
 sendiri **tidak pernah dipakai untuk koneksi sungguhan** (autentikasi lewat
 `docker compose exec`, lihat di atas), jadi baris cron tidak perlu memuat
-password atau connection string kredensial apa pun. Setelah toko selesai
+password atau connection string kredensial apa pun. Baris cron juga tidak
+perlu prefix `cd /srv/app &&`: `backup.sh` sudah `cd` ke root repo sendiri,
+jadi ia menemukan file `docker-compose*.yml` walau cron menjalankannya dari
+`$HOME`. Setelah toko selesai
 cutover, ganti baris cron produksi dari varian SQLite ke varian Postgres —
 langkah lengkapnya ada di §8a
 [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md).
@@ -155,7 +167,10 @@ umum di kedua jalur (detail lengkap per-jalur, termasuk sentinel
    reversibel.
 4. Terapkan backup ke DB live — SQLite: salin file lalu hapus
    `bot.db-wal`/`bot.db-shm` basi milik DB lama; Postgres: `pg_restore
-   --clean --if-exists` di dalam container.
+   --clean --if-exists --single-transaction` di dalam container
+   (`--single-transaction` membuat restore-nya atomik **dan** membuat
+   `pg_restore` benar-benar exit non-zero saat ada statement yang gagal —
+   tanpa itu restore yang setengah jadi tetap dilaporkan sukses).
 5. `integrity_check` ulang (SQLite) pada hasil restore, lalu `docker compose
    start ...` dan smoke-test `GET /healthz` sampai 200.
 

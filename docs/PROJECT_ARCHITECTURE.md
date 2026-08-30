@@ -418,7 +418,7 @@ Configuration is validated at startup by [packages/core/src/config.ts](file:///c
 
 | Environment Variable | Validation Rule / Default | Primary Consumer Location | Core System Utility |
 |---|---|---|---|
-| `DATABASE_URL_PRISMA` | Required PostgreSQL connection URL (schema-enforced) | `prisma/schema.prisma` | Location of the application database — PostgreSQL per the current schema; a pre-cutover shop may still point this at `file:../data/bot.db` (see [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md)). |
+| `DATABASE_URL_PRISMA` | Required PostgreSQL connection URL (schema-enforced) | `prisma/schema.prisma` | Location of the application database — PostgreSQL per the current schema; a pre-cutover shop, *while still running the older pre-cutover code*, may point this at `file:../data/bot.db`. Those describe two different points in time, not a live inconsistency: this branch's code will not accept a `file:` URL (see [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) for the cutover). |
 | `BOT_TOKEN` | String (Optional) | `apps/server`, `apps/order-bot` | Fallback Telegram API connection token. |
 | `BOT_USERNAME` | String (Optional) | `apps/order-bot` | Fallback Telegram handle. |
 | `ADMIN_IDS` | Comma-separated Integers | `apps/server/index.ts` | List of owner Telegram IDs used to bootstrap the super-admin account. |

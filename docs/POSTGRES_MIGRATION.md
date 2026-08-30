@@ -413,7 +413,11 @@ No new tooling or cron slot is needed — just swap the env vars in front of
 
    This is a single crontab line — Vixie cron's command field ends at
    end-of-line, it does **not** support backslash line-continuation, so do
-   not try to wrap it.
+   not try to wrap it. It needs no `cd /srv/app &&` prefix either:
+   `backup.sh` `cd`s to the repo root itself, based on its own location, so
+   the `docker compose -f docker-compose.yml -f
+   docker-compose.postgres.prod.yml` call on the Postgres path finds its
+   compose files even though cron runs jobs from `$HOME`.
 
    `backup.sh` only inspects `DATABASE_URL_PRISMA`'s prefix to pick the
    Postgres path; the value itself is never used to connect (`pg_dump` runs

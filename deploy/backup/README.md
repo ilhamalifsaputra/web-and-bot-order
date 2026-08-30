@@ -47,8 +47,23 @@ cara memastikan itu.
 
 ## Prasyarat (host VPS)
 
-Skrip ini berjalan **di host**, dari root repo, sama seperti perintah
-`docker compose` lainnya untuk stack ini.
+Skrip ini berjalan **di host**, sama seperti perintah `docker compose`
+lainnya untuk stack ini. Keduanya **self-locating**: baris pertama setelah
+`set -euo pipefail` melakukan `cd` ke root repo relatif terhadap lokasi
+skrip itu sendiri, jadi boleh dipanggil dari direktori mana pun — termasuk
+dari cron, yang menjalankan job dengan working directory `$HOME`. Ini yang
+membuat jalur Postgres bekerja di cron sama sekali: perintah
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml`
+memakai path file compose **relatif**, yang hanya bisa ditemukan dari root
+repo.
+
+Konsekuensinya: nilai `DB=`/`DEST=` yang **relatif** ditafsirkan relatif
+terhadap root repo, bukan terhadap direktori tempat Anda memanggil skrip.
+(Path file backup yang diberikan sebagai argumen ke `restore.sh`
+dikecualikan — itu di-resolve ke absolut lebih dulu, sebelum `cd`, sehingga
+`restore.sh ./data/backups/x.dump` tetap berarti file yang barusan Anda
+`ls`.) Path absolut seperti contoh produksi di bawah tidak terpengaruh sama
+sekali.
 
 **Jalur SQLite** — `./data` di-bind-mount di host. Pasang `sqlite3` sekali:
 
@@ -64,20 +79,26 @@ entrypoint **menolak** mengubah skema (tidak ada perubahan skema tanpa jalur
 rollback) — jadi jangan hapus dari `Dockerfile`.
 
 **Jalur Postgres** — data Postgres hidup di named volume container, bukan
-`./data`. Host butuh:
-- `docker` (untuk `docker compose exec` — dump/restore sesungguhnya berjalan
-  di dalam container `postgres`)
-- `pg_restore` (paket `postgresql-client`) **di host**, dipakai skrip untuk
-  memverifikasi isi dump (`pg_restore --list`) tanpa perlu me-restore-nya ke
-  database sungguhan dulu:
+`./data`. Host hanya butuh **`docker`** (untuk `docker compose exec`).
+Tidak perlu memasang `postgresql-client` di host: dump, restore, **dan
+verifikasi dump** (`pg_restore --list`) semuanya dijalankan di dalam
+container `postgres` lewat `docker compose exec`, dump-nya dikirim masuk
+lewat stdin.
 
-```bash
-sudo apt-get update && sudo apt-get install -y postgresql-client
-```
+Itu bukan sekadar penghematan paket — itu **wajib demi kebenaran**. Server-nya
+`postgres:16-alpine` (lihat `docker-compose.postgres.yml` dan
+`docker-compose.postgres.prod.yml`), sedangkan `apt-get install
+postgresql-client` di beberapa distro masih memberi client PG14/PG15. Client
+yang lebih tua **menolak** membaca dump `-Fc` buatan PG16 dengan pesan
+`unsupported version ... in file header` — padahal dump-nya sehat. Kalau
+verifikasi memakai binary host, `backup.sh` akan menganggap itu "dump rusak",
+**menghapus backup-nya**, dan exit non-zero — berpotensi pada *setiap* run.
+Client di dalam container selalu seversi dengan servernya, jadi masalah itu
+tidak bisa terjadi.
 
-Kedua perintah presence-check ini dijalankan otomatis di awal `backup.sh`
-dan `restore.sh` masing-masing jalur; kalau hilang, skrip berhenti dengan
-pesan error yang jelas sebelum menyentuh apa pun.
+Presence-check per jalur (`sqlite3` untuk SQLite, `docker` untuk Postgres)
+dijalankan otomatis di awal `backup.sh` dan `restore.sh`; kalau hilang, skrip
+berhenti dengan pesan error yang jelas sebelum menyentuh apa pun.
 
 ## Backup otomatis sebelum perubahan skema (jalur SQLite saja)
 
@@ -141,9 +162,17 @@ atas) — tidak ada flag terpisah untuk memilihnya.
   lewat `docker compose -f docker-compose.yml -f
   docker-compose.postgres.prod.yml exec -T postgres pg_dump -U
   "$POSTGRES_USER" -Fc "$POSTGRES_DB"`, hasilnya di-redirect ke file host.
+  Kalau `pg_dump` gagal (container mati, dsb.), file hasil redirect yang
+  terlanjur dibuat shell **dihapus eksplisit** sebelum skrip exit — file
+  0-byte tidak boleh tertinggal, karena pemangkasan retensi murni berdasar
+  urutan waktu dan akan menganggap stub terbaru itu sebagai backup yang
+  layak disimpan, lalu memangkas backup sungguhan.
 - **Diverifikasi** — `pg_restore --list` dijalankan pada hasil (padanan
   `PRAGMA integrity_check` untuk Postgres, tanpa perlu restore sungguhan ke
-  DB scratch); gagal ⇒ backup dihapus & exit non-zero.
+  DB scratch), **di dalam container `postgres`** (lihat Prasyarat di atas —
+  client host yang lebih tua dari server akan salah menolak dump yang sehat);
+  gagal ⇒ pesan error asli dari `pg_restore` ikut dicetak, backup dihapus,
+  exit non-zero.
 - **Tidak pernah membaca `POSTGRES_PASSWORD`** — autentikasi terjadi lewat
   socket lokal di dalam container via `docker compose exec`, bukan kredensial
   yang harus diketikkan ke skrip/env.
@@ -175,11 +204,11 @@ sendiri). Pola `VAR=value` di depan pemanggilan skrip pada baris crontab
 yang sama **bekerja normal** di sini — persis seperti `DB=`/`DEST=` pada
 contoh SQLite di atas — karena skrip membaca `$DATABASE_URL_PRISMA` lewat
 ekspansi variabelnya sendiri di proses terpisah, bukan sebagai teks literal
-yang perlu di-expand dalam baris crontab yang sama. (Ini beda dengan jebakan
-yang dicatat di [../../docs/POSTGRES_MIGRATION.md](../../docs/POSTGRES_MIGRATION.md)
-§8a, yang soal `"$POSTGRES_USER"` dipakai sebagai argumen literal *pada baris
-crontab yang sama* dengan prefix `POSTGRES_USER=...`-nya — kasus itu memang
-tidak ter-expand seperti dugaan; kasus di sini berbeda.)
+yang perlu di-expand dalam baris crontab yang sama.
+
+Baris cron **tidak** perlu `cd /srv/app &&` di depannya: `backup.sh`
+melakukan `cd` ke root repo sendiri (lihat Prasyarat di atas), jadi ia
+menemukan file `docker-compose*.yml` walau cron menjalankannya dari `$HOME`.
 
 `detect_engine()` hanya mencocokkan **awalan** `DATABASE_URL_PRISMA`
 (`postgres://`/`postgresql://`) untuk memilih jalur — nilainya sendiri tidak
@@ -194,7 +223,9 @@ sungguhan/kredensial sama sekali, cukup nilai apa pun yang berawalan
 
 Kalau lebih suka memakai nilai `.env` produksi yang sesungguhnya (fungsinya
 sama — hanya awalannya yang dibaca), source saja filenya sebelum memanggil
-skrip; ini tidak pernah mencetak isinya ke mana pun:
+skrip; ini tidak pernah mencetak isinya ke mana pun. Di varian ini `cd
+/srv/app` tetap diperlukan — bukan demi skripnya (ia tetap `cd` sendiri),
+melainkan supaya `. ./.env` menemukan file `.env`-nya:
 
 ```cron
 0 */6 * * * cd /srv/app && set -a && . ./.env && set +a && deploy/backup/backup.sh >> /var/log/bot-backup.log 2>&1
@@ -253,7 +284,10 @@ Terdeteksi otomatis dari ekstensi `.dump` (lihat "Jalur mana yang aktif?" di
 atas) — argumen yang sama seperti SQLite, tidak ada flag tambahan.
 
 Langkah (otomatis di skrip):
-1. `pg_restore --list` pada **backup** dulu — abort sebelum menyentuh DB live bila dump-nya rusak.
+1. `pg_restore --list` pada **backup** dulu — dijalankan di dalam container
+   `postgres` (dump dikirim lewat stdin), bukan dengan binary host, alasan
+   versinya ada di Prasyarat di atas. Abort sebelum menyentuh DB live bila
+   dump-nya rusak, dan pesan error asli `pg_restore` ikut dicetak.
 2. `docker compose stop server` (hentikan proses penulis DB; container
    `postgres` sendiri **tetap jalan**, hanya `server` yang dihentikan).
 3. Simpan DB Postgres saat ini ke salinan pengaman `pg-pre-restore-<stamp>.dump`
@@ -261,11 +295,22 @@ Langkah (otomatis di skrip):
    ditulis ke folder yang sama dengan file backup yang sedang direstore,
    sehingga restore pun reversibel. **File ini sengaja tidak ikut kena
    glob retensi `backup.sh`** — lihat catatan pola nama di bagian Backup —
-   Postgres di atas.
-4. `pg_restore --clean --if-exists -U "$POSTGRES_USER" -d "$POSTGRES_DB"` —
-   dijalankan di dalam container `postgres` lewat `docker compose exec`,
-   menerima dump lewat stdin. `--clean --if-exists` menghapus object lama
-   sebelum me-restore ulang, tanpa error kalau object itu belum ada.
+   Postgres di atas. Kalau dump pengaman ini gagal, file parsialnya dihapus
+   dan skrip **abort sebelum me-restore apa pun** (DB live masih utuh; start
+   ulang service dengan `docker compose start server`) — restore tanpa titik
+   balik bukan operasi yang reversibel.
+4. `pg_restore --clean --if-exists --single-transaction -U "$POSTGRES_USER"
+   -d "$POSTGRES_DB"` — dijalankan di dalam container `postgres` lewat
+   `docker compose exec`, menerima dump lewat stdin. `--clean --if-exists`
+   menghapus object lama sebelum me-restore ulang, tanpa error kalau object
+   itu belum ada. **`--single-transaction` bukan opsional di sini:** tanpanya
+   `pg_restore` exit 0 walau sebagian statement di dalam dump gagal — hanya
+   mencetak error ke stderr lalu lanjut — sehingga DB yang setengah ter-restore
+   akan lolos ke langkah 5, `/healthz` tetap 200, dan operator mengira
+   rollback-nya sukses. Dengan flag itu seluruh restore dibungkus satu
+   `BEGIN`/`COMMIT` (gagal ⇒ DB kembali ke keadaan **sebelum** restore, bukan
+   setengah jadi) dan `--exit-on-error` ikut aktif, jadi kegagalan sungguhan
+   benar-benar exit non-zero.
 5. `docker compose start …` lalu smoke `GET /healthz` sampai 200.
 
 **Tidak ada sentinel `SKIP_AUTO_MIGRATE` di jalur ini** — tidak diperlukan.
@@ -291,8 +336,8 @@ diuji bukan backup. Berlaku untuk kedua jalur.
 ## Uji end-to-end (di staging — WAJIB sekali sebelum diandalkan)
 
 > Tidak dijalankan dari mesin dev Windows ini: butuh Docker Linux, dan untuk
-> jalur SQLite juga `sqlite3`; untuk jalur Postgres juga `pg_restore`
-> (`postgresql-client`) di host serta stack Postgres
+> jalur SQLite juga `sqlite3`; untuk jalur Postgres cukup Docker (tidak perlu
+> `postgresql-client` di host — lihat Prasyarat) plus stack Postgres
 > (`docker-compose.postgres.prod.yml`) sudah jalan. Sintaks kedua skrip sudah
 > divalidasi (`bash -n`). Jalankan ini di staging VPS:
 
@@ -347,9 +392,11 @@ runbook lengkap untuk cutover SQLite → Postgres itu sendiri (bukan dokumen
 ini — dokumen ini hanya tentang backup/restore harian di kedua sisi). §3-nya
 memakai `backup.sh` untuk mengambil snapshot SQLite terakhir sebelum cutover
 dimulai; §8a membahas memindahkan entri cron produksi dari SQLite ke Postgres
-setelah cutover selesai. Jalur Postgres yang didokumentasikan di sini —
-verifikasi `pg_restore --list`, retensi, salinan pengaman pra-restore, smoke
-test — menutup gap yang disebut eksplisit di §8a ("retention pruning,
-integrity verification... are real gaps this minimal pg_dump leaves open"):
-`backup.sh`/`restore.sh` sekarang menyediakan semua itu lewat satu skrip yang
-sama dipakai jalur SQLite, bukan `pg_dump` mentah di baris crontab.
+setelah cutover selesai — cukup menukar env var di depan `backup.sh`, tanpa
+tooling atau slot cron baru. §8a merujuk balik ke dokumen ini untuk detail
+jalur Postgres, dan menegaskan bahwa `backup.sh` sudah menangani retensi,
+verifikasi dump, dan salinan off-box untuk Postgres persis seperti untuk
+SQLite; bagian "Backup — Postgres" dan "Restore — Postgres" di atas adalah
+penjelasan lengkapnya. Satu hal yang tetap **tidak** dicakup pendekatan
+snapshot berkala ini — di sini maupun di §8a — adalah point-in-time recovery
+lewat WAL archiving berkelanjutan; itu di luar lingkup engine-swap.

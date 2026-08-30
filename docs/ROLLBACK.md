@@ -75,7 +75,9 @@ kedua jalur: verifikasi backup (`integrity_check`/`pg_restore --list`) →
 stop writer → simpan DB saat ini sebagai salinan pengaman pra-restore
 (`bot.db.pre-restore-<stamp>` / `pg-pre-restore-<stamp>.dump`, restore
 sendiri reversibel) → terapkan backup ke DB live (SQLite: swap file + hapus
-`-wal`/`-shm` basi; Postgres: `pg_restore --clean --if-exists`) →
+`-wal`/`-shm` basi; Postgres: `pg_restore --clean --if-exists
+--single-transaction`, atomik — gagal ⇒ DB kembali ke keadaan sebelum
+restore) →
 integrity-check hasil (SQLite) → start → smoke-test `/healthz`. Detail
 penuh: [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md).
 

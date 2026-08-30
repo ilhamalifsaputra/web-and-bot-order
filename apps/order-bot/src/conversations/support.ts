@@ -5,7 +5,7 @@
  */
 import { SenderType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
-import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders, logCustomerAction, enqueueAdminNewTicketDm } from "@app/db";
+import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders, logCustomerAction, enqueueAdminNewTicketDm, getOpenTicketForOrder } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit, menuAnchor } from "../util/chat";
 import { t } from "../util/i18n";
@@ -91,6 +91,16 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
         const picked = parseInt(m[1]!, 10);
         const match = orders.find((o) => o.id === picked);
         if (match) {
+          const existing = await conversation.external(() => getOpenTicketForOrder(prisma, picked));
+          if (existing) {
+            await u.answerCallbackQuery();
+            await menuAnchor(
+              u,
+              t(u, "support.duplicate_open_ticket", { id: existing.id, code: match.orderCode }),
+              ckb.ticketDuplicateKb(existing.id, lang),
+            );
+            return;
+          }
           orderId = picked;
           await u.answerCallbackQuery({ text: t(u, "support.order_linked_toast", { code: match.orderCode }) });
           break;

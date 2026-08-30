@@ -5,7 +5,7 @@
  * Markup/classes copied verbatim — no v3→v4 renames apply to this page.
  */
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -34,6 +34,7 @@ export default function SupportPage() {
   const [toastText, setToastText] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"success" | "error">("success");
   const isDesktop = useIsDesktop();
+  const navigate = useNavigate();
   const { data, error, refetch } = useQuery({
     queryKey: ["account-support"],
     queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
@@ -57,7 +58,7 @@ export default function SupportPage() {
   const createMutation = useMutation({
     mutationFn: (vars: { message: string; files: File[]; orderCode: string }) => {
       if (vars.files.length === 0) {
-        return apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", {
+        return apiPost<{ ok: boolean; ticket_id: number | null; duplicate?: boolean }>("/api/v1/account/support", {
           message: vars.message,
           ...(vars.orderCode ? { order_code: vars.orderCode } : {}),
         });
@@ -66,13 +67,20 @@ export default function SupportPage() {
       form.append("message", vars.message);
       if (vars.orderCode) form.append("order_code", vars.orderCode);
       for (const file of vars.files) form.append("attachments", file);
-      return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null }>(
+      return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null; duplicate?: boolean }>(
         "/api/v1/account/support",
         form,
         setUploadProgress,
       );
     },
     onSuccess: (resp) => {
+      if (resp.duplicate && resp.ticket_id != null) {
+        // A toast set here would never paint — navigate() unmounts this page
+        // in the same render. Hand the notice to the destination via router
+        // state instead; TicketDetailPage shows it as its own Toast on mount.
+        navigate(`/account/support/${resp.ticket_id}`, { state: { notice: t("web.support_duplicate_redirect") } });
+        return;
+      }
       setMessage("");
       setFiles([]);
       setOrderCode("");

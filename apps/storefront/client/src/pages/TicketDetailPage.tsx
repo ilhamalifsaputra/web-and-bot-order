@@ -7,7 +7,7 @@
  * different mobile markup, just a narrower column).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -36,10 +36,17 @@ export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const ticketId = Number(id);
   const { data: ctx } = useShopContext();
+  const location = useLocation();
   const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // Carried over from SupportPage's redirect-to-existing-ticket flow (router
+  // state, not a query param — it's transient, one-shot, and shouldn't
+  // survive a reload or show up in the URL).
+  const [noticeText, setNoticeText] = useState<string | null>(
+    (location.state as { notice?: string } | null)?.notice ?? null,
+  );
 
   const { data, error, refetch } = useQuery({
     queryKey: ["account-ticket", id],
@@ -133,7 +140,11 @@ export default function TicketDetailPage() {
 
   return (
     <>
-      <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
+      <Toast
+        text={noticeText ?? errorText}
+        onDismiss={() => (noticeText ? setNoticeText(null) : setErrorText(null))}
+        kind={noticeText ? "info" : "error"}
+      />
 
       <div className="mb-6">
         <div className="text-xs text-ink-faint mb-1">

@@ -175,7 +175,7 @@ export const Env = z.object({
   NOWPAYMENTS_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
 
   // ---- Database ----
-  DATABASE_URL_PRISMA: z.string().default("file:../data/bot.db"),
+  DATABASE_URL_PRISMA: z.string(),
 
   // ---- Behaviour ----
   DEFAULT_LANGUAGE: z

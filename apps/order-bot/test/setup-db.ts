@@ -28,6 +28,13 @@ process.env.PAYMENT_WINDOW_MINUTES = "30";
 process.env.BYBIT_DEPOSIT_ADDRESS = "";
 process.env.BYBIT_API_KEY = "";
 process.env.BYBIT_API_SECRET = "";
+// Needed for buyNowNowpayments (checkout.ts) to get past its own
+// shopPublicUrl() null-check — config.SHOP_PUBLIC_URL is parsed once from
+// process.env at @app/core/config's module load time (Env.parse(process.env)
+// in packages/core/src/config.ts), so this MUST be set here, before any
+// @app/* import, not inside an individual test. No test in this suite reads
+// or depends on this being unset.
+process.env.SHOP_PUBLIC_URL = "https://shop.test";
 
 const schemaEnv = await provisionPgTestSchema("orderbot");
 export const DB_URL = schemaEnv.url;

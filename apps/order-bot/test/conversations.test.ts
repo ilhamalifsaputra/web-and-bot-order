@@ -166,9 +166,15 @@ describe("support + reject conversations", () => {
   it("support: description + submit creates a ticket, a message, and forwards to admins", async () => {
     const sink: SentCall[] = [];
     const entry = entryCust(sink, "v1:support:open");
+    // Captured by name (not inlined into the queue) so the assertion below
+    // can check correlationId against the exact update logCustomerAction
+    // threaded — support.ts's own logCustomerAction call uses `lastCtx`,
+    // the freshest waited update, which is this one (the photos:done tap is
+    // the last wait before the ticket is created).
+    const photosDone = msg(sink, { callbackData: "v1:support:photos:done" });
     const conv = new FakeConversation([
       msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
+      photosDone,
     ]);
     await supportConversation(conv.asMyConversation(), entry);
 
@@ -176,6 +182,19 @@ describe("support + reject conversations", () => {
     expect(ticket).toBeTruthy();
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
+
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "ticket", targetId: ticket!.id } });
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.telegramUserId).toBe(42n);
+    expect(audit?.channel).toBe("BOT");
+    expect(audit?.action).toBe("ticket_create");
+    expect(audit?.details).toBe("Created a support ticket via Telegram.");
+    // I-2 (final whole-branch review): correlationId is the one field that
+    // lets this row be joined back to the exact update that created the
+    // ticket — assert equality, not just truthiness.
+    expect(audit?.correlationId).toBe(String(photosDone.update.update_id));
   });
 
   it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {

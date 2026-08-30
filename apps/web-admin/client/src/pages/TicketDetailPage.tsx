@@ -85,6 +85,9 @@ interface CustomerContext {
 interface AuditLogRow {
   id: number;
   adminId: number | null;
+  // "ADMIN" | "CUSTOMER" (Phase H, customer-action audit trail) — may be
+  // absent on older/mocked fixtures, treated the same as "ADMIN".
+  actorType?: string;
   action: string;
   details: string | null;
   createdAt: string;
@@ -157,9 +160,18 @@ export function TicketDetailPage() {
   for (const a of adminsData?.admins ?? []) {
     if (a.id !== null) adminNameById.set(a.id, a.name ?? `Telegram ID ${a.telegramId}`);
   }
-  function adminLabel(adminId: number | null): string {
-    if (adminId === null) return "System";
-    return adminNameById.get(adminId) ?? `Admin #${adminId}`;
+  // I-1 (final whole-branch review): a CUSTOMER-actor row (e.g. the
+  // ticket_create row every ticket now gets, or a customer's own
+  // order_create/order_cancel/order_edit_info row) has adminId: null, same
+  // as it does for a true system entry — so this used to fall straight
+  // through to "System", mislabeling the customer's own action. The
+  // customer's identity is already shown once at the top of this page
+  // ("Customer: <name>"), so each timeline row just needs to say who acted,
+  // not repeat which customer.
+  function actorLabel(row: AuditLogRow): string {
+    if (row.actorType === "CUSTOMER") return "Customer";
+    if (row.adminId === null) return "System";
+    return adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`;
   }
 
   const sendReply = useMutation({
@@ -339,7 +351,7 @@ export function TicketDetailPage() {
                 timeline.order.map((row) => (
                   <div key={row.id} className="rounded-lg border-l-2 border-line bg-sand px-3 py-2">
                     <div className="mb-0.5 text-xs text-ink-soft">
-                      {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
+                      {row.createdAtDisplay ?? "—"} — {actorLabel(row)}
                     </div>
                     <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
                   </div>
@@ -379,7 +391,7 @@ export function TicketDetailPage() {
           {ticketTimeline.map((row) => (
             <div key={row.id} data-testid="timeline-row" className="rounded-lg border-l-2 border-line bg-sand px-4 py-3">
               <div className="mb-1 text-xs text-ink-soft">
-                {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
+                {row.createdAtDisplay ?? "—"} — {actorLabel(row)}
               </div>
               <div className="text-sm break-words text-ink">{row.details ?? row.action}</div>
             </div>

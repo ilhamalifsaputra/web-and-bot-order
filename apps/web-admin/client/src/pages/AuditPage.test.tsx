@@ -154,4 +154,53 @@ describe("AuditPage", () => {
     render(<AuditPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Admin #42")).toBeInTheDocument());
   });
+
+  // I-1 (final whole-branch review): a CUSTOMER-actor row (Phase H,
+  // logCustomerAction) has adminId: null, same as a true system entry — this
+  // used to fall through to the admin-name lookup and render "Admin #null".
+  it("renders a CUSTOMER-actor row as its customer identity, not 'Admin #null' (I-1)", async () => {
+    mockAuditAndAdmins({
+      rows: [
+        {
+          ...ROWS[0],
+          id: 5,
+          adminId: null,
+          actorType: "CUSTOMER",
+          customerId: 77,
+          telegramUserId: "555000111",
+          action: "order_create",
+          details: "Created order via TokoPay.",
+        },
+      ],
+      total: 1,
+      page: 1,
+      hasNext: false,
+    });
+    render(<AuditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Customer #77")).toBeInTheDocument());
+    expect(screen.queryByText(/Admin #/)).not.toBeInTheDocument();
+    expect(screen.queryByText("System")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the Telegram id when a CUSTOMER-actor row has no resolved customerId (I-1)", async () => {
+    mockAuditAndAdmins({
+      rows: [
+        {
+          ...ROWS[0],
+          id: 6,
+          adminId: null,
+          actorType: "CUSTOMER",
+          customerId: null,
+          telegramUserId: "555000222",
+          action: "order_create",
+          details: "Created order via TokoPay.",
+        },
+      ],
+      total: 1,
+      page: 1,
+      hasNext: false,
+    });
+    render(<AuditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Telegram #555000222")).toBeInTheDocument());
+  });
 });

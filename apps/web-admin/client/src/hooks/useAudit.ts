@@ -2,7 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 
 export interface AuditRow {
   id: number;
-  adminId: number;
+  adminId: number | null;
+  // "ADMIN" | "CUSTOMER" (Phase H). Defaults to "ADMIN" server-side, but
+  // every row this hook can return carries it explicitly.
+  actorType: string;
+  customerId: number | null;
+  telegramUserId: string | null;
   action: string;
   targetType: string | null;
   targetId: string | null;
@@ -23,6 +28,7 @@ export function useAudit(params: {
   action?: string;
   targetType?: string;
   adminId?: string;
+  actorType?: string;
   since?: string;
   until?: string;
 }) {
@@ -31,6 +37,7 @@ export function useAudit(params: {
   if (params.action) search.set("action", params.action);
   if (params.targetType) search.set("target_type", params.targetType);
   if (params.adminId) search.set("admin_id", params.adminId);
+  if (params.actorType) search.set("actor_type", params.actorType);
   if (params.since) search.set("since", params.since);
   if (params.until) search.set("until", params.until);
 

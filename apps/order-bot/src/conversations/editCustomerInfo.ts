@@ -35,7 +35,7 @@ import {
   validateFieldAnswer,
   type AdditionalField,
 } from "@app/core/deliveryFields";
-import { prisma, getOrder, updateOrderCustomerData } from "@app/db";
+import { prisma, getOrder, updateOrderCustomerData, logCustomerAction } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { menuAnchor, consumeInput } from "../util/chat";
 import { esc } from "../util/format";
@@ -271,6 +271,23 @@ export async function editCustomerInfoConversation(conversation: MyConversation,
       }
       throw e;
     }
+    // Phase H customer-audit trail — logged only after
+    // updateOrderCustomerData has actually committed (the catch block above
+    // returns/continues on every failure path, so reaching here means the
+    // edit genuinely succeeded). targetType is "order", not "order_item":
+    // updateOrderCustomerData writes Order.customerData as one JSON blob for
+    // the whole order, not a per-OrderItem column (see its own signature in
+    // packages/db/src/crud/orders.ts).
+    await logCustomerAction(prisma, {
+      customerId: userId,
+      telegramUserId: u.from ? BigInt(u.from.id) : null,
+      channel: "BOT",
+      correlationId: String(u.update.update_id),
+      action: "order_edit_info",
+      targetType: "order",
+      targetId: orderId,
+      details: "Updated the submitted order information via Telegram.",
+    });
     return viewOrder(u, orderId);
   }
 }

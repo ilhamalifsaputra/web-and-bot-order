@@ -105,6 +105,26 @@ describe("SupportPage", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
+  it("shows a redirect toast and navigates to the existing ticket when the server reports a duplicate", async () => {
+    renderSupport(() => supportData, () => ({
+      orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
+    }));
+    await screen.findByRole("link", { name: "#1" });
+    fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
+      target: { value: "New issue" },
+    });
+    (apiPost as Mock).mockResolvedValue({ ok: false, duplicate: true, ticket_id: 1 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    // Navigating to the existing ticket unmounts SupportPage (and its local
+    // toast state) in the same render, so we assert the redirect landed
+    // rather than the toast still being painted.
+    await screen.findByText("ticket-detail-stub");
+    // Nothing was created, so the form shouldn't reset and the ticket list shouldn't refetch.
+    // 2 = initial support fetch + initial account-orders fetch (order picker) only.
+    expect(apiGet).toHaveBeenCalledTimes(2);
+  });
+
   it("renders the empty state when there are no tickets", async () => {
     renderSupport(() => ({ tickets: [] }));
     expect(await screen.findByText("No support tickets yet.")).toBeInTheDocument();

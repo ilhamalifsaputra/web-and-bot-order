@@ -36,6 +36,7 @@ import {
   getTicketWithOrder,
   createTicket,
   addTicketMessage,
+  getOpenTicketForOrder,
   closeTicketByUser,
   reopenTicket,
   TICKET_REOPEN_WINDOW_DAYS,
@@ -322,6 +323,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: "error.order_not_found" });
       }
       orderId = order.id;
+    }
+    if (orderId !== null) {
+      const existingTicket = await getOpenTicketForOrder(prisma, orderId);
+      if (existingTicket) {
+        return reply.send({ ok: false, duplicate: true, ticket_id: existingTicket.id });
+      }
     }
     // M-18 fix (backend audit 2026-07-31): attachments are only written to
     // disk here, after ownership + the message guard below have both passed

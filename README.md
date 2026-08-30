@@ -275,7 +275,7 @@ pm2 restart bot-order
 > ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
 > ini.
 
-**Backup database** (rutin — database live sekarang PostgreSQL):
+**Backup database** (rutin — jalur SQLite/Postgres terdeteksi otomatis sesuai status cutover toko ini):
 
 > `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) **engine-aware**:
 > satu skrip yang sama menangani SQLite maupun PostgreSQL, jalurnya dideteksi

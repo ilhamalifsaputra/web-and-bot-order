@@ -41,12 +41,17 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
 // default) so the M-6 race tests below can override it once to simulate a
 // concurrent claimant — see "doesn't create a second TokoPay transaction
 // when it loses the gateway claim to a concurrent request".
+// getOrder is wrapped the same way, for the changePaymentRail guard test:
+// that handler's status/ownership checks necessarily read the order before
+// its write transaction opens, so overriding this read once is how a test
+// hands it the stale "still awaiting payment" view a real concurrent payment
+// confirmation would leave it holding.
 vi.mock("@app/db", async (orig) => {
   const actual = await orig<typeof import("@app/db")>();
-  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
+  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot), getOrder: vi.fn(actual.getOrder) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -55,7 +60,7 @@ import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/p
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -2308,6 +2313,16 @@ describe("checkout handlers", () => {
     // the exact Telegram update that created it — assert equality against
     // this test's own ctx, not just truthiness.
     expect(audit?.correlationId).toBe(String(ctx.update.update_id));
+
+    // Trustance Phase A Task A2b: a PENDING Payment ledger row now exists for
+    // this attempt, with the gateway's own clean trxId as its reference (not
+    // the JSON-cached blob Order.paymentRef holds).
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order.id } });
+    expect(payment.method).toBe("TOKOPAY");
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe("TP-TEST");
+    expect(payment.amount.toString()).toBe(new Decimal(order.totalAmount).toString());
+    expect(payment.currency).toBe("IDR");
   });
 
   // Phase H regression guard: a checkout attempt that ends in
@@ -2462,6 +2477,231 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
+  // A1: the atomic checkoutIntentId constraint is the correctness guarantee
+  // behind refuseDuplicateCheckout's best-effort pre-check — this proves the
+  // atomic path ALSO degrades gracefully into the same buyer-facing UX, not a
+  // raw/unhandled error, on the cases the pre-check's per-product+window scope
+  // can't catch (e.g. a different product, or outside DUPLICATE_CHECKOUT_
+  // WINDOW_MS). The colliding order below is created for a DIFFERENT product
+  // than the one this call buys, so refuseDuplicateCheckout's own
+  // `items: { some: { productId } }` filter can't be what refuses this call —
+  // only createOrderDirect's DuplicateCheckoutIntentError catch in
+  // buyNowTokopay can be.
+  it("buyNowTokopay converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent@x.com:pw"]);
+    const checkoutIntentId = "11111111-1111-1111-1111-111111111111";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payq:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // No second order — the collision was refused, not raced through.
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // Same alert copy refuseDuplicateCheckout uses (checkout.duplicate_pending),
+    // not error.generic or a thrown/unhandled exception.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  // Task 1 fix (review finding): Binance Internal, Bybit, and Bybit BSC are
+  // thin createOrderDirect pass-through wrappers exactly like Tokopay above —
+  // they must degrade the same way on an atomic checkoutIntentId collision,
+  // not throw unhandled. Same shape as the buyNowTokopay test directly above:
+  // the colliding order is for a DIFFERENT product than the one this call
+  // buys, so only the DuplicateCheckoutIntentError catch in each buyNow*
+  // handler (not refuseDuplicateCheckout's pre-check) can be what refuses it.
+  it("buyNowInternal converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-internal@x.com:pw"]);
+    const checkoutIntentId = "22222222-2222-2222-2222-222222222222";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payx:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybit converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "UID456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybit@x.com:pw"]);
+    const checkoutIntentId = "33333333-3333-3333-3333-333333333333";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payb:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybitBsc converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, "0xDEADBEEF");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybitbsc@x.com:pw"]);
+    const checkoutIntentId = "44444444-4444-4444-4444-444444444444";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:paybc:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  // Final whole-branch review (Important #1): completeOrderWithWallet is the
+  // SEVENTH order-creating path on this same confirm bubble, and the only one
+  // refuseDuplicateCheckout structurally cannot cover — it creates, settles AND
+  // delivers in one transaction, so its order is never PENDING_PAYMENT and that
+  // pre-check's `status: PENDING_PAYMENT` filter can never match. The buyer here
+  // holds 10.00 credit against a 5.00 product, i.e. enough for BOTH taps, so
+  // error.insufficient_wallet cannot be what refuses the second one either —
+  // only the atomic checkoutIntentId catch can be. Same shape as the buyNow*
+  // tests above: the colliding order is for a DIFFERENT product.
+  it("completeOrderWithWallet converts an atomic checkoutIntentId collision into the same friendly duplicate toast — no second order, debit, or delivery (A1)", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-wallet@x.com:pw"]);
+    const checkoutIntentId = "55555555-5555-5555-5555-555555555555";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const balanceBefore = (await getUser(prisma, sample.user.id))!.walletBalance;
+
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true, checkoutIntentId } },
+    });
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    // No second order…
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // …no second wallet debit (the whole transaction rolled back, and the
+    // colliding INSERT happens before adjustWallet is ever reached)…
+    expect(Number((await getUser(prisma, sample.user.id))!.walletBalance)).toBeCloseTo(Number(balanceBefore));
+    // …and nothing was delivered: no credentials DM, and the only SOLD stock
+    // item in the DB is none at all (the pre-existing colliding order is still
+    // PENDING_PAYMENT, so its stock is RESERVED, not SOLD).
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+    expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(0);
+    // Same alert copy every other rail uses, not error.generic or a throw.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
   it("buyNowInternal's screen carries native copy-to-clipboard buttons for the Binance UID and unique payment code", async () => {
     // Pins the real call site (checkout.ts's buyNowInternal → proofCancelKb(..., copy)),
     // not just the keyboard builder in isolation — nothing else would catch
@@ -2490,6 +2730,45 @@ describe("checkout handlers", () => {
     const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("Binance Internal Transfer");
+  });
+
+  // Trustance Phase A Task A2b: buyNowInternal now also records a PENDING
+  // Payment ledger row once the order (and its paymentRef note) exists. Uses
+  // its own higher-priced product (not sample.product, whose IDR 5.00 price
+  // rounds to a 0 USDT total at this rate — createPaymentAttempt correctly
+  // rejects a zero amount, which would make this assertion flaky against the
+  // shared fixture instead of proving anything about the wiring itself).
+  it("buyNowInternal records a PENDING Payment ledger row with the order's own transfer-note reference (Task A2b)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const category = await createCategory(prisma, `a2b-cat-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "A2b Ledger Product" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "A2b Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "160000.00",
+      warrantyDays: 30,
+    });
+    await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"]);
+
+    const { ctx } = customerCtx();
+    await checkout.buyNowInternal(ctx, denom.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(order?.paymentRef).toBeTruthy();
+    expect(new Decimal(order!.totalAmount).greaterThan(0)).toBe(true);
+
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order!.id } });
+    expect(payment.method).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe(order!.paymentRef);
+    expect(payment.currency).toBe("USDT");
+    expect(payment.amount.toString()).toBe(new Decimal(order!.totalAmount).toString());
   });
 
   it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {
@@ -2616,6 +2895,113 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
     expect(audit?.action).toBe("order_create");
     expect(audit?.details).toContain("PayDisini");
+  });
+});
+
+// ===========================================================================
+// changePaymentRail (Trustance Phase A Task A2a) — switching an order still
+// awaiting payment to a different rail without creating a second Order.
+//
+// Everything here is about the moment the write actually lands. The handler's
+// status/ownership checks run before its $transaction opens, so they can only
+// ever describe the order as it was; the write itself is guarded by
+// setOrderPaymentRail's compare-and-swap (packages/db/src/crud/orders.ts, with
+// its own crud-level race tests in orders.test.ts). These tests drive the whole
+// handler so the composition is covered end to end: that the guard is really
+// reached from here, and that the outgoing gateway reference survives the
+// switch on the retired ledger row.
+// ===========================================================================
+
+describe("changePaymentRail (Task A2a)", () => {
+  async function pendingTokopayOrder() {
+    const order = await makeOrder();
+    await prisma.order.update({
+      where: { id: order!.id },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, paymentRef: "TP-OLD-REF" },
+    });
+    return order!;
+  }
+
+  it("retires the old attempt with the outgoing paymentRef, opens a new one, and clears paymentRef on the Order", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    // Cleared so the new rail's own claimGatewaySlot starts from null...
+    expect(after!.paymentRef).toBeNull();
+
+    // ...but not lost: the reference the old rail was quoting — the key
+    // binanceInternal.ts/amountMatching.ts/nowpaymentsReconcile.ts match
+    // incoming payments against — is now on the retired ledger row, so a
+    // payment landing on the old rail after the switch is still traceable.
+    const retired = await prisma.payment.findUniqueOrThrow({ where: { id: oldAttempt.id } });
+    expect(retired.status).toBe(PaymentStatus.EXPIRED);
+    expect(retired.expiryReason).toBe(PaymentExpiryReason.RAIL_CHANGED);
+    expect(retired.reference).toBe("TP-OLD-REF");
+
+    const live = await prisma.payment.findMany({ where: { orderId: order.id, status: PaymentStatus.PENDING } });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.method).toBe(PaymentMethod.PAYDISINI);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("Payment method updated for this order.");
+  });
+
+  it("leaves an order that got PAID between its pre-check and its write completely untouched (the crud guard, not the pre-check, is what stops it)", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    // Reproduce the TOCTOU window deterministically: hand the handler's
+    // status/ownership pre-check the still-PENDING_PAYMENT view it would
+    // genuinely read, then land the payment confirmation before its write
+    // transaction opens. The pre-check therefore waves the switch through on
+    // a stale read — exactly what the old unguarded `tx.order.update` acted
+    // on — leaving setOrderPaymentRail's compare-and-swap as the only thing
+    // between that and a PAID order being restamped with a rail the buyer
+    // never paid on. (Overriding one crud call once to stand in for a
+    // concurrent writer is the same technique the M-6 claimGatewaySlot test
+    // above uses. Real overlapping Postgres transactions prove the guard
+    // itself in packages/db/src/crud/orders.test.ts's setOrderPaymentRail
+    // block; what this adds is that the HANDLER is actually gated by it.)
+    vi.mocked(getOrder).mockImplementationOnce(async (db, id) => {
+      const staleSnapshot = await getOrder(db, id); // the once-impl is spent — this is the real read
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAID } });
+      return staleSnapshot;
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    // The handler doesn't throw — it catches the crud layer's ValidationError
+    // and tells the buyer, same as its own pre-check would have.
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.status).toBe(OrderStatus.PAID);
+    expect(after!.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(after!.paymentRef).toBe("TP-OLD-REF");
+
+    // The whole $transaction rolled back with the guard: the old attempt is
+    // still the live one and no PAYDISINI attempt was ever opened.
+    const attempts = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.id).toBe(oldAttempt.id);
+    expect(attempts[0]!.status).toBe(PaymentStatus.PENDING);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("This order can no longer be paid.");
   });
 });
 

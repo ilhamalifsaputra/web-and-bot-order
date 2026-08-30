@@ -641,6 +641,49 @@ export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
 export const zRefundStatus = z.nativeEnum(RefundStatus);
 
 /**
+ * Payment.status (Trustance Phase A Task A2a) — a multi-attempt payment
+ * ledger that coexists with (does not replace) the payment fields directly on
+ * `Order` (`paymentMethod`, `paymentRef`, `binanceTxid`, `bybitTxid`, ...),
+ * which stay the "current/latest attempt" cache the six existing payment-rail
+ * webhook/poller handlers read directly. String, not a native Prisma enum,
+ * matching every other lifecycle-status column in this schema (`Order.status`,
+ * `Refund.status`, `OrderItem.status`).
+ *
+ * The legal transition shape is PENDING -> CONFIRMED | EXPIRED | FAILED, all
+ * three terminal — see `PAYMENT_LEGAL_TRANSITIONS`
+ * (packages/db/src/crud/payments.ts). Only PENDING -> EXPIRED
+ * (`expirePaymentAttempt`) and PENDING -> CONFIRMED (`confirmPaymentAttempt`)
+ * have a crud function today; PENDING -> FAILED is reserved in the shape for
+ * a future caller (e.g. Task 3's webhook wiring reporting a declined/failed
+ * gateway attempt) without needing to touch the transition table again.
+ */
+export const PaymentStatus = {
+  PENDING: "PENDING",
+  CONFIRMED: "CONFIRMED",
+  EXPIRED: "EXPIRED",
+  FAILED: "FAILED",
+} as const;
+export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
+export const zPaymentStatus = z.nativeEnum(PaymentStatus);
+
+/**
+ * Payment.expiryReason (Trustance Phase A Task A2a) — free-text-shaped but
+ * constrained in practice to these three machine codes, set only when
+ * `Payment.status` reaches EXPIRED (`expirePaymentAttempt`,
+ * packages/db/src/crud/payments.ts). "RAIL_CHANGED" is written by the new
+ * "change payment rail" entry point (apps/order-bot/src/handlers/
+ * checkout.ts) when a buyer switches gateways on the SAME order instead of
+ * abandoning it; "TIMEOUT" and "CANCELLED" are reserved for a future poller/
+ * cancel-order caller to use the same column instead of inventing another.
+ */
+export const PaymentExpiryReason = {
+  RAIL_CHANGED: "RAIL_CHANGED",
+  TIMEOUT: "TIMEOUT",
+  CANCELLED: "CANCELLED",
+} as const;
+export type PaymentExpiryReason = (typeof PaymentExpiryReason)[keyof typeof PaymentExpiryReason];
+
+/**
  * AdminTask.type (Trustance Master Architecture Task 9a, §38) — the five
  * manual-operation task kinds the admin task queue can hold. String, not a
  * native Prisma enum, matching every other lifecycle-status-adjacent column

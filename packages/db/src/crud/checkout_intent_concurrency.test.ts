@@ -1,0 +1,285 @@
+/**
+ * True-concurrency regression tests for the atomic checkoutIntentId guard
+ * (Task A1) — the DB-enforced replacement for the bot's best-effort,
+ * race-prone `refuseDuplicateCheckout` (apps/order-bot/src/handlers/
+ * checkout.ts): two near-simultaneous "Buy Now" taps for the SAME checkout
+ * attempt (same client-minted checkoutIntentId) must never both create an
+ * Order row.
+ *
+ * Same technique as stock_concurrency.test.ts (Postgres migration
+ * verification, Task 4): fire multiple `createOrderDirect`/
+ * `createOrderFromCart` calls at the SAME instant via `Promise.allSettled`
+ * against the real dev Postgres, which has actual concurrent writers — a
+ * sequential, one-await-at-a-time pair of calls could never distinguish "the
+ * unique constraint holds under a genuine race" from "the second call just
+ * happened to run after the first committed".
+ */
+import { randomUUID } from "node:crypto";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
+import {
+  createOrderDirect,
+  createOrderFromCart,
+  addToCart,
+  upsertUser,
+  adjustWallet,
+  DuplicateCheckoutIntentError,
+  getOrderByCheckoutIntentId,
+  createInternalOrder,
+  completeOrderWithWalletCredit,
+} from "@app/db";
+import { OrderCurrency, OrderStatus, StockStatus } from "@app/core/enums";
+
+let db: TestDb;
+let prisma: PrismaClient;
+let sample: SampleData;
+
+beforeAll(async () => {
+  db = await makeTestDb();
+  prisma = db.prisma;
+});
+afterAll(async () => {
+  await db.cleanup();
+});
+beforeEach(async () => {
+  await resetDb(prisma);
+  sample = await buildSampleData(prisma);
+});
+
+/** `n` distinct buyers, one per concurrent request — a shared buyer would
+ *  confound "N concurrent requests" with "session state reused". Mirrors
+ *  stock_concurrency.test.ts's makeBuyers. */
+async function makeBuyers(n: number) {
+  const buyers = [];
+  for (let i = 0; i < n; i++) {
+    buyers.push(
+      await upsertUser(prisma, { telegramId: 910000 + i, username: `intent-buyer-${i}`, fullName: `Intent Buyer ${i}` }),
+    );
+  }
+  return buyers;
+}
+
+describe("createOrderDirect under true Postgres concurrency — checkoutIntentId collision", () => {
+  it("5 concurrent buyers, SAME checkoutIntentId, ample stock: exactly 1 order is created, 4 reject with DuplicateCheckoutIntentError", async () => {
+    const { product } = sample; // buildSampleData seeds 5 AVAILABLE stock rows — never the bottleneck here
+    const buyers = await makeBuyers(5);
+    const checkoutIntentId = randomUUID();
+
+    const results = await Promise.allSettled(
+      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1, checkoutIntentId })),
+    );
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createOrderDirect>>> => r.status === "fulfilled",
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(4);
+    for (const r of rejected) {
+      expect(r.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+      expect((r.reason as DuplicateCheckoutIntentError).checkoutIntentId).toBe(checkoutIntentId);
+    }
+
+    // Exactly one Order row carries this checkoutIntentId, and it's the
+    // winner's order — not a phantom row from a loser that half-committed.
+    const winningOrder = fulfilled[0]!.value!;
+    const rowCount = await prisma.order.count({ where: { checkoutIntentId } });
+    expect(rowCount).toBe(1);
+    const stamped = await getOrderByCheckoutIntentId(prisma, checkoutIntentId);
+    expect(stamped?.id).toBe(winningOrder.id);
+  });
+
+  it("2 concurrent buyers, DIFFERENT checkoutIntentId each: both succeed independently (the constraint doesn't over-block)", async () => {
+    const { product } = sample;
+    const buyers = await makeBuyers(2);
+    const intentA = randomUUID();
+    const intentB = randomUUID();
+
+    const results = await Promise.allSettled([
+      createOrderDirect(prisma, { user: buyers[0]!, productId: product.id, quantity: 1, checkoutIntentId: intentA }),
+      createOrderDirect(prisma, { user: buyers[1]!, productId: product.id, quantity: 1, checkoutIntentId: intentB }),
+    ]);
+
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    expect(await prisma.order.count({ where: { checkoutIntentId: intentA } })).toBe(1);
+    expect(await prisma.order.count({ where: { checkoutIntentId: intentB } })).toBe(1);
+  });
+
+  it("omitting checkoutIntentId (existing callers, unaffected): two concurrent orders with no intent id both succeed", async () => {
+    const { product } = sample;
+    const buyers = await makeBuyers(2);
+
+    const results = await Promise.allSettled(
+      buyers.map((user) => createOrderDirect(prisma, { user, productId: product.id, quantity: 1 })),
+    );
+
+    expect(results.every((r) => r.status === "fulfilled")).toBe(true);
+    // Both orders persist checkoutIntentId as null — no accidental collision
+    // between two null values (a unique index treats NULLs as distinct).
+    const orders = await prisma.order.findMany({ where: { userId: { in: buyers.map((b) => b.id) } } });
+    expect(orders.every((o) => o.checkoutIntentId === null)).toBe(true);
+  });
+
+  it("sequential retry after a collision: the loser's own retry with a FRESH checkoutIntentId succeeds", async () => {
+    const { product } = sample;
+    const [buyerA, buyerB] = await makeBuyers(2);
+    const checkoutIntentId = randomUUID();
+
+    const first = await createOrderDirect(prisma, { user: buyerA!, productId: product.id, quantity: 1, checkoutIntentId });
+    expect(first).not.toBeNull();
+
+    await expect(
+      createOrderDirect(prisma, { user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId }),
+    ).rejects.toBeInstanceOf(DuplicateCheckoutIntentError);
+
+    // buyerB mints a new attempt (mirrors checkout.ts's notifyDuplicateCheckout
+    // path — the bot never reuses the same checkoutIntentId after a collision).
+    const retryIntentId = randomUUID();
+    const retry = await createOrderDirect(prisma, { user: buyerB!, productId: product.id, quantity: 1, checkoutIntentId: retryIntentId });
+    expect(retry).not.toBeNull();
+    expect(await prisma.order.count({ where: { userId: buyerB!.id } })).toBe(1);
+  });
+});
+
+describe("createOrderFromCart under true Postgres concurrency — checkoutIntentId collision", () => {
+  it("5 concurrent buyers, SAME checkoutIntentId, ample stock: exactly 1 order is created, 4 reject with DuplicateCheckoutIntentError", async () => {
+    const { product } = sample;
+    const buyers = await makeBuyers(5);
+    for (const user of buyers) {
+      await addToCart(prisma, user.id, product.id, 1);
+    }
+    const checkoutIntentId = randomUUID();
+
+    const results = await Promise.allSettled(
+      buyers.map((user) => createOrderFromCart(prisma, { user, checkoutIntentId })),
+    );
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createOrderFromCart>>> => r.status === "fulfilled",
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(4);
+    for (const r of rejected) {
+      expect(r.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+    }
+    expect(await prisma.order.count({ where: { checkoutIntentId } })).toBe(1);
+  });
+});
+
+// Task 1 fix (review finding): createInternalOrder (Binance Internal) is one
+// of the three USDT rails — along with createBybitOrder and
+// createBybitBscOrder — that were left unwired in the original A1 commit
+// despite being thin createOrderDirect pass-through wrappers. This proves the
+// atomic constraint holds through the wrapper under a genuine concurrent
+// race, exactly like createOrderDirect above; per the fix brief, one such
+// wrapper test plus the generic createOrderDirect coverage above is enough
+// to prove the mechanism, since createBybitOrder/createBybitBscOrder are not
+// reimplementations — they're the same `...baseArgs` spread into the same
+// createOrderDirect call.
+describe("createInternalOrder (Binance Internal wrapper) under true Postgres concurrency — checkoutIntentId collision", () => {
+  it("5 concurrent buyers, SAME checkoutIntentId, ample stock: exactly 1 order is created, 4 reject with DuplicateCheckoutIntentError", async () => {
+    const { product } = sample;
+    const buyers = await makeBuyers(5);
+    const checkoutIntentId = randomUUID();
+
+    const results = await Promise.allSettled(
+      buyers.map((user) =>
+        createInternalOrder(prisma, { user, productId: product.id, quantity: 1, rate: "16000", checkoutIntentId }),
+      ),
+    );
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof createInternalOrder>>> => r.status === "fulfilled",
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(4);
+    for (const r of rejected) {
+      expect(r.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+      expect((r.reason as DuplicateCheckoutIntentError).checkoutIntentId).toBe(checkoutIntentId);
+    }
+    expect(await prisma.order.count({ where: { checkoutIntentId } })).toBe(1);
+  });
+});
+
+// Final whole-branch review (Important #1): completeOrderWithWalletCredit is
+// the SEVENTH order-creating path on the bot's confirm bubble, and the one the
+// legacy best-effort guard structurally cannot reach — it creates, settles AND
+// delivers inside one transaction, so its order is never left PENDING_PAYMENT
+// and refuseDuplicateCheckout's `status: PENDING_PAYMENT` filter can never
+// match a double-tap here. That makes this the highest-consequence rail of the
+// seven: unguarded, one double-tap means two orders, two wallet debits and two
+// delivered stock items. Unlike every other test in this file the two racers
+// are the SAME buyer (that is what a double-tap IS), and they are deliberately
+// given 2x the balance they need, so `error.insufficient_wallet` cannot be
+// what refuses the loser — only the unique index can be.
+describe("completeOrderWithWalletCredit (wallet-credit rail) under true Postgres concurrency — checkoutIntentId collision", () => {
+  it("one buyer double-taps Complete Order with 2x the needed credit: exactly 1 order, 1 wallet debit, 1 delivered stock item", async () => {
+    const { product } = sample; // 5.00 IDR, 5 AVAILABLE stock rows — neither is the bottleneck
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    const checkoutIntentId = randomUUID();
+
+    // Both taps carry the same session snapshot of the balance, exactly as two
+    // near-simultaneous callback updates from one chat would.
+    //
+    // maxWait/timeout are raised well above Prisma's 2s/5s defaults ON PURPOSE.
+    // Unlike the six gateway rails, this rail's winning transaction is long
+    // (create + settle + DELIVER, all before it commits), and the loser's
+    // colliding INSERT blocks on the unique index until that commit lands. With
+    // the defaults the loser intermittently gives up first with a P2028
+    // ("unable to start a transaction in the given time") instead of reaching
+    // the collision — still safe (nothing was created, so no second order,
+    // debit or delivery either way) but a different code path, which made this
+    // test flaky. Widening the windows pins it to the path under test: that the
+    // unique index, not a timeout, is what refuses the second tap.
+    const tap = () =>
+      prisma.$transaction(
+        (tx) =>
+          completeOrderWithWalletCredit(tx, {
+            user: { id: buyer.id, role: buyer.role, walletBalance: buyer.walletBalance },
+            productId: product.id,
+            quantity: 1,
+            currency: OrderCurrency.IDR,
+            checkoutIntentId,
+          }),
+        { maxWait: 30_000, timeout: 60_000 },
+      );
+
+    const results = await Promise.allSettled([tap(), tap()]);
+
+    const fulfilled = results.filter(
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof completeOrderWithWalletCredit>>> =>
+        r.status === "fulfilled",
+    );
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(1);
+    expect(rejected[0]!.reason).toBeInstanceOf(DuplicateCheckoutIntentError);
+    expect((rejected[0]!.reason as DuplicateCheckoutIntentError).checkoutIntentId).toBe(checkoutIntentId);
+
+    // Exactly one order — and it really did settle+deliver, so this is not a
+    // "both taps failed" false pass.
+    expect(await prisma.order.count({ where: { userId: buyer.id } })).toBe(1);
+    expect(await prisma.order.count({ where: { checkoutIntentId } })).toBe(1);
+    expect(fulfilled[0]!.value.order.status).toBe(OrderStatus.DELIVERED);
+
+    // Exactly one wallet debit: 10.00 - 5.00, and a single order_payment
+    // ledger row (the loser's adjustWallet is never reached — the colliding
+    // INSERT is createOrderDirect's first write — and rolls back regardless).
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: buyer.id } });
+    expect(Number(after.walletBalance)).toBeCloseTo(5);
+    expect(await prisma.walletTransaction.count({ where: { userId: buyer.id, reason: "order_payment" } })).toBe(1);
+
+    // Exactly one delivered stock item — the other 4 are untouched.
+    expect(await prisma.stockItem.count({ where: { productId: product.id, status: StockStatus.SOLD } })).toBe(1);
+    expect(await prisma.stockItem.count({ where: { productId: product.id, status: StockStatus.AVAILABLE } })).toBe(4);
+  });
+});

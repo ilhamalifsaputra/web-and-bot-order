@@ -652,6 +652,14 @@ model Order {
   /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
   /// text, not this field.
   digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
+  /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
+  /// bubble is first rendered for a given checkout attempt and passed through
+  /// to createOrderDirect/createOrderFromCart. The unique constraint is the
+  /// atomic, DB-enforced guard against two near-simultaneous "Buy Now" taps
+  /// both creating an order — see packages/db/src/crud/orders.ts's
+  /// DuplicateCheckoutIntentError. Nullable: existing rows and any
+  /// non-bot-originated order creation path never set it.
+  checkoutIntentId       String?   @unique(map: "ix_orders_checkout_intent_id") @map("checkout_intent_id")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)
@@ -665,6 +673,7 @@ model Order {
   statusHistory      OrderStatusHistory[]
   refunds            Refund[]
   adminTasks         AdminTask[]
+  payments           Payment[]
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -901,6 +910,129 @@ model RefundItem {
   @@index([refundId], map: "ix_refund_items_refund_id")
   @@index([orderItemId], map: "ix_refund_items_order_item_id")
   @@map("refund_items")
+}
+
+/// Multi-attempt payment ledger (Trustance Phase A Task A2a) — one row per
+/// payment ATTEMPT for an Order, coexisting with (not replacing) the payment
+/// fields directly on Order (paymentMethod, paymentRef, binanceTxid,
+/// bybitTxid, ...). Those Order fields stay the "current/latest attempt"
+/// cache the six existing payment-rail webhook/poller handlers
+/// (binance_internal.ts, bybit_deposit.ts, bybit_bsc_deposit.ts,
+/// nowpaymentsReconcile.ts, tokopayReconcile.ts, paydisiniReconcile.ts) read
+/// directly and unchanged — wiring those six handlers to also write to THIS
+/// table is a separate follow-up task, out of scope for the model/crud/entry-
+/// point this migration adds. Before this model, this repo had no single
+/// Payment table to point a typed FK at (see Refund.externalReference's own
+/// doc comment); this is that table, purpose-built for one thing the Order
+/// fields alone can't express — a buyer switching payment rails on the SAME
+/// order without abandoning it and creating a whole new Order (see
+/// "change payment rail", apps/order-bot/src/handlers/checkout.ts).
+///
+/// INVARIANT: an Order may have at most one PENDING Payment row at a time.
+///
+/// A first design pass tried enforcing this with a Postgres PARTIAL unique
+/// index (`CREATE UNIQUE INDEX ... ON "payments"("order_id") WHERE "status" =
+/// 'PENDING'`) hand-appended to this feature's migration SQL, since Prisma's
+/// schema DSL has no syntax for a partial/conditional unique index at all
+/// (verified: `@@unique` always constrains every row, no WHERE clause
+/// available). That approach was ABANDONED after verifying it against this
+/// repo's actual deploy mechanism (docs/MIGRATIONS.md: "`db push`, bukan
+/// `migrate deploy`" — `db push` diffs schema.prisma -> DB directly and is
+/// the ONLY thing every dev/CI/staging/prod environment here actually runs;
+/// `prisma/migrations/*` is audit-trail documentation, not an applied
+/// history). Hand-written SQL that exists ONLY in a migration file is dead
+/// documentation under that mechanism — `tests/helpers/testdb.ts` proved this
+/// empirically: it provisions each test's schema via `db push`, so a partial
+/// index invisible to schema.prisma silently never existed in ANY test run,
+/// and a true-concurrency test written against it caught 5-for-5 inserts
+/// succeeding instead of 1 (see payments.test.ts's git history / task
+/// report). The exact same gap would exist in dev/staging/prod.
+///
+/// A single-row `updateMany`-with-guard claim (this schema's other
+/// concurrency-safety precedent, `claimGatewaySlot` in
+/// packages/db/src/crud/orders.ts) doesn't fit either: that pattern
+/// atomically compare-and-swaps a value on ONE already-existing row, whereas
+/// this invariant is over INSERTING a new sibling row conditioned on the
+/// absence of another — under Postgres' default READ COMMITTED isolation, a
+/// plain read-then-insert check (no matter how it's phrased, including a
+/// single `INSERT ... WHERE NOT EXISTS (...)` statement) lets two concurrent
+/// transactions each see "no PENDING row yet" and both insert.
+///
+/// The mechanism actually used: `pendingOrderId` below is a nullable column
+/// that mirrors `orderId` while (and only while) `status` is PENDING, and is
+/// cleared back to `null` the instant a row leaves PENDING (EXPIRED/
+/// CONFIRMED/FAILED). A plain, FULL `@unique` index on it — ordinary Prisma
+/// DSL, created automatically by `db push` in every environment, no hand SQL
+/// anywhere — then enforces the invariant: Postgres unique indexes treat
+/// every NULL as distinct from every other NULL (default `NULLS DISTINCT`
+/// behavior, unchanged since this repo targets it), so any number of
+/// non-PENDING rows (`pendingOrderId: null`) coexist freely, while a second
+/// row trying to set `pendingOrderId` to an order id that's already claimed
+/// raises a genuine unique-constraint violation (Postgres 23505, surfaced by
+/// Prisma as P2002). This is the SAME nullable+unique claim-column shape this
+/// schema already uses twice on `Order` itself (`paymentRef`,
+/// `checkoutIntentId`) — not a new pattern, just applied to a new table.
+/// `createPaymentAttempt` (packages/db/src/crud/payments.ts) sets
+/// `pendingOrderId: orderId` on insert and translates the resulting P2002
+/// into a clean `ValidationError`; `expirePaymentAttempt`/
+/// `confirmPaymentAttempt` clear it to `null` in the same atomic
+/// `updateMany`-with-guard call that moves `status` off PENDING.
+model Payment {
+  id      Int    @id @default(autoincrement())
+  orderId Int    @map("order_id")
+  /// PaymentMethod value (@app/core/enums) — free String, not a native Prisma
+  /// enum, matching Order.paymentMethod's own column and every other
+  /// lifecycle-status-adjacent column in this schema.
+  method  String
+  /// PENDING | CONFIRMED | EXPIRED | FAILED (PaymentStatus, @app/core/enums).
+  /// See this model's own doc comment for the transition shape and the
+  /// at-most-one-PENDING-per-order invariant.
+  status  String @default("PENDING")
+  /// This attempt's own external reference at whatever rail it's for (e.g. a
+  /// gateway transaction id, a Binance Internal Transfer note) — same
+  /// "external reference" role as Refund.externalReference, just for the
+  /// payment side. Independent of Order.paymentRef (which is only ever the
+  /// CURRENT attempt's reference) — an EXPIRED attempt here keeps its OWN
+  /// reference even after a rail change moves Order.paymentRef on.
+  reference String?
+  /// This attempt's own quoted amount, snapshotted at creation time — same
+  /// snapshot-at-creation-time reasoning as Refund.amount/RefundItem.amount
+  /// (their own doc comments) — later Order edits must never retroactively
+  /// change what a past attempt quoted. Decimal, never Float (CLAUDE.md money
+  /// rule; matches every other money column in this schema, e.g.
+  /// Refund.amount, Order.totalAmount).
+  amount    Decimal
+  /// Snapshot of the currency this attempt was quoted in — same
+  /// snapshot-at-creation-time reasoning as `amount` above and
+  /// Refund.currency's own doc comment.
+  currency    String
+  createdAt   DateTime  @default(now()) @map("created_at")
+  /// Set together with `expiryReason` the moment this attempt reaches
+  /// EXPIRED — mirrors Refund.processedAt's nullable-until-terminal pattern.
+  expiredAt   DateTime? @map("expired_at")
+  /// Set the moment this attempt reaches CONFIRMED.
+  confirmedAt DateTime? @map("confirmed_at")
+  /// Set only when `status` reaches EXPIRED — "RAIL_CHANGED" | "TIMEOUT" |
+  /// "CANCELLED" (PaymentExpiryReason, @app/core/enums). Null for every
+  /// PENDING/CONFIRMED/FAILED row.
+  expiryReason String? @map("expiry_reason")
+  /// Mirrors `orderId` while (and only while) `status` is PENDING; `null`
+  /// for every non-PENDING row. See this model's own doc comment — the
+  /// `@unique` index below on this column, not a partial index on `orderId`,
+  /// is what enforces "at most one PENDING Payment per order".
+  pendingOrderId Int? @unique(map: "ix_payments_pending_order_id") @map("pending_order_id")
+
+  // Restrict, not Cascade — matches every other Order-adjacent
+  // financial-audit row in this schema (WalletTransaction/
+  // OrderStatusHistory/Refund/RefundItem, Infra-5 fix, security audit
+  // 2026-06-23): no code path hard-deletes an Order today; this is a
+  // schema-level guardrail against ever adding one that would silently erase
+  // payment-attempt history.
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orderId], map: "ix_payments_order_id")
+  @@index([status], map: "ix_payments_status")
+  @@map("payments")
 }
 
 /// Manual-operation task queue (Trustance Master Architecture Task 9a, §38):

@@ -38,6 +38,7 @@ import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
+import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -158,6 +159,11 @@ export async function createBybitBscOrder(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Forwarded verbatim to createOrderDirect; null otherwise. */
     customerData?: string | null;
+    /** Client-minted checkout attempt id (A1) — forwarded verbatim to
+     * createOrderDirect via the `...baseArgs` spread below; see
+     * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
+     * contract this enforces. */
+    checkoutIntentId?: string | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;
@@ -520,6 +526,15 @@ export async function deliverPaidBybitBscOrder(
         );
         return { status: "stale" as const };
       }
+      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+      // ledger row (if any) BEFORE settling, so both branches below can
+      // confirm it once delivery actually succeeds. May legitimately be null
+      // — orders created before this ledger was wired up, or a rail change
+      // that left no PENDING row — and that is never treated as an error.
+      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+        return null;
+      });
       if (order.kind === OrderKind.WALLET_TOPUP) {
         // settleWalletTopup's own idempotency claim only matches
         // status === PENDING_PAYMENT (same idiom as approveOrder's claim).
@@ -545,6 +560,19 @@ export async function deliverPaidBybitBscOrder(
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        if (pendingPayment) {
+          // Best-effort: swallows the benign race where a concurrent
+          // poller/webhook already confirmed this same Payment row
+          // (ValidationError, count!==1) — expected and harmless. A genuine
+          // database error here still aborts this whole transaction
+          // regardless of this .catch, since Postgres poisons an
+          // interactive transaction on any failed statement; this call
+          // cannot rescue the settlement from that, it only prevents the
+          // benign race from doing so.
+          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+          );
+        }
         // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
         // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
         // deeper on the line above, behind its own atomic claim — that single
@@ -577,6 +605,12 @@ export async function deliverPaidBybitBscOrder(
         meta: `bybitTxId=${args.bybitTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (pendingPayment) {
+        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
+        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+        );
+      }
       // Overpayment: the buyer sent more USDT on-chain than the order total.
       // Still deliver (handled above) but flag the ledger row and alert admins
       // so the excess can be refunded/credited manually — never

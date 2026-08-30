@@ -28,6 +28,7 @@ import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
+import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 /** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
@@ -165,6 +166,15 @@ export async function deliverPaidPaydisiniOrder(
         );
         return { status: "stale" as const };
       }
+      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+      // ledger row (if any) BEFORE settling, so both branches below can
+      // confirm it once delivery actually succeeds. May legitimately be null
+      // — orders created before this ledger was wired up, or a rail change
+      // that left no PENDING row — and that is never treated as an error.
+      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+        return null;
+      });
       if (order.kind === OrderKind.WALLET_TOPUP) {
         // Buyer DM (WALLET_TOPUP_CREDITED_DM) is enqueued inside
         // settleWalletTopup itself — the ONE call site for that event across
@@ -173,6 +183,19 @@ export async function deliverPaidPaydisiniOrder(
         // itself) must not enqueue it again here, or the buyer would be
         // notified twice.
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        if (pendingPayment) {
+          // Best-effort: swallows the benign race where a concurrent
+          // poller/webhook already confirmed this same Payment row
+          // (ValidationError, count!==1) — expected and harmless. A genuine
+          // database error here still aborts this whole transaction
+          // regardless of this .catch, since Postgres poisons an
+          // interactive transaction on any failed statement; this call
+          // cannot rescue the settlement from that, it only prevents the
+          // benign race from doing so.
+          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+          );
+        }
         logger.info(
         {
           event: PaymentLogEvent.PAYMENT_CONFIRMED,
@@ -196,6 +219,12 @@ export async function deliverPaidPaydisiniOrder(
         meta: `trxId=${args.trxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (pendingPayment) {
+        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
+        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+        );
+      }
       // Buyer DM via the outbox — only if the buyer has a Telegram account.
       // Web-only buyers (telegramId=null) have no chat to DM; they see their
       // order on the storefront instead. Link only — the outbox payload is

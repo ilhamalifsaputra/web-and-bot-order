@@ -167,7 +167,12 @@ export function getTicketWithOrder(db: Db, ticketId: number) {
  * once) could each pass this check before either has created its ticket, so
  * in the rare case a duplicate could still slip through. Accepted tradeoff —
  * worst case is one extra ticket row, no data corruption — not a bug to fix
- * here. */
+ * here.
+ *
+ * Does not itself check who owns `orderId` — both call sites (bot, storefront)
+ * only ever pass an id already verified to belong to the requesting customer,
+ * so the ticket this returns is always theirs. A future caller must verify
+ * ownership the same way before using this helper's result. */
 export function getOpenTicketForOrder(db: Db, orderId: number) {
   return db.supportTicket.findFirst({
     where: {

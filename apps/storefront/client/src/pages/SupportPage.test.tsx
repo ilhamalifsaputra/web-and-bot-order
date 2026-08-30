@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SupportPage from "./SupportPage";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -26,6 +26,19 @@ const supportData: SupportData = {
   ],
 };
 
+// Stands in for TicketDetailPage — renders enough of the router state a
+// redirect carries so tests can assert the "your draft wasn't saved" notice
+// actually reached the destination, without pulling in the real page.
+function TicketDetailStub() {
+  const location = useLocation() as { state?: { notice?: string } | null };
+  return (
+    <div>
+      ticket-detail-stub
+      {location.state?.notice && <span>{location.state.notice}</span>}
+    </div>
+  );
+}
+
 function renderSupport(respond: () => unknown = () => supportData, ordersRespond: () => unknown = () => ({ orders: [] })) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
     if (path === "/api/v1/account/orders") return ordersRespond();
@@ -37,7 +50,7 @@ function renderSupport(respond: () => unknown = () => supportData, ordersRespond
       <MemoryRouter initialEntries={["/account/support"]}>
         <Routes>
           <Route path="/account/support" element={<SupportPage />} />
-          <Route path="/account/support/:id" element={<div>ticket-detail-stub</div>} />
+          <Route path="/account/support/:id" element={<TicketDetailStub />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -105,7 +118,7 @@ describe("SupportPage", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
-  it("shows a redirect toast and navigates to the existing ticket when the server reports a duplicate", async () => {
+  it("navigates to the existing ticket with a 'wasn't saved' notice when the server reports a duplicate", async () => {
     renderSupport(() => supportData, () => ({
       orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
     }));
@@ -116,10 +129,11 @@ describe("SupportPage", () => {
     });
     (apiPost as Mock).mockResolvedValue({ ok: false, duplicate: true, ticket_id: 1 });
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
-    // Navigating to the existing ticket unmounts SupportPage (and its local
-    // toast state) in the same render, so we assert the redirect landed
-    // rather than the toast still being painted.
+    // SupportPage unmounts on navigate, so a toast set on it would never
+    // paint — the notice must ride router state to the destination instead.
+    // TicketDetailStub renders location.state.notice if the redirect carried it.
     await screen.findByText("ticket-detail-stub");
+    expect(screen.getByText("You already have an open ticket for this order. What you typed wasn't saved — redirecting you to that existing ticket.")).toBeInTheDocument();
     // Nothing was created, so the form shouldn't reset and the ticket list shouldn't refetch.
     // 2 = initial support fetch + initial account-orders fetch (order picker) only.
     expect(apiGet).toHaveBeenCalledTimes(2);

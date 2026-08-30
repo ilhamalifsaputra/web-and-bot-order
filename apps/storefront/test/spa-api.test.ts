@@ -54,7 +54,6 @@ import {
   setFlashSale,
   clearFlashSale,
   createPasswordResetToken,
-  listUserTickets,
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
@@ -2270,8 +2269,8 @@ describe("/api/v1/account twins", () => {
       expect(second.statusCode).toBe(200);
       expect(second.json()).toEqual({ ok: false, duplicate: true, ticket_id: firstTicketId });
 
-      const tickets = await listUserTickets(prisma, buyerId);
-      expect(tickets.filter((t) => t.orderId === order.id)).toHaveLength(1);
+      const ticketCount = await prisma.supportTicket.count({ where: { orderId: order.id } });
+      expect(ticketCount).toBe(1);
     });
 
     it("support ticket: create with an order_code belonging to someone else is rejected", async () => {

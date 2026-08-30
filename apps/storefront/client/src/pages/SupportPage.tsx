@@ -75,8 +75,10 @@ export default function SupportPage() {
     },
     onSuccess: (resp) => {
       if (resp.duplicate && resp.ticket_id != null) {
-        setToastText(t("web.support_duplicate_redirect"));
-        navigate(`/account/support/${resp.ticket_id}`);
+        // A toast set here would never paint — navigate() unmounts this page
+        // in the same render. Hand the notice to the destination via router
+        // state instead; TicketDetailPage shows it as its own Toast on mount.
+        navigate(`/account/support/${resp.ticket_id}`, { state: { notice: t("web.support_duplicate_redirect") } });
         return;
       }
       setMessage("");

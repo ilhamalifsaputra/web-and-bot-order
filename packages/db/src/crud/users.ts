@@ -184,9 +184,28 @@ export interface WalletAdjustOpts {
 
 /**
  * Atomically add `delta` (may be negative) to a wallet. Throws on overdraw
- * unless allowNegative. Returns the new balance. Run inside a $transaction
- * when paired with other money/stock mutations (SQLite serializes writers,
- * giving the same guarantee as the Python with_for_update lock).
+ * unless allowNegative. Returns the new balance.
+ *
+ * "Atomically" is enforced here, not inherited from the caller. The read of
+ * the current balance, the overdraw check and the write-back are one
+ * read-modify-write cycle, and under Postgres two callers for the same user
+ * can genuinely run it at the same instant: both would read the same
+ * pre-movement balance, both would pass their own overdraw check, and
+ * whichever committed last would silently overwrite the other's movement — a
+ * double-spend on debits, a lost credit on top-ups. (Under the old SQLite
+ * deployment the single-writer connection pool serialized every writer in the
+ * process, so the cycle was accidentally race-free and needed no lock. That
+ * protection is gone.) So the cycle runs with the user row held under
+ * `SELECT ... FOR UPDATE`, which makes concurrent callers for the same user
+ * queue behind each other and each read the previous one's committed result.
+ * See wallet_concurrency.test.ts.
+ *
+ * A row lock only lasts as long as the transaction holding it, so this needs
+ * one to exist. Callers pass either the bare `prisma` client or a `tx` they
+ * already opened (`Db` is `PrismaClient | Tx`), and a `Tx` cannot nest another
+ * transaction — so open one when given the bare client, and reuse the caller's
+ * when given a `tx` (the lock then lives until the caller commits, which is
+ * exactly the scope they need for their own paired money/stock mutations).
  *
  * Every applied move also writes a `wallet_transactions` ledger row (running
  * balance + reason + optional admin/order), so the per-user money timeline is
@@ -207,39 +226,57 @@ export async function adjustWallet(
   opts: WalletAdjustOpts = {},
 ): Promise<Decimal> {
   const currency = opts.currency ?? "IDR";
-  const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
-  const oldBalance = new Decimal(currency === "USDT" ? user.walletBalanceUsdt : user.walletBalance);
-  const newBalance = quantizeMoney(oldBalance.plus(delta), 4);
-  if (newBalance.lessThan(0) && !opts.allowNegative) {
-    throw new ValidationError("error.insufficient_wallet");
-  }
-  // Ledger row FIRST, balance second — the order matters (Task E5 item 2).
-  // `wallet_transactions` is UNIQUE on (orderId, reason), so this insert can
-  // legitimately fail: it is what stops one order being credited twice if a
-  // caller's own guard is ever bypassed. Writing the balance first would move
-  // the buyer's money and only then discover the movement is a duplicate,
-  // leaving the balance and the ledger permanently disagreeing whenever the
-  // caller did not wrap this in a transaction — a worse outcome than the
-  // double-credit being prevented. Inserting first makes the rejection
-  // abort before any money moves, transaction or no transaction. Both writes
-  // use `newBalance`, which was computed above, so neither depends on the
-  // other having run.
-  await db.walletTransaction.create({
-    data: {
-      userId,
-      delta: newBalance.minus(oldBalance), // the amount actually applied
-      balanceAfter: newBalance,
-      currency,
-      reason: opts.reason ?? "adjust",
-      note: opts.note ?? null,
-      adminId: opts.adminId ?? null,
-      orderId: opts.orderId ?? null,
-    },
-  });
-  await db.user.update({
-    where: { id: userId },
-    data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
-  });
+
+  /** The read-modify-write cycle, run on a client that is inside a transaction. */
+  const applyMovement = async (trx: Db): Promise<Decimal> => {
+    // Take the user row's write lock before reading the balance, so a
+    // concurrent adjustWallet for this same user blocks here and reads our
+    // committed result instead of the value we are about to replace. A
+    // missing user returns no row and falls through to the findUniqueOrThrow
+    // below, which raises the same not-found error it always did.
+    await trx.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    const user = await trx.user.findUniqueOrThrow({ where: { id: userId } });
+    const oldBalance = new Decimal(currency === "USDT" ? user.walletBalanceUsdt : user.walletBalance);
+    const newBalance = quantizeMoney(oldBalance.plus(delta), 4);
+    if (newBalance.lessThan(0) && !opts.allowNegative) {
+      throw new ValidationError("error.insufficient_wallet");
+    }
+    // Ledger row FIRST, balance second — the order matters (Task E5 item 2).
+    // `wallet_transactions` is UNIQUE on (orderId, reason), so this insert can
+    // legitimately fail: it is what stops one order being credited twice if a
+    // caller's own guard is ever bypassed. Writing the balance first would move
+    // the buyer's money and only then discover the movement is a duplicate. The
+    // transaction this now always runs in would roll that back, but inserting
+    // first keeps the rejection safe on its own terms — it aborts before any
+    // money moves instead of relying on a rollback to undo it, which is what
+    // kept the balance and the ledger from permanently disagreeing back when
+    // callers could reach this with no transaction at all. Both writes use
+    // `newBalance`, which was computed above, so neither depends on the other
+    // having run.
+    await trx.walletTransaction.create({
+      data: {
+        userId,
+        delta: newBalance.minus(oldBalance), // the amount actually applied
+        balanceAfter: newBalance,
+        currency,
+        reason: opts.reason ?? "adjust",
+        note: opts.note ?? null,
+        adminId: opts.adminId ?? null,
+        orderId: opts.orderId ?? null,
+      },
+    });
+    await trx.user.update({
+      where: { id: userId },
+      data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
+    });
+    return newBalance;
+  };
+
+  // A `Tx` has no `$transaction` (Prisma strips it from the interactive
+  // transaction client), so its presence is what distinguishes the bare client
+  // from a caller-owned transaction.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  const newBalance = ownsTransaction ? await db.$transaction(applyMovement) : await applyMovement(db);
   invalidateWarmUser(userId);
   return newBalance;
 }

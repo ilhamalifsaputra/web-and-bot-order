@@ -164,9 +164,12 @@ Panel admin **`/outbox`** (`apps/web-admin/src/routes/api/outbox.ts`) —
 
 ### `/metrics` (scrape Prometheus)
 
-`GET /metrics` (`apps/web-admin/src/routes/metrics.ts`) meng-expose tiga
+`GET /metrics` (`apps/web-admin/src/routes/metrics.ts`) meng-expose empat
 gauge tentang outbox: `outbox_oldest_unsent_age_seconds`,
-`outbox_backlog_size`, dan `outbox_dead_letter_count`. Endpoint ini tidak
+`outbox_backlog_size`, `outbox_dead_letter_count`, dan `outbox_failed_count`
+(baris `FAILED` yang permanen gagal sejak percobaan pertama — bisa termasuk
+kasus jinak seperti customer yang memblokir bot, jadi bukan sinyal alert
+yang berdiri sendiri tanpa filter tambahan). Endpoint ini tidak
 diautentikasi — tier yang sama dengan `/healthz` — dan setiap nilai dihitung
 ulang dari query live pada setiap scrape (tidak ada cache polling).
 

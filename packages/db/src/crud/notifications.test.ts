@@ -669,6 +669,11 @@ describe("enqueueAdminDigiflazzResyncAborted", () => {
 
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      // Postgres doesn't guarantee row order without ORDER BY (unlike SQLite's
+      // old single-writer setup, which happened to preserve insertion order) —
+      // without this, .slice(-4) below can pick up the sharp_change test's
+      // rows instead of this test's own.
+      orderBy: { id: "asc" },
     });
     const newestRows = rows.slice(-4); // this test's own fan-out, appended after the sharp_change test's rows
     expect(newestRows.length).toBeGreaterThan(0);

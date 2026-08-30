@@ -30,7 +30,7 @@ graph TD
     end
 
     subgraph "Data Storage"
-        DB[(SQLite File db.sqlite)]
+        DB[(PostgreSQL - schema's target engine)]
     end
 
     AdminApp & ShopApp & BotApp & NotifierApp --> CorePkg
@@ -41,7 +41,7 @@ graph TD
 ### Core Technologies
 *   **Runtime & Language:** Node.js (ESM) + TypeScript 5.
 *   **Package Manager:** pnpm 9.15.9 (configured via [pnpm-workspace.yaml](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/pnpm-workspace.yaml)).
-*   **Database ORM:** Prisma 5.22, targeting SQLite in WAL (Write-Ahead Logging) mode.
+*   **Database ORM:** Prisma 5.22. The `schema.prisma` `datasource` targets **PostgreSQL** since the 2026-08-27 engine-swap (no longer optional — the `postgresql` provider rejects a SQLite `file:` URL outright). A given shop's production instance may still be running the pre-cutover **SQLite** engine (WAL mode) until its operator completes the [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) runbook.
 *   **Web Framework:** Fastify 5 (routing, hooks, cookie session management, templates).
 *   **Telegram Bot Framework:** grammY 1.30 + `@grammyjs/conversations` (wizard states) + `@grammyjs/runner` (concurrency controls).
 *   **HTML Templating Engine:** Nunjucks 3 (compiled server-side; shared components via Nunjucks macros).
@@ -70,14 +70,14 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 │   ├── core/              # Shared config schema, enums, currency, SMTP mailer, locales/i18n
 │   ├── db/                # Shared Prisma client initialization and transaction-safe CRUD modules
 │   └── web-ui/            # Shared layouts, visual style assets, Nunjucks macros, and main CSS
-├── prisma/                # schema.prisma declaration and SQLite migration logs
+├── prisma/                # schema.prisma declaration and Prisma migration logs
 ├── scripts/               # Maintenance scripts (passwords resets, catalog migrations, dev probes)
-└── data/                  # (Runtime) Contains SQLite database file, local file attachments, and logs
+└── data/                  # (Runtime) Local file attachments and logs; also the legacy SQLite DB file for shops not yet cut over to Postgres (see POSTGRES_MIGRATION.md)
 ```
 
 ### Folder Responsibilities
 
-*   **[apps/server](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server):** The orchestrator. Combines all apps to run within a single Node.js process. In production, this prevents multiple processes from concurrent-write conflicts on SQLite. It also multiplexes incoming HTTP traffic by hostname (e.g., routing storefront requests to one sub-app and admin panel requests to another).
+*   **[apps/server](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server):** The orchestrator. Combines all apps to run within a single Node.js process. Historically (pre-cutover, on SQLite) this was required to avoid concurrent-write conflicts; on the current Postgres-targeting schema, Postgres itself handles concurrent writers, so this is no longer a correctness requirement — but the unified process is still used, since it also multiplexes incoming HTTP traffic by hostname (e.g., routing storefront requests to one sub-app and admin panel requests to another).
 *   **[apps/order-bot](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot):** Handles Telegram updates. Contains chat menus, slash command routers, interactive dialog flows (conversations), database synchronization checks, and active background payment polling engines.
 *   **[apps/web-admin](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/web-admin):** The store administration interface. Handles catalog configurations, stock imports, payment configs, manual order resolutions, user audits, and ticket messaging.
 *   **[apps/storefront](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/storefront):** The public web shop. Serves product groups, processes user accounts (with local signup or Telegram Login Widget validation), supports shopping carts, processes orders, and handles gateway webhooks.
@@ -96,7 +96,7 @@ The system has a main combined entry point for production, and separate lightwei
 *   **Path:** [apps/server/src/index.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/server/src/index.ts)
 *   **Execution:** `pnpm start` (which runs the compiled JS file under `dist/apps/server/src/index.js`).
 *   **Behavior:**
-    1. Invokes [initDb()](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db/src/client.ts) to establish the SQLite database connection, enabling WAL (Write-Ahead Logging) and configuring a `busy_timeout` of 5000ms.
+    1. Invokes [initDb()](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db/src/client.ts) — a no-op on the current Postgres-targeting schema (Postgres needs no per-connection setup statements). It previously applied SQLite PRAGMAs (WAL mode, `busy_timeout` of 5000ms) and is kept as an empty async function only so existing call sites don't need touching.
     2. Dynamically pulls system configs, bot tokens, and cryptographic keys from the `Setting` database table (falling back to environment variables).
     3. Builds and boots Fastify instances for both the Admin and Storefront web apps.
     4. Initializes the GrammY bot instance. If `BOT_MODE` is `webhook`, it registers a POST handler `/tg/${WEBHOOK_SECRET}` directly on the Fastify instance. If `polling`, it spawns an asynchronous long-polling runner.
@@ -180,7 +180,7 @@ For local debugging, standalone entry points bypass the unified server wrapper:
 
 ## 5. Database Schema & ORM Usage
 
-The database schema ([schema.prisma](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/prisma/schema.prisma)) contains **26 models** that map directly to SQLite tables. 
+The database schema ([schema.prisma](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/prisma/schema.prisma)) contains **26 models** that map directly to database tables — **PostgreSQL** per the schema's `datasource` block since the 2026-08-27 engine-swap; a shop's production instance may still be running these same tables under pre-cutover SQLite until it completes [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md). 
 
 ### Core Database Model Diagram
 
@@ -383,7 +383,7 @@ These jobs are defined in [apps/order-bot/src/jobs/index.ts](file:///c:/Users/ma
 | Cron Pattern | Task Target | Core Purpose |
 |---|---|---|
 | `* * * * *` (Every 1m) | `autoCancelExpiredOrders` | Checks for `PENDING_PAYMENT` orders past their `expiresAt` timestamp, releases reserved stock items, and marks the orders as `CANCELLED`. |
-| `5,20,35,50 * * * * *` (Every 15s, at :05/:20/:35/:50) | `drainBroadcasts` | Batches and dispatches pending global broadcast queues to user Telegram IDs. Four ticks a minute so a queued broadcast starts within ~15s rather than up to a minute; the seconds are listed explicitly (not `*/15`) so none lands on :00, where it would contend with `autoCancelExpiredOrders` for SQLite's write-lock every tick, nor on :40 with `announceStartedFlashSales`. |
+| `5,20,35,50 * * * * *` (Every 15s, at :05/:20/:35/:50) | `drainBroadcasts` | Batches and dispatches pending global broadcast queues to user Telegram IDs. Four ticks a minute so a queued broadcast starts within ~15s rather than up to a minute; the seconds are listed explicitly (not `*/15`) so none lands on :00, where it would contend with `autoCancelExpiredOrders` for the same write-lock every tick (a SQLite-era concern, kept as harmless scheduling hygiene after the Postgres engine-swap), nor on :40 with `announceStartedFlashSales`. |
 | `0 * * * *` (Every 1h) | `autoCloseStaleTickets` | Closes customer support tickets that have been left in `REPLIED` status without customer activity for over 48 hours. |
 | `0 */6 * * *` (Every 6h) | `reconcileFinancesJob` | Compares catalog price sheets against user transaction history to flag financial discrepancies. |
 | `*/2 * * * *` (Every 2m) | `binancePollWatchdog` | Alerts administrators if the Binance API poller fails to report status checks. |
@@ -418,7 +418,7 @@ Configuration is validated at startup by [packages/core/src/config.ts](file:///c
 
 | Environment Variable | Validation Rule / Default | Primary Consumer Location | Core System Utility |
 |---|---|---|---|
-| `DATABASE_URL_PRISMA` | Required file URI | `prisma/schema.prisma` | Location of the SQLite database. |
+| `DATABASE_URL_PRISMA` | Required PostgreSQL connection URL (schema-enforced) | `prisma/schema.prisma` | Location of the application database — PostgreSQL per the current schema; a pre-cutover shop may still point this at `file:../data/bot.db` (see [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md)). |
 | `BOT_TOKEN` | String (Optional) | `apps/server`, `apps/order-bot` | Fallback Telegram API connection token. |
 | `BOT_USERNAME` | String (Optional) | `apps/order-bot` | Fallback Telegram handle. |
 | `ADMIN_IDS` | Comma-separated Integers | `apps/server/index.ts` | List of owner Telegram IDs used to bootstrap the super-admin account. |
@@ -445,7 +445,7 @@ sequenceDiagram
     autonumber
     actor Customer
     participant Shop as Web Storefront
-    participant DB as SQLite DB
+    participant DB as DB (PostgreSQL)
     participant Gateway as Payment Gateway API
     participant Worker as Background Poller
 
@@ -577,9 +577,9 @@ These structural issues could impact scaling, reliability, and security:
 *   **Lack of Compile-Time Translation Validation:**
     *   *Problem:* i18n keys are stored as plain string mappings in key-value structures.
     *   *Consequence:* Missing translation keys or incorrect variable interpolation placeholders are not caught at compile time.
-*   **Global Single-Writer Database Constraint:**
-    *   *Problem:* The platform uses a single SQLite database file.
-    *   *Consequence:* SQLite only supports a single writer at a time. If the bot, storefront, admin panel, and payment pollers attempt to write to the database concurrently, write collisions can occur. Although WAL mode and `busy_timeout` mitigate this, it limits the system's ability to scale horizontally.
+*   **Global Single-Writer Database Constraint (resolved by the Postgres engine-swap):**
+    *   *Problem (historical):* Before the 2026-08-27 engine-swap, the platform ran on a single SQLite database file. SQLite only supports a single writer at a time, so if the bot, storefront, admin panel, and payment pollers wrote to the database concurrently, write collisions could occur; WAL mode and `busy_timeout` mitigated but did not eliminate this, and it limited the system's ability to scale horizontally.
+    *   *Current status:* The Prisma schema now targets PostgreSQL, which handles concurrent writers natively — this constraint no longer applies to the schema. A given production instance may still be running the pre-cutover SQLite engine until its operator completes the [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) runbook; until then, the historical constraint above still applies to that instance.
 *   **Security Defaults Configuration:**
     *   *Problem:* `WEB_COOKIE_SECURE` defaults to `false` in the configuration schema.
     *   *Consequence:* Admins must manually enable secure cookies in production, which increases the risk of misconfiguration.

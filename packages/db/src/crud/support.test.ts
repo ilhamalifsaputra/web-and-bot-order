@@ -1005,6 +1005,36 @@ describe("getOpenTicketForOrder", () => {
     expect(found!.status).toBe(TicketStatus.REPLIED);
   });
 
+  it("returns a ticket with status: WAITING_ADMIN linked to the order", async () => {
+    const user = await makeUser(1406n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.WAITING_ADMIN);
+  });
+
+  it("returns a ticket with status: WAITING_CUSTOMER linked to the order", async () => {
+    const user = await makeUser(1407n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+  });
+
   it("returns null for a ticket with status: RESOLVED linked to the order", async () => {
     const user = await makeUser(1402n);
     const order = await makeOrder(user.id);

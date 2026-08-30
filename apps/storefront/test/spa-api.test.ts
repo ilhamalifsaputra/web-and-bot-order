@@ -54,6 +54,7 @@ import {
   setFlashSale,
   clearFlashSale,
   createPasswordResetToken,
+  listUserTickets,
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
@@ -2227,6 +2228,50 @@ describe("/api/v1/account twins", () => {
       expect(body.order.items).toHaveLength(1);
       expect(body.order.items[0].warranty_days).toBe(30);
       expect(body.order.items[0].warranty_active).toBe(true);
+    });
+
+    it("support ticket: a second create against an order that already has an open ticket is rejected as a duplicate", async () => {
+      const stock = await prisma.stockItem.create({
+        data: { productId: denomId, credentials: "tick-dup@mail.com:pw", status: "SOLD" },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-TICKDUP-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+          paidAt: new Date(),
+          deliveredAt: new Date(),
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "first message about this order", order_code: order.orderCode },
+      });
+      expect(first.statusCode).toBe(200);
+      const firstBody = first.json();
+      expect(firstBody.ok).toBe(true);
+      const firstTicketId = firstBody.ticket_id as number;
+      expect(firstTicketId).toBeTypeOf("number");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "a different message, same order", order_code: order.orderCode },
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual({ ok: false, duplicate: true, ticket_id: firstTicketId });
+
+      const tickets = await listUserTickets(prisma, buyerId);
+      expect(tickets.filter((t) => t.orderId === order.id)).toHaveLength(1);
     });
 
     it("support ticket: create with an order_code belonging to someone else is rejected", async () => {

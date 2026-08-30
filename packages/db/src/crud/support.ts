@@ -148,12 +148,39 @@ export function getTicketWithOrder(db: Db, ticketId: number) {
   });
 }
 
-/** Returns the most recent open ticket for an order (status OPEN or REPLIED),
- * or null if none exists. Used to detect duplicate ticket attempts — a customer
- * cannot open a second ticket for an order that already has one being worked on. */
+/** Returns the most recent open (still-active) ticket for an order — status
+ * OPEN, WAITING_ADMIN, REPLIED, or WAITING_CUSTOMER — or null if none exists.
+ * Used to detect duplicate ticket attempts — a customer cannot open a second
+ * ticket for an order that already has one being worked on. Mirrors the
+ * OPEN/WAITING_ADMIN and REPLIED/WAITING_CUSTOMER pairing used elsewhere in
+ * this file (see `getTicketStats`, `listStaleRepliedTickets`): a ticket an
+ * admin has already replied to (WAITING_CUSTOMER, or REPLIED for a
+ * historical row) is still "being worked on", not fair game for a second
+ * ticket — narrower than that would only catch a ticket in its first few
+ * seconds of life. Distinct from `listOpenTickets` below, whose "open" means
+ * "not CLOSED" (i.e. also includes RESOLVED) — this helper's "open" means
+ * "still actively in the OPEN<->WAITING_ADMIN<->WAITING_CUSTOMER/REPLIED
+ * cycle", so a RESOLVED ticket does NOT block a new one here.
+ *
+ * Plain read-then-write check, no transaction/row lock: two near-simultaneous
+ * submissions for the same order (two browser tabs, or bot+storefront at
+ * once) could each pass this check before either has created its ticket, so
+ * in the rare case a duplicate could still slip through. Accepted tradeoff —
+ * worst case is one extra ticket row, no data corruption — not a bug to fix
+ * here. */
 export function getOpenTicketForOrder(db: Db, orderId: number) {
   return db.supportTicket.findFirst({
-    where: { orderId, status: { in: [TicketStatus.OPEN, TicketStatus.REPLIED] } },
+    where: {
+      orderId,
+      status: {
+        in: [
+          TicketStatus.OPEN,
+          TicketStatus.WAITING_ADMIN,
+          TicketStatus.REPLIED,
+          TicketStatus.WAITING_CUSTOMER,
+        ],
+      },
+    },
     orderBy: { createdAt: "desc" },
   });
 }

@@ -223,6 +223,23 @@ describe("SupportPage", () => {
     expect(within(rowFor("#2")!).queryByText("Overdue")).not.toBeInTheDocument();
   });
 
+  // Task 3: ticketNumber (Task 1) displayed prominently in the Ticket cell,
+  // falling back to the old #id label for historical rows where it's null
+  // (every fixture above omits ticketNumber, which already exercises that
+  // fallback — this test covers the other half, a ticket that HAS one).
+  it("shows the ticketNumber in the Ticket cell when present, instead of #id", async () => {
+    mockFetchRouter({
+      support: supportData([{ ...TICKET_OPEN, ticketNumber: "TCK-20260828-00001" }, TICKET_REPLIED]),
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    expect(screen.getByText("TCK-20260828-00001")).toBeInTheDocument();
+    expect(screen.queryByText("#1")).not.toBeInTheDocument();
+    // TICKET_REPLIED has no ticketNumber — still falls back to #id.
+    expect(screen.getByText("#2")).toBeInTheDocument();
+  });
+
   it("shows the full message text in a popover on hovering the Ticket cell", async () => {
     const longMessage = "Order saya belum sampai setelah lebih dari seminggu, bisa tolong dicek statusnya?";
     mockFetchRouter({ support: supportData([{ ...TICKET_OPEN, message: longMessage }]) });
@@ -305,8 +322,28 @@ describe("SupportPage", () => {
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/support?status=REPLIED&priority=HIGH&assigned=unassigned&sort=priority",
+        "/api/support?status=REPLIED%2CWAITING_CUSTOMER&priority=HIGH&assigned=unassigned&sort=priority",
       ),
+    );
+  });
+
+  // Task 1 fix review (Important finding): selecting "Open" must query both
+  // OPEN and WAITING_ADMIN, or a ticket that already advanced through the
+  // Task 1 fix's automatic transition would silently vanish from this filter
+  // while still counting toward the (correctly {in:[...]}-based) KPI tiles.
+  it("queries both statuses in the Open/Waiting Admin pair when 'Open' is selected", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Status filter" }));
+    await user.click(await screen.findByRole("option", { name: "Open" }));
+
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/support?status=OPEN%2CWAITING_ADMIN&sort=newest"),
     );
   });
 

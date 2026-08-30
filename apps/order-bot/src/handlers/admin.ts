@@ -36,6 +36,7 @@ import {
   deleteBulkPricing,
   listOpenTickets,
   closeTicket,
+  enqueueTicketClosedDm,
   logAdminAction,
   listRestockSubscribers,
   deleteRestockSubscription,
@@ -615,15 +616,14 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
   });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.ticket_closed") });
 
+  // Task 2 (Phase C): routed through notification_outbox instead of a direct
+  // ctx.api.sendMessage() — the dispatcher's TICKET_CLOSED_DM branch renders
+  // the exact same coreT("support.ticket_closed", buyerLang) text, in the
+  // buyer's own language.
   if (customerTgId) {
-    try {
-      // DM the buyer in THEIR language, not a hardcoded "en".
-      const buyer = await getUserByTelegramId(prisma, customerTgId);
-      const buyerLang = buyer ? langCode(buyer.language) : "en";
-      await ctx.api.sendMessage(Number(customerTgId), coreT("support.ticket_closed", buyerLang), { parse_mode: "HTML" });
-    } catch (err) {
-      logger.error({ err }, `Failed to notify customer ${customerTgId} that their support ticket ${ticketId} was closed — ticket is closed in the DB, but they won't see a DM about it`);
-    }
+    const buyer = await getUserByTelegramId(prisma, customerTgId);
+    const buyerLang = buyer ? langCode(buyer.language) : "en";
+    await enqueueTicketClosedDm(prisma, { ticketId, chatId: Number(customerTgId), buyerLanguage: buyerLang });
   }
   await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
 }

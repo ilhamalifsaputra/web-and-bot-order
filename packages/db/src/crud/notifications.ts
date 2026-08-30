@@ -362,6 +362,110 @@ export async function enqueueAdminUnconfirmablePayment(
   }
 }
 
+// ---- Support ticket DMs (Task 2, Phase C) ----------------------------------
+// The three sites below used to call ctx.api.sendMessage() directly from
+// apps/order-bot — a deliberate-looking exception to the rule every other
+// buyer/admin DM in this codebase already follows. These route them through
+// the outbox like everything else, so a bot crash or a Telegram flood-control
+// hiccup no longer silently drops a ticket notification with only a caught
+// `logger.error` to show for it (retried by the dispatcher instead).
+
+/**
+ * Enqueue the "new support ticket" forward to the support group (or, with no
+ * group configured, every resolved admin) — one outbox row per target,
+ * mirroring `enqueueAdminOverpaid`/`enqueueManualOrderAdminAlert`'s
+ * fan-out-per-admin shape, except the fan-out set is `config.SUPPORT_GROUP_ID`
+ * when set (a single-element target list) rather than always
+ * `resolveAdminIds`. Same target-resolution fallback the pre-outbox direct
+ * send used (`conversations/support.ts`). Not routed through
+ * `enqueueNotification` — like `enqueueAdminDigiflazzResyncAborted`, this is
+ * not order-scoped (`orderId: null`), and `enqueueNotification`'s `orderId`
+ * parameter is non-nullable.
+ *
+ * `photoFileIds` carries Telegram file ids only (never binary) — the
+ * dispatcher re-sends them via `sendMediaGroup` right after the text, same
+ * "file id, not the file itself" rule every credential-safe payload in this
+ * file follows.
+ */
+export async function enqueueAdminNewTicketDm(
+  db: Db,
+  args: {
+    ticketId: number;
+    fromUserId: number;
+    fromUsername: string | null;
+    message: string;
+    photoFileIds: string[];
+  },
+): Promise<void> {
+  const targets: number[] = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : await resolveAdminIds(db);
+  for (const chatId of targets) {
+    if (!chatId) continue;
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_NEW_TICKET,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: chatId,
+          ticket_id: args.ticketId,
+          from_user_id: args.fromUserId,
+          from_username: args.fromUsername,
+          message: args.message,
+          photo_file_ids: args.photoFileIds,
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue the buyer's "admin replied to your ticket" DM
+ * (`conversations/admin.ts`'s `ticketReplyConversation`). Always rendered in
+ * English by the dispatcher — see `NotificationEvent.TICKET_REPLY_DM`'s own
+ * doc comment for why (preserves the pre-outbox direct send's behavior
+ * byte-for-byte). Not order-scoped (`orderId: null`) — tickets have no order.
+ */
+export async function enqueueTicketReplyDm(
+  db: Db,
+  args: { ticketId: number; chatId: number; message: string },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.TICKET_REPLY_DM,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.chatId,
+        ticket_id: args.ticketId,
+        message: args.message,
+      }),
+    },
+  });
+}
+
+/**
+ * Enqueue the buyer's "your ticket was closed" DM (`handlers/admin.ts`'s
+ * `closeTicketAdmin`). Rendered in the buyer's own stored language
+ * (`buyerLanguage`, normalized via `langCode` the same way
+ * `enqueueOrderDeliveredDm`/`enqueueOrderProcessingDm` normalize
+ * `buyer_language`) — unlike `enqueueTicketReplyDm` above, which is always
+ * English. Not order-scoped (`orderId: null`) — tickets have no order.
+ */
+export async function enqueueTicketClosedDm(
+  db: Db,
+  args: { ticketId: number; chatId: number; buyerLanguage: string | null },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.TICKET_CLOSED_DM,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.chatId,
+        ticket_id: args.ticketId,
+        buyer_language: langCode(args.buyerLanguage),
+      }),
+    },
+  });
+}
+
 /**
  * Write one EMAIL-channel outbox row addressed to the shop owner, or nothing
  * at all. Resolves the recipient via `resolveOwnerEmailRecipient` — the

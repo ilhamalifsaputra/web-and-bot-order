@@ -878,9 +878,14 @@ export function ticketResolvedKb(ticketId: number, lang = "en"): InlineKeyboard 
   return ik([[{ text: coreT("support.btn_resolve", lang), data: cb("ticket", "close", ticketId) }]]);
 }
 
+// Task 1 fix: WAITING_ADMIN/WAITING_CUSTOMER are now live values (see
+// TicketStatus's own doc comment, @app/core/enums) — same icon as their
+// OPEN/REPLIED counterpart.
 const TICKET_ICONS: Record<string, string> = {
   [TicketStatus.OPEN]: "🔴",
+  [TicketStatus.WAITING_ADMIN]: "🔴",
   [TicketStatus.REPLIED]: "🟡",
+  [TicketStatus.WAITING_CUSTOMER]: "🟡",
   [TicketStatus.RESOLVED]: "🟢",
   [TicketStatus.CLOSED]: "⚫",
 };

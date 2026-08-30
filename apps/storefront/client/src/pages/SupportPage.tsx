@@ -25,9 +25,10 @@ import ProgressBar from "../components/shop/ProgressBar";
 const SKELETON_ROWS = Array.from({ length: 3 }, (_, i) => i);
 
 export default function SupportPage() {
-  // Pre-filled skeleton so customers know what info to include — they edit
-  // it in place rather than starting from a blank box.
-  const [message, setMessage] = useState(() => t("web.support_template"));
+  // Starts empty — order selection lives solely in the dropdown below, so the
+  // textarea only hints at Product/What-happened/When via its placeholder
+  // instead of pre-filling an editable "Order number:" line that duplicated it.
+  const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [toastText, setToastText] = useState<string | null>(null);
@@ -72,7 +73,7 @@ export default function SupportPage() {
       );
     },
     onSuccess: (resp) => {
-      setMessage(t("web.support_template"));
+      setMessage("");
       setFiles([]);
       setOrderCode("");
       refetch();
@@ -128,7 +129,7 @@ export default function SupportPage() {
           rows={6}
           required
           className="field"
-          placeholder={t("web.support_placeholder")}
+          placeholder={t("web.support_new_placeholder")}
         />
         <label className="field-label mt-3" htmlFor="ticket-order-picker">
           {t("web.ticket_order_picker_label")}

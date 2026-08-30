@@ -4412,6 +4412,32 @@ describe("support", () => {
     expect(data.ticket.resolvedAtDisplay).toBeNull();
   });
 
+  it("ticket detail (Task 3): includes ticketNumber, assignedAtDisplay, and surfaces internal notes in the messages array", async () => {
+    const tid = await makeTicket();
+    // A minted ticketNumber (Task 1's createTicket) should already be present.
+    let res = await get(`/api/support/${tid}`, seed.cookie);
+    let data = JSON.parse(res.body) as {
+      ticket: { ticketNumber: string | null; assignedAtDisplay: string | null };
+      messages: { content: string; internal: boolean }[];
+    };
+    expect(data.ticket.ticketNumber).toMatch(/^TCK-\d{8}-\d{5}$/);
+    expect(data.ticket.assignedAtDisplay).toBeNull();
+
+    // This is the route-level proof that Task 1's includeInternal opt-in is
+    // actually wired here — packages/db/src/crud/support.ts's own tests
+    // cover the crud function directly, but this admin-facing route is what
+    // makes an internal note reachable in the UI at all.
+    await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "Internal-only note.",
+      internal: true,
+    });
+    res = await get(`/api/support/${tid}`, seed.cookie);
+    data = JSON.parse(res.body) as typeof data;
+    const note = data.messages.find((m) => m.content === "Internal-only note.");
+    expect(note).toBeTruthy();
+    expect(note?.internal).toBe(true);
+  });
+
   it("ticket detail: subject is truncated to the last full word past ~60 chars, with an ellipsis", async () => {
     const longMessage =
       "This is a very long support message that definitely exceeds sixty characters in total length easily";
@@ -4493,6 +4519,56 @@ describe("support", () => {
     expect(adminMsgs.some((m) => m.content === "Looking into it.")).toBe(true);
   });
 
+  it("internal note (Task 3): stored with internal: true, excluded from the default message list, audited as ticket_internal_note (not ticket_reply), and does not flip ticket status", async () => {
+    const tid = await makeTicket();
+    const res = await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "Checking with the courier before replying.",
+      internal: true,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const customerSafeMsgs = await listTicketMessages(prisma, tid, 10);
+    expect(customerSafeMsgs.some((m) => m.content === "Checking with the courier before replying.")).toBe(false);
+
+    const allMsgs = await listTicketMessages(prisma, tid, 10, { includeInternal: true });
+    const note = allMsgs.find((m) => m.content === "Checking with the courier before replying.");
+    expect(note).toBeTruthy();
+    expect(note?.internal).toBe(true);
+    expect(note?.senderType).toBe("ADMIN");
+
+    // Doesn't flip the ticket's customer-visible status (still OPEN, not
+    // WAITING_CUSTOMER) — an internal note isn't a reply the customer sees.
+    expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("OPEN");
+
+    const internalAudit = await prisma.auditLog.findFirst({
+      where: { action: "ticket_internal_note", targetId: tid },
+    });
+    expect(internalAudit).toBeTruthy();
+    expect(internalAudit?.details).toBe(`Added an internal note to ticket #${tid} (not visible to the customer).`);
+    // The route must not ALSO log a "ticket_reply" row for an internal note —
+    // that would double-audit the same action under a misleading sentence.
+    const replyAudit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply", targetId: tid } });
+    expect(replyAudit).toBeNull();
+  });
+
+  it("a normal (non-internal) reply is unaffected by the internal-note field: audited as ticket_reply, visible in the default message list", async () => {
+    const tid = await makeTicket();
+    const res = await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "We're checking your order.",
+    });
+    expect(res.statusCode).toBe(200);
+
+    const msgs = await listTicketMessages(prisma, tid, 10);
+    expect(msgs.some((m) => m.content === "We're checking your order." && m.internal === false)).toBe(true);
+
+    const replyAudit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply", targetId: tid } });
+    expect(replyAudit).toBeTruthy();
+    const internalAudit = await prisma.auditLog.findFirst({
+      where: { action: "ticket_internal_note", targetId: tid },
+    });
+    expect(internalAudit).toBeNull();
+  });
+
   it("close ticket", async () => {
     const tid = await makeTicket();
     const res = await post(`/api/support/${tid}/close`, seed.cookie, { csrf_token: seed.csrf });
@@ -4531,35 +4607,48 @@ describe("support", () => {
       return upsertUser(prisma, { telegramId: 1000, username: "second", fullName: "Second Admin" });
     }
 
-    it("happy path: assigns a ticket to an admin and audits", async () => {
+    it("happy path: assigns a ticket to an admin, audits, and stamps assignedAt/assignedBy (Task 3)", async () => {
       const tid = await makeTicket();
       const second = await makeSecondAdmin();
       const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true });
-      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBe(second.id);
+      const row = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(row!.adminId).toBe(second.id);
+      // Task 3: this route now calls assignTicketWithAudit (packages/db/src/
+      // crud/support.ts), migrated from the old un-audited assignTicket — the
+      // whole point of the admin panel's new assignment picker is that these
+      // two columns actually get populated, not just adminId.
+      expect(row!.assignedBy).toBe(seed.adminId);
+      expect(row!.assignedAt).toBeInstanceOf(Date);
 
       const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_assign", targetId: tid } });
       expect(audit).toBeTruthy();
       expect(audit?.targetType).toBe("ticket");
       expect(audit?.adminId).toBe(seed.adminId);
+      // Task 3 review fix: assignTicketWithAudit now accepts the caller's
+      // already-resolved display name, so this keeps the same friendly
+      // wording the old route-local logAdminAction call used.
       expect(audit?.details).toBe(`Assigned ticket #${tid} to "Second Admin".`);
     });
 
-    it("unassign (adminId: null) clears the assignment and audits", async () => {
+    it("unassign (adminId: null) clears the assignment (incl. assignedAt/assignedBy) and audits", async () => {
       const tid = await makeTicket();
       const second = await makeSecondAdmin();
       await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
 
       const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: null });
       expect(res.statusCode).toBe(200);
-      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBeNull();
+      const row = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(row!.adminId).toBeNull();
+      expect(row!.assignedBy).toBeNull();
+      expect(row!.assignedAt).toBeNull();
 
       const audit = await prisma.auditLog.findFirst({
         where: { action: "ticket_assign", targetId: tid },
         orderBy: { id: "desc" },
       });
-      expect(audit?.details).toBe(`Unassigned ticket #${tid}.`);
+      expect(audit?.details).toBe(`Assigned ticket #${tid} to nobody (unassigned).`);
     });
 
     it("rejects a non-existent ticket id with 404", async () => {

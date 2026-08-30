@@ -473,4 +473,30 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("<x>");
     expect(out).toContain("A &amp; B &lt;x&gt;");
   });
+
+  // Task 2 (Phase C): TICKET_CLOSED_DM is the one of the three new ticket
+  // events rendered through this file's render() — ADMIN_NEW_TICKET and
+  // TICKET_REPLY_DM need a reply_markup keyboard (and, for ADMIN_NEW_TICKET,
+  // a photo media-group send) render() has no way to carry, so
+  // dispatcher.ts builds and sends their text itself (see dispatcher.test.ts
+  // for those two).
+  it("renders TICKET_CLOSED_DM in English by default", () => {
+    const out = render("TICKET_CLOSED_DM", {});
+    expect(out).toBe("Your ticket has been closed. Open a new one if you need further help.");
+  });
+
+  it("renders TICKET_CLOSED_DM in English when buyer_language is 'en'", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "en" });
+    expect(out).toBe("Your ticket has been closed. Open a new one if you need further help.");
+  });
+
+  it("renders TICKET_CLOSED_DM in Indonesian when buyer_language is 'id'", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "id" });
+    expect(out).toBe("Tiket ditutup. Buka tiket baru jika masih butuh bantuan.");
+  });
+
+  it("falls back to English for an unrecognized TICKET_CLOSED_DM buyer_language", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "fr" });
+    expect(out).toContain("Your ticket has been closed");
+  });
 });

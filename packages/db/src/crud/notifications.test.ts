@@ -16,6 +16,9 @@ import {
   enqueueAdminStalePayment,
   enqueueAdminDigiflazzResyncAborted,
   enqueueAdminPasswordReset,
+  enqueueAdminNewTicketDm,
+  enqueueTicketReplyDm,
+  enqueueTicketClosedDm,
   enqueueWalletTopupCreditedDm,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
@@ -501,6 +504,94 @@ describe("enqueueAdminDigiflazzResyncAborted", () => {
       expect(payload.sharp_changes).toBeUndefined();
       expect(payload.considered_rows).toBeUndefined();
     }
+  });
+});
+
+// Task 2 (Phase C): the three ticket-notification events that used to call
+// ctx.api.sendMessage() directly from apps/order-bot (conversations/
+// support.ts, conversations/admin.ts, handlers/admin.ts) — these tests assert
+// the exact payload shape each enqueue* helper writes; dispatcher.test.ts
+// (packages/outbox-dispatcher) covers the render/keyboard/send side end to
+// end. Runs after enqueueAdminDigiflazzResyncAborted's block, so
+// 4001/4002/4501/4502 are already persisted in the shared `admin_ids`
+// Setting — enqueueAdminNewTicketDm fans out to that full resolved set, same
+// as every other admin fan-out helper tested above.
+describe("enqueueAdminNewTicketDm", () => {
+  it("enqueues one ADMIN_NEW_TICKET DM per resolved admin, with orderId null and chat_id/ticket_id/from_user_id/from_username/message/photo_file_ids", async () => {
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: 9001,
+      fromUserId: 555_000_001,
+      fromUsername: "buyer1",
+      message: "I need help",
+      photoFileIds: ["file_a", "file_b"],
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === 9001);
+    expect(matching.length).toBeGreaterThan(0);
+    expect(matching.every((r) => r.orderId === null)).toBe(true);
+    const chatIds = matching.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(matching[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.from_user_id).toBe(555_000_001);
+    expect(payload.from_username).toBe("buyer1");
+    expect(payload.message).toBe("I need help");
+    expect(payload.photo_file_ids).toEqual(["file_a", "file_b"]);
+  });
+
+  it("carries photo_file_ids as an empty array (not omitted) and from_username as null when the ticket has neither", async () => {
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: 9002,
+      fromUserId: 555_000_002,
+      fromUsername: null,
+      message: "No photos here",
+      photoFileIds: [],
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === 9002);
+    expect(matching.length).toBeGreaterThan(0);
+    const payload = JSON.parse(matching[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.from_username).toBeNull();
+    expect(payload.photo_file_ids).toEqual([]);
+  });
+});
+
+describe("enqueueTicketReplyDm", () => {
+  it("writes one TICKET_REPLY_DM row with orderId null and exactly chat_id/ticket_id/message", async () => {
+    await enqueueTicketReplyDm(prisma, { ticketId: 9101, chatId: 620_001, message: "We refunded your order." });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_REPLY_DM, payloadJson: { contains: '"ticket_id":9101,' } },
+    });
+    expect(row).toBeDefined();
+    expect(row!.orderId).toBeNull();
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({ chat_id: 620_001, ticket_id: 9101, message: "We refunded your order." });
+  });
+});
+
+describe("enqueueTicketClosedDm", () => {
+  it("writes one TICKET_CLOSED_DM row with orderId null and exactly chat_id/ticket_id/buyer_language normalized via langCode", async () => {
+    await enqueueTicketClosedDm(prisma, { ticketId: 9201, chatId: 620_002, buyerLanguage: "id" });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: '"ticket_id":9201,' } },
+    });
+    expect(row).toBeDefined();
+    expect(row!.orderId).toBeNull();
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({ chat_id: 620_002, ticket_id: 9201, buyer_language: "id" });
+  });
+
+  it("normalizes a null buyerLanguage to 'en' via langCode", async () => {
+    await enqueueTicketClosedDm(prisma, { ticketId: 9202, chatId: 620_003, buyerLanguage: null });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: '"ticket_id":9202,' } },
+    });
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.buyer_language).toBe("en");
   });
 });
 

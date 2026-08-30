@@ -312,9 +312,64 @@ export const VoucherScope = {
 export type VoucherScope = (typeof VoucherScope)[keyof typeof VoucherScope];
 export const zVoucherScope = z.nativeEnum(VoucherScope);
 
+/**
+ * SupportTicket.status. Trustance Phase C Task 1 expanded this from
+ * `OPEN|REPLIED|RESOLVED|CLOSED` to also carry `WAITING_ADMIN`/
+ * `WAITING_CUSTOMER` — a more explicit vocabulary for "whose turn it is to
+ * respond" than the original OPEN/REPLIED pair (which conflated "brand new,
+ * nobody has looked at it" and "customer replied, waiting on admin again"
+ * into the same OPEN value).
+ *
+ * ## Task 1 FIX (post-review): wired and resolved
+ *
+ * The original Task 1 commit shipped `WAITING_ADMIN`/`WAITING_CUSTOMER`
+ * unreachable by any real code path, with target lists in
+ * `TICKET_LEGAL_TRANSITIONS` byte-for-byte identical to `OPEN`'s/`REPLIED`'s
+ * — two exactly-synonymous pairs (task-scoped review Findings 1 and 2). A
+ * follow-up fix wired `addTicketMessage` (packages/db/src/crud/support.ts —
+ * the single choke point for every real reply in bot/web-admin/storefront)
+ * to actually produce them, and resolved the redundancy:
+ *
+ *  - `OPEN` is KEPT — narrowed to mean "genuinely new, zero real messages
+ *    yet" (written only by `createTicket` and the reopen functions). A
+ *    customer's first follow-up now moves the ticket to `WAITING_ADMIN`
+ *    instead of re-asserting `OPEN`.
+ *  - `REPLIED` is KEPT in the enum/schema (existing `String` column, never
+ *    rewrites historical rows — see this file's header comment) but RETIRED
+ *    as a normal write target: `addTicketMessage`'s ADMIN branch and
+ *    `replyToTicket` now write `WAITING_CUSTOMER` instead, since the review
+ *    confirmed the two meant exactly the same thing. Every read-side
+ *    consumer that used to check `REPLIED` alone (`listStaleRepliedTickets`,
+ *    `getTicketStats`, `isTicketOverdue`/`buildTicketConditions`'s overdue
+ *    predicate, bot keyboards/handlers, web-admin badges/filters/
+ *    resolve-reopen visibility) was updated to match `WAITING_CUSTOMER`
+ *    ALONGSIDE `REPLIED`, not instead of it.
+ *  - `WAITING_ADMIN`/`WAITING_CUSTOMER` are now genuinely differentiated
+ *    from `OPEN`/`REPLIED` (Finding 2), not just renamed: see
+ *    `TICKET_LEGAL_TRANSITIONS`'s doc comment (support.ts) for the exact
+ *    transition-table shape and why each new edge exists.
+ *
+ * This mirrors an established pattern already in this file — see
+ * `OrderStatus.PARTIALLY_DELIVERED` and `OrderItemStatus`'s own "shadow, not
+ * yet a source of truth" doc comments below, except this pair has since
+ * graduated from shadow to live.
+ */
 export const TicketStatus = {
   OPEN: "OPEN",
+  /** Retired as a normal write target (see this const's doc comment) —
+   * `WAITING_CUSTOMER` is now written instead. Kept for historical rows and
+   * one deliberate carve-out (`addTicketMessage`'s ADMIN branch replying to
+   * an already-RESOLVED/CLOSED ticket — see that function's own comment). */
   REPLIED: "REPLIED",
+  /** Ticket needs admin attention — a customer reply (after the ticket's
+   * first-ever message) moves it here via `addTicketMessage` ->
+   * `transitionTicketStatus`. See this const's doc comment. */
+  WAITING_ADMIN: "WAITING_ADMIN",
+  /** An admin has responded and the ticket is waiting on the customer's next
+   * message — the live replacement for `REPLIED`, written by
+   * `addTicketMessage`'s ADMIN branch and `replyToTicket`. See this const's
+   * doc comment. */
+  WAITING_CUSTOMER: "WAITING_CUSTOMER",
   RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",
 } as const;
@@ -330,12 +385,29 @@ export const TicketPriority = {
 export type TicketPriority = (typeof TicketPriority)[keyof typeof TicketPriority];
 export const zTicketPriority = z.nativeEnum(TicketPriority);
 
+/** SupportTicket.category — admin-set triage field, null until classified
+ * (`classifyTicket`). Trustance Phase C Task 1 added `DELIVERY`/
+ * `GAME_TOPUP`/`REFUND`/`TECHNICAL` alongside the original 5 values for
+ * finer-grained triage; existing rows keep whatever category (or null) they
+ * already had — this is a plain `String` column, not a native Postgres enum
+ * (see this file's header comment), so widening this const object needs no
+ * migration and cannot itself invalidate a stored value. */
 export const TicketCategory = {
   ORDER: "ORDER",
   PAYMENT: "PAYMENT",
   ACCOUNT: "ACCOUNT",
   PRODUCT: "PRODUCT",
   OTHER: "OTHER",
+  /** Order paid but the item didn't arrive / arrived wrong. */
+  DELIVERY: "DELIVERY",
+  /** Game top-up specific issue (wrong game id/server, top-up didn't land in
+   * the game account) — narrower than the general `PRODUCT`/`ORDER`. */
+  GAME_TOPUP: "GAME_TOPUP",
+  /** Ticket is about a refund request/status, distinct from a general
+   * `PAYMENT` question. */
+  REFUND: "REFUND",
+  /** Bot/site bug reports, login issues, etc. — not about a specific order. */
+  TECHNICAL: "TECHNICAL",
 } as const;
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 export const zTicketCategory = z.nativeEnum(TicketCategory);
@@ -569,6 +641,34 @@ export const NotificationEvent = {
   // sharp_changes/considered_rows (plain counts only, never a SKU/price
   // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
   ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin/support-group DM (fan-out — one row per resolved target, same
+  // per-recipient shape as ADMIN_MANUAL_ORDER_QUEUED/ADMIN_STALE_PAYMENT):
+  // forwards a newly-opened support ticket for triage. Enqueued from the
+  // bot's own ticket-creation flow (conversations/support.ts) — the
+  // storefront's ticket-creation path has no Telegram equivalent, it only
+  // triggers OWNER_EMAIL_NEW_TICKET. Targets are `config.SUPPORT_GROUP_ID`
+  // when set, else every resolved admin id (`resolveAdminIds`) — the same
+  // fallback the pre-outbox direct send used. payload carries `chat_id` plus
+  // ticket_id/from_user_id/from_username/message/photo_file_ids (Telegram
+  // file ids only, never binary — the dispatcher re-sends them via
+  // sendMediaGroup right after the text). NOT order-scoped (orderId: null)
+  // — tickets have no order.
+  ADMIN_NEW_TICKET: "ADMIN_NEW_TICKET",
+  // Buyer DM (not a channel post): an admin replied to the buyer's support
+  // ticket (conversations/admin.ts's ticketReplyConversation). Always
+  // rendered in English — mirrors the pre-outbox direct send, which
+  // hardcoded language "en" rather than the buyer's own stored language
+  // (unlike TICKET_CLOSED_DM below, which does use it); preserved exactly
+  // as-is, not a bug this event fixes. payload carries `chat_id` plus
+  // ticket_id and the admin's reply text, NOT order-scoped (orderId: null).
+  TICKET_REPLY_DM: "TICKET_REPLY_DM",
+  // Buyer DM (not a channel post): an admin closed the buyer's support
+  // ticket from the bot's admin panel (handlers/admin.ts's
+  // closeTicketAdmin). Rendered in the buyer's own stored language
+  // (payload.buyer_language), unlike TICKET_REPLY_DM above. payload carries
+  // `chat_id` plus ticket_id and buyer_language, NOT order-scoped
+  // (orderId: null).
+  TICKET_CLOSED_DM: "TICKET_CLOSED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

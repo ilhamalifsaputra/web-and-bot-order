@@ -653,7 +653,14 @@ describe("POST /api/support/bulk-action", () => {
     const body = res.json() as { succeeded: number[]; failed: unknown[] };
     expect(body.succeeded.sort()).toEqual([t1.id, t2.id].sort());
     expect(body.failed).toEqual([]);
-    expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).adminId).toBe(adminId);
+    const t1After = await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } });
+    expect(t1After.adminId).toBe(adminId);
+    // Whole-branch review fix: a bulk assignment must stamp assignedAt/
+    // assignedBy the same way the single-ticket /assign route does, or the
+    // detail page shows a named assignee while its own "Assigned by" line
+    // reads "Not yet assigned." for the exact same ticket.
+    expect(t1After.assignedBy).toBe(adminId);
+    expect(t1After.assignedAt).toBeInstanceOf(Date);
     const summaryRows = await prisma.auditLog.findMany({
       where: { action: "ticket_bulk_assign", targetId: null },
     });
@@ -665,6 +672,24 @@ describe("POST /api/support/bulk-action", () => {
     const t2Row = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign", targetId: t2.id } });
     expect(t1Row?.details).toBe(`Assigned ticket #${t1.id} to "Admin".`);
     expect(t2Row?.details).toBe(`Assigned ticket #${t2.id} to "Admin".`);
+  });
+
+  it("assign: unassigning via bulk (adminId: null) clears assignedAt/assignedBy too", async () => {
+    const t1 = await createTicket(prisma, customerId, "One");
+    await postJson("/api/support/bulk-action", cookie, csrf, { ids: [t1.id], action: "assign", adminId });
+    const assigned = await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } });
+    expect(assigned.assignedAt).toBeInstanceOf(Date);
+
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, {
+      ids: [t1.id],
+      action: "assign",
+      adminId: null,
+    });
+    expect(res.statusCode).toBe(200);
+    const t1After = await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } });
+    expect(t1After.adminId).toBeNull();
+    expect(t1After.assignedBy).toBeNull();
+    expect(t1After.assignedAt).toBeNull();
   });
 
   it("assign: a non-existent id in the batch is reported as failed, not falsely echoed as succeeded", async () => {

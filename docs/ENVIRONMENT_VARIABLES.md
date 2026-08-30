@@ -112,7 +112,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `NOTIF_BOT_TOKEN` | opsional | Bot terpisah untuk posting channel testimoni. Kosong = pakai bot utama (harus jadi admin channel). |
 | `PUBLIC_CHANNEL_ID` | opsional, number | ID channel testimoni publik. Setting `public_channel_id` menang. |
 | `NOTIF_POLL_INTERVAL_SECONDS` | `10` | Interval polling `notification_outbox`. |
-| `NOTIF_MAX_ATTEMPTS` | `5` | Percobaan kirim maksimum sebelum baris `FAILED` permanen. |
+| `NOTIF_MAX_ATTEMPTS` | `10` | Percobaan kirim maksimum sebelum baris jadi `DEAD_LETTER` permanen (baris yang benar-benar sudah di-retry sampai limit — beda dari `FAILED`, yang khusus kegagalan permanen sejak percobaan pertama, lihat komentar `markNotificationFailed` di `packages/db/src/crud/notifications.ts`). |
 
 ## SMTP (forgot-password storefront)
 

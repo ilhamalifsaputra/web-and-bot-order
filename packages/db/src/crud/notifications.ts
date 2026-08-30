@@ -895,10 +895,29 @@ export function notificationBackoffMs(attempts: number): number {
 }
 
 /**
- * Increment attempts and record the error (truncated to 500 chars). Flip to
- * FAILED only once attempts >= maxAttempts; otherwise back to PENDING with an
- * exponential-backoff `nextRetryAt`, for a later retry. No-op if the row is
- * gone.
+ * Increment attempts and record the error (truncated to 500 chars). Once
+ * attempts >= maxAttempts the row goes terminal (nextRetryAt cleared);
+ * otherwise it goes back to PENDING with an exponential-backoff
+ * `nextRetryAt`, for a later retry. No-op if the row is gone.
+ *
+ * The terminal status depends on whether the row was ever actually eligible
+ * for retry:
+ * - `maxAttempts > 1`: the row went through real exponential-backoff retries
+ *   and still exhausted them all → DEAD_LETTER ("retried to the ceiling,
+ *   still failing" — worth paging an operator about).
+ * - `maxAttempts <= 1`: the row was terminal on its very first and only
+ *   call — a permanently invalid row (malformed payload, missing template,
+ *   missing chat_id, etc.) that retrying would never fix → FAILED, same as
+ *   before this split existed.
+ *
+ * Worst-case time-to-DEAD_LETTER under the current default
+ * (`NOTIF_MAX_ATTEMPTS=10`, `NOTIF_RETRY_BASE_MS=30s` doubling, capped at
+ * `NOTIF_RETRY_MAX_MS=10min`) is ~55.5 minutes (30+60+120+240+480+600×4) —
+ * up from ~7.5 minutes under the old default of 5. The row stays visible via
+ * the `/metrics` `outbox_backlog_size`/`outbox_oldest_unsent_age_seconds`
+ * gauges throughout that window, so an operator alerting only on
+ * `outbox_dead_letter_count` should also watch those two for an earlier
+ * signal.
  */
 export async function markNotificationFailed(
   db: Db,
@@ -910,15 +929,16 @@ export async function markNotificationFailed(
   const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
   if (!row) return;
   const attempts = row.attempts + 1;
-  const failed = attempts >= maxAttempts;
+  const terminal = attempts >= maxAttempts;
+  const terminalStatus = maxAttempts > 1 ? NotificationStatus.DEAD_LETTER : NotificationStatus.FAILED;
   await db.notificationOutbox.update({
     where: { id: notifId },
     data: {
       attempts,
       lastError: error.slice(0, 500),
       claimedAt: null,
-      status: failed ? NotificationStatus.FAILED : NotificationStatus.PENDING,
-      nextRetryAt: failed ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
+      status: terminal ? terminalStatus : NotificationStatus.PENDING,
+      nextRetryAt: terminal ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
     },
   });
 }
@@ -1349,6 +1369,36 @@ export function listNotifications(
 
 export function countNotifications(db: Db, opts: { status?: string | null } = {}) {
   return db.notificationOutbox.count({ where: opts.status ? { status: opts.status } : {} });
+}
+
+/**
+ * Age in seconds of the single oldest unsent outbox row — "unsent" meaning
+ * PENDING, or SENDING with a claim older than STALE_CLAIM_MS (an abandoned
+ * claim from a dispatcher that died mid-send effectively never sent, exactly
+ * like fetchPendingNotifications/claimNotification already treat it
+ * elsewhere in this file). Drives the /metrics `outbox_oldest_unsent_age_seconds`
+ * gauge (apps/web-admin/src/routes/metrics.ts). A single query — `MIN(createdAt)`
+ * over that set via `findFirst`/`orderBy` — not a fetch-then-compute-in-app-code.
+ *
+ * Returns `null` when no such row exists (an empty/healthy outbox) rather
+ * than `0`: a Prometheus gauge should simply not report a sample in that
+ * case, since `0` would misleadingly read as "a row aged out at exactly this
+ * instant."
+ */
+export async function oldestUnsentNotificationAge(db: Db, now: Date = new Date()): Promise<number | null> {
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
+  const row = await db.notificationOutbox.findFirst({
+    where: {
+      OR: [
+        { status: NotificationStatus.PENDING },
+        { status: NotificationStatus.SENDING, claimedAt: { lt: staleCutoff } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
+  if (!row) return null;
+  return Math.floor((now.getTime() - row.createdAt.getTime()) / 1000);
 }
 
 /** Count of outbox rows per status — drives the summary cards. */

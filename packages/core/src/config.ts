@@ -261,7 +261,7 @@ export const Env = z.object({
   NOTIF_BOT_TOKEN: z.string().optional(),
   PUBLIC_CHANNEL_ID: z.coerce.number().optional(),
   NOTIF_POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
-  NOTIF_MAX_ATTEMPTS: z.coerce.number().default(5),
+  NOTIF_MAX_ATTEMPTS: z.coerce.number().default(10),
 
   // ---- SMTP (storefront forgot-password email) ----
   // Env-fallback only — web-admin Settings (smtp_host/port/user/pass/from/

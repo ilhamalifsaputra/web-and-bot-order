@@ -8,7 +8,7 @@ import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
 import { prisma, setupNeeded } from "@app/db";
 
-const EXCLUDED = ["/setup", "/static", "/uploads", "/healthz", "/favicon.ico"];
+const EXCLUDED = ["/setup", "/static", "/uploads", "/healthz", "/metrics", "/favicon.ico"];
 const isExcluded = (path: string): boolean =>
   EXCLUDED.some((p) => path === p || path.startsWith(p + "/"));
 

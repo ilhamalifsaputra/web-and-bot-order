@@ -138,6 +138,35 @@ describe("OutboxPage", () => {
     await waitFor(() => expect(screen.getAllByText("Pending").length).toBeGreaterThan(0));
   });
 
+  it("retries a DEAD_LETTER notification via /api/outbox/:id/retry", async () => {
+    const deadLetterRow = { ...ROW, id: 9, status: "DEAD_LETTER" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [deadLetterRow], total: 1, page: 1, hasNext: false, counts: { DEAD_LETTER: 1 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [{ ...deadLetterRow, status: "PENDING" }], total: 1, page: 1, hasNext: false, counts: { PENDING: 1 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OutboxPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/outbox/9/retry", expect.objectContaining({ method: "POST" })),
+    );
+    await waitFor(() => expect(screen.getAllByText("Pending").length).toBeGreaterThan(0));
+  });
+
   it("shows a toast when retrying a notification fails", async () => {
     const failedRow = { ...ROW, id: 9, status: "FAILED" };
     const fetchSpy = vi.spyOn(globalThis, "fetch");

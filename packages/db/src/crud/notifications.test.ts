@@ -37,6 +37,8 @@ import {
   markNotificationFailed,
   retryNotification,
   getNotification,
+  outboxStatusCounts,
+  oldestUnsentNotificationAge,
   STALE_CLAIM_MS,
   notificationBackoffMs,
   NOTIF_RETRY_BASE_MS,
@@ -75,6 +77,118 @@ async function seedOrder(): Promise<number> {
   return order.id;
 }
 
+// This describe block MUST run first in the file (Vitest executes tests
+// within a file sequentially, top-to-bottom, by default — no
+// test.concurrent/shuffle is configured here): the "empty outbox" case needs
+// a genuinely empty notification_outbox, and every other describe block
+// below enqueues rows into the same shared schema-per-file `prisma` without
+// cleaning up afterward (see the "fetchPendingNotifications priority"
+// block's comment further down for the same shared-DB caveat). Each
+// subsequent case here deliberately inserts a row OLDER than anything
+// already in the table so its assertion holds regardless of run order among
+// ITS OWN cases.
+//
+// Unlike every other describe block in this file, the rows created here are
+// explicitly deleted in this block's own `afterAll` (below) rather than left
+// for the rest of the file to accumulate: several later tests (e.g. "outbox
+// CRUD > enqueue → stored PENDING with JSON payload" and "nextRetryAt
+// backoff > a backed-off row is excluded ... until its window passes")
+// assert an EXACT claimable-row count from fetchPendingNotifications, which
+// would be thrown off by a genuinely-PENDING (or stale-SENDING, which
+// fetchPendingNotifications treats as equally claimable) row left behind by
+// this block — a real regression caught by running the full file, not just
+// this block's own cases, before considering this task done.
+describe("oldestUnsentNotificationAge", () => {
+  const createdIds: number[] = [];
+
+  afterAll(async () => {
+    await prisma.notificationOutbox.deleteMany({ where: { id: { in: createdIds } } });
+  });
+
+  it("returns null on an empty outbox", async () => {
+    expect(await oldestUnsentNotificationAge(prisma)).toBeNull();
+  });
+
+  it("returns the age of a single PENDING row", async () => {
+    const orderId = await seedOrder();
+    const createdAt = new Date(Date.now() - 120_000); // 120s old
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "PENDING",
+        createdAt,
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(120);
+    expect(age!).toBeLessThanOrEqual(135); // generous tolerance for test runtime
+  });
+
+  it("ignores a fresh (non-stale) SENDING row even if its createdAt is much older", async () => {
+    const orderId = await seedOrder();
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: new Date(), // fresh claim — actively being sent right now
+        createdAt: new Date(Date.now() - 3_600_000), // 1h old, but must be excluded
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    // Still reflects the ~120s PENDING row from the previous case, NOT the
+    // 1h-old fresh-SENDING row — proves a fresh claim is excluded.
+    expect(age!).toBeLessThan(300);
+  });
+
+  it("counts a SENDING row whose claim is older than STALE_CLAIM_MS, like a PENDING row", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 10_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 400_000), // 400s old — older than any prior row
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(400);
+    expect(age!).toBeLessThanOrEqual(415);
+  });
+
+  it("returns the OLDEST qualifying row's age across a mix of PENDING and stale SENDING rows", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 20_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 500_000), // 500s old — older than the 400s row above
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(500);
+    expect(age!).toBeLessThanOrEqual(515);
+  });
+});
+
 describe("outbox CRUD", () => {
   it("enqueue → stored PENDING with JSON payload", async () => {
     const orderId = await seedOrder();
@@ -98,7 +212,7 @@ describe("outbox CRUD", () => {
     expect(await fetchPendingNotifications(prisma, 50)).toHaveLength(0);
   });
 
-  it("markFailed stays PENDING until attempts >= maxAttempts", async () => {
+  it("markFailed stays PENDING until attempts >= maxAttempts, then goes DEAD_LETTER (genuinely retried, exhausted)", async () => {
     const orderId = await seedOrder();
     await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
     const [row] = await fetchPendingNotifications(prisma, 1);
@@ -114,10 +228,10 @@ describe("outbox CRUD", () => {
     await markNotificationFailed(prisma, id, "boom3", 3);
     r = await prisma.notificationOutbox.findUnique({ where: { id } });
     expect(r!.attempts).toBe(3);
-    expect(r!.status).toBe("FAILED");
+    expect(r!.status).toBe("DEAD_LETTER");
   });
 
-  it("markFailed with maxAttempts=1 fails immediately", async () => {
+  it("markFailed with maxAttempts=1 fails immediately as FAILED, not DEAD_LETTER (never actually retried)", async () => {
     const orderId = await seedOrder();
     await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
     const [row] = await fetchPendingNotifications(prisma, 1);
@@ -182,6 +296,17 @@ describe("outbox CRUD", () => {
       expect(r!.nextRetryAt).toBeNull();
     });
 
+    it("a row that reaches DEAD_LETTER also has nextRetryAt cleared (terminal — no backoff to track)", async () => {
+      const orderId = await seedOrder();
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+      const [row] = await fetchPendingNotifications(prisma, 1);
+      await markNotificationFailed(prisma, row!.id, "attempt 1", 2);
+      await markNotificationFailed(prisma, row!.id, "attempt 2", 2);
+      const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("DEAD_LETTER");
+      expect(r!.nextRetryAt).toBeNull();
+    });
+
     it("retryNotification clears nextRetryAt — an admin retry isn't blocked by a leftover backoff window", async () => {
       const orderId = await seedOrder();
       await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
@@ -195,6 +320,23 @@ describe("outbox CRUD", () => {
       expect(r!.nextRetryAt).toBeNull();
       // Immediately claimable, even "now" (no backoff wait needed).
       expect((await fetchPendingNotifications(prisma, 50, now)).some((x) => x.id === row!.id)).toBe(true);
+    });
+
+    it("retryNotification resets a DEAD_LETTER row to PENDING/attempts:0, same as it already does for FAILED", async () => {
+      const orderId = await seedOrder();
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+      const [row] = await fetchPendingNotifications(prisma, 1);
+      await markNotificationFailed(prisma, row!.id, "attempt 1", 2);
+      await markNotificationFailed(prisma, row!.id, "attempt 2", 2);
+      let r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("DEAD_LETTER");
+
+      const ok = await retryNotification(prisma, row!.id);
+      expect(ok).toBe(true);
+      r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("PENDING");
+      expect(r!.attempts).toBe(0);
+      expect(r!.nextRetryAt).toBeNull();
     });
 
     it("a backed-off row never starves a VALID row enqueued after it, once the batch is limit-constrained", async () => {
@@ -229,6 +371,39 @@ describe("getNotification", () => {
 
   it("returns null for a notification that doesn't exist", async () => {
     expect(await getNotification(prisma, 999999)).toBeNull();
+  });
+});
+
+describe("outboxStatusCounts", () => {
+  it("buckets DEAD_LETTER separately from FAILED", async () => {
+    const deadLetterOrder = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, deadLetterOrder, {});
+    const [deadLetterRow] = await fetchPendingNotifications(prisma, 1);
+    await markNotificationFailed(prisma, deadLetterRow!.id, "attempt 1", 2);
+    await markNotificationFailed(prisma, deadLetterRow!.id, "attempt 2", 2);
+
+    const failedOrder = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, failedOrder, {});
+    const [failedRow] = await fetchPendingNotifications(prisma, 1);
+    await markNotificationFailed(prisma, failedRow!.id, "no template", 1);
+
+    const [deadLetterAfter, failedAfter] = await Promise.all([
+      prisma.notificationOutbox.findUnique({ where: { id: deadLetterRow!.id } }),
+      prisma.notificationOutbox.findUnique({ where: { id: failedRow!.id } }),
+    ]);
+    expect(deadLetterAfter!.status).toBe("DEAD_LETTER");
+    expect(failedAfter!.status).toBe("FAILED");
+
+    const counts = await outboxStatusCounts(prisma);
+    expect(counts.DEAD_LETTER).toBeGreaterThanOrEqual(1);
+    expect(counts.FAILED).toBeGreaterThanOrEqual(1);
+    // Same-cause rows landed in different buckets — proves DEAD_LETTER and
+    // FAILED are counted separately, not collapsed into one status.
+    const grouped = await prisma.notificationOutbox.groupBy({ by: ["status"], _count: { _all: true } });
+    const dl = grouped.find((g) => g.status === "DEAD_LETTER")!;
+    const fl = grouped.find((g) => g.status === "FAILED")!;
+    expect(counts.DEAD_LETTER).toBe(dl._count._all);
+    expect(counts.FAILED).toBe(fl._count._all);
   });
 });
 

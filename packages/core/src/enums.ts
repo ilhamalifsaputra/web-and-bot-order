@@ -693,7 +693,18 @@ export const NotificationStatus = {
   // crash-window double-send guard (Infra-2 fix). Reclaimable once stale.
   SENDING: "SENDING",
   SENT: "SENT",
+  // Terminal, never retried: a permanently invalid row (malformed payload,
+  // missing template, missing chat_id, etc.) that failed on its one and only
+  // eligible attempt (markNotificationFailed's maxAttempts <= 1 call sites).
+  // Retrying would never fix these — they're a data/config problem, not a
+  // transient delivery problem.
   FAILED: "FAILED",
+  // Terminal: a row that WAS genuinely retried with exponential backoff
+  // (markNotificationFailed's maxAttempts > 1 call sites, real
+  // NOTIF_MAX_ATTEMPTS) and still exhausted every attempt. Distinct from
+  // FAILED so operators can page on "retried to the ceiling, still failing"
+  // without the metric being drowned out by one-shot invalid-data failures.
+  DEAD_LETTER: "DEAD_LETTER",
 } as const;
 export type NotificationStatus =
   (typeof NotificationStatus)[keyof typeof NotificationStatus];

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "../api/client";
 
 /** One row of the shop-wide wallet ledger (GET /api/wallet-transactions).
  *  The customer arrives as the pre-resolved `customerLabel` string only: the
@@ -49,10 +50,6 @@ export function useWalletTransactions(params: {
 
   return useQuery<WalletTransactionsResponse>({
     queryKey: ["wallet-transactions", params],
-    queryFn: async () => {
-      const res = await fetch(`/api/wallet-transactions?${search}`, { credentials: "include" });
-      if (!res.ok) throw new Error(`/api/wallet-transactions ${res.status}`);
-      return res.json() as Promise<WalletTransactionsResponse>;
-    },
+    queryFn: () => apiGet<WalletTransactionsResponse>(`/api/wallet-transactions?${search}`),
   });
 }

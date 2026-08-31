@@ -39,25 +39,39 @@ function WrapperAt({ initialEntries, children }: { initialEntries: string[]; chi
 
 const TX = { id: 1, gateway: "binance", reference: "TX123", amount: "100000", currency: "IDR", outcome: "MATCHED", memo: "ORDER-001", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
 
+// Task 2 (fetch → shared Application Client): PaymentsPage's own usePayments
+// now calls apiGet(`/api/payments?...`) instead of raw fetch(), so the ledger
+// payload has to be served by the same mocked apiGet the order-code-suggest
+// calls (`/api/search?...`) already go through — a single mock function
+// serving two different endpoints, dispatched by path prefix. These two
+// mutable payloads are what that dispatcher reads; mockPaymentsFetch (below)
+// and the search-suggestion overrides just reassign them, so a mid-test
+// reassignment (e.g. simulating a refetch after invalidateQueries) is picked
+// up on the next apiGet call with no extra mock plumbing.
+let paymentsPayload: Record<string, unknown> = { enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} };
+let searchPayload: { q: string; exactOrderId: number | null } = { q: "", exactOrderId: null };
+
 function mockPaymentsFetch(payload: Record<string, unknown>) {
-  vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-    new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }),
-  );
+  paymentsPayload = payload;
 }
 
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(apiGet).mockReset();
   vi.mocked(apiPost).mockReset();
+  paymentsPayload = { enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} };
   // Safe default so the 300ms order-code-suggest debounce (PaymentsPage.tsx's
   // useOrderCodeSuggest) never calls `.then` on `undefined`: several tests
   // type into the "Order code" field without caring about the suggestion
-  // feature and never give apiGet its own mock. Under a slow/loaded test run
-  // the debounce can fire before the component unmounts, and a bare vi.fn()
-  // resolves to undefined — an uncaught exception outside any assertion.
-  // Tests that DO care about the suggestion override this with their own
-  // mockResolvedValue/mockImplementation.
-  vi.mocked(apiGet).mockResolvedValue({ q: "", exactOrderId: null });
+  // feature and never give the search path its own payload. Under a slow/
+  // loaded test run the debounce can fire before the component unmounts, and
+  // a bare vi.fn() resolves to undefined — an uncaught exception outside any
+  // assertion. Tests that DO care about the suggestion override
+  // `searchPayload` directly.
+  searchPayload = { q: "", exactOrderId: null };
+  vi.mocked(apiGet).mockImplementation(async (path: string) =>
+    path.startsWith("/api/payments") ? paymentsPayload : searchPayload,
+  );
   // Radix Dialog/Select use pointer-capture APIs and scrollIntoView — jsdom
   // doesn't implement them.
   Element.prototype.scrollIntoView = vi.fn();
@@ -100,7 +114,10 @@ describe("PaymentsPage", () => {
   });
 
   it("shows error on fetch failure", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
+    vi.mocked(apiGet).mockImplementation(async (path: string) => {
+      if (path.startsWith("/api/payments")) throw new Error("network");
+      return searchPayload;
+    });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
@@ -157,9 +174,13 @@ describe("PaymentsPage", () => {
 
   it("debounces order-code lookups via /api/search and fills the input on selecting a suggestion", async () => {
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
-    vi.mocked(apiGet).mockResolvedValue({ q: "abc-1", exactOrderId: 42 });
+    searchPayload = { q: "abc-1", exactOrderId: 42 };
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+
+    // Isolate the debounced search call's own args from the mount-time
+    // /api/payments call already recorded on this same mocked apiGet.
+    vi.mocked(apiGet).mockClear();
 
     const orderInput = screen.getByPlaceholderText("Order code");
     fireEvent.focus(orderInput);
@@ -178,7 +199,7 @@ describe("PaymentsPage", () => {
   it("truncates a long order-code suggestion inside the bounded autocomplete dropdown, keeping the full code in title (Task 4)", async () => {
     const longCode = "ABC-VERY-LONG-ORDER-CODE-1234567890";
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
-    vi.mocked(apiGet).mockResolvedValue({ q: longCode, exactOrderId: 42 });
+    searchPayload = { q: longCode, exactOrderId: 42 };
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
 
@@ -193,7 +214,7 @@ describe("PaymentsPage", () => {
 
   it("shows a 'no matching order code' hint when /api/search finds nothing", async () => {
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
-    vi.mocked(apiGet).mockResolvedValue({ q: "zzz", exactOrderId: null });
+    searchPayload = { q: "zzz", exactOrderId: null };
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
 
@@ -278,7 +299,7 @@ describe("PaymentsPage", () => {
     mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
     // Search resolves case-insensitively and reports the canonical (uppercased)
     // code — the admin types lowercase, the API's fallback still finds it.
-    vi.mocked(apiGet).mockResolvedValue({ q: "order-9", exactOrderId: 9 });
+    searchPayload = { q: "order-9", exactOrderId: 9 };
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CREDIT1")).toBeInTheDocument());
@@ -445,16 +466,16 @@ describe("PaymentsPage", () => {
     render(<PaymentsPage />, { wrapper: Wrapper });
     await vi.waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+    // Isolate the debounced call's own args from the mount-time call already
+    // recorded above.
+    vi.mocked(apiGet).mockClear();
 
     const search = screen.getByPlaceholderText(/search transfer id/i);
     fireEvent.change(search, { target: { value: "ABC" } });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(apiGet).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(300);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=ABC")));
+    await vi.waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("q=ABC")));
     vi.useRealTimers();
   });
 
@@ -570,11 +591,9 @@ describe("PaymentsPage", () => {
 
     expect(screen.getByText(/showing 1–50 of 120/i)).toBeInTheDocument();
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ enabled: true, ledger: [], total: 120, todayCount: 0, page: 2, hasNext: true, outcomes: [], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 120, todayCount: 0, page: 2, hasNext: true, outcomes: [], counts: {} });
     await user.click(screen.getByRole("button", { name: /next/i }));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2")));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("page=2")));
   });
 
   // Task 47 (backend audit follow-up): PaymentsPage used to always start
@@ -583,16 +602,14 @@ describe("PaymentsPage", () => {
   // showed an unfiltered ledger. Pre-fix, this test's fetch would have been
   // called without an outcome param at all.
   it("seeds the outcome filter from ?outcome= in the URL on mount", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: ["delivery_failed"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: ["delivery_failed"], counts: {} });
     render(
       <WrapperAt initialEntries={["/payments?outcome=delivery_failed"]}>
         <PaymentsPage />
       </WrapperAt>,
     );
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("outcome=delivery_failed")),
+      expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("outcome=delivery_failed")),
     );
   });
 
@@ -635,15 +652,13 @@ describe("PaymentsPage", () => {
   });
 
   it("seeds the order-type filter from ?kind= in the URL on mount", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
     render(
       <WrapperAt initialEntries={["/payments?kind=WALLET_TOPUP"]}>
         <PaymentsPage />
       </WrapperAt>,
     );
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
   });
 
   it("re-queries from page 1 when the order-type filter changes", async () => {
@@ -652,14 +667,12 @@ describe("PaymentsPage", () => {
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], kinds: ["PRODUCT", "WALLET_TOPUP"], counts: {} });
     await user.click(screen.getByRole("combobox", { name: /order type/i }));
     await user.click(await screen.findByRole("option", { name: "Wallet Topup" }));
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
-    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=1"));
+    await waitFor(() => expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("kind=WALLET_TOPUP")));
+    expect(apiGet).toHaveBeenCalledWith(expect.stringContaining("page=1"));
   });
 });
 

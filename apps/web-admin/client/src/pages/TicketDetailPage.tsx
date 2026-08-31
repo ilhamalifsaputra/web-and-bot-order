@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/select";
 import { Send, CircleX, CheckCircle2, RotateCcw, Lock } from "lucide-react";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
 
@@ -126,11 +126,7 @@ interface AdminOption {
 function useTicket(ticketId: string) {
   return useQuery<TicketDetail>({
     queryKey: ["ticket", ticketId],
-    queryFn: async () => {
-      const res = await fetch(`/api/support/${ticketId}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<TicketDetail>;
-    },
+    queryFn: () => apiGet<TicketDetail>(`/api/support/${ticketId}`),
   });
 }
 
@@ -142,11 +138,7 @@ function useTicket(ticketId: string) {
 function useAdmins() {
   return useQuery<{ admins: AdminOption[] }>({
     queryKey: ["admins"],
-    queryFn: async () => {
-      const res = await fetch("/api/admins");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ admins: AdminOption[] }>;
-    },
+    queryFn: () => apiGet<{ admins: AdminOption[] }>("/api/admins"),
   });
 }
 

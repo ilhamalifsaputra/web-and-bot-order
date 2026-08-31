@@ -160,9 +160,7 @@ function usePayments(outcome: string, kind: string, q: string, page: number) {
       if (outcome) params.set("outcome", outcome);
       if (kind) params.set("kind", kind);
       if (q) params.set("q", q);
-      const res = await fetch(`/api/payments?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<PaymentsData>;
+      return apiGet<PaymentsData>(`/api/payments?${params.toString()}`);
     },
   });
 }

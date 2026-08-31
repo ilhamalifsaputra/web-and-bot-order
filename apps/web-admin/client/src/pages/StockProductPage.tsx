@@ -22,7 +22,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 
@@ -55,11 +55,7 @@ interface StockProductData {
 function useStockProduct(productId: string) {
   return useQuery<StockProductData>({
     queryKey: ["stock", productId],
-    queryFn: async () => {
-      const res = await fetch(`/api/stock/${productId}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<StockProductData>;
-    },
+    queryFn: () => apiGet<StockProductData>(`/api/stock/${productId}`),
     enabled: !!productId,
   });
 }

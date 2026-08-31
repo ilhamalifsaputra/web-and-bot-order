@@ -16,7 +16,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
 /** NotificationEvent values from packages/core/src/enums.ts, labeled
@@ -118,9 +118,7 @@ export function OutboxPage() {
       const p = new URLSearchParams();
       if (applied.status) p.set("status", applied.status);
       if (applied.page > 1) p.set("page", String(applied.page));
-      const res = await fetch(`/api/outbox?${p}`, { credentials: "include" });
-      if (!res.ok) throw new Error(`/api/outbox ${res.status}`);
-      return res.json() as Promise<OutboxResponse>;
+      return apiGet<OutboxResponse>(`/api/outbox?${p}`);
     },
   });
 

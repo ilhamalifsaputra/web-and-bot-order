@@ -9,6 +9,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { apiGet } from "../api/client";
 
 interface DayRevenue {
   day: string;
@@ -30,11 +31,7 @@ interface ReportsData {
 export function ReportsPage() {
   const { data, isLoading, isError } = useQuery<ReportsData>({
     queryKey: ["reports"],
-    queryFn: async () => {
-      const res = await fetch("/api/reports", { credentials: "include" });
-      if (!res.ok) throw new Error(`/api/reports ${res.status}`);
-      return res.json() as Promise<ReportsData>;
-    },
+    queryFn: () => apiGet<ReportsData>("/api/reports"),
     refetchInterval: 5 * 60_000,
   });
 

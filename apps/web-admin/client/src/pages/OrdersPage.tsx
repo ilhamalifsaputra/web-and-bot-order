@@ -44,7 +44,7 @@ import { formatCurrencyParts } from "../components/shared/CurrencyAmount";
 import { useOrdersKpis } from "../hooks/useOrdersKpis";
 import { orderStatusLabel } from "../lib/orderStatus";
 import { PAYMENT_METHOD_LABELS, paymentMethodLabel } from "../lib/paymentMethod";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 
@@ -138,9 +138,7 @@ function useOrders(filters: Filters) {
       if (filters.until) params.set("until", filters.until);
       if (filters.page > 1) params.set("page", String(filters.page));
       if (filters.pageSize !== 20) params.set("pageSize", String(filters.pageSize));
-      const res = await fetch(`/api/orders?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<OrdersData>;
+      return apiGet<OrdersData>(`/api/orders?${params.toString()}`);
     },
   });
 }

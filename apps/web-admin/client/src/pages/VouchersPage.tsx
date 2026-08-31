@@ -207,9 +207,7 @@ function useVouchers(q: string, status: string, page: number) {
       const params = new URLSearchParams({ page: String(page) });
       if (q) params.set("q", q);
       if (status) params.set("status", status);
-      const res = await fetch(`/api/vouchers?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json();
+      return apiGet(`/api/vouchers?${params.toString()}`);
     },
   });
 }

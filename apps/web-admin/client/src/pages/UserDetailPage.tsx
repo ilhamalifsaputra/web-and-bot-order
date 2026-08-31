@@ -22,7 +22,7 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { CircleCheck, Ban } from "lucide-react";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
 interface UserDetail {
@@ -41,11 +41,7 @@ interface UserDetail {
 function useUserDetail(userId: string) {
   return useQuery<UserDetail>({
     queryKey: ["user", userId],
-    queryFn: async () => {
-      const res = await fetch(`/api/users/${userId}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<UserDetail>;
-    },
+    queryFn: () => apiGet<UserDetail>(`/api/users/${userId}`),
   });
 }
 

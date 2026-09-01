@@ -22,6 +22,9 @@
      0.01 short of WCAG AA (4.5:1) for the pill's small text. This marginally
      darker green clears AA (~4.55:1) without shifting the hue perceptibly.
      Scoped to StockBadge — do NOT substitute for --gg-grass-dark anywhere the
-     shared success green is used (StatusBadge, ProductCard, money deltas). */
+     shared success green is used (StatusBadge, ProductCard, money deltas).
+     Consuming utility: `text-grass-dark-aa`, resolved from the literal mirror
+     `--color-grass-dark-aa: #157e3b` in the `@theme` block of ../index.css. If
+     you retone this green, update BOTH copies (this one and that @theme line). */
   --gg-grass-dark-aa: #157e3b;
 }

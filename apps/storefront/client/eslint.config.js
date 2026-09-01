@@ -27,7 +27,6 @@
 // `tailwindcss/no-custom-classname` is deliberately NOT enabled — it would flag
 // every legacy `.btn` / `.card` / `.field` / `.chip` / `.denom-card` class.
 
-import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import tailwindcss from "eslint-plugin-tailwindcss";
 import { fileURLToPath } from "node:url";
@@ -44,8 +43,10 @@ const RAW_COLOR = String.raw`#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(`;
 
 // A Tailwind arbitrary value that bakes in a colour or an absolute px length:
 //   -[ ...#hex... ]  |  -[ ...rgba(...)... ]  |  -[ ...12px... ]
-// (rem / % / vw / vh / svh / fr / ratios / gradients / calc / env are NOT
-// matched — those are allowed.)
+// (rem / % / vw / vh / svh / fr / ratios / gradients, and calc()/env()
+// expressions with no `px` term, are NOT matched — those are allowed. Note a
+// `calc()`/`env()` that DOES contain a px length — `w-[calc(100%-20px)]` — is
+// still flagged, because it carries a hard-coded px value.)
 const ARBITRARY_OFFTOKEN = String.raw`-\[[^\]]*(?:#[0-9a-fA-F]{3,8}|(?:rgba?|hsla?)\([^\]]*\)|\d(?:\.\d+)?px)[^\]]*\]`;
 
 // A hard-coded absolute length inside an inline style string.
@@ -87,7 +88,14 @@ export default tseslint.config(
   },
   {
     files: ["src/**/*.{ts,tsx}"],
-    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    // `tseslint.configs.base` ONLY registers the TypeScript parser + plugin —
+    // it enables ZERO rules. Deliberately not `js.configs.recommended` /
+    // `tseslint.configs.recommended`: those turn on ~18 rules we'd then have to
+    // disable by name, and a future ESLint / typescript-eslint minor bump could
+    // add a new `recommended` rule that fails `pnpm test` repo-wide for a reason
+    // unrelated to token styling. Starting from zero keeps this a single-purpose
+    // gate — the only rule it asserts is `no-restricted-syntax` below.
+    extends: [tseslint.configs.base],
     languageOptions: { parserOptions: { ecmaFeatures: { jsx: true } } },
     linterOptions: {
       // The source carries two `// eslint-disable-next-line react-hooks/...`
@@ -100,6 +108,10 @@ export default tseslint.config(
       // comments predating any ESLint here. Registering the names (with no-op
       // rules) keeps those directives resolvable without pulling in
       // eslint-plugin-react-hooks, which is out of scope for this gate.
+      // Still required after dropping the `recommended` presets: an unknown
+      // rule name in a disable directive is a hard "Definition for rule … was
+      // not found" error that `reportUnusedDisableDirectives: "off"` does NOT
+      // silence.
       "react-hooks": {
         rules: {
           "exhaustive-deps": { create: () => ({}) },
@@ -110,25 +122,6 @@ export default tseslint.config(
     rules: {
       // ---- THE GATE (the only thing this config asserts) ------------------
       "no-restricted-syntax": GATE_FULL,
-
-      // ---- everything else from the presets: off. Not a general linter. --
-      "no-unused-vars": "off",
-      "@typescript-eslint/no-unused-vars": "off",
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-empty-object-type": "off",
-      "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/ban-ts-comment": "off",
-      "@typescript-eslint/no-unused-expressions": "off",
-      "@typescript-eslint/no-require-imports": "off",
-      "@typescript-eslint/no-this-alias": "off",
-      "no-empty": "off",
-      "no-useless-escape": "off",
-      "no-control-regex": "off",
-      "no-cond-assign": "off",
-      "no-constant-condition": "off",
-      "no-fallthrough": "off",
-      "no-prototype-builtins": "off",
-      "prefer-const": "off",
     },
   },
 

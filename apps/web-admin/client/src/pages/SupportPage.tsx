@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { ticketStatusLabel } from "../lib/ticketStatus";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 
@@ -167,9 +167,7 @@ function useTickets(q: string, filters: Filters) {
       if (filters.overdue) params.set("overdue", "true");
       if (filters.page > 1) params.set("page", String(filters.page));
       if (filters.pageSize !== 20) params.set("pageSize", String(filters.pageSize));
-      const res = await fetch(`/api/support?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<SupportData>;
+      return apiGet<SupportData>(`/api/support?${params.toString()}`);
     },
     refetchInterval: 30_000,
   });
@@ -178,11 +176,7 @@ function useTickets(q: string, filters: Filters) {
 function useAdmins() {
   return useQuery<{ admins: AdminOption[] }>({
     queryKey: ["admins"],
-    queryFn: async () => {
-      const res = await fetch("/api/admins");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ admins: AdminOption[] }>;
-    },
+    queryFn: () => apiGet<{ admins: AdminOption[] }>("/api/admins"),
   });
 }
 

@@ -182,6 +182,7 @@ describe("TasksPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/admin-tasks?type=MANUAL_DELIVERY&status=PENDING&priority=HIGH&assignedTo=unassigned",
+        expect.objectContaining({ credentials: "include" }),
       ),
     );
   });

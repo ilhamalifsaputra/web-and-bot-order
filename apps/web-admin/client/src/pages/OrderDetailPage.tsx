@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { RefreshCw, Check, X, CircleDollarSign, Send, MailX } from "lucide-react";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { useSse } from "../hooks/useSse";
 
@@ -121,11 +121,7 @@ interface OrderDetailData {
 function useOrderDetail(orderId: string) {
   return useQuery<OrderDetailData>({
     queryKey: ["order", orderId],
-    queryFn: async () => {
-      const res = await fetch(`/api/orders/${orderId}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<OrderDetailData>;
-    },
+    queryFn: () => apiGet<OrderDetailData>(`/api/orders/${orderId}`),
     enabled: !!orderId,
   });
 }

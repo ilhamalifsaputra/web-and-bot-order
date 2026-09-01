@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "../api/client";
 
 export interface AuditRow {
   id: number;
@@ -43,10 +44,6 @@ export function useAudit(params: {
 
   return useQuery<AuditResponse>({
     queryKey: ["audit", params],
-    queryFn: async () => {
-      const res = await fetch(`/api/audit?${search}`, { credentials: "include" });
-      if (!res.ok) throw new Error(`/api/audit ${res.status}`);
-      return res.json() as Promise<AuditResponse>;
-    },
+    queryFn: () => apiGet<AuditResponse>(`/api/audit?${search}`),
   });
 }

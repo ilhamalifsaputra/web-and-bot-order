@@ -36,7 +36,7 @@ import {
   UserCheck,
   AlertTriangle,
 } from "lucide-react";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
 const TYPE_VALUES = [
@@ -163,9 +163,7 @@ function useAdminTasks(filters: Filters) {
       if (filters.assignedTo) params.set("assignedTo", filters.assignedTo);
       if (filters.page > 1) params.set("page", String(filters.page));
       if (filters.pageSize !== 20) params.set("pageSize", String(filters.pageSize));
-      const res = await fetch(`/api/admin-tasks?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<TasksData>;
+      return apiGet<TasksData>(`/api/admin-tasks?${params.toString()}`);
     },
     refetchInterval: 30_000,
   });
@@ -182,11 +180,7 @@ function useAdminTasks(filters: Filters) {
 function useTaskAssignees() {
   return useQuery<{ admins: AdminOption[] }>({
     queryKey: ["admin-task-assignees"],
-    queryFn: async () => {
-      const res = await fetch("/api/admin-tasks/assignees");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ admins: AdminOption[] }>;
-    },
+    queryFn: () => apiGet<{ admins: AdminOption[] }>("/api/admin-tasks/assignees"),
   });
 }
 

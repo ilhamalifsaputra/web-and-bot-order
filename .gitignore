@@ -40,6 +40,11 @@ coverage/
 apps/web-admin/static/dashboard-app/
 apps/storefront/static/shop-app/
 
+# --- Playwright run artifacts (screenshots/traces on failure, HTML report) ---
+/test-results/
+/playwright-report/
+/blob-report/
+
 # --- Prisma generated client (regenerated via prisma generate) ---
 **/generated/
 

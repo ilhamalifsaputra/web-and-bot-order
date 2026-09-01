@@ -41,6 +41,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { AlertTriangle, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
+import { useIdempotentPost } from "../api/idempotency";
 import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
@@ -263,7 +264,7 @@ export default function InstantBuyPage() {
       apiPost<{ available: boolean; valid?: boolean; nickname?: string | null; region_mismatch?: boolean }>(
         "/api/v1/topup/check-account",
         { denomination_id: selected.id, id: accountId, server: accountServer || undefined },
-        controller.signal,
+        { signal: controller.signal },
       )
         .then((res) => {
           if (cancelled) return;
@@ -335,9 +336,16 @@ export default function InstantBuyPage() {
   // vs. signed-in client nav, same order-code email handoff, identical response
   // shape) against this flow's own cart-free endpoint — customer_data is always
   // a single-unit array here, since InstantBuyPage never buys more than qty 1.
+  //
+  // `idempotentPost`, not `apiPost`: POST /api/v1/topup/order is the
+  // order-creating call (routes/apiTopup.ts, TOPUP_ORDER_IDEMPOTENCY_ENDPOINT),
+  // so a retry after a request that never came back must replay the first
+  // attempt rather than buy twice. The preview and nickname-check calls above
+  // create nothing and stay on the plain client.
+  const idempotentPost = useIdempotentPost();
   const placeOrderMutation = useMutation({
     mutationFn: () =>
-      apiPost<PlaceOrderResponse>("/api/v1/topup/order", {
+      idempotentPost<PlaceOrderResponse>("/api/v1/topup/order", {
         denomination_id: selected!.id,
         qty: 1,
         method,

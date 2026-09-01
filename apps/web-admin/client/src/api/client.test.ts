@@ -44,6 +44,53 @@ describe("apiPost", () => {
       "Your session was refreshed in another tab. Reload this page to continue.",
     );
   });
+
+  it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/dashboard/something", {});
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).has("Idempotency-Key")).toBe(false);
+  });
+
+  it("attaches the given key as an Idempotency-Key header", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/payments/order/501/refund", {}, { idempotencyKey: "9f1c-key" });
+    // Fastify lowercases incoming header names, so this is what the routes
+    // read as `req.headers["idempotency-key"]`.
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("idempotency-key")).toBe("9f1c-key");
+  });
+
+  it("reports a received response's status through onResponse, whatever that status is", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 422, text: async () => JSON.stringify({ error: "Order is no longer underpaid." }) })));
+    const answered = vi.fn();
+    await expect(apiPost("/api/payments/order/501/refund", {}, { onResponse: answered })).rejects.toThrow(
+      "Order is no longer underpaid.",
+    );
+    // The status is what `useIdempotentPost` reads to tell a stored 4xx from
+    // a 5xx that stored nothing.
+    expect(answered).toHaveBeenCalledTimes(1);
+    expect(answered).toHaveBeenCalledWith(422);
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) })));
+    const ok = vi.fn();
+    await apiPost("/api/payments/order/501/refund", {}, { onResponse: ok });
+    expect(ok).toHaveBeenCalledTimes(1);
+    expect(ok).toHaveBeenCalledWith(200);
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 504, text: async () => "" })));
+    const gatewayTimeout = vi.fn();
+    await expect(apiPost("/api/payments/order/501/refund", {}, { onResponse: gatewayTimeout })).rejects.toThrow("504");
+    expect(gatewayTimeout).toHaveBeenCalledTimes(1);
+    expect(gatewayTimeout).toHaveBeenCalledWith(504);
+  });
+
+  it("stays silent on a transport failure, where no response ever arrived", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    const unanswered = vi.fn();
+    await expect(apiPost("/api/payments/order/501/refund", {}, { onResponse: unanswered })).rejects.toThrow("Failed to fetch");
+    expect(unanswered).not.toHaveBeenCalled();
+  });
 });
 
 describe("apiPatch", () => {

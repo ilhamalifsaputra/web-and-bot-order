@@ -197,7 +197,7 @@ describe("SupportPage", () => {
 
     // `sort` is always sent (DEFAULT_SORT is a non-empty string), so the
     // quick-filter's request is "the default sort plus overdue=true".
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest&overdue=true"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest&overdue=true", expect.objectContaining({ credentials: "include" })));
 
     // Clicking a second time toggles the quick-filter back off.
     fetchSpy.mockImplementation(async (input, init) => {
@@ -208,7 +208,7 @@ describe("SupportPage", () => {
       return jsonResponse(supportData([TICKET_OPEN, TICKET_REPLIED]));
     });
     await user.click(overdueCard!);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest", expect.objectContaining({ credentials: "include" })));
   });
 
   it("shows an Overdue chip only for rows flagged isOverdue", async () => {
@@ -293,10 +293,18 @@ describe("SupportPage", () => {
 
     const search = screen.getByPlaceholderText(/search ticket message/i);
     fireEvent.change(search, { target: { value: "refund" } });
-    expect(fetchSpy).not.toHaveBeenCalledWith(expect.stringContaining("q=refund"));
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("q=refund"),
+      expect.objectContaining({ credentials: "include" }),
+    );
 
     vi.advanceTimersByTime(300);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=refund")));
+    await vi.waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("q=refund"),
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
     vi.useRealTimers();
   });
 
@@ -323,6 +331,7 @@ describe("SupportPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/support?status=REPLIED%2CWAITING_CUSTOMER&priority=HIGH&assigned=unassigned&sort=priority",
+        expect.objectContaining({ credentials: "include" }),
       ),
     );
   });
@@ -343,7 +352,10 @@ describe("SupportPage", () => {
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/support?status=OPEN%2CWAITING_ADMIN&sort=newest"),
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/support?status=OPEN%2CWAITING_ADMIN&sort=newest",
+        expect.objectContaining({ credentials: "include" }),
+      ),
     );
   });
 
@@ -607,11 +619,15 @@ describe("SupportPage", () => {
       return jsonResponse(supportData([TICKET_OPEN], { total: 45, page: 2 }));
     });
     await user.click(screen.getByRole("button", { name: "Go to page 2" }));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2")));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2"), expect.objectContaining({ credentials: "include" })),
+    );
 
     await user.click(screen.getByRole("combobox", { name: /rows per page/i }));
     await user.click(await screen.findByText("50 / page"));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("pageSize=50")));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("pageSize=50"), expect.objectContaining({ credentials: "include" })),
+    );
     // Changing the page size resets to page 1 — the request must not still carry page=2.
     const lastPageSizeCall = fetchSpy.mock.calls
       .map(([url]) => (typeof url === "string" ? url : url!.toString()))
@@ -709,7 +725,9 @@ describe("SupportPage", () => {
     await user.click(await screen.findByRole("option", { name: "Payment" }));
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?category=PAYMENT&sort=newest"));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/support?category=PAYMENT&sort=newest", expect.objectContaining({ credentials: "include" })),
+    );
   });
 
   it("Export CSV link carries the active filters through to /api/support/export", async () => {

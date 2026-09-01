@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 
 interface BrandingData {
   faviconUrl: string;
@@ -35,11 +35,7 @@ interface BrandingData {
 function useBranding() {
   return useQuery<BrandingData>({
     queryKey: ["branding"],
-    queryFn: async () => {
-      const res = await fetch("/api/branding");
-      if (!res.ok) throw new Error(`Failed to load branding (${res.status})`);
-      return res.json() as Promise<BrandingData>;
-    },
+    queryFn: () => apiGet<BrandingData>("/api/branding"),
   });
 }
 

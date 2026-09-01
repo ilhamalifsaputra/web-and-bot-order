@@ -258,7 +258,7 @@ describe("InstantBuyPage", () => {
     fireEvent.change(screen.getByLabelText("Zone ID"), { target: { value: "1111" } });
     await waitFor(() => expect(screen.getAllByRole("button", { name: /Buy now/ })[0]).not.toBeDisabled());
     fireEvent.click(screen.getAllByRole("button", { name: /Buy now/ })[0]!);
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.any(Object)));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/topup/order", expect.any(Object), expect.objectContaining({ idempotencyKey: expect.any(String) })));
 
     expect(cartCalls()).toEqual([]);
   });
@@ -325,7 +325,7 @@ describe("InstantBuyPage", () => {
         voucher_code: "",
         customer_data: [{ user_id: "1234567", zone_id: "1111" }],
         guest_email: undefined,
-      }),
+      }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
     expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
   });
@@ -560,7 +560,7 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
             { denomination_id: 1, id: "1234567", server: undefined },
-            expect.any(AbortSignal),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
       } finally {
@@ -591,13 +591,13 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
             { denomination_id: 1, id: "1111", server: undefined },
-            expect.any(AbortSignal),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
         const firstCall = (apiPost as Mock).mock.calls.find(
           (c) => c[0] === "/api/v1/topup/check-account" && (c[1] as Record<string, unknown>).id === "1111",
         )!;
-        const firstSignal = firstCall[2] as AbortSignal;
+        const firstSignal = (firstCall[2] as { signal: AbortSignal }).signal;
         expect(firstSignal.aborted).toBe(false);
 
         // The field changes again before the first lookup resolves — its
@@ -610,7 +610,7 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
             { denomination_id: 1, id: "2222", server: undefined },
-            expect.any(AbortSignal),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
       } finally {
@@ -683,7 +683,7 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
             { denomination_id: 1, id: "1234567", server: "1111" },
-            expect.any(AbortSignal),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
       } finally {
@@ -710,7 +710,7 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/check-account",
             { denomination_id: 1, id: "1234567", server: undefined },
-            expect.any(AbortSignal),
+            expect.objectContaining({ signal: expect.any(AbortSignal) }),
           ),
         );
 
@@ -840,6 +840,7 @@ describe("InstantBuyPage", () => {
           expect(apiPost).toHaveBeenCalledWith(
             "/api/v1/topup/order",
             expect.objectContaining({ method: "binance", denomination_id: 1, qty: 1 }),
+            expect.objectContaining({ idempotencyKey: expect.any(String) }),
           ),
         );
       } finally {

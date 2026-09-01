@@ -294,7 +294,12 @@ describe("VouchersPage", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(300);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=SAVE")));
+    await vi.waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("q=SAVE"),
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
     vi.useRealTimers();
   });
 
@@ -309,7 +314,12 @@ describe("VouchersPage", () => {
     await waitFor(() => screen.getByRole("option", { name: "Expired" }));
     await user.click(screen.getByRole("option", { name: "Expired" }));
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("status=expired")));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("status=expired"),
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
   });
 
   it("gives every inline 'New Voucher' field a persistent visible label, including the Type and Scope combobox (F-014)", async () => {

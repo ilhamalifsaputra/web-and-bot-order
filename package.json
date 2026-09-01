@@ -24,10 +24,12 @@
     "check-migration-drift": "tsx scripts/check-migration-drift.ts",
     "check-migration-timestamps": "tsx scripts/check-migration-timestamps.ts",
     "check-migration-rebuild-quoting": "tsx scripts/check-migration-rebuild-quoting.ts",
+    "check-frontend-boundaries": "tsx scripts/check-frontend-boundaries.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
-    "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-migration-rebuild-quoting",
+    "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-migration-rebuild-quoting && pnpm run check-frontend-boundaries",
     "test": "vitest run",
+    "e2e": "playwright test",
     "dev:web": "pnpm --filter @app/web-admin dev",
     "dev:store": "pnpm --filter @app/storefront dev",
     "dev:bot": "pnpm --filter @app/order-bot dev"
@@ -35,6 +37,7 @@
   "devDependencies": {
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^22.9.0",
     "dotenv": "^16.4.5",
     "esbuild": "^0.24.0",

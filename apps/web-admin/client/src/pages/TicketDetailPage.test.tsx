@@ -8,8 +8,19 @@ import { Toaster } from "@/components/ui/sonner";
 import { TicketDetailPage } from "./TicketDetailPage";
 import { apiPost } from "../api/client";
 
+// Task 2 (fetch → shared Application Client): TicketDetailPage's useTicket
+// and useAdmins now call apiGet(...) instead of raw fetch(), so the mocked
+// module needs an apiGet too — implemented as a thin forward to the global
+// `fetch` this file's tests already stub per-test via
+// vi.spyOn(globalThis, "fetch"), so every existing test body keeps working
+// unchanged.
 vi.mock("../api/client", () => ({
   apiPost: vi.fn(),
+  apiGet: vi.fn(async (path: string) => {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`${path} failed`);
+    return res.json();
+  }),
 }));
 
 function Wrapper({ children }: { children: React.ReactNode }) {

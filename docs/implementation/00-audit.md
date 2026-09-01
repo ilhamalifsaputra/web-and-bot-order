@@ -68,7 +68,7 @@ Covers §5.2 of `FRONTEND_IMPLEMENTATION_PROMPT_v3.md`. No `TBD` cells.
 
 ## B. Route inventory
 
-All 27 `<Route>` entries in `App.tsx` plus the catch-all (`*`) = 31 rows.
+All 30 named `<Route>` entries in `App.tsx` plus the catch-all (`*`) = 31 rows.
 Priority derives from the plan's stated order: **core commerce > funnel >
 auth > account > content** (P1–P5).
 
@@ -150,9 +150,9 @@ no existing equivalent, create new · `delete` = dead code, remove.
 | Breadcrumb | `components.md` "Breadcrumb" | `src/components/shop/Breadcrumb.tsx` | adopt (already business-agnostic, token-aligned; promote to `ui/` optional) | `src/components/shop/Breadcrumb.tsx` |
 | Toast / notifications | `components.md` "Toast / notifications" | `src/components/shop/Toast.tsx` | adopt | `src/components/shop/Toast.tsx` (or promote to `src/components/ui/Toast.tsx`) |
 | Badge – Discount (`15% OFF`) | `components.md` "Badge & chip" | `src/components/shop/FlashBadge.tsx` | refactor (fold into Badge primitive once built; keep `FlashBadge` as the domain wrapper owning countdown/strike-through logic) | `src/components/shop/FlashBadge.tsx` |
-| Badge – Status chip | `components.md` "Badge & chip" | `src/components/shop/StatusBadge.tsx` **and** `src/components/shop/TicketStatusBadge.tsx` (two implementations — deliberate divergence, ticket-specific copy; see §E) | refactor (both) | `src/components/shop/StatusBadge.tsx`, `src/components/shop/TicketStatusBadge.tsx` |
+| Badge – Status chip | `components.md` "Badge & chip" | `src/components/shop/StatusBadge.tsx` (ticket-flavoured counterpart `TicketStatusBadge.tsx` — deliberate divergence, ticket-specific copy — is its own row in C3) | refactor | `src/components/shop/StatusBadge.tsx` |
 | Top navigation (desktop) | `components.md` "Top navigation" | `src/components/Layout.tsx` (header block) | refactor (split out) | `src/components/layout/Navbar.tsx` |
-| Bottom navigation (mobile) | `components.md` "Bottom navigation" | `src/components/Layout.tsx` (hamburger + slide-in **left drawer** — structurally different pattern) | **escalate — see §F** (not a component-mapping decision) | n/a until decided |
+| Bottom navigation (mobile) | `components.md` "Bottom navigation" | `src/components/Layout.tsx` (hamburger + slide-in **left drawer** — structurally different pattern) | build (deferred — navigation-model decision pending §F escalation #1) | n/a until decided — see §F |
 | Footer | `components.md` "Footer" | `src/components/Layout.tsx` (footer block) | refactor (split out) | `src/components/layout/Footer.tsx` |
 | Sticky purchase bar | `components.md` "Sticky purchase bar" | **three independent hand-rolled implementations**: `ProductPage.tsx`, `InstantBuyPage.tsx`, `CheckoutPage.tsx` (mobile sticky total bar) — see §E debt | refactor (consolidate three call sites into one parameterized component) | `src/components/shop/StickyPurchaseBar.tsx` |
 

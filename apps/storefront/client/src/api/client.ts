@@ -75,23 +75,48 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Everything `apiPost` can be asked to do beyond "POST this body". All three
+ * are optional; a call that passes none behaves exactly as it always has. */
+export interface PostOptions {
+  /** Cancels an in-flight request (e.g. InstantBuyPage.tsx's debounced
+   * nickname-check lookup, cancelled on every keystroke so a stale response
+   * can never overwrite a newer one). */
+  signal?: AbortSignal;
+  /** Opaque per-operation key sent as `Idempotency-Key`. The order-creating
+   * routes (POST /api/v1/checkout, POST /api/v1/topup/order) replay the first
+   * attempt's stored response when a retry arrives with the same key and the
+   * same request, instead of creating a second order. Minting and holding the
+   * key is `useIdempotentPost`'s job (api/idempotency.ts) — pages should call
+   * that rather than passing this by hand. */
+  idempotencyKey?: string;
+  /** Fired the moment the server's response is in hand, before its body is
+   * read and whatever the status. This is what lets `useIdempotentPost` tell
+   * a KNOWN outcome (any HTTP status — the server answered, and the route has
+   * already stored that answer against the key) from an UNKNOWN one (a
+   * transport failure, where the mutation may or may not have run). */
+  onResponse?: () => void;
+}
+
 /** Attaches the page's CSRF token as a header (the storefront csrfCheck in
  * apps/storefront/src/plugins/auth.ts accepts x-csrf-token as an alternative
  * to the form-field token the HTML forms used). Guests may call this with an
- * empty token — the cart routes exempt them, everything else 401s first.
- *
- * `signal` is optional and only used by callers that need to cancel an
- * in-flight request (e.g. InstantBuyPage.tsx's debounced nickname-check
- * lookup, cancelled on every keystroke so a stale response can never
- * overwrite a newer one) — every existing call site is unaffected. */
-export async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+ * empty token — the cart routes exempt them, everything else 401s first. */
+export async function apiPost<T>(path: string, body: unknown, options?: PostOptions): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-CSRF-Token": csrfToken(),
+  };
+  // Sent in the header's canonical mixed casing; Fastify lowercases incoming
+  // header names, so the routes read it as `req.headers["idempotency-key"]`.
+  if (options?.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
   const res = await fetch(path, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+    headers,
     body: JSON.stringify(body),
-    signal,
+    signal: options?.signal,
   });
+  options?.onResponse?.();
   // Guest checkout's 201 AND its 4xx both carry the guest session's CSRF token
   // once that session exists, so a failed attempt still leaves the page able to
   // retry — but only the error path tolerates a body that isn't JSON (see

@@ -244,7 +244,7 @@ describe("PaymentsPage", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Match" }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/match", { binance_tx_id: "TX999", order_code: "ORDER-9" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/match", { binance_tx_id: "TX999", order_code: "ORDER-9" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
   });
 
@@ -280,7 +280,7 @@ describe("PaymentsPage", () => {
     expect(within(dialog).getByText(/TX1/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1" }, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("does not show an actions menu for a matched transfer", async () => {
@@ -319,7 +319,7 @@ describe("PaymentsPage", () => {
     // raw lowercase text the admin typed — the backend's lookup is
     // case-sensitive and would 404 on "order-9".
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/credit", { binance_tx_id: "CREDIT1", order_code: "ORDER-9" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/credit", { binance_tx_id: "CREDIT1", order_code: "ORDER-9" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
   });
 
@@ -498,8 +498,8 @@ describe("PaymentsPage", () => {
     await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
 
     await waitFor(() => {
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1" });
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2" });
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
     });
   });
 
@@ -556,9 +556,9 @@ describe("PaymentsPage", () => {
     await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
 
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS" }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
-    expect(apiPost).not.toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "GETSMATCHED" });
+    expect(apiPost).not.toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "GETSMATCHED" }, expect.objectContaining({ idempotencyKey: expect.any(String) }));
   });
 
   it("clears the bulk selection when navigating to the next page", async () => {
@@ -711,7 +711,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", {}));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("refunds an underpaid order to the buyer's wallet", async () => {
@@ -728,7 +728,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Refund" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/refund", {}));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/refund", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("cancels an underpaid order", async () => {
@@ -745,7 +745,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel order" }));
 
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/cancel", {}));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/cancel", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
   it("lists pending internal transfers awaiting confirmation", async () => {
@@ -811,5 +811,102 @@ describe("PaymentsPage — underpaid order resolution", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
     expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
+  });
+});
+
+// Idempotency-Key. All six payment mutations read one (see
+// src/routes/api/payments.ts). These assert the header VALUE across two
+// attempts, not merely that apiPost was called.
+//
+// The lifecycle is exercised through bulk dismiss rather than the row-action
+// dialogs: `ConfirmDialog` closes as soon as its confirm button is clicked
+// (its `onConfirm` is a fire-and-forget `mutate`), and under jsdom Radix
+// leaves `aria-hidden` / `pointer-events: none` behind when that dialog is
+// unmounted by its parent instead of closed through its own animation — so a
+// second pass through the menu is unreachable for reasons that have nothing to
+// do with the key. Bulk dismiss touches the same `/api/payments/dismiss`
+// route and the same `useIdempotentPost` instance with no modal in the way.
+describe("PaymentsPage — Idempotency-Key", () => {
+  const DISMISS_PATH = "/api/payments/dismiss";
+
+  /** The keys the calls to `path` carried, in click order. */
+  function keysFor(path: string): string[] {
+    return vi
+      .mocked(apiPost)
+      .mock.calls.filter((c) => c[0] === path)
+      .map((c) => (c[2] as { idempotencyKey: string }).idempotencyKey);
+  }
+
+  const LEDGER = [
+    { id: 1, gateway: "binance", reference: "BULK1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    { id: 2, gateway: "binance", reference: "BULK2", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+  ];
+
+  async function renderLedger(rows = LEDGER) {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: rows, total: rows.length, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(rows[0]!.reference)).toBeInTheDocument());
+    return user;
+  }
+
+  /** Select BULK1 and dismiss it. The selection is cleared after each run, so
+   * calling this twice is the admin retrying the same transfer. */
+  async function dismissBulk1(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole("checkbox", { name: /select transfer bulk1/i }));
+    await user.click(await screen.findByRole("button", { name: /dismiss 1 transfer/i }));
+  }
+
+  it("retrying a dismiss whose request never came back sends the byte-identical key", async () => {
+    // A transport failure: `onResponse` never fires, so the outcome is
+    // unknown — the dismiss may already have landed and only the response
+    // lost. This is exactly the retry that must be deduped.
+    vi.mocked(apiPost).mockRejectedValue(new TypeError("Failed to fetch"));
+    const user = await renderLedger([LEDGER[0]!]);
+
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(1));
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(2));
+
+    const [first, second] = keysFor(DISMISS_PATH);
+    expect(first).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second).toBe(first);
+  });
+
+  it("mints a fresh key for the next attempt once the server has answered", async () => {
+    // A received 4xx — the outcome is known and the route has already stored
+    // it against the key, so reusing the key could only replay that same
+    // error even after the transfer's state has moved on.
+    vi.mocked(apiPost).mockImplementation(
+      async (_path: string, _body: unknown, options?: { onResponse?: () => void }) => {
+        options?.onResponse?.();
+        throw new Error("Transfer not found.");
+      },
+    );
+    const user = await renderLedger([LEDGER[0]!]);
+
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(1));
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(2));
+
+    const [first, second] = keysFor(DISMISS_PATH);
+    expect(second).not.toBe(first);
+  });
+
+  it("gives each transfer in a bulk dismiss its own key", async () => {
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    const user = await renderLedger();
+
+    await user.click(screen.getByRole("checkbox", { name: /select transfer bulk1/i }));
+    await user.click(screen.getByRole("checkbox", { name: /select transfer bulk2/i }));
+    await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
+
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(2));
+    const [first, second] = keysFor(DISMISS_PATH);
+    // Two different transfers are two different logical operations — sharing
+    // one key would earn a 409 `idempotency_key_reused` on the second.
+    expect(second).not.toBe(first);
   });
 });

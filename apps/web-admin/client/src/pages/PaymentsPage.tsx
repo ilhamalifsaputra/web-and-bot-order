@@ -41,7 +41,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet } from "../api/client";
+import { useIdempotentPost } from "../api/idempotency";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 import { HEALTH_DOT } from "../lib/healthDot";
@@ -235,8 +236,16 @@ export function PaymentsPage() {
   const underpaid = data?.underpaid ?? [];
   const pendingInternal = data?.pendingInternal ?? [];
 
+  // Every mutation below moves money or an order's state, and every one of the
+  // six routes behind them reads an `Idempotency-Key` (see api/idempotency.ts
+  // for the hold-vs-mint rule, and src/routes/api/payments.ts for what the
+  // server does with it). One hook instance serves them all: the key is scoped
+  // to the request, so the six never collide, and the bulk dismiss below gets
+  // one key per transfer for free.
+  const idempotentPost = useIdempotentPost();
+
   const match = useMutation({
-    mutationFn: () => apiPost("/api/payments/match", matchForm),
+    mutationFn: () => idempotentPost("/api/payments/match", matchForm),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       setMatchForm({ binance_tx_id: "", order_code: "" });
@@ -246,7 +255,7 @@ export function PaymentsPage() {
   });
 
   const dismiss = useMutation({
-    mutationFn: (txId: string) => apiPost("/api/payments/dismiss", { binance_tx_id: txId }),
+    mutationFn: (txId: string) => idempotentPost("/api/payments/dismiss", { binance_tx_id: txId }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Transfer dismissed.");
@@ -256,7 +265,7 @@ export function PaymentsPage() {
   });
 
   const creditToBalance = useMutation({
-    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.reference, order_code: creditSuggestion!.code }),
+    mutationFn: () => idempotentPost("/api/payments/credit", { binance_tx_id: pendingCredit!.reference, order_code: creditSuggestion!.code }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Added to the buyer's credit balance.");
@@ -267,7 +276,7 @@ export function PaymentsPage() {
   });
 
   const deliverAnyway = useMutation({
-    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/deliver`, {}),
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/deliver`, {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order delivered.");
@@ -276,7 +285,7 @@ export function PaymentsPage() {
   });
 
   const refundUnderpaid = useMutation({
-    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/refund`, {}),
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/refund`, {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order refunded to wallet.");
@@ -285,7 +294,7 @@ export function PaymentsPage() {
   });
 
   const cancelUnderpaid = useMutation({
-    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/cancel`, {}),
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/cancel`, {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order cancelled.");
@@ -327,7 +336,7 @@ export function PaymentsPage() {
   const bulkDismiss = useMutation({
     mutationFn: async (ids: number[]) => {
       const rows = ledgerRows.filter(tx => ids.includes(tx.id));
-      const results = await Promise.allSettled(rows.map(tx => apiPost("/api/payments/dismiss", { binance_tx_id: tx.reference })));
+      const results = await Promise.allSettled(rows.map(tx => idempotentPost("/api/payments/dismiss", { binance_tx_id: tx.reference })));
       const failed = results.filter(r => r.status === "rejected").length;
       return { succeeded: results.length - failed, failed };
     },

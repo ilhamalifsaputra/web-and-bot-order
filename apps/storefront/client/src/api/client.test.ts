@@ -37,6 +37,34 @@ describe("apiPost", () => {
     expect(init.credentials).toBe("include");
     expect(JSON.parse(init.body as string)).toEqual({ denomination_id: 1, qty: 2 });
   });
+
+  it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/v1/cart", {});
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).has("Idempotency-Key")).toBe(false);
+  });
+
+  it("attaches the given key as an Idempotency-Key header", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/v1/checkout", { method: "binance" }, { idempotencyKey: "9f1c-key" });
+    // Fastify lowercases incoming header names, so this is what the routes
+    // read as `req.headers["idempotency-key"]`.
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("idempotency-key")).toBe("9f1c-key");
+  });
+
+  it("reports a received response through onResponse, whatever its status, and stays silent on a transport failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 422, json: async () => ({ error: "web.out_of_stock" }) })));
+    const answered = vi.fn();
+    await expect(apiPost("/api/v1/checkout", {}, { onResponse: answered })).rejects.toThrow("web.out_of_stock");
+    expect(answered).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    const unanswered = vi.fn();
+    await expect(apiPost("/api/v1/checkout", {}, { onResponse: unanswered })).rejects.toThrow("Failed to fetch");
+    expect(unanswered).not.toHaveBeenCalled();
+  });
 });
 
 // Guest checkout and /track mint a session in the MIDDLE of the request that

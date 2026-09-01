@@ -180,7 +180,7 @@ describe("CheckoutPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
         method: "binance",
         voucher_code: "",
-      }),
+      }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
     );
     expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
   });
@@ -368,7 +368,7 @@ describe("CheckoutPage", () => {
             { game_id: "unit1game", email: "unit1@mail.com" },
             { game_id: "unit2game", email: "unit2@mail.com" },
           ],
-        }),
+        }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
     });
 
@@ -477,7 +477,7 @@ describe("CheckoutPage", () => {
           method: "binance",
           voucher_code: "",
           customer_data: [{ game_id: "abc" }],
-        }),
+        }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
     });
 
@@ -561,7 +561,7 @@ describe("CheckoutPage", () => {
             method: "binance",
             voucher_code: "",
             guest_email: "guest@example.com",
-          }),
+          }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
         );
         // Full page load, not navigate(): the shell has to re-render so the
         // whole app (account menu, CSRF meta) sees the new guest session.
@@ -833,7 +833,7 @@ describe("CheckoutPage", () => {
         expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
           method: "wallet_idr",
           voucher_code: "",
-        }),
+        }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
       expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
     });
@@ -850,7 +850,7 @@ describe("CheckoutPage", () => {
         expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
           method: "wallet_usdt",
           voucher_code: "",
-        }),
+        }, expect.objectContaining({ idempotencyKey: expect.any(String) })),
       );
       expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
     });
@@ -915,5 +915,95 @@ describe("CheckoutPage", () => {
       fireEvent.change(screen.getByLabelText("Game ID"), { target: { value: "abc" } });
       expect(placeOrderBtn).not.toBeDisabled();
     });
+  });
+});
+
+// Idempotency-Key (doc section 22.1). POST /api/v1/checkout is the one call on
+// this page that creates an order, and routes/api.ts replays the first
+// attempt's stored response when a retry arrives with the same key and the
+// same request. What matters here is the key's LIFECYCLE, so these assert the
+// header value itself across two clicks, not merely that apiPost was called.
+describe("CheckoutPage — Idempotency-Key", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  /** The keys the place-order call carried, in click order. */
+  function placeOrderKeys(): string[] {
+    return (apiPost as Mock).mock.calls
+      .filter((c) => c[0] === "/api/v1/checkout")
+      .map((c) => (c[2] as { idempotencyKey: string }).idempotencyKey);
+  }
+
+  it("retrying an attempt that never came back sends the byte-identical key", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    // A transport failure: `onResponse` never fires, so the outcome is
+    // unknown — the order may well exist and only the response was lost.
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(2));
+
+    const [first, second] = placeOrderKeys();
+    expect(first).toMatch(/^[0-9a-f-]{36}$/);
+    expect(second).toBe(first);
+  });
+
+  it("starts a new operation with a new key when the buyer changes the payment method after a failure", async () => {
+    renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new TypeError("Failed to fetch"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(1));
+
+    // A different `method` is a different request — and `method` is in the
+    // server's own request hash, so reusing the key here would earn a 409
+    // `error.idempotency_key_reused` rather than any protection.
+    fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(2));
+
+    const [first, second] = placeOrderKeys();
+    expect(second).not.toBe(first);
+  });
+
+  it("mints a fresh key for the next attempt once the server has answered", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    // The server answered (4xx) — the outcome is known and the route has
+    // already stored it against the key, so reusing the key could only hand
+    // the buyer the identical error again. The next click is a new operation.
+    (apiPost as Mock).mockImplementation(
+      async (_path: string, _body: unknown, options?: { onResponse?: () => void }) => {
+        options?.onResponse?.();
+        throw new Error("web.out_of_stock");
+      },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    await waitFor(() => expect(placeOrderKeys()).toHaveLength(2));
+
+    const [first, second] = placeOrderKeys();
+    expect(second).not.toBe(first);
+  });
+
+  it("leaves the voucher preview — which creates nothing — without a key", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockResolvedValue(checkoutData);
+
+    fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout/voucher/preview", { voucher_code: "SAVE10" }),
+    );
   });
 });

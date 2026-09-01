@@ -35,6 +35,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ShoppingCart } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
+import { useIdempotentPost } from "../api/idempotency";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
@@ -275,6 +276,11 @@ export default function CheckoutPage() {
   // a normal empty state, and the user was explicit that it stays shelf-free.
   const { data: suggested } = useSuggestedProducts(page?.items_empty === true);
 
+  // Only the order-creating call below goes through this — the voucher
+  // preview is a pure re-price that creates nothing, so replaying it would
+  // buy nothing and pin a stale quote.
+  const idempotentPost = useIdempotentPost();
+
   const previewMutation = useMutation({
     mutationFn: (voucherCode: string) =>
       apiPost<CheckoutData>("/api/v1/checkout/voucher/preview", { voucher_code: voucherCode }),
@@ -296,9 +302,17 @@ export default function CheckoutPage() {
   // Drives both gateway methods and wallet credit ("wallet_idr"/"wallet_usdt"
   // — just two more radio values) — the server branches on `method` before
   // ever looking at voucher_code/customer_data for the wallet case.
+  //
+  // `idempotentPost`, not `apiPost`: this is the one call on the page that
+  // creates an order (and, for a guest, an account), so a retry after a
+  // request that never came back must replay the first attempt instead of
+  // buying twice. See api/idempotency.ts for when the key is held and when a
+  // fresh one is minted — in short, an unanswered attempt at the identical
+  // request keeps its key, and every edit the buyer makes here (method,
+  // voucher, guest email, info answers) starts a new one.
   const placeOrderMutation = useMutation({
     mutationFn: () =>
-      apiPost<PlaceOrderResponse>("/api/v1/checkout", {
+      idempotentPost<PlaceOrderResponse>("/api/v1/checkout", {
         method,
         voucher_code: voucherInput,
         customer_data: page?.items.some((i) => i.delivery_type === "manual_with_info") ? answers : undefined,

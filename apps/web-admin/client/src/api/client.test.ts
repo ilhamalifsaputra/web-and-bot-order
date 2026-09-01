@@ -44,6 +44,36 @@ describe("apiPost", () => {
       "Your session was refreshed in another tab. Reload this page to continue.",
     );
   });
+
+  it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/dashboard/something", {});
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).has("Idempotency-Key")).toBe(false);
+  });
+
+  it("attaches the given key as an Idempotency-Key header", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/payments/order/501/refund", {}, { idempotencyKey: "9f1c-key" });
+    // Fastify lowercases incoming header names, so this is what the routes
+    // read as `req.headers["idempotency-key"]`.
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("idempotency-key")).toBe("9f1c-key");
+  });
+
+  it("reports a received response through onResponse, whatever its status, and stays silent on a transport failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 422, text: async () => JSON.stringify({ error: "Order is no longer underpaid." }) })));
+    const answered = vi.fn();
+    await expect(apiPost("/api/payments/order/501/refund", {}, { onResponse: answered })).rejects.toThrow(
+      "Order is no longer underpaid.",
+    );
+    expect(answered).toHaveBeenCalledTimes(1);
+
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+    const unanswered = vi.fn();
+    await expect(apiPost("/api/payments/order/501/refund", {}, { onResponse: unanswered })).rejects.toThrow("Failed to fetch");
+    expect(unanswered).not.toHaveBeenCalled();
+  });
 });
 
 describe("apiPatch", () => {

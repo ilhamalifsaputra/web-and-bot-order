@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.2.8",
@@ -20,6 +21,7 @@
     "react-router-dom": "^7"
   },
   "devDependencies": {
+    "@eslint/js": "^9",
     "@tailwindcss/vite": "^4.3.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.0.1",
@@ -27,9 +29,12 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "eslint": "^9",
+    "eslint-plugin-tailwindcss": "^4.4.0",
     "jsdom": "^25.0.1",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.6.3",
+    "typescript-eslint": "^8",
     "vite": "^6.0.3"
   }
 }

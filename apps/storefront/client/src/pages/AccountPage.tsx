@@ -210,7 +210,7 @@ function SummaryCard(props: SummaryCardProps) {
     </>
   );
 
-  const className = "card card-pad flex min-h-[44px] flex-col items-start text-left";
+  const className = "card card-pad flex min-h-11 flex-col items-start text-left";
 
   if (props.as === "link") {
     return (
@@ -311,7 +311,7 @@ export default function AccountPage() {
         <div
           aria-busy="true"
           aria-label={t("web.loading")}
-          className="space-y-8 lg:mx-auto lg:max-w-[1280px] lg:px-6"
+          className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6"
         >
           <div className="card card-pad flex items-center gap-4">
             <Skeleton className="h-14 w-14 rounded-full" />
@@ -363,7 +363,7 @@ export default function AccountPage() {
     // rest of the shop uses. No effect below `lg` — both wrapper divs are
     // unpositioned there, so mobile/tablet render exactly as before.
     <div className="lg:relative lg:left-1/2 lg:w-screen lg:-translate-x-1/2">
-    <div className="space-y-8 lg:mx-auto lg:max-w-[1280px] lg:px-6">
+    <div className="space-y-8 lg:mx-auto lg:max-w-7xl lg:px-6">
       <Toast text={toastText} onDismiss={() => setToastText(null)} kind="success" />
 
       <h1 className="page-title">{t("web.account_title")}</h1>

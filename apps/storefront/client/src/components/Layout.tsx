@@ -407,7 +407,7 @@ export default function Layout() {
               animate="animate"
               exit="exit"
               aria-hidden="true"
-              className="fixed inset-0 z-40 bg-[rgba(15,23,42,0.35)] sm:hidden"
+              className="fixed inset-0 z-40 bg-ink/35 sm:hidden"
               onClick={() => setDrawerOpen(false)}
             />
             <motion.div

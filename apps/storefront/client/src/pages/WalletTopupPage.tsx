@@ -105,7 +105,7 @@ function iconFor(value: string): ReactNode {
         <img
           src="/static/pay/qris.png"
           alt={value === "qris" ? "QRIS" : "PayDisini"}
-          className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
+          className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
         />
       );
     case "binance":

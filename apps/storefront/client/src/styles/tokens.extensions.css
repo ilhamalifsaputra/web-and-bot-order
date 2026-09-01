@@ -1,0 +1,27 @@
+/* =============================================================================
+   STOREFRONT DESIGN-TOKEN EXTENSIONS (spec §26.2)
+   ---------------------------------------------------------------------------
+   Values the running app genuinely needs that the design-system spec
+   (src/styles/tokens.css / gogogo-frontend/design-system/tokens.css) does not
+   define. Everything here is a documented, reviewed exception — NOT a second
+   token source. Each entry is logged in docs/implementation/extensions.md with
+   its rationale.
+
+   Rules:
+     - Add a value here ONLY after confirming no existing --gg-* token fits.
+     - Mirror every entry into the `@theme` block in ../index.css so the
+       matching Tailwind utility exists (same literal-value convention as
+       tokens.css — see the note on that block).
+     - Prefer promoting a stable extension into the real spec later over letting
+       this file grow.
+   ========================================================================== */
+
+:root {
+  /* --gg-grass-dark-aa — foreground of the StockBadge "in stock" pill ONLY.
+     The shared --gg-grass-dark (#15803d) on --gg-grass-tint measures 4.49:1,
+     0.01 short of WCAG AA (4.5:1) for the pill's small text. This marginally
+     darker green clears AA (~4.55:1) without shifting the hue perceptibly.
+     Scoped to StockBadge — do NOT substitute for --gg-grass-dark anywhere the
+     shared success green is used (StatusBadge, ProductCard, money deltas). */
+  --gg-grass-dark-aa: #157e3b;
+}

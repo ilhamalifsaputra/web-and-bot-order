@@ -19,6 +19,7 @@
  */
 @import "tailwindcss";
 @import "./styles/tokens.css";
+@import "./styles/tokens.extensions.css"; /* §26.2 reviewed exceptions — see docs/implementation/extensions.md */
 
 /* Latin subset only. The unscoped `@fontsource/<font>/<weight>.css` entrypoints
    declare every subset the family ships — cyrillic, greek, vietnamese and
@@ -82,6 +83,7 @@
   --color-pine-tint: #e6effe;
   --color-grass: #16a34a;
   --color-grass-dark: #15803d;
+  --color-grass-dark-aa: #157e3b; /* §26.2 extension — StockBadge pill only; mirrors styles/tokens.extensions.css */
   --color-grass-tint: #e7f6ec;
   --color-amberx: #b45c0a;
   --color-amberx-tint: #fdedcf;

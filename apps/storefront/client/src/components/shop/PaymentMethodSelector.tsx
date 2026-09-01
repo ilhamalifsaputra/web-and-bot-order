@@ -180,7 +180,7 @@ export default function PaymentMethodSelector({
               <img
                 src="/static/pay/qris.png"
                 alt="QRIS"
-                className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
+                className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
               />
             }
             title={t("web.pay_idr_title")}
@@ -197,7 +197,7 @@ export default function PaymentMethodSelector({
               <img
                 src="/static/pay/qris.png"
                 alt="PayDisini"
-                className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
+                className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
               />
             }
             title={t("web.pay_paydisini_title")}

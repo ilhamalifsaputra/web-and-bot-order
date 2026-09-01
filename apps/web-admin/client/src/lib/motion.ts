@@ -1,6 +1,6 @@
 import type { Variants } from "framer-motion";
 
-/** House easing/timing — matches the `rise`/`alert-in` CSS keyframes in app.css/admin-theme.css. */
+/** House easing/timing — matches the `rise`/`alert-in` CSS keyframes in app.css. */
 export const EASE = [0.22, 1, 0.36, 1] as const;
 
 export const DURATION = {

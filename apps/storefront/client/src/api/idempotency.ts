@@ -32,27 +32,41 @@
  *      hash would not simply forgoes replay for that one attempt, which is
  *      exactly today's behaviour.)
  *
- *   2. The held attempt's outcome is still UNKNOWN — meaning either no
- *      response at all (timeout, connection dropped, tab offline mid-flight)
- *      or a 5xx. In both, the order may well have been created and only the
+ *   2. The held attempt's outcome is still UNKNOWN. That means no response at
+ *      all (timeout, connection dropped, tab offline mid-flight) — and also
+ *      two statuses that DID arrive but answered nothing:
+ *
+ *      - **5xx.** No route here ever stores one. `respond()` — the only caller
+ *        of `saveIdempotentResponse` — is used with 200/201/400/404/422 and
+ *        nothing else, because a 500 is an escaped `throw` and a 502/504 is
+ *        the reverse proxy giving up before the app replied at all. A 504 over
+ *        a checkout that actually completed is the textbook duplicate-order
+ *        case: the row IS stored (with its real 201), and only reusing the key
+ *        replays it.
+ *      - **429.** The submit rate limiter short-circuits and returns before
+ *        the route reaches its idempotency block at all (routes/api.ts:532,
+ *        routes/apiTopup.ts:299), so a throttled attempt stores nothing and
+ *        tells us nothing about whether an EARLIER attempt ran. Dropping the
+ *        key here would be actively harmful, because a 429 is exactly what
+ *        repeated retry-clicking after a timeout provokes: attempt 1 times out
+ *        with the order possibly created, attempt 2 is throttled, and a fresh
+ *        key on attempt 3 buys the same thing twice.
+ *
+ *      In all of these the order may well have been created and only the
  *      answer lost, which is the case this whole mechanism exists for, so the
  *      retry must carry the same key.
  *
- *      5xx counts as unknown, NOT as answered, for a concrete reason: no route
- *      here ever stores a 5xx. `respond()` — the only caller of
- *      `saveIdempotentResponse` — is used with 200/201/400/404/422 and nothing
- *      else, because a 500 is an escaped `throw` and a 502/504 is the reverse
- *      proxy giving up before the app replied at all. A 504 over a checkout
- *      that actually completed is the textbook duplicate-order case: the row
- *      IS stored (with its real 201), and only reusing the key replays it.
- *
- * A response below 500 makes the outcome KNOWN and drops the key, so the next
+ * Any other response makes the outcome KNOWN and drops the key, so the next
  * click starts a new operation. That is deliberate, and it is where this
  * differs from a naive "never regenerate on failure" rule: after a received
  * 4xx the server has already stored that exact answer, so reusing the key
  * cannot protect anything — it can only replay the same error forever, turning
- * the retry button into a no-op for a buyer whose stock/price/rate-limit
- * problem has since cleared.
+ * the retry button into a no-op for a buyer whose stock or price problem has
+ * since cleared.
+ *
+ * 401/403 need no special case: both short-circuit before the idempotency
+ * block too, but both drive a full page reload in this codebase, which takes
+ * the whole ref map with it regardless of what this decided.
  *
  * KNOWN LIMIT — this makes a SEQUENTIAL retry safe, which is what it is for.
  * It does not fully dedupe two requests genuinely in flight at once (a
@@ -108,10 +122,10 @@ export function useIdempotentPost(): IdempotentPost {
     try {
       return await apiPost<T>(path, body, {
         idempotencyKey: key,
-        // Below 500 only: a 5xx response is an unknown outcome, not an
-        // answer — see the header comment.
+        // 5xx and 429 are responses that arrived without answering the
+        // question — see the header comment.
         onResponse: (status) => {
-          answered = status < 500;
+          answered = status < 500 && status !== 429;
         },
       });
     } finally {

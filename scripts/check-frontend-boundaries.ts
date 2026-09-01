@@ -5,8 +5,9 @@
  * must never import from @app/db, @prisma/client, @app/core, or
  * @app/outbox-dispatcher — these are server-only packages that will break
  * the browser bundle if included. This script scans the two client src trees
- * for actual `import ... from "..."` statements (not prose comments that
- * mention these package names for documentation).
+ * for actual import statements — both `import ... from "..."` and the bare
+ * side-effect `import "..."` — rather than prose comments that mention these
+ * package names for documentation.
  *
  * Run standalone: `pnpm run check-frontend-boundaries`
  * Also runs automatically as part of `pretest`, next to the other checks.
@@ -21,10 +22,17 @@ const FORBIDDEN_PACKAGES = [
   "@app/outbox-dispatcher",
 ];
 
-// Regex to match import statements: `from "..."` or `from '...'`
-// This matches: `import X from "Y"`, `import "Y"`, `import { X } from "Y"`, etc.
-// The capture group extracts the quoted package name.
-const IMPORT_FROM_REGEX = /from\s+["']([^"']+)["']/g;
+// Two alternations, because the two import forms have no keyword in common:
+//   1. `from "Y"`      — covers `import X from "Y"`, `import { X } from "Y"`,
+//                        `import * as X from "Y"`, and `export ... from "Y"`.
+//   2. `import "Y"`    — the bare side-effect import (`import "@app/db/register"`),
+//                        which has no `from` at all and so was invisible to
+//                        alternation 1 on its own. That form is exactly how a
+//                        server-only module with import-time side effects would
+//                        sneak into a browser bundle, so it must be caught.
+// Whichever alternation matched leaves the package name in its own capture
+// group; `checkFile` reads the first one that is set.
+const IMPORT_REGEX = /from\s+["']([^"']+)["']|\bimport\s+["']([^"']+)["']/g;
 
 interface Violation {
   file: string;
@@ -52,8 +60,12 @@ function checkFile(filePath: string): Violation[] {
   const violations: Violation[] = [];
 
   let match;
-  while ((match = IMPORT_FROM_REGEX.exec(content)) !== null) {
-    const importPath = match[1];
+  while ((match = IMPORT_REGEX.exec(content)) !== null) {
+    // Group 1 is the `from "..."` form, group 2 the bare `import "..."` one;
+    // exactly one of them is set per match. Explicitly guarded rather than
+    // asserted so the loop stays honest under `noUncheckedIndexedAccess`.
+    const importPath = match[1] ?? match[2];
+    if (importPath === undefined) continue;
     // Check if this import matches any forbidden package or its subpaths
     for (const forbidden of FORBIDDEN_PACKAGES) {
       if (importPath === forbidden || importPath.startsWith(forbidden + "/")) {

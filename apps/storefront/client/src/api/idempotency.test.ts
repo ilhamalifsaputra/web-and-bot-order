@@ -94,6 +94,43 @@ describe("useIdempotentPost", () => {
     expect(keyOfCall(1)).toBe(keyOfCall(0));
   });
 
+  // The submit rate limiter returns 429 BEFORE the route reaches its
+  // idempotency block (routes/api.ts:532, routes/apiTopup.ts:299), so a
+  // throttled attempt stores nothing and says nothing about whether an earlier
+  // attempt ran. Dropping the key here is the damaging case: a timeout
+  // followed by impatient retry-clicking is exactly what provokes the 429, and
+  // a fresh key afterwards would buy the same order twice.
+  it("holds the key when the response was a 429 from the rate limiter", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(429, "error.rate_limited"));
+    const { result } = renderHook(() => useIdempotentPost());
+
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.rate_limited");
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("error.rate_limited");
+
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+  });
+
+  // The full sequence the 429 rule exists for: an attempt whose outcome was
+  // never known, then a throttle, then the real retry — all three must carry
+  // the same key, or the last one places a second order.
+  it("carries one key through timeout → 429 → retry", async () => {
+    const { result } = renderHook(() => useIdempotentPost());
+    const body = { method: "binance", voucher_code: "" };
+
+    vi.mocked(apiPost).mockImplementation(neverAnswered());
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+
+    vi.mocked(apiPost).mockImplementation(respondedWith(429, "error.rate_limited"));
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+
+    vi.mocked(apiPost).mockImplementation(neverAnswered());
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow();
+
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+    expect(keyOfCall(2)).toBe(keyOfCall(0));
+  });
+
   // The boundary itself, so a later refactor can't quietly move it.
   it("treats 499 as answered and 500 as unknown", async () => {
     vi.mocked(apiPost).mockImplementation(respondedWith(499, "client closed request"));

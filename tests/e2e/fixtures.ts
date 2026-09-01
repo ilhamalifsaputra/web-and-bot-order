@@ -21,3 +21,20 @@ export const E2E_SHOPPER_PASSWORD = "E2ePlaywright-1";
 export const E2E_GOLDEN_PRODUCT_NAME = "E2E Golden Path Product";
 export const E2E_RACE_PRODUCT_NAME = "E2E Stock Race Product";
 export const E2E_PRODUCT_PRICE = "5000";
+
+/**
+ * `E2E_PRODUCT_PRICE` as the storefront actually renders it ("Rp5.000"), so a
+ * spec can assert on the on-screen total without hardcoding a string that
+ * silently stops matching the moment the seeded price above changes.
+ *
+ * The grouping is re-derived here rather than imported from the real formatter
+ * (`formatIdr`, apps/storefront/client/src/lib/format.ts) for the same reason
+ * this file imports nothing from `@app/*`: `apps/storefront/client/package.json`
+ * is `"type": "module"` too, so pulling that file through Playwright's
+ * CommonJS test transform would fail exactly like an `@app/core` import does.
+ * `formatIdr` remains the source of truth for the FORMAT; this mirrors it for
+ * the one shape that matters here (a positive whole-rupiah amount).
+ */
+export const E2E_PRODUCT_PRICE_DISPLAY = `Rp${Number(E2E_PRODUCT_PRICE)
+  .toFixed(0)
+  .replace(/\B(?=(\d{3})+(?!\d))/g, ".")}`;

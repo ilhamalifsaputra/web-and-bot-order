@@ -30,27 +30,42 @@
  *      409. Bulk dismiss falls out of the same rule for free: each transfer is
  *      its own body, hence its own key.
  *
- *   2. The held attempt's outcome is still UNKNOWN — meaning either no
- *      response at all (timeout, connection dropped, laptop asleep mid-flight)
- *      or a 5xx. In both, the refund may well have been paid out and only the
+ *   2. The held attempt's outcome is still UNKNOWN. That means no response at
+ *      all (timeout, connection dropped, laptop asleep mid-flight) — and also
+ *      two statuses that DID arrive but answered nothing:
+ *
+ *      - **5xx.** No route here ever stores one. `respond()` — the only caller
+ *        of `saveIdempotentResponse` — is used with 200/400/404/422 and
+ *        nothing else, because a 500 is an escaped `throw` and a 502/504 is
+ *        the reverse proxy giving up before the app replied at all. A 504 over
+ *        a refund that actually paid out is the textbook double-payment case:
+ *        the row IS stored (with its real 200), and only reusing the key
+ *        replays it.
+ *      - **429.** `paymentsMutationRateLimited` short-circuits and returns
+ *        before the route reaches its idempotency block at all
+ *        (src/routes/api/payments.ts:129, and the same five lines on the other
+ *        five routes), so a throttled attempt stores nothing and tells us
+ *        nothing about whether an EARLIER attempt ran. Dropping the key here
+ *        would be actively harmful, because a 429 is exactly what repeated
+ *        retry-clicking after a timeout provokes: attempt 1 times out with the
+ *        refund possibly paid, attempt 2 is throttled, and a fresh key on
+ *        attempt 3 pays it again.
+ *
+ *      In all of these the refund may well have been paid out and only the
  *      answer lost, which is the case this whole mechanism exists for, so the
  *      retry must carry the same key.
  *
- *      5xx counts as unknown, NOT as answered, for a concrete reason: no route
- *      here ever stores a 5xx. `respond()` — the only caller of
- *      `saveIdempotentResponse` — is used with 200/400/404/422 and nothing
- *      else, because a 500 is an escaped `throw` and a 502/504 is the reverse
- *      proxy giving up before the app replied at all. A 504 over a refund that
- *      actually paid out is the textbook double-payment case: the row IS
- *      stored (with its real 200), and only reusing the key replays it.
- *
- * A response below 500 makes the outcome KNOWN and drops the key, so the next
+ * Any other response makes the outcome KNOWN and drops the key, so the next
  * click starts a new operation. That is deliberate, and it is where this
  * differs from a naive "never regenerate on failure" rule: after a received
  * 422 ("order is no longer underpaid") the server has already stored that
  * exact answer, so reusing the key cannot protect anything — it can only
  * replay the same error forever, turning the retry into a no-op even once the
  * underlying state has moved on.
+ *
+ * 401/403 need no special case: both short-circuit before the idempotency
+ * block too, but both drive a full page reload in this codebase, which takes
+ * the whole ref map with it regardless of what this decided.
  *
  * KNOWN LIMIT — this makes a SEQUENTIAL retry safe, which is what it is for.
  * It does not fully dedupe two requests genuinely in flight at once (a
@@ -106,10 +121,10 @@ export function useIdempotentPost(): IdempotentPost {
     try {
       return await apiPost<T>(path, body, {
         idempotencyKey: key,
-        // Below 500 only: a 5xx response is an unknown outcome, not an
-        // answer — see the header comment.
+        // 5xx and 429 are responses that arrived without answering the
+        // question — see the header comment.
         onResponse: (status) => {
-          answered = status < 500;
+          answered = status < 500 && status !== 429;
         },
       });
     } finally {

@@ -192,22 +192,27 @@ function voucherRequestBody(form: VoucherFormState): Record<string, unknown> {
   };
 }
 
+/** Named so `apiGet` below can carry the same explicit generic every other
+ * converted call site in this file does, instead of leaning on contextual
+ * inference from `useQuery`'s own type argument. */
+interface VouchersData {
+  vouchers: Voucher[];
+  types: string[];
+  scopes: string[];
+  total: number;
+  page: number;
+  pageSize: number;
+  stats: { active: number; scheduled: number; expired: number; totalRedemptions: number };
+}
+
 function useVouchers(q: string, status: string, page: number) {
-  return useQuery<{
-    vouchers: Voucher[];
-    types: string[];
-    scopes: string[];
-    total: number;
-    page: number;
-    pageSize: number;
-    stats: { active: number; scheduled: number; expired: number; totalRedemptions: number };
-  }>({
+  return useQuery<VouchersData>({
     queryKey: ["vouchers", q, status, page],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page) });
       if (q) params.set("q", q);
       if (status) params.set("status", status);
-      return apiGet(`/api/vouchers?${params.toString()}`);
+      return apiGet<VouchersData>(`/api/vouchers?${params.toString()}`);
     },
   });
 }

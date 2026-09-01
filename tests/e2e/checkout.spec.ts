@@ -48,6 +48,7 @@ import {
   E2E_SHOPPER_PASSWORD,
   E2E_GOLDEN_PRODUCT_NAME,
   E2E_RACE_PRODUCT_NAME,
+  E2E_PRODUCT_PRICE_DISPLAY,
 } from "./fixtures";
 
 // Deliberately just `@prisma/client` (no `@app/db`) — see fixtures.ts's doc
@@ -100,11 +101,13 @@ test.describe("storefront checkout", () => {
     await page.waitForURL(/\/checkout$/);
     await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible();
     // CheckoutPage's summary card shows the price total, not an itemized
-    // product name — Rp5.000 is this seeded product's exact price, so a
-    // matching total is the checkout page's own evidence that the guest
-    // cart's item survived the sign-in merge (establishSession,
-    // routes/auth.ts) rather than the buyer landing on an empty cart.
-    await expect(page.getByText("Rp5.000").first()).toBeVisible();
+    // product name — this is the seeded product's exact price, so a matching
+    // total is the checkout page's own evidence that the guest cart's item
+    // survived the sign-in merge (establishSession, routes/auth.ts) rather
+    // than the buyer landing on an empty cart. Derived from
+    // E2E_PRODUCT_PRICE, so re-seeding at a different price re-points this
+    // assertion instead of silently failing against a stale literal.
+    await expect(page.getByText(E2E_PRODUCT_PRICE_DISPLAY).first()).toBeVisible();
 
     // Wallet Credit (IDR) is pre-selected: no gateway is configured in the
     // seeded fixture, and defaultMethod() only offers wallet credit once no

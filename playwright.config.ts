@@ -68,6 +68,15 @@ export default defineConfig({
   // that safe without needing per-test data isolation infrastructure this
   // starter suite doesn't otherwise need.
   workers: 1,
+  // No retries, and that is load-bearing rather than a default left alone.
+  // The fixtures are seeded ONCE per run and two of these tests consume them
+  // irreversibly: the rejection test flips the stock-race product's single
+  // unit to DEAD with a direct DB write (checkout.spec.ts), and the golden
+  // path spends the other product's stock and the shopper's wallet balance.
+  // A retry would re-run against already-spent fixtures and fail for fixture
+  // reasons rather than product ones — a red run that says nothing about the
+  // code. The same applies to `--repeat-each`: re-seed (restart the run)
+  // instead of repeating a test in place.
   retries: 0,
   reporter: [["list"]],
   use: {

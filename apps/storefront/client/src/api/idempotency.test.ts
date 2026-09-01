@@ -12,20 +12,20 @@ function keyOfCall(n: number): string {
   return options.idempotencyKey!;
 }
 
-/** A server that answered (`onResponse` fires, exactly as the real `apiPost`
- * does the moment a Response is in hand) and then rejected — the shape of any
- * 4xx/5xx: the outcome is KNOWN, and the route has already stored it. */
-function serverAnswered(status: number, message: string) {
+/** A server that responded (`onResponse` fires with the status, exactly as the
+ * real `apiPost` does the moment a Response is in hand) and then rejected. */
+function respondedWith(status: number, message: string) {
   return async (_path: string, _body: unknown, options?: PostOptions) => {
-    options?.onResponse?.();
+    options?.onResponse?.(status);
     const err = new Error(message) as Error & { status?: number };
     err.status = status;
     throw err;
   };
 }
 
-/** A request that never got an answer — a timeout, a dropped connection, a tab
- * that went offline mid-flight. The mutation may or may not have run. */
+/** A request that never got a response at all — a timeout, a dropped
+ * connection, a tab that went offline mid-flight. `fetch` itself rejects, so
+ * `onResponse` never fires. The mutation may or may not have run. */
 function neverAnswered() {
   return async () => {
     throw new TypeError("Failed to fetch");
@@ -39,7 +39,7 @@ beforeEach(() => {
 describe("useIdempotentPost", () => {
   it("sends a key at all, and a fresh one per logical operation", async () => {
     vi.mocked(apiPost).mockImplementation(async (_p, _b, o?: PostOptions) => {
-      o?.onResponse?.();
+      o?.onResponse?.(200);
       return {};
     });
     const { result } = renderHook(() => useIdempotentPost());
@@ -67,13 +67,59 @@ describe("useIdempotentPost", () => {
     expect(keyOfCall(2)).toBe(keyOfCall(0));
   });
 
-  it("mints a new key once the server has answered, so a retry is not stuck replaying that answer", async () => {
-    vi.mocked(apiPost).mockImplementation(serverAnswered(400, "web.out_of_stock"));
+  it("mints a new key once the server has answered 4xx, so a retry is not stuck replaying that answer", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(400, "web.out_of_stock"));
     const { result } = renderHook(() => useIdempotentPost());
 
     const body = { method: "binance", voucher_code: "" };
     await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("web.out_of_stock");
     await expect(result.current("/api/v1/checkout", body)).rejects.toThrow("web.out_of_stock");
+
+    expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+  });
+
+  // A 5xx arrived, but it says nothing about whether the mutation ran: no
+  // route here ever STORES a 5xx (`respond()` is only called with
+  // 200/201/400/404/422), so there is no stale answer to get stuck on — while
+  // a 504 over a checkout that actually completed is exactly the
+  // duplicate-order case the key exists to close.
+  it.each([500, 502, 503, 504])("holds the key when the response was a %i", async (status) => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(status, `/api/v1/checkout responded ${status}`));
+    const { result } = renderHook(() => useIdempotentPost());
+
+    const body = { method: "binance", voucher_code: "" };
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(String(status));
+    await expect(result.current("/api/v1/checkout", body)).rejects.toThrow(String(status));
+
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+  });
+
+  // The boundary itself, so a later refactor can't quietly move it.
+  it("treats 499 as answered and 500 as unknown", async () => {
+    vi.mocked(apiPost).mockImplementation(respondedWith(499, "client closed request"));
+    const { result: a } = renderHook(() => useIdempotentPost());
+    await expect(a.current("/api/v1/checkout", {})).rejects.toThrow();
+    await expect(a.current("/api/v1/checkout", {})).rejects.toThrow();
+    expect(keyOfCall(1)).not.toBe(keyOfCall(0));
+
+    vi.mocked(apiPost).mockReset();
+    vi.mocked(apiPost).mockImplementation(respondedWith(500, "boom"));
+    const { result: b } = renderHook(() => useIdempotentPost());
+    await expect(b.current("/api/v1/checkout", {})).rejects.toThrow();
+    await expect(b.current("/api/v1/checkout", {})).rejects.toThrow();
+    expect(keyOfCall(1)).toBe(keyOfCall(0));
+  });
+
+  it("drops the key after a 2xx, so the next order is a new operation", async () => {
+    vi.mocked(apiPost).mockImplementation(async (_p, _b, o?: PostOptions) => {
+      o?.onResponse?.(201);
+      return {};
+    });
+    const { result } = renderHook(() => useIdempotentPost());
+
+    const body = { method: "binance", voucher_code: "" };
+    await result.current("/api/v1/checkout", body);
+    await result.current("/api/v1/checkout", body);
 
     expect(keyOfCall(1)).not.toBe(keyOfCall(0));
   });

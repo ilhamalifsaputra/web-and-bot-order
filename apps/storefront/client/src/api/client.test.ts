@@ -54,12 +54,29 @@ describe("apiPost", () => {
     expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("idempotency-key")).toBe("9f1c-key");
   });
 
-  it("reports a received response through onResponse, whatever its status, and stays silent on a transport failure", async () => {
+  it("reports a received response's status through onResponse, whatever that status is", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 422, json: async () => ({ error: "web.out_of_stock" }) })));
     const answered = vi.fn();
     await expect(apiPost("/api/v1/checkout", {}, { onResponse: answered })).rejects.toThrow("web.out_of_stock");
+    // The status is what `useIdempotentPost` reads to tell a stored 4xx from
+    // a 5xx that stored nothing.
     expect(answered).toHaveBeenCalledTimes(1);
+    expect(answered).toHaveBeenCalledWith(422);
 
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 201, json: async () => ({}) })));
+    const created = vi.fn();
+    await apiPost("/api/v1/checkout", {}, { onResponse: created });
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(created).toHaveBeenCalledWith(201);
+
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 504, json: async () => ({}) })));
+    const gatewayTimeout = vi.fn();
+    await expect(apiPost("/api/v1/checkout", {}, { onResponse: gatewayTimeout })).rejects.toThrow("504");
+    expect(gatewayTimeout).toHaveBeenCalledTimes(1);
+    expect(gatewayTimeout).toHaveBeenCalledWith(504);
+  });
+
+  it("stays silent on a transport failure, where no response ever arrived", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
     const unanswered = vi.fn();
     await expect(apiPost("/api/v1/checkout", {}, { onResponse: unanswered })).rejects.toThrow("Failed to fetch");

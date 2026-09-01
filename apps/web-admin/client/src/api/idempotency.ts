@@ -30,23 +30,35 @@
  *      409. Bulk dismiss falls out of the same rule for free: each transfer is
  *      its own body, hence its own key.
  *
- *   2. The held attempt never got an answer. A transport failure — timeout,
- *      connection dropped, laptop asleep mid-flight — leaves the outcome
- *      UNKNOWN: the refund may well have been paid out and only the response
- *      lost. That is the case this whole mechanism exists for, so the retry
- *      (the confirm dialog stays open on failure, so retrying is one click)
- *      must carry the same key and be deduped. This is also what protects a
- *      double-tapped confirm button: the second tap fires while the first has
- *      yet to answer, so it reuses the key.
+ *   2. The held attempt's outcome is still UNKNOWN — meaning either no
+ *      response at all (timeout, connection dropped, laptop asleep mid-flight)
+ *      or a 5xx. In both, the refund may well have been paid out and only the
+ *      answer lost, which is the case this whole mechanism exists for, so the
+ *      retry must carry the same key.
  *
- * Once a response of ANY status arrives the outcome is KNOWN and the key is
- * dropped, so the next click starts a new operation with a new key. That is
- * deliberate, and it is where this differs from a naive "never regenerate on
- * failure" rule: after a received 422 ("order is no longer underpaid") the
- * server has already stored that exact answer, so reusing the key cannot
- * protect anything — it can only replay the same error forever, turning the
- * retry into a no-op even once the underlying state has moved on. Answered
- * means finished; unanswered means retry the same operation.
+ *      5xx counts as unknown, NOT as answered, for a concrete reason: no route
+ *      here ever stores a 5xx. `respond()` — the only caller of
+ *      `saveIdempotentResponse` — is used with 200/400/404/422 and nothing
+ *      else, because a 500 is an escaped `throw` and a 502/504 is the reverse
+ *      proxy giving up before the app replied at all. A 504 over a refund that
+ *      actually paid out is the textbook double-payment case: the row IS
+ *      stored (with its real 200), and only reusing the key replays it.
+ *
+ * A response below 500 makes the outcome KNOWN and drops the key, so the next
+ * click starts a new operation. That is deliberate, and it is where this
+ * differs from a naive "never regenerate on failure" rule: after a received
+ * 422 ("order is no longer underpaid") the server has already stored that
+ * exact answer, so reusing the key cannot protect anything — it can only
+ * replay the same error forever, turning the retry into a no-op even once the
+ * underlying state has moved on.
+ *
+ * KNOWN LIMIT — this makes a SEQUENTIAL retry safe, which is what it is for.
+ * It does not fully dedupe two requests genuinely in flight at once (a
+ * double-tapped confirm that outruns the button's disabled state):
+ * `findIdempotentResponse` only reads a row that `saveIdempotentResponse`
+ * writes at response time, so there is no in-flight reservation — both can
+ * read null, both can run, and the loser's insert is swallowed as a unique
+ * violation. Closing that would need a reservation row written on the way in.
  *
  * The held keys live in a `useRef`, so they survive re-renders and any number
  * of retries within one visit to the page, and are gone when the page unmounts
@@ -80,23 +92,28 @@ function newIdempotencyKey(): string {
 export type IdempotentPost = <T>(path: string, body: unknown) => Promise<T>;
 
 export function useIdempotentPost(): IdempotentPost {
-  // scope ("path + body") → the key of an attempt that never got an answer.
-  const unanswered = useRef(new Map<string, string>());
+  // scope ("path + body") → the key of an attempt whose outcome is still in
+  // doubt. Built on first use rather than in the `useRef` argument, which
+  // would allocate and discard a Map on every render.
+  const unansweredRef = useRef<Map<string, string> | null>(null);
 
   return useCallback(async <T>(path: string, body: unknown): Promise<T> => {
+    const unanswered = (unansweredRef.current ??= new Map<string, string>());
     const scope = JSON.stringify({ path, body });
-    const key = unanswered.current.get(scope) ?? newIdempotencyKey();
-    unanswered.current.set(scope, key);
+    const key = unanswered.get(scope) ?? newIdempotencyKey();
+    unanswered.set(scope, key);
     let answered = false;
     try {
       return await apiPost<T>(path, body, {
         idempotencyKey: key,
-        onResponse: () => {
-          answered = true;
+        // Below 500 only: a 5xx response is an unknown outcome, not an
+        // answer — see the header comment.
+        onResponse: (status) => {
+          answered = status < 500;
         },
       });
     } finally {
-      if (answered) unanswered.current.delete(scope);
+      if (answered) unanswered.delete(scope);
     }
   }, []);
 }

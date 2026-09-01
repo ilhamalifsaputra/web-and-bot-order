@@ -90,11 +90,11 @@ export interface PostOptions {
    * that rather than passing this by hand. */
   idempotencyKey?: string;
   /** Fired the moment the server's response is in hand, before its body is
-   * read and whatever the status. This is what lets `useIdempotentPost` tell
-   * a KNOWN outcome (any HTTP status — the server answered, and the route has
-   * already stored that answer against the key) from an UNKNOWN one (a
-   * transport failure, where the mutation may or may not have run). */
-  onResponse?: () => void;
+   * read and whatever the status, with that status. This is what lets
+   * `useIdempotentPost` tell a KNOWN outcome from an UNKNOWN one — see its
+   * own comment for why the 5xx half of "a response arrived" still counts as
+   * unknown. */
+  onResponse?: (status: number) => void;
 }
 
 /** Attaches the page's CSRF token as a header (the storefront csrfCheck in
@@ -116,7 +116,7 @@ export async function apiPost<T>(path: string, body: unknown, options?: PostOpti
     body: JSON.stringify(body),
     signal: options?.signal,
   });
-  options?.onResponse?.();
+  options?.onResponse?.(res.status);
   // Guest checkout's 201 AND its 4xx both carry the guest session's CSRF token
   // once that session exists, so a failed attempt still leaves the page able to
   // retry — but only the error path tolerates a body that isn't JSON (see

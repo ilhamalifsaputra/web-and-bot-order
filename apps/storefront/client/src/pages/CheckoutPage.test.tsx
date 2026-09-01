@@ -979,8 +979,8 @@ describe("CheckoutPage — Idempotency-Key", () => {
     // already stored it against the key, so reusing the key could only hand
     // the buyer the identical error again. The next click is a new operation.
     (apiPost as Mock).mockImplementation(
-      async (_path: string, _body: unknown, options?: { onResponse?: () => void }) => {
-        options?.onResponse?.();
+      async (_path: string, _body: unknown, options?: { onResponse?: (status: number) => void }) => {
+        options?.onResponse?.(400);
         throw new Error("web.out_of_stock");
       },
     );

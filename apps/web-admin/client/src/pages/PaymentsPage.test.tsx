@@ -879,8 +879,8 @@ describe("PaymentsPage — Idempotency-Key", () => {
     // it against the key, so reusing the key could only replay that same
     // error even after the transfer's state has moved on.
     vi.mocked(apiPost).mockImplementation(
-      async (_path: string, _body: unknown, options?: { onResponse?: () => void }) => {
-        options?.onResponse?.();
+      async (_path: string, _body: unknown, options?: { onResponse?: (status: number) => void }) => {
+        options?.onResponse?.(404);
         throw new Error("Transfer not found.");
       },
     );
@@ -893,6 +893,27 @@ describe("PaymentsPage — Idempotency-Key", () => {
 
     const [first, second] = keysFor(DISMISS_PATH);
     expect(second).not.toBe(first);
+  });
+
+  // A 504 is the reverse proxy giving up, not the app answering: the mutation
+  // may have completed and stored its real 200. Nothing 5xx is ever stored, so
+  // holding the key costs nothing and dropping it would risk a second action.
+  it("holds the key across a 504, which says nothing about whether the mutation ran", async () => {
+    vi.mocked(apiPost).mockImplementation(
+      async (_path: string, _body: unknown, options?: { onResponse?: (status: number) => void }) => {
+        options?.onResponse?.(504);
+        throw new Error("/api/payments/dismiss responded 504");
+      },
+    );
+    const user = await renderLedger([LEDGER[0]!]);
+
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(1));
+    await dismissBulk1(user);
+    await waitFor(() => expect(keysFor(DISMISS_PATH)).toHaveLength(2));
+
+    const [first, second] = keysFor(DISMISS_PATH);
+    expect(second).toBe(first);
   });
 
   it("gives each transfer in a bulk dismiss its own key", async () => {

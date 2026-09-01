@@ -70,11 +70,11 @@ export interface PostOptions {
    * rather than passing this by hand. */
   idempotencyKey?: string;
   /** Fired the moment the server's response is in hand, before its body is
-   * read and whatever the status. This is what lets `useIdempotentPost` tell
-   * a KNOWN outcome (any HTTP status — the server answered, and the route has
-   * already stored that answer against the key) from an UNKNOWN one (a
-   * transport failure, where the mutation may or may not have run). */
-  onResponse?: () => void;
+   * read and whatever the status, with that status. This is what lets
+   * `useIdempotentPost` tell a KNOWN outcome from an UNKNOWN one — see its
+   * own comment for why the 5xx half of "a response arrived" still counts as
+   * unknown. */
+  onResponse?: (status: number) => void;
 }
 
 /** Attaches the page's CSRF token as a header (see
@@ -94,7 +94,7 @@ export async function apiPost<T>(path: string, body: unknown, options?: PostOpti
     headers,
     body: JSON.stringify(body),
   });
-  options?.onResponse?.();
+  options?.onResponse?.(res.status);
   if (!res.ok) return throwForResponse(res, path);
   return res.json() as Promise<T>;
 }

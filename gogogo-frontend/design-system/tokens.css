@@ -90,11 +90,12 @@
   --gg-font-sans:    Manrope, system-ui, sans-serif;              /* body, default */
   --gg-font-mono:    "JetBrains Mono", ui-monospace, monospace;   /* order/voucher/referral codes */
 
-  --gg-text-xs:   0.75rem;   /* 12px — chips, .codeish, table meta        */
-  --gg-text-sm:   0.8125rem; /* 13px — table header labels                */
-  --gg-text-base: 0.875rem;  /* 14px — buttons, field text (desktop)      */
-  --gg-text-md:   1rem;      /* 16px — field text (mobile, iOS-zoom safe) */
-  --gg-text-lg:   1.125rem;  /* 18px — section-title                     */
+  --gg-text-xs:           0.75rem;   /* 12px — chips, .codeish, table meta        */
+  --gg-text-sm:           0.8125rem; /* 13px — table header labels                */
+  --gg-text-base:         1rem;      /* 16px — body / field text (mobile-first, iOS-zoom safe) */
+  --gg-text-base-desktop: 0.875rem;  /* 14px — buttons, field text (desktop, ≥640px) */
+  --gg-text-md:           1rem;      /* 16px — field text (mobile, iOS-zoom safe) */
+  --gg-text-lg:           1.125rem;  /* 18px — section-title                     */
   --gg-text-xl:   1.5rem;    /* 24px — page-title (mobile)                */
   --gg-text-2xl:  1.875rem;  /* 30px — page-title (desktop), stat-value   */
 

@@ -8,7 +8,6 @@
  *    engine binary; must be regenerated on the server (`prisma generate`).
  *  - pino / thread-stream — resolve worker-thread transport files by path;
  *    bundling breaks that resolution.
- *  - nunjucks — loads templates from disk via dynamic requires.
  * Everything else (grammy, fastify, zod, decimal.js, luxon, croner, dotenv,
  * bcryptjs, and all `@app/*` source) is inlined.
  */
@@ -33,7 +32,6 @@ async function main(): Promise<void> {
       ".prisma/client",
       "pino",
       "thread-stream",
-      "nunjucks",
     ],
     // CJS output has no real `import.meta.url`; point it at the bundle file so
     // the few modules that read it (config env-walk, the order-bot entry guard)

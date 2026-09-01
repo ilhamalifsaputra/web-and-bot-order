@@ -70,7 +70,7 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 │   ├── db/                # Shared Prisma client initialization and transaction-safe CRUD modules
 │   └── outbox-dispatcher/ # Drains notification_outbox → Telegram, runs in-process inside apps/server
 ├── prisma/                # schema.prisma declaration and Prisma migration logs
-├── scripts/                # Maintenance scripts (passwords resets, catalog migrations, dev probes)
+├── scripts/               # Maintenance scripts (passwords resets, catalog migrations, dev probes)
 └── data/                  # (Runtime) Local file attachments and logs; also the legacy SQLite DB file for shops not yet cut over to Postgres (see POSTGRES_MIGRATION.md)
 ```
 

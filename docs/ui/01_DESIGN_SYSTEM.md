@@ -75,8 +75,9 @@ state lives in React Query, UI state lives in local `useState`, see
 
 Two token layers exist in `index.css` and are **intentionally numerically
 synchronized** — shadcn's semantic layer is repointed at the same palette as the
-hand-authored "ported" layer (which mirrors the storefront's Nunjucks theme, so the
-whole product — bot, storefront, admin — shares one palette). Always prefer the
+hand-authored "ported" layer (which mirrors the storefront's retired
+Nunjucks-era theme, so the whole product — bot, storefront, admin — shares
+one palette). Always prefer the
 **semantic Tailwind utility names** (`bg-card`, `text-foreground`, `border-border`)
 inside generic/shadcn-derived components, and the **named palette utilities**
 (`bg-paper`, `text-ink`, `bg-pine`) everywhere else in page/feature code — this

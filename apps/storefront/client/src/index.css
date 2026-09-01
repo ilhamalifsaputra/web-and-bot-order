@@ -1,18 +1,24 @@
 /* Storefront SPA styles — pixel parity with the Nunjucks pages.
  *
- * Three layers, in order:
+ * Four layers, in order:
  *   1. Tailwind v4 + self-hosted fonts (replaces the Google Fonts + Tailwind
  *      CDN pair loaded by packages/web-ui/views/_theme.njk).
- *   2. ../../static/app.css imported VERBATIM — the `:root` design tokens and
- *      the .card/.btn/.field/.chip component classes stay single-sourced.
- *   3. An @theme block transcribing _theme.njk's inline tailwind.config
- *      byte-for-byte, plus a v3-compat base layer (the templates were written
- *      against the Tailwind v3 CDN; v4 changed a few preflight defaults).
+ *   2. ./styles/tokens.css — the single source for every design-token VALUE
+ *      (`--gg-*` set + legacy short-name aliases like `--pine` / `--r-lg`).
+ *   3. ../../static/app.css imported VERBATIM — the .card/.btn/.field/.chip
+ *      component classes. Its old `:root` token block moved to tokens.css; the
+ *      classes now read the legacy aliases from there via `var()`.
+ *   4. An @theme block giving Tailwind the token NAMES (bg-pine, font-display,
+ *      shadow-soft, …). It stays a LITERAL mirror of tokens.css — see the note
+ *      on the block below for why `var()` forwards don't work here — plus a
+ *      v3-compat base layer (the templates were written against the Tailwind
+ *      v3 CDN; v4 changed a few preflight defaults).
  *
- * If a token changes in packages/web-ui/views/_theme.njk, mirror it in the
- * @theme block below — and vice versa.
+ * To change a token value: edit ./styles/tokens.css, then mirror it into the
+ * @theme block below and into gogogo-frontend/design-system/tokens.css.
  */
 @import "tailwindcss";
+@import "./styles/tokens.css";
 
 /* Latin subset only. The unscoped `@fontsource/<font>/<weight>.css` entrypoints
    declare every subset the family ships — cyrillic, greek, vietnamese and
@@ -50,8 +56,19 @@
 
 @import "../../static/app.css";
 
-/* Tokens from packages/web-ui/views/_theme.njk (tailwind.config, byte-for-byte).
-   `static` so Tailwind v4 emits every token even when unreferenced. */
+/* The Tailwind v4 token layer for the SPA. These map _theme.njk's token NAMES
+   (bg-pine, font-display, shadow-soft, …) to the "Clean Modern" values.
+ *
+ * NOTE: values are kept LITERAL here rather than `var(--gg-*)` forwards to
+ * src/styles/tokens.css. Tailwind v4 (4.3.1) only pre-resolves a token when it
+ * can read its literal value at build time: with a `var()` it (a) drops the
+ * alpha for every opacity-modified colour utility (`bg-card/90`, `bg-ink/5`,
+ * `border-rust/30`, … would render fully opaque) and (b) collapses the
+ * `--tw-shadow-color` recolour channel on `shadow-soft`/`shadow-lift`. Both are
+ * real changes to the built CSS, so this block stays a literal mirror.
+ * Values mirror src/styles/tokens.css — keep in sync. See
+ * docs/implementation/deviations.md (A1). `static` so Tailwind v4 emits every
+ * token even when unreferenced. */
 @theme static {
   --color-paper: #f6f8fb;
   --color-card: #ffffff;

@@ -1,33 +1,7 @@
 /* Clean Modern — plain-CSS layer for the storefront. Mirrors the web-admin
    app.css so both webs feel like one product; storefront-only bits at the end. */
 
-:root {
-  --paper:      #f6f8fb;
-  --card:       #ffffff;
-  --sand:       #eef1f6;
-  --line:       #e3e8ef;
-  --ink:        #1b2330;
-  --ink-soft:   #5a6473;
-  --ink-faint:  #677288;
-  --pine:       #2563eb;
-  --pine-dark:  #1d4ed8;
-  --pine-tint:  #e6effe;
-  --grass:      #16a34a;
-  --grass-dark: #15803d;
-  --grass-tint: #e7f6ec;
-  --amberx:     #b45c0a;
-  --amberx-tint:#fdedcf;
-  --rust:       #dc2626;
-  --rust-dark:  #b91c1c;
-  --rust-tint:  #fde7e7;
-  --accent:     #2563eb;
-  --pine-rgb:   37 99 235;
-  --r-xs:       .25rem;
-  --r-sm:       .5rem;
-  --r-md:       .75rem;
-  --r-lg:       1rem;
-  --r-pill:     9999px;
-}
+/* Design tokens now single-sourced in apps/storefront/client/src/styles/tokens.css */
 
 /* A barely-there cool wash for depth, not decoration. */
 body {

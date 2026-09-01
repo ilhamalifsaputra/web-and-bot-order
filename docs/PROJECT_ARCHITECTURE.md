@@ -33,8 +33,8 @@ graph TD
         DB[(PostgreSQL - schema's target engine)]
     end
 
-    AdminApp & ShopApp & BotApp & NotifierApp --> CorePkg
-    AdminApp & ShopApp & BotApp & NotifierApp --> DbPkg
+    AdminApp & ShopApp & BotApp --> CorePkg
+    AdminApp & ShopApp & BotApp --> DbPkg
     DbPkg --> DB
 ```
 
@@ -83,7 +83,6 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 *   **[packages/outbox-dispatcher](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher):** The messaging subsystem (library). Its polling loop (`runDispatcher`) regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via the Telegram Bot. Run in-process by `apps/server`.
 *   **[packages/core](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/core):** Enforces settings schema validations, manages application-wide enums, handles multi-language keys, currency conversions, and defines core business logic helpers.
 *   **[packages/db](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db):** Holds database transaction scripts, database client singletons, and CRUD abstraction modules.
-*   **[packages/web-ui](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/web-ui):** Common CSS systems, global responsive layouts, typography templates, and macro functions.
 
 ---
 
@@ -276,7 +275,7 @@ erDiagram
     3.  `Denomination` (the actual SKU, e.g., "1 Month Shared Profile")
 *   **`StockItem`:** Holds stock items (keys, accounts, license credentials) for a denomination. Items are marked as `AVAILABLE`, `RESERVED`, `SOLD`, or `DEAD`.
 *   **`Order`, `OrderItem`:** The checkout contract. Tracks payment method, expiry timestamps, amounts, and associated stock items.
-*   **`NotificationOutbox`:** Serves as an async messaging queue. Instead of sending messages inline during requests (which can delay responses or fail), apps write notification records (e.g., event, payload) to this table. The notifier service then processes them sequentially.
+*   **`NotificationOutbox`:** Serves as an async messaging queue. Instead of sending messages inline during requests (which can delay responses or fail), apps write notification records (e.g., event, payload) to this table. The in-process outbox dispatcher (`packages/outbox-dispatcher`, run by `apps/server`) then processes them sequentially.
 *   **Idempotency Ledgers:** Tables like `ProcessedTokopayTx`, `ProcessedPaydisiniTx`, `ProcessedNowpaymentsTx`, `ProcessedBinanceTx`, and `ProcessedBybitTx` store unique transaction hashes. Webhooks and pollers check these tables first to prevent double-crediting orders.
 
 ### Database Transaction Pattern

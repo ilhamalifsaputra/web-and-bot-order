@@ -35,8 +35,10 @@ titik pemanggilan, bukan memformat ulang di komponen.
    `key=value`.
 4. **Jangan pernah** menyisipkan daftar id/nama yang dipotong
    (`.slice(0, N)`) ke dalam kalimat — ringkas jadi jumlah saja. Kolom
-   `details` di `AuditPage.tsx` memakai CSS `break-all`, jadi string panjang
-   akan terpotong tengah kata dan makin tidak terbaca.
+   `details` di `AuditPage.tsx` di-`truncate` pada `max-w-[320px]` (teks
+   penuh hanya muncul lewat tooltip `title` saat hover; tampilan kartu
+   mobile pakai `break-words`), jadi string panjang tak pernah terlihat
+   utuh dan makin tidak terbaca.
 5. Nama/key yang berasal dari input user boleh diberi tanda kutip ganda
    agar mudah dipindai: `Changed setting "MAINTENANCE_MODE".`
 6. Tetap singkat — satu kalimat. Detail yang hanya berguna untuk developer

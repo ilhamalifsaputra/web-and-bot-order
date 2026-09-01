@@ -26,7 +26,7 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 
 ## 1. Arsitektur
 
-Monorepo pnpm: lima workspace `apps/*` + tiga `packages/*`, berbagi **satu
+Monorepo pnpm: empat workspace `apps/*` + tiga `packages/*`, berbagi **satu
 database PostgreSQL** (schema `public`; lihat `docs/POSTGRES_MIGRATION.md`
 untuk runbook deploy produksi).
 

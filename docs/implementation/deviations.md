@@ -150,3 +150,136 @@ value.
 **Files.** `gogogo-frontend/design-system/tokens.json`,
 `gogogo-frontend/design-system/tokens.css`,
 `apps/storefront/client/src/styles/tokens.css`.
+
+---
+
+## D2-radius — `--gg-radius-xl` mirrored as `--radius-3xl`, class stays `rounded-3xl` (Task 9)
+
+**Context.** Task 9's brief adds `--gg-radius-xl: 1.5rem` (24px) as a §26.2
+extension for the full-bleed marketing bands (hero, "Our Promise",
+AuthBrandPanel) and instructs: mirror it in the `@theme` block as
+`--radius-xl`, then rename `rounded-3xl` → `rounded-xl` in the markup.
+
+**Deviation.** The `@theme` mirror is **`--radius-3xl: 1.5rem`**, not
+`--radius-xl`, and the markup **keeps `rounded-3xl`** (not renamed to
+`rounded-xl`).
+
+**Why.** Tailwind v4's core theme already defines `--radius-xl: 0.75rem`
+(12px) and `--radius-3xl: 1.5rem` (24px), and the storefront's `@theme static`
+block does not clear the core scale. `rounded-xl` is used at **~33 call
+sites** across the storefront today (icon wells, buttons, inputs, the hero
+preview cards) — all of them relying on the 12px core value. Overriding
+`--radius-xl` to 1.5rem in `@theme` would silently re-radius every one of
+them, a broad visual regression far outside this page's scope. Core's
+`--radius-3xl` is already exactly the 24px this token wants, so mirroring
+`--radius-3xl: 1.5rem` **pins that value with zero computed-style change** and
+ties the `rounded-3xl` class to the documented `--gg-radius-xl` exception. The
+brief's parenthetical fallback ("maybe they should just be `radius-lg` 16px")
+does not apply either: the Tailwind `rounded-lg` utility resolves to core's
+`--radius-lg` = `0.5rem` (8px) here, not the 16px `.card` radius, so that
+route would shrink the bands.
+
+**Net effect.** All three extension surfaces are present (`--gg-radius-xl` in
+`tokens.extensions.css`, `--radius-3xl` in the `@theme` mirror,
+`extensions.md` row). `rounded-3xl` in `HomePage.tsx` (hero, hero skeleton,
+"Our Promise") and `AuthBrandPanel.tsx` now resolves through the documented
+token instead of an implicit framework default. The trust-checklist panel,
+which was also `rounded-3xl`, became a `<Card>` (`.card`, 16px) — it is a
+bordered content card, not a full-bleed band.
+
+**Files.** `apps/storefront/client/src/styles/tokens.extensions.css`,
+`apps/storefront/client/src/index.css`,
+`apps/storefront/client/docs/implementation/extensions.md` *(repo path:
+`docs/implementation/extensions.md`)*, `apps/storefront/client/src/pages/HomePage.tsx`,
+`apps/storefront/client/src/components/AuthBrandPanel.tsx`.
+
+---
+
+## 13-home-colour — reference-brand colours on HomePage adapted to this project's tokens (Task 9)
+
+Type: §13 "reference-brand-specific colour → adapted to this project's brand
+tokens." The reverse-engineered `HomePage.tsx` / `AuthBrandPanel.tsx` carried
+four Tailwind-default hues that are **not in this project's palette**
+(`pine` / `grass` / `amberx` / `rust` / `ink` / `paper` / `sand` / `line`
+only). No violet or gold token was added. Each was mapped to the nearest
+semantic token; the icons are decorative (every icon sits beside a text label
+that already carries the meaning):
+
+| Off-palette value | Where | Mapped to | Reasoning |
+|---|---|---|---|
+| `text-amber-400` | hero "instant" ⚡ chip; AuthBrandPanel "instant" ⚡ | `text-grass` | "instant delivery" is a positive capability; `grass` reads well on both the dark hero band and the pine auth panel, where `amberx` (`#b45c0a`, dark orange-brown) muddies against the dark grounds. |
+| `text-violet-400` | hero "support" 🎧 chip; AuthBrandPanel "support" 🎧 | `text-pine-tint` | violet → pine family (brief guidance). On the dark hero / pine panel `text-pine` (`#2563eb`) is too low-contrast; `pine-tint` (`#e6effe`) matches the near-white decorative treatment of the sibling warranty icon. |
+| `bg-violet-50` / `text-violet-600` | features grid "24/7 support" icon well; "Sosmed" upcoming-teaser icon well | `bg-pine-tint` / `text-pine` | violet → pine family. The support feature card now shares the pine well of the "instant" card; the four wells are pine / grass / amberx / pine. `rust` (the only remaining palette hue) means danger and is wrong for "support". |
+
+Slight legibility trade-off logged: the hero's warranty and support chips now
+use the same `pine-tint` icon colour, and two of the four feature-card wells
+are pine. Both are acceptable — the pairs are decorative and the labels
+disambiguate — and neither harms hierarchy.
+
+**Files.** `apps/storefront/client/src/pages/HomePage.tsx`,
+`apps/storefront/client/src/components/AuthBrandPanel.tsx`.
+
+---
+
+## 9-home-structure — HomePage kept content-richer than the §1 template; no category filter added (Task 9)
+
+**Context.** `page-templates.md` §1 "Home / Landing" is a 6-section template
+(promo strip, hero carousel, category **filter** pill control, repeated
+5-col product sections + "show more", two help CTAs, FAQ accordion).
+
+**Deviations, all deliberate:**
+
+1. **Content-richer than the template.** This shop's Home has 11 sections —
+   dark hero, feature grid, "how to order" stepper (`#how-to-order`), dynamic
+   category grid (`#categories`), featured/newest product shelf (`#products`),
+   upcoming-services teaser, "Our Promise" pine band, verifiable-trust
+   checklist, testimonials (hidden when none), FAQ, contact cards
+   (`#contact`). Every section carries real data / i18n and was kept; the
+   migration re-skinned them onto `Card` / `Button` / `Accordion` /
+   `TrustBadgeRow` / `Alert` primitives and the token radius/rhythm, it did
+   not delete any. Per the brief: "content-richer … is a logged deviation,
+   not a reason to delete sections."
+
+2. **No category filter.** §1.3's pill segmented control filters the product
+   shelves. This Home reaches categories through a category **grid** section
+   instead (`business-adaptation.md` §Navigation). The grid was kept and **no
+   filter was added** — a filter over a single "newest" shelf would filter
+   nothing.
+
+3. **No "show more" / "Tampilkan lebih banyak" button.** §1.4's ghost link
+   pages through repeated product sections. This Home has one server-capped
+   "Latest products" shelf and no pagination, so there is nothing to expand.
+   The only nearby affordance — a "Browse by category" jump-link in the shelf
+   header — was left as an inline `text-pine` link rather than promoted to a
+   44px `.btn-ghost`, which would over-weight a section-header adjunct.
+
+4. **Hero secondary CTA is not `.btn-ghost`.** The brief maps the two hero
+   CTAs to `Button` primary / ghost. `.btn-ghost` is `ink-soft` text on a
+   `sand` hover fill — invisible on the `bg-ink` hero (foundations.md §7
+   dark-surface exception). The primary CTA uses `.btn btn-primary` (pine
+   fill works on any ground); the secondary keeps `.btn` sizing with a white
+   `border-white/20` + `hover:bg-white/15` outline treatment. Both keep the
+   white `.focus-on-dark` ring.
+
+5. **`Card` primitive is a `<div>`; link/anchor cards apply `.card` classes
+   directly.** `Card` has no polymorphic `as` / `asChild`. The category tiles
+   and contact cards are `<Link>` / `<a>` elements whose own class list is
+   asserted by `HomePage.test.tsx` (the hover lift/shadow must be on the link
+   itself). They apply `card card-pad …` utility classes directly — the
+   established storefront pattern (`CartPage`, `OrderSummaryCard`, `PayPage`,
+   `ErrorPage`) — rather than nesting a `<div>` inside the link. The feature
+   grid, testimonial cards and trust-checklist panel (plain `<div>`s) use the
+   `<Card>` component.
+
+6. **"Coming soon" teaser stays hand-rolled.** Its dashed border marks it
+   non-interactive (pinned by a test) and `.card` hardcodes
+   `border: 1px solid` at plain-class precedence, which `border-dashed`
+   cannot override. It keeps `rounded-2xl` + token colours.
+
+7. **Contact-hours note left as-is.** Already token-clean
+   (`bg-pine-tint` / `text-ink-soft` / `text-pine` / `rounded-2xl`); not in
+   the brief's card/panel conversion list, so not churned into an `Alert`.
+
+**Files.** `apps/storefront/client/src/pages/HomePage.tsx`,
+`apps/storefront/client/src/pages/HomePage.css`,
+`apps/storefront/client/src/pages/HomePage.test.tsx`.

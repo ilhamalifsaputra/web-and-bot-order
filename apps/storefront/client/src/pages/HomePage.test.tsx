@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, waitFor, act } from "@testing-library/react";
+import { render, screen, waitFor, act, within, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import HomePage from "./HomePage";
@@ -125,15 +125,26 @@ describe("HomePage", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders all eleven FAQ entries, with only the first one open", async () => {
+  it("renders all eleven FAQ entries as an accordion, with only the first expanded", async () => {
     renderHome(homeFixture());
-    await screen.findByText("Frequently asked questions");
-    const entries = document.querySelectorAll("details.faq");
-    expect(entries).toHaveLength(11);
-    expect((entries[0] as HTMLDetailsElement).open).toBe(true);
+    const faqHeading = await screen.findByRole("heading", { name: "Frequently asked questions" });
+    const section = faqHeading.closest("section")!;
+    const triggers = within(section).getAllByRole("button");
+    expect(triggers).toHaveLength(11);
+    // Native <details> is gone — each row is a <button aria-expanded>.
+    expect(triggers[0]).toHaveAttribute("aria-expanded", "true");
     // A page that opened every answer would be an unreadable wall of text.
-    expect([...entries].filter((d) => (d as HTMLDetailsElement).open)).toHaveLength(1);
-    expect(screen.getByText("Which network should I send USDT on?")).toBeInTheDocument();
+    expect(triggers.slice(1).every((b) => b.getAttribute("aria-expanded") === "false")).toBe(true);
+    expect(within(section).getByText("Which network should I send USDT on?")).toBeInTheDocument();
+  });
+
+  it("expands an FAQ row on click and collapses the previously open one (single accordion)", async () => {
+    renderHome(homeFixture());
+    const faqHeading = await screen.findByRole("heading", { name: "Frequently asked questions" });
+    const triggers = within(faqHeading.closest("section")!).getAllByRole("button");
+    fireEvent.click(triggers[2]);
+    expect(triggers[2]).toHaveAttribute("aria-expanded", "true");
+    expect(triggers[0]).toHaveAttribute("aria-expanded", "false");
   });
 
   it("renders testimonials when present, and hides the section when empty", async () => {
@@ -217,12 +228,29 @@ describe("HomePage", () => {
     expect(hero!.querySelector(".bg-grass\\/10")).not.toBeNull();
   });
 
-  it("gives the primary hero CTA a stronger shadow on hover and the secondary CTA a more visible hover fill", async () => {
+  it("renders the hero CTAs as design-system buttons — pine-fill primary + dark-surface outline, both with the white focus ring", async () => {
     renderHome(homeFixture());
     const primary = await screen.findByRole("link", { name: /Browse products/ });
-    expect(primary.className).toContain("hover:shadow-lift");
+    expect(primary.className).toContain("btn-primary");
+    expect(primary.className).toContain("focus-on-dark");
     const secondary = screen.getByRole("link", { name: /Contact support/ });
+    // .btn-ghost (ink-soft on sand) is unreadable on bg-ink — the outline CTA
+    // keeps a white border + white/15 hover instead (foundations.md §7).
     expect(secondary.className).toContain("hover:bg-white/15");
+    expect(secondary.className).toContain("focus-on-dark");
+  });
+
+  it("renders the hero trust chips through the shared TrustBadgeRow primitive", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const hero = container.querySelector("section.bg-ink")!;
+    const list = within(hero).getByRole("list");
+    const labels = within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+    expect(labels).toEqual(
+      expect.arrayContaining(["Instant delivery", "QRIS & USDT", "Warranty included", "24/7 support"]),
+    );
   });
 
   it("shows a hero product-preview composition when at least two products are available, linking each card to its product", async () => {

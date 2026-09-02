@@ -1,35 +1,18 @@
-/* Verbatim port of home.njk's {% block meta %} <style> tag (design.md §4.8) —
- * the FAQ open animation and the section scroll-reveal, byte-identical to the
- * Nunjucks CSS text. See HomePage.tsx's useEffect for the IntersectionObserver
- * that toggles `.visible`. */
+/* Port of home.njk's {% block meta %} <style> tag (design.md §4.8) — the
+ * section scroll-reveal. See HomePage.tsx's useEffect for the
+ * IntersectionObserver that toggles `.visible`.
+ *
+ * The FAQ open animation (`faq-in` keyframe + `details[open] > .faq-body`) was
+ * deleted in Task 9: the native <details> FAQ is now the <Accordion> primitive,
+ * which owns its own reduced-motion-aware grid-rows expand transition. */
 
-/* FAQ open animation */
-details[open] > .faq-body {
-  animation: faq-in 0.18s ease;
-}
-@keyframes faq-in {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  details[open] > .faq-body {
-    animation: none;
-  }
-}
-
-/* Section reveal on scroll */
+/* Section reveal on scroll — signature ease + entrance duration (tokens.css §8). */
 .reveal {
   opacity: 0;
   transform: translateY(20px);
   transition:
-    opacity 0.5s ease,
-    transform 0.5s ease;
+    opacity var(--gg-duration-entrance) var(--gg-ease),
+    transform var(--gg-duration-entrance) var(--gg-ease);
 }
 .reveal.visible {
   opacity: 1;

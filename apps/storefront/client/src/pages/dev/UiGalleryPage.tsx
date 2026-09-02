@@ -9,7 +9,7 @@
  * no API calls, no router — just the primitives.
  */
 import { useState } from "react";
-import { Flame, X, ChevronLeft, Info, Receipt } from "lucide-react";
+import { Flame, X, ChevronLeft, Info, Receipt, Zap, ShieldCheck, CheckCircle } from "lucide-react";
 import Button from "../../components/ui/Button";
 import IconButton from "../../components/ui/IconButton";
 import Input from "../../components/ui/Input";
@@ -32,6 +32,7 @@ import Accordion from "../../components/ui/Accordion";
 import Alert, { type AlertTone } from "../../components/ui/Alert";
 import Toast from "../../components/ui/Toast";
 import Tooltip from "../../components/ui/Tooltip";
+import TrustBadgeRow from "../../components/ui/TrustBadgeRow";
 import StatusScreen from "../../components/shop/StatusScreen";
 import EmptyState from "../../components/shop/EmptyState";
 import ErrorState from "../../components/shop/ErrorState";
@@ -363,6 +364,37 @@ export default function UiGalleryPage() {
             items={[
               { value: "a", trigger: "First", content: "First body." },
               { value: "b", trigger: "Second", content: "Second body." },
+            ]}
+          />
+        </div>
+      </Section>
+
+      <Section title="Trust badge row">
+        <div className="w-full max-w-xl space-y-6">
+          <TrustBadgeRow
+            className="text-ink-soft"
+            items={[
+              { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+              { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+              { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
+            ]}
+          />
+          <div className="rounded-xl bg-ink p-5">
+            <TrustBadgeRow
+              className="text-ink-faint"
+              items={[
+                { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+                { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+              ]}
+            />
+          </div>
+          <TrustBadgeRow
+            orientation="column"
+            className="text-ink-soft"
+            items={[
+              { icon: <Zap className="h-4 w-4 text-grass" />, label: "Instant delivery" },
+              { icon: <ShieldCheck className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+              { icon: <CheckCircle className="h-4 w-4 text-pine" />, label: "Warranty included" },
             ]}
           />
         </div>

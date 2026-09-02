@@ -28,6 +28,26 @@
      you retone this green, update BOTH copies (this one and that @theme line). */
   --gg-grass-dark-aa: #157e3b;
 
+  /* --gg-radius-xl — corner radius of the full-bleed MARKETING BANDS only: the
+     dark hero band, the pine "Our Promise" band, and the hero's loading-skeleton
+     placeholder (HomePage.tsx), plus AuthBrandPanel's pine brand panel. The
+     design-system radius scale (styles/tokens.css §5) is this project's own
+     small scale and tops out at --gg-radius-lg (1rem / 16px), which is the
+     CONTENT-CARD radius (.card). A band that spans the full content width needs
+     a larger corner to stay proportional; 24px is that step.
+     Scoped to those bands — do NOT use for content cards, buttons, fields or
+     icon wells (those stay on --gg-radius-md / --gg-radius-lg).
+     Consuming utility: `rounded-3xl`. Its value is pinned to this token via the
+     literal mirror `--radius-3xl: 1.5rem` in the `@theme` block of ../index.css.
+     (`rounded-3xl` — not `rounded-xl` — because overriding Tailwind v4's core
+     `--radius-xl` 0.75rem would silently re-radius ~33 existing `rounded-xl`
+     call sites storefront-wide. Tailwind's core `--radius-3xl` is coincidentally
+     also 1.5rem; pinning it makes the storefront own the value and ties the
+     class to this documented exception. See docs/implementation/deviations.md
+     §D2-radius.) If you resize this, update BOTH copies (this one and that
+     @theme line). */
+  --gg-radius-xl: 1.5rem;
+
   /* --gg-text-2xs — label size of the Badge `discount` / `savings` variants ONLY.
      The design-system type scale (styles/tokens.css §TYPOGRAPHY, mirrored from
      gogogo-frontend/design-system/tokens.css) bottoms out at --gg-text-xs

@@ -172,8 +172,10 @@ export default tseslint.config(
   //       fixed 320px ticket side-rail; a content decision, no token expresses it.
   //   src/components/shop/Spinner.tsx  align-[-2px] — optical baseline nudge for
   //       the inline spinner glyph; Tailwind has no negative vertical-align util.
-  //   src/components/shop/EmptyState.tsx  min-h-[360px] / min-h-[420px] —
-  //       illustration panel min-heights. TODO(task-7x): tokenise on migration.
+  //   src/components/shop/StatusScreen.tsx  min-h-[360px] / min-h-[420px] —
+  //       the §16 state-screen floor height (shared shell behind EmptyState,
+  //       ErrorState, NotFoundState, PermissionDeniedState). Moved here from
+  //       EmptyState.tsx when the shell was extracted. TODO(task-7x): tokenise.
   //   src/components/layout/MobileDrawer.tsx  text-[15px] — drawer nav-row label
   //       size between text-sm (14) and text-base (16). Moved here from
   //       Layout.tsx by the Task 5 chrome split. TODO(task-7x): type-scale token.
@@ -185,7 +187,7 @@ export default tseslint.config(
     files: [
       "src/pages/TicketDetailPage.tsx",
       "src/components/shop/Spinner.tsx",
-      "src/components/shop/EmptyState.tsx",
+      "src/components/shop/StatusScreen.tsx",
       "src/components/layout/MobileDrawer.tsx",
       "src/components/shop/StepTimeline.tsx",
       "src/components/shop/TicketMessageThread.tsx",

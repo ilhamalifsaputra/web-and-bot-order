@@ -9,7 +9,7 @@
  * no API calls, no router — just the primitives.
  */
 import { useState } from "react";
-import { Flame, X, ChevronLeft, Info } from "lucide-react";
+import { Flame, X, ChevronLeft, Info, Receipt } from "lucide-react";
 import Button from "../../components/ui/Button";
 import IconButton from "../../components/ui/IconButton";
 import Input from "../../components/ui/Input";
@@ -32,6 +32,12 @@ import Accordion from "../../components/ui/Accordion";
 import Alert, { type AlertTone } from "../../components/ui/Alert";
 import Toast from "../../components/ui/Toast";
 import Tooltip from "../../components/ui/Tooltip";
+import StatusScreen from "../../components/shop/StatusScreen";
+import EmptyState from "../../components/shop/EmptyState";
+import ErrorState from "../../components/shop/ErrorState";
+import NotFoundState from "../../components/shop/NotFoundState";
+import PermissionDeniedState from "../../components/shop/PermissionDeniedState";
+import LoadingState from "../../components/shop/LoadingState";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -403,6 +409,83 @@ export default function UiGalleryPage() {
             <Info className="h-4 w-4" />
           </IconButton>
         </Tooltip>
+      </Section>
+
+      <h1 className="page-title mt-16">State components (§16)</h1>
+      <p className="page-lead">
+        The <code className="codeish">components/shop/</code> required-state set. All compose{" "}
+        <code className="codeish">StatusScreen</code>.
+      </p>
+
+      <Section title="StatusScreen — the shared shell">
+        <div className="w-full max-w-2xl">
+          <StatusScreen
+            icon={Receipt}
+            title="Shared centred shell"
+            description="Icon, title, one line of copy, and up to two actions. Every state below is this."
+            action={{ label: "Primary action", to: "/__ui" }}
+            secondaryAction={{ label: "Secondary", to: "/__ui" }}
+          />
+        </div>
+      </Section>
+
+      <Section title="EmptyState — nothing here yet (composes StatusScreen)">
+        <div className="w-full max-w-2xl">
+          <EmptyState
+            icon={Receipt}
+            title="No orders yet"
+            description="Your purchases will show up here."
+            action={{ label: "Browse products", to: "/__ui" }}
+          />
+        </div>
+      </Section>
+
+      <Section title="ErrorState — with retry">
+        <div className="w-full max-w-2xl">
+          <ErrorState onRetry={() => setToast("Retry handler fired.")} />
+        </div>
+      </Section>
+
+      <Section title="ErrorState — no retry (reload link fallback)">
+        <div className="w-full max-w-2xl">
+          <ErrorState />
+        </div>
+      </Section>
+
+      <Section title="NotFoundState — in-page 404">
+        <div className="w-full max-w-2xl">
+          <NotFoundState />
+        </div>
+      </Section>
+
+      <Section title="PermissionDeniedState — 403">
+        <div className="w-full max-w-2xl">
+          <PermissionDeniedState />
+        </div>
+      </Section>
+
+      <Section title="LoadingState — variant=page">
+        <div className="w-full max-w-2xl">
+          <LoadingState variant="page" />
+        </div>
+      </Section>
+
+      <Section title="LoadingState — variant=list">
+        <div className="w-full max-w-2xl">
+          <LoadingState variant="list" />
+        </div>
+      </Section>
+
+      <Section title="LoadingState — variant=detail">
+        <div className="w-full max-w-2xl">
+          <LoadingState variant="detail" />
+        </div>
+      </Section>
+
+      <Section title="LoadingState — variant=form">
+        <div className="w-full max-w-2xl">
+          <LoadingState variant="form" />
+        </div>
       </Section>
     </main>
   );

@@ -89,6 +89,10 @@ h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 @media (pointer: coarse) {
   .btn-sm    { min-height: 2.75rem; padding: .5rem 1rem; font-size: .875rem; }
 }
+/* components.md "Button" → "Disabled" row: sand fill, ink-faint text, no
+   shadow — for every variant. Specificity (class + pseudo-class) clears the
+   per-variant fills and their :hover rules above without !important. */
+.btn:disabled { background: var(--sand); color: var(--ink-faint); box-shadow: none; cursor: not-allowed; }
 
 .field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); margin-bottom: .375rem; }
 /* 16px on small screens is not a style choice: Safari on iOS zooms the whole

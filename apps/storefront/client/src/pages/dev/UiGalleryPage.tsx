@@ -9,7 +9,7 @@
  * no API calls, no router — just the primitives.
  */
 import { useState } from "react";
-import { Flame, X, ChevronLeft } from "lucide-react";
+import { Flame, X, ChevronLeft, Info } from "lucide-react";
 import Button from "../../components/ui/Button";
 import IconButton from "../../components/ui/IconButton";
 import Input from "../../components/ui/Input";
@@ -25,6 +25,13 @@ import Badge from "../../components/ui/Badge";
 import Divider from "../../components/ui/Divider";
 import Skeleton from "../../components/ui/Skeleton";
 import Spinner from "../../components/ui/Spinner";
+import Modal from "../../components/ui/Modal";
+import AlertDialog from "../../components/ui/AlertDialog";
+import Tabs from "../../components/ui/Tabs";
+import Accordion from "../../components/ui/Accordion";
+import Alert, { type AlertTone } from "../../components/ui/Alert";
+import Toast from "../../components/ui/Toast";
+import Tooltip from "../../components/ui/Tooltip";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -35,10 +42,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+const ALERT_TONES: AlertTone[] = ["info", "success", "warning", "error", "tip"];
+
 export default function UiGalleryPage() {
   const [switchOn, setSwitchOn] = useState(false);
   const [checked, setChecked] = useState(true);
   const [radio, setRadio] = useState("a");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(false);
+  const [tab, setTab] = useState("cheap");
+  const [toast, setToast] = useState<string | null>(null);
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-10">
@@ -236,6 +250,159 @@ export default function UiGalleryPage() {
           <Spinner />
           loading
         </span>
+      </Section>
+
+      <Section title="Modal">
+        <Button variant="soft" onClick={() => setModalOpen(true)}>
+          Open modal
+        </Button>
+        <Modal
+          open={modalOpen}
+          onClose={() => setModalOpen(false)}
+          title="Modal title"
+          description="Derived from Card + tokens; a11y from the MobileDrawer pattern."
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setModalOpen(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" onClick={() => setModalOpen(false)}>
+                Confirm
+              </Button>
+            </>
+          }
+        >
+          <p>
+            Focus is trapped here, Esc closes, the scrim closes, body scroll is locked, and focus
+            returns to the trigger on close.
+          </p>
+        </Modal>
+      </Section>
+
+      <Section title="AlertDialog (destructive confirm)">
+        <Button variant="danger" onClick={() => setConfirmOpen(true)}>
+          Delete something
+        </Button>
+        <AlertDialog
+          open={confirmOpen}
+          tone="danger"
+          confirmPending={confirmPending}
+          title="Delete this item?"
+          description="This action cannot be undone."
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          onCancel={() => setConfirmOpen(false)}
+          onConfirm={() => {
+            setConfirmPending(true);
+            window.setTimeout(() => {
+              setConfirmPending(false);
+              setConfirmOpen(false);
+            }, 1200);
+          }}
+        />
+      </Section>
+
+      <Section title="Tabs — segmented control (with panels)">
+        <div className="w-full">
+          <Tabs
+            aria-label="Pricing view"
+            value={tab}
+            onValueChange={setTab}
+            items={[
+              { value: "cheap", label: "Termurah" },
+              { value: "member", label: "Membership" },
+              { value: "diamonds", label: "Diamonds" },
+              { value: "soon", label: "Coming soon", disabled: true },
+            ]}
+            panels={{
+              cheap: <p className="text-sm text-ink-soft">Cheapest-first listing.</p>,
+              member: <p className="text-sm text-ink-soft">Membership packages.</p>,
+              diamonds: <p className="text-sm text-ink-soft">Diamond top-ups.</p>,
+              soon: <p className="text-sm text-ink-soft">Not available yet.</p>,
+            }}
+          />
+        </div>
+      </Section>
+
+      <Section title="Accordion — single (FAQ)">
+        <div className="w-full max-w-xl">
+          <Accordion
+            defaultValue="ship"
+            items={[
+              {
+                value: "ship",
+                trigger: "How fast is delivery?",
+                content: "Instantly after your payment is confirmed.",
+              },
+              {
+                value: "refund",
+                trigger: "Can I get a refund?",
+                content: "Yes — within 24 hours if the item was not delivered.",
+              },
+              {
+                value: "safe",
+                trigger: "Is my account safe?",
+                content: "We never store your password and only ask for what a top-up needs.",
+              },
+            ]}
+          />
+        </div>
+      </Section>
+
+      <Section title="Accordion — multiple">
+        <div className="w-full max-w-xl">
+          <Accordion
+            type="multiple"
+            defaultValue={["a"]}
+            items={[
+              { value: "a", trigger: "First", content: "First body." },
+              { value: "b", trigger: "Second", content: "Second body." },
+            ]}
+          />
+        </div>
+      </Section>
+
+      <Section title="Alert — banner (ex-Flash)">
+        <div className="w-full max-w-xl space-y-3">
+          {ALERT_TONES.map((tone) => (
+            <Alert key={tone} variant="banner" tone={tone}>
+              Banner alert, tone <strong>{tone}</strong>.
+            </Alert>
+          ))}
+          <Alert variant="banner" tone="error" title="With a title">
+            Extra detail under the bold lead line.
+          </Alert>
+        </div>
+      </Section>
+
+      <Section title="Alert — panel (ex-Callout)">
+        <div className="w-full max-w-xl space-y-3">
+          {ALERT_TONES.map((tone) => (
+            <Alert key={tone} variant="panel" tone={tone}>
+              Panel alert, tone <strong>{tone}</strong>.
+            </Alert>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Toast">
+        <Button variant="soft" onClick={() => setToast("Saved to your account.")}>
+          Trigger toast
+        </Button>
+        <Toast text={toast} onDismiss={() => setToast(null)} />
+      </Section>
+
+      <Section title="Tooltip">
+        <Tooltip label="Copied to clipboard">
+          <Button variant="ghost" size="sm">
+            Hover or focus me
+          </Button>
+        </Tooltip>
+        <Tooltip label="More info about this field">
+          <IconButton aria-label="Info" size="sm">
+            <Info className="h-4 w-4" />
+          </IconButton>
+        </Tooltip>
       </Section>
     </main>
   );

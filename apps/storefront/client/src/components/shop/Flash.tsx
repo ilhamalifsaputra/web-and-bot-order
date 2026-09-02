@@ -1,10 +1,17 @@
 /**
- * TSX port of `flash(message, kind)` in packages/web-ui/views/_macros.njk —
- * the only admin macro the storefront needs. Renders nothing when `text` is
- * empty/null, same as the NJK `{% if message %}` guard. Icon choices mirror
- * the sibling `Toast.tsx` banner (same tone-class pattern) for visual parity.
+ * Compat shim — `Flash` is now `<Alert variant="banner">` (Fase 6 Task 7).
+ * Kept so the existing page importers (Login/Register/Forgot/Reset/Settings)
+ * keep working unchanged; new code imports `Alert` from `components/ui/Alert`
+ * directly.
+ *
+ * Emits byte-identical DOM to the old hand-rolled Flash — same wrapper classes
+ * (incl. `mb-5`), same lucide icon per `kind`, same `<span>` text node, and no
+ * ARIA role (`role={false}`), matching its historical output. The pages gain
+ * the spec `role="alert"` when they migrate to `<Alert>` in Fase 7.
+ *
+ * Renders nothing when `text` is empty/null, same as before.
  */
-import { AlertTriangle, CheckCircle, Info } from "lucide-react";
+import Alert from "../ui/Alert";
 
 export interface FlashProps {
   text?: string | null;
@@ -13,17 +20,9 @@ export interface FlashProps {
 
 export default function Flash({ text, kind = "info" }: FlashProps) {
   if (!text) return null;
-  const toneClass =
-    kind === "error"
-      ? "bg-rust-tint text-rust-dark border-rust/30"
-      : kind === "success"
-        ? "bg-grass-tint text-grass-dark border-grass/30"
-        : "bg-sand text-ink border-line";
-  const Icon = kind === "error" ? AlertTriangle : kind === "success" ? CheckCircle : Info;
   return (
-    <div className={`flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border ${toneClass}`}>
-      <Icon className="w-4 h-4 shrink-0 mt-px" />
-      <span>{text}</span>
-    </div>
+    <Alert variant="banner" tone={kind} role={false}>
+      {text}
+    </Alert>
   );
 }

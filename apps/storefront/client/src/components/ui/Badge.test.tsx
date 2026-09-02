@@ -5,19 +5,24 @@ import { render, screen } from "@testing-library/react";
 import Badge from "./Badge";
 
 describe("Badge", () => {
-  it("discount → soft grass tint, 6px radius, bold", () => {
+  it("discount → soft grass tint, 6px radius, bold, 10px label", () => {
     render(<Badge variant="discount">15% OFF</Badge>);
     expect(screen.getByText("15% OFF")).toHaveClass(
       "bg-grass-tint",
       "text-grass-dark",
       "rounded-md",
       "font-bold",
+      "text-2xs",
     );
   });
 
   it("savings uses the same soft grass pairing as discount", () => {
     render(<Badge variant="savings">Hemat Rp150</Badge>);
-    expect(screen.getByText("Hemat Rp150")).toHaveClass("bg-grass-tint", "text-grass-dark");
+    expect(screen.getByText("Hemat Rp150")).toHaveClass(
+      "bg-grass-tint",
+      "text-grass-dark",
+      "text-2xs",
+    );
   });
 
   it("category → lowercase pine pill", () => {

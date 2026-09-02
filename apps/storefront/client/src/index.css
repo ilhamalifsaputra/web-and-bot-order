@@ -84,6 +84,7 @@
   --color-grass: #16a34a;
   --color-grass-dark: #15803d;
   --color-grass-dark-aa: #157e3b; /* §26.2 extension — StockBadge pill only; mirrors styles/tokens.extensions.css */
+  --text-2xs: 0.625rem; /* §26.2 extension — Badge discount/savings label (10px) only; mirrors styles/tokens.extensions.css */
   --color-grass-tint: #e7f6ec;
   --color-amberx: #b45c0a;
   --color-amberx-tint: #fdedcf;

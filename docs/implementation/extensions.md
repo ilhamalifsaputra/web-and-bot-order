@@ -14,6 +14,7 @@ against every existing `--gg-*` token for a fit.
 | Token | Value | Scope | Why it exists | Added |
 |---|---|---|---|---|
 | `--gg-grass-dark-aa` (`text-grass-dark-aa`) | `#157e3b` | `StockBadge` "in stock" pill foreground only | The shared `--gg-grass-dark` (`#15803d`) on `--gg-grass-tint` measures **4.49:1** — 0.01 short of WCAG AA (4.5:1) for the pill's `text-xs`. This marginally darker green clears AA (~4.55:1) with no perceptible hue shift. Must not replace `--gg-grass-dark` where the shared success green is used (StatusBadge, ProductCard, money deltas). Previously hard-coded as the arbitrary class `text-[#157e3b]`; moved to a token when the §7.3 ESLint gate (Task 4) banned raw hex in `.tsx`. | Task 4 (2026-09) |
+| `--gg-text-2xs` (`text-2xs`) | `0.625rem` (10px) | `Badge` `discount` / `savings` variant label only | `components.md` "Badge & chip" specifies **~10px/700** for the Discount and Savings badges. The design-system type scale (`tokens.css` §TYPOGRAPHY) bottoms out at `--gg-text-xs` (`0.75rem` / 12px), 2px above the spec, and the Task 4 ESLint gate bans `text-[10px]` (px arbitrary value), so there is no in-scale way to reach it. This is the single 10px step. Scoped to those two Badge variants — must not replace `--gg-text-xs` where the shared 12px chip size is used. Mirrored as `--text-2xs` in the `@theme` block of `index.css` to generate the `text-2xs` utility (Tailwind v4 has no built-in `2xs`). | Task 6a (2026-09) |
 
 ## Considered but NOT extended
 

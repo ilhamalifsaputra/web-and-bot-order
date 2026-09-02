@@ -27,4 +27,18 @@
      `--color-grass-dark-aa: #157e3b` in the `@theme` block of ../index.css. If
      you retone this green, update BOTH copies (this one and that @theme line). */
   --gg-grass-dark-aa: #157e3b;
+
+  /* --gg-text-2xs — label size of the Badge `discount` / `savings` variants ONLY.
+     The design-system type scale (styles/tokens.css §TYPOGRAPHY, mirrored from
+     gogogo-frontend/design-system/tokens.css) bottoms out at --gg-text-xs
+     (0.75rem / 12px). components.md "Badge & chip" specifies ~10px/700 for the
+     Discount and Savings badges — 2px below the smallest spec token — and the
+     Task 4 ESLint gate bans `text-[10px]` (px arbitrary value), so there is no
+     in-scale way to hit it. This is that one 10px step.
+     Scoped to those two Badge variants — do NOT substitute for --gg-text-xs
+     anywhere the shared 12px chip size is used.
+     Consuming utility: `text-2xs`, resolved from the literal mirror
+     `--text-2xs: 0.625rem` in the `@theme` block of ../index.css. If you resize
+     this step, update BOTH copies (this one and that @theme line). */
+  --gg-text-2xs: 0.625rem;
 }

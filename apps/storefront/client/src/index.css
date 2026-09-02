@@ -96,6 +96,10 @@
   --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -14px rgba(16, 24, 40, 0.12);
   --shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.06), 0 16px 36px -18px rgba(16, 24, 40, 0.18);
   --radius-xl2: 1.25rem;
+  /* Literal mirror of --gg-bottom-nav-height (styles/tokens.css §7 LAYOUT).
+     Enables h-bottom-nav / pb-bottom-nav for the fixed mobile tab bar
+     (src/components/layout/MobileTabBar.tsx). */
+  --spacing-bottom-nav: 3.5rem;
 }
 
 /* v3 CDN applied hover: styles unconditionally; v4 gates them behind

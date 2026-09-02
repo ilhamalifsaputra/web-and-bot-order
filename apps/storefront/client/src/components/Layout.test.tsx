@@ -52,6 +52,7 @@ function renderLayout(overrides: Partial<ShopContext> = {}, path = "/") {
               }
             />
             <Route path="products" element={<div>products content</div>} />
+            <Route path="cart" element={<div>cart content</div>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -214,6 +215,26 @@ describe("Layout", () => {
       await user.click(within(drawer).getByRole("link", { name: /browse products/i }));
       await waitFor(() => expect(screen.queryByRole("dialog", { name: "Menu" })).not.toBeInTheDocument());
       expect(await screen.findByText("products content")).toBeInTheDocument();
+    });
+  });
+
+  describe("mobile bottom tab bar", () => {
+    it("mounts on a standard route, as a distinct nav landmark from the header", async () => {
+      renderLayout();
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("home content");
+      const tabBar = screen.getByRole("navigation", { name: "Quick navigation" });
+      expect(within(tabBar).getAllByRole("link")).toHaveLength(5);
+      // Header and footer landmarks are untouched by its arrival.
+      expect(screen.getByRole("navigation", { name: "Main navigation" })).toBeInTheDocument();
+      expect(screen.getByRole("navigation", { name: "Footer navigation" })).toBeInTheDocument();
+    });
+
+    it("is absent on the full-funnel /cart route (it owns the bottom edge with a sticky bar)", async () => {
+      renderLayout({}, "/cart");
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByText("cart content");
+      expect(screen.queryByRole("navigation", { name: "Quick navigation" })).not.toBeInTheDocument();
     });
   });
 

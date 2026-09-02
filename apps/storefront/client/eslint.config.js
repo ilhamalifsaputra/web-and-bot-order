@@ -174,8 +174,9 @@ export default tseslint.config(
   //       the inline spinner glyph; Tailwind has no negative vertical-align util.
   //   src/components/shop/EmptyState.tsx  min-h-[360px] / min-h-[420px] —
   //       illustration panel min-heights. TODO(task-7x): tokenise on migration.
-  //   src/components/Layout.tsx  text-[15px] — nav-label size between text-sm
-  //       (14) and text-base (16). TODO(task-7x): add a type-scale token.
+  //   src/components/layout/MobileDrawer.tsx  text-[15px] — drawer nav-row label
+  //       size between text-sm (14) and text-base (16). Moved here from
+  //       Layout.tsx by the Task 5 chrome split. TODO(task-7x): type-scale token.
   //   src/components/shop/StepTimeline.tsx  text-[11px] — step-number badge.
   //       TODO(task-7x): add a type-scale token.
   //   src/components/shop/TicketMessageThread.tsx  text-[11px] — avatar initials.
@@ -185,7 +186,7 @@ export default tseslint.config(
       "src/pages/TicketDetailPage.tsx",
       "src/components/shop/Spinner.tsx",
       "src/components/shop/EmptyState.tsx",
-      "src/components/Layout.tsx",
+      "src/components/layout/MobileDrawer.tsx",
       "src/components/shop/StepTimeline.tsx",
       "src/components/shop/TicketMessageThread.tsx",
     ],

@@ -58,6 +58,15 @@ const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const RefundPage = lazy(() => import("./pages/RefundPage"));
 
+// Dev-only primitive gallery (Fase 6 phase gate + later-task visual-QA
+// surface). `import.meta.env.DEV` is a compile-time constant: in a production
+// build this ternary collapses to `() => null`, the `import()` literal is
+// dead-code-eliminated, and Rollup emits no chunk for it — the route is
+// unreachable and absent from the bundle. Never add it to any nav.
+const UiGalleryPage = import.meta.env.DEV
+  ? lazy(() => import("./pages/dev/UiGalleryPage"))
+  : () => null;
+
 /**
  * Full route table for every storefront URL. Ported cluster by cluster
  * (docs/REACT_STOREFRONT_MIGRATION.md): A catalog+cart, B auth, C
@@ -83,6 +92,10 @@ export default function App() {
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/forgot" element={<ForgotPage />} />
         <Route path="/reset/:token" element={<ResetPage />} />
+
+        {/* Dev-only, tree-shaken from production builds (see UiGalleryPage
+            import above). Rendered bare — no shop chrome. */}
+        {import.meta.env.DEV && <Route path="/__ui" element={<UiGalleryPage />} />}
 
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />

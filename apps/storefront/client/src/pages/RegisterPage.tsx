@@ -11,6 +11,16 @@
  * desktop. Note this page also has its own inline Terms/Privacy links in the
  * consent notice below the password fields (T11) — those are independent of
  * the panel's policy links and intentionally duplicate them.
+ *
+ * Task 15 (design-system migration, Fase 7d): see LoginPage.tsx's header
+ * comment for the §4 template-mismatch writeup (no OTP step exists in this
+ * app) and deviations.md §15-auth for the one-time record. Fields are now
+ * `<FormField>` + `<Input>`/`<PasswordInput>`, the submit is `<Button>`, the
+ * error banner is `<Alert variant="banner" tone="error">`. The T11
+ * Terms/Privacy notice keeps its exact copy and non-checkbox nature — only
+ * its paragraph colour moves from `ink-faint` to `ink-soft` (no test asserts
+ * that class, unlike the password-hint paragraph below, which keeps
+ * `ink-faint` because RegisterPage.test.tsx pins it).
  */
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -19,9 +29,13 @@ import { UserPlus } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
-import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
+import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
 
 /** Client-side twin of routes/auth.ts `safeNext` — see LoginPage.tsx. */
 function safeNext(raw: string | null): string {
@@ -80,27 +94,23 @@ export default function RegisterPage() {
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
       <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
-        <div className="w-full max-w-md card card-pad">
+        <Card className="w-full max-w-md">
           <Link to="/" className="text-center block">
             <UserPlus className="w-8 h-8 text-pine mx-auto" />
             <h1 className="font-display text-xl font-semibold mt-3">{t("web.register_title")}</h1>
           </Link>
 
           {error && (
-            <div className="mt-4">
-              <Flash text={error} kind="error" />
-            </div>
+            <Alert variant="banner" tone="error" className="mt-4">
+              {error}
+            </Alert>
           )}
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
-            <div>
-              <label className="text-sm font-semibold" htmlFor="fullName">
-                {t("web.register_fullname")}
-              </label>
-              <input
-                className="field mt-1"
-                type="text"
+            <FormField label={t("web.register_fullname")} htmlFor="fullName">
+              <Input
                 id="fullName"
+                type="text"
                 name="fullName"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
@@ -109,77 +119,65 @@ export default function RegisterPage() {
                 minLength={2}
                 maxLength={100}
               />
-            </div>
+            </FormField>
             <div>
-              <label className="text-sm font-semibold" htmlFor="username">
-                {t("web.register_username")}
-              </label>
-              <input
-                className="field mt-1"
-                type="text"
-                id="username"
-                name="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                required
-                minLength={3}
-                maxLength={32}
-                // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts) — was
-                // [a-zA-Z0-9_]+, letting an uppercase username pass client-side then 400 at the server.
-                pattern="[a-z0-9_]+"
-              />
+              <FormField label={t("web.register_username")} htmlFor="username">
+                <Input
+                  id="username"
+                  type="text"
+                  name="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  required
+                  minLength={3}
+                  maxLength={32}
+                  // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts) — was
+                  // [a-zA-Z0-9_]+, letting an uppercase username pass client-side then 400 at the server.
+                  pattern="[a-z0-9_]+"
+                />
+              </FormField>
               <p className="text-xs text-ink-faint mt-1">{t("web.register_username_help")}</p>
             </div>
-            <div>
-              <label className="text-sm font-semibold" htmlFor="email">
-                {t("web.register_email")}
-              </label>
-              <input
-                className="field mt-1"
-                type="email"
+            <FormField label={t("web.register_email")} htmlFor="email">
+              <Input
                 id="email"
+                type="email"
                 name="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
                 required
               />
-            </div>
+            </FormField>
             <div>
-              <label className="text-sm font-semibold" htmlFor="password">
-                {t("web.login_password")}
-              </label>
-              <PasswordInput
-                className="field mt-1"
-                id="password"
-                name="password"
-                autoComplete="new-password"
-                required
-                minLength={8}
-              />
+              <FormField label={t("web.login_password")} htmlFor="password">
+                <PasswordInput
+                  id="password"
+                  name="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={8}
+                />
+              </FormField>
               {/* T10: the 8-character minimum used to only surface as the
                   browser's native validation bubble after a failed submit —
                   same hint style/position as the username field's above. */}
               <p className="text-xs text-ink-faint mt-1">{t("web.register_password_help")}</p>
             </div>
-            <div>
-              <label className="text-sm font-semibold" htmlFor="password2">
-                {t("web.register_password2")}
-              </label>
+            <FormField label={t("web.register_password2")} htmlFor="password2">
               <PasswordInput
-                className="field mt-1"
                 id="password2"
                 name="password2"
                 autoComplete="new-password"
                 required
                 minLength={8}
               />
-            </div>
+            </FormField>
             {/* T11: a passive notice, not a blocking consent checkbox — signup
                 stays a single required step, this just makes sure the two
                 policies are reachable from the form that binds you to them. */}
-            <p className="text-center text-xs text-ink-faint">
+            <p className="text-center text-xs text-ink-soft">
               {t("web.register_terms_prefix")}{" "}
               <Link to="/terms" className="text-pine hover:underline">
                 {t("web.terms_title")}
@@ -190,17 +188,17 @@ export default function RegisterPage() {
               </Link>
               .
             </p>
-            <button type="submit" className="btn btn-primary w-full" disabled={registerMutation.isPending}>
+            <Button type="submit" variant="primary" fullWidth disabled={registerMutation.isPending}>
               {registerMutation.isPending && <Spinner />}
               {t("web.register_submit")}
-            </button>
+            </Button>
             <div className="text-center text-sm">
               <Link to={next !== "/" ? `/login?next=${encodeURIComponent(next)}` : "/login"} className="text-pine hover:underline">
                 {t("web.register_have_account")}
               </Link>
             </div>
           </form>
-        </div>
+        </Card>
 
         <AuthBrandPanel className="max-w-md" />
       </div>

@@ -1,31 +1,31 @@
 # Graph Report - storefront-redesign  (2026-09-03)
 
 ## Corpus Check
-- 1330 files · ~3,157,972 words
+- 1337 files · ~3,173,164 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 10072 nodes · 25747 edges · 435 communities (404 shown, 31 thin omitted)
+- 10110 nodes · 25952 edges · 434 communities (402 shown, 32 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 455 edges (avg confidence: 0.72)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `5fbafdbb`
+- Built from commit: `af54e943`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- crud/digiflazz.ts
+- routes/checkout.ts
 - DesignSystemGenerator
 - validate_data.py
-- setSetting
+- db/src/index.ts
 - 5. Logging & auditability
 - Storefront UX Review Notes (ID)
 - scripts/core.py
 - Tailwind CSS Utility Reference
 - design_system.py
 - 03 — Component Library
-- finalizeOrderPayment
+- tokopayReconcile.ts
 - slide_search_core.py
 - read_rows
 - Backend Audit — Delta since 2026-07-06 + Full Pass on High-Risk Areas
@@ -34,7 +34,7 @@
 - Design
 - Canvas Design System
 - spacing
-- PrivacyPage.test.tsx
+- StaticPage.tsx
 - search_stack
 - Form & Input Components
 - telegramCheck.ts
@@ -53,7 +53,7 @@
 - InstantBuyPage.tsx
 - apiGet
 - search
-- nowpaymentsReconcile.ts
+- createCatalogProduct
 - crud/catalog.ts
 - Before / After
 - Logo Usage Rules
@@ -61,11 +61,11 @@
 - Component Specifications
 - shadcn/ui Accessibility Patterns
 - UiGalleryPage.tsx
-- t
-- getSetting
+- Layout.tsx
+- binance_internal.ts
 - TestTailwindConfigGenerator
-- routes/branding.ts
-- digiflazzCatalogSyncStream.ts
+- upload.ts
+- finalizeOrderPayment
 - html-token-validator.py
 - radius
 - UI Layout & Design Token Audit
@@ -74,7 +74,7 @@
 - Logo AI Prompt Engineering
 - Before / After
 - Medium
-- storefront/client/src/pages/OrderDetailPage.tsx
+- conversations/admin.ts
 - Color Palette Management
 - CIP Deliverable Guide
 - BM25
@@ -82,7 +82,7 @@
 - Dual-Currency Wallet Design
 - UI Styling Skill
 - Admin UI Consistency Plan
-- datetime.ts
+- crud/vouchers.ts
 - prismaSessionStorage.ts
 - Workflow
 - Dokumentasi Teknis — `telegram-order-bot`
@@ -105,7 +105,7 @@
 - generate-slide.py
 - fontSize
 - Migration SQL Quoting Checks
-- color
+- keyboards/admin.ts
 - shadcn/ui Theming & Customization
 - TailwindConfigGenerator
 - 01 — Design System (Tokens & Foundations)
@@ -130,7 +130,7 @@
 - React Storefront Migration
 - Design Principles
 - Design Principles
-- src/errors.ts
+- t
 - FAQ Command Handler
 - How To Pay Command
 - Terms Command Handler
@@ -144,9 +144,9 @@
 - Bot Setup Wizard Design
 - ShadcnInstaller
 - CatalogRefreshTest
-- web-admin/src/plugins/auth.ts
+- AccountPage.tsx
 - Owner Email Notifications Design
-- fetchWithTimeoutSafe
+- payments/paydisini.ts
 - Design
 - CIP Design Reference
 - Icon Design Reference
@@ -170,7 +170,7 @@
 - Troubleshooting
 - 02 — Admin Layout
 - 06 — Settings Guidelines
-- DeliveryTypeSection.tsx
+- email/index.ts
 - update.md
 - Logo Design Reference
 - storefront/client/src/api/client.ts
@@ -178,7 +178,7 @@
 - §1 Findings
 - broadcasts.ts
 - Customer Journey Walkthrough
-- util/format.ts
+- denominationLabel.ts
 - Primitive Tokens
 - design-tokens-starter.json
 - Migrasi Database
@@ -190,23 +190,23 @@
 - Design
 - Storefront homepage — visual polish design
 - 07 — Dashboard Guidelines
-- routes/checkout.ts
+- dashboard.ts
 - extract-colors.cjs
 - Asset Validation Script
 - Design System / Component Consistency
-- TicketMessageThread.tsx
+- AttachmentGallery.tsx
 - Core Visual Elements
 - CIP Design Style Guide
 - jobs/index.ts
-- emailTemplates.ts
+- escapeHtml
 - adminTasks.test.ts
-- web-admin/client/src/api/types.ts
-- primitive
+- apiGet
+- emailTemplates.ts
 - Quick Reference
 - middleware.ts
 - generate_html
-- api/stock.ts
-- payments/tokopay.ts
+- bybit_bsc_deposit.test.ts
+- BrandConfig
 - Feature Parity Audit
 - Catalog 3-Tier Rename Plan
 - Dashboard Frontend Foundation Plan
@@ -220,22 +220,22 @@
 - Group-Aware Catalog Search Design
 - Next.js/Postgres Migration Plan
 - Product Denominations Design
-- NoOpIntersectionObserver
+- templates.ts
 - Business Adaptation
 - Bot UX (grammY)
 - Brand
 - Slide Strategies
 - generate_logo
-- BrandingPage.test.tsx
-- shop.ts
+- customEmoji.ts
+- storefront/src/plugins/auth.ts
 - Release Notes History
 - Component Tokens
-- SettingsNav.tsx
+- routes/cart.ts
 - button
 - Security Audit — Auth & Bot
 - Migration Timestamp Checker
 - Customers Module Upgrade Plan
-- 50
+- api/payments.ts
 - Data Layer/Schema Fix Batch
 - Owner Email Notifications Plan
 - Slide Strategies
@@ -262,7 +262,7 @@
 - Context carried in from prior work (already done, do not redo)
 - Accessibility Findings
 - Implementation Plan
-- db/src/index.ts
+- enums.ts
 - Brand Context Injection Script
 - Performance UX Findings
 - Responsive Findings
@@ -274,13 +274,14 @@
 - Web Conventions (Fastify + React SPA)
 - ._base_config
 - gogogo-frontend — Component Specs
-- chat.ts
+- cartComposition.ts
 - Backup & Restore — SQLite & PostgreSQL (execution/06, M-5)
 - Audit Keamanan & Business-Logic — Full Repo
 - Referensi Variabel Environment
-- TasksPage.tsx
+- 99 — Final verification (§23, §30)
 - Bot Concurrency Security Findings
 - Sistem Inventori (Stok)
+- Accordion.tsx
 - Admin UI Consistency Design
 - Storefront Ticket Workspace Design
 - Langkah instalasi
@@ -296,6 +297,7 @@
 - UI/UX Pro Max - Design Intelligence
 - Token-to-CSS Generator
 - Model per domain
+- truncLabel
 - Accessibility Findings
 - Checkout
 - Categories Page Tests
@@ -308,7 +310,7 @@
 - Homepage Visual Polish Plan
 - Brand Token Sync Script
 - test_validate_tokens.py
-- WalletTransactionsPage.test.tsx
+- preview-emails.ts
 - Navigation
 - Pricing & Voucher Audit Fixes
 - Payment Gateway
@@ -316,13 +318,14 @@
 - Catalog Product Creation Plan
 - Wallet Dual-Currency Plan
 - Wallet-Credit Checkout Plan
-- destructive-foreground
+- web-admin/src/flash.ts
 - Auth & Route Security Fixes
-- ProductPage.tsx
+- t
 - Payment Gateway Webhook Fixes
 - Hero Gradient Fallback Design
-- Spinner
+- TelegramLoginButton.tsx
 - Audit fixes plan — `docs/audit-backend-2026-08-21.md`
+- orderReady.test.ts
 - General UX Recommendations
 - HTML Slide Template
 - Slides Reference
@@ -332,20 +335,21 @@
 - card
 - HTML Slide Template
 - Query Contract
-- muted
+- mailer.ts
 - Security Patch
 - Slides
-- SearchModal.tsx
+- payment-menu.test.ts
 - Logging Conventions Guide
 - Cleanup & Finalization Plan
 - Search Page Redesign Plan
 - Money & Pricing Audit Fixes
 - Pre-Delivery Checklist
 - Prerequisites
-- primary-foreground
+- sm
 - GamesPage.test.tsx
 - Postgres migration cutover runbook
-- pgTestSchema.ts
+- Status: **none**
+- Status: **none**
 - Backend Audit Fixes Plan
 - gogogo-frontend — Foundations
 - Navigation Analysis
@@ -355,26 +359,26 @@
 - web-admin/client/src/pages/OrderDetailPage.tsx
 - storefront/client/src/App.tsx
 - Brand Guidelines Template
-- $type
-- radius
+- matchPersistentLabel
+- Flash.tsx
 - Common Rules for Professional UI
 - Example Workflow
 - Homepage
 - Product Listing and Product Detail
 - Order State Machine
 - input
-- padding-y
+- ResizeObserverStub
 - Tips for Better Results
 - Wallet Transaction Duplicate Checker
 - Arsitektur
 - Backup & Restore
+- xl
 - Konfigurasi
 - Sistem Antrian (`notification_outbox`)
 - test_sync_brand_to_tokens.py
 - main
 - Order Bot — Bot Telegram + Panel Admin + Toko Web
-- foreground
-- displayDateTime
+- crud/audit.ts
 - check-frontend-boundaries.ts
 - gogogo-frontend — Design System
 - eslint.config.js
@@ -382,7 +386,6 @@
 - format_output
 - slides-create.md
 - create.md
-- StepTimeline.tsx
 - .test_add_fonts
 - .test_add_spacing
 - .test_add_breakpoints
@@ -406,17 +409,13 @@
 - Rollback
 - Panduan Update
 - restore.sh
-- bulk.ts
 - docker-entrypoint.sh
-- $type
 - SearchOverlay.tsx
 - backup.sh
 - Panduan Patch (Bugfix)
 - Implementation deviations & design-system inconsistency log
-- primary
 - pageData.ts
 - Assumptions & Escalation Log
-- secondary
 - 28. ASSUMPTIONS AND ESCALATION
 - 7. PIXEL-LEVEL VISUAL FIDELITY
 - 8. COMPONENT ARCHITECTURE
@@ -431,23 +430,23 @@
 - Frontend Implementation Prompt — Reverse-Engineered Design System
 - apiAuth.ts
 - bybitBscDeposit.ts
-- PaymentsPage.tsx
-- CatalogPage.tsx
-- apiGet
+- ProductDetailPage.tsx
+- TasksPage.tsx
+- web-admin/client/src/api/client.ts
 - web-admin/client/src/pages/SupportPage.tsx
 - VouchersPage.tsx
 - web-admin/client/src/pages/SettingsPage.tsx
 - cn
 - Bybit Internal Status Probe
 - crud/reviews.ts
-- enums.ts
-- storefront/src/server.ts
+- notifications.ts
+- storefront/src/routes/spaShell.ts
 - dispatcher.ts
 - reconcile-sqlite-postgres.ts
 
 ## God Nodes (most connected - your core abstractions)
 1. `setSetting()` - 149 edges
-2. `t()` - 145 edges
+2. `t()` - 147 edges
 3. `t()` - 130 edges
 4. `createOrderDirect()` - 130 edges
 5. `getSetting()` - 126 edges
@@ -466,18 +465,18 @@
   apps/order-bot/src/handlers/customer.ts → packages/db/src/crud/digiflazz.test.ts
 - `browseProduct()` --indirect_call--> `unitPrice()`  [INFERRED]
   apps/order-bot/src/handlers/customer.ts → packages/db/src/crud/orders.ts
-- `makeStaleTicket()` --calls--> `createTicket()`  [EXTRACTED]
-  apps/order-bot/test/jobs.test.ts → packages/db/src/crud/support.ts
+- `ensureStock()` --calls--> `bulkAddStock()`  [EXTRACTED]
+  apps/order-bot/test/handlers.test.ts → packages/db/src/crud/stock.ts
 
 ## Import Cycles
 - 3-file cycle: `apps/storefront/src/plugins/auth.ts -> apps/storefront/src/routes/cart.ts -> apps/storefront/src/shop.ts -> apps/storefront/src/plugins/auth.ts`
 - 3-file cycle: `packages/db/src/crud/orders.ts -> packages/db/src/crud/referrals.ts -> packages/db/src/crud/pricing.ts -> packages/db/src/crud/orders.ts`
 
-## Communities (435 total, 31 thin omitted)
+## Communities (434 total, 32 thin omitted)
 
-### Community 0 - "crud/digiflazz.ts"
-Cohesion: 0.09
-Nodes (41): digiflazzSyncApiRoutes(), parsePrice(), quantizeMoney(), emitDigiflazzOrderStatusChanged(), DigiflazzCreds, DigiflazzPriceListItem, alertDigiflazzDispatchFailed(), applyDigiflazzMarkup() (+33 more)
+### Community 0 - "routes/checkout.ts"
+Cohesion: 0.05
+Nodes (72): webhookRateLimited(), AdHocLine, CachedGateway, CartLine, checkoutRoutes(), GatewayPaymentChoice, loadAdHocLine(), OrderRow (+64 more)
 
 ### Community 1 - "DesignSystemGenerator"
 Cohesion: 0.05
@@ -487,9 +486,9 @@ Nodes (29): _contrast_ratio(), _derive_dark_palette(), DesignSystemGenerator, _f
 Cohesion: 0.07
 Nodes (46): read_rows(), TestAccessibilityGuidance, TestChartsTypographyAndIcons, TestCurrentReactGuidance, TestSemanticColors, _catalog_date(), _check_app_interface_contract(), _check_catalog_contract() (+38 more)
 
-### Community 3 - "setSetting"
-Cohesion: 0.04
-Nodes (43): loginAs(), makeBuyerWithOrder(), mockCreateTransaction, digiflazzSupplierMock, disableDigiflazz(), enableDigiflazz(), makeUser(), cartCookie() (+35 more)
+### Community 3 - "db/src/index.ts"
+Cohesion: 0.02
+Nodes (84): homeRoutes(), baseUrl(), seoRoutes(), xmlEscape(), buildApp(), HERE, redactPath(), start() (+76 more)
 
 ### Community 4 - "5. Logging & auditability"
 Cohesion: 0.04
@@ -515,9 +514,9 @@ Nodes (34): ansi_ljust(), _detect_page_type(), format_ascii_box(), format_markdo
 Cohesion: 0.05
 Nodes (43): 03 — Component Library, Alert, Avatar, Badge, Breadcrumb, Button, Card, Charts (+35 more)
 
-### Community 10 - "finalizeOrderPayment"
-Cohesion: 0.04
-Nodes (76): pollOnce(), reconcileOrder(), alertAdmins(), AnchoredOrder, cursor, editBubbleAndClear(), loop, PendingOrder (+68 more)
+### Community 10 - "tokopayReconcile.ts"
+Cohesion: 0.09
+Nodes (35): alertAdmins(), AnchoredOrder, cursor, editBubbleAndClear(), loop, PendingOrder, pollOnce(), reconcileOrder() (+27 more)
 
 ### Community 11 - "slide_search_core.py"
 Cohesion: 0.08
@@ -532,8 +531,8 @@ Cohesion: 0.05
 Nodes (38): 0. Status of prior audit findings, 1. Money, pricing, FX, reconciliation, 2. Orders, checkout, stock, delivery, 3. Payment gateways and webhooks, 4. Auth, CSRF, route security, 5. Order bot (delta since 2026-07-06), 6. Data layer and schema (delta since 2026-07-06), 7. Outbox, notifications, composition root (+30 more)
 
 ### Community 14 - "handlers.test.ts"
-Cohesion: 0.04
-Nodes (109): SessionData, cache, invalidateRateCache(), custSession(), entryCust(), msg(), customerCtx(), EMAIL_FIELD (+101 more)
+Cohesion: 0.05
+Nodes (59): SessionData, cache, invalidateRateCache(), customerCtx(), EMAIL_FIELD, GAME_ID_FIELD, userSession(), EMAIL_FIELD (+51 more)
 
 ### Community 15 - "Brand Guidelines v1.0"
 Cohesion: 0.05
@@ -551,6 +550,10 @@ Nodes (35): 1. Visual Communication First, 2. Minimal Text Integration, 3. Exper
 Cohesion: 0.06
 Nodes (34): $type, $value, $type, $value, $type, $value, $type, $value (+26 more)
 
+### Community 19 - "StaticPage.tsx"
+Cohesion: 0.07
+Nodes (15): Callout(), CalloutProps, CalloutVariant, BodyProps, ProseBody(), StaticPage(), StaticPageProps, StaticPageStep (+7 more)
+
 ### Community 20 - "search_stack"
 Cohesion: 0.09
 Nodes (10): _exact_stack_identifier(), _project_row(), Resolve a standalone API identifier even when its BM25 IDF is low., Search stack-specific guidelines, search_stack(), _valid_max_results(), _rows(), TestNativeDesktopStackFreshness (+2 more)
@@ -564,8 +567,8 @@ Cohesion: 0.14
 Nodes (12): BotAdminCheck, ChannelCheck, checkBotIsAdminOf(), checkChannelWithTelegram(), checkTokenWithTelegram(), FileResolution, JoinUrlResolution, normalizeChannelInput() (+4 more)
 
 ### Community 23 - "logger.ts"
-Cohesion: 0.08
-Nodes (27): PollLoop, PollLoopOptions, logger, updateCtx, SmtpCreds, SseReply, SseRequest, streamSse() (+19 more)
+Cohesion: 0.09
+Nodes (22): OrderDigiflazzSnapshot, orderDigiflazzStreamRoutes(), readOrderDigiflazzSnapshot(), logger, updateCtx, constantTimeEqual(), createInvoice(), NowpaymentsCreds (+14 more)
 
 ### Community 24 - "Tailwind CSS Responsive Design"
 Cohesion: 0.06
@@ -584,52 +587,52 @@ Cohesion: 0.06
 Nodes (32): Added, Added, Added, Added, Added, Added, Added, Added (+24 more)
 
 ### Community 28 - "PayPage.tsx"
-Cohesion: 0.06
-Nodes (17): PayData, PayState, PayStatusData, readCodeEmailed(), FakeStorage, checkoutData, context, FakeStorage (+9 more)
+Cohesion: 0.08
+Nodes (19): PayData, PayState, PayStatusData, ICON, LABEL_KEY, TicketStatusBadge(), VARIANT, AlertDialog() (+11 more)
 
 ### Community 29 - "web-admin/client/src/pages/ReviewsPage.tsx"
-Cohesion: 0.06
-Nodes (33): SearchBar(), SearchBarProps, useDebouncedValue(), ReviewsKpis, useReviewsKpis(), RatingDistributionCard(), STARS, ReplyDialogReview (+25 more)
+Cohesion: 0.04
+Nodes (58): App(), SearchBar(), SearchBarProps, Stars(), StarsProps, Tooltip(), TooltipContent(), TooltipProvider() (+50 more)
 
 ### Community 30 - "apiAccount.ts"
 Cohesion: 0.05
-Nodes (90): isCmd(), supportConversation(), HERE, IMAGE_MIME, ParsedAttachment, parseTicketMultipart(), TICKET_DIR, TicketSubmission (+82 more)
+Nodes (89): isCmd(), supportConversation(), HERE, IMAGE_MIME, ParsedAttachment, parseTicketMultipart(), TICKET_DIR, TicketSubmission (+81 more)
 
 ### Community 31 - "connectionTest.ts"
 Cohesion: 0.05
-Nodes (52): binanceSign(), bybitSignedGet(), classifyCheckError(), CONNECTION_TESTS, ConnectionTestResult, errorMessage(), testBinanceInternal(), testBybit() (+44 more)
+Nodes (53): binanceSign(), bybitSignedGet(), classifyCheckError(), ConnectionTestResult, errorMessage(), testBinanceInternal(), testBybit(), testDigiflazz() (+45 more)
 
 ### Community 32 - "BM25"
 Cohesion: 0.09
 Nodes (23): BM25, detect_domain(), get_cip_brief(), _load_csv(), Load CSV and return list of dicts, Core search function using BM25, Auto-detect the most relevant domain from query, Main search function with auto-domain detection (+15 more)
 
 ### Community 33 - "t"
-Cohesion: 0.10
-Nodes (91): MyContext, MyConversation, acquireBroadcastLock(), adminGate(), answerStaleTap(), broadcastConversation(), bulkPricingConversation(), denyAdmin() (+83 more)
+Cohesion: 0.14
+Nodes (56): MyContext, isCmd(), rejectConversation(), adminCommand(), adminEmojiIdCommand(), adminMarkStockDead(), adminWalletCommand(), closeTicketAdmin() (+48 more)
 
 ### Community 34 - "Typography Specifications"
 Cohesion: 0.06
 Nodes (30): Accessibility, Base System, Best Practices, Clean & Modern, Common Font Pairings, Contrast Requirements, CSS Implementation, Editorial (+22 more)
 
 ### Community 35 - "InstantBuyPage.tsx"
-Cohesion: 0.06
-Nodes (58): useIdempotentPost(), AccountData, AccountOrderSummary, CheckoutData, PlaceOrderResponse, WalletTopupCreateResponse, WalletTopupData, anyMethodEnabled() (+50 more)
+Cohesion: 0.04
+Nodes (64): apiPatch(), IdempotentPost, newIdempotencyKey(), useIdempotentPost(), AdditionalField, CheckoutData, OrderDetailData, PlaceOrderResponse (+56 more)
 
 ### Community 36 - "apiGet"
-Cohesion: 0.07
-Nodes (53): apiGet(), ReferralData, ShelfPageData, SORT_KEYS, SortKey, Layout(), useShopContext(), PageTransition() (+45 more)
+Cohesion: 0.08
+Nodes (48): apiGet(), AccountReview, PendingReview, ShelfPageData, SORT_KEYS, SortKey, useShopContext(), BreadcrumbItem (+40 more)
 
 ### Community 37 - "search"
 Cohesion: 0.10
 Nodes (8): Resolve a deprecated in-domain alias, or expose a cross-domain redirect., Main search function with auto-domain detection, search(), _style_search_destination(), TestDiagnosticsContracts, TestSearchDomains, read_rows(), TestStyleTaxonomy
 
-### Community 38 - "nowpaymentsReconcile.ts"
+### Community 38 - "createCatalogProduct"
 Cohesion: 0.07
-Nodes (34): FLIPPABLE_SETTLED_STATUSES, flipSettledOrderBubble(), alertAdmins(), alertAdmins(), AnchoredOrder, cursor, editBubbleAndClear(), extractInvoiceId() (+26 more)
+Nodes (59): makeManualDenom(), makeManualWithInfoDenom(), makeManualWithInfoDenom(), makeManualDenom(), makeManualWithInfoDenom(), makeProductWithTwo(), makeGameDenom(), seedProduct() (+51 more)
 
 ### Community 39 - "crud/catalog.ts"
-Cohesion: 0.06
-Nodes (65): categoryNameMap(), ImportRow, isNum(), parseDenominationCsv(), resolveOrCreateProduct(), catalogApiRoutes(), gameNavigationFields(), parseDecimal() (+57 more)
+Cohesion: 0.04
+Nodes (88): categoryNameMap(), ImportRow, isNum(), parseDenominationCsv(), resolveOrCreateProduct(), HERE, csrfProtect, currentAdmin() (+80 more)
 
 ### Community 40 - "Before / After"
 Cohesion: 0.06
@@ -640,8 +643,8 @@ Cohesion: 0.07
 Nodes (28): Absolute Don'ts, Approved Backgrounds, Before Using Logo, Clear Space, Co-branding, Color Rules, Color Usage, Color Variants (+20 more)
 
 ### Community 42 - "Sidebar.tsx"
-Cohesion: 0.06
-Nodes (23): AppShell(), NAV_GROUPS, NavGroup, NavItemConfig, Sidebar(), SidebarContent(), SidebarProps, QUICK_ACTIONS (+15 more)
+Cohesion: 0.05
+Nodes (30): u(), AppShell(), SearchApiResponse, SearchModal(), SearchModalProps, SearchResult, TYPE_ICONS, TYPE_LABELS (+22 more)
 
 ### Community 43 - "Component Specifications"
 Cohesion: 0.07
@@ -653,35 +656,35 @@ Nodes (28): Accordion, Alert, ARIA Labels, Checkbox and Radio, Color Contrast, C
 
 ### Community 45 - "UiGalleryPage.tsx"
 Cohesion: 0.03
-Nodes (63): flashPercentLabel(), cartFlashSummary(), OrderSummaryCard(), OrderSummaryCardProps, ActionButton(), StickyPurchaseAction, StickyPurchaseBar(), StickyPurchaseBarProps (+55 more)
+Nodes (87): publicPost(), POLICY_LINKS, cartFlashSummary(), OrderSummaryCard(), PasswordInput(), PasswordInputProps, PaymentMethodRow(), ActionButton() (+79 more)
 
-### Community 46 - "t"
-Cohesion: 0.04
-Nodes (59): SupportTicketSummary, TicketOrderSummary, Footer(), FOOTER_LINKS, APP_VERSION, DRAWER_ICON, DrawerRow(), drawerRowClass() (+51 more)
+### Community 46 - "Layout.tsx"
+Cohesion: 0.08
+Nodes (20): Footer(), FOOTER_LINKS, Layout(), APP_VERSION, DRAWER_ICON, DrawerRow(), drawerRowClass(), MobileDrawer() (+12 more)
 
-### Community 47 - "getSetting"
-Cohesion: 0.04
-Nodes (119): pollOnce(), makeBybitOrder(), makeBybitOrder(), addMinutes(), NotificationEvent, OrderKind, OrderStatus, PaymentMethod (+111 more)
+### Community 47 - "binance_internal.ts"
+Cohesion: 0.07
+Nodes (77): pollOnce(), makeTrackedOrder(), makeBybitBscOrder(), makeBybitOrder(), makeBybitOrder(), makeBybitBscOrderAt(), cartCompositionError(), PaymentLogEvent (+69 more)
 
 ### Community 48 - "TestTailwindConfigGenerator"
 Cohesion: 0.07
 Nodes (15): Test adding full color palette., Test TailwindConfigGenerator class., Test that adding same plugin twice doesn't duplicate., Test plugin recommendations for Next.js., Test generating TypeScript configuration., Test generating config with plugins., Test validating config with empty theme extensions., Test that written config contains expected content. (+7 more)
 
-### Community 49 - "routes/branding.ts"
-Cohesion: 0.10
-Nodes (32): validateAttachment(), flashOrRedirect(), redirectWithFlash(), deleteOldUpload(), handleUpload(), HandleUploadOpts, awaitWebpVariants(), CONVERTIBLE_EXTENSIONS (+24 more)
+### Community 49 - "upload.ts"
+Cohesion: 0.17
+Nodes (22): validateAttachment(), deleteOldUpload(), handleUpload(), HandleUploadOpts, awaitWebpVariants(), CONVERTIBLE_EXTENSIONS, deleteWebpVariants(), generateWebpVariants() (+14 more)
 
-### Community 50 - "digiflazzCatalogSyncStream.ts"
-Cohesion: 0.27
-Nodes (10): optionalAdmin(), requireSseAdmin(), digiflazzCatalogSyncStreamRoutes(), OrderDigiflazzSnapshot, orderDigiflazzStreamRoutes(), readOrderDigiflazzSnapshot(), bus, emitDigiflazzCatalogSyncChanged() (+2 more)
+### Community 50 - "finalizeOrderPayment"
+Cohesion: 0.07
+Nodes (41): hideIfZero(), OrderMoneyInput, orderMoneyView, base, addMinutes(), computeUniqueCents(), generateOrderCode(), generatePaymentRef() (+33 more)
 
 ### Community 51 - "html-token-validator.py"
 Cohesion: 0.13
 Nodes (23): get_context(), is_allowed_exception(), is_allowed_rgba(), is_inside_block(), load_css_variables(), main(), print_result(), print_summary() (+15 more)
 
 ### Community 52 - "radius"
-Cohesion: 0.11
-Nodes (27): $type, $value, lg, sm, $type, $value, $type, $value (+19 more)
+Cohesion: 0.09
+Nodes (28): $type, $value, fast, normal, slow, $type, $value, $type (+20 more)
 
 ### Community 53 - "UI Layout & Design Token Audit"
 Cohesion: 0.08
@@ -689,7 +692,7 @@ Nodes (25): 1.1 [HIGH] Login storefront tidak ter-center secara vertikal dan bis
 
 ### Community 54 - "storefront/client/src/api/types.ts"
 Cohesion: 0.02
-Nodes (67): AccountOrdersData, AccountReview, CartLineView, CartPageData, CategoriesPageData, Category, CategoryPageData, CheckoutItem (+59 more)
+Nodes (69): CartLineView, CartPageData, CategoriesPageData, Category, CategoryPageData, CheckoutItem, CustomerInfo, HomeCategory (+61 more)
 
 ### Community 55 - "Asset Approval Checklist"
 Cohesion: 0.08
@@ -707,9 +710,9 @@ Nodes (25): Audit closing summary, Before / After, F-001 — Removed duplicate "
 Cohesion: 0.08
 Nodes (25): 10. F-007 — Fix Denomination breadcrumb product-name bug, 11. F-010 — Semantic headings on Dashboard, 12. F-011 — Fix low-contrast muted text token, 13. F-013 — Settings gateway toggle/status display fix, 14. F-014 — Add labels to Voucher inline-create form, 15. F-008 — Remove redundant "← Back" button, 16. F-015 — Rename "Pwd" column header, 17. F-017 — Search returns no results for an existing product (+17 more)
 
-### Community 59 - "storefront/client/src/pages/OrderDetailPage.tsx"
-Cohesion: 0.08
-Nodes (21): apiPatch(), AdditionalField, OrderDetailData, DeliveryFieldInput(), MockEventSource, OrderLike, useSse(), allFieldsValid() (+13 more)
+### Community 59 - "conversations/admin.ts"
+Cohesion: 0.15
+Nodes (43): MyConversation, acquireBroadcastLock(), adminGate(), answerStaleTap(), broadcastConversation(), bulkPricingConversation(), denyAdmin(), downloadTgText() (+35 more)
 
 ### Community 60 - "Color Palette Management"
 Cohesion: 0.08
@@ -739,13 +742,13 @@ Nodes (24): Accessibility Patterns, Alternative: Tailwind-Only Setup, Best Pract
 Cohesion: 0.09
 Nodes (22): Admin UI Consistency Implementation Plan, Global Constraints, Scope notes (decided during planning, not in the original spec), Self-Review, Task 10: Migrate VouchersPage onto StatusBadge and Switch, Task 11: Migrate SettingsPage banners onto Sonner toast and fix the raw checkbox, Task 12: Migrate OutboxPage onto DataTable and StatusBadge, Task 13: Migrate ReportsPage onto Card/DataTable and fix hardcoded colors (+14 more)
 
-### Community 67 - "datetime.ts"
-Cohesion: 0.13
-Nodes (26): VOUCHER_SCOPES, VOUCHER_STATUSES, VOUCHER_TYPES, vouchersApiRoutes(), parseShopLocal(), startOfDayUtc(), VoucherScope, VoucherType (+18 more)
+### Community 67 - "crud/vouchers.ts"
+Cohesion: 0.12
+Nodes (29): displayDate(), displayDateTime(), auditApiRoutes(), parseDate(), VOUCHER_SCOPES, VOUCHER_STATUSES, VOUCHER_TYPES, vouchersApiRoutes() (+21 more)
 
 ### Community 68 - "prismaSessionStorage.ts"
 Cohesion: 0.16
-Nodes (14): initialSession(), CHECKOUT_SCRATCH_KEYS, CHECKOUT_TTL_MS, classifySessionKind(), isCheckoutInProgress(), LONGEST_PAYMENT_WINDOW_MINUTES, buildTestBot(), installFakeTransport() (+6 more)
+Nodes (15): BotState, initialSession(), CHECKOUT_SCRATCH_KEYS, CHECKOUT_TTL_MS, classifySessionKind(), isCheckoutInProgress(), LONGEST_PAYMENT_WINDOW_MINUTES, prismaSessionStorage() (+7 more)
 
 ### Community 69 - "Workflow"
 Cohesion: 0.08
@@ -764,8 +767,8 @@ Cohesion: 0.09
 Nodes (21): 10. `editCustomerInfo`'s `/skip` + narrow error handling can crash the wizard, 11. Hardcoded English string in the bot's admin approve flow, 12. Raw untranslated error key shown to admin on underpaid-manual-SKU delivery attempt, 13. Same raw-error-key pattern on the new manual-fulfillment route, 14. Admin's client-side "at least one field" check is weaker than the server's validation, 15. Two new notification-enqueue functions reimplement an existing helper, 1. Admin "Resend to Telegram" sends an empty file for manually-fulfilled orders, 2. No refund/reject/cancel path for a stuck `PROCESSING` order (+13 more)
 
 ### Community 73 - "handlers/checkout.ts"
-Cohesion: 0.13
-Nodes (63): dispatchCheckout(), dispatchTopup(), buyNowBybit(), buyNowBybitBsc(), buyNowInternal(), buyNowNowpayments(), buyNowPaydisini(), buyNowTokopay() (+55 more)
+Cohesion: 0.07
+Nodes (105): dispatchCheckout(), dispatchTopup(), dispatchWalletMenu(), buyNowBybit(), buyNowBybitBsc(), buyNowInternal(), buyNowNowpayments(), buyNowPaydisini() (+97 more)
 
 ### Community 74 - "Blockchain Order Tracking Design"
 Cohesion: 0.09
@@ -804,12 +807,12 @@ Cohesion: 0.10
 Nodes (19): Context, Global Constraints (berlaku di SEMUA task — reviewer pakai ini sebagai lensa), Plan — Integrasi NOWPayments (USDT) & PayDisini (IDR) sebagai metode bayar baru, Task 10: NOWPayments DB crud — `packages/db/src/crud/nowpayments.ts`, Task 11: NOWPayments reconcile poller + registrasi di DUA composition root, Task 12: NOWPayments di storefront — checkout, pay page, webhook IPN, Task 13: NOWPayments — admin settings whitelist + card UI, Task 14: NOWPayments — bot UI (keyboard, handler, dispatcher) + i18n (+11 more)
 
 ### Community 83 - "handlers/customer.ts"
-Cohesion: 0.07
-Nodes (74): showUsdtMethods(), showWalletCreditMenu(), allOrderHistory(), backToHome(), bannerArg(), browseCategoriesInGroup(), browseCategoryEntry(), browseDenomination() (+66 more)
+Cohesion: 0.06
+Nodes (85): allOrderHistory(), backToHome(), bannerArg(), browseCategoriesInGroup(), browseCategoryEntry(), browseDenomination(), browseGroups(), browsePopular() (+77 more)
 
 ### Community 84 - "order-bot/src/main.ts"
-Cohesion: 0.05
-Nodes (69): CONVERSATIONS, flushSettledOrderBubble(), scheduleDigiflazzCatalogSync(), scheduleDigiflazzDispatch(), scheduleFxRefresh(), buildBot(), guardRunnerTask(), setupCommandMenu() (+61 more)
+Cohesion: 0.04
+Nodes (72): CONVERSATIONS, scheduleDigiflazzCatalogSync(), scheduleDigiflazzDispatch(), scheduleFxRefresh(), buildBot(), guardRunnerTask(), setupCommandMenu(), start() (+64 more)
 
 ### Community 85 - "Routing by Task Type"
 Cohesion: 0.10
@@ -824,16 +827,16 @@ Cohesion: 0.15
 Nodes (19): _e(), generate_chart_slide(), generate_cta_slide(), generate_deck(), generate_metrics_slide(), generate_problem_slide(), generate_solution_slide(), generate_testimonial_slide() (+11 more)
 
 ### Community 88 - "fontSize"
-Cohesion: 0.11
-Nodes (20): $type, $value, $type, $value, $type, $value, $type, $value (+12 more)
+Cohesion: 0.10
+Nodes (21): $type, $value, $type, $value, $type, $value, $type, $value (+13 more)
 
 ### Community 89 - "Migration SQL Quoting Checks"
 Cohesion: 0.19
 Nodes (14): GRANDFATHERED, grandfatheredCopies, GrandfatheredFolder, migrationsDir, offenders, problems, findClauseEnd(), findUnqualifiedSources() (+6 more)
 
-### Community 90 - "color"
-Cohesion: 0.15
-Nodes (21): $type, $value, $type, $value, 500, 600, blue, green (+13 more)
+### Community 90 - "keyboards/admin.ts"
+Cohesion: 0.11
+Nodes (31): ADM_TICKET_ICONS, adminMenu(), approvedResendKb(), backToAdminKb(), bannerRemovedUndoKb(), broadcastConfirmKb(), Btn, bulkPricingKb() (+23 more)
 
 ### Community 91 - "shadcn/ui Theming & Customization"
 Cohesion: 0.10
@@ -872,12 +875,12 @@ Cohesion: 0.11
 Nodes (18): 1. Wordmark (Logotype), 2. Lettermark (Monogram), 3. Pictorial Mark (Brand Mark), 4. Abstract Mark, 5. Mascot, 6. Emblem, 7. Combination Mark, Aesthetic Styles (+10 more)
 
 ### Community 100 - "gray"
-Cohesion: 0.09
-Nodes (23): $type, $value, $type, $value, $type, $value, $type, $value (+15 more)
+Cohesion: 0.05
+Nodes (53): $type, $value, $type, $value, $type, $value, $type, $value (+45 more)
 
 ### Community 101 - "color"
-Cohesion: 0.11
-Nodes (19): $type, $value, background, destructive, muted-foreground, primary-hover, ring, secondary-foreground (+11 more)
+Cohesion: 0.05
+Nodes (37): $type, $value, background, destructive, destructive-foreground, foreground, muted, muted-foreground (+29 more)
 
 ### Community 102 - "10 — UI Review Checklist"
 Cohesion: 0.11
@@ -931,21 +934,21 @@ Nodes (15): 22 Art Direction Styles, Banner Sizes & Art Direction Styles Referen
 Cohesion: 0.12
 Nodes (15): 22 Art Direction Styles, Banner Sizes & Art Direction Styles Reference, Complete Banner Sizes, CTA Rules, Design Principles, Pinterest Research Queries, Print, Print Specs (+7 more)
 
-### Community 115 - "src/errors.ts"
+### Community 115 - "t"
 Cohesion: 0.08
-Nodes (47): BaseContext, BotState, DbUserSnap, isCmd(), voucherConversation(), customerInfoConversation(), fieldPrompt(), isCmd() (+39 more)
+Nodes (38): BaseContext, DbUserSnap, customerInfoConversation(), fieldPrompt(), isCmd(), editCustomerInfoConversation(), fieldPrompt(), isCmd() (+30 more)
 
 ### Community 119 - "crud/orders.ts"
-Cohesion: 0.03
-Nodes (143): makeTrackedOrder(), makeBybitBscOrder(), pendingVerificationOrder(), EMAIL_FIELD, entryCtx(), GAME_ID_FIELD, makeProcessingOrder(), OPTIONAL_NOTE_FIELD (+135 more)
+Cohesion: 0.04
+Nodes (84): computeConfirmation(), computeTotals(), directCustomerDataJson(), performCheckout(), buildOrderFilter(), BULK_ACTIONS, BulkAction, csvField() (+76 more)
 
 ### Community 120 - "callbacks.ts"
-Cohesion: 0.08
-Nodes (16): closeTicketUser(), dispatchAdmin(), dispatchPayBybit(), dispatchPayBybitBsc(), dispatchPayInternal(), dispatchPayNowpayments(), dispatchPayPaydisini(), dispatchPayTokopay() (+8 more)
+Cohesion: 0.07
+Nodes (19): closeTicketUser(), dispatchAdmin(), dispatchBuy(), dispatchPayBybit(), dispatchPayBybitBsc(), dispatchPayInternal(), dispatchPayNowpayments(), dispatchPayPaydisini() (+11 more)
 
 ### Community 121 - "PaymentsPage.test.tsx"
-Cohesion: 0.04
-Nodes (29): FILE, Toaster(), BROADCAST, eventLabel(), humanizeEventCode(), OutboxPage(), ROW, keysFor() (+21 more)
+Cohesion: 0.03
+Nodes (37): EXT_MIME, ImageUploadField(), saveButtonContent(), FILE, UploadPhase, ProgressBar(), ProgressBarProps, ProgressBarTone (+29 more)
 
 ### Community 122 - "Vouchers Page Tests"
 Cohesion: 0.18
@@ -971,17 +974,17 @@ Nodes (16): 10. Testing (ikut CLAUDE.md), 11. Keputusan (FINAL — dikonfirmasi 
 Cohesion: 0.04
 Nodes (38): main(), Add all available shadcn/ui components.          Args:             overwrite:, Handle shadcn/ui component installation., List installed components.          Returns:             Tuple of (success, m, Initialize installer.          Args:             project_root: Project root d, Check if shadcn is initialized in project.          Returns:             True, Get list of already installed components.          Returns:             List, Read shadcn version from project package.json; fall back to a pinned default. (+30 more)
 
-### Community 129 - "web-admin/src/plugins/auth.ts"
+### Community 129 - "AccountPage.tsx"
 Cohesion: 0.09
-Nodes (27): AdminSession, constantTimeEqual(), WebRole, authPlugin(), canMutate(), CONFIG_PREFIXES, csrfCheck(), csrfProtect (+19 more)
+Nodes (23): AccountData, AccountOrderSummary, AMBER, GRASS, PINE, RUST, STATUS_LABEL_KEY, StatusBadge() (+15 more)
 
 ### Community 130 - "Owner Email Notifications Design"
 Cohesion: 0.12
 Nodes (15): Deployment, Design, Dispatcher, Enqueue, Events, Known tradeoff (inherited), `/outbox` page, Outcome (+7 more)
 
-### Community 131 - "fetchWithTimeoutSafe"
-Cohesion: 0.08
-Nodes (33): fetchWithTimeout(), fetchWithTimeoutSafe(), HTTP_TIMEOUT_MS, HttpTimeoutError, constantTimeEqual(), createInvoice(), NowpaymentsCreds, NowpaymentsInvoice (+25 more)
+### Community 131 - "payments/paydisini.ts"
+Cohesion: 0.14
+Nodes (20): checkTransaction(), constantTimeEqual(), createTransaction(), fetchPaydisiniJson(), firstString(), PaydisiniCallback, PaydisiniCreds, PaydisiniOrderInfo (+12 more)
 
 ### Community 132 - "Design"
 Cohesion: 0.13
@@ -996,8 +999,8 @@ Cohesion: 0.13
 Nodes (14): Available Styles, CLI Options, Commands, Generate Batch Variations, Generate Multiple Sizes, Generate Single Icon, Icon Categories, Icon Design Reference (+6 more)
 
 ### Community 135 - "keyboards/customer.ts"
-Cohesion: 0.05
-Nodes (87): ADM_TICKET_ICONS, adminMenu(), approvedResendKb(), backToAdminKb(), bannerRemovedUndoKb(), broadcastConfirmKb(), Btn, bulkPricingKb() (+79 more)
+Cohesion: 0.10
+Nodes (45): backToMain(), Btn, bybitBscTrackingKb(), CategoryLike, cb(), denominationDetailKb(), DenominationLike, editInfoCancelKb() (+37 more)
 
 ### Community 136 - "Copywriting Formulas"
 Cohesion: 0.13
@@ -1020,16 +1023,16 @@ Cohesion: 0.14
 Nodes (13): Art Direction Styles (Top 10), Banner Design - Multi-Format Creative Banner System, Banner Size Quick Reference, Design Rules, Prerequisites, Security, Step 1: Gather Requirements (AskUserQuestion), Step 2: Research & Art Direction (+5 more)
 
 ### Community 141 - "web.test.ts"
-Cohesion: 0.02
-Nodes (151): accountFailures, accountLockedOut(), attempts, b64url(), base32Decode(), base32Encode(), consumeResetCode(), cookieSecret() (+143 more)
+Cohesion: 0.03
+Nodes (133): accountFailures, accountLockedOut(), AdminSession, attempts, b64url(), base32Decode(), base32Encode(), constantTimeEqual() (+125 more)
 
 ### Community 142 - "Messaging Framework"
 Cohesion: 0.14
 Nodes (13): Core Statements, Elevator Pitches, Framework Structure, Message Architecture, Message by Audience, Message Testing, Messaging Framework, Mission Statement (+5 more)
 
 ### Community 143 - "routes/api/games.ts"
-Cohesion: 0.22
-Nodes (17): fakeApi(), fakeApiWithEdits(), fakeApi(), fakeApi(), fakeApi(), gamesApiRoutes(), isUniqueConstraintError(), optionalBool() (+9 more)
+Cohesion: 0.18
+Nodes (22): fakeApi(), fakeApiWithEdits(), fakeApi(), fakeApi(), fakeApi(), makeNicknameGame(), gamesApiRoutes(), isUniqueConstraintError() (+14 more)
 
 ### Community 144 - "Public Channel ID Design"
 Cohesion: 0.13
@@ -1075,9 +1078,9 @@ Nodes (13): 02 — Admin Layout, 1. The shell, 2. Sidebar, 3. TopBar, 4. Standar
 Cohesion: 0.14
 Nodes (13): 06 — Settings Guidelines, 10. Progressive disclosure, 11. Save status, restart, and quick actions, 12. Never do, 1. Navigation, 2. Grouping, 3. Field display — `FieldRow`, 4. Save indicator / confirmation (+5 more)
 
-### Community 155 - "DeliveryTypeSection.tsx"
-Cohesion: 0.14
-Nodes (19): AdditionalField, AdditionalFieldDraft, AdditionalFieldsEditor(), AUTO_DELIVERY_FIELDS_TEMPLATE, AutoDeliverySourceOption, DeliveryMethod, DeliveryTypeSection(), methodOf() (+11 more)
+### Community 155 - "email/index.ts"
+Cohesion: 0.16
+Nodes (21): item(), eventBanner(), components, layout, theme, ptDivider(), ptKeyValue(), ptSection() (+13 more)
 
 ### Community 156 - "update.md"
 Cohesion: 0.15
@@ -1088,8 +1091,8 @@ Cohesion: 0.15
 Nodes (12): Available Styles, Color Psychology, Commands, Design Brief (Start Here), Detailed References, Generate Logo, Industry Defaults, Logo Design Reference (+4 more)
 
 ### Community 158 - "storefront/client/src/api/client.ts"
-Cohesion: 0.06
-Nodes (31): adoptCsrfToken(), apiPost(), apiPostFormWithProgress(), csrfToken(), PostOptions, IdempotentPost, newIdempotencyKey(), keyOfCall() (+23 more)
+Cohesion: 0.05
+Nodes (37): adoptCsrfToken(), apiPost(), apiPostFormWithProgress(), csrfToken(), PostOptions, keyOfCall(), AccountOrdersData, SupportData (+29 more)
 
 ### Community 159 - "Token Architecture"
 Cohesion: 0.15
@@ -1100,16 +1103,16 @@ Cohesion: 0.15
 Nodes (12): §1 Findings, §2 Verified clean, §3 Files changed, Executive summary, F1 [HIGH] — the storefront quoted a total it would not charge, F2 [MEDIUM] — asymmetric zero-clamp between the two order creators, F3 [MEDIUM] — bulk-pricing rules were trusted at read time, F4 [MEDIUM] — the bulk discount had two spellings (+4 more)
 
 ### Community 161 - "broadcasts.ts"
-Cohesion: 0.18
-Nodes (24): broadcastFloodWaitMs(), drainBroadcasts(), sleep(), broadcastPhotoArg(), cacheBroadcastPhotoFileId(), broadcastApiRoutes(), BROADCAST_SEGMENTS, BroadcastSegment (+16 more)
+Cohesion: 0.17
+Nodes (25): broadcastFloodWaitMs(), drainBroadcasts(), sleep(), broadcastPhotoArg(), cacheBroadcastPhotoFileId(), broadcastApiRoutes(), BroadcastStatus, BROADCAST_SEGMENTS (+17 more)
 
 ### Community 162 - "Customer Journey Walkthrough"
 Cohesion: 0.15
 Nodes (12): 1. Landing (`/`), 2. Browse products, 3. Search products, 4. Filter products, 5. Open product / View details (`/p/capcut-pro-1-month`), 6. Add to Cart / Buy Now, 7. Checkout gate (sign-in), 8. Checkout (`/checkout`) (+4 more)
 
-### Community 163 - "util/format.ts"
-Cohesion: 0.08
-Nodes (31): appendDiamondSuffix(), collapseDescriptor(), collapseWhole(), escapeRegExp(), formatDenominationLabel(), gameTopUpDenomLabel(), GameTopUpDenomLike, BybitBscTrackedOrder (+23 more)
+### Community 163 - "denominationLabel.ts"
+Cohesion: 0.32
+Nodes (10): appendDiamondSuffix(), collapseDescriptor(), collapseWhole(), escapeRegExp(), formatDenominationLabel(), gameTopUpDenomLabel(), GameTopUpDenomLike, formatCompactPrice() (+2 more)
 
 ### Community 164 - "Primitive Tokens"
 Cohesion: 0.17
@@ -1155,9 +1158,9 @@ Nodes (11): A. Hero background — layered depth, no new colors, B. Hero right s
 Cohesion: 0.17
 Nodes (11): 07 — Dashboard Guidelines, 1. The three questions a dashboard answers, 2. Live composition (the canonical order), 3. KPI row, 4. Operational attention (`OperationCenter`), 5. Charts, 6. Recent activity, 7. Quick actions (+3 more)
 
-### Community 175 - "routes/checkout.ts"
-Cohesion: 0.05
-Nodes (88): showTopupMethods(), denom(), apiWalletTopupRoutes(), csrfHeaderOk(), loadOwnedTopup(), requireCustomer(), loadGuestCartItems(), AdHocLine (+80 more)
+### Community 175 - "dashboard.ts"
+Cohesion: 0.08
+Nodes (46): dashboardApiRoutes(), shapeRevenue(), trendPct(), csvField(), csvRow(), reportsApiRoutes(), RFC-4180, addDays() (+38 more)
 
 ### Community 176 - "extract-colors.cjs"
 Cohesion: 0.20
@@ -1171,9 +1174,9 @@ Nodes (13): checkManifest(), formatBytes(), formatOutput(), fs, main(), parseFil
 Cohesion: 0.17
 Nodes (11): Accordions, Alerts / Flash messages, Badges, Buttons, Cards, Design System / Component Consistency, Inputs, Modals / Drawers (+3 more)
 
-### Community 179 - "TicketMessageThread.tsx"
-Cohesion: 0.15
-Nodes (14): TicketMessage, AttachmentGallery(), extOf(), VIDEO_EXT, dateGroupLabel(), MessageBubble(), SYSTEM_ICON, SystemEventRow() (+6 more)
+### Community 179 - "AttachmentGallery.tsx"
+Cohesion: 0.83
+Nodes (3): AttachmentGallery(), extOf(), VIDEO_EXT
 
 ### Community 180 - "Core Visual Elements"
 Cohesion: 0.18
@@ -1185,43 +1188,43 @@ Nodes (10): Bold Dynamic, CIP Design Style Guide, Classic Traditional, Color Psy
 
 ### Community 182 - "jobs/index.ts"
 Cohesion: 0.06
-Nodes (52): AnchoredSettledOrder, announceStartedFlashSales(), autoCancelExpiredOrders(), autoCloseStaleTickets(), binancePollWatchdog(), BubbleEditResult, BubbleFlipOutcome, bybitBscPollWatchdog() (+44 more)
+Nodes (51): AnchoredSettledOrder, announceStartedFlashSales(), autoCancelExpiredOrders(), autoCloseStaleTickets(), binancePollWatchdog(), BubbleEditResult, BubbleFlipOutcome, bybitBscPollWatchdog() (+43 more)
 
-### Community 183 - "emailTemplates.ts"
-Cohesion: 0.06
-Nodes (90): item(), toAbsoluteAssetUrl(), alertBox(), AlertTone, divider(), eventBanner(), fallbackLinkLine(), footer() (+82 more)
+### Community 183 - "escapeHtml"
+Cohesion: 0.17
+Nodes (27): alertBox(), AlertTone, divider(), fallbackLinkLine(), footer(), FooterArgs, InfoRow, infoTable() (+19 more)
 
 ### Community 184 - "adminTasks.test.ts"
-Cohesion: 0.16
-Nodes (23): adminTasksApiRoutes(), buildAdminTaskFilter(), PAGE_SIZE_OPTIONS, PRIORITY_VALUES, STATUS_VALUES, TYPE_VALUES, makeTask(), AdminTaskPriority (+15 more)
+Cohesion: 0.10
+Nodes (34): adminTasksApiRoutes(), buildAdminTaskFilter(), PAGE_SIZE_OPTIONS, PRIORITY_VALUES, shapeTask(), STATUS_VALUES, TYPE_VALUES, makeTask() (+26 more)
 
-### Community 185 - "web-admin/client/src/api/types.ts"
+### Community 185 - "apiGet"
 Cohesion: 0.03
-Nodes (69): AnalyticsCurrency, AnalyticsMetric, AnalyticsPoint, AnalyticsRange, CurrencyProfit, DashboardKpis, ExpirationRow, HealthStatus (+61 more)
+Nodes (97): apiGet(), AnalyticsCurrency, AnalyticsMetric, AnalyticsPoint, AnalyticsRange, CurrencyProfit, DashboardKpis, ExpirationRow (+89 more)
 
-### Community 186 - "primitive"
-Cohesion: 0.18
-Nodes (11): fast, normal, slow, $type, $value, $type, $value, primitive (+3 more)
+### Community 186 - "emailTemplates.ts"
+Cohesion: 0.13
+Nodes (20): toAbsoluteAssetUrl(), OrderReadyItem, formatMoney(), fmtItemLines(), formatWarranty(), Item, ManualQueuedPayload, NewTicketPayload (+12 more)
 
 ### Community 187 - "Quick Reference"
 Cohesion: 0.18
 Nodes (11): 10. Charts & Data (LOW), 1. Accessibility (CRITICAL), 2. Touch & Interaction (CRITICAL), 3. Performance (HIGH), 4. Style Selection (HIGH), 5. Layout & Responsive (HIGH), 6. Typography & Color (MEDIUM), 7. Animation (MEDIUM) (+3 more)
 
 ### Community 188 - "middleware.ts"
-Cohesion: 0.14
-Nodes (19): bindUpdateId(), buckets, checkMembership(), COMMERCE_CALLBACK_RE, COMMERCE_COMMANDS, commerceGate(), GateCacheEntry, isCommerceCallback() (+11 more)
+Cohesion: 0.18
+Nodes (17): bindUpdateId(), buckets, checkMembership(), COMMERCE_CALLBACK_RE, COMMERCE_COMMANDS, commerceGate(), GateCacheEntry, isCommerceCallback() (+9 more)
 
 ### Community 189 - "generate_html"
 Cohesion: 0.36
 Nodes (7): generate_html(), get_deliverable_info(), get_image_base64(), main(), Convert image to base64 for embedding in HTML, Extract deliverable type from filename and get info, Generate HTML presentation from CIP images
 
-### Community 190 - "api/stock.ts"
-Cohesion: 0.15
-Nodes (20): displayDate(), csvField(), csvRow(), stockApiRoutes(), stockStatusLabel(), RFC-4180, CredentialKeyConfigError, listAllDenominations() (+12 more)
+### Community 190 - "bybit_bsc_deposit.test.ts"
+Cohesion: 0.09
+Nodes (34): csvField(), csvRow(), stockApiRoutes(), stockStatusLabel(), RFC-4180, CredentialEnvelope, CredentialKeyConfigError, decryptCredentials() (+26 more)
 
-### Community 191 - "payments/tokopay.ts"
-Cohesion: 0.16
-Nodes (15): checkTransaction(), computeQrisAdminFee(), constantTimeEqual(), createTransaction(), fetchTokopayJson(), firstString(), QRIS_ADMIN_FEE_FLAT, QRIS_ADMIN_FEE_PERCENT (+7 more)
+### Community 191 - "BrandConfig"
+Cohesion: 0.21
+Nodes (14): accentRuleHtml(), renderShell(), RenderShellArgs, brand, buildSubject(), brand, buildThemeStyleBlock(), ColorTokens (+6 more)
 
 ### Community 192 - "Feature Parity Audit"
 Cohesion: 0.15
@@ -1240,8 +1243,8 @@ Cohesion: 0.18
 Nodes (10): File Structure, Global Constraints, Order-Bot Support Ticket Parity Implementation Plan, Task 1: Locale keys, Task 2: `summarizeTicketOrder` — order-summary formatter, Task 3: Keyboard changes — `ticketViewKb` reopen button + `orderPickerKb`, Task 4: `viewMyTicket` — show linked order, compute reopenable, Task 5: `callbacks.ts` — fix self-close, add reopen (+2 more)
 
 ### Community 196 - "api.ts"
-Cohesion: 0.10
-Nodes (33): checkoutSubmitRateLimited(), nicknameCheckRateLimited(), apiRoutes(), CategoryJson, clampJsonQty(), DenominationJson, normalizeIdempotencyKey(), ProductJson (+25 more)
+Cohesion: 0.11
+Nodes (44): constantTimeEqual(), denom(), csrfCheck(), checkoutPreviewRateLimited(), checkoutSubmitRateLimited(), clientIp(), guestCheckoutRateLimited(), nicknameCheckRateLimited() (+36 more)
 
 ### Community 197 - "05 — Table Guidelines"
 Cohesion: 0.18
@@ -1275,6 +1278,10 @@ Nodes (12): Bagian 1 — Arsitektur target, Bagian 2 — Struktur monorepo, Bagi
 Cohesion: 0.15
 Nodes (12): Bot (`apps/order-bot`), CRUD helpers (`packages/db/src/crud/catalog.ts`), Decisions (from brainstorming), Edge cases, Non-goals, Problem, Product Denominations (Product Groups) — Design, Schema (+4 more)
 
+### Community 205 - "templates.ts"
+Cohesion: 0.10
+Nodes (18): AdminDigiflazzResyncAbortedPayload, AdminOverpaidPayload, AdminResetPayload, AdminStalePaymentPayload, BulkPurchaseBroadcastPayload, DeliveredPayload, FlashSaleBroadcastPayload, Item (+10 more)
+
 ### Community 206 - "Business Adaptation"
 Cohesion: 0.11
 Nodes (18): Account navigation (`AccountPage` — grouped menu, the sole account nav listing), Brand, Business Adaptation, Core Actions, CTA Register, Customer, Entity States, Features (+10 more)
@@ -1295,13 +1302,13 @@ Nodes (9): Common Structures, Duarte Sparkline Pattern, Matching Strategy to Con
 Cohesion: 0.29
 Nodes (9): enhance_prompt(), generate_batch(), generate_logo(), load_env(), main(), Enhance the logo prompt with style and industry modifiers, Generate a logo using Gemini models with image generation      Args:, Generate multiple logo variants with different styles (+1 more)
 
-### Community 211 - "BrandingPage.test.tsx"
-Cohesion: 0.33
-Nodes (3): BrandingPage(), BRANDING_DATA, useBranding()
+### Community 211 - "customEmoji.ts"
+Cohesion: 0.21
+Nodes (14): HTML_FIELD, htmlDefaultsTransformer(), isCustomEmojiRejection(), rewriteBody(), MAP, ok(), applyCustomEmoji(), emojiToId (+6 more)
 
-### Community 212 - "shop.ts"
-Cohesion: 0.06
-Nodes (52): b64url(), constantTimeEqual(), cookieSecret(), CustomerSession, makeCustomerSession(), readCustomerSession(), sign(), TelegramAuthData (+44 more)
+### Community 212 - "storefront/src/plugins/auth.ts"
+Cohesion: 0.15
+Nodes (19): authPlugin(), csrfProtect, Customer, fastify, FastifyRequest, optionalCustomer(), trackLookupRateLimited(), apiCheckoutRoutes() (+11 more)
 
 ### Community 213 - "Release Notes History"
 Cohesion: 0.17
@@ -1311,13 +1318,13 @@ Nodes (12): Release Notes, v1.0.0 — 2026-05-30 s/d 2026-05-31, v1.10.0 — 202
 Cohesion: 0.20
 Nodes (9): Alert Tokens, Badge Tokens, Button Tokens, Card Tokens, Component Tokens, Dialog/Modal Tokens, Input Tokens, Table Tokens (+1 more)
 
-### Community 215 - "SettingsNav.tsx"
-Cohesion: 0.14
-Nodes (12): prefersReducedMotion(), readExpandedStorage(), SettingsNav(), SettingsNavGroup, SettingsNavLink, SettingsNavProps, BOTTOM, GROUP (+4 more)
+### Community 215 - "routes/cart.ts"
+Cohesion: 0.20
+Nodes (16): apiCartRoutes(), cartPayload(), writeGuestCartAndPatch(), cartLineLabel(), CartLineView, clampQty(), FlashLineView, flashViewFor() (+8 more)
 
 ### Community 216 - "button"
-Cohesion: 0.20
-Nodes (10): fg, font-size, hover-bg, button, $type, $value, $type, $value (+2 more)
+Cohesion: 0.15
+Nodes (15): fg, font-size, hover-bg, radius, radius, button, $type, $value (+7 more)
 
 ### Community 217 - "Security Audit — Auth & Bot"
 Cohesion: 0.17
@@ -1331,9 +1338,9 @@ Nodes (5): foldersByTimestamp, GRANDFATHERED, GrandfatheredCollision, migrations
 Cohesion: 0.17
 Nodes (11): Context, Customers Module Upgrade — Task Plan, Final Verification (after all tasks, whole-branch review), Global Constraints (binding on every task), Task 1: Customers list/count/sort/KPI/order-stats crud functions, Task 2: `touchLastSeen` + wire into the storefront, Task 3: `apps/web-admin/src/routes/api/users.ts` — list/export/kpis routes, Task 4: Frontend infra — relative time, Customers KPI hook/row, StatusBadge, Tooltip mount (+3 more)
 
-### Community 220 - "50"
-Cohesion: 0.67
-Nodes (4): $type, $value, 50, 50
+### Community 220 - "api/payments.ts"
+Cohesion: 0.23
+Nodes (13): paymentsMutationRateLimited(), normalizeIdempotencyKey(), NotFoundError, ORDER_KINDS, paymentsApiRoutes(), countProcessedBinanceTxToday(), dismissUnmatchedTx(), listPendingInternalOrders() (+5 more)
 
 ### Community 221 - "Data Layer/Schema Fix Batch"
 Cohesion: 0.17
@@ -1427,9 +1434,9 @@ Nodes (9): Accessibility Findings, Accessible error messages, Color contrast, Fo
 Cohesion: 0.20
 Nodes (9): Batch 1 — Critical correctness fix (do first, alone), Batch 2 — High-severity access/trust fixes (small, independent, safe to parallelize), Batch 3 — Checkout/cart friction pass (one PR, same files), Batch 4 — Homepage resilience (one PR), Batch 5 — Product listing & detail scaffolding (larger, plan ahead of catalog growth), Batch 6 — Design-system primitives (unlocks several Low findings at once), Batch 7 — Low-priority polish (bundle into a single cleanup PR), Implementation Plan (+1 more)
 
-### Community 250 - "db/src/index.ts"
-Cohesion: 0.08
-Nodes (39): fakeApi, CredentialEnvelope, decryptCredentials(), encryptCredentials(), isEncryptedCredentialEnvelope(), isEnvelopeShape(), keyForVersion(), StockStatus (+31 more)
+### Community 250 - "enums.ts"
+Cohesion: 0.03
+Nodes (147): makeInternalOrder(), fakeApi, base, pendingVerificationOrder(), makeProcessingOrder(), deliverOrder(), makeProcessingOrder(), makeTokopayPendingOrder() (+139 more)
 
 ### Community 251 - "Brand Context Injection Script"
 Cohesion: 0.31
@@ -1444,8 +1451,8 @@ Cohesion: 0.20
 Nodes (9): Checkout, Footer, Forms, Hero, Navbar, Product grid, Responsive Findings, Summary (+1 more)
 
 ### Community 254 - "bybitBscConfirmationTracker.ts"
-Cohesion: 0.11
-Nodes (18): backoff, BscScanProxyResponse, bscscanRpc(), computeConfirmations(), cursor, fetchConfirmations(), fetchLatestBlock(), fetchTxBlockNumber() (+10 more)
+Cohesion: 0.06
+Nodes (29): backoff, BscScanProxyResponse, bscscanRpc(), computeConfirmations(), cursor, fetchConfirmations(), fetchLatestBlock(), fetchTxBlockNumber() (+21 more)
 
 ### Community 255 - "Token Embedding Script"
 Cohesion: 0.20
@@ -1475,9 +1482,9 @@ Nodes (5): Any, Initialize generator.          Args:             typescript: If 
 Cohesion: 0.12
 Nodes (17): Accordion (FAQ), Badge & chip, Bottom navigation (mobile), Breadcrumb, Button, Card / surface panel, Carousel / banner, Denomination / package card (+9 more)
 
-### Community 263 - "chat.ts"
-Cohesion: 0.38
-Nodes (8): editAnchor(), isInline(), isNotModified(), Markup, renderMenu(), retireKeyboard(), truncateText(), releasePaymentAnchorIfReused()
+### Community 263 - "cartComposition.ts"
+Cohesion: 0.29
+Nodes (4): cartAdditionError(), CartCompositionLine, CartKind, cartKindOf()
 
 ### Community 264 - "Backup & Restore — SQLite & PostgreSQL (execution/06, M-5)"
 Cohesion: 0.12
@@ -1491,9 +1498,9 @@ Nodes (19): 5 hal yang harus diperbaiki SEGERA (urutan dampak finansial), Admin-
 Cohesion: 0.13
 Nodes (15): Behaviour / Tuning, Database, Hanya di Settings (TIDAK ada di `.env`), Logging, Notifier (outbox dispatcher), Payment — Binance Internal Transfer (UID, auto-confirm), Payment — Binance Pay (manual, legacy fallback), Payment — Bybit Internal Transfer (UID, off-chain instant) (+7 more)
 
-### Community 267 - "TasksPage.tsx"
-Cohesion: 0.09
-Nodes (26): buildPageWindow(), Pagination(), StatusBadge(), statusLabel(), titleCase(), Tone, TONE_CLASS, AdminOption (+18 more)
+### Community 267 - "99 — Final verification (§23, §30)"
+Cohesion: 0.22
+Nodes (8): 1. Automated gates (§23 verification matrix), 2. Live visual sweep (Playwright MCP, seeded server), §30.1 route-level DoD — status across the 32 routes, §30.2 project-level completion, 3. Known items carried into hardening / integration, 4. §30 acceptance criteria, 5. Bottom line, 99 — Final verification (§23, §30)
 
 ### Community 268 - "Bot Concurrency Security Findings"
 Cohesion: 0.20
@@ -1502,6 +1509,10 @@ Nodes (10): Bot-1 [CRITICAL] ✅ DIPERBAIKI 2026-06-23, Bot-2 [HIGH] ✅ DIPERBA
 ### Community 269 - "Sistem Inventori (Stok)"
 Cohesion: 0.18
 Nodes (10): Agregat status (`stockStatusCounts`), Dedup saat tambah stok massal (`bulkAddStock`), Download stok tersisa, Hapus stok (`bulkDeleteStock`) vs tandai rusak (`markStockDead`/`bulkMarkStockDead`), ⚠️ Limitasi yang diketahui: belum ada reaper TTL, Pelepasan reservasi (`releaseOrderHolds`), Reservasi atomik saat checkout (bukan saat approve), Restock subscription (+2 more)
+
+### Community 270 - "Accordion.tsx"
+Cohesion: 0.32
+Nodes (5): Accordion(), AccordionItem, AccordionProps, ITEMS, toArray()
 
 ### Community 271 - "Admin UI Consistency Design"
 Cohesion: 0.20
@@ -1525,11 +1536,11 @@ Nodes (8): Checkout friction affecting conversion, Conversion Rate Optimization 
 
 ### Community 276 - "crud/users.ts"
 Cohesion: 0.07
-Nodes (49): blockReadonlyReads, searchApiRoutes(), buildUserFilter(), csvField(), csvRow(), PAGE_SIZE_OPTIONS, parseBannedFilter(), parseDate() (+41 more)
+Nodes (52): blockReadonlyReads, searchApiRoutes(), buildUserFilter(), csvField(), csvRow(), PAGE_SIZE_OPTIONS, parseBannedFilter(), parseDate() (+44 more)
 
 ### Community 277 - "web-admin/client/src/App.tsx"
-Cohesion: 0.03
-Nodes (50): publicPost(), App(), Tooltip(), TooltipContent(), TooltipProvider(), TooltipTrigger(), formatRelativeTime(), queryClient (+42 more)
+Cohesion: 0.07
+Nodes (25): publicPost(), buttonVariants, MotionButton, MotionSlot, Input(), Label(), BootstrapPage(), BootstrapResult (+17 more)
 
 ### Community 278 - "web-admin/client/src/pages/OrdersPage.tsx"
 Cohesion: 0.08
@@ -1562,6 +1573,10 @@ Nodes (9): flattenTokens(), fs, generateCSS(), generateTailwind(), main(), parse
 ### Community 285 - "Model per domain"
 Cohesion: 0.14
 Nodes (14): Database, ERD — inti Order/Stok/Pembayaran, Foreign key & cascade policy, Generate ERD penuh, Idempotency ledger pembayaran, Identitas & sesi, Index signifikan, Katalog (3 tier) (+6 more)
+
+### Community 286 - "truncLabel"
+Cohesion: 0.29
+Nodes (7): stockProductsKb(), categoryPickerKb(), denominationPickerKb(), orderPickerKb(), popularKb(), searchResultsKb(), truncLabel()
 
 ### Community 287 - "Accessibility Findings"
 Cohesion: 0.25
@@ -1611,9 +1626,9 @@ Nodes (8): adjustBrightness(), { execFileSync }, extractColorsFromMarkdown(), fs
 Cohesion: 0.32
 Nodes (7): Regression tests for validate-tokens.cjs.  The validator used to skip any line, A hardcoded hex on the same line as a var() token is still a violation., A line that references only tokens produces no false positives., _run(), test_flags_hardcoded_hex_sharing_line_with_token(), test_token_only_line_reports_no_violation(), CompletedProcess
 
-### Community 299 - "WalletTransactionsPage.test.tsx"
-Cohesion: 0.22
-Nodes (6): humanizeReason(), reasonLabel(), REASONS, SPEND, TOPUP, WalletTransactionsPage()
+### Community 299 - "preview-emails.ts"
+Cohesion: 0.29
+Nodes (6): brand, main(), orderPaidCopy, orderPaidInput, resetPasswordCopy, resetPasswordInput
 
 ### Community 300 - "Navigation"
 Cohesion: 0.25
@@ -1643,17 +1658,13 @@ Nodes (7): Admin Wallet IDR/USDT Split Implementation Plan, Global Constraints, 
 Cohesion: 0.25
 Nodes (7): Global Constraints, Manual Verification (after Task 4), Task 1: `PaymentMethod.WALLET` + `finalizeOrderPayment` support, Task 2: `completeOrderWithWalletCredit` crud function, Task 3: Locale fixes — duplicate "USDT" + new wallet-credit strings, Task 4: Bot UI — wallet-credit submenu, zero-total Complete Order, routing, Wallet-Credit Checkout Submenu + Zero-Total Completion Implementation Plan
 
-### Community 307 - "destructive-foreground"
-Cohesion: 0.67
-Nodes (3): destructive-foreground, $type, $value
-
 ### Community 308 - "Auth & Route Security Fixes"
 Cohesion: 0.25
 Nodes (8): Batch 2 — Auth, CSRF, route security, Task 10: M-18 — Validate ticket attachments before writing them to disk, Task 11: M-19 — Strip the query string before logging the request URL in both error handlers, Task 12: M-20 — Add `Cache-Control: no-store` to the SPA shell responses, Task 6: H-4 — Stop serializing password hashes and emails into admin API responses, Task 7: H-5 — Lock `POST /setup/restart` after setup completes, Task 8: M-16 — Rotate the admin session jti on password change, Task 9: M-17 — Rate-limit storefront registration and password-reset submission
 
-### Community 309 - "ProductPage.tsx"
-Cohesion: 0.08
-Nodes (25): DenominationCard(), DenominationCardData, DenominationCardProps, purchasable(), AUTO, FlashBadge(), FlashBadgeProps, FlashCountdown() (+17 more)
+### Community 309 - "t"
+Cohesion: 0.03
+Nodes (66): AuthBrandPanel(), Navbar(), SearchForm(), AttachmentPicker(), AttachmentPickerProps, IMAGE_TYPES, VIDEO_TYPES, DenominationCard() (+58 more)
 
 ### Community 310 - "Payment Gateway Webhook Fixes"
 Cohesion: 0.25
@@ -1663,13 +1674,17 @@ Nodes (8): Batch 4 — Payment gateways and webhooks, Task 19: M-9 — Add a liv
 Cohesion: 0.25
 Nodes (7): Design, Docs, Goals, Hero: replace default Unsplash photo with a brand gradient, Non-goals, Problem, Testing
 
-### Community 312 - "Spinner"
-Cohesion: 0.05
-Nodes (38): publicPost(), SettingsData, TrackOrderResponse, AuthBrandPanel(), POLICY_LINKS, EmptyStateAction, Flash(), FlashProps (+30 more)
+### Community 312 - "TelegramLoginButton.tsx"
+Cohesion: 0.31
+Nodes (5): TelegramIcon(), TelegramIconProps, TelegramLoginButton(), TelegramLoginButtonProps, buildTelegramOAuthUrl()
 
 ### Community 313 - "Audit fixes plan — `docs/audit-backend-2026-08-21.md`"
 Cohesion: 0.20
 Nodes (9): Audit fixes plan — `docs/audit-backend-2026-08-21.md`, Global Constraints, Task 10: Circuit-breaker + admin alert on `resyncDigiflazzCatalog`, Task 11: Read-side role gate on credential/export routes (web-admin C-1), Task 12: Live re-verification + order-kind check on the Digiflazz webhook (I-1/I-4), Task 13: Alert admins + flag UNDERPAID on the three QRIS/IDR reconcile pollers (I-5), Task 14: Exclude wallet-topup orders from `reconcileFinances`'s order-drift check (I-1), Task 15: Health watchdog for the outbox dispatcher (I-3) (+1 more)
+
+### Community 314 - "orderReady.test.ts"
+Cohesion: 0.33
+Nodes (3): OrderReadyInput, brand, fullInput
 
 ### Community 315 - "General UX Recommendations"
 Cohesion: 0.25
@@ -1697,7 +1712,7 @@ Nodes (7): Batch 3 — Orders, checkout, stock, delivery, Task 13: H-2 — Let p
 
 ### Community 321 - "card"
 Cohesion: 0.20
-Nodes (12): $type, $value, bg, bg, padding, shadow, card, bg (+4 more)
+Nodes (12): $type, $value, border, padding, shadow, border, card, border (+4 more)
 
 ### Community 322 - "HTML Slide Template"
 Cohesion: 0.29
@@ -1707,9 +1722,9 @@ Nodes (6): Animation Classes, Background Images, Base Structure, Chart.js Integr
 Cohesion: 0.29
 Nodes (7): Query Contract, Step 1: Analyze User Requirements, Step 2: Generate Design System (new projects/pages), Step 2b: Persist Design System (Master + Overrides Pattern), Step 2c: Design Dials (optional), Step 3: Supplement with Detailed Searches (as needed), Step 4: Stack Guidelines
 
-### Community 324 - "muted"
-Cohesion: 0.67
-Nodes (3): muted, $type, $value
+### Community 324 - "mailer.ts"
+Cohesion: 0.60
+Nodes (4): sendMail(), SmtpCreds, transport(), verifySmtp()
 
 ### Community 325 - "Security Patch"
 Cohesion: 0.33
@@ -1719,9 +1734,9 @@ Nodes (5): Overview, Patch process, Security Patch, When to Use, Where this proj
 Cohesion: 0.33
 Nodes (5): References (Knowledge Base), Routing, Slides, Subcommands, When to Use
 
-### Community 327 - "SearchModal.tsx"
-Cohesion: 0.18
-Nodes (8): u(), SearchApiResponse, SearchModal(), SearchModalProps, SearchResult, TYPE_ICONS, TYPE_LABELS, userLabel()
+### Community 327 - "payment-menu.test.ts"
+Cohesion: 0.40
+Nodes (3): orderConfirmKb(), usdtMethodsKb(), FlatBtn
 
 ### Community 328 - "Logging Conventions Guide"
 Cohesion: 0.33
@@ -1747,9 +1762,9 @@ Nodes (6): Accessibility, Interaction, Layout, Light/Dark Mode, Pre-Delivery Che
 Cohesion: 0.33
 Nodes (6): Available Domains, Available Stacks, How to Use This Skill, Output Formats, Prerequisites, Search Reference
 
-### Community 334 - "primary-foreground"
-Cohesion: 0.67
-Nodes (3): primary-foreground, $type, $value
+### Community 334 - "sm"
+Cohesion: 0.60
+Nodes (5): sm, sm, sm, $type, $value
 
 ### Community 335 - "GamesPage.test.tsx"
 Cohesion: 0.29
@@ -1759,9 +1774,13 @@ Nodes (4): FREE_FIRE, jsonResponse(), MOBILE_LEGENDS, mockFetch()
 Cohesion: 0.15
 Nodes (13): 10. Post-cutover monitoring, 1. Prerequisites, 2. Freeze application writes, 3. Back up the real production SQLite database, 3a. Build the application image for this branch, 4. Bring up the Postgres container (schema-empty), 5. Apply the schema to the empty Postgres database, 6. Run the data-transform script against the real backup (+5 more)
 
-### Community 337 - "pgTestSchema.ts"
-Cohesion: 0.24
-Nodes (7): cleanupTestDb(), dropSchema(), HERE, PgTestSchemaEnv, provisionPgTestSchema(), ROOT, withSchema()
+### Community 337 - "Status: **none**"
+Cohesion: 0.40
+Nodes (4): Mocked adapters register (§11), Status: **none**, Test doubles are not adapters, Why there are none
+
+### Community 338 - "Status: **none**"
+Cohesion: 0.40
+Nodes (4): Placeholder copy register (§21.3), Real copy that is shop-configured, not placeholder, Status: **none**, Why there are none
 
 ### Community 339 - "Backend Audit Fixes Plan"
 Cohesion: 0.40
@@ -1789,23 +1808,19 @@ Nodes (13): 10. Search, 11. 404 / Not found — any unknown route (e.g. `/instal
 
 ### Community 345 - "web-admin/client/src/pages/OrderDetailPage.tsx"
 Cohesion: 0.08
-Nodes (17): DigiflazzSyncStatus, Badge(), badgeVariants, useDigiflazzSyncStatus(), MockEventSource, OrderLike, useSse(), CustomerDataField (+9 more)
+Nodes (15): DigiflazzSyncStatus, useDigiflazzSyncStatus(), MockEventSource, OrderLike, useSse(), CustomerDataField, CustomerDataUnit, MoneyView (+7 more)
 
 ### Community 346 - "storefront/client/src/App.tsx"
-Cohesion: 0.04
-Nodes (41): AboutPage, AccountPage, CartPage, CheckoutPage, ForgotPage, HowToOrderPage, LoginPage, OrderDetailPage (+33 more)
+Cohesion: 0.06
+Nodes (28): AboutPage, AccountPage, CartPage, CheckoutPage, ForgotPage, HowToOrderPage, LoginPage, OrderDetailPage (+20 more)
 
 ### Community 347 - "Brand Guidelines Template"
 Cohesion: 0.40
 Nodes (4): Brand Guidelines Template, Document Structure, Extractable Fields, Usage
 
-### Community 348 - "$type"
-Cohesion: 0.60
-Nodes (5): $type, $value, border, border, border
-
-### Community 349 - "radius"
-Cohesion: 0.60
-Nodes (5): radius, radius, radius, $type, $value
+### Community 348 - "matchPersistentLabel"
+Cohesion: 0.50
+Nodes (4): isPersistentLabel(), matchPersistentLabel(), persistentLabel(), productsPersistentKb()
 
 ### Community 350 - "Common Rules for Professional UI"
 Cohesion: 0.40
@@ -1828,12 +1843,8 @@ Cohesion: 0.40
 Nodes (5): Diagram transisi, Invariant penting, Order State Machine, Siapa yang memicu transisi, Status & makna
 
 ### Community 356 - "input"
-Cohesion: 0.29
-Nodes (8): padding-x, input, $type, $value, focus-ring, padding-x, $type, $value
-
-### Community 357 - "padding-y"
-Cohesion: 0.67
-Nodes (4): padding-y, padding-y, $type, $value
+Cohesion: 0.15
+Nodes (17): $type, $value, bg, padding-x, padding-y, bg, input, $type (+9 more)
 
 ### Community 358 - "Tips for Better Results"
 Cohesion: 0.50
@@ -1851,6 +1862,10 @@ Nodes (12): Alur order & state machine, Alur pembayaran, Apa yang TIDAK ada di s
 Cohesion: 0.17
 Nodes (12): Backup & Restore, Database backup — dua jalur, terdeteksi otomatis, Disaster recovery, Jadwal (cron, tiap 6 jam), Jalur Postgres (toko post-cutover), Jalur SQLite (toko pre-cutover), Off-box (aturan 3-2-1), Restore procedure (+4 more)
 
+### Community 362 - "xl"
+Cohesion: 0.67
+Nodes (4): xl, xl, $type, $value
+
 ### Community 364 - "Konfigurasi"
 Cohesion: 0.33
 Nodes (6): Dua sumber konfigurasi, Konfigurasi, Multi-toko di satu VPS, Profil Development, Profil Produksi, Validasi (`packages/core/src/config.ts`)
@@ -1863,13 +1878,9 @@ Nodes (11): Backoff eksponensial (anti head-of-line blocking), Enqueue, Jalur em
 Cohesion: 0.18
 Nodes (11): 1. Sebelum Mulai, 2. File `.env`, 3. Jalur A — Docker (disarankan), 4. Jalur B — tanpa Docker, 5. Buat Admin Pertama, 6. Pembayaran & Branding, 7. Update, Backup, Perawatan, 8. Masalah Umum (+3 more)
 
-### Community 369 - "foreground"
-Cohesion: 0.67
-Nodes (3): foreground, $type, $value
-
-### Community 370 - "displayDateTime"
-Cohesion: 0.13
-Nodes (18): displayDateTime(), shapeTask(), auditApiRoutes(), parseDate(), AuditFilter, auditWhere(), countAuditLogs(), InsertAuditLogArgs (+10 more)
+### Community 370 - "crud/audit.ts"
+Cohesion: 0.29
+Nodes (6): AuditFilter, auditWhere(), countAuditLogs(), insertAuditLog(), InsertAuditLogArgs, logCustomerAction()
 
 ### Community 371 - "check-frontend-boundaries.ts"
 Cohesion: 0.47
@@ -1886,10 +1897,6 @@ Nodes (8): ARBITRARY_OFFTOKEN, arbitrarySelectors, colorSelectors, cssConfigPath
 ### Community 374 - "schema.ts"
 Cohesion: 0.29
 Nodes (4): e2eDatabaseUrl, STOREFRONT_PORT, globalTeardown(), withSchema()
-
-### Community 378 - "StepTimeline.tsx"
-Cohesion: 0.25
-Nodes (3): StepItem, StepTimelineProps, steps
 
 ### Community 396 - "What's here"
 Cohesion: 0.22
@@ -1919,21 +1926,13 @@ Nodes (8): Breaking changes & restart order per jenis perubahan, Cache & "Redis"
 Cohesion: 0.43
 Nodes (4): remind_sentinel(), restore_postgres(), restore_sqlite(), restore.sh script
 
-### Community 411 - "bulk.ts"
-Cohesion: 0.52
-Nodes (4): activeBulkPercent(), bulkDiscountFor(), BulkRuleFields, isBulkActive()
-
 ### Community 414 - "docker-entrypoint.sh"
 Cohesion: 0.60
 Nodes (4): auto_migrate(), db_push(), log(), docker-entrypoint.sh script
 
-### Community 415 - "$type"
-Cohesion: 0.60
-Nodes (5): $type, $value, 700, 700, 700
-
 ### Community 416 - "SearchOverlay.tsx"
-Cohesion: 0.11
-Nodes (17): SearchOverlay(), SearchOverlayContext, SearchOverlayValue, SKELETON_ROWS, Modal(), ModalProps, ModalSize, SIZE (+9 more)
+Cohesion: 0.06
+Nodes (26): SearchPageData, SearchOverlay(), SearchOverlayContext, SearchOverlayProvider(), SearchOverlayValue, SKELETON_ROWS, emptyData, FakeStorage (+18 more)
 
 ### Community 417 - "backup.sh"
 Cohesion: 0.60
@@ -1944,12 +1943,8 @@ Cohesion: 0.40
 Nodes (5): Contoh terisi — insiden `claimed_at` (2026-06-24), Kapan migrasi dianggap "required", Outbox notification gagal: `P2022 column claimed_at does not exist`, Panduan Patch (Bugfix), Template
 
 ### Community 419 - "Implementation deviations & design-system inconsistency log"
-Cohesion: 0.18
-Nodes (10): 10-listing-structure — category-listing family kept its pills + sort on top of the §2 template (Task 10), 11-product-detail — ProductPage + InstantBuyPage migration, DenominationCard + StickyPurchaseBar (Task 11), 12-search-overlay — `/search` full page → `SearchOverlay`; 404 page → §16 states; mobile header search row dropped (Task 12), 13-home-colour — reference-brand colours on HomePage adapted to this project's tokens (Task 9), 9-home-structure — HomePage kept content-richer than the §1 template; no category filter added (Task 9), A1 — Tailwind `@theme` block kept as a literal mirror, not `var()` forwards (Task 3, Part A), A2 — literal `:root` token block retained in the build-free error shell (Task 3, Part A), B1 — stale `font-size` `base` token in the design-system spec (Task 3, Part B) (+2 more)
-
-### Community 421 - "primary"
-Cohesion: 0.67
-Nodes (3): primary, $type, $value
+Cohesion: 0.12
+Nodes (16): 10-listing-structure — category-listing family kept its pills + sort on top of the §2 template (Task 10), 11-product-detail — ProductPage + InstantBuyPage migration, DenominationCard + StickyPurchaseBar (Task 11), 12-search-overlay — `/search` full page → `SearchOverlay`; 404 page → §16 states; mobile header search row dropped (Task 12), 13-checkout — CartPage + CheckoutPage migration, PaymentMethodSelector grouping, Stepper restyle, StickyPurchaseBar wiring (Task 13), 13-home-colour — reference-brand colours on HomePage adapted to this project's tokens (Task 9), 14-pay-topup-track — PayPage + WalletTopupPage + TrackOrderPage migration, cancel-order confirmation dialog (Task 14), 15-auth — Login/Register/Forgot/Reset migration, PasswordInput + TelegramLoginButton refactor (Task 15), 16-account — Account family migration + logout confirmation dialog (Task 16) (+8 more)
 
 ### Community 422 - "pageData.ts"
 Cohesion: 0.10
@@ -1958,10 +1953,6 @@ Nodes (48): aggregateRating(), BulkMap, isSortKey(), ProductCard, RatingMap, sha
 ### Community 423 - "Assumptions & Escalation Log"
 Cohesion: 0.50
 Nodes (3): ASSUMPTION 1 — Mobile navigation: adopt the fixed bottom tab bar, ASSUMPTION 2 — Form library: keep the existing manual-validation convention, Assumptions & Escalation Log
-
-### Community 424 - "secondary"
-Cohesion: 0.67
-Nodes (3): secondary, $type, $value
 
 ### Community 425 - "28. ASSUMPTIONS AND ESCALATION"
 Cohesion: 0.50
@@ -2009,39 +2000,39 @@ Nodes (3): 5.1 What to inspect, 5.2 Required audit output, 5. FIRST: REPOSITORY 
 
 ### Community 444 - "apiAuth.ts"
 Cohesion: 0.08
-Nodes (57): newJti(), shopSessionJtiKey(), verifyTelegramLogin(), currentCustomer(), accountFailures, accountLockedOut(), attempts, checkoutPreviewHits (+49 more)
+Nodes (56): b64url(), cookieSecret(), CustomerSession, makeCustomerSession(), newJti(), readCustomerSession(), shopSessionJtiKey(), sign() (+48 more)
 
 ### Community 458 - "bybitBscDeposit.ts"
+Cohesion: 0.05
+Nodes (83): classifyTx(), matchByAmount(), matchUnderpaidByAmount(), noteMatches(), overpaymentCap(), parsePositiveAmount(), alertAdmins(), backoff (+75 more)
+
+### Community 480 - "ProductDetailPage.tsx"
 Cohesion: 0.06
-Nodes (77): classifyTx(), matchByAmount(), matchUnderpaidByAmount(), noteMatches(), overpaymentCap(), parsePositiveAmount(), backoff, BinanceTx (+69 more)
+Nodes (51): CATALOG_QUERY_KEY, CatalogData, CategoryRow, countProductsInCategory(), ProductRow, useCatalog(), gameQueryKey(), GameRow (+43 more)
 
-### Community 480 - "PaymentsPage.tsx"
-Cohesion: 0.05
-Nodes (69): CategoryRow, countProductsInCategory(), gameQueryKey(), GameRow, GAMES_QUERY_KEY, PROVIDER_LABELS, ProviderId, providerLabel() (+61 more)
-
-### Community 481 - "CatalogPage.tsx"
-Cohesion: 0.05
-Nodes (90): CATALOG_QUERY_KEY, CatalogData, ProductRow, useCatalog(), FIELD_TYPES, EmptyState(), EmptyStateProps, FilterBar() (+82 more)
-
-### Community 483 - "apiGet"
+### Community 481 - "TasksPage.tsx"
 Cohesion: 0.04
-Nodes (54): apiDelete(), apiGet(), apiPatch(), apiPost(), csrfToken(), logout(), PostOptions, throwForResponse() (+46 more)
+Nodes (93): FIELD_TYPES, DataTable(), DateInput(), FilterBar(), FilterBarProps, PageHeader(), PageHeaderProps, PageLayout() (+85 more)
+
+### Community 483 - "web-admin/client/src/api/client.ts"
+Cohesion: 0.04
+Nodes (59): apiDelete(), apiPatch(), apiPost(), csrfToken(), logout(), PostOptions, throwForResponse(), IdempotentPost (+51 more)
 
 ### Community 499 - "web-admin/client/src/pages/SupportPage.tsx"
-Cohesion: 0.04
-Nodes (53): CardRow(), CardRowProps, TicketPriorityBadge(), TicketPriorityBadgeProps, TONE_CLASS, TicketStatusBadge(), TicketStatusBadgeProps, TONE_CLASS (+45 more)
+Cohesion: 0.06
+Nodes (49): TicketPriorityBadge(), TicketPriorityBadgeProps, TONE_CLASS, TicketStatusBadge(), TicketStatusBadgeProps, TONE_CLASS, Badge(), badgeVariants (+41 more)
 
 ### Community 507 - "VouchersPage.tsx"
-Cohesion: 0.07
-Nodes (31): CurrencyAmount, CurrencyStack(), formatCurrencyDisplay(), formatCurrencyParts(), formatUsdtAmount(), trimTrailingZeros(), CustomersKpis, useCustomersKpis() (+23 more)
+Cohesion: 0.04
+Nodes (78): HealthLevel, ConfirmDialog(), CurrencyStack(), formatCurrencyDisplay(), formatCurrencyParts(), formatUsdtAmount(), trimTrailingZeros(), COLUMNS (+70 more)
 
 ### Community 512 - "web-admin/client/src/pages/SettingsPage.tsx"
-Cohesion: 0.07
-Nodes (38): HealthEntry, relativeTime(), SettingsSaveStatus(), SettingsSaveStatusProps, highlightMatch(), matchesQuery(), SettingsSearch(), SettingsSearchProps (+30 more)
+Cohesion: 0.05
+Nodes (51): HealthEntry, HealthSection, prefersReducedMotion(), readExpandedStorage(), SettingsNav(), SettingsNavGroup, SettingsNavLink, SettingsNavProps (+43 more)
 
 ### Community 566 - "cn"
 Cohesion: 0.04
-Nodes (77): Column, ColumnKind, DataTable(), DataTableProps, MotionCardRow, MotionTableBody, MotionTableRow, resolveKind() (+69 more)
+Nodes (63): CardRow(), CardRowProps, Column, ColumnKind, DataTableProps, MotionCardRow, MotionTableBody, MotionTableRow (+55 more)
 
 ### Community 579 - "Bybit Internal Status Probe"
 Cohesion: 0.53
@@ -2049,42 +2040,42 @@ Nodes (5): BybitResp, get(), internalStatusLabel(), main(), rowsOf()
 
 ### Community 649 - "crud/reviews.ts"
 Cohesion: 0.13
-Nodes (30): buildReviewFilter(), MANUAL_STATUS_VALUES, reviewsApiRoutes(), SENTIMENT_VALUES, SOURCE_VALUES, STATUS_VALUES, ReviewSentiment, ReviewSource (+22 more)
+Nodes (29): buildReviewFilter(), MANUAL_STATUS_VALUES, reviewsApiRoutes(), SENTIMENT_VALUES, SOURCE_VALUES, STATUS_VALUES, ReviewSentiment, ReviewSource (+21 more)
 
-### Community 677 - "enums.ts"
-Cohesion: 0.04
-Nodes (58): baseItem, baseOrder, outboxApiRoutes(), STATUS_VALUES, backlogSizeGauge, deadLetterCountGauge, failedCountGauge, metricsRoutes() (+50 more)
+### Community 677 - "notifications.ts"
+Cohesion: 0.08
+Nodes (40): outboxApiRoutes(), STATUS_VALUES, backlogSizeGauge, deadLetterCountGauge, failedCountGauge, metricsRoutes(), oldestUnsentAgeGauge, registry (+32 more)
 
-### Community 865 - "storefront/src/server.ts"
-Cohesion: 0.11
-Nodes (34): esc(), HERE, renderSpecialShell(), SPA_INDEX_PATH, SpecialShellOpts, staticFallbackHtml(), EXCLUDED, isExcluded() (+26 more)
+### Community 865 - "storefront/src/routes/spaShell.ts"
+Cohesion: 0.15
+Nodes (26): esc(), HERE, renderSpecialShell(), SPA_INDEX_PATH, SpecialShellOpts, staticFallbackHtml(), EXCLUDED, isExcluded() (+18 more)
 
 ### Community 906 - "dispatcher.ts"
-Cohesion: 0.07
-Nodes (56): DeliverableOrder, sendAccountFile(), SettledBubbleOrder, accountFileName(), buildAccountFileContent(), buildDeliveryCaption(), DeliveredItem, groupCredentials() (+48 more)
+Cohesion: 0.13
+Nodes (36): DeliverableOrder, accountFileName(), buildAccountFileContent(), buildDeliveryCaption(), DeliveredItem, groupCredentials(), warrantyDaysFor(), flushPaymentBubble() (+28 more)
 
 ### Community 1157 - "reconcile-sqlite-postgres.ts"
 Cohesion: 0.06
 Nodes (51): Cell, DEP_COLUMNS, DEP_DDL, hasColumn(), hasTable(), migrateCatalogRename(), POST_INDEXES, Row (+43 more)
 
 ## Knowledge Gaps
-- **3867 isolated node(s):** `fs`, `path`, `fs`, `path`, `fs` (+3862 more)
+- **3885 isolated node(s):** `fs`, `path`, `fs`, `path`, `fs` (+3880 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **31 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **32 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `msg()` connect `handlers.test.ts` to `t`, `web-admin/client/src/App.tsx`?**
-  _High betweenness centrality (0.072) - this node is a cross-community bridge._
-- **Why does `LoginPage()` connect `web-admin/client/src/App.tsx` to `handlers.test.ts`?**
-  _High betweenness centrality (0.072) - this node is a cross-community bridge._
-- **Why does `t()` connect `t` to `SearchOverlay.tsx`, `InstantBuyPage.tsx`, `apiGet`, `UiGalleryPage.tsx`, `TicketMessageThread.tsx`, `ProductPage.tsx`, `Spinner`, `storefront/client/src/App.tsx`, `storefront/client/src/pages/OrderDetailPage.tsx`, `PayPage.tsx`, `storefront/client/src/api/client.ts`?**
-  _High betweenness centrality (0.060) - this node is a cross-community bridge._
+- **Why does `LoginPage()` connect `web-admin/client/src/App.tsx` to `conversations/admin.ts`?**
+  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+- **Why does `msg()` connect `conversations/admin.ts` to `web-admin/client/src/App.tsx`, `handlers.test.ts`?**
+  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+- **Why does `t()` connect `t` to `SearchOverlay.tsx`, `AccountPage.tsx`, `InstantBuyPage.tsx`, `apiGet`, `UiGalleryPage.tsx`, `Layout.tsx`, `StaticPage.tsx`, `storefront/client/src/api/types.ts`, `TelegramLoginButton.tsx`, `storefront/client/src/App.tsx`, `PayPage.tsx`, `storefront/client/src/api/client.ts`?**
+  _High betweenness centrality (0.059) - this node is a cross-community bridge._
 - **What connects `fs`, `path`, `fs` to the rest of the system?**
-  _3867 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `crud/digiflazz.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.08599290780141844 - nodes in this community are weakly interconnected._
+  _3885 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `routes/checkout.ts` be split into smaller, more focused modules?**
+  _Cohesion score 0.053069420539300055 - nodes in this community are weakly interconnected._
 - **Should `DesignSystemGenerator` be split into smaller, more focused modules?**
   _Cohesion score 0.05191256830601093 - nodes in this community are weakly interconnected._
 - **Should `validate_data.py` be split into smaller, more focused modules?**

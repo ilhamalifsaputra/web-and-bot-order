@@ -435,20 +435,34 @@ export default function InstantBuyPage() {
               of this page's sections. */}
           <div className="card card-pad">
             <div className="aspect-[4/3] w-full overflow-hidden rounded-xl bg-sand">
-              <picture className="block w-full h-full">
-                {product.image_srcset && (
-                  <source type="image/webp" srcSet={product.image_srcset} sizes="(max-width: 768px) 100vw, 600px" />
-                )}
-                <img
-                  src={product.image}
-                  alt={product.name}
-                  loading="eager"
-                  decoding="async"
-                  width={800}
-                  height={600}
-                  className="w-full h-full object-cover"
-                />
-              </picture>
+              {product.image ? (
+                <picture className="block w-full h-full">
+                  {product.image_srcset && (
+                    <source
+                      type="image/webp"
+                      srcSet={product.image_srcset}
+                      sizes="(max-width: 768px) 100vw, 600px"
+                    />
+                  )}
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    loading="eager"
+                    decoding="async"
+                    width={800}
+                    height={600}
+                    className="w-full h-full object-cover"
+                  />
+                </picture>
+              ) : (
+                // Fase 12: no more stock-photo fallback — same neutral empty
+                // state the hero-product preview (HomePage.tsx) already uses
+                // for a photo-less product, rather than pulling the full
+                // category-keyed DefaultThumb into this out-of-scope page.
+                <div className="flex h-full w-full items-center justify-center">
+                  <Package className="h-10 w-10 text-ink-faint" aria-hidden="true" />
+                </div>
+              )}
             </div>
             <h1 className="page-title mt-4">{product.name}</h1>
             {product.description && (

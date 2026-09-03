@@ -28,7 +28,7 @@ import {
   shopFulfilmentStats,
   type CatalogProduct,
 } from "@app/db";
-import { PRODUCT_VARIANT_WIDTHS, categoryImage, productImage, webpSrcset } from "./images";
+import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
 import { resolveBotUsername } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
@@ -94,7 +94,10 @@ export async function homePageData() {
 
   return {
     hero_image: heroUrl || null,
-    categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
+    // No more stock-photo fallback for category tiles either — HomePage.tsx/
+    // CategoriesPage.tsx never read `image` (only emoji/name/slug/description),
+    // so this passes the raw (always-null-today) Category.image column through.
+    categories,
     products: cards,
     stats,
     testimonials,
@@ -244,8 +247,9 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       warranty_note: product.warrantyNote,
       category_name: catName,
       category_slug: product.category.slug,
-      image: product.webImageUrl ?? productImage(product, catName),
+      image: product.webImageUrl ?? null,
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+      image_kind: defaultThumbKind(product, product.category),
       rating: productRatingAvg,
       rating_count: productRatingCount,
       // Task 6 (Digiflazz instant-buy pilot): already fetched via
@@ -331,9 +335,10 @@ export async function flashPageData(sort: SortKey = "default") {
   return shelfFrom(await listFlashSaleProducts(prisma), sort);
 }
 
-/** The category index (GET /api/v1/pages/categories). `image` is resolved the
- * same way the homepage tiles do, so both surfaces show the same artwork. */
+/** The category index (GET /api/v1/pages/categories). No stock-photo fallback
+ * for `image` anymore (Fase 12) — same raw (always-null-today) Category.image
+ * column the homepage tiles now pass through. */
 export async function categoriesPageData() {
   const categories = await listActiveCategories(prisma);
-  return { categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })) };
+  return { categories };
 }

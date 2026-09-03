@@ -3,6 +3,12 @@
 import type { ProductCardData } from "../components/shop/ProductCard";
 import type { FlashInfo } from "../components/shop/FlashBadge";
 
+/** Mirrors the server's ThumbnailKind union (apps/storefront/src/images.ts)
+ * verbatim — kept as a local alias rather than a cross-import since this
+ * file mirrors server-side shapes elsewhere too (see api/types.ts's own
+ * conventions) rather than taking server code as a client dependency. */
+export type ThumbnailKind = "game" | "voucher" | "steam" | "entertainment" | "app" | "generic";
+
 /** Signed-in customer as exposed to the client (display fields only — the
  * CSRF token travels via the shell's meta tag, never in JSON). */
 export interface CustomerInfo {
@@ -24,12 +30,11 @@ export interface Category {
   isActive: boolean;
 }
 
-/** Homepage category tile — a Category with `image` replaced by the resolved
- * display image (apps/storefront/src/pageData.ts homePageData()); home.njk
- * itself only reads emoji/slug/name, image is unused there. */
-export interface HomeCategory extends Omit<Category, "image"> {
-  image: string;
-}
+/** Homepage category tile — the raw Category shape (apps/storefront/src/
+ * pageData.ts homePageData()/categoriesPageData() no longer resolve any
+ * display image for it, Fase 12; the client never reads `image` here
+ * anyway — only emoji/slug/name/description). */
+export type HomeCategory = Category;
 
 /** Honest home-page figures (apps/storefront/src/pageData.ts) — currently
  * unused by home.njk's markup (the stats band was replaced by the static
@@ -164,10 +169,17 @@ export interface ProductPageData {
     warranty_note: string | null;
     category_name: string;
     category_slug: string;
-    image: string;
+    /** The admin's real photo, or null (Fase 12: no more stock-photo
+     * fallback) — a null renders the DefaultThumb design-system placeholder,
+     * keyed by `image_kind`. */
+    image: string | null;
     /** WebP `srcset` for `image`, or null when no derivatives exist — see
      *  webpSrcset() in apps/storefront/src/images.ts. */
     image_srcset?: string | null;
+    /** Which DefaultThumb icon to show when `image` is null — mirrors the
+     * server-side ThumbnailKind union (apps/storefront/src/images.ts). Never
+     * absent, but typed nullable to tolerate an older/mocked payload. */
+    image_kind?: ThumbnailKind | null;
     /** Aggregate rating across every denomination of this product — the same
      * weighted-average calculation ProductCard's `rating`/`rating_count`
      * come from (apps/storefront/src/cards.ts's `aggregateRating`), so this

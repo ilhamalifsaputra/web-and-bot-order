@@ -8,6 +8,7 @@ import { motion } from "framer-motion";
 import { Tag, Zap } from "lucide-react";
 import { t } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
+import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
 import FlashBadge, { FlashWasPrice } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
@@ -23,11 +24,17 @@ export interface ProductCardData {
   category_name: string;
   from_price: string;
   variant_count: number;
-  image: string;
+  /** The admin's real photo, or null (Fase 12: no more stock-photo
+   * fallback) — a null renders DefaultThumb, keyed by `image_kind`. */
+  image: string | null;
   /** WebP `srcset` for `image` (apps/storefront/src/images.ts webpSrcset).
-   * Null/absent — an upload predating the derivatives, or a hotlinked
-   * placeholder — means render the plain <img>, never a broken <source>. */
+   * Null/absent — an upload predating the derivatives, or no real photo at
+   * all — means render the plain <img>, never a broken <source>. */
   image_srcset?: string | null;
+  /** Which DefaultThumb icon to show when `image` is null — see
+   *  defaultThumbKind() in apps/storefront/src/images.ts. Optional so an
+   *  older/mocked payload still type-checks (falls back to "generic"). */
+  image_kind?: ThumbnailKind | null;
   available: number;
   rating: number | null;
   rating_count: number;
@@ -93,12 +100,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             />
           </picture>
         ) : (
-          <>
-            <div className="absolute inset-0 bg-linear-to-br from-ink to-ink-soft"></div>
-            <span className="relative z-10 text-2xl font-bold text-white/90 px-4 text-center line-clamp-2">
-              {p.name}
-            </span>
-          </>
+          <DefaultThumb kind={p.image_kind ?? "generic"} name={p.name} />
         )}
 
         {/* Flash badge above the bulk badge in one stacked column — they can

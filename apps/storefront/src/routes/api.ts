@@ -114,7 +114,7 @@ async function productJson(product: CatalogProduct): Promise<ProductJson> {
     slug: product.slug,
     name: product.name,
     description: product.description,
-    image: product.webImageUrl ?? productImage(product, product.category.name),
+    image: product.webImageUrl ?? productImage(product),
     category: categoryJson(product.category),
     denominations,
   };

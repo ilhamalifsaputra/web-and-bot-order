@@ -30,6 +30,7 @@ import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import StockBadge from "../components/shop/StockBadge";
+import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import Alert from "../components/ui/Alert";
@@ -269,33 +270,37 @@ export default function ProductPage() {
             {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
                 the intrinsic size is declared even under object-cover, and why
                 <picture> needs to be block. */}
-            <picture className="block w-full h-full">
-              {product.image_srcset && (
-                // Full width on phones, roughly half the grid on desktop.
-                <source
-                  type="image/webp"
-                  srcSet={product.image_srcset}
-                  sizes="(max-width: 768px) 100vw, 600px"
+            {product.image ? (
+              <picture className="block w-full h-full">
+                {product.image_srcset && (
+                  // Full width on phones, roughly half the grid on desktop.
+                  <source
+                    type="image/webp"
+                    srcSet={product.image_srcset}
+                    sizes="(max-width: 768px) 100vw, 600px"
+                  />
+                )}
+                {/* Eager on purpose: this is the page's LCP element and the only
+                    image above the fold on a phone, so deferring it would trade a
+                    measurable delay for nothing. Everything below (the
+                    related-products shelf) lazy-loads via ProductCard. The
+                    width/height pair is what stops the text below from jumping
+                    while it decodes — object-cover ignores the numbers for
+                    painting, but the browser still uses their ratio to reserve
+                    the box. */}
+                <img
+                  src={product.image}
+                  alt={product.name}
+                  loading="eager"
+                  decoding="async"
+                  width={800}
+                  height={600}
+                  className="w-full h-full object-cover"
                 />
-              )}
-              {/* Eager on purpose: this is the page's LCP element and the only
-                  image above the fold on a phone, so deferring it would trade a
-                  measurable delay for nothing. Everything below (the
-                  related-products shelf) lazy-loads via ProductCard. The
-                  width/height pair is what stops the text below from jumping
-                  while it decodes — object-cover ignores the numbers for
-                  painting, but the browser still uses their ratio to reserve
-                  the box. */}
-              <img
-                src={product.image}
-                alt={product.name}
-                loading="eager"
-                decoding="async"
-                width={800}
-                height={600}
-                className="w-full h-full object-cover"
-              />
-            </picture>
+              </picture>
+            ) : (
+              <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
+            )}
           </div>
         </div>
 

@@ -674,6 +674,31 @@ describe("ProductPage sharing and image formats", () => {
     expect(screen.getByLabelText("Quantity")).toHaveAttribute("inputmode", "numeric");
   });
 
+  // Fase 12: the hardcoded Unsplash fallback is gone — a product with no
+  // admin-set webImageUrl now renders the DefaultThumb design-system
+  // placeholder, keyed by the server-resolved `image_kind`, instead of an
+  // unconditional <img> (there used to be no no-image branch at all here).
+  it("renders DefaultThumb (no <img>) when the product has no image", async () => {
+    const noImage: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, image: null, image_kind: "voucher" },
+    };
+    renderProduct("netflix-premium", () => noImage);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByAltText("Netflix Premium")).not.toBeInTheDocument();
+    expect(document.querySelector(".lucide-ticket")).toBeInTheDocument();
+  });
+
+  it("defaults DefaultThumb to the generic icon when image_kind is absent", async () => {
+    const noImage: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, image: null, image_kind: undefined },
+    };
+    renderProduct("netflix-premium", () => noImage);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(document.querySelector(".lucide-package")).toBeInTheDocument();
+  });
+
   it("offers the WebP derivatives as a <source> when they exist", async () => {
     const withSrcset: ProductPageData = {
       ...productData,

@@ -88,10 +88,20 @@ describe("CategoryPage", () => {
     renderCategory("streaming", () => categoryData);
     expect(await screen.findByRole("heading", { name: "🎬 Streaming" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
+    // components.md "Segmented control / tabs": active = pine-tint fill +
+    // pine-dark text (the .btn-soft pattern), inactive = ink-soft on sand.
     const activePill = screen.getByRole("link", { name: "🎬 Streaming" });
-    expect(activePill).toHaveClass("bg-pine", "text-white");
+    expect(activePill).toHaveClass("bg-pine-tint", "text-pine-dark", "rounded-full");
     const otherPill = screen.getByRole("link", { name: "🎮 Gaming" });
     expect(otherPill).toHaveClass("bg-sand", "text-ink-soft");
+  });
+
+  it("renders a breadcrumb: Home link → current category name", async () => {
+    renderCategory("streaming", () => categoryData);
+    const nav = await screen.findByRole("navigation", { name: "breadcrumb" });
+    const home = screen.getByRole("link", { name: "Home" });
+    expect(home).toHaveAttribute("href", "/");
+    expect(nav).toHaveTextContent("Streaming");
   });
 
   it("renders the empty state when the category has no products", async () => {

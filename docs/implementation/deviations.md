@@ -231,19 +231,28 @@ no visible pagination. Task 10 migrates the four routes that share this shape
 `/products`, `FlashPage` `/flash`) plus the `ProductCard` / `ProductCardSkeleton`
 / `SortSelect` domain components.
 
+**Rule cited:** FRONTEND_IMPLEMENTATION_PROMPT §3.2 ("adapt composition, not
+invention" — preserve existing business functionality; the design system is a
+visual *language*, applied by re-skinning what the app already does, never by
+removing a working feature to match a minimal template). §2's "no facets, no
+pagination, no sort" describes gogogo.id's category pages; it is not a licence
+to strip this shop's pre-existing category-switch pills or `?sort=` control.
+
 **Deviations, all deliberate:**
 
 1. **`CategoryPage` keeps its category-switch pill row.** §2 has no
    category switcher (each category is its own SEO page). This shop has always
    let a visitor hop between sibling categories from a horizontally-scrolling
    pill row under the H1. Kept, restyled to the `components.md`
-   "Segmented control / tabs" visual — `rounded-full`, `text-xs`/`600`, scale
+   "Segmented control / tabs" visual — `rounded-full`, `text-sm`/`600`, scale
    padding (`px-3 py-1.5`), **active** = `bg-pine-tint` + `text-pine-dark`
-   (the `.btn-soft` pattern), **inactive** = `text-ink-soft` on `bg-sand`.
-   They stay `<Link>`s (not a controlled `<Tabs>` — they navigate, they don't
-   filter in place). The old `px-3.5!` / `py-1.5!` bang overrides (which
-   existed only to beat the `.chip` class's own `padding`) are gone: the pill
-   is now composed from plain utilities, no `.chip` class, no `!`.
+   (the `.btn-soft` pattern), **inactive** = `text-ink-soft` on `bg-sand` with
+   a `hover:bg-pine-tint hover:text-pine-dark` hover. They stay `<Link>`s (not
+   a controlled `<Tabs>` — they navigate, they don't filter in place). The old
+   `px-3.5!` / `py-1.5!` bang overrides (which existed only to beat the
+   `.chip` class's own `padding`) are gone: the pill is now composed from
+   plain utilities (`inline-flex items-center gap-2 rounded-full …`), no
+   `.chip` class, no `!`.
 
 2. **All four pages keep the `SortSelect` control.** §2 lists no sort. STO-007
    gave this family a shared cheapest/newest/rating sort that re-fetches with
@@ -295,16 +304,29 @@ no visible pagination. Task 10 migrates the four routes that share this shape
    matched the spec and are untouched. `scale-[1.03]` on image hover
    (arbitrary but gate-allowed, no px/hex) is kept.
 
-8. **`Breadcrumb` adopted with two `components.md`-alignment tweaks.** The
+8. **`Breadcrumb` adopted with `components.md`-alignment tweaks.** The
    shared `components/shop/Breadcrumb.tsx` (audit verdict: `adopt`) was wired
-   into all four pages. Two small changes bring it onto the `components.md`
-   "Breadcrumb" spec: the separator glyph `/` → `›`, and the current
+   into all four pages. Four small changes bring it onto the `components.md`
+   "Breadcrumb" spec: size `text-xs` → `text-sm` (14px); non-current crumbs
+   `text-ink-faint` → `text-ink-soft` (nav base colour); the current
    (last, non-link) crumb `text-ink-soft` → `text-ink font-semibold` (spec:
-   "current page in `ink` (bold)"). These ripple to the two other current
-   consumers (`ProductPage`, `InstantBuyPage`) as a pure visual refinement
-   toward the design system; no behaviour or structure changes. The
-   component's `text-xs` size and `hover:text-pine` link treatment are left
-   as the `adopt` baseline.
+   "current page in `ink` (bold)"); separator glyph `/` → `›`, coloured
+   `text-ink-faint`. The current-crumb `<span>` also gains `min-w-0
+   break-words` so a very long product / category name wraps inside the
+   already-`flex-wrap` nav rather than pushing the row (§21 content
+   robustness). These ripple to the two other current consumers
+   (`ProductPage`, `InstantBuyPage`) as a pure visual refinement toward the
+   design system; the `items: {label, href?}[]` API, the "last item = current,
+   no link" behaviour and the `hover:text-pine` link treatment are unchanged.
+
+   *Known pre-existing (not introduced here):* at ≤320px a pathologically
+   long, unbroken category name still forces a small horizontal scroll on
+   `CategoryPage` — via the `.page-title` h1 (`display:flex`, no `flex-wrap`,
+   in `app.css`) and the `whitespace-nowrap` category pills inside their
+   `overflow-x-auto` row — and on `CategoriesPage` via the tile `h2.truncate`
+   (`white-space:nowrap`) in a rigid `1fr` grid track. All three predate this
+   task; `/products` and `/flash` (breadcrumb, no pills, no truncate) show no
+   overflow at 320px with realistic titles.
 
 **Crumb labels used:** `CategoryPage` — `{Home} › {category.name}`;
 `ProductsPage` — `{Home} › {All products}`; `FlashPage` —

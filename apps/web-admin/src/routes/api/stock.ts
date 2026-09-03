@@ -1,8 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import {
   prisma,
+  getUsdIdrRate,
   listAllDenominations,
   stockStatusCounts,
   getDenominationWithProduct,
@@ -86,13 +88,25 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // authenticated admin including readonly — explicitly out of scope for the
   // C-1 fix that gates /:productId and /:productId/download below.
   app.get("/api/stock/export", { preHandler: currentAdmin }, async (req, reply) => {
-    const [denominations, counts, waiting] = await Promise.all([
+    const [denominations, counts, waiting, usdRate] = await Promise.all([
       listAllDenominations(prisma),
       stockStatusCounts(prisma),
       restockSubscriberCounts(prisma),
+      getUsdIdrRate(prisma),
     ]);
 
-    const header = ["Denomination", "Product", "Category", "Available", "Reserved", "Sold", "Waiting", "Status"];
+    const header = [
+      "Denomination",
+      "Product",
+      "Category",
+      "Catalog Price (IDR)",
+      "Catalog Price (USD)",
+      "Available",
+      "Reserved",
+      "Sold",
+      "Waiting",
+      "Status",
+    ];
     let csv = csvRow(header);
     for (const d of denominations) {
       const cnt = counts[d.id];
@@ -101,6 +115,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         d.name,
         d.product?.name ?? "",
         d.product?.category?.name ?? "",
+        formatIdr(d.price),
+        usdRate ? formatUsdt(usdtFromIdr(d.price, usdRate)) : "",
         String(available),
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),

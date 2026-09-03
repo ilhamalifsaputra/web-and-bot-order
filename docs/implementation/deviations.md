@@ -658,3 +658,100 @@ still resolve for shared links; log the trade).
 `apps/storefront/client/src/App.tsx`,
 `packages/core/locales/{en,id}.json`. Deleted:
 `apps/storefront/client/src/pages/SearchPage.tsx` (+ `.test.tsx`).
+
+## 13-checkout — CartPage + CheckoutPage migration, PaymentMethodSelector grouping, Stepper restyle, StickyPurchaseBar wiring (Task 13)
+
+**Context.** Fase 7c migrates the checkout funnel — `CartPage.tsx`,
+`CheckoutPage.tsx`, and the shared domain components they use
+(`OrderSummaryCard.tsx`, `PaymentMethodSelector.tsx`, `Stepper.tsx`,
+`DeliveryFieldInput.tsx`, also shared with the already-migrated
+`InstantBuyPage`). Pure re-skin — no total/subtotal/discount arithmetic,
+mutation payload, endpoint string, payment-method state machine,
+idempotency-key handling, or guest/auth branch logic changed; verified by
+grepping the diff for `/api/v1/`, `formatIdr(`, `apiPost(`/`apiGet(`,
+`mutationFn` — the only hits are the same expressions re-indented or moved
+into a different prop, never a changed value or endpoint.
+
+**Deviations, all deliberate:**
+
+1. **Cart has no page-templates.md reference layout ("composed" per §3.2
+   rule 3).** gogogo.id checks out from its own sticky bar with no dedicated
+   cart template. `CartPage` keeps its existing desktop 2-col (line items +
+   summary `Card`) / mobile sticky-bar shape, restyled onto `.card`/token
+   utilities and the shared `<StickyPurchaseBar>` — no template to diverge
+   from, so this is composition, not adaptation of an existing one.
+
+2. **`PaymentMethodSelector` groups by this shop's actual payment rails, not
+   page-templates.md's literal "e-wallet / VA / QRIS / retail" taxonomy.**
+   This shop has no virtual-account or retail-outlet gateway; its eight rows
+   are QRIS, PayDisini ("QRIS / E-Wallet"), four crypto gateways (Binance,
+   Bybit, Bybit On-Chain, NOWPayments), and two wallet-credit rows. Grouped
+   instead as **IDR quick-pay** (QRIS + PayDisini), **Cryptocurrency**
+   (Binance/Bybit/Bybit BSC/NOWPayments), and **Wallet credit** (wallet_idr/
+   wallet_usdt) under `field-label` sub-headings — three new i18n keys
+   (`web.pay_group_idr`, `web.pay_group_crypto`, `web.pay_group_wallet`,
+   `en`+`id`). Every row's own gating condition (`data.X_enabled`, wallet
+   sufficiency) is byte-identical to before; the groups only wrap
+   already-conditional rows, never add/remove one or change when it renders.
+   `PaymentMethodRow` itself is a `border-2` card-surfaced `<label>` wrapping
+   a `<ui/Radio>` — DenominationCard's `has-[:checked]:border-pine` + ring,
+   no-fill selected treatment — kept as a `<label>` (not a literal `<Card>`)
+   because the native label-wraps-input click-anywhere-to-select behaviour
+   needs a real `<label>` element. Shared `PaymentMethodSelector` API
+   (`data`/`method`/`onSelect`) is unchanged; `InstantBuyPage.test.tsx` (21
+   tests, including the payment-row selection and re-validation-on-re-price
+   suites) passes unmodified against the restyle.
+
+3. **`Stepper` restyled to numbered circles + connector** (the brief's first
+   option, not the pill-row fallback): a small numbered circle per step,
+   `pine` active / `grass` + check done / `sand`+`ink-faint` upcoming,
+   joined by a short connector bar (`grass` once passed, `line` otherwise).
+   Chosen over the simpler pill row because circles-plus-connector reads as
+   *progress* at a glance (the connector fills in as steps complete) in a
+   way a same-shaped pill row does not. Kept: 3 steps, their labels, the
+   below-`sm` collapse-to-number-only-except-current behaviour, and the
+   `aria-label`/`aria-current="step"` wiring — this file was one of the 3
+   left uncommitted by the interrupted prior attempt; reviewed and kept
+   as-is (see task-13-report.md for that call).
+
+4. **`CartPage`/`CheckoutPage` sticky bars now portal via
+   `StickyPurchaseBar`, and their `env()`/`calc()` allowlist entries in
+   `eslint.config.js` are dropped.** Both pages' hand-rolled `fixed` bottom
+   bars are replaced by the shared, `document.body`-portaled
+   `<StickyPurchaseBar>` (Task 11) — fixing the same `<main>`
+   `transform`-makes-a-containing-block bug Task 11's own doc comment
+   describes, which pinned the old bars to `<main>`'s bottom edge instead of
+   the viewport. Neither page needs its own `env(safe-area-inset-bottom)`
+   calc any more (the bar pads its own bottom for the notch); the pages'
+   own reserved-runway space is now a plain `pb-28` utility. Removed from
+   `eslint.config.js`'s allowlist (A) accordingly — `InstantBuyPage.tsx` and
+   `ProductPage.tsx` keep their own entries (unchanged, out of this task's
+   scope). One behavioural note: `StickyPurchaseBar`'s primary action is
+   always a `<button onClick>`, not a `<Link>`, so `CartPage`'s
+   "Continue to payment" mobile CTA (pure navigation, no mutation) now
+   `navigate("/checkout")`s from a button instead of rendering an `<a
+   href="/checkout">` — `CartPage.test.tsx`'s "single reachable place on
+   mobile" assertion was updated from `getByRole("link", …)` to
+   `getByRole("button", …)`; the destination and "exactly one control"
+   property are unchanged. `CheckoutPage`'s bar was already button-based
+   (it submits `placeOrderMutation`), so no equivalent selector change was
+   needed there.
+
+5. **`GuestContactCard` (in `CheckoutPage.tsx`) composes `<Label>` +
+   `<Input>` directly, not a literal `<FormField>`** — same reasoning as
+   `OrderSummaryCard`'s voucher field (Task 11/7b precedent): the label row
+   also carries a "Required" badge beside the label text, which
+   `FormField`'s single-child clone + fixed `<Label>` slot has no room for.
+   `DeliveryFieldInput` (the field shared by `InstantBuyPage`/`CheckoutPage`/
+   `OrderDetailPage`) DOES use a literal `<FormField>` — it has no such
+   adjacent-badge requirement, only a label + control + error.
+
+**Files.** `apps/storefront/client/src/pages/CartPage.tsx`,
+`apps/storefront/client/src/pages/CheckoutPage.tsx`,
+`apps/storefront/client/src/pages/CartPage.test.tsx` (one selector update),
+`apps/storefront/client/src/components/shop/OrderSummaryCard.tsx`,
+`apps/storefront/client/src/components/shop/PaymentMethodSelector.tsx`,
+`apps/storefront/client/src/components/shop/Stepper.tsx`,
+`apps/storefront/client/src/components/shop/DeliveryFieldInput.tsx`,
+`apps/storefront/client/eslint.config.js` (allowlist cleanup),
+`packages/core/locales/{en,id}.json` (3 new `web.pay_group_*` keys).

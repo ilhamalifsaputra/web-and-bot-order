@@ -29,6 +29,22 @@
  * renames (docs/REACT_STOREFRONT_MIGRATION.md), with two deliberate mobile
  * departures from template parity documented at PaymentMethodRow (selected
  * state) and at the sticky total bar near the bottom of this file.
+ *
+ * Design-system migration (Fase 7c): `GuestContactCard`/`InfoStepCard`'s
+ * `.card.card-pad` surfaces are now `<Card>`; the page-level place-order
+ * error banner is `<Alert variant="banner" tone="error">`. `GuestContactCard`
+ * composes `<Label>` + `<Input>` directly rather than a literal `<FormField>`
+ * (same reasoning as OrderSummaryCard's voucher field): the label row also
+ * carries a "Required" badge and the card header carries a sign-in link,
+ * neither of which FormField's single-child clone/label contract has room
+ * for. The mobile sticky total bar is now the shared `<StickyPurchaseBar>`
+ * (Task 11) instead of a hand-rolled `fixed` div — it portals out of `<main>`,
+ * fixing the same containing-block bug Task 11's doc comment describes — and
+ * the form's own reserved-runway padding switched from an inline
+ * `calc(env(safe-area-inset-bottom) + …)` style to a plain `pb-28` utility:
+ * StickyPurchaseBar already pads its own bottom for the safe area, so the
+ * page only has to clear the bar's visible height, not re-derive the notch
+ * geometry itself. See deviations.md §13-checkout.
  */
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -48,7 +64,7 @@ import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
-import Spinner from "../components/shop/Spinner";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import PaymentMethodSelector, {
   anyMethodEnabled,
   defaultMethod,
@@ -56,6 +72,11 @@ import PaymentMethodSelector, {
   isUsdtWalletSufficient,
 } from "../components/shop/PaymentMethodSelector";
 import OrderSummaryCard from "../components/shop/OrderSummaryCard";
+import Card from "../components/ui/Card";
+import Label from "../components/ui/Label";
+import Input from "../components/ui/Input";
+import Alert from "../components/ui/Alert";
+import { cn } from "../components/ui/cn";
 
 /**
  * Turn whatever an API rejection carried into something a shopper can read.
@@ -107,7 +128,7 @@ function InfoStepCard({
   }
 
   return (
-    <div className="card card-pad">
+    <Card>
       <h2 className="section-title mb-1">{t("web.checkout_info_title")}</h2>
       <p className="text-xs text-ink-soft mb-3">{t("web.checkout_info_intro")}</p>
       <div className="space-y-5">
@@ -143,7 +164,7 @@ function InfoStepCard({
           </div>
         ))}
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -180,7 +201,7 @@ export function GuestContactCard({
   const [touched, setTouched] = useState(false);
   const showError = serverRejected || (touched && !isValidEmail(email));
   return (
-    <div className="card card-pad">
+    <Card>
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="section-title">{t("web.guest_contact_title")}</h2>
         <Link
@@ -192,17 +213,19 @@ export function GuestContactCard({
       </div>
       {/* The marker sits OUTSIDE the <label>, so the field's accessible name
           stays "Email address" and `required` carries the semantics for
-          assistive tech; this text is the sighted half of the same fact. */}
+          assistive tech; this text is the sighted half of the same fact. Composed
+          from <Label>/<Input> directly rather than a literal <FormField> — the
+          label row also carries this "Required" badge, which FormField's
+          single-child clone/label contract has no slot for (same reasoning as
+          OrderSummaryCard's voucher field). */}
       <div className="flex items-baseline justify-between gap-2">
-        <label className="field-label" htmlFor="guest_email">
-          {t("web.guest_email_label")}
-        </label>
+        <Label htmlFor="guest_email">{t("web.guest_email_label")}</Label>
         <span className="text-xs text-ink-faint">{t("web.field_required")}</span>
       </div>
-      <input
+      <Input
         id="guest_email"
         type="email"
-        className="field"
+        invalid={showError}
         value={email}
         onChange={(e) => onChange(e.target.value)}
         onBlur={() => setTouched(true)}
@@ -210,7 +233,6 @@ export function GuestContactCard({
         inputMode="email"
         placeholder="you@example.com"
         aria-describedby={showError ? "guest_email_error guest_email_hint" : "guest_email_hint"}
-        aria-invalid={showError ? true : undefined}
         required
       />
       {showError && (
@@ -221,7 +243,7 @@ export function GuestContactCard({
       <p id="guest_email_hint" className="mt-2 text-xs leading-relaxed text-ink-soft">
         {t("web.guest_email_hint")}
       </p>
-    </div>
+    </Card>
   );
 }
 
@@ -378,23 +400,23 @@ export default function CheckoutPage() {
           <Skeleton className="mb-5 h-8 w-48" />
           <div className="grid items-start gap-6 lg:grid-cols-3">
             <div className="space-y-6 lg:col-span-2">
-              <div className="card card-pad space-y-3">
+              <Card className="space-y-3">
                 <Skeleton className="h-5 w-40" />
                 {[0, 1, 2].map((i) => (
                   <Skeleton key={i} className="h-14 w-full rounded-xl" />
                 ))}
-              </div>
-              <div className="card card-pad space-y-3">
+              </Card>
+              <Card className="space-y-3">
                 <Skeleton className="h-4 w-24" />
                 <Skeleton className="h-10 w-full" />
-              </div>
+              </Card>
             </div>
-            <div className="card card-pad space-y-3">
+            <Card className="space-y-3">
               <Skeleton className="h-5 w-28" />
               <Skeleton className="h-4 w-full" />
               <Skeleton className="h-4 w-2/3" />
               <Skeleton className="h-10 w-full" />
-            </div>
+            </Card>
           </div>
         </div>
       );
@@ -474,18 +496,19 @@ export default function CheckoutPage() {
           sentence in a page-level banner is noise, and the banner is a whole
           column away from the input the buyer has to fix. */}
       {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-        <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5">
-          <AlertTriangle className="w-4 h-4" /> {humanError(placeOrderErrorKey)}
-        </div>
+        <Alert variant="banner" tone="error">
+          {humanError(placeOrderErrorKey)}
+        </Alert>
       )}
 
       <form
         onSubmit={(e) => e.preventDefault()}
-        className="grid lg:grid-cols-3 gap-6 items-start"
-        // The sticky bar is fixed, so it is out of flow and would otherwise sit
-        // on top of the last thing in the form ("Back to cart"). Reserve its
-        // height plus the home-indicator inset at the end of the page instead.
-        style={isDesktop ? undefined : { paddingBottom: "calc(env(safe-area-inset-bottom) + 5.5rem)" }}
+        // The sticky bar is fixed (out of flow) and would otherwise sit on top
+        // of the last thing in the form ("Back to cart") — reserve its visible
+        // height at the end of the page instead. StickyPurchaseBar already
+        // pads its own bottom for the iOS safe area, so this only needs a
+        // plain utility, not a re-derived env()/calc() of its own.
+        className={cn("grid lg:grid-cols-3 gap-6 items-start", !isDesktop && "pb-28")}
       >
         <div className="lg:col-span-2 space-y-6">
           {/* First card in the column for a guest: the shop needs to know
@@ -539,39 +562,28 @@ export default function CheckoutPage() {
       {/* Sticky mobile total: on a phone the summary card stacks *below* the method
           list, so the buyer chooses a payment rail with the amount they are
           about to pay scrolled off-screen — the one number that should never
-          leave view on a checkout. This bar pins the live total (the same
-          `totals.total` the summary renders, after any voucher preview) next
-          to the only submit control mobile has, and reuses the summary
-          button's mutation and gating verbatim: no second request path, no
-          second notion of "ready to pay". Desktop keeps the in-card button —
-          there the summary sits beside the methods and is already in view. */}
+          leave view on a checkout. The shared StickyPurchaseBar (Task 11)
+          pins the live total (the same `totals.total` the summary renders,
+          after any voucher preview) next to the only submit control mobile
+          has, reusing the summary button's mutation and gating verbatim: no
+          second request path, no second notion of "ready to pay". Desktop
+          keeps the in-card button — there the summary sits beside the methods
+          and is already in view. The IDR figure only, matching the previous
+          hand-rolled bar: the USDT hint stays in the summary card, where
+          there is room for it without crowding the button off a 320px row. */}
       {!isDesktop && (
-        <div
-          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 pt-3 backdrop-blur-sm"
-          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
-        >
-          <div className="flex items-center gap-3">
-            {/* The IDR figure only: the USDT hint stays in the summary card,
-                where there is room for it without crowding the button off a
-                320px row. */}
-            <div className="min-w-0">
-              <div className="text-xs text-ink-soft">{t("web.order_total")}</div>
-              <div className="text-base font-semibold text-pine truncate">
-                {formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary ml-auto shrink-0"
-              disabled={placeOrderDisabled}
-              style={placeOrderBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-              onClick={() => placeOrderMutation.mutate()}
-            >
-              {placeOrderMutation.isPending && <Spinner />}
-              {t("web.place_order")}
-            </button>
-          </div>
-        </div>
+        <StickyPurchaseBar
+          ariaLabel={t("web.purchase_bar")}
+          priceLabel={t("web.order_total")}
+          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          primaryAction={{
+            label: t("web.place_order"),
+            onClick: () => placeOrderMutation.mutate(),
+            pending: placeOrderMutation.isPending,
+            disabled: placeOrderDisabled,
+            blocked: placeOrderBlocked,
+          }}
+        />
       )}
     </>
   );

@@ -158,13 +158,16 @@ export default tseslint.config(
   //   src/components/shop/StickyPurchaseBar.tsx — the shared mobile purchase
   //       strip (Task 11) pads its bottom by `calc(0.75rem + env(safe-area-
   //       inset-bottom))` so the primary CTA clears the iOS home indicator.
-  //       CartPage/CheckoutPage/InstantBuyPage/ProductPage still keep their own
-  //       reserved-runway spacer divs with the same env() calc.
+  //       InstantBuyPage/ProductPage still keep their own reserved-runway
+  //       spacer divs with the same env() calc. Task 13 (Fase 7c) wired
+  //       CartPage/CheckoutPage's own mobile sticky bars onto
+  //       StickyPurchaseBar and dropped their own env()/calc() usage entirely
+  //       (a plain `pb-28` utility now reserves the runway, since the bar
+  //       already pads its own bottom for the safe area) — removed from this
+  //       list accordingly.
   {
     files: [
       "src/components/shop/StickyPurchaseBar.tsx",
-      "src/pages/CartPage.tsx",
-      "src/pages/CheckoutPage.tsx",
       "src/pages/InstantBuyPage.tsx",
       "src/pages/ProductPage.tsx",
     ],

@@ -524,6 +524,31 @@ template is not a licence to add or remove working behaviour).
     §10-listing-structure item 8 "Known pre-existing") also reproduces on
     `InstantBuyPage` ("Mobile Legends Diamonds") and is likewise untouched.
 
+11. **`DeliveryFieldInput.tsx`'s own field-validation error left as-is.**
+    The brief's Apply bullet names the instant-rail "account field"
+    validation error alongside "Cek ID". The page-level error *banners*
+    (item 8) were converted, but `DeliveryFieldInput.tsx`'s hand-rolled
+    per-field `<p className="text-xs text-rust">` message (the one under a
+    User-ID / server-data input) was **not** — that component is shared by
+    `InstantBuyPage`, `CheckoutPage` and `OrderDetailPage`, so re-skinning
+    it onto `FormField`'s error slot is a cross-consumer change outside a
+    single page-migration task's scope. Deferred to whichever later task
+    (Fase 7c checkout / Fase 7e order-detail) first has all three consumers
+    in view, or a dedicated `DeliveryFieldInput` refactor. It is already
+    token-clean (`text-rust`), so this is a structural/API alignment, not a
+    colour or token fix.
+
+12. **`shadow-lift` on the pinned bar casts downward, not upward.**
+    `components.md` "Sticky purchase bar" describes a `shadow-lift` cast
+    **upward** onto the content above it. This project's `--gg-shadow-lift`
+    token is a single downward-offset shadow (`0 2px 4px …, 0 16px 36px
+    -18px …`), and there is no upward-shadow token. On a viewport-bottom
+    bar the visible portion of that shadow is minimal. Adding an
+    upward-shadow token is a `design-system/` change requiring the §26.1
+    proposal flow and is out of this task's scope; the bar keeps
+    `shadow-lift` for now (still a real elevation token, just less visible
+    in this position). Flag for Fase 10 hardening.
+
 **Files.** `apps/storefront/client/src/components/shop/DenominationCard.tsx`,
 `apps/storefront/client/src/components/shop/StickyPurchaseBar.tsx` (new),
 `apps/storefront/client/src/pages/ProductPage.tsx`,

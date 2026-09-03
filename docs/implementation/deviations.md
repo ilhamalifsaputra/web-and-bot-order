@@ -1106,3 +1106,205 @@ styling.
 `apps/storefront/client/src/components/shop/PasswordInput.tsx`,
 `apps/storefront/client/src/components/shop/TelegramLoginButton.tsx`. No
 test files, locale files, or `AuthBrandPanel.tsx` were modified.
+
+---
+
+## 16-account — Account family migration + logout confirmation dialog (Task 16)
+
+**Context.** Fase 7e: `AccountPage.tsx`, `OrdersPage.tsx`,
+`OrderDetailPage.tsx`, `ReferralPage.tsx`, `ReviewsPage.tsx` (page-templates.md
+§5 + §6). Same hard-boundary discipline as the payment/auth migrations
+(Tasks 13/14/15): `POST /api/v1/auth/logout` payload, the `GET
+/api/v1/account*` endpoints, every page's `401 → window.location.assign(
+"/login?next=…")` guard, the logout-success → `window.location.assign("/")`
+full reload, `OrderDetailPage`'s `useSse` stream + its merge logic +
+`data?.processing` enable condition + 5s `refetchInterval` poll, the
+PROCESSING-only editability of the manual-info form, the `#credentials`
+hash-scroll, referral `earned_usdt` Decimal→`formatNativeUsdt`, the copy-link
+logic, and the review rating/submit payloads are all byte-unchanged. Verified
+by grepping the added-line diff for `/api/v1/account`, `/api/v1/auth/logout`,
+`useSse`, `window.location.assign`, `logoutMutation`, `formatNativeUsdt`,
+`processing`, `refetchInterval`, `mutationFn`, `5000`, `EventSource` — the
+only hits on real code (not comments) are the two AlertDialog props
+`onConfirm={() => logoutMutation.mutate()}` and
+`confirmPending={logoutMutation.isPending}`, plus the logout trigger's
+`onClick` changing from `logoutMutation.mutate()` to
+`setLogoutDialogOpen(true)`. `OrderDetailPage`'s only logic-adjacent diff is
+the Refresh `<button>` → `<Button>` swap (same `onClick={() => void
+refetch()}`, same `disabled={isFetching}`).
+
+**The one logic addition — logout confirmation dialog (required, not
+optional).** `AccountPage.tsx`'s logout button (`web.nav_logout`, "Sign out" /
+"Keluar") used to call `logoutMutation.mutate()` directly from `onClick` — the
+same gap class flagged in the Task 1 audit (§F escalation #3) and required by
+the plan's Global Constraints ("Destructive actions … MUST show a
+confirmation dialog … Do not silently keep the old direct-execute behavior").
+It now opens `<AlertDialog>` (built Fase 6 Task 7), mirroring PayPage's cancel
+dialog (Task 14, deviations §14-pay-topup-track):
+
+- Trigger `onClick` → `setLogoutDialogOpen(true)` only; no mutation call.
+- `AlertDialog onConfirm` → `() => logoutMutation.mutate()` — the exact same
+  call the old `onClick` made, moved verbatim. The mutation's `onSuccess:
+  () => window.location.assign("/")` (full reload, CSRF-meta clear) is
+  untouched.
+- `onCancel` → closes the dialog, no mutation.
+- `confirmPending={logoutMutation.isPending}`, `tone="danger"` (→ `<Button
+  variant="danger">` confirm), focus starts on Cancel, Esc = cancel — all
+  from the `AlertDialog`/`Modal` primitive.
+- Copy: **new auth-specific keys** (no PayPage precedent fits — its
+  `web.cancel_order_confirm_*` copy is order-specific: "Cancel this order?",
+  "Order {code} — this can't be undone."). Four new keys added to both
+  `en.json`/`id.json`, no `{placeholder}`s, passing
+  `packages/core/src/locales.test.ts`'s key-parity + placeholder-parity
+  guard:
+  - `web.logout_confirm_title` — "Sign out?" / "Keluar dari akun?"
+  - `web.logout_confirm_body` — "You'll need to sign in again to see your
+    orders and balance." / "Kamu perlu masuk lagi untuk melihat pesanan dan
+    saldo."
+  - `web.logout_confirm_yes` — "Yes, sign out" / "Ya, keluar" (danger confirm)
+  - `web.logout_confirm_no` — "Cancel" / "Batal" (default cancel)
+- The trigger keeps its `ghost` + `text-rust` visual weight (now `<Button
+  variant="ghost" className="… text-rust …">`), same call as PayPage's
+  cancel trigger — the required change is the confirmation step, not the
+  trigger's prominence.
+- `AccountPage.test.tsx`: the single existing "logout posts … then assigns /"
+  test is replaced by a 3-case `describe` block — click-opens-dialog-no-POST,
+  confirm-POSTs-and-assigns-"/", cancel-closes-no-POST. The
+  `window.location.assign("/")` assertion is preserved verbatim in the
+  confirm case (a confirm-click was added before it, nothing about the
+  assertion changed). Every other AccountPage test is unmodified; 16/16 pass.
+
+**Deviations, all deliberate:**
+
+1. **No `page-templates.md` §5 "info rows" — this account page has no
+   email/phone/region to list.** §5's body is a list of *info rows* (Email,
+   Nomor Telepon, Region dan Bahasa, Bantuan — icon + label + value +
+   chevron). `AccountData` carries only
+   `name`/`order_count`/`referral_code`/`wallet_idr`/`wallet_usdt` (no email,
+   no phone, no fx rate — the page's own header comment says so). The page
+   was already restructured (Task 11) into an identity block + a
+   wallet/orders/referral **summary-tile grid** + a grouped **nav menu**
+   whose rows *are* the icon + label + description + chevron shape §5
+   describes, just pointing at destinations rather than showing scalar
+   values. Kept that structure; the migration re-skinned its panels onto
+   `<Card>` and left the `stat-label`/`stat-value`/`stat-sub` type roles
+   (already present from Task 11) in place. §3.2 rule 1 ("adapt composition,
+   preserve business functionality" — a minimal reference template is not a
+   licence to invent an email row for data the API doesn't return).
+
+2. **`SummaryCard` keeps `.card`/`.card-pad` utility classes on its
+   `<Link>`/`<button>` elements rather than nesting a `<Card>`.** `Card` is a
+   `<div>` with no polymorphic `as`/`asChild`; the summary tiles are `<Link>`
+   (Orders, both wallet balances) or `<button>` (Referral, tap-to-copy)
+   whose hover treatment must live on the interactive element itself. This
+   is the established storefront pattern (deviations §9-home item 5,
+   §11-product-detail) — apply `card card-pad …` directly on the link/button.
+   The plain-`<div>` panels that *aren't* interactive (identity block,
+   Recent Orders widget, the two grouped-menu containers) did become
+   `<Card>`.
+
+3. **No `rounded-3xl` on AccountPage.** §5 mentions a "decorative header
+   background image" (gogogo.id's). This page's identity block is a plain
+   `.card` (16px radius) with an avatar initial, no decorative band — nothing
+   to resolve against the `--radius-3xl` mirror. (The `--radius-3xl` note in
+   the brief was a "if it uses `rounded-3xl`" conditional; it doesn't.)
+
+4. **Grouped-menu containers → `<Card padded={false}>`.** They hold
+   full-bleed `MenuRow` links with their own `px-4 py-3` padding and
+   `divide-y` separators, so the card must not add its own `.card-pad`
+   inset — `padded={false}` composes `.card` (border + radius +
+   `shadow-soft`) without `.card-pad`. Same for `OrderDetailPage`/`OrdersPage`
+   table wrappers (a `.data-table` owns its own cell padding).
+
+5. **`OrdersPage` gains a filter row (search `Input` + status `Select`) —
+   net-new UI, entirely client-side.** §6's template has "a pill search field
+   + a select dropdown (`Semua Status ▾`)"; this page had neither. Added, but
+   the endpoint still returns the full list and **no query param is sent** —
+   `data.orders` is filtered in the component (`code`/`items` substring +
+   exact status match). The row renders **only when `data.orders.length > 1`**
+   (a filter over ≤1 order sorts nothing — SortSelect's own
+   "products.length > 1" precedent, deviations §10-listing item 2), which
+   also keeps the existing 1-order and 0-order tests collision-free (the
+   status `<option>` labels would otherwise clash with a `StatusBadge` chip's
+   text under `getByText`). Status option labels come from a new exported
+   `statusLabel(value)` helper in `StatusBadge.tsx` (same keyed-`t()`
+   resolution the chip uses) so the filter and the chips can never show
+   different words for the same status.
+
+6. **`OrdersPage` empty state now distinguishes two states (§16).**
+   `data.orders.length === 0` → the existing "No orders yet" `EmptyState`
+   (suggestions shelf + catalogue CTA, unchanged). Filtered-to-nothing →
+   a distinct `EmptyState` (`web.orders_no_match` /
+   `web.orders_no_match_desc`, 5 new keys incl. `web.orders_filter_search` /
+   `web.orders_filter_all_status` / `web.orders_filter_clear`) followed by a
+   `<Button variant="soft">` that resets the filter — `EmptyState`'s `action`
+   only supports `to`/`href`, not an `onClick`, so the reset control is a
+   sibling button rather than the card's primary action.
+
+7. **Entity-state colours — checked, no divergence to flag on these pages.**
+   Task 14 flagged a `waiting`/`confirming`/`closed` tone divergence, but
+   that was against PayPage's `PayState` strings (a payment-flow enum), not
+   order statuses. `OrdersPage`/`OrderDetailPage`/`AccountPage` all render
+   order statuses through the shared `StatusBadge`, whose mapping matches
+   `business-adaptation.md`'s "Entity States" table:
+   `pending_payment`→`pine`, `processing`→`amberx`, `delivered`→`grass`,
+   `cancelled`/`rejected`/`refunded`/`failed`→`rust`,
+   `partially_delivered`→`amberx`. No `StatusBadge` change made; nothing to
+   flag.
+
+8. **`ReviewsPage` rating control stays a native `<select>` (now `ui/Select`
+   in a `FormField`), not a star-input.** Per the brief's explicit
+   carve-out: a 5..1 numeric picker is a plain-select case, not an ambiguous
+   one. `FormField` wires the `<Label htmlFor>` ↔ control id so
+   `getByLabelText("Your rating")` still resolves; a `w-24!` width cap keeps
+   the select from stretching to `.field`'s full width (the pre-existing
+   `w-20!` cap, a Tailwind v3→v4 rename leftover, is replaced by `w-24!` —
+   two more characters of label fit "5 ★"). Comment box →
+   `ui/Textarea`; submit → `<Button type="submit">`. The `ReviewCard`
+   comment `<p>` keeps its exact `text-sm text-ink-soft mt-2
+   whitespace-pre-line break-words` class list (pinned by a test).
+
+9. **`ReferralPage` bang-override cleanup, scoped.** Dropped the `text-2xl!`
+   size cap on the referral **code** (it now takes the full `.stat-value`
+   30px role, `+ break-words` so a long code still wraps) and the `text-xs!`
+   cap on the referral-**link** `<Input>` (it now takes `.field`'s own
+   16px→14px). The two summary **tiles** keep their `text-xl!` cap —
+   consistent with AccountPage's `SummaryCard` tiles, which also cap
+   `stat-value` at `text-xl!`/`text-2xl!` so a long `formatNativeUsdt` value
+   doesn't overflow a half-width tile; unifying those is a cross-page
+   type-scale decision, not this task's.
+
+10. **`OrderDetailPage` — `page-title text-2xl!` bang dropped**
+    (`.page-title` already resolves 24px→30px; the `!important` was
+    redundant — deviations §11-product-detail item 9 precedent). The
+    `codeish text-sm!` caps on the credential / delivered-content `<code>`
+    blocks are **left as-is** (not named by the brief, and shrinking the
+    already-small `.codeish` 12px further is not the goal). The
+    `digiflazz_status` `pending`/`reviewing` sub-status lines inside the
+    PROCESSING card stay token-styled hint text (`text-xs text-ink-soft`) —
+    the brief allowed "token hints **or** a small `Alert`", and a bordered
+    `Alert` box nested in the small reassurance card would over-weight a
+    one-line status note. The `infoErrorKey` block (mid-edit-race / field
+    error) **did** become `<Alert variant="banner" tone="error">` — it's a
+    genuine error banner, and now picks up `role="alert"` where the
+    hand-rolled `<div>` had no ARIA role.
+
+11. **`<section>` / `<ul>` elements keep `.card` utility classes rather than
+    nesting a `<Card>` `<div>`.** `OrderDetailPage`'s info / credentials /
+    delivered-content `<section>`s (the credentials one must keep
+    `id="credentials"` for the hash-scroll) and its mobile item-list `<ul>`
+    stay semantic elements with `card card-pad …` applied directly — same
+    reasoning as item 2. Plain wrapper `<div>`s (pending-payment card,
+    PROCESSING card, totals card, desktop item-table wrapper) became
+    `<Card>`.
+
+**Files.** `apps/storefront/client/src/pages/AccountPage.tsx`,
+`apps/storefront/client/src/pages/AccountPage.test.tsx`,
+`apps/storefront/client/src/pages/OrdersPage.tsx`,
+`apps/storefront/client/src/pages/OrderDetailPage.tsx`,
+`apps/storefront/client/src/pages/ReferralPage.tsx`,
+`apps/storefront/client/src/pages/ReviewsPage.tsx`,
+`apps/storefront/client/src/components/shop/StatusBadge.tsx` (new exported
+`statusLabel`), `packages/core/locales/{en,id}.json` (4 `web.logout_confirm_*`
++ 5 `web.orders_*` keys). No test file other than `AccountPage.test.tsx` was
+modified; no SSE/poll/`window.location.assign` assertion was changed anywhere.

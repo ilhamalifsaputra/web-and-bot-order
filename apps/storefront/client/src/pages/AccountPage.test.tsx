@@ -82,15 +82,42 @@ describe("AccountPage", () => {
     expect(screen.getByText("1.5 USDT")).toBeInTheDocument();
   });
 
-  it("logout posts to /api/v1/auth/logout then assigns / on success", async () => {
-    const assign = vi.fn();
-    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
-    renderAccount();
-    await screen.findByRole("heading", { name: "My account" });
-    (apiPost as Mock).mockResolvedValue({ ok: true });
-    fireEvent.click(screen.getByRole("button", { name: /Sign out/ }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/auth/logout", {}));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+  // Task 16: the logout button now opens an AlertDialog first — it must not
+  // touch the session until the shopper confirms. The full-reload-on-success
+  // (window.location.assign("/")) is unchanged; it just now fires from the
+  // dialog's confirm rather than the trigger's own onClick.
+  describe("logout confirmation dialog", () => {
+    it("clicking Sign out opens the dialog and does NOT post to /api/v1/auth/logout", async () => {
+      renderAccount();
+      await screen.findByRole("heading", { name: "My account" });
+      (apiPost as Mock).mockResolvedValue({ ok: true });
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+      expect(screen.getByText("Sign out?")).toBeInTheDocument();
+      expect(apiPost).not.toHaveBeenCalled();
+    });
+
+    it("confirming posts to /api/v1/auth/logout then assigns / on success", async () => {
+      const assign = vi.fn();
+      Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+      renderAccount();
+      await screen.findByRole("heading", { name: "My account" });
+      (apiPost as Mock).mockResolvedValue({ ok: true });
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Yes, sign out" }));
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/auth/logout", {}));
+      await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+    });
+
+    it("cancelling closes the dialog without posting to /api/v1/auth/logout", async () => {
+      renderAccount();
+      await screen.findByRole("heading", { name: "My account" });
+      (apiPost as Mock).mockResolvedValue({ ok: true });
+      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(apiPost).not.toHaveBeenCalled();
+    });
   });
 
   it("renders the account-menu links", async () => {

@@ -8,6 +8,9 @@
  * account.njk's `<form action="/logout">` becomes a POST to
  * /api/v1/auth/logout followed by a full reload to "/" (clears the CSRF
  * meta + any client cache), same pattern as every other auth mutation.
+ * Task 16 gates that mutation behind an `AlertDialog` confirmation — the
+ * mutation itself and its full-reload `onSuccess` are byte-unchanged; only
+ * the trigger's onClick moved from `mutate()` to opening the dialog.
  *
  * Redesigned into a dashboard shape: a summary grid (2x2 below `lg`, one row
  * of 4 at `lg` — wallet cards outweigh orders/referral visually, per this
@@ -65,9 +68,11 @@ import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
-import Spinner from "../components/shop/Spinner";
 import StatusBadge from "../components/shop/StatusBadge";
 import Toast from "../components/shop/Toast";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import AlertDialog from "../components/ui/AlertDialog";
 
 interface MenuItem {
   href: string;
@@ -250,6 +255,11 @@ function RecentOrderRow({ order, fx }: { order: AccountOrderSummary; fx: string 
 
 export default function AccountPage() {
   const [toastText, setToastText] = useState<string | null>(null);
+  // Task 16: logout is a destructive session action, so the button now opens a
+  // confirmation (Global Constraint / Task 1 audit §F item 3) instead of firing
+  // logoutMutation.mutate() straight from onClick — mirrors PayPage's cancel
+  // dialog (Task 14). The mutation itself is byte-unchanged.
+  const [logoutDialogOpen, setLogoutDialogOpen] = useState(false);
   // Tailwind's `lg` breakpoint — where the two-column dashboard kicks in.
   // Distinct from `useIsDesktop()` (768px) used elsewhere in this app for the
   // table-vs-cards swap; this page's split happens at a wider point.
@@ -372,7 +382,7 @@ export default function AccountPage() {
           and goes full width: sharing the row with a long name would squeeze
           both, and sign-out is the one destructive action here — it should be
           deliberate, not something the thumb brushes while scrolling. */}
-      <div className="card card-pad flex flex-col gap-4 sm:flex-row sm:items-center">
+      <Card className="flex flex-col gap-4 sm:flex-row sm:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
           <span
             className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-pine-tint font-display text-xl font-semibold text-pine-dark"
@@ -394,22 +404,38 @@ export default function AccountPage() {
             code itself. Say so next to the button rather than letting them
             find out afterwards. */}
         <div className="flex shrink-0 flex-col gap-2 sm:items-end">
-          <button
-            type="button"
-            className="btn btn-ghost w-full shrink-0 sm:w-auto"
+          <Button
+            variant="ghost"
+            className="w-full shrink-0 text-rust sm:w-auto"
             disabled={logoutMutation.isPending}
-            onClick={() => logoutMutation.mutate()}
+            onClick={() => setLogoutDialogOpen(true)}
           >
-            {logoutMutation.isPending && <Spinner />}
             <LogOut className="w-4 h-4" aria-hidden="true" /> {t("web.nav_logout")}
-          </button>
+          </Button>
           {isGuest && (
             <p className="max-w-xs text-xs leading-relaxed text-ink-soft sm:text-right">
               {t("web.guest_account_note")}
             </p>
           )}
         </div>
-      </div>
+      </Card>
+
+      {/* Required behavior change (Task 16): the logout trigger opens this
+          confirmation instead of running logoutMutation directly. onConfirm is
+          the EXACT SAME logoutMutation.mutate() call the old onClick made — the
+          full-reload-on-success (window.location.assign("/")) still lives on the
+          mutation's onSuccess, untouched. */}
+      <AlertDialog
+        open={logoutDialogOpen}
+        onCancel={() => setLogoutDialogOpen(false)}
+        onConfirm={() => logoutMutation.mutate()}
+        title={t("web.logout_confirm_title")}
+        description={t("web.logout_confirm_body")}
+        confirmLabel={t("web.logout_confirm_yes")}
+        cancelLabel={t("web.logout_confirm_no")}
+        tone="danger"
+        confirmPending={logoutMutation.isPending}
+      />
 
       {/* Summary grid: 2x2 below `lg`, one row of 4 at `lg`. Orders before
           referral, and both wallet balances carry heavier (pine-tint)
@@ -479,7 +505,7 @@ export default function AccountPage() {
               shapes for the same content is wasted work and ambiguous to
               assistive tech/tests, so only one ever mounts). */}
           {isDashboard ? (
-            <div className="card overflow-hidden">
+            <Card padded={false} className="overflow-hidden">
               {menuGroups.map((group) => (
                 <nav key={group.headingKey} aria-label={t(group.headingKey)}>
                   <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink uppercase">
@@ -492,17 +518,17 @@ export default function AccountPage() {
                   </div>
                 </nav>
               ))}
-            </div>
+            </Card>
           ) : (
             <div className="space-y-6">
               {menuGroups.map((group) => (
                 <nav key={group.headingKey} aria-label={t(group.headingKey)} className="space-y-2">
                   <h2 className="stat-label px-1">{t(group.headingKey)}</h2>
-                  <div className="card divide-y divide-line overflow-hidden">
+                  <Card padded={false} className="divide-y divide-line overflow-hidden">
                     {group.items.map((item) => (
                       <MenuRow key={item.href} item={item} />
                     ))}
-                  </div>
+                  </Card>
                 </nav>
               ))}
             </div>
@@ -518,7 +544,7 @@ export default function AccountPage() {
             widget from (the audit log is admin-only), so Recent Orders is
             the sole widget here rather than a fabricated companion. */}
         <div className="hidden space-y-6 lg:col-span-8 lg:block">
-          <div className="card card-pad">
+          <Card>
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="section-title">{t("web.account_recent_orders")}</h2>
               <Link to="/account/orders" className="link text-sm whitespace-nowrap">
@@ -552,7 +578,7 @@ export default function AccountPage() {
                 ))}
               </div>
             )}
-          </div>
+          </Card>
         </div>
       </div>
     </div>

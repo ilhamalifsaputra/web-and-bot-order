@@ -1450,3 +1450,99 @@ copy, none of which moved.
 `apps/storefront/client/src/components/shop/TicketOrderSummaryCard.tsx`,
 `apps/storefront/client/eslint.config.js` (Group-B allowlist: `TicketMessageThread` removed),
 `docs/implementation/extensions.md` (§26.2 chat/thread row).
+
+---
+
+## 18-content — Content / legal pages to the §7 prose treatment (Task 18)
+
+**Context.** Fase 7g migrates the five informational pages (`AboutPage`,
+`HowToOrderPage`, `TermsPage`, `PrivacyPage`, `RefundPage`) — all thin wrappers
+over `components/shop/StaticPage.tsx` — plus `components/shop/StepTimeline.tsx`.
+Pure re-skin: no copy, no `t()` key, no route, and `spaShell.ts` (the crawler
+shell / cloaking guard) untouched.
+
+**The §7 mismatch, resolved (page-templates.md §7 vs §3.2 rule 3).** §7 wants
+"a single narrow prose column (~768px), H1 + long-form body, no card chrome,
+text on `paper`". The shell rendered EVERY block through `StepTimeline`
+(numbered badge + icon + connector) — a step-sequence treatment. Split by what
+each page actually is:
+
+- **`/terms`, `/privacy`, `/refund` → plain prose.** These are §7's own
+  reference language (legal/compliance copy, §28.2). `<article>` at
+  `max-w-3xl` (= 48rem = 768px, the `--gg-container-prose` value exactly),
+  `<h1>`/`<h2>` `font-display font-semibold` (Outfit 600 per §7), paragraphs
+  `text-base leading-relaxed text-ink-soft`, `space-y-8` between sections, no
+  `.card`, no numbered badges. Per-block warning/tip Callouts are preserved
+  (terms block 3, refund blocks 1–2, privacy block 4) — same `Alert
+  variant="panel"` shim as earlier phases, just no longer inside a badge.
+- **`/how-to-order` → keeps `StepTimeline` (`variant="timeline"`).** It is a
+  genuine ordered sequence (pick a plan → check out → pay → receive) with a
+  merged QRIS/USDT payment step via the `render` escape hatch — the §3 "Cara
+  Top Up" numbered-steps pattern, not §7 prose.
+- **`/about` → prose (judgment call, noted).** Its four blocks are
+  informational topics — "What we sell", "How your order is processed",
+  "Hours", "How to reach us" — not an ordered procedure. Only block 2 has any
+  sequence flavour, and it reads fine as a standalone section. Treated as the
+  legal pages are; the generic per-block `FileText` icon it used to get added
+  nothing and is dropped.
+
+**Approach: a `variant?: "prose" | "timeline"` prop on `StaticPage` (default
+`"prose"`), not a shell split.** The title / intro / end-of-page help-CTA are
+identical across both treatments; only the middle differs (a `ProseBody` vs a
+`TimelineBody` sub-component in the same file). A two-file split would
+duplicate the shared chrome and the `_hN`/`_pN` block loop for no gain. The
+`StaticPageProps` API stays source-compatible; `StaticPageStep.icon` is
+**widened to optional** (prose pages have no badges, so the four legal/about
+callers pass `steps` only for the `callout` config or omit it entirely) —
+`TimelineBody` falls back to `FileText` when an icon is absent, so the one
+timeline caller is unaffected. All five callers are updated in the same change.
+
+**Token-alignment (design-system, Task 4 gate — token-only):**
+
+- `StaticPage` help-CTA: hand-rolled `rounded-2xl border border-line bg-card
+  p-6 shadow-xs` box → `<Card>`; hand-rolled `bg-pine px-4 py-2.5 …
+  hover:bg-pine-dark` link → `<Link className="btn btn-primary">` (link-as-
+  button, consistent with HomePage). No `!` bangs were present.
+- `StepTimeline`: step-number badge `text-[11px]` → `text-2xs` (the
+  `--gg-text-2xs` / `--text-2xs` token, same swap Task 17 did for
+  `TicketMessageThread`); its Group-B ESLint allowlist entry is **removed** —
+  `text-[11px]` was its last arbitrary value (verified: no other `-[…]` in the
+  file). Stacked-layout heading `font-bold` → `font-semibold` (Outfit 600,
+  matches the prose headings; only affects `/how-to-order`, the sole stacked
+  caller — HomePage uses `layout="grid"`).
+- `HowToOrderPage` merged payment step: the two `rounded-2xl border border-line
+  bg-card p-5 shadow-xs` cards → `<Card>`.
+- `PrivacyPage` analytics block (`children`): de-chromed from a `rounded-2xl …
+  shadow-xs` card with an icon well to a plain prose `<section>` (`<h2>` +
+  info `Callout`), matching the crawler shell.
+
+**Minor deviation from §7's "16px/1.5":** paragraph body uses `leading-relaxed`
+(1.625), not 1.5 — consistent with every other body-copy block in the
+storefront and easier to read down a full-width legal column. Line-height is
+the only §7 number not taken literally.
+
+**HARD BOUNDARY held — verified.** ZERO copy changed: `git diff` for
+`web.terms_`/`web.privacy_`/`web.refund_`/`web.about_`/`web.hto_`/`web.how_`
+shows hits only for `web.static_help_*` and `web.privacy_analytics_h` — both
+same key, className/indent change only; no key added, removed, renamed or
+reordered. `spaShell.ts` is **not in the diff**. Cross-checked
+`spaShell.ts`'s `STATIC_PAGES` (about=4, hto=5, terms=5, privacy=5, refund=5
+blocks; privacy's conditional `privacy_analytics_h/p` under the same
+`analyticsOn` flag): every migrated page renders the same `t()` prefixes, the
+same block count, and the same order the shell emits.
+
+**Tests.** New `components/shop/StaticPage.test.tsx` (prose renders section
+`<h2>`s and no `<ol>`/`<li>` timeline; `variant="timeline"` renders the
+`StepTimeline` `<ol>` with one `<li>` per step). `PrivacyPage.test.tsx` and
+`StepTimeline.test.tsx` pass unchanged. Full `apps/storefront/client` suite:
+96 files / 744 tests green. `lint` exit 0, `typecheck` clean, `build` succeeds.
+
+**Files.** `apps/storefront/client/src/components/shop/StaticPage.tsx`,
+`apps/storefront/client/src/components/shop/StepTimeline.tsx`,
+`apps/storefront/client/src/pages/AboutPage.tsx`,
+`apps/storefront/client/src/pages/HowToOrderPage.tsx`,
+`apps/storefront/client/src/pages/TermsPage.tsx`,
+`apps/storefront/client/src/pages/PrivacyPage.tsx`,
+`apps/storefront/client/src/pages/RefundPage.tsx`,
+`apps/storefront/client/src/components/shop/StaticPage.test.tsx` (new),
+`apps/storefront/client/eslint.config.js` (Group-B allowlist: `StepTimeline` removed).

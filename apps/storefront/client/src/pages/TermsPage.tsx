@@ -1,4 +1,3 @@
-import { FileCheck, Scale, ShieldOff, Tag, UserCog } from "lucide-react";
 import StaticPage from "../components/shop/StaticPage";
 import { useShopContext } from "../components/Layout";
 
@@ -9,13 +8,10 @@ export default function TermsPage() {
       prefix="terms"
       blocks={5}
       args={{ shop: ctx?.shop_name ?? "" }}
-      steps={[
-        { icon: UserCog },
-        { icon: FileCheck },
-        { icon: ShieldOff, callout: "warning" },
-        { icon: Tag },
-        { icon: Scale },
-      ]}
+      // Block 3 (no chargebacks / abuse) reads as the critical warning of the
+      // policy, so its paragraph is wrapped in a warning Callout — unchanged
+      // from the timeline layout, just no longer inside a numbered badge.
+      steps={[{}, {}, { callout: "warning" }, {}, {}]}
     />
   );
 }

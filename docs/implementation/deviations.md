@@ -508,6 +508,22 @@ template is not a licence to add or remove working behaviour).
    `text-2xl! sm:text-3xl!` on the title; `.page-title` already resolves to
    24px→30px, so the `!important` overrides were redundant and are removed.
 
+10. **`StickyPurchaseBar` is portaled to `document.body`.** `app.css` runs
+    `main { animation: rise .5s … both }`; the `both` fill-mode leaves
+    `<main>` with a non-`none` `transform` after load, which makes it the
+    containing block for its `position: fixed` descendants. A bar rendered
+    inside the routed page therefore pinned to `<main>`'s bottom edge (above
+    the footer, scrolled away mid-page) instead of the viewport — a latent
+    bug the three hand-rolled bars all shared, surfaced by this task's visual
+    QA. The shared component renders via `createPortal(bar, document.body)`
+    (with a `typeof document === "undefined"` SSR guard) so it escapes
+    `<main>`. Fixing the root cause (`animation-fill-mode` on `<main>`, or a
+    Layout restructure) is a cross-cutting base-layer change outside this
+    task's file scope. The pre-existing `.page-title` / breadcrumb horizontal
+    overflow at ≤320px with a long product name (deviations.md
+    §10-listing-structure item 8 "Known pre-existing") also reproduces on
+    `InstantBuyPage` ("Mobile Legends Diamonds") and is likewise untouched.
+
 **Files.** `apps/storefront/client/src/components/shop/DenominationCard.tsx`,
 `apps/storefront/client/src/components/shop/StickyPurchaseBar.tsx` (new),
 `apps/storefront/client/src/pages/ProductPage.tsx`,

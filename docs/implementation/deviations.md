@@ -1546,3 +1546,128 @@ same block count, and the same order the shell emits.
 `apps/storefront/client/src/pages/RefundPage.tsx`,
 `apps/storefront/client/src/components/shop/StaticPage.test.tsx` (new),
 `apps/storefront/client/eslint.config.js` (Group-B allowlist: `StepTimeline` removed).
+
+---
+
+## 19-default-thumbnail — IP-safe default thumbnails + admin-configurable currency icon (Fase 12)
+
+**Context.** Before this work, a product with no admin-set photo fell back to
+a hardcoded Unsplash stock photo, keyed by a substring match against the
+admin's free-text category name (`CATEGORY_IMAGES` in
+`apps/storefront/src/images.ts`, plus a `PLACEHOLDER` default) — off-brand,
+fragile (any category name that didn't match a needle silently got the wrong
+stock photo), and a pointless third-party dependency for a shop that already
+has its own product catalog. `DenominationCard` had no currency-icon concept
+at all — every plan tile was plain text. Fase 12 (1) replaces the Unsplash
+fallback with a business-agnostic design-system placeholder
+(`DefaultThumb.tsx`, a lucide icon in a tinted well, zero external image
+request), (2) makes BOTH the placeholder style and a new denomination
+currency-icon chip admin-configurable per product via two new nullable
+`Product` columns (`thumbnailKind`, `currencyIconKind` — additive Prisma
+migration) rather than purely auto-guessed, and (3) never surfaces either
+admin control, and never renders a currency-icon chip, for products in a
+`PREMIUM_APPS`-group category — those rely solely on their own uploaded photo
+plus a neutral generic placeholder.
+
+**Rule cited:** FRONTEND_IMPLEMENTATION_PROMPT §14 (IP guardrails — no
+unlicensed/unverified third-party asset shipped in the production bundle).
+
+**The resolution rule**, verified against the current
+`apps/storefront/src/images.ts` and `apps/storefront/src/denomIcon.ts`:
+
+- **Thumbnail placeholder** (`defaultThumbKind(product, category)`, only
+  consulted when `Product.webImageUrl` is absent — a real admin-uploaded
+  photo always wins over any placeholder, untouched by this work):
+  1. `category.group === "PREMIUM_APPS"` → always `"generic"`, unconditionally
+     overriding even a set `product.thumbnailKind` (so a category reclassified
+     to `PREMIUM_APPS` after an admin set a game-ish override can't keep
+     showing game art off stale data).
+  2. else `product.thumbnailKind`, when it's one of the six recognized kinds
+     (`game` / `voucher` / `steam` / `entertainment` / `app` / `generic`).
+  3. else a heuristic: `category.group === "GAME_TOPUP"` → `"game"`, else the
+     first needle from the old `CATEGORY_IMAGES` category-name substring list
+     (re-targeted from Unsplash URLs to icon kinds, pruned to the kinds this
+     resolver distinguishes), else `"generic"`.
+- **Denomination currency-icon chip** (`resolveDenomIconKind`, resolved ONCE
+  per product — not per-denomination, since every SKU under one product
+  shares the same in-game currency — and passed down as an `iconKind` prop to
+  every `DenominationCard` on both `ProductPage.tsx` and
+  `InstantBuyPage.tsx`):
+  1. `category.group === "PREMIUM_APPS"` → always `null` (no chip renders,
+     full stop — same unconditional-override shape as the thumbnail rule).
+  2. else `product.currencyIconKind`, when it's one of the five recognized
+     kinds (`diamond` / `coin` / `key` / `card` / `voucher`).
+  3. else a heuristic on the cheapest active denomination's `qtyUnit`
+     (case-insensitive substring match against `diamond`/`uc`/`cp`/`coin`/
+     `gold`/`point`), then `category.group === "GAME_TOPUP"` → `"diamond"`,
+     else `null` — better to show no chip than guess wrong.
+
+**§14 IP note — corrects two assumptions in an earlier planning draft.**
+That draft assumed a `gogogo-frontend/assets/catalog/` folder existed with
+134 product key-art images that could seed dev/test data. **It does not
+exist** — verified directly (`ls gogogo-frontend/assets/catalog` → nothing;
+`gogogo-frontend/assets/` has only one subfolder, `icons/`). The only
+reference-art folder that exists is `gogogo-frontend/assets/icons/` — 50
+per-game (plus one shared `_currency-generic/`) subfolders holding 58 icon
+files total (some games, e.g. `free-fire/`, have several), plus the folder's
+own top-level `README.md` (59 files counted recursively), described by that
+README as gogogo.id's own small **denomination-card**
+icons pulled for reference, not full product photography, with an explicit
+"swap in your own currency iconography before shipping" note. Since this
+task's admin-configurable currency icon turned out to be a **preset dropdown
+rendered as a lucide icon** (`ICON_KIND_ICONS` in `DenominationCard.tsx` —
+`Gem`/`Coins`/`KeyRound`/`CreditCard`/`Ticket`), not an image asset at all,
+`assets/icons/` ended up NOT used by the currency-icon feature itself. Its
+only actual use anywhere in this plan is as substitute image bytes in the
+gitignored dev-seed script (`tests/e2e/seed-thumbs.ts`, commit `25c31d55`) to
+exercise the "admin uploaded a real photo" WebP-srcset rendering path
+visually during manual QA. That script never commits or ships any of those
+bytes — confirmed directly: `git show --stat 25c31d55` touches exactly one
+file (`tests/e2e/seed-thumbs.ts`) and `git status --porcelain
+gogogo-frontend/` is clean, with every file under `gogogo-frontend/` tracked
+only as the pre-existing reference set (`git ls-files gogogo-frontend/`),
+none of it copied into `data/uploads/` at commit time. Net: this repo ships
+**zero** third-party/gogogo.id imagery in its production bundle — every
+default visual is a generated design-system placeholder (lucide icon + token
+colours), and the one real per-product photo path (`Product.webImageUrl`) is
+100% admin-uploaded original content via the pre-existing web-admin upload
+flow.
+
+**Token-alignment.** `DefaultThumb.tsx`'s well and `DenominationCard.tsx`'s
+new icon chip both use only pre-existing design tokens — `bg-pine-tint` for
+the tinted background, `text-pine` for the icon colour (identical pairing in
+both files) — no new arbitrary Tailwind values were introduced anywhere in
+this plan; the ESLint Group-A/Group-B arbitrary-value gate stayed green
+throughout with no allowlist changes required.
+
+**New functionality, not a closed deviation.** Checked
+(`grep -in "denomination.*icon\|currency" deviations.md` before writing this
+entry): no prior entry in this file mentions a denomination/currency-icon
+concept — the only hits are unrelated (`WalletTopupPage`'s IDR/crypto
+currency *toggle*, §14-pay-topup-track). `DenominationCard` simply had no
+currency-icon slot before Fase 12; this entry documents new capability being
+added, not something being closed out.
+
+**Commits** (this branch, chronological):
+
+- `396d0faf` feat(db): add Product.thumbnailKind + currencyIconKind
+- `409458af` feat(web-admin): admin controls for thumbnail style + currency icon
+- `5f33b327` feat(storefront): IP-safe design-system default thumbnails, admin-overridable
+- `8143a7ce` fix(storefront): guard cart/instant-buy image fallbacks against nullable image
+- `307d5c20` feat(storefront): denomination currency-icon slot, admin-overridable, hidden for PREMIUM_APPS
+- `25c31d55` chore(storefront): local dev thumbnail seed for visual QA (gitignored)
+
+**Files.** `prisma/schema.prisma` + migration, `packages/db/src/crud/catalog.ts`,
+`apps/web-admin/src/routes/api/catalog.ts`,
+`apps/web-admin/client/src/pages/ProductDetailPage.tsx`,
+`apps/storefront/src/images.ts`, `apps/storefront/src/denomIcon.ts` (new),
+`apps/storefront/src/cards.ts`, `apps/storefront/src/pageData.ts`,
+`apps/storefront/src/routes/api.ts`, `apps/storefront/src/routes/cart.ts`,
+`apps/storefront/client/src/components/shop/DefaultThumb.tsx` (new),
+`apps/storefront/client/src/components/shop/DenominationCard.tsx`,
+`apps/storefront/client/src/components/shop/ProductCard.tsx`,
+`apps/storefront/client/src/pages/ProductPage.tsx`,
+`apps/storefront/client/src/pages/InstantBuyPage.tsx`,
+`apps/storefront/client/src/pages/CartPage.tsx`,
+`apps/storefront/client/src/api/types.ts`,
+`tests/e2e/seed-thumbs.ts` (new, gitignored dev-only).

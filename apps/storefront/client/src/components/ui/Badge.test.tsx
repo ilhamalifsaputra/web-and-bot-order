@@ -39,6 +39,7 @@ describe("Badge", () => {
     ["neutral", ["chip", "bg-sand", "text-ink-soft"]],
     ["success", ["chip", "bg-grass-tint", "text-grass-dark"]],
     ["pending", ["chip", "bg-amberx-tint", "text-amberx"]],
+    ["info", ["chip", "bg-pine-tint", "text-pine-dark"]],
     ["failed", ["chip", "bg-rust-tint", "text-rust-dark"]],
   ] as const)("status variant %s composes .chip + the right tone", (variant, classes) => {
     render(<Badge variant={variant}>{variant}</Badge>);

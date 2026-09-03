@@ -6,8 +6,12 @@
  *   hot               → flame icon + muted `ink-soft` text, no fill
  *   category          → tiny lowercase `pine-tint` / `pine-dark` pill
  *   neutral           → `sand` / `ink-soft` pill
- *   success / pending / failed → status chip: tint bg + dark text, full radius
- *                               (`grass` / `amberx` / `rust`)
+ *   success / pending / info / failed → status chip: tint bg + dark text,
+ *                               full radius (`grass` / `amberx` / `pine` / `rust`)
+ *
+ * `info` (pine chip) was added in Task 14 for PayPage's `StatusStrip` —
+ * pine is not a new color (it's the same token `category` already tints
+ * with), just a chip-shaped (not pill-shaped) pairing that didn't exist yet.
  *
  * The pill variants compose `.chip` (app.css). Any icon is passed in via the
  * `icon` prop — nothing is hardcoded, so this stays business-agnostic.
@@ -29,6 +33,7 @@ export type BadgeVariant =
   | "neutral"
   | "success"
   | "pending"
+  | "info"
   | "failed";
 
 const VARIANTS: Record<BadgeVariant, string> = {
@@ -42,6 +47,7 @@ const VARIANTS: Record<BadgeVariant, string> = {
   neutral: "chip bg-sand text-ink-soft",
   success: "chip bg-grass-tint text-grass-dark",
   pending: "chip bg-amberx-tint text-amberx",
+  info: "chip bg-pine-tint text-pine-dark",
   failed: "chip bg-rust-tint text-rust-dark",
 };
 

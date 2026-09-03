@@ -11,9 +11,10 @@
  */
 import type { RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Globe, LogIn, Menu, PackageSearch, ShoppingCart, Store, User } from "lucide-react";
+import { Globe, LogIn, Menu, PackageSearch, Search, ShoppingCart, Store, User } from "lucide-react";
 import type { ShopContext } from "../../api/types";
 import { currentLang, t } from "../../lib/i18n";
+import { useSearchOverlay } from "../shop/SearchOverlay";
 import { SearchForm } from "./SearchForm";
 
 export default function Navbar({
@@ -33,6 +34,7 @@ export default function Navbar({
   const backPath = location.pathname + location.search;
   const shopName = ctx?.shop_name ?? "";
   const cartCount = ctx?.cart_count ?? 0;
+  const { open: openSearch } = useSearchOverlay();
 
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-card/90 backdrop-blur-sm">
@@ -77,6 +79,20 @@ export default function Navbar({
           className="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0"
           aria-label={t("web.nav_main")}
         >
+          {/* Mobile-only: the desktop search pill is `hidden ... sm:block`, so
+              mobile opens the same SearchOverlay from this icon (§10). The
+              secondary header row that used to hold a full search field is
+              gone — Task 12. */}
+          <button
+            type="button"
+            onClick={() => openSearch()}
+            aria-label={t("web.nav_search")}
+            aria-haspopup="dialog"
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
+          >
+            <Search className="h-5 w-5" />
+          </button>
+
           {/* T21: shows the language IN FORCE (not the target you'd switch to). */}
           <a
             href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
@@ -124,22 +140,6 @@ export default function Navbar({
             )}
           </Link>
         </nav>
-      </div>
-
-      {/* Mobile secondary row — search plus the language switcher (STO-004: the
-          switcher is `hidden sm:flex` above, so mobile visitors need it here).
-          Kept inside the sticky <header> so it scrolls/sticks with the top bar. */}
-      <div className="flex items-center gap-2 border-t border-line bg-card px-4 py-2 sm:hidden">
-        <div className="flex-1">
-          <SearchForm inputAriaLabel={t("web.search_placeholder")} />
-        </div>
-        <a
-          href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
-          className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-2 text-sm uppercase text-ink-soft hover:bg-sand"
-          aria-label={t("web.lang_label")}
-        >
-          <Globe className="h-4 w-4" /> {lang}
-        </a>
       </div>
     </header>
   );

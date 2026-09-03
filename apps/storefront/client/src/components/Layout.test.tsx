@@ -131,16 +131,23 @@ describe("Layout", () => {
     expect(skipLink).toHaveFocus();
   });
 
-  it("exposes a language switcher reachable on mobile, not only the desktop nav (STO-004)", async () => {
-    const { container } = renderLayout();
+  // Task 12 removed the mobile secondary header row (it held a full search
+  // field + a language link). The language switcher's mobile home is now the
+  // drawer (covered by the drawer tests below); the search affordance is an
+  // icon button in the top bar that opens the SearchOverlay.
+  it("replaces the mobile header search row with an icon button opening the search overlay (Task 12)", async () => {
+    const user = userEvent.setup();
+    renderLayout();
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
     await screen.findByText("home content");
 
-    // Two language links must exist: the desktop one (hidden ... sm:flex)
-    // and a second one folded into the mobile secondary row (sm:hidden) —
-    // otherwise mobile visitors can never reach the switcher (STO-004).
-    const langLinks = container.querySelectorAll('a[href^="/lang?to=id"]');
-    expect(langLinks.length).toBeGreaterThanOrEqual(2);
+    const banner = screen.getByRole("banner");
+    // The old secondary row rendered an <input type="search"> in the header.
+    expect(within(banner).queryByRole("searchbox")).not.toBeInTheDocument();
+
+    const searchIcon = within(banner).getByRole("button", { name: "Search" });
+    await user.click(searchIcon);
+    expect(await screen.findByRole("dialog", { name: "Search" })).toBeInTheDocument();
   });
 
   describe("mobile nav drawer", () => {

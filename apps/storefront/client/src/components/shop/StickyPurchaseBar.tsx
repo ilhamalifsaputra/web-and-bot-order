@@ -17,9 +17,19 @@
  * indicator (the sole reason this file is on the eslint.config.js Group-A
  * `env()` allowlist).
  *
+ * Portaled to `document.body`: `apps/storefront/static/app.css` runs
+ * `main { animation: rise .5s … both }`, whose `both` fill-mode leaves `<main>`
+ * with a non-`none` `transform` after load. A `transform` other than `none`
+ * makes an element the containing block for its `position: fixed` descendants,
+ * so a bar rendered inside the routed page (a `<main>` descendant) pins to
+ * `<main>`'s bottom edge — above the footer, and scrolled away mid-page —
+ * instead of the viewport. The hand-rolled bars this component replaces all
+ * had that latent bug; portaling out of `<main>` fixes it for every consumer.
+ *
  * Business-agnostic: all copy, prices, handlers and pending flags are props.
  */
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import Spinner from "./Spinner";
 import Button, { type ButtonVariant } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -89,7 +99,7 @@ export default function StickyPurchaseBar({
   ariaLabel,
   className,
 }: StickyPurchaseBarProps) {
-  return (
+  const bar = (
     <div
       role={ariaLabel ? "region" : undefined}
       aria-label={ariaLabel}
@@ -124,4 +134,7 @@ export default function StickyPurchaseBar({
       </div>
     </div>
   );
+
+  // SSR / non-DOM guard — render inline if there is no document to portal into.
+  return typeof document === "undefined" ? bar : createPortal(bar, document.body);
 }

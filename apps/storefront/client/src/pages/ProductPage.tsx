@@ -264,12 +264,18 @@ export default function ProductPage() {
       />
 
       <div className="grid md:grid-cols-2 gap-6 lg:gap-10">
+        {/* The product name spans both columns so it stays the first thing
+            read on mobile (where the grid collapses to image → description →
+            picker beneath it) while still heading the whole block on
+            desktop. */}
+        <h1 className="page-title md:col-span-2">{product.name}</h1>
+
         {/* Image + short description. `self-start` on this wrapper (not the
             image card) so the column doesn't stretch to the taller right
             column: a photo-less product (every Digiflazz import) would
             otherwise leave a tall empty DefaultThumb well with dead space
-            below it. The description moved here, under the banner, from its
-            old spot beneath the <h1> in the right column. */}
+            below it. The description sits here, under the banner, moved from
+            its old spot beneath the <h1>. */}
         <div className="self-start">
           <div className="card overflow-hidden">
             <div className="aspect-[4/3] bg-sand">
@@ -324,8 +330,6 @@ export default function ProductPage() {
 
         {/* Facts + denomination picker + actions */}
         <div id="product-detail">
-          <h1 className="page-title">{product.name}</h1>
-
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}

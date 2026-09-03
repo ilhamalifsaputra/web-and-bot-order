@@ -10,6 +10,15 @@
  * currency toggle → amount input (server limits are the real gate;
  * client-side min/max is a UX hint only) → gateway picker → POST
  * /api/v1/wallet/topup → navigate to the pay screen.
+ *
+ * Design-system migration (Task 14): mirrors CheckoutPage.tsx's card/field/
+ * button treatment — `<Card>`, `<FormField>`+`<Input>` for the amount,
+ * `<Alert variant="banner" tone="error">` for the submit-error banner,
+ * `<Button>` for the currency toggle + submit. `PaymentMethodRow` (from
+ * `PaymentMethodSelector.tsx`) is unchanged — already migrated in Task 13,
+ * re-verified here, not re-migrated. See deviations.md
+ * §14-pay-topup-track. No mutation payload, endpoint, or gating logic
+ * changed.
  */
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -24,6 +33,13 @@ import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
 import { PaymentMethodRow } from "../components/shop/PaymentMethodSelector";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Alert from "../components/ui/Alert";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
+import Label from "../components/ui/Label";
+import { cn } from "../components/ui/cn";
 
 type Currency = "IDR" | "USDT";
 
@@ -177,13 +193,13 @@ export default function WalletTopupPage() {
       return (
         <div aria-busy="true" aria-label={t("web.loading")}>
           <Skeleton className="mb-5 h-8 w-48" />
-          <div className="card card-pad space-y-3 max-w-lg">
+          <Card className="space-y-3 max-w-lg">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-10 w-full" />
             {[0, 1].map((i) => (
               <Skeleton key={i} className="h-14 w-full rounded-xl" />
             ))}
-          </div>
+          </Card>
         </div>
       );
     }
@@ -211,55 +227,45 @@ export default function WalletTopupPage() {
       <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
 
       {submitErrorKey && (
-        <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" /> {humanError(submitErrorKey)}
-        </div>
+        <Alert variant="banner" tone="error">
+          {humanError(submitErrorKey)}
+        </Alert>
       )}
 
       <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
-        <div className="card card-pad space-y-4">
+        <Card className="space-y-4">
           {/* Currency toggle */}
           <div>
-            <label className="field-label mb-2 block">{t("web.wallet_topup_currency_label")}</label>
+            <Label className="mb-2 block">{t("web.wallet_topup_currency_label")}</Label>
             <div className="grid grid-cols-2 gap-2">
               {(["IDR", "USDT"] as const).map((cur) => (
-                <button
+                <Button
                   key={cur}
-                  type="button"
-                  className={
-                    cur === currency
-                      ? "btn btn-primary"
-                      : "btn btn-soft"
-                  }
+                  variant={cur === currency ? "primary" : "soft"}
                   onClick={() => setCurrency(cur)}
                 >
                   {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
 
           {/* Amount */}
-          <div>
-            <label className="field-label" htmlFor="topup_amount">
-              {t("web.wallet_topup_amount_label")}
-            </label>
-            <input
+          <FormField label={t("web.wallet_topup_amount_label")} htmlFor="topup_amount" hint={hint ?? undefined}>
+            <Input
               id="topup_amount"
               type="number"
               inputMode="decimal"
               min="0"
               step="any"
-              className="field"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder={currency === "IDR" ? "50000" : "10"}
             />
-            {hint && <p className="mt-1.5 text-xs text-ink-soft">{hint}</p>}
-          </div>
-        </div>
+          </FormField>
+        </Card>
 
-        <div className="card card-pad">
+        <Card>
           <h2 className="section-title mb-3">{t("web.wallet_topup_method_label")}</h2>
           <div className="space-y-3">
             {options.map((opt) => (
@@ -280,18 +286,18 @@ export default function WalletTopupPage() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
 
-        <button
-          type="button"
-          className="btn btn-primary w-full"
+        <Button
+          variant="primary"
+          fullWidth
+          className={cn(submitBlocked && "opacity-50")}
           disabled={submitDisabled}
-          style={submitBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
           onClick={() => submitMutation.mutate()}
         >
           {submitMutation.isPending && <Spinner />}
           {t("web.wallet_topup_submit")}
-        </button>
+        </Button>
       </form>
     </div>
   );

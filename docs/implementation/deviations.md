@@ -1077,6 +1077,28 @@ auth/session code. Deliberately not added; buttons keep their existing
 `disabled={mutation.isPending}` gate, matching `TrackOrderPage`'s and
 `WalletTopupPage`'s own submit-button convention.
 
+**8. `ResetPage`'s new-password / confirm-password fields gained a
+show/hide toggle.** They were raw `<input type="password">` before this
+task and are now `<PasswordInput>` (×2) — additive UI only, no payload or
+validation change (the fields still submit the same values to the same
+`POST .../reset/:token`). Consistent with the toggle every other password
+field in the app already has (Login, Register, Settings). Noted here
+explicitly because it is a user-visible behavior addition on a
+boundary-sensitive page, not only a restyle. Review follow-up: Task 15
+review Minor #1.
+
+**9. `RegisterPage` inline field hints not migrated to `FormField`'s
+`hint` prop.** The two field-hint `<p>`s (`web.register_username_help`,
+`web.register_password_help`) stay sibling paragraphs rather than being
+passed through `FormField`'s `hint` slot, so they remain unlinked from
+their inputs via `aria-describedby` — an a11y upgrade `FormField` was
+built to provide. Left as-is because `RegisterPage.test.tsx` pins the
+password hint's `text-xs text-ink-faint` class pair, and threading it
+through `FormField` would change that DOM. Unchanged from before (not a
+regression). Review follow-up: Task 15 review Minor #3 — close alongside
+a small-print-treatment alignment pass if design wants uniform hint
+styling.
+
 **Files.** `apps/storefront/client/src/pages/LoginPage.tsx`,
 `apps/storefront/client/src/pages/RegisterPage.tsx`,
 `apps/storefront/client/src/pages/ForgotPage.tsx`,

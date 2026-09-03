@@ -207,7 +207,7 @@ that already carries the meaning):
 
 | Off-palette value | Where | Mapped to | Reasoning |
 |---|---|---|---|
-| `text-amber-400` | hero "instant" ⚡ chip; AuthBrandPanel "instant" ⚡ | `text-grass` | "instant delivery" is a positive capability; `grass` reads well on both the dark hero band and the pine auth panel, where `amberx` (`#b45c0a`, dark orange-brown) muddies against the dark grounds. |
+| `text-amber-400` / `text-amber-300` | hero "instant" ⚡ chip; AuthBrandPanel "instant" ⚡; **ProductCard catalog-tile "instant" ⚡ chip** (was `text-amber-300`, on its `bg-black/40` overlay — Task 10) | `text-grass` | "instant delivery" is a positive capability; `grass` reads well on the dark hero band, the pine auth panel, and the card's translucent-black image overlay, where `amberx` (`#b45c0a`, dark orange-brown) muddies against the dark grounds. |
 | `text-violet-400` | hero "support" 🎧 chip; AuthBrandPanel "support" 🎧 | `text-pine-tint` | violet → pine family (brief guidance). On the dark hero / pine panel `text-pine` (`#2563eb`) is too low-contrast; `pine-tint` (`#e6effe`) matches the near-white decorative treatment of the sibling warranty icon. |
 | `bg-violet-50` / `text-violet-600` | features grid "24/7 support" icon well; "Sosmed" upcoming-teaser icon well | `bg-pine-tint` / `text-pine` | violet → pine family. The support feature card now shares the pine well of the "instant" card; the four wells are pine / grass / amberx / pine. `rust` (the only remaining palette hue) means danger and is wrong for "support". |
 
@@ -217,7 +217,110 @@ are pine. Both are acceptable — the pairs are decorative and the labels
 disambiguate — and neither harms hierarchy.
 
 **Files.** `apps/storefront/client/src/pages/HomePage.tsx`,
-`apps/storefront/client/src/components/AuthBrandPanel.tsx`.
+`apps/storefront/client/src/components/AuthBrandPanel.tsx`,
+`apps/storefront/client/src/components/shop/ProductCard.tsx` *(Task 10 — instant-chip row above)*.
+
+---
+
+## 10-listing-structure — category-listing family kept its pills + sort on top of the §2 template (Task 10)
+
+**Context.** `page-templates.md` §2 "Category listing" is deliberately minimal:
+**breadcrumb → H2 → single 5-col product-card grid**, no sidebar, no facets,
+no visible pagination. Task 10 migrates the four routes that share this shape
+(`CategoryPage` `/c/:slug`, `CategoriesPage` `/categories`, `ProductsPage`
+`/products`, `FlashPage` `/flash`) plus the `ProductCard` / `ProductCardSkeleton`
+/ `SortSelect` domain components.
+
+**Deviations, all deliberate:**
+
+1. **`CategoryPage` keeps its category-switch pill row.** §2 has no
+   category switcher (each category is its own SEO page). This shop has always
+   let a visitor hop between sibling categories from a horizontally-scrolling
+   pill row under the H1. Kept, restyled to the `components.md`
+   "Segmented control / tabs" visual — `rounded-full`, `text-xs`/`600`, scale
+   padding (`px-3 py-1.5`), **active** = `bg-pine-tint` + `text-pine-dark`
+   (the `.btn-soft` pattern), **inactive** = `text-ink-soft` on `bg-sand`.
+   They stay `<Link>`s (not a controlled `<Tabs>` — they navigate, they don't
+   filter in place). The old `px-3.5!` / `py-1.5!` bang overrides (which
+   existed only to beat the `.chip` class's own `padding`) are gone: the pill
+   is now composed from plain utilities, no `.chip` class, no `!`.
+
+2. **All four pages keep the `SortSelect` control.** §2 lists no sort. STO-007
+   gave this family a shared cheapest/newest/rating sort that re-fetches with
+   `?sort=` (the server owns price/rating ordering). Kept, and only rendered
+   when `products.length > 1` (nothing to reorder otherwise). `SortSelect`
+   now composes the `components/ui/Select` primitive instead of a raw
+   `<select className="field">`; its responsive label-row layout, the
+   `sm:w-auto!` collapse, its four options and i18n keys are unchanged.
+
+3. **Grid density raised to the design-system 5-up, but only at `xl`.**
+   `tokens.json productGridColumns.desktop: 5`. Current was
+   `grid-cols-2 sm:grid-cols-3 lg:grid-cols-4`; now
+   `grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5` — 5 cards only
+   from ≥1280px, 4-up at 1024 (5 at 1024 is cramped). `gap-4` and the
+   one-product `max-w-xs` special-case are unchanged. The per-page loading
+   skeleton grids got the same `xl:grid-cols-5`.
+
+4. **`CategoriesPage` is a category **tile** grid, not a product grid.** It has
+   no products and no sort; it keeps its `sm:grid-cols-2 lg:grid-cols-3` tile
+   layout. Only the breadcrumb was added and the tile card elevation was
+   nudged onto the design-system step (`shadow-xs` → `shadow-soft`,
+   `hover:shadow` → `hover:shadow-lift`) to match the migrated `ProductCard`
+   and HomePage's category tiles.
+
+5. **`ProductCard` rating stays an inline row, no overlay chip.**
+   `components.md` "Product card" puts rating in a **top-left white pill
+   overlay** on the art. This card's `top-3 left-3` corner already carries a
+   stacked flash-badge + bulk-badge column and its `top-3 right-3` corner the
+   instant ⚡ chip — both corners are occupied and the left column is
+   variable-height, so a rating overlay could not be added without crowding
+   or a larger recomposition outside this task's scope. The existing inline
+   rating row (`<Stars>` + value + review count, below the title) is kept
+   unchanged — it shows the same information. `components.md`'s "Sales row"
+   (`587 RB+ Terjual`) is **not** added — this shop tracks no per-product
+   sales count (audit C1).
+
+6. **`ProductCard` bulk-hint text size.** `text-[0.7rem]` (11.2px, an
+   arbitrary rem value) → `text-xs` (12px). `text-2xs` (`--gg-text-2xs`, 10px)
+   was considered and rejected: `extensions.md` scopes that token to the
+   `Badge` discount/savings label only ("must not replace `--gg-text-xs`
+   where the shared 12px chip size is used"), and this is body-adjacent hint
+   text, not a badge label.
+
+7. **`ProductCard` / `ProductCardSkeleton` elevation.** `shadow-xs` →
+   `shadow-soft` (resting), `hover:shadow-md` → `hover:shadow-lift` (a real
+   elevation step, per `components.md` "Product card"). The skeleton's
+   resting shadow was moved in lock-step so there is no elevation pop on
+   load. The `border-line` + white `bg-card` + `rounded-2xl` (16px) already
+   matched the spec and are untouched. `scale-[1.03]` on image hover
+   (arbitrary but gate-allowed, no px/hex) is kept.
+
+8. **`Breadcrumb` adopted with two `components.md`-alignment tweaks.** The
+   shared `components/shop/Breadcrumb.tsx` (audit verdict: `adopt`) was wired
+   into all four pages. Two small changes bring it onto the `components.md`
+   "Breadcrumb" spec: the separator glyph `/` → `›`, and the current
+   (last, non-link) crumb `text-ink-soft` → `text-ink font-semibold` (spec:
+   "current page in `ink` (bold)"). These ripple to the two other current
+   consumers (`ProductPage`, `InstantBuyPage`) as a pure visual refinement
+   toward the design system; no behaviour or structure changes. The
+   component's `text-xs` size and `hover:text-pine` link treatment are left
+   as the `adopt` baseline.
+
+**Crumb labels used:** `CategoryPage` — `{Home} › {category.name}`;
+`ProductsPage` — `{Home} › {All products}`; `FlashPage` —
+`{Home} › {Flash sale}`; `CategoriesPage` — `{Home} › {Categories}`
+(`web.nav_home` / `web.products_title` / `web.flash_title` /
+`web.categories_page_title`; Indonesian: Beranda / Semua produk / Flash sale /
+Kategori).
+
+**Files.** `apps/storefront/client/src/pages/CategoryPage.tsx`,
+`apps/storefront/client/src/pages/CategoriesPage.tsx`,
+`apps/storefront/client/src/pages/ProductsPage.tsx`,
+`apps/storefront/client/src/pages/FlashPage.tsx`,
+`apps/storefront/client/src/components/shop/ProductCard.tsx`,
+`apps/storefront/client/src/components/shop/ProductCardSkeleton.tsx`,
+`apps/storefront/client/src/components/shop/SortSelect.tsx`,
+`apps/storefront/client/src/components/shop/Breadcrumb.tsx`.
 
 ---
 

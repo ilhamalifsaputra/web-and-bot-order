@@ -62,7 +62,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
     <MotionLink
       to={`/p/${p.slug}`}
       {...pressable}
-      className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-xs transition hover:shadow-md hover:border-pine-tint flex flex-col"
+      className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-soft transition hover:shadow-lift hover:border-pine-tint flex flex-col"
     >
       <div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
         {p.image ? (
@@ -116,7 +116,11 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             )}
           </div>
         )}
-        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300 backdrop-blur-sm">
+        {/* "instant delivery" is a positive capability → text-grass (palette),
+            not the off-palette text-amber-300. Same amber → grass map as
+            HomePage's hero/AuthBrandPanel instant chip — see deviations.md
+            §13-home-colour. */}
+        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-grass backdrop-blur-sm">
           <Zap className="w-3 h-3" /> {t("web.badge_instant")}
         </span>
       </div>
@@ -153,7 +157,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
         </div>
 
         {p.bulk_discount && p.bulk_min_qty && (
-          <div className="text-[0.7rem] text-grass-dark font-medium flex items-center gap-1 mt-2">
+          <div className="text-xs text-grass-dark font-medium flex items-center gap-1 mt-2">
             <Tag className="w-3 h-3" />
             {t("web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
           </div>

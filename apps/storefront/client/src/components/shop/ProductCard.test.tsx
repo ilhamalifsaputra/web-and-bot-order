@@ -70,6 +70,30 @@ describe("ProductCard", () => {
     expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
+  it("uses the design-system card elevation: shadow-soft resting, shadow-lift on hover", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={base} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    const card = screen.getByRole("link");
+    expect(card).toHaveClass("shadow-soft");
+    expect(card.className).toContain("hover:shadow-lift");
+    expect(card.className).not.toContain("shadow-xs");
+    expect(card.className).not.toContain("hover:shadow-md");
+  });
+
+  it("tints the instant chip with the palette token, not off-palette amber", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={base} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    const chip = screen.getByText("Instant delivery");
+    expect(chip).toHaveClass("text-grass");
+    expect(chip.className).not.toMatch(/amber/);
+  });
+
   it("renders whole-number ratings without trailing .0", () => {
     const wholeRating: ProductCardData = { ...base, rating: 5, rating_count: 1 };
     render(

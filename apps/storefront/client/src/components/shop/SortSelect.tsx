@@ -1,6 +1,7 @@
 import { ArrowUpDown } from "lucide-react";
 import type { SortKey } from "../../api/types";
 import { t } from "../../lib/i18n";
+import Select from "../ui/Select";
 
 const SORT_OPTIONS: { value: SortKey; labelKey: string }[] = [
   { value: "default", labelKey: "web.sort_default" },
@@ -34,18 +35,19 @@ export default function SortSelect({ value, onChange }: SortSelectProps) {
         {t("web.sort_label")}
       </span>
       {/* `min-w-0` so the select may shrink inside the flex row instead of
-          pushing the label off a 320px screen. */}
-      <select
+          pushing the label off a 320px screen. <Select> is the thin `.field`
+          wrapper from components/ui — it supplies the `field` class. */}
+      <Select
         value={value}
         onChange={(e) => onChange(e.target.value as SortKey)}
-        className="field min-w-0 flex-1 sm:w-auto! sm:flex-none"
+        className="min-w-0 flex-1 sm:w-auto! sm:flex-none"
       >
         {SORT_OPTIONS.map((opt) => (
           <option key={opt.value} value={opt.value}>
             {t(opt.labelKey)}
           </option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }

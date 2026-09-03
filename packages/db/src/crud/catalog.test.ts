@@ -501,6 +501,50 @@ describe("storefront detail blocks (whatYouGet / terms / warrantyNote)", () => {
   });
 });
 
+describe("thumbnailKind / currencyIconKind (Fase 12)", () => {
+  it("defaults both to null when omitted", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Kind Set");
+    expect(p.thumbnailKind).toBeNull();
+    expect(p.currencyIconKind).toBeNull();
+  });
+
+  it("persists explicit thumbnailKind/currencyIconKind on create", async () => {
+    const cat = await makeCategory();
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "With Kinds",
+      thumbnailKind: "game",
+      currencyIconKind: "diamond",
+    });
+    expect(p.thumbnailKind).toBe("game");
+    expect(p.currencyIconKind).toBe("diamond");
+
+    const fresh = await getCatalogProduct(prisma, p.id);
+    expect(fresh!.thumbnailKind).toBe("game");
+    expect(fresh!.currencyIconKind).toBe("diamond");
+  });
+
+  it("updateCatalogProduct sets and clears both fields (blind passthrough)", async () => {
+    const cat = await makeCategory();
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Round Trip",
+      thumbnailKind: "voucher",
+      currencyIconKind: "coin",
+    });
+
+    await updateCatalogProduct(prisma, p.id, { thumbnailKind: "steam", currencyIconKind: null });
+    const afterSet = await getCatalogProduct(prisma, p.id);
+    expect(afterSet!.thumbnailKind).toBe("steam");
+    expect(afterSet!.currencyIconKind).toBeNull();
+
+    await updateCatalogProduct(prisma, p.id, { thumbnailKind: null });
+    const afterClear = await getCatalogProduct(prisma, p.id);
+    expect(afterClear!.thumbnailKind).toBeNull();
+  });
+});
+
 describe("listCatalogProducts", () => {
   it("returns active products with ≥1 active denomination, denominations price-asc", async () => {
     const cat = await makeCategory();

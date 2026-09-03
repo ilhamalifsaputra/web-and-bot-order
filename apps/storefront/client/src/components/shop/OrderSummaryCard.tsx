@@ -6,6 +6,16 @@
  * totals/voucher/submit UI without duplicating it. Pure move — parameterized
  * on props instead of closing over CheckoutPage's own state.
  *
+ * Design-system migration (Fase 7c): the two `.card.card-pad` blocks are now
+ * `<Card>`, the voucher control is `<Label>` + `<Input>` + an inline apply
+ * `<Button variant="soft">`, and the submit is `<Button variant="primary"
+ * fullWidth>`. The summary line rows — which numbers show, and how they are
+ * computed / formatted (`formatIdr`, `<Price>`) — are UNCHANGED: money is
+ * Decimal, formatted only at this render boundary. The voucher field composes
+ * `<Label>` + `<Input>` directly rather than a literal `<FormField>` because
+ * the apply `<Button>` sits inline beside the input (FormField clones a single
+ * control child and cannot hold the adjacent button).
+ *
  * `submitLabel`/`submitIcon` and `backTo` are the only two seams CheckoutPage
  * and InstantBuyPage don't share verbatim: CheckoutPage says "Place order &
  * pay" with a back-to-cart link (there is a cart to go back to); InstantBuyPage
@@ -21,6 +31,11 @@ import { formatIdr } from "../../lib/format";
 import FlashBadge, { flashPercentLabel } from "./FlashBadge";
 import Price from "./Price";
 import Spinner from "./Spinner";
+import Card from "../ui/Card";
+import Button from "../ui/Button";
+import Input from "../ui/Input";
+import Label from "../ui/Label";
+import { cn } from "../ui/cn";
 
 /**
  * The biggest live flash discount in the cart, plus the last moment any of
@@ -99,45 +114,43 @@ export default function OrderSummaryCard({
     // `grid lg:grid-cols-3` form, and a Fragment would hand the grid two
     // separate top-level children instead of one, breaking the column split.
     <div className="space-y-6">
-      <div className="card card-pad">
-        <label className="field-label" htmlFor="voucher_code">
-          {t("web.voucher_label")}
-        </label>
+      <Card>
+        <Label htmlFor="voucher_code">{t("web.voucher_label")}</Label>
         <div className="flex gap-2">
-          <input
+          <Input
             id="voucher_code"
             value={voucherInput}
             onChange={(e) => onVoucherInputChange(e.target.value)}
             onKeyDown={onVoucherKeyDown}
-            className="field uppercase"
+            className="uppercase"
             placeholder={t("web.voucher_placeholder")}
             maxLength={32}
-            aria-invalid={totals.error_key ? true : undefined}
+            invalid={totals.error_key ? true : undefined}
             aria-describedby={totals.error_key ? "voucher_code_error" : undefined}
           />
-          <button
-            type="button"
+          <Button
             id="voucher_apply"
-            className="btn btn-soft shrink-0"
+            variant="soft"
+            className="shrink-0"
             disabled={voucherPending}
             onClick={onVoucherApply}
           >
             {voucherPending && <Spinner />}
             {t("web.voucher_apply")}
-          </button>
+          </Button>
         </div>
         {/* STO-005: the voucher error belongs next to the field it
             validates, on every viewport — it used to render in the
             summary column, a full column gutter away on desktop. */}
         {totals.error_key && (
-          <p id="voucher_code_error" role="alert" className="mt-2 text-sm text-rust-dark flex items-center gap-1.5">
+          <p id="voucher_code_error" role="alert" className="mt-2 flex items-center gap-1.5 text-sm text-rust-dark">
             <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
           </p>
         )}
-      </div>
+      </Card>
 
       <div id="checkout-summary">
-        <div className="card card-pad">
+        <Card>
           <h2 className="section-title mb-3">{t("web.summary")}</h2>
           <div className="text-sm divide-y divide-line">
             <div className="flex justify-between py-2">
@@ -170,8 +183,8 @@ export default function OrderSummaryCard({
                 <span>{formatIdr(totals.qris_admin_fee)}</span>
               </div>
             )}
-            <div className="flex justify-between py-3 items-baseline">
-              <span className="font-semibold">{t("web.order_total")}</span>
+            <div className="flex items-baseline justify-between py-3">
+              <span className="text-base font-semibold text-ink">{t("web.order_total")}</span>
               <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={fx} size="text-lg" />
             </div>
           </div>
@@ -181,23 +194,23 @@ export default function OrderSummaryCard({
               identically-labelled submits in the page for assistive tech to
               disambiguate, so only one exists at a time. */}
           {showDesktopSubmit && (
-            <button
-              type="button"
-              className="btn btn-primary w-full mt-4"
+            <Button
+              variant="primary"
+              fullWidth
+              className={cn("mt-4", submitBlocked && "opacity-50")}
               disabled={submitDisabled}
-              style={submitBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
               onClick={onSubmit}
             >
               {submitPending && <Spinner />}
               {submitLabel} {submitIcon ?? <ChevronRight className="w-4 h-4" />}
-            </button>
+            </Button>
           )}
           {backTo && (
             <Link to={backTo.to} className="btn btn-ghost w-full mt-2">
               {backTo.label}
             </Link>
           )}
-        </div>
+        </Card>
       </div>
     </div>
   );

@@ -5,6 +5,22 @@
  * JSX, the default-selection cascade and the wallet-sufficiency checks are
  * unchanged from CheckoutPage.tsx — only the closures (`page`/`method`/
  * `setMethod`) became parameters (`data`/`method`/`onSelect`).
+ *
+ * Design-system migration (Fase 7c): `PaymentMethodRow` is now a `border-2`
+ * card-surfaced `<label>` wrapping a `<ui/Radio>` — the same
+ * `has-[:checked]:border-pine` + ring "selected" treatment as the new
+ * `DenominationCard`, and (like it) NO background fill on selection. It stays
+ * a `<label>`, not a literal `<Card>`, because the native label-wraps-input
+ * click-anywhere-to-select behaviour needs a `<label>` element; `Card` renders
+ * a `<div>`. The rows are also now grouped under `field-label` sub-headings —
+ * this shop's actual methods (QRIS, PayDisini, Binance/Bybit/NOWPayments,
+ * wallet credit) don't map onto page-templates.md's generic "e-wallet / VA /
+ * QRIS / retail" taxonomy (no VA/retail-outlet gateway exists here), so the
+ * three groups are IDR quick-pay (QRIS + PayDisini), cryptocurrency, and
+ * wallet credit instead — see deviations.md §13-checkout. Every row's own
+ * gating condition (`data.X_enabled`, wallet sufficiency) is unchanged; the
+ * groups only wrap already-conditional rows in a heading, never add/remove a
+ * row or change when one renders.
  */
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -12,6 +28,8 @@ import { Wallet } from "lucide-react";
 import type { CheckoutData } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../../lib/format";
+import Radio from "../ui/Radio";
+import { cn } from "../ui/cn";
 
 /** All-or-nothing wallet-credit gates: only "sufficient" when the balance
  * covers the live total outright — never offered as a partial discount.
@@ -125,15 +143,12 @@ export function PaymentMethodRow({
   feeNote?: string;
 }) {
   return (
-    <label className="flex items-start gap-3 p-3 rounded-xl border border-line transition-colors cursor-pointer hover:border-pine focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:bg-pine-tint">
-      <input
-        type="radio"
-        name="method"
-        value={value}
-        className="mt-1 size-4 shrink-0 accent-pine"
-        checked={checked}
-        onChange={onSelect}
-      />
+    <label
+      className={cn(
+        "flex cursor-pointer items-start gap-3 rounded-xl border-2 border-line bg-card p-3 shadow-soft transition-all duration-150 hover:shadow-lift focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35",
+      )}
+    >
+      <Radio name="method" value={value} className="mt-1 shrink-0" checked={checked} onChange={onSelect} />
       {icon}
       {/* min-w-0 lets a long gateway description wrap rather than push the row
           wider than a 320px viewport. */}
@@ -166,127 +181,148 @@ export default function PaymentMethodSelector({
   // total (post-voucher); hidden (not disabled) otherwise.
   const idrWalletSufficient = isIdrWalletSufficient(data);
   const usdtWalletSufficient = isUsdtWalletSufficient(data);
+  // Group-level visibility is derived from the exact same flags each row
+  // below already gates on — a group heading only ever wraps rows that would
+  // have rendered anyway, never adds or hides one.
+  const showIdrGroup = data.idr_enabled || data.paydisini_enabled;
+  const showCryptoGroup = data.binance_enabled || data.bybit_enabled || data.bybit_bsc_enabled || data.nowpayments_enabled;
+  const showWalletGroup = idrWalletSufficient || usdtWalletSufficient;
 
   return (
     <div className="card card-pad">
       <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
-      <div className="space-y-3">
-        {data.idr_enabled && (
-          <PaymentMethodRow
-            value="qris"
-            checked={method === "qris"}
-            onSelect={() => onSelect("qris")}
-            icon={
-              <img
-                src="/static/pay/qris.png"
-                alt="QRIS"
-                className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+      <div className="space-y-5">
+        {showIdrGroup && (
+          <div className="space-y-3">
+            <p className="field-label">{t("web.pay_group_idr")}</p>
+            {data.idr_enabled && (
+              <PaymentMethodRow
+                value="qris"
+                checked={method === "qris"}
+                onSelect={() => onSelect("qris")}
+                icon={
+                  <img
+                    src="/static/pay/qris.png"
+                    alt="QRIS"
+                    className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_idr_title")}
+                subtitle={t("web.pay_idr_sub")}
+                feeNote={t("web.qris_admin_fee_note")}
               />
-            }
-            title={t("web.pay_idr_title")}
-            subtitle={t("web.pay_idr_sub")}
-            feeNote={t("web.qris_admin_fee_note")}
-          />
-        )}
-        {data.paydisini_enabled && (
-          <PaymentMethodRow
-            value="paydisini"
-            checked={method === "paydisini"}
-            onSelect={() => onSelect("paydisini")}
-            icon={
-              <img
-                src="/static/pay/qris.png"
-                alt="PayDisini"
-                className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+            )}
+            {data.paydisini_enabled && (
+              <PaymentMethodRow
+                value="paydisini"
+                checked={method === "paydisini"}
+                onSelect={() => onSelect("paydisini")}
+                icon={
+                  <img
+                    src="/static/pay/qris.png"
+                    alt="PayDisini"
+                    className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_paydisini_title")}
+                subtitle={t("web.pay_paydisini_sub")}
               />
-            }
-            title={t("web.pay_paydisini_title")}
-            subtitle={t("web.pay_paydisini_sub")}
-          />
+            )}
+          </div>
         )}
-        {data.binance_enabled && (
-          <PaymentMethodRow
-            value="binance"
-            checked={method === "binance"}
-            onSelect={() => onSelect("binance")}
-            icon={
-              <img
-                src="/static/pay/binance.png"
-                alt="Binance"
-                className="h-7 w-7 object-contain shrink-0 mt-0.5"
+        {showCryptoGroup && (
+          <div className="space-y-3">
+            <p className="field-label">{t("web.pay_group_crypto")}</p>
+            {data.binance_enabled && (
+              <PaymentMethodRow
+                value="binance"
+                checked={method === "binance"}
+                onSelect={() => onSelect("binance")}
+                icon={
+                  <img
+                    src="/static/pay/binance.png"
+                    alt="Binance"
+                    className="h-7 w-7 object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_usdt_title")}
+                subtitle={t("web.pay_usdt_sub")}
               />
-            }
-            title={t("web.pay_usdt_title")}
-            subtitle={t("web.pay_usdt_sub")}
-          />
-        )}
-        {data.bybit_enabled && (
-          <PaymentMethodRow
-            value="bybit"
-            checked={method === "bybit"}
-            onSelect={() => onSelect("bybit")}
-            icon={
-              <img
-                src="/static/pay/bybit.png"
-                alt="Bybit"
-                className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            )}
+            {data.bybit_enabled && (
+              <PaymentMethodRow
+                value="bybit"
+                checked={method === "bybit"}
+                onSelect={() => onSelect("bybit")}
+                icon={
+                  <img
+                    src="/static/pay/bybit.png"
+                    alt="Bybit"
+                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_bybit_title")}
+                subtitle={t("web.pay_bybit_sub")}
               />
-            }
-            title={t("web.pay_bybit_title")}
-            subtitle={t("web.pay_bybit_sub")}
-          />
-        )}
-        {data.bybit_bsc_enabled && (
-          <PaymentMethodRow
-            value="bybit_bsc"
-            checked={method === "bybit_bsc"}
-            onSelect={() => onSelect("bybit_bsc")}
-            icon={
-              <img
-                src="/static/pay/bybit.png"
-                alt="Bybit"
-                className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            )}
+            {data.bybit_bsc_enabled && (
+              <PaymentMethodRow
+                value="bybit_bsc"
+                checked={method === "bybit_bsc"}
+                onSelect={() => onSelect("bybit_bsc")}
+                icon={
+                  <img
+                    src="/static/pay/bybit.png"
+                    alt="Bybit"
+                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_bybit_bsc_title")}
+                subtitle={t("web.pay_bybit_bsc_sub")}
               />
-            }
-            title={t("web.pay_bybit_bsc_title")}
-            subtitle={t("web.pay_bybit_bsc_sub")}
-          />
-        )}
-        {data.nowpayments_enabled && (
-          <PaymentMethodRow
-            value="nowpayments"
-            checked={method === "nowpayments"}
-            onSelect={() => onSelect("nowpayments")}
-            icon={
-              <img
-                src="/static/pay/nowpayments.png"
-                alt="NOWPayments"
-                className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+            )}
+            {data.nowpayments_enabled && (
+              <PaymentMethodRow
+                value="nowpayments"
+                checked={method === "nowpayments"}
+                onSelect={() => onSelect("nowpayments")}
+                icon={
+                  <img
+                    src="/static/pay/nowpayments.png"
+                    alt="NOWPayments"
+                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                  />
+                }
+                title={t("web.pay_nowpayments_title")}
+                subtitle={t("web.pay_nowpayments_sub")}
               />
-            }
-            title={t("web.pay_nowpayments_title")}
-            subtitle={t("web.pay_nowpayments_sub")}
-          />
+            )}
+          </div>
         )}
-        {idrWalletSufficient && (
-          <PaymentMethodRow
-            value="wallet_idr"
-            checked={method === "wallet_idr"}
-            onSelect={() => onSelect("wallet_idr")}
-            icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-            title={t("web.pay_wallet_idr_title")}
-            subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(data.wallet_idr) })}
-          />
-        )}
-        {usdtWalletSufficient && (
-          <PaymentMethodRow
-            value="wallet_usdt"
-            checked={method === "wallet_usdt"}
-            onSelect={() => onSelect("wallet_usdt")}
-            icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
-            title={t("web.pay_wallet_usdt_title")}
-            subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(data.wallet_usdt) })}
-          />
+        {showWalletGroup && (
+          <div className="space-y-3">
+            <p className="field-label">{t("web.pay_group_wallet")}</p>
+            {idrWalletSufficient && (
+              <PaymentMethodRow
+                value="wallet_idr"
+                checked={method === "wallet_idr"}
+                onSelect={() => onSelect("wallet_idr")}
+                icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+                title={t("web.pay_wallet_idr_title")}
+                subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(data.wallet_idr) })}
+              />
+            )}
+            {usdtWalletSufficient && (
+              <PaymentMethodRow
+                value="wallet_usdt"
+                checked={method === "wallet_usdt"}
+                onSelect={() => onSelect("wallet_usdt")}
+                icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+                title={t("web.pay_wallet_usdt_title")}
+                subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(data.wallet_usdt) })}
+              />
+            )}
+          </div>
         )}
         {!anyMethodEnabled(data) && !idrWalletSufficient && !usdtWalletSufficient && (
           <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">

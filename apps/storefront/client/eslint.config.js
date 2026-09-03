@@ -189,19 +189,18 @@ export default tseslint.config(
   //   src/components/layout/MobileDrawer.tsx  text-[15px] — drawer nav-row label
   //       size between text-sm (14) and text-base (16). Moved here from
   //       Layout.tsx by the Task 5 chrome split. TODO(task-7x): type-scale token.
-  //   src/components/shop/StepTimeline.tsx  text-[11px] — step-number badge.
-  //       TODO(task-7x): add a type-scale token.
   //
   //   (Task 17 removed src/components/shop/TicketMessageThread.tsx from this
   //   list: its one off-scale `text-[11px]` avatar initial is now the
-  //   `text-2xs` utility backed by the `--gg-text-2xs` token from Task 6a.)
+  //   `text-2xs` utility backed by the `--gg-text-2xs` token from Task 6a.
+  //   Task 18 removed src/components/shop/StepTimeline.tsx the same way: its
+  //   `text-[11px]` step-number badge is now `text-2xs`.)
   {
     files: [
       "src/pages/TicketDetailPage.tsx",
       "src/components/shop/Spinner.tsx",
       "src/components/shop/StatusScreen.tsx",
       "src/components/layout/MobileDrawer.tsx",
-      "src/components/shop/StepTimeline.tsx",
     ],
     rules: { "no-restricted-syntax": ["error", ...colorSelectors, ...inlineLenSelectors] },
   },

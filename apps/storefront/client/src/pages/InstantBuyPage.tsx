@@ -544,6 +544,7 @@ export default function InstantBuyPage() {
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
                   onChange={() => setSelectedId(d.id)}
+                  iconKind={product.icon_kind}
                 />
               ))}
             </div>

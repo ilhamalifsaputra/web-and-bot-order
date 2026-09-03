@@ -718,4 +718,30 @@ describe("ProductPage sharing and image formats", () => {
     // The original stays the fallback, so a browser without WebP still works.
     expect(img.getAttribute("src")).toBe("/uploads/products/product-abc.jpg");
   });
+
+  // Fase 12: product.icon_kind is resolved once server-side and forwarded to
+  // every DenominationCard as `iconKind` (denom-list has 3 plans in
+  // productData, so this also proves it's the SAME icon on every card, not
+  // something computed per-denomination).
+  it("forwards product.icon_kind to every DenominationCard as the currency chip", async () => {
+    const withIcon: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, icon_kind: "voucher" },
+    };
+    renderProduct("netflix-premium", () => withIcon);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const denomList = document.querySelector("#denom-list")!;
+    expect(denomList.querySelectorAll(".lucide-ticket")).toHaveLength(productData.denominations.length);
+  });
+
+  it("renders no currency chip on any DenominationCard when product.icon_kind is null", async () => {
+    const noIcon: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, icon_kind: null },
+    };
+    renderProduct("netflix-premium", () => noIcon);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const denomList = document.querySelector("#denom-list")!;
+    expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
+  });
 });

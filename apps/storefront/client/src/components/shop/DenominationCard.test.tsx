@@ -60,4 +60,47 @@ describe("DenominationCard", () => {
     expect(radio).toBeDisabled();
     expect(screen.getByText("5 Diamonds").closest("label")!.className).toContain("opacity-60");
   });
+
+  // Fase 12: the per-product currency chip. iconKind is a per-render prop
+  // (not part of DenominationCardData), resolved once for the whole product
+  // and passed identically to every plan.
+  describe("iconKind chip", () => {
+    it("renders nothing extra when iconKind is undefined", () => {
+      renderCard();
+      const label = screen.getByText("5 Diamonds").closest("label")!;
+      expect(label.querySelector("svg")).toBeNull();
+    });
+
+    it("renders nothing extra when iconKind is null", () => {
+      renderCard({ iconKind: null });
+      const label = screen.getByText("5 Diamonds").closest("label")!;
+      expect(label.querySelector("svg")).toBeNull();
+    });
+
+    it.each([
+      ["diamond", "lucide-gem"],
+      ["coin", "lucide-coins"],
+      ["key", "lucide-key-round"],
+      ["card", "lucide-credit-card"],
+      ["voucher", "lucide-ticket"],
+    ] as const)("renders the %s icon", (kind, lucideClass) => {
+      renderCard({ iconKind: kind });
+      const label = screen.getByText("5 Diamonds").closest("label")!;
+      expect(label.querySelector(`.${lucideClass}`)).toBeInTheDocument();
+    });
+  });
+
+  // Regression guard: the icon chip must never disturb the radio/data-*
+  // contract the product page's picker logic reads (task-17-brief.md).
+  it("keeps the radio + data-* contract unchanged when an icon chip is shown", () => {
+    const onChange = vi.fn();
+    renderCard({ checked: true, onChange, iconKind: "diamond" });
+    const radio = screen.getByRole("radio") as HTMLInputElement;
+    expect(radio).toBeChecked();
+    expect(radio.getAttribute("form")).toBe("buy-form");
+    const label = radio.closest("label")!;
+    expect(label.getAttribute("data-denom-id")).toBe("1");
+    expect(label.getAttribute("data-price")).toBe("5000");
+    expect(label.className).toContain("has-[:checked]:border-pine");
+  });
 });

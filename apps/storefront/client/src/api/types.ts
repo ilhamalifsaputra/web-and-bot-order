@@ -9,6 +9,11 @@ import type { FlashInfo } from "../components/shop/FlashBadge";
  * conventions) rather than taking server code as a client dependency. */
 export type ThumbnailKind = "game" | "voucher" | "steam" | "entertainment" | "app" | "generic";
 
+/** Mirrors the server's DenomIconKind union (apps/storefront/src/denomIcon.ts)
+ * verbatim — same local-alias convention as ThumbnailKind above. Drives the
+ * small currency chip DenominationCard renders, resolved once per product. */
+export type DenomIconKind = "diamond" | "coin" | "key" | "card" | "voucher";
+
 /** Signed-in customer as exposed to the client (display fields only — the
  * CSRF token travels via the shell's meta tag, never in JSON). */
 export interface CustomerInfo {
@@ -180,6 +185,12 @@ export interface ProductPageData {
      * server-side ThumbnailKind union (apps/storefront/src/images.ts). Never
      * absent, but typed nullable to tolerate an older/mocked payload. */
     image_kind?: ThumbnailKind | null;
+    /** Which currency-chip icon DenominationCard should render for every
+     * plan of this product (resolved ONCE per product, not per-SKU — see
+     * apps/storefront/src/denomIcon.ts's `resolveDenomIconKind`), or null
+     * when no chip should render at all. Optional so an older/mocked payload
+     * still type-checks (same convention as `image_kind` above). */
+    icon_kind?: DenomIconKind | null;
     /** Aggregate rating across every denomination of this product — the same
      * weighted-average calculation ProductCard's `rating`/`rating_count`
      * come from (apps/storefront/src/cards.ts's `aggregateRating`), so this

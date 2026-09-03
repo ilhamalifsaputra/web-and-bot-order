@@ -14,12 +14,33 @@
  * pine focus ring and NO fill (the old `bg-pine-tint/40` wash is dropped —
  * spec: "never a solid colour fill on the whole card"). The resting border is
  * 2px `line` (not the spec's literal 1px) so selection is a colour swap with
- * zero layout reflow when clicking through a grid of cards. `DenominationCardProps`
- * is unchanged — call sites depend on it.
+ * zero layout reflow when clicking through a grid of cards.
+ *
+ * `iconKind` (Fase 12) adds an optional small currency chip (diamond/coin/
+ * key/card/voucher) to the leading content block — resolved once per PRODUCT
+ * (apps/storefront/src/denomIcon.ts) and passed down identically to every
+ * denomination of that product, since they all share one in-game currency.
+ * It is a per-render prop, not part of `DenominationCardData` (the per-SKU
+ * shape), and its rendering must never touch the `<input type="radio">`,
+ * the `has-[:checked]:` classes, or any `data-*` attribute on the outer
+ * `<label>` — those are read by the product page's picker logic.
  */
+import { Gem, Coins, KeyRound, CreditCard, Ticket, type LucideIcon } from "lucide-react";
 import StockBadge from "./StockBadge";
 import Price from "./Price";
 import FlashBadge, { FlashWasPrice, type FlashInfo } from "./FlashBadge";
+
+/** Mirrors the server's DenomIconKind union (apps/storefront/src/denomIcon.ts)
+ * and the client's own local alias (api/types.ts) verbatim. */
+export type DenomIconKind = "diamond" | "coin" | "key" | "card" | "voucher";
+
+const ICON_KIND_ICONS: Record<DenomIconKind, LucideIcon> = {
+  diamond: Gem,
+  coin: Coins,
+  key: KeyRound,
+  card: CreditCard,
+  voucher: Ticket,
+};
 
 export interface DenominationCardData {
   id: number;
@@ -49,10 +70,14 @@ export interface DenominationCardProps {
   lowThreshold: number;
   checked: boolean;
   onChange: () => void;
+  /** Resolved once per product (apps/storefront/src/denomIcon.ts), shared by
+   * every denomination of that product — null/undefined renders no chip. */
+  iconKind?: DenomIconKind | null;
 }
 
-export default function DenominationCard({ d, fx, lowThreshold, checked, onChange }: DenominationCardProps) {
+export default function DenominationCard({ d, fx, lowThreshold, checked, onChange, iconKind }: DenominationCardProps) {
   const buyable = purchasable(d);
+  const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
   return (
     <label
       className={`denom-card cursor-pointer flex items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
@@ -72,6 +97,14 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           checked={checked}
           onChange={onChange}
         />
+        {Icon && (
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pine-tint"
+            aria-hidden="true"
+          >
+            <Icon className="h-4 w-4 text-pine" />
+          </span>
+        )}
         <div className="min-w-0">
           <div className="font-display text-sm font-semibold text-ink leading-snug">
             {d.duration_label || d.name}

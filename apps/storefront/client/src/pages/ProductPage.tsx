@@ -328,6 +328,7 @@ export default function ProductPage() {
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
                   onChange={() => selectDenomination(d.id, d.available, d.delivery_type === "auto")}
+                  iconKind={product.icon_kind}
                 />
               ))}
             </div>

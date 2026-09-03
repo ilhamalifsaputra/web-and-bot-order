@@ -29,6 +29,7 @@ import {
   type CatalogProduct,
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
+import { resolveDenomIconKind } from "./denomIcon";
 import { resolveBotUsername } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
@@ -250,6 +251,12 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       image: product.webImageUrl ?? null,
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
       image_kind: defaultThumbKind(product, product.category),
+      // Per-product currency chip on DenominationCard — resolved ONCE here
+      // (not per-denomination) since every plan under one product shares the
+      // same in-game currency. `product.denominations` is already sorted
+      // price-asc (getCatalogProductBySlugWithDenominations's query), so
+      // `[0]` is the cheapest/first one without a new sort.
+      icon_kind: resolveDenomIconKind(product, product.category, product.denominations[0]?.qtyUnit ?? null),
       rating: productRatingAvg,
       rating_count: productRatingCount,
       // Task 6 (Digiflazz instant-buy pilot): already fetched via

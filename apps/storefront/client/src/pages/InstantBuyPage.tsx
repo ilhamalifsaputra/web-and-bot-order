@@ -39,7 +39,7 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { AlertTriangle, Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
+import { Package, ScrollText, ShieldCheck, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { useIdempotentPost } from "../api/idempotency";
 import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/types";
@@ -54,7 +54,9 @@ import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Callout from "../components/shop/Callout";
 import DenominationCard from "../components/shop/DenominationCard";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
+import Alert from "../components/ui/Alert";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
 import PaymentMethodSelector, {
@@ -416,14 +418,14 @@ export default function InstantBuyPage() {
       />
 
       {previewErrorKey && (
-        <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" /> {humanError(previewErrorKey)}
-        </div>
+        <Alert variant="banner" tone="error">
+          {humanError(previewErrorKey)}
+        </Alert>
       )}
       {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
-        <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5">
-          <AlertTriangle className="w-4 h-4" /> {humanError(placeOrderErrorKey)}
-        </div>
+        <Alert variant="banner" tone="error">
+          {humanError(placeOrderErrorKey)}
+        </Alert>
       )}
 
       <form onSubmit={(e) => e.preventDefault()} className="grid lg:grid-cols-3 gap-6 items-start">
@@ -448,7 +450,7 @@ export default function InstantBuyPage() {
                 />
               </picture>
             </div>
-            <h1 className="page-title text-2xl! sm:text-3xl! mt-4">{product.name}</h1>
+            <h1 className="page-title mt-4">{product.name}</h1>
             {product.description && (
               <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
                 {product.description}
@@ -524,7 +526,7 @@ export default function InstantBuyPage() {
               sequence could. */}
           <div className="card card-pad">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div className="grid gap-2.5">
+            <div className="grid gap-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}
@@ -629,33 +631,25 @@ export default function InstantBuyPage() {
           CheckoutPage.tsx, so padding-on-form alone wouldn't cover it). */}
       {!isDesktop && <div aria-hidden="true" style={{ height: "calc(4.75rem + env(safe-area-inset-bottom))" }} />}
 
-      {/* Sticky mobile total + submit — CheckoutPage.tsx's own bar verbatim
-          (same classes/paddingBottom calc), reusing the same mutation and
-          gating as the desktop submit button above: one purchase path. */}
+      {/* Sticky mobile total + submit — the shared <StickyPurchaseBar>
+          (components.md "Sticky purchase bar"), reusing the same
+          placeOrderMutation and the same submitDisabled/submitBlocked gating
+          as the desktop submit button in OrderSummaryCard above: one purchase
+          path. `submitBlocked` mutes the button ("can't proceed yet"),
+          `submitDisabled` (blocked OR pending) actually disables it. */}
       {!isDesktop && page && totals && (
-        <div
-          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 pt-3 backdrop-blur-sm"
-          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
-        >
-          <div className="flex items-center gap-3">
-            <div className="min-w-0">
-              <div className="text-xs text-ink-soft">{t("web.order_total")}</div>
-              <div className="text-base font-semibold text-pine truncate">
-                {formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="btn btn-primary ml-auto shrink-0"
-              disabled={submitDisabled}
-              style={submitBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-              onClick={() => placeOrderMutation.mutate()}
-            >
-              {placeOrderMutation.isPending && <Spinner />}
-              {t("web.buy_now")}
-            </button>
-          </div>
-        </div>
+        <StickyPurchaseBar
+          ariaLabel={t("web.purchase_bar")}
+          priceLabel={t("web.order_total")}
+          price={formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+          primaryAction={{
+            label: t("web.buy_now"),
+            onClick: () => placeOrderMutation.mutate(),
+            pending: placeOrderMutation.isPending,
+            disabled: submitDisabled,
+            blocked: submitBlocked,
+          }}
+        />
       )}
     </>
   );

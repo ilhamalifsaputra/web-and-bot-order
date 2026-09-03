@@ -9,6 +9,19 @@
  * Task 16: shares its <main> with <AuthBrandPanel/> — see AuthBrandPanel.tsx
  * for why it sits after the card in the JSX despite rendering to its left on
  * desktop.
+ *
+ * Task 15 (design-system migration, Fase 7d): see LoginPage.tsx's header
+ * comment for the §4 template-mismatch writeup and deviations.md §15-auth
+ * for the one-time record, which also covers this page's specific
+ * token-check state mapping (kept close to its current shape rather than
+ * forced onto `LoadingState`/`ErrorState` — see that entry for why). The
+ * password/confirm fields are now `<FormField>` + `<PasswordInput>` (this
+ * page previously used raw `<input type="password">` with no show/hide
+ * toggle — PasswordInput adds it, a pure UI affordance, no payload change),
+ * the submit is `<Button>`, and every banner is `<Alert variant="banner">`.
+ * The `GET .../reset/:token/check` pre-check, `tokenKnownInvalid`/
+ * `submitHitInvalidToken` logic, and the "request a new link" escape hatch
+ * are byte-for-byte unchanged.
  */
 import { type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -17,8 +30,12 @@ import { LockKeyhole } from "lucide-react";
 import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
-import Flash from "../components/shop/Flash";
+import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
+import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
 
 interface ResetResponse {
   redirect: string;
@@ -89,70 +106,60 @@ export default function ResetPage() {
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
       <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
-        <div className="w-full max-w-md card card-pad">
+        <Card className="w-full max-w-md">
           <Link to="/" className="text-center block">
             <LockKeyhole className="w-8 h-8 text-pine mx-auto" />
             <h1 className="font-display text-xl font-semibold mt-3">{t("web.reset_title")}</h1>
           </Link>
 
           {checkQuery.isPending ? (
-            <div className="mt-6 flex justify-center">
+            <div className="mt-6 flex justify-center" aria-busy="true" aria-label={t("web.loading")}>
               <Spinner />
             </div>
           ) : tokenKnownInvalid ? (
             <>
-              <div className="mt-4">
-                <Flash text={t("web.reset_invalid")} kind="error" />
-              </div>
+              <Alert variant="banner" tone="error" className="mt-4">
+                {t("web.reset_invalid")}
+              </Alert>
               <RequestNewLinkNotice />
             </>
           ) : (
             <>
               {error && (
-                <div className="mt-4">
-                  <Flash text={error} kind="error" />
-                </div>
+                <Alert variant="banner" tone="error" className="mt-4">
+                  {error}
+                </Alert>
               )}
 
               <form onSubmit={onSubmit} className="mt-6 space-y-4">
-                <div>
-                  <label className="text-sm font-semibold" htmlFor="password">
-                    {t("web.login_password")}
-                  </label>
-                  <input
-                    className="field mt-1"
-                    type="password"
+                <FormField label={t("web.login_password")} htmlFor="password">
+                  <PasswordInput
                     id="password"
                     name="password"
                     autoComplete="new-password"
                     required
                     minLength={8}
                   />
-                </div>
-                <div>
-                  <label className="text-sm font-semibold" htmlFor="password2">
-                    {t("web.register_password2")}
-                  </label>
-                  <input
-                    className="field mt-1"
-                    type="password"
+                </FormField>
+                <FormField label={t("web.register_password2")} htmlFor="password2">
+                  <PasswordInput
                     id="password2"
                     name="password2"
                     autoComplete="new-password"
                     required
                     minLength={8}
                   />
-                </div>
-                <button type="submit" className="btn btn-primary w-full" disabled={resetMutation.isPending}>
+                </FormField>
+                <Button type="submit" variant="primary" fullWidth disabled={resetMutation.isPending}>
                   {resetMutation.isPending && <Spinner />}
                   {t("web.reset_submit")}
-                </button>
+                </Button>
               </form>
 
               {submitHitInvalidToken && <RequestNewLinkNotice />}
             </>
           )}
-        </div>
+        </Card>
 
         <AuthBrandPanel className="max-w-md" />
       </div>

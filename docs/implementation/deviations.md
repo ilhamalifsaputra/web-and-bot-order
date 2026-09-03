@@ -935,3 +935,152 @@ confirm-mutates, cancel-does-not-mutate — every other test unmodified),
 `apps/storefront/client/src/components/ui/Badge.test.tsx` (one new case),
 `packages/core/locales/{en,id}.json` (4 new `web.cancel_order_confirm_*`
 keys).
+
+---
+
+## 15-auth — Login/Register/Forgot/Reset migration, PasswordInput + TelegramLoginButton refactor (Task 15)
+
+**Context.** Fase 7d: `LoginPage.tsx`, `RegisterPage.tsx`, `ForgotPage.tsx`,
+`ResetPage.tsx`, plus the two shared pieces they compose,
+`components/shop/PasswordInput.tsx` and `components/shop/
+TelegramLoginButton.tsx`. Same hard-boundary discipline as the payment
+migrations (Tasks 13/14): `POST /api/v1/auth/{login,register,forgot,
+reset/:token}` payloads, `safeNext()` (client twin of the server's own
+open-redirect re-check), the full-page-load redirect on success
+(`window.location.assign`, not `navigate()` — a fresh session cookie needs a
+fresh document to pick up the new CSRF token) on all four pages, the
+Telegram-widget OAuth flow, `ResetPage`'s `GET .../reset/:token/check`
+pre-check + its "request a new link" escape hatch, the password-visibility
+toggle logic, and the `RegisterPage` Terms/Privacy notice's non-checkbox
+nature are all byte-for-byte unchanged. Verified by grepping the diff for
+`/api/v1/auth`, `safeNext`, `window.location.assign`, `reset/:token/check`,
+`publicPost` — every hit is either an unchanged context line or one of two
+new doc-comment sentences (in `RegisterPage.tsx`/`ResetPage.tsx`) that name
+these terms in prose; zero hits touch a call, a payload, or the redirect
+itself. `AuthBrandPanel.tsx` has **zero diff** — see below.
+
+**1. Template mismatch (once, referenced from all four pages).**
+`page-templates.md` §4 describes gogogo.id's auth flow as identifier-only →
+OTP: an email/phone step, a Flip consent modal, then a 6-box OTP input with
+a resend countdown. This app has no OTP step anywhere — real auth is
+identifier+password plus Telegram-widget OAuth (the Task 1 audit already
+flagged `ui/OtpInput` as `deferred — no current call site`; still true, not
+built here). Per §3.2 rule 3 ("adapt composition, preserve business
+functionality"), only the template's **visual shell** was carried over: a
+full-screen page with no nav/footer, a centered card + `AuthBrandPanel`
+split, no skip-to-content link (the card stays first in DOM order so a
+keyboard user tabs straight into the form — unchanged from Task 16). The
+identifier/email field maps onto `FormField`+`Input`, the password field(s)
+onto `FormField`+`PasswordInput`, the OTP step's full-width primary submit
+onto `Button variant="primary" fullWidth`, and Telegram OAuth is kept as a
+secondary option below the primary CTA (`TelegramLoginButton`, now itself
+`Button variant="soft" fullWidth`). No OTP input or Flip consent modal was
+built — there is no business flow behind either.
+
+**2. Banner convention: `Alert` called directly, not `Flash`.** `Flash` is
+already an `Alert variant="banner"` shim (Fase 6 Task 7) that renders
+byte-identical DOM with `role={false}`. This migration drops the `Flash`
+import from all four pages and calls `Alert` directly — the same convention
+`CheckoutPage`/`InstantBuyPage`/`WalletTopupPage`/`PayPage` already use — so
+every banner in the auth flow now also picks up the spec `role="alert"`/
+`role="status"` ARIA role Flash's shim deliberately withheld. `Flash.tsx`
+itself is untouched (still a valid shim for other importers) and its own
+test suite (`Flash.test.tsx`) is unaffected. Tone assignments, all
+presentation-only (copy/keys unchanged):
+  - `LoginPage`: the `reset=1` notice is now `tone="success"` (a genuine
+    success, not Flash's flat "info" grey); the `err=tg_failed`/
+    `err=tg_unlinked` notices are both `tone="error"` (both mean the
+    Telegram flow didn't complete); the mutation error banner stays
+    `tone="error"`.
+  - `RegisterPage`: the mutation error banner is `tone="error"`.
+  - `ForgotPage`: the SMTP-unavailable branch is `tone="warning"` (per the
+    brief); the sent-confirmation branch is `tone="success"` (was Flash's
+    "info"); the rate-limit/other error branch is `tone="error"`.
+  - `ResetPage`: the invalid-token banner and the submit-error banner are
+    both `tone="error"`.
+
+**3. `AuthBrandPanel` — confirmed already done, zero further work.** The
+brief asked to verify Task 9's claim that this file is fully migrated
+before touching it. Read against deviations.md's own `D2-radius` entry
+(Task 9): `rounded-3xl` already resolves through the `--radius-3xl` `@theme`
+mirror (not an unpinned framework default), the panel already uses the
+shared `TrustBadgeRow` primitive, and its colours are already
+grass/pine-tint tokens (`bg-pine`, `text-pine-tint`, `text-grass`) — no
+Tailwind-default amber/violet hues remain. There is no separate CTA on this
+panel to reconsider (just the logo link, the trust row, and the policy-link
+row). `git diff` on `AuthBrandPanel.tsx` for this task is empty — left
+exactly as Task 9/16 built it.
+
+**4. `ResetPage`'s token-check states kept close to their current shape,
+not forced onto `LoadingState`/`ErrorState`.** Evaluated both:
+  - **Loading** — `LoadingState variant="form"` renders its own `h-8 w-1/2`
+    title skeleton plus three label+input skeleton pairs. This page already
+    renders its real icon+`<h1>` above the conditional (unconditionally, not
+    itself skeletoned) and the actual form only has two fields, so
+    `LoadingState`'s shape would put a redundant second title skeleton under
+    the real title and skeleton one field too many — a worse layout-shift
+    match than the existing centered `<Spinner>`, not a better one. Kept the
+    existing small centered spinner, only adding `aria-busy="true"
+    aria-label={t("web.loading")}` (the same pairing `LoadingState` itself
+    uses) so it announces correctly to assistive tech.
+  - **Invalid token** — `ErrorState`'s action slot is hardcoded to exactly
+    two shapes: `onRetry` → "Try again" (re-run the query) or no-`onRetry` →
+    "Reload page" (`window.location.href` reload). Neither matches this
+    page's actual escape hatch, a `<Link to="/forgot">` ("Request a new
+    reset link"). Composing `ErrorState` here would mean either losing that
+    exact destination/copy or extending `ErrorStateProps` with a
+    caller-supplied action — a shared-component change with blast radius
+    well outside a page re-skin. Kept the existing `RequestNewLinkNotice`
+    (untouched, still its own function) paired with `Alert variant="banner"
+    tone="error"` in place of `Flash`.
+  Per the brief's own carve-out for this exact situation ("whichever
+  preserves the exact copy/escape-hatch behavior with the least new
+  markup") — both escape hatches are pixel/behavior-identical to before,
+  only their banner primitive changed.
+
+**5. `PasswordInput`/`TelegramLoginButton` — internal refactor only, output
+class lists unchanged, confirmed by test.** `PasswordInput` now wraps
+`components/ui/Input` instead of a raw `<input>`, forwarding `invalid`
+(the prop `FormField.cloneElement` injects on any non-DOM-tag child) straight
+through; the show/hide toggle, its two `aria-label` keys, and the "every
+prop but `type` passes through" contract are unchanged.
+`TelegramLoginButton`'s `<button>` is now `<Button variant="soft"
+fullWidth>`; `Button` composes the identical `cn("btn", "btn-soft", "w-full")`
+class list the hand-rolled version used, so `TelegramLoginButton.test.tsx`'s
+`toHaveClass("btn", "btn-soft", "w-full")` assertion passes unmodified — no
+test needed a class-list update.
+
+**6. `RegisterPage`'s Terms/Privacy notice paragraph: `ink-faint` →
+`ink-soft`, copy/non-checkbox nature unchanged.** The brief's target styling
+names an `ink-soft` paragraph; applied only to this notice, since no test
+asserts its text-colour class. The **password-hint** paragraph just above it
+(`web.register_password_help`, "At least 8 characters.") keeps
+`text-ink-faint` — `RegisterPage.test.tsx`'s "shows the 8-character password
+hint…" test pins that exact class pair (`toHaveClass("text-xs",
+"text-ink-faint")`), and changing it would be an unrequested, untested-for
+visual change smuggled into a boundary-sensitive page. Same reasoning kept
+the username-help paragraph (`web.register_username_help`) on `ink-faint`
+too, for consistency between the two inline field hints.
+
+**7. Submit buttons: disabled only while the mutation is pending, not
+gated on field validity.** The brief's template mapping describes the
+primary CTA as "disabled until valid, same as spec's OTP step for the
+submit button." None of the four forms track per-keystroke validity today
+(native `required`/`minLength`/`pattern` HTML5 validation already blocks an
+invalid submit attempt — see `RegisterPage.test.tsx`'s "requires the
+fullName field" test, which relies on exactly this). Wiring a
+disabled-until-valid gate would mean lifting every currently-uncontrolled
+password field into controlled state across four pages, purely to grey out
+a button a fraction of a second earlier than the native validation already
+does — more new state/logic than a re-skin task should introduce on
+auth/session code. Deliberately not added; buttons keep their existing
+`disabled={mutation.isPending}` gate, matching `TrackOrderPage`'s and
+`WalletTopupPage`'s own submit-button convention.
+
+**Files.** `apps/storefront/client/src/pages/LoginPage.tsx`,
+`apps/storefront/client/src/pages/RegisterPage.tsx`,
+`apps/storefront/client/src/pages/ForgotPage.tsx`,
+`apps/storefront/client/src/pages/ResetPage.tsx`,
+`apps/storefront/client/src/components/shop/PasswordInput.tsx`,
+`apps/storefront/client/src/components/shop/TelegramLoginButton.tsx`. No
+test files, locale files, or `AuthBrandPanel.tsx` were modified.

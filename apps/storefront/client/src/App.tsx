@@ -7,7 +7,7 @@ import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
 import CategoriesPage from "./pages/CategoriesPage";
-import SearchPage from "./pages/SearchPage";
+import SearchRedirect from "./pages/SearchRedirect";
 import ProductPage from "./pages/ProductPage";
 import ProductsPage from "./pages/ProductsPage";
 import FlashPage from "./pages/FlashPage";
@@ -104,7 +104,10 @@ export default function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/flash" element={<FlashPage />} />
           <Route path="/p/:slug" element={<ProductPage />} />
-          <Route path="/search" element={<SearchPage />} />
+          {/* Search is an overlay (§10), not a page. This keeps old
+              `/search?q=…` links alive: open the overlay pre-filled, replace
+              the URL with `/`. See pages/SearchRedirect.tsx. */}
+          <Route path="/search" element={<SearchRedirect />} />
           <Route path="/cart" element={<CartPage />} />
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/checkout/:code/pay" element={<PayPage />} />

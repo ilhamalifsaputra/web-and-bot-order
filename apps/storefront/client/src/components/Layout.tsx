@@ -20,6 +20,7 @@ import Navbar from "./layout/Navbar";
 import Footer from "./layout/Footer";
 import MobileDrawer from "./layout/MobileDrawer";
 import MobileTabBar, { isTabBarHidden } from "./layout/MobileTabBar";
+import { SearchOverlayProvider } from "./shop/SearchOverlay";
 
 /** Header context, shared by every page under the shop chrome. staleTime
  * doesn't poll — it just permits TanStack to refetch on refocus/remount once
@@ -72,7 +73,7 @@ export default function Layout() {
   const tabBarHidden = isTabBarHidden(location.pathname);
 
   return (
-    <>
+    <SearchOverlayProvider fx={ctx?.fx}>
       {/* T14: first focusable element in the document. Off-screen until it
           receives keyboard focus, at which point a keyboard user can jump
           straight past the header to the page content. */}
@@ -112,6 +113,6 @@ export default function Layout() {
       <Footer ctx={ctx} clearBottomNav={!tabBarHidden} />
 
       <MobileTabBar cartCount={ctx?.cart_count ?? 0} isSignedIn={Boolean(ctx?.customer)} />
-    </>
+    </SearchOverlayProvider>
   );
 }

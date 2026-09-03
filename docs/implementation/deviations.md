@@ -555,3 +555,106 @@ template is not a licence to add or remove working behaviour).
 `apps/storefront/client/src/pages/InstantBuyPage.tsx`,
 `apps/storefront/client/eslint.config.js` (Group-A `env()` allowlist entry
 for `StickyPurchaseBar.tsx`).
+
+## 12-search-overlay — `/search` full page → `SearchOverlay`; 404 page → §16 states; mobile header search row dropped (Task 12)
+
+**Context.** `page-templates.md` §10 makes search an overlay panel, not a
+route — and the user explicitly chose this over the old full `/search`
+results page (plan Global Constraints, "`/search` route"). `page-templates.md`
+§11 wants the 404 page on the standard chrome with a centered
+illustration + message + primary action, and §16 forbids raw status codes
+in the UI.
+
+**Rule cited:** FRONTEND_IMPLEMENTATION_PROMPT §3.2 rule 1 (preserve
+behaviour; adapt composition) + plan Global Constraints (`/search` must
+still resolve for shared links; log the trade).
+
+**Deviations, all deliberate + user-approved:**
+
+1. **`/search` is no longer a results page — it is a redirect.** `App.tsx`
+   still has the `<Route path="/search">`, but it renders
+   `pages/SearchRedirect.tsx`: read `?q=`, open the `SearchOverlay`
+   pre-filled, `navigate("/", { replace: true })`. Previously shared
+   `/search?q=…` links therefore land on Home with the overlay open and the
+   query run, instead of a dedicated full-page grid. `pages/SearchPage.tsx`
+   (+ its test) is deleted; its recent-searches localStorage logic moved
+   verbatim to `src/lib/recentSearches.ts` (same `storefront.recent_searches`
+   key, same 5-entry cap, same case-insensitive dedupe, same private-mode
+   try/catch), consumed by the overlay.
+
+2. **Dropped with the route: the sort control, the `?sort=` param, and the
+   results-as-a-shareable-page.** The overlay is a compact type-and-pick
+   list, not a browsable grid — `SortSelect`, `SORT_KEYS` wiring and the
+   `&sort=` query-string on `/api/v1/pages/search` are gone from this
+   surface (the endpoint still accepts `sort`; the overlay just never sends
+   it). Shoppers who want to sort a full catalogue use `/products` (which
+   keeps its sort). This is the user-approved trade for the overlay pattern.
+
+3. **No new dependency; the combobox ARIA is hand-rolled.** Pattern chosen:
+   a `role="dialog"` + `aria-modal` shell (reusing `ui/useDialogA11y` —
+   scroll-lock, Esc-to-close, focus trap, focus restore to the trigger)
+   wrapping an APG **combobox**: the field is `role="combobox"` with
+   `aria-expanded` / `aria-controls` / `aria-activedescendant`, and results
+   are a `role="listbox"` of `role="option"` rows navigated with
+   ArrowUp/ArrowDown. Result rows are **not** `<a>` elements (APG advises
+   against interactive children inside options) — selection navigates
+   programmatically via `useNavigate`, so middle-click / "open in new tab"
+   on a result row is not available (acceptable for an ephemeral search
+   panel; the product pages themselves are still normal links everywhere
+   else). Enter with a highlighted row opens it; Enter with **no** highlight
+   keeps the overlay open showing every match (there is no results page to
+   route to) and records the term. The existing endpoint is debounced
+   ~220ms; no backend/schema change.
+
+4. **Desktop scrim is lighter than mobile, and scroll-lock applies on both.**
+   §10 asks for "a lighter click-outside-to-close on the desktop dropdown".
+   Interpreted as visual weight: mobile scrim is `bg-ink/45` (full-screen
+   panel), desktop `bg-ink/25` (panel drops under the header search field,
+   anchored `sm:top-20`, `sm:max-w-xl`, centered). Both close on
+   scrim-click and both get `useDialogA11y`'s body scroll-lock + focus trap
+   — matching the `Modal` primitive rather than special-casing desktop to
+   "no trap". Functionally the same close affordances on every viewport.
+
+5. **`ErrorPage.tsx` composes the §16 state components.** A 404 renders
+   `NotFoundState`, a 5xx renders `ErrorState` (both non-`bare`, so they
+   bring the centered icon-in-a-well + `StatusScreen` treatment §11 asks
+   for). The `statusCode` / `message` prop API the SPA shell passes is
+   unchanged, and the `fadeUp` entrance is kept. The status **number** is
+   no longer the `text-5xl` headline (§16 "no raw status codes in the UI");
+   it survives only as a small `aria-hidden` `text-xs text-ink-faint`
+   caption below the state card, for support conversations. `message` is
+   passed through as the state component's `description`, so the default
+   404 copy is still `web.not_found` ("That page doesn't exist.") and the
+   default 500 copy `web.error_message`. A 5xx keeps `ErrorState`'s
+   canonical "Reload page" action rather than a back-home button; a 404
+   (the overwhelmingly common shell case) gets the `web.back_home` CTA.
+
+6. **Mobile secondary header row removed entirely.** `Navbar.tsx`'s
+   `sm:hidden border-t` row held a full `<SearchForm>` field **and** a
+   language `<a>`. The language switcher already has a mobile home in
+   `MobileDrawer.tsx` (the `Globe` / `web.lang_label` row, Task 5), so the
+   whole row is gone. Its replacement is a single search **icon** button in
+   the main mobile bar (`sm:hidden`, `aria-label` = `web.nav_search`,
+   `aria-haspopup="dialog"`) that opens the same `SearchOverlay`. The
+   `MobileTabBar` "Cari" tab is unchanged — it still `<Link>`s to `/search`,
+   which now resolves through `SearchRedirect` to the same overlay, so both
+   mobile entry points end in one place. `SearchForm.tsx` itself became a
+   button trigger (it no longer navigates); it is still used as the
+   persistent desktop header pill. No `Navbar` / `Layout` prop became unused
+   (`lang` / `otherLang` / `backPath` are still read by the desktop
+   language switcher, which stays).
+
+**New i18n keys** (`packages/core/locales/{en,id}.json`):
+`web.search_no_results` (`{q}`), `web.search_browse_all`, `web.search_close`.
+
+**Files.** `apps/storefront/client/src/components/shop/SearchOverlay.tsx`
+(new — component + `SearchOverlayProvider` + `useSearchOverlay`),
+`apps/storefront/client/src/pages/SearchRedirect.tsx` (new),
+`apps/storefront/client/src/lib/recentSearches.ts` (new — extracted),
+`apps/storefront/client/src/pages/ErrorPage.tsx`,
+`apps/storefront/client/src/components/Layout.tsx` (mounts the provider),
+`apps/storefront/client/src/components/layout/Navbar.tsx`,
+`apps/storefront/client/src/components/layout/SearchForm.tsx`,
+`apps/storefront/client/src/App.tsx`,
+`packages/core/locales/{en,id}.json`. Deleted:
+`apps/storefront/client/src/pages/SearchPage.tsx` (+ `.test.tsx`).

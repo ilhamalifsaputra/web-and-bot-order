@@ -10,7 +10,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
-  AlertTriangle,
   Bell,
   Package,
   ScrollText,
@@ -32,6 +31,8 @@ import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import StockBadge from "../components/shop/StockBadge";
 import DenominationCard from "../components/shop/DenominationCard";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import Alert from "../components/ui/Alert";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
@@ -300,7 +301,7 @@ export default function ProductPage() {
 
         {/* Facts + denomination picker + actions */}
         <div id="product-detail">
-          <h1 className="page-title text-2xl! sm:text-3xl!">{product.name}</h1>
+          <h1 className="page-title">{product.name}</h1>
 
           {product.description && (
             <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
@@ -313,7 +314,7 @@ export default function ProductPage() {
               live price / stock / warranty and the checkout payload below. */}
           <div className="mt-6">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div id="denom-list" className="grid gap-2.5">
+            <div id="denom-list" className="grid gap-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}
@@ -362,9 +363,9 @@ export default function ProductPage() {
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
             {cartErrorKey && (
-              <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-3 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" /> {t(cartErrorKey)}
-              </div>
+              <Alert variant="banner" tone="error" className="mt-3 mb-0">
+                {t(cartErrorKey)}
+              </Alert>
             )}
 
             {purchasable(selected) ? (
@@ -542,57 +543,37 @@ export default function ProductPage() {
           before this, deciding meant scrolling all the way back up to act on
           it. It reuses the same mutations and the same `selected` plan as the
           in-page controls, so there is exactly one purchase path, and it only
-          appears once those controls have left the viewport. Desktop keeps the
-          buy card in view beside the image, so it needs none of this. */}
+          appears once those controls have left the viewport (the `#buy-summary`
+          IntersectionObserver sentinel above). Desktop keeps the buy card in
+          view beside the image, so it needs none of this. Shared component
+          (components.md "Sticky purchase bar") — Add to Cart stays in the
+          in-page form only, so just `primaryAction` is passed. */}
       {!isDesktop && !buyAreaVisible && (
-        <div
-          role="region"
-          // Names the landmark for what it is. "Buy now" stood in here before
-          // the key existed, which announced the region as if it were the
-          // button inside it.
-          aria-label={t("web.purchase_bar")}
-          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 py-3 backdrop-blur-sm"
-          // The home-indicator strip on a modern phone would otherwise eat the
-          // bottom of the button.
-          style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
-        >
-          <div className="mx-auto flex max-w-6xl items-center gap-3">
-            {/* min-w-0 + truncate: a long plan name has to give way to the
-                button, not push it off a 320px screen. */}
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs text-ink-soft">{selected.duration_label || selected.name}</div>
-              {/* Same `selected.price` the summary shows — already discounted
-                  by the server, never recomputed here. */}
-              <div className="font-display text-lg font-semibold leading-tight text-pine">
-                {formatIdr(selected.price)}
-              </div>
-            </div>
-            {purchasable(selected) ? (
-              <button
-                type="button"
-                className="btn btn-primary shrink-0"
-                disabled={buying}
-                onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
-              >
-                {buyMutation.isPending && <Spinner />}
-                <Zap className="w-4 h-4" /> {t("web.buy_now")}
-              </button>
-            ) : (
-              // Nothing to buy, but the bar still carries the one action that
-              // does exist — an empty or disabled bar would just be a strip of
-              // wasted screen on the shortest viewport we have.
-              <button
-                type="button"
-                className="btn btn-soft shrink-0"
-                disabled={restockMutation.isPending}
-                onClick={() => restockMutation.mutate(selected.id)}
-              >
-                {restockMutation.isPending && <Spinner />}
-                <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-              </button>
-            )}
-          </div>
-        </div>
+        <StickyPurchaseBar
+          ariaLabel={t("web.purchase_bar")}
+          priceLabel={selected.duration_label || selected.name}
+          price={formatIdr(selected.price)}
+          primaryAction={
+            purchasable(selected)
+              ? {
+                  label: t("web.buy_now"),
+                  icon: <Zap className="w-4 h-4" />,
+                  onClick: () => buyMutation.mutate({ denomination_id: selected.id, qty }),
+                  pending: buyMutation.isPending,
+                  disabled: buying,
+                }
+              : {
+                  // Nothing to buy, but the bar still carries the one action
+                  // that does exist — an empty bar is wasted screen on 320px.
+                  label: t("web.notify_restock"),
+                  icon: <Bell className="w-4 h-4" />,
+                  onClick: () => restockMutation.mutate(selected.id),
+                  pending: restockMutation.isPending,
+                  disabled: restockMutation.isPending,
+                  variant: "soft",
+                }
+          }
+        />
       )}
     </>
   );

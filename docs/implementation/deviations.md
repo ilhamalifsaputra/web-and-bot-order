@@ -408,3 +408,109 @@ Kategori).
 **Files.** `apps/storefront/client/src/pages/HomePage.tsx`,
 `apps/storefront/client/src/pages/HomePage.css`,
 `apps/storefront/client/src/pages/HomePage.test.tsx`.
+
+---
+
+## 11-product-detail — ProductPage + InstantBuyPage migration, DenominationCard + StickyPurchaseBar (Task 11)
+
+**Context.** `page-templates.md` §3 "Product detail" describes gogogo.id's
+top-up page: a User-ID card, **nominal tabs** (`Termurah` / `Membership` /
+`Diamonds`) grouping a 2-col/3-col denomination grid, and a sticky
+`Lanjutkan` bar with a two-strip cashback ribbon. Task 11 migrates the two
+routes that share this shape — `ProductPage` (`/p/:slug`, cart flow) and
+`InstantBuyPage` (the `checkout_flow === "instant"` one-page top-up rail) —
+plus the `DenominationCard` domain component, and extracts the shared
+`StickyPurchaseBar`.
+
+**Rule cited:** FRONTEND_IMPLEMENTATION_PROMPT §3.2 rule 1 ("adapt
+composition, not invention" — the design system is a visual *language*
+applied by re-skinning existing business content; a minimal reference
+template is not a licence to add or remove working behaviour).
+
+**Deviations, all deliberate:**
+
+1. **Flat denomination list — no nominal `<Tabs>` grouping.** §3's nominal
+   tabs assume denomination *types* to group by (`Termurah` / `Membership` /
+   `Diamonds`). This catalog's `denominations` is a flat, server-ordered list
+   with no group dimension, so both pages render it as a single ungrouped
+   grid. Adding a `<Tabs>` with one tab would be chrome over nothing.
+
+2. **Denomination grid stays single-column.** §3 shows a 2-col mobile /
+   3-col desktop grid of vertical tiles (icon top, price bottom). This shop's
+   `DenominationCard` is a *horizontal* row — plan/label + stock/flash badges
+   on the left, price (+ struck original) on the right — which needs the full
+   row width to stay legible. On `ProductPage` the picker also sits in the
+   ~half-width right column of the `md:grid-cols-2` page layout. Both pages
+   keep `<div class="grid gap-3">` (one column); the off-scale `gap-2.5`
+   (10px) is corrected to `gap-3` (12px, the spec's "12–16px gap").
+
+3. **`DenominationCard` resting border is 2px, not the spec's literal 1px.**
+   `components.md` "Denomination / package card" says `1px line` border at
+   rest, `2px solid pine` when selected. Swapping 1px→2px on selection
+   reflows every sibling in the grid by a pixel as the shopper clicks
+   through. The card instead carries `border-2` at all times — `border-line`
+   at rest (a 2px hairline in `#e3e8ef` is visually ~identical to 1px at tile
+   scale), `has-[:checked]:border-pine` when selected — so selection is a
+   pure colour swap. The card is composed from token utilities
+   (`rounded-lg border-2 border-line bg-card p-4 shadow-soft`) instead of the
+   shared `.card` class specifically so it takes the spec's `radius 8px`
+   (`rounded-lg` = `--gg-radius-sm`) rather than `.card`'s unlayered 16px.
+
+4. **`DenominationCard` selected state drops the fill.** The old
+   `has-[:checked]:bg-pine-tint/40` wash is removed (spec: "never a solid
+   colour fill on the whole card"). Selected = `has-[:checked]:border-pine`
+   (2px solid) + `has-[:checked]:ring-2 has-[:checked]:ring-pine/35` (the
+   translucent focus-ring halo `--gg-shadow-focus` describes; `shadow-focus`
+   is not a wired Tailwind utility in this project). `DenominationCardProps`
+   (`d`, `fx`, `lowThreshold`, `checked`, `onChange`), the `<input
+   type="radio">` + `has-[:checked]:` contract and the `data-*` attributes
+   are unchanged.
+
+5. **`StickyPurchaseBar` has no cashback ribbon.** §3's strip 1 is a
+   `pine-tint` "Asik kamu bisa dapat CASHBACK N Koin!" ribbon. This shop has
+   no koin cashback, so the extracted component's `notice` slot is optional
+   and both pages omit it. The price still renders in `grass-dark` ~20px/700
+   per the spec; `savingsChip` / `secondaryChip` slots exist for a future
+   bulk-discount hint but neither page passes one today.
+
+6. **`ProductPage`'s sticky bar keeps its single CTA.** The component
+   supports `primaryAction` + optional `secondaryAction` (the "Buy Now + Add
+   to Cart" shape §3 implies, and CheckoutPage will use). `ProductPage`'s bar
+   historically shows only Buy Now (or the restock CTA when nothing is
+   purchasable) — Add to Cart lives in the in-page buy form only — and that
+   behaviour is preserved: it passes `primaryAction` alone. The
+   `IntersectionObserver` sentinel (`#buy-summary`) that shows/hides the bar
+   is unchanged.
+
+7. **`InstantBuyPage` keeps its existing `lg:grid-cols-3` desktop layout.**
+   §3 / the brief suggest a 2-col "info left / buy right" split. InstantBuyPage
+   already has a working multi-column desktop layout (left `col-span-2` =
+   header + account fields + denomination grid + guest contact; right =
+   `OrderSummaryCard`; a full-width row-2 = `PaymentMethodSelector`, placed
+   there by documented, test-covered grid auto-placement). Re-fragmenting it
+   into a strict 2-col would break that row-2 placement and its tests for no
+   visual gain, so the grid is left as-is; only the sticky bar, the error
+   banners, the denomination `gap`, and the `<h1>` size bang were touched.
+
+8. **Inline error banners → `<Alert variant="banner" tone="error">`.**
+   `ProductPage`'s `cartErrorKey` block and `InstantBuyPage`'s
+   `previewErrorKey` / `placeOrderErrorKey` blocks (hand-rolled
+   `card card-pad border-rust/40 bg-rust-tint …` rows) now render through the
+   `ui/Alert` primitive. The `InstantBuyPage` nickname-check hints
+   (`nickname-check-found` / `-not-found` / `-pending`, region `Callout`s) are
+   **not** touched — they are deliberately soft informational text
+   (`text-ink-soft` / `text-grass-dark`), already token-clean, and their exact
+   markup / `data-testid`s are pinned by tests; converting a "not found" hint
+   into a red error `Alert` would be the behaviour change the "keep exactly"
+   list forbids.
+
+9. **`<h1 className="page-title">` bang overrides dropped.** Both pages had
+   `text-2xl! sm:text-3xl!` on the title; `.page-title` already resolves to
+   24px→30px, so the `!important` overrides were redundant and are removed.
+
+**Files.** `apps/storefront/client/src/components/shop/DenominationCard.tsx`,
+`apps/storefront/client/src/components/shop/StickyPurchaseBar.tsx` (new),
+`apps/storefront/client/src/pages/ProductPage.tsx`,
+`apps/storefront/client/src/pages/InstantBuyPage.tsx`,
+`apps/storefront/client/eslint.config.js` (Group-A `env()` allowlist entry
+for `StickyPurchaseBar.tsx`).

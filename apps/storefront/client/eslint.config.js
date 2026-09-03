@@ -154,8 +154,15 @@ export default tseslint.config(
   //     expression — iOS notch / home-indicator geometry. No Tailwind utility,
   //     no token: a runtime device measurement, not a design value. Colour and
   //     arbitrary-value bans stay ACTIVE on these files.
+  //
+  //   src/components/shop/StickyPurchaseBar.tsx — the shared mobile purchase
+  //       strip (Task 11) pads its bottom by `calc(0.75rem + env(safe-area-
+  //       inset-bottom))` so the primary CTA clears the iOS home indicator.
+  //       CartPage/CheckoutPage/InstantBuyPage/ProductPage still keep their own
+  //       reserved-runway spacer divs with the same env() calc.
   {
     files: [
+      "src/components/shop/StickyPurchaseBar.tsx",
       "src/pages/CartPage.tsx",
       "src/pages/CheckoutPage.tsx",
       "src/pages/InstantBuyPage.tsx",

@@ -6,6 +6,16 @@
  * page's picker logic controls selection via the `checked`/`onChange` props,
  * so the `<input type="radio">` + `has-[:checked]:` styling contract is kept
  * so the same CSS drives the selected look either way.
+ *
+ * Design-system migration (Task 11, `components.md` "Denomination / package
+ * card"): the surface is composed from token utilities instead of the shared
+ * `.card` class so it takes the spec's `radius 8px` (`rounded-lg`) rather than
+ * `.card`'s 16px. Selected state is a `2px solid pine` border + a translucent
+ * pine focus ring and NO fill (the old `bg-pine-tint/40` wash is dropped —
+ * spec: "never a solid colour fill on the whole card"). The resting border is
+ * 2px `line` (not the spec's literal 1px) so selection is a colour swap with
+ * zero layout reflow when clicking through a grid of cards. `DenominationCardProps`
+ * is unchanged — call sites depend on it.
  */
 import StockBadge from "./StockBadge";
 import Price from "./Price";
@@ -45,7 +55,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
   const buyable = purchasable(d);
   return (
     <label
-      className={`denom-card card card-pad cursor-pointer flex items-center justify-between gap-3 transition-all duration-150 hover:shadow-lift has-[:checked]:ring-2 has-[:checked]:ring-pine has-[:checked]:bg-pine-tint/40 ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer flex items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}

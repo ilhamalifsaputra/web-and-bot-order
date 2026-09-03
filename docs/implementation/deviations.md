@@ -1308,3 +1308,145 @@ dialog (Task 14, deviations §14-pay-topup-track):
 `statusLabel`), `packages/core/locales/{en,id}.json` (4 `web.logout_confirm_*`
 + 5 `web.orders_*` keys). No test file other than `AccountPage.test.tsx` was
 modified; no SSE/poll/`window.location.assign` assertion was changed anywhere.
+
+---
+
+## 17-support — Support + TicketDetail + Settings migration, the §26.2 chat/thread extension (Task 17)
+
+**Context.** Fase 7f migrates `SupportPage.tsx`, `TicketDetailPage.tsx`,
+`SettingsPage.tsx` and the seven ticket domain components (`TicketMessageThread`,
+`TicketComposer`, `TicketSidebar`, `TicketOrderSummaryCard`, `TicketStatusBadge`,
+`AttachmentGallery`, `AttachmentPicker`). Pure re-skin — no support/settings
+endpoint, payload, the multipart create-ticket / reply flow, the
+`ticketDraft.ts` debounced-localStorage autosave, the `ticketTimeline.ts` merge
+builder, the `Ctrl/Cmd+Enter` submit shortcut, the `ticketAttachments`
+size/type limits, the quick-reply templates, the `SettingsPage`
+`/credentials` payload, the server-driven Telegram-link redirect
+(`?saved=1` / `?linked=1` / `?err=…`) or the `401 → window.location.assign`
+guards changed. Verified by grepping the diff for `/api/v1/account/support`,
+`/api/v1/account/settings`, `ticketDraft`, `ticketTimeline`, `metaKey`/`ctrlKey`,
+`window.location.assign`, `FormData`/`apiPostFormWithProgress` — every hit is
+the same expression re-indented or moved into a primitive's prop, never a
+changed value, endpoint or handler.
+
+**Deviations, all deliberate:**
+
+1. **§26.2 extension — the ticket chat/thread pattern (`extensions.md` entry
+   added, NOT a §28.2 escalation).** `components.md` has no template for a
+   message-bubble timeline. The Task 1 audit marked `TicketMessageThread` /
+   `TicketComposer` as `build`; in fact `TicketMessageThread` already composed
+   `.card`/`.card-pad` + `bg-pine-tint/30` + `bg-sand` + the spacing scale, so
+   it was a token-composed `refactor`/`adopt`, not a from-scratch build. It was
+   refactored **in place** onto the `<Card>` primitive (bubble = `<Card>`
+   surface), not rebuilt; the bubble geometry is byte-unchanged — customer
+   right/`pine-tint/30`-tinted, support left/neutral, system events centered,
+   per-date dividers, `text-sm whitespace-pre-line break-words` message body.
+   The one off-scale value, the `text-[11px]` avatar initial, is now the
+   `text-2xs` utility (`--gg-text-2xs`, Task 6a extension row) — which **removed
+   `src/components/shop/TicketMessageThread.tsx` from the ESLint Group-B
+   `text-[11px]` allowlist** in `apps/storefront/client/eslint.config.js`.
+   `TicketDetailPage.tsx` stays in Group-B for its `grid-cols-[1fr_320px]`
+   side-rail layout (unchanged). Logged in
+   `docs/implementation/extensions.md` under "Component-pattern exceptions": no
+   new hue, radius or shadow; derived entirely from `Card` / `pine-tint/30` /
+   `pine`-`sand` avatar circle / 4px spacing / `text-xs ink-faint` timestamps.
+   No pricing/auth/legal/destructive semantics, so **not** a §28.2 escalation.
+
+2. **§8 is FAQ-only; this shop's `/account/support` is a ticket inbox +
+   creation form (superset kept).** `page-templates.md` §8 "Support" is a
+   FAQ page (FAQ H2 → accordion → help-CTA card → legal/regulator block).
+   `business-adaptation.md` ("Pages" row + "Terminology": *"Layanan Pengaduan
+   Konsumen" → Support tickets + FAQ on Home … not a static
+   FAQ-plus-regulator-block page. FAQ content lives in the Home FAQ accordion.
+   Any regulator/company-entity disclosure is shop-configured, not a fixed
+   block*) is explicit that this app runs a real ticketing system here — a
+   business feature the reference site never had. So **no FAQ accordion and no
+   legal/regulator block were added to `SupportPage`** (that §8 treatment
+   already lives on `HomePage`, Task 9); the existing ticket inbox
+   (table↔cards) + new-ticket form were kept and re-skinned: the new-ticket
+   `<textarea>`/`<select>` → `<FormField>` + `<Textarea>` / `<Select>`, the
+   submit → `<Button>`. Per FRONTEND_IMPLEMENTATION_PROMPT §3.2 rule 1 ("adapt
+   composition, not invention"): a minimal reference template is not a licence
+   to strip a working business feature.
+
+3. **Ticket sidebar sections keep native `<details open>`, not `ui/Accordion`.**
+   `TicketSidebar` / `TicketOrderSummaryCard` render each section
+   (`order summary`, `trust`, `recent tickets`, `help`) as its own `<details
+   open className="card card-pad">` — a **stack of separate cards**, each
+   independently collapsible, always-expanded on desktop. `ui/Accordion` takes
+   a single `items` array and renders **one** card with `divide-y` dividers;
+   moving to it would merge the four cards into one panel and lose the
+   stacked-card visual and the per-section `open` default. The brief allows
+   either and calls native `<details>` "fine and lighter"; kept as-is (already
+   token-clean — `section-title`, `text-ink-soft`, `bg-grass`, `border-line`).
+   Only the real `<button>` controls in these two files (the copy-order-code
+   button) moved to `<Button>`; the `<Link className="btn …">` /
+   `<a className="link">` elements stay utility-classed (`<Button>` is
+   `<button>`-only — established pattern, deviations §9 item 5).
+
+4. **No canonical-label fix on `SettingsPage`.** The brief flags a possible
+   "Simpan" vs "Simpan perubahan" conflict. There is none: `business-adaptation.md`'s
+   CTA Register has **two distinct rows** — `Simpan / Save` = "Save account
+   credential changes" (`…/credentials`, primary) and `Simpan perubahan / Save
+   changes` = "Persist edited order delivery info" (`PATCH …/info`, primary
+   `-sm`). `SettingsPage`'s button is `web.settings_save` = "Simpan" / "Save",
+   which already matches the credential-save row. No key changed.
+
+5. **`TicketStatusBadge` token-aligned onto `<Badge>`, kept a separate
+   component.** Per the Task 1 audit it stays a distinct component (ticket-
+   specific copy the shared `StatusBadge` can't carry). Its hand-rolled
+   `chip <tone>` class list is now `<Badge variant={…} icon={…}>`:
+   OPEN/`waiting_admin` → `info` (pine chip), REPLIED/`waiting_customer` →
+   `pending` (amberx chip), CLOSED → `success` (grass chip), unknown →
+   `neutral` (sand chip) — the same tint/tone pairing it already had, now
+   drawn from the shared `components.md` "Badge & chip" vocabulary. The
+   `LABEL_KEY` / `ICON` maps and the raw-value fallback are unchanged; the
+   `business-adaptation.md` "Support-ticket states" tone note (OPEN as `pine`
+   in `TicketStatusBadge` vs `amberx` in the list `StatusBadge`) is preserved.
+   Icon-to-text gap goes from `gap-1` (4px) to `.chip`'s own `gap-2` (8px) —
+   an accepted consequence of adopting the shared chip.
+
+6. **`AttachmentPicker` / `AttachmentGallery` left essentially as-is.** Both
+   are already token-clean (`bg-sand` / `text-ink` / `border-line` /
+   `bg-line/40` / `bg-ink/5` / `rounded-md`). `AttachmentPicker`'s attach
+   trigger is a neutral **sand** button with no matching `<Button>` variant
+   (`soft` is `pine-tint`); converting it would change its look or need a new
+   variant — out of scope. `AttachmentGallery` the brief explicitly says
+   "stays". The upload flow / size-type limits are on the HARD BOUNDARY.
+
+7. **`SettingsPage` status banners → `<Alert variant="banner">`, including the
+   "linked as {name}" confirmation.** The three query-param flashes
+   (`?err=…` → `tone="error"`; `?saved=1` / `?linked=1` → `tone="info"`), the
+   credentials-POST error (`tone="error"` — `<Alert>` carries `role="alert"`
+   itself, so the wrapper `<div role="alert">` was dropped; the
+   `within(form).getByRole("alert")` test still passes), and the persistent
+   `tg_linked` confirmation (was a hand-rolled `rounded-xl border
+   border-grass/30 bg-grass-tint` row with a custom icon circle) → `<Alert
+   variant="banner" tone="success">`. `Flash` (and the `CheckCircle` import)
+   are no longer used on this page.
+
+8. **`TicketComposer` / `SupportPage` / `TicketDetailPage` `.btn` buttons →
+   `<Button>`; textareas → `<Textarea>`.** `TicketComposer`'s reply textarea
+   → `<Textarea>` (keeps `onKeyDown` Ctrl/Cmd+Enter, `maxLength`, the char
+   counter, the `saveTicketDraft` debounce `useEffect` verbatim); its submit
+   and `SupportPage`'s send + `TicketDetailPage`'s reopen / "issue solved" /
+   quick-reply buttons → `<Button variant="soft|primary" size="sm">`. The
+   quick-reply chips stay in their `flex flex-wrap gap-2` row and still call
+   `applyTemplate` (fills the composer, never submits). `TicketDetailPage`'s
+   thread card + closed-state banner → `<Card>`.
+
+**No test file was modified.** All six suites
+(`SupportPage`/`TicketDetailPage`/`SettingsPage`/`TicketMessageThread`/
+`TicketComposer`/`TicketOrderSummaryCard`/`TicketStatusBadge`) pass unchanged
+against the re-skin — selectors are label text / placeholder / role / rendered
+copy, none of which moved.
+
+**Files.** `apps/storefront/client/src/pages/SupportPage.tsx`,
+`apps/storefront/client/src/pages/TicketDetailPage.tsx`,
+`apps/storefront/client/src/pages/SettingsPage.tsx`,
+`apps/storefront/client/src/components/shop/TicketMessageThread.tsx`,
+`apps/storefront/client/src/components/shop/TicketComposer.tsx`,
+`apps/storefront/client/src/components/shop/TicketStatusBadge.tsx`,
+`apps/storefront/client/src/components/shop/TicketOrderSummaryCard.tsx`,
+`apps/storefront/client/eslint.config.js` (Group-B allowlist: `TicketMessageThread` removed),
+`docs/implementation/extensions.md` (§26.2 chat/thread row).

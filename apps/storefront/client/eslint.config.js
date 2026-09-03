@@ -174,7 +174,7 @@ export default tseslint.config(
     rules: { "no-restricted-syntax": ["error", ...arbitrarySelectors, ...colorSelectors] },
   },
 
-  // (B) Six className arbitrary values that are content-derived layout or a
+  // (B) Five className arbitrary values that are content-derived layout or a
   //     sub-scale label size with no token yet. Colour + inline-style bans stay
   //     ACTIVE; only the px-in-arbitrary-value check is relaxed, per file:
   //
@@ -191,8 +191,10 @@ export default tseslint.config(
   //       Layout.tsx by the Task 5 chrome split. TODO(task-7x): type-scale token.
   //   src/components/shop/StepTimeline.tsx  text-[11px] — step-number badge.
   //       TODO(task-7x): add a type-scale token.
-  //   src/components/shop/TicketMessageThread.tsx  text-[11px] — avatar initials.
-  //       TODO(task-7x): add a type-scale token.
+  //
+  //   (Task 17 removed src/components/shop/TicketMessageThread.tsx from this
+  //   list: its one off-scale `text-[11px]` avatar initial is now the
+  //   `text-2xs` utility backed by the `--gg-text-2xs` token from Task 6a.)
   {
     files: [
       "src/pages/TicketDetailPage.tsx",
@@ -200,7 +202,6 @@ export default tseslint.config(
       "src/components/shop/StatusScreen.tsx",
       "src/components/layout/MobileDrawer.tsx",
       "src/components/shop/StepTimeline.tsx",
-      "src/components/shop/TicketMessageThread.tsx",
     ],
     rules: { "no-restricted-syntax": ["error", ...colorSelectors, ...inlineLenSelectors] },
   },

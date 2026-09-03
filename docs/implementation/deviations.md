@@ -882,6 +882,32 @@ instead:
    radio pair); only the raw `<button className="btn …">` elements became
    `<Button>`.
 
+6. **`PayPage.tsx`'s `cancelMutation` has no `onError` handler — known gap,
+   follow-up needed.** Before this task, a failed cancel (e.g. a 409
+   "already paid", or a dropped connection) silently re-enabled the Cancel
+   button in place — there was no confirmation dialog yet to leave open.
+   Now, with the AlertDialog wired in (see "The one logic addition" above),
+   a failed cancel leaves the dialog open with the spinner stopped and both
+   buttons re-enabled, but nothing tells the shopper the cancel attempt
+   actually failed — on a payment page, mid-transaction. It's still
+   dismissible (Esc and "No, go back" both work — not a trap), but reads as
+   "the button is broken" rather than "that failed, try again." This is
+   genuinely new UX surface created by the AlertDialog wiring, not a
+   pre-existing bug carried over unchanged. Not fixed here: adding an
+   `onError` to `cancelMutation` would touch the mutation definition, which
+   this task's hard boundary explicitly forbade (see "Context" above —
+   `mutationFn` blocks are byte-unchanged, verified by grep). Needs a
+   dedicated small follow-up task: add an `onError` to `cancelMutation` that
+   surfaces a friendly failure message — via the AlertDialog's own error
+   slot, or an `Alert` in the dialog body; exact copy and placement are
+   deferred to that follow-up task, not decided here.
+
+**Also noted (Minor #6 from the review).** `<Alert variant="banner"
+tone="error">` (used by `GatewayDownFallback` and `WalletTopupPage`'s
+submit-error banner) now renders `role="alert"`, where the pre-migration raw
+markup carried no ARIA role at all — a beneficial, previously-undocumented
+behavior change: screen readers now announce these interruptively.
+
 **`PaymentMethodRow` re-verification (not re-migration).** `WalletTopupPage`
 imports `PaymentMethodRow` from `PaymentMethodSelector.tsx` (already
 migrated in Task 13 — `border-2` card-surfaced `<label>` wrapping a

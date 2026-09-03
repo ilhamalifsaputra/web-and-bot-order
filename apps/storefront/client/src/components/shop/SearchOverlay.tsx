@@ -176,6 +176,17 @@ function SearchOverlay({
       ? optionId(activeIndex)
       : undefined;
 
+  // Keyboard selection can walk a highlighted row past the visible window of
+  // the `overflow-y-auto` results container (it can be taller than
+  // `sm:max-h-[70vh]`); pull the active option back into view on every move.
+  // Skip when nothing is highlighted (`activeIndex < 0`).
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    const row = document.getElementById(`${listboxId}-opt-${activeIndex}`);
+    // Optional call: jsdom (test env) has no `scrollIntoView` implementation.
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex, listboxId]);
+
   const selectResult = useCallback(
     (product: ProductCardData) => {
       if (value.trim()) setRecent(pushRecent(value));

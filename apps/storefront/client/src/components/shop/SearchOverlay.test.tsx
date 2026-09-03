@@ -134,6 +134,13 @@ describe("SearchOverlay", () => {
   });
 
   it("moves the active option with the arrow keys and opens it on Enter", async () => {
+    // jsdom ships no scrollIntoView; install a stub so we can assert the call.
+    const scrollSpy = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      value: scrollSpy,
+      configurable: true,
+      writable: true,
+    });
     const user = userEvent.setup();
     renderOverlay({ q: "p", products: [product, product2], low_threshold: 5 });
     await user.click(screen.getByRole("button", { name: "Open search" }));
@@ -145,6 +152,8 @@ describe("SearchOverlay", () => {
     const first = screen.getByRole("option", { name: /Netflix Premium/ });
     expect(first).toHaveAttribute("aria-selected", "true");
     expect(combobox).toHaveAttribute("aria-activedescendant", first.id);
+    // The highlighted row is kept in view as selection moves (Fix 2).
+    expect(scrollSpy).toHaveBeenLastCalledWith({ block: "nearest" });
 
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("option", { name: /Spotify Premium/ })).toHaveAttribute(
@@ -154,6 +163,7 @@ describe("SearchOverlay", () => {
 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(screen.getByTestId("loc")).toHaveTextContent("/p/spotify-premium"));
+    delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
 
   it("closes on Esc and restores focus to the trigger", async () => {

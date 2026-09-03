@@ -17,15 +17,30 @@
  * hints, and the credentials error moved next to the button that produced
  * it — but every endpoint, payload and validation rule is unchanged from
  * the port.
+ *
+ * Task 17 (design-system migration, Fase 7f): two-card layout kept; the
+ * cards are now `<Card>`, the credential fields `<FormField>` + `<Input>` /
+ * `<PasswordInput>`, the submit a `<Button>`, and every status banner
+ * (`?saved=1` / `?linked=1` / `?err=…`, the credentials-POST error, and the
+ * "linked as {name}" confirmation) an `<Alert variant="banner">`. The
+ * server-driven Telegram-link redirect flow, the `/credentials` payload, the
+ * `window.location.assign` reload and the `401` guard are untouched. No
+ * canonical-label fix applied: `web.settings_save` = "Simpan / Save" already
+ * matches `business-adaptation.md`'s CTA Register row for "Save account
+ * credential changes" (distinct from the order-info "Simpan perubahan / Save
+ * changes" row) — see deviations.md §17-support.
  */
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
 import { t } from "../lib/i18n";
-import Flash from "../components/shop/Flash";
+import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
 import TelegramLoginButton from "../components/shop/TelegramLoginButton";
@@ -105,63 +120,57 @@ export default function SettingsPage() {
       <h1 className="page-title mb-6">{t("web.settings_title")}</h1>
 
       {queryErrorText && (
-        <div className="mb-4 max-w-md">
-          <Flash text={queryErrorText} kind="error" />
-        </div>
+        <Alert variant="banner" tone="error" className="max-w-md">
+          {queryErrorText}
+        </Alert>
       )}
       {saved && (
-        <div className="mb-4 max-w-md">
-          <Flash text={t("web.settings_saved")} kind="info" />
-        </div>
+        <Alert variant="banner" tone="info" className="max-w-md">
+          {t("web.settings_saved")}
+        </Alert>
       )}
       {linked && (
-        <div className="mb-4 max-w-md">
-          <Flash text={t("web.settings_tg_done")} kind="info" />
-        </div>
+        <Alert variant="banner" tone="info" className="max-w-md">
+          {t("web.settings_tg_done")}
+        </Alert>
       )}
 
       <div className="grid lg:grid-cols-2 gap-6 items-start">
-        <div className="card card-pad">
+        <Card>
           <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_login_section")}</h2>
           {/* `space-y-5` rather than `space-y-4`: with a help line hanging off
               the username field, tighter gaps made the help text look like it
               belonged to the field below it. */}
           <form onSubmit={onSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-semibold mb-1.5" htmlFor="username">
-                {t("web.register_username")}
-              </label>
-              <input
-                className="field"
-                type="text"
-                id="username"
-                name="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                // The pattern below only accepts lowercase, so a phone keyboard
-                // must not auto-capitalise or autocorrect what is typed here —
-                // otherwise the field silently fails validation on the first
-                // character. Unchanged rules, just a keyboard that respects them.
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                minLength={3}
-                maxLength={32}
-                // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
-                pattern="[a-z0-9_]+"
-                aria-describedby="username_help"
-              />
+              <FormField label={t("web.register_username")} htmlFor="username">
+                <Input
+                  type="text"
+                  id="username"
+                  name="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  // The pattern below only accepts lowercase, so a phone keyboard
+                  // must not auto-capitalise or autocorrect what is typed here —
+                  // otherwise the field silently fails validation on the first
+                  // character. Unchanged rules, just a keyboard that respects them.
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  minLength={3}
+                  maxLength={32}
+                  // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
+                  pattern="[a-z0-9_]+"
+                  aria-describedby="username_help"
+                />
+              </FormField>
               <p id="username_help" className="text-xs text-ink-faint mt-1.5">
                 {t("web.register_username_help")}
               </p>
             </div>
-            <div>
-              <label className="block text-sm font-semibold mb-1.5" htmlFor="email">
-                {t("web.register_email")}
-              </label>
-              <input
-                className="field"
+            <FormField label={t("web.register_email")} htmlFor="email">
+              <Input
                 type="email"
                 id="email"
                 name="email"
@@ -175,61 +184,52 @@ export default function SettingsPage() {
                 autoCorrect="off"
                 spellCheck={false}
               />
-            </div>
+            </FormField>
             {page.has_password && (
-              <div>
-                <label className="block text-sm font-semibold mb-1.5" htmlFor="current_password">
-                  {t("web.settings_current_password")}
-                </label>
+              <FormField label={t("web.settings_current_password")} htmlFor="current_password">
                 <PasswordInput
-                  className="field"
                   id="current_password"
                   name="current_password"
                   autoComplete="current-password"
                 />
-              </div>
+              </FormField>
             )}
-            <div>
-              <label className="block text-sm font-semibold mb-1.5" htmlFor="new_password">
-                {t("web.settings_new_password")}
-              </label>
+            <FormField label={t("web.settings_new_password")} htmlFor="new_password">
               <PasswordInput
-                className="field"
                 id="new_password"
                 name="new_password"
                 autoComplete="new-password"
                 minLength={8}
               />
-            </div>
+            </FormField>
             {/* Next to the button that produced it: on a phone a failure
                 announced at the top of the page is off-screen by the time the
-                thumb reaches Save. `role="alert"` so it is spoken when it
-                appears rather than only on the next focus move. */}
+                thumb reaches Save. `<Alert variant="banner" tone="error">`
+                carries `role="alert"` itself, so it is spoken when it appears
+                rather than only on the next focus move. */}
             {mutationErrorText && (
-              <div role="alert">
-                <Flash text={mutationErrorText} kind="error" />
-              </div>
+              <Alert variant="banner" tone="error">
+                {mutationErrorText}
+              </Alert>
             )}
-            <button
+            <Button
               type="submit"
-              className="btn btn-primary w-full sm:w-auto"
+              variant="primary"
+              className="w-full sm:w-auto"
               disabled={credentialsMutation.isPending}
             >
               {credentialsMutation.isPending && <Spinner />}
               {t("web.settings_save")}
-            </button>
+            </Button>
           </form>
-        </div>
+        </Card>
 
-        <div className="card card-pad">
+        <Card>
           <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_tg_section")}</h2>
           {page.tg_linked ? (
-            <div className="flex items-center gap-3 rounded-xl border border-grass/30 bg-grass-tint px-4 py-3">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-card text-grass">
-                <CheckCircle className="w-5 h-5" />
-              </span>
-              <p className="text-sm text-grass-dark">{t("web.settings_tg_linked", { name: page.tg_name })}</p>
-            </div>
+            <Alert variant="banner" tone="success">
+              {t("web.settings_tg_linked", { name: page.tg_name })}
+            </Alert>
           ) : (
             <>
               <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
@@ -240,7 +240,7 @@ export default function SettingsPage() {
               )}
             </>
           )}
-        </div>
+        </Card>
       </div>
     </>
   );

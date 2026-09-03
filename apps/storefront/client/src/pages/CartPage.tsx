@@ -7,15 +7,31 @@
  * (docs/REACT_STOREFRONT_MIGRATION.md) and the later mobile pass — the row
  * layout, the remove confirmation and the sticky checkout bar below are ours,
  * not the NJK's.
+ *
+ * Design-system migration (Fase 7c): the line-list and summary surfaces are
+ * now `<Card>`, the qty field is `<Input>`, the Update/Remove icon controls
+ * are `<IconButton>`, and the remove-confirm row's two buttons are `<Button>`
+ * (danger/ghost) — all four keep the exact same DOM shape (a real `<label>`-
+ * free `<input>`/`<button>` under the hood) the existing tests already query
+ * by role/label text, so no state, mutation or gating logic moved. The mobile
+ * sticky bar is now the shared `<StickyPurchaseBar>` (Task 11) instead of a
+ * hand-rolled `fixed` div — it portals to `document.body`, fixing the same
+ * `<main>`-containing-block bug Task 11's doc comment describes. Its CTA is
+ * `onClick={() => navigate("/checkout")}` rather than a literal `<Link>`
+ * (StickyPurchaseBar's primary action is always a button), so the "single
+ * reachable place on mobile" test now looks for a `button`, not a `link` —
+ * the destination and the "exactly one" property are unchanged, only the
+ * element type. See deviations.md §13-checkout.
  */
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { formatIdr, formatUsdt } from "../lib/format";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
@@ -24,6 +40,11 @@ import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
 import Spinner from "../components/shop/Spinner";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import IconButton from "../components/ui/IconButton";
+import Input from "../components/ui/Input";
 
 /** Mirrors the input's own min="0" max="99" — the server's clampQty is still
  * the source of truth, this only keeps the field itself sane while typing. */
@@ -102,23 +123,23 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
            replaces the trash button. */
         <div role="alert" className="flex flex-wrap items-center gap-2 shrink-0 sm:justify-end">
           <span className="text-xs text-ink-soft flex-1 min-w-0 sm:flex-none">{t("web.remove_confirm")}</span>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
+          <Button
+            variant="danger"
+            size="sm"
             disabled={removeMutation.isPending}
             onClick={() => removeMutation.mutate()}
           >
             {removeMutation.isPending && <Spinner />}
             {t("web.remove")}
-          </button>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmingRemove(false)}>
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setConfirmingRemove(false)}>
             {t("web.cancel")}
-          </button>
+          </Button>
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2 shrink-0 sm:justify-end sm:gap-3">
           <form className="flex items-center gap-1.5" onSubmit={(e) => e.preventDefault()}>
-            <input
+            <Input
               type="number"
               /* Phones pick the keyboard from inputMode, not from type=number —
                  without it the user gets the full QWERTY layout to type a digit
@@ -128,29 +149,28 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
               value={qty}
               min={0}
               max={99}
-              className="field w-16! text-center"
+              className="w-16! text-center"
               aria-label={t("web.qty")}
               onChange={(e) => setQty(clampCartQty(Number(e.target.value)))}
             />
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
+            <IconButton
+              size="sm"
               aria-label={t("web.update")}
               disabled={updateMutation.isPending}
               onClick={() => updateMutation.mutate(qty)}
             >
               {updateMutation.isPending && <Spinner />}
               <RefreshCw className="w-4 h-4" />
-            </button>
+            </IconButton>
           </form>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm text-rust"
+          <IconButton
+            size="sm"
+            className="text-rust"
             aria-label={t("web.remove")}
             onClick={() => setConfirmingRemove(true)}
           >
             <Trash2 className="w-4 h-4" />
-          </button>
+          </IconButton>
         </div>
       )}
     </div>
@@ -158,6 +178,7 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
 }
 
 export default function CartPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
   const isDesktop = useIsDesktop();
@@ -186,7 +207,7 @@ export default function CartPage() {
       <div aria-busy="true" aria-label={t("web.loading")}>
         <Skeleton className="mb-6 h-6 w-56" />
         <div className="grid items-start gap-6 lg:grid-cols-3">
-          <div className="card divide-y divide-line lg:col-span-2">
+          <Card padded={false} className="lg:col-span-2 divide-y divide-line">
             {[0, 1].map((i) => (
               <div key={i} className="flex items-center gap-3 p-4">
                 <Skeleton className="h-16 w-16 shrink-0" />
@@ -196,7 +217,7 @@ export default function CartPage() {
                 </div>
               </div>
             ))}
-          </div>
+          </Card>
           <Skeleton className="h-48 w-full" />
         </div>
       </div>
@@ -225,14 +246,14 @@ export default function CartPage() {
               underneath it. */}
           <div className={`grid lg:grid-cols-3 gap-6 items-start${isDesktop ? "" : " pb-28"}`}>
             {/* Lines */}
-            <div className="lg:col-span-2 card divide-y divide-line">
+            <Card padded={false} className="lg:col-span-2 divide-y divide-line">
               {items.map((item) => (
                 <CartLine key={item.key} item={item} fx={fx} onMutated={handleMutated} />
               ))}
-            </div>
+            </Card>
 
             {/* Summary */}
-            <div className="card card-pad">
+            <Card>
               <h2 className="section-title mb-3">{t("web.summary")}</h2>
               <div className="flex items-center justify-between text-sm py-1.5">
                 <span className="text-ink-soft">{t("web.subtotal")}</span>
@@ -254,29 +275,37 @@ export default function CartPage() {
                 {t("web.continue_shopping")}
               </Link>
               {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
-            </div>
+            </Card>
           </div>
 
           {/* The summary card stacks below every line item on a phone, which
               put the only way to pay an entire cart's worth of scrolling away.
-              A fixed bar keeps the total and the call to action in reach at any
-              scroll position; desktop keeps the card, where the two-column grid
-              already leaves the summary in view. */}
+              The shared StickyPurchaseBar (Task 11) keeps the total and the
+              call to action in reach at any scroll position, portaled out of
+              <main> so it pins to the viewport rather than <main>'s bottom
+              edge; desktop keeps the card, where the two-column grid already
+              leaves the summary in view. Its CTA navigates programmatically
+              (StickyPurchaseBar's action slot is a button, not a Link) — same
+              /checkout destination as the desktop link above. */}
           {!isDesktop && (
-            <div
-              className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card px-4 pt-3"
-              style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
-            >
-              <div className="mx-auto flex max-w-5xl items-center gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs text-ink-soft">{t("web.subtotal")}</div>
-                  <Price value={subtotal} fx={fx} size="text-sm" />
-                </div>
-                <Link to="/checkout" className="btn btn-primary flex-1">
-                  {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
-                </Link>
-              </div>
-            </div>
+            <StickyPurchaseBar
+              ariaLabel={t("web.purchase_bar")}
+              priceLabel={t("web.subtotal")}
+              price={formatIdr(subtotal)}
+              secondaryChip={
+                formatUsdt(subtotal, fx) ? (
+                  <span className="text-xs text-ink-faint">{formatUsdt(subtotal, fx)}</span>
+                ) : undefined
+              }
+              primaryAction={{
+                label: (
+                  <>
+                    {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
+                  </>
+                ),
+                onClick: () => navigate("/checkout"),
+              }}
+            />
           )}
         </>
       ) : (

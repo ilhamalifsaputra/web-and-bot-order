@@ -197,11 +197,11 @@ export async function loadCartLines(
             product_slug: parent.slug,
             name: cartLineLabel(parent.name, denom.name),
             // No stock-photo fallback here either (Fase 12) — CartLineView.image
-        // stays a non-nullable string for CartPage.tsx's unconditional <img>
-        // (out of scope for this task's DefaultThumb work), so an absent
-        // real photo on both the denomination and its parent product renders
-        // an empty src rather than a hotlinked placeholder.
-        image: denom.webImageUrl ?? productImage(parent) ?? "",
+            // stays a non-nullable string for CartPage.tsx's unconditional <img>
+            // (out of scope for this task's DefaultThumb work), so an absent
+            // real photo on both the denomination and its parent product renders
+            // an empty src rather than a hotlinked placeholder.
+            image: denom.webImageUrl ?? productImage(parent) ?? "",
             unit_price: unit.toString(),
             qty: r.quantity,
             line_total: unit.times(r.quantity).toString(),

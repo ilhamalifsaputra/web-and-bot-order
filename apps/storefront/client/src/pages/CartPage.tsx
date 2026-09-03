@@ -26,7 +26,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
+import { ChevronRight, Package, RefreshCw, ShoppingBag, Trash2 } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -86,7 +86,13 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
     <div className="p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
       <div className="flex items-start gap-3 min-w-0 flex-1 sm:items-center sm:gap-4">
         <Link to={`/p/${item.product_slug}`} className="w-16 h-16 rounded-xl overflow-hidden bg-sand shrink-0">
-          <img src={item.image} alt={item.name} loading="lazy" className="w-full h-full object-cover" />
+          {item.image ? (
+            <img src={item.image} alt={item.name} loading="lazy" className="w-full h-full object-cover" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center">
+              <Package className="h-6 w-6 text-ink-faint" aria-hidden="true" />
+            </div>
+          )}
         </Link>
         <div className="flex-1 min-w-0">
           <Link

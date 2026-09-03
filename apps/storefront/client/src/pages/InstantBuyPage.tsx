@@ -53,6 +53,7 @@ import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Callout from "../components/shop/Callout";
+import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
 import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
@@ -455,13 +456,7 @@ export default function InstantBuyPage() {
                   />
                 </picture>
               ) : (
-                // Fase 12: no more stock-photo fallback — same neutral empty
-                // state the hero-product preview (HomePage.tsx) already uses
-                // for a photo-less product, rather than pulling the full
-                // category-keyed DefaultThumb into this out-of-scope page.
-                <div className="flex h-full w-full items-center justify-center">
-                  <Package className="h-10 w-10 text-ink-faint" aria-hidden="true" />
-                </div>
+                <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
               )}
             </div>
             <h1 className="page-title mt-4">{product.name}</h1>

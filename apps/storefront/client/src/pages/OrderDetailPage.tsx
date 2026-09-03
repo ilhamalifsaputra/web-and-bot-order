@@ -40,7 +40,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BadgeCheck, Clock, Copy, Pencil, RefreshCw, Wallet } from "lucide-react";
+import { BadgeCheck, Clock, Copy, Pencil, RefreshCw, Wallet } from "lucide-react";
 import { apiGet, apiPatch } from "../api/client";
 import type { OrderDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -55,6 +55,9 @@ import StatusBadge from "../components/shop/StatusBadge";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import ErrorPage from "./ErrorPage";
 import Spinner from "../components/shop/Spinner";
+import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
@@ -188,7 +191,7 @@ export default function OrderDetailPage() {
             </Link>
             <span className="mx-1">/</span> <span className="font-mono">{order.code}</span>
           </div>
-          <h1 className="page-title text-2xl!">
+          <h1 className="page-title">
             {t("web.order_code")} <span className="font-mono">{order.code}</span>
           </h1>
         </div>
@@ -196,18 +199,18 @@ export default function OrderDetailPage() {
       </div>
 
       {pendingPayment && (
-        <div className="card card-pad mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
+        <Card className="mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
           <div className="text-sm text-ink-soft">
             {t("web.order_status")}: <StatusBadge value={order.status} />
           </div>
           <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary">
             <Wallet className="w-4 h-4" /> {t("web.pay_now")}
           </Link>
-        </div>
+        </Card>
       )}
 
       {processing && (
-        <div className="card card-pad mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
+        <Card className="mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
           <div className="flex items-start gap-3">
             <Clock className="w-5 h-5 text-pine mt-0.5 shrink-0" />
             <div>
@@ -221,16 +224,16 @@ export default function OrderDetailPage() {
               )}
             </div>
           </div>
-          <button type="button" className="btn btn-soft btn-sm" disabled={isFetching} onClick={() => void refetch()}>
+          <Button variant="soft" size="sm" disabled={isFetching} onClick={() => void refetch()}>
             <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> {t("web.order_refresh")}
-          </button>
-        </div>
+          </Button>
+        </Card>
       )}
 
       {/* Item lines: stacked on a phone, the three-column table from md up.
           Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
       {isDesktop ? (
-        <div className="card mb-5">
+        <Card padded={false} className="mb-5">
           <table className="data-table">
             <thead>
               <tr>
@@ -254,7 +257,7 @@ export default function OrderDetailPage() {
               ))}
             </tbody>
           </table>
-        </div>
+        </Card>
       ) : (
         <ul className="card mb-5 divide-y divide-line">
           {order.items.map((i, idx) => (
@@ -270,7 +273,7 @@ export default function OrderDetailPage() {
         </ul>
       )}
 
-      <div className="card card-pad mb-5 max-w-md ml-auto text-sm">
+      <Card className="mb-5 max-w-md ml-auto text-sm">
         <div className="flex justify-between py-1">
           <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
         </div>
@@ -287,23 +290,23 @@ export default function OrderDetailPage() {
         <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">
           <span>{t("web.order_total")}</span> <Price value={order.total} fx={ctx?.fx} size="text-base" />
         </div>
-      </div>
+      </Card>
 
       {fields.length > 0 && (
         <section className="card card-pad mb-5">
           <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
             <h2 className="section-title">{t("web.order_info_title")}</h2>
             {processing && !editMode && (
-              <button type="button" className="btn btn-soft btn-sm" onClick={startEdit}>
+              <Button variant="soft" size="sm" onClick={startEdit}>
                 <Pencil className="w-3.5 h-3.5" /> {t("web.order_info_edit_btn")}
-              </button>
+              </Button>
             )}
           </div>
 
           {infoErrorKey && (
-            <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-3">
-              <AlertTriangle className="w-4 h-4" /> {t(infoErrorKey)}
-            </div>
+            <Alert variant="banner" tone="error" className="mt-3">
+              {t(infoErrorKey)}
+            </Alert>
           )}
 
           {editMode ? (
@@ -331,23 +334,23 @@ export default function OrderDetailPage() {
                 ))}
               </div>
               <div className="flex gap-2 mt-4">
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
+                <Button
+                  variant="primary"
+                  size="sm"
                   disabled={!infoValid || infoMutation.isPending}
                   onClick={() => infoMutation.mutate(answers)}
                 >
                   {infoMutation.isPending && <Spinner />}
                   {t("web.order_info_save_btn")}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   disabled={infoMutation.isPending}
                   onClick={cancelEdit}
                 >
                   {t("web.order_info_cancel_btn")}
-                </button>
+                </Button>
               </div>
             </>
           ) : (
@@ -386,13 +389,13 @@ export default function OrderDetailPage() {
                 i.credentials && (
                   <div key={idx} className="flex items-center gap-2">
                     <code className="codeish flex-1 text-sm! break-all select-all">{i.credentials}</code>
-                    <button
-                      type="button"
-                      className="btn btn-soft btn-sm"
+                    <Button
+                      variant="soft"
+                      size="sm"
                       onClick={() => navigator.clipboard.writeText(i.credentials ?? "")}
                     >
                       <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
-                    </button>
+                    </Button>
                   </div>
                 ),
             )}
@@ -410,13 +413,13 @@ export default function OrderDetailPage() {
             <code className="codeish flex-1 text-sm! break-all whitespace-pre-wrap select-all">
               {order.delivered_content}
             </code>
-            <button
-              type="button"
-              className="btn btn-soft btn-sm"
+            <Button
+              variant="soft"
+              size="sm"
               onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
             >
               <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
-            </button>
+            </Button>
           </div>
         </section>
       )}

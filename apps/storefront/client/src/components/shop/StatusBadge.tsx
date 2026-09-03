@@ -77,6 +77,18 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
+/**
+ * The buyer-facing label for a status value, resolved the same way the chip
+ * resolves it (keyed `t()` where a key exists, else a title-cased fallback).
+ * Exported so a status <select> filter (OrdersPage, Task 16) shows exactly the
+ * words the chips do, without duplicating the key map.
+ */
+export function statusLabel(value: string): string {
+  const v = String(value).toLowerCase();
+  const key = STATUS_LABEL_KEY[v];
+  return key ? t(key) : titleCase(v.replace(/_/g, " "));
+}
+
 export interface StatusBadgeProps {
   value: string;
 }
@@ -92,7 +104,5 @@ export default function StatusBadge({ value }: StatusBadgeProps) {
         : RUST.has(v)
           ? "bg-rust-tint text-rust-dark"
           : "bg-sand text-ink-soft";
-  const key = STATUS_LABEL_KEY[v];
-  const label = key ? t(key) : titleCase(v.replace(/_/g, " "));
-  return <span className={`chip ${toneClass}`}>{label}</span>;
+  return <span className={`chip ${toneClass}`}>{statusLabel(value)}</span>;
 }

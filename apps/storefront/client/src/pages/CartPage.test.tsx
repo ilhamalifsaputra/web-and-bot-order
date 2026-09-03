@@ -56,6 +56,7 @@ function renderCart(respond: (path: string) => unknown) {
       <MemoryRouter initialEntries={["/cart"]}>
         <Routes>
           <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<div>checkout-page-stub</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -147,6 +148,19 @@ describe("CartPage", () => {
     expect(screen.queryAllByRole("link", { name: /Continue to payment/ })).toHaveLength(0);
     const checkoutButtons = screen.getAllByRole("button", { name: /Continue to payment/ });
     expect(checkoutButtons).toHaveLength(1);
+  });
+
+  // Fix 1 (Task 13 review, Important): the sticky bar's CTA button navigates
+  // programmatically (StickyPurchaseBar has no Link variant), so nothing
+  // else in the suite verified it still lands on /checkout after the
+  // migration off the old <Link href="/checkout">. Same convention as
+  // ProductPage.test.tsx's "buys through the same mutation..." case: assert
+  // the destination route's stub actually mounts after the click.
+  it("navigates to /checkout when the mobile sticky bar's CTA is clicked", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue to payment/ }));
+    expect(await screen.findByText("checkout-page-stub")).toBeInTheDocument();
   });
 
   it("renders the empty-cart branch when the cart starts empty", async () => {

@@ -29,6 +29,7 @@ import type { CheckoutData } from "../../api/types";
 import { t } from "../../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../../lib/format";
 import Radio from "../ui/Radio";
+import Card from "../ui/Card";
 import { cn } from "../ui/cn";
 
 /** All-or-nothing wallet-credit gates: only "sufficient" when the balance
@@ -162,11 +163,18 @@ export function PaymentMethodRow({
 }
 
 /**
- * The `.card.card-pad` payment-method picker — title, the eight conditional
+ * The `<Card>` payment-method picker — title, the eight conditional
  * `<PaymentMethodRow>` blocks (each gated on a `page.X_enabled` flag) and the
  * "no methods available" fallback. Shared between CheckoutPage.tsx and
  * InstantBuyPage.tsx (Task 6) so the two flows can never drift on which
  * methods are offered or how a row looks/behaves.
+ *
+ * Task 13 review (Important): each group wrapper is `role="group"` +
+ * `aria-labelledby` pointing at an `id` on its own `field-label` heading, so
+ * a screen reader announces "IDR quick-pay group" / etc. before its radios
+ * instead of dropping a buyer straight into 8 unlabelled options. Purely
+ * additive — which rows render, their order, and the `showXGroup` gates are
+ * unchanged.
  */
 export default function PaymentMethodSelector({
   data,
@@ -189,12 +197,14 @@ export default function PaymentMethodSelector({
   const showWalletGroup = idrWalletSufficient || usdtWalletSufficient;
 
   return (
-    <div className="card card-pad">
+    <Card>
       <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
       <div className="space-y-5">
         {showIdrGroup && (
-          <div className="space-y-3">
-            <p className="field-label">{t("web.pay_group_idr")}</p>
+          <div className="space-y-3" role="group" aria-labelledby="payment-group-idr">
+            <p className="field-label" id="payment-group-idr">
+              {t("web.pay_group_idr")}
+            </p>
             {data.idr_enabled && (
               <PaymentMethodRow
                 value="qris"
@@ -231,8 +241,10 @@ export default function PaymentMethodSelector({
           </div>
         )}
         {showCryptoGroup && (
-          <div className="space-y-3">
-            <p className="field-label">{t("web.pay_group_crypto")}</p>
+          <div className="space-y-3" role="group" aria-labelledby="payment-group-crypto">
+            <p className="field-label" id="payment-group-crypto">
+              {t("web.pay_group_crypto")}
+            </p>
             {data.binance_enabled && (
               <PaymentMethodRow
                 value="binance"
@@ -300,8 +312,10 @@ export default function PaymentMethodSelector({
           </div>
         )}
         {showWalletGroup && (
-          <div className="space-y-3">
-            <p className="field-label">{t("web.pay_group_wallet")}</p>
+          <div className="space-y-3" role="group" aria-labelledby="payment-group-wallet">
+            <p className="field-label" id="payment-group-wallet">
+              {t("web.pay_group_wallet")}
+            </p>
             {idrWalletSufficient && (
               <PaymentMethodRow
                 value="wallet_idr"
@@ -337,6 +351,6 @@ export default function PaymentMethodSelector({
           </div>
         )}
       </div>
-    </div>
+    </Card>
   );
 }

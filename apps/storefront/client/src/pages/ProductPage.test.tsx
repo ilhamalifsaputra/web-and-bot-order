@@ -527,10 +527,36 @@ describe("ProductPage", () => {
     renderProduct("netflix-premium", () => manualOnly);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
-    // Only one denomination and no related products here, so this is
-    // unambiguous — it's the live-summary badge.
-    const badge = screen.getByText("Available");
+    // The DenominationCard now also renders an "Available" pill for a
+    // non-auto plan (task-23), so scope this to the live-summary badge.
+    const badge = document.querySelector("#buy-summary .rounded-full");
+    expect(badge).toHaveTextContent("Available");
     expect(badge).toHaveClass("bg-grass-tint");
+  });
+
+  // task-23 (Fase 12 audit follow-up): the short lead paragraph moved OUT of
+  // the right column (under the <h1>) and INTO the left column, below the
+  // image card — a photo-less Digiflazz product otherwise left a tall empty
+  // DefaultThumb well with dead space beside the much taller picker column.
+  it("renders product.description in the left column below the image, not inside #product-detail", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const desc = screen.getByText("Shared account, instant delivery.");
+    expect(desc).toHaveClass("whitespace-pre-line", "text-ink-soft", "mt-4");
+    // No longer nested under the facts / picker column…
+    expect(desc.closest("#product-detail")).toBeNull();
+    // …and it sits after the image card in document order.
+    const imageCard = document.querySelector(".card.overflow-hidden")!;
+    expect(imageCard.compareDocumentPosition(desc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders no description block for a product with description: null (Digiflazz import)", async () => {
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      product: { ...productData.product, description: null },
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
   });
 });
 

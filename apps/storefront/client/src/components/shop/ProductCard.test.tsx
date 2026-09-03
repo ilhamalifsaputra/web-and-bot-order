@@ -83,14 +83,19 @@ describe("ProductCard", () => {
     expect(card.className).not.toContain("hover:shadow-md");
   });
 
-  it("tints the instant chip with the palette token, not off-palette amber", () => {
+  // task-23: the badge sits over the image well, which since Fase 12 can be
+  // the light DefaultThumb placeholder — bg-black/40 + text-grass fell to
+  // ~2.3:1 there and failed WCAG AA. It's now an opaque grass chip (solid
+  // background + white text, ~5.9:1), still the grass family, never amber.
+  it("gives the instant chip an opaque, legible grass background (not bg-black/40 + text-grass) and no amber", () => {
     render(
       <MemoryRouter>
         <ProductCard p={base} fx="16000" lowThreshold={5} />
       </MemoryRouter>,
     );
     const chip = screen.getByText("Instant delivery");
-    expect(chip).toHaveClass("text-grass");
+    expect(chip).toHaveClass("bg-grass-dark", "text-white");
+    expect(chip.className).not.toContain("bg-black/40");
     expect(chip.className).not.toMatch(/amber/);
   });
 

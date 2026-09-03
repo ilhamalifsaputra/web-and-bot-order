@@ -264,55 +264,67 @@ export default function ProductPage() {
       />
 
       <div className="grid md:grid-cols-2 gap-6 lg:gap-10">
-        {/* Image */}
-        <div className="card overflow-hidden self-start">
-          <div className="aspect-[4/3] bg-sand">
-            {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
-                the intrinsic size is declared even under object-cover, and why
-                <picture> needs to be block. */}
-            {product.image ? (
-              <picture className="block w-full h-full">
-                {product.image_srcset && (
-                  // Full width on phones, roughly half the grid on desktop.
-                  <source
-                    type="image/webp"
-                    srcSet={product.image_srcset}
-                    sizes="(max-width: 768px) 100vw, 600px"
+        {/* Image + short description. `self-start` on this wrapper (not the
+            image card) so the column doesn't stretch to the taller right
+            column: a photo-less product (every Digiflazz import) would
+            otherwise leave a tall empty DefaultThumb well with dead space
+            below it. The description moved here, under the banner, from its
+            old spot beneath the <h1> in the right column. */}
+        <div className="self-start">
+          <div className="card overflow-hidden">
+            <div className="aspect-[4/3] bg-sand">
+              {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
+                  the intrinsic size is declared even under object-cover, and why
+                  <picture> needs to be block. */}
+              {product.image ? (
+                <picture className="block w-full h-full">
+                  {product.image_srcset && (
+                    // Full width on phones, roughly half the grid on desktop.
+                    <source
+                      type="image/webp"
+                      srcSet={product.image_srcset}
+                      sizes="(max-width: 768px) 100vw, 600px"
+                    />
+                  )}
+                  {/* Eager on purpose: this is the page's LCP element and the only
+                      image above the fold on a phone, so deferring it would trade a
+                      measurable delay for nothing. Everything below (the
+                      related-products shelf) lazy-loads via ProductCard. The
+                      width/height pair is what stops the text below from jumping
+                      while it decodes — object-cover ignores the numbers for
+                      painting, but the browser still uses their ratio to reserve
+                      the box. */}
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    loading="eager"
+                    decoding="async"
+                    width={800}
+                    height={600}
+                    className="w-full h-full object-cover"
                   />
-                )}
-                {/* Eager on purpose: this is the page's LCP element and the only
-                    image above the fold on a phone, so deferring it would trade a
-                    measurable delay for nothing. Everything below (the
-                    related-products shelf) lazy-loads via ProductCard. The
-                    width/height pair is what stops the text below from jumping
-                    while it decodes — object-cover ignores the numbers for
-                    painting, but the browser still uses their ratio to reserve
-                    the box. */}
-                <img
-                  src={product.image}
-                  alt={product.name}
-                  loading="eager"
-                  decoding="async"
-                  width={800}
-                  height={600}
-                  className="w-full h-full object-cover"
-                />
-              </picture>
-            ) : (
-              <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
-            )}
+                </picture>
+              ) : (
+                <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
+              )}
+            </div>
           </div>
+
+          {/* Optional lead paragraph, directly under the banner. Stays behind
+              the `product.description &&` guard — Digiflazz products have
+              `description: null` and must render nothing extra here. `mt-4`
+              spaces it from the image card. No heading: it's a plain lead
+              paragraph, same as it was under the <h1>. */}
+          {product.description && (
+            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+              {product.description}
+            </div>
+          )}
         </div>
 
         {/* Facts + denomination picker + actions */}
         <div id="product-detail">
           <h1 className="page-title">{product.name}</h1>
-
-          {product.description && (
-            <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-              {product.description}
-            </div>
-          )}
 
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the

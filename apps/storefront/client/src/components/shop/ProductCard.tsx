@@ -118,11 +118,14 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             )}
           </div>
         )}
-        {/* "instant delivery" is a positive capability → text-grass (palette),
-            not the off-palette text-amber-300. Same amber → grass map as
-            HomePage's hero/AuthBrandPanel instant chip — see deviations.md
-            §13-home-colour. */}
-        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-grass backdrop-blur-sm">
+        {/* "instant delivery" is a positive capability → an opaque grass chip:
+            solid bg-grass-dark + white text stays legible over BOTH a real
+            photo and the light DefaultThumb well Fase 12 introduced. The old
+            bg-black/40 + text-grass computed to ~2.3:1 over that pale
+            placeholder (fails WCAG AA); white on bg-grass-dark is ~5.9:1.
+            Still the grass family (positive capability), never off-palette
+            amber — same treatment as the sibling bulk-discount badge above. */}
+        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
           <Zap className="w-3 h-3" /> {t("web.badge_instant")}
         </span>
       </div>

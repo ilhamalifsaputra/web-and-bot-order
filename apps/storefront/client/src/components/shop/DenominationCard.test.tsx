@@ -61,6 +61,25 @@ describe("DenominationCard", () => {
     expect(screen.getByText("5 Diamonds").closest("label")!.className).toContain("opacity-60");
   });
 
+  // task-23 (Fase 12 audit follow-up): a non-auto (provider-backed) plan
+  // used to render no availability signal at all — now it shows the plain
+  // "Available" pill, while an auto plan still runs the numeric StockBadge
+  // path (low-stock / out-of-stock branches a non-auto plan can never reach).
+  describe("availability signal", () => {
+    it("shows the Available pill for a non-auto denomination", () => {
+      renderCard({ d: { ...AUTO, delivery_type: "manual_with_info", available: 0, in_stock: false } });
+      const pill = screen.getByText("Available");
+      expect(pill).toHaveClass("bg-grass-tint", "text-grass-dark-aa");
+    });
+
+    it("still renders the numeric StockBadge path for an auto denomination", () => {
+      // available (3) <= lowThreshold (5) -> the low-stock "N left" branch.
+      renderCard({ d: { ...AUTO, delivery_type: "auto", available: 3 } });
+      expect(screen.getByText("3 left")).toBeInTheDocument();
+      expect(screen.queryByText("Available")).not.toBeInTheDocument();
+    });
+  });
+
   // Fase 12: the per-product currency chip. iconKind is a per-render prop
   // (not part of DenominationCardData), resolved once for the whole product
   // and passed identically to every plan.

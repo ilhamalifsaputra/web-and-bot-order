@@ -109,10 +109,17 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           <div className="font-display text-sm font-semibold text-ink leading-snug">
             {d.duration_label || d.name}
           </div>
-          {/* Non-auto plans have no stock concept — showing a stock badge
-              (even a false "in stock") would be misleading, so omit it. */}
+          {/* Non-auto (provider-backed, e.g. Digiflazz) plans have no real
+              stock count — a number would be misleading, but rendering
+              nothing left the buyer with no "purchasable" cue at all. Show
+              the plain "Available" pill (StockBadge's allNonAuto branch,
+              identical markup to the catalog card's). */}
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {d.delivery_type === "auto" && <StockBadge available={d.available} lowThreshold={lowThreshold} />}
+            {d.delivery_type === "auto" ? (
+              <StockBadge available={d.available} lowThreshold={lowThreshold} />
+            ) : (
+              <StockBadge available={d.available} lowThreshold={lowThreshold} allNonAuto />
+            )}
             {d.flash && <FlashBadge percent={d.flash.discount_percent} endsAt={d.flash.ends_at} />}
           </div>
         </div>

@@ -19,6 +19,15 @@
  *     the CSRF meta tag). `publicPost` has already adopted the response's
  *     `csrf_token` by then, which covers anything the page does before the
  *     browser actually leaves.
+ *
+ * Design-system migration (Task 14): the form is now a `<Card>` wrapping the
+ * `<form>` (the form itself keeps native submit semantics — Enter-to-submit
+ * — so it stays a real `<form>`, not a `<Card>` element), the order-code
+ * field is `<FormField>`+`<Input>`, the submit is `<Button type="submit">`.
+ * `FailureState`'s `EmptyState` usage (already design-system, Task 10) is
+ * untouched — the single generic anti-enumeration message and the full-page
+ * redirect on success are unchanged. See deviations.md
+ * §14-pay-topup-track.
  */
 import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
@@ -30,6 +39,10 @@ import { t } from "../lib/i18n";
 import type { EmptyStateAction } from "../components/shop/EmptyState";
 import EmptyState from "../components/shop/EmptyState";
 import Spinner from "../components/shop/Spinner";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
 
 /**
  * Where a failed lookup sends someone who has NO way to sign in.
@@ -163,26 +176,25 @@ export default function TrackOrderPage() {
       <h1 className="page-title mb-2">{t("web.track_title")}</h1>
       <p className="page-lead mb-6">{t("web.track_intro")}</p>
 
-      <form onSubmit={onSubmit} className="card card-pad space-y-4">
-        <div>
-          <label className="field-label" htmlFor="track_order_code">
-            {t("web.order_code")}
-          </label>
-          <input
-            id="track_order_code"
-            className="field uppercase"
-            value={orderCode}
-            onChange={(e) => setOrderCode(e.target.value)}
-            autoComplete="off"
-            maxLength={32}
-            required
-          />
-        </div>
-        <button type="submit" className="btn btn-primary w-full" disabled={!canSubmit}>
-          {lookupMutation.isPending && <Spinner />}
-          {t("web.track_submit")}
-        </button>
-      </form>
+      <Card>
+        <form onSubmit={onSubmit} className="space-y-4">
+          <FormField label={t("web.order_code")} htmlFor="track_order_code">
+            <Input
+              id="track_order_code"
+              className="uppercase"
+              value={orderCode}
+              onChange={(e) => setOrderCode(e.target.value)}
+              autoComplete="off"
+              maxLength={32}
+              required
+            />
+          </FormField>
+          <Button type="submit" variant="primary" fullWidth disabled={!canSubmit}>
+            {lookupMutation.isPending && <Spinner />}
+            {t("web.track_submit")}
+          </Button>
+        </form>
+      </Card>
 
       {/* The form above stays put, so retrying is one edit away; this only
           explains what happened and offers somewhere else to go.

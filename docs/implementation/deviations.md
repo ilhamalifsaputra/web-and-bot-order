@@ -755,3 +755,157 @@ into a different prop, never a changed value or endpoint.
 `apps/storefront/client/src/components/shop/DeliveryFieldInput.tsx`,
 `apps/storefront/client/eslint.config.js` (allowlist cleanup),
 `packages/core/locales/{en,id}.json` (3 new `web.pay_group_*` keys).
+
+---
+
+## 14-pay-topup-track — PayPage + WalletTopupPage + TrackOrderPage migration, cancel-order confirmation dialog (Task 14)
+
+**Context.** Fase 7c, part 2 of the payment funnel: `PayPage.tsx` (shared by
+`/checkout/:code/pay` and `/wallet/topup/:code/pay` via `variant`),
+`WalletTopupPage.tsx`, `TrackOrderPage.tsx`. Pure re-skin plus ONE permitted
+logic addition (below) — no fetch/poll endpoint, mutation payload, gateway
+branch, countdown mechanism, or the `payState()`-driven state machine
+changed. Verified by grepping the diff for `/api/v1`, `cancelMutation`,
+`mutationFn`, `5000`/`5_000`, and every gateway flag name
+(`is_binance`/`is_bybit`/`is_qris`/`is_paydisini`/`is_nowpayments`/etc.) —
+zero hits touch a mutation definition or an endpoint string; the only
+`cancelMutation` hits are the cancel button's `onClick`→`onConfirm` move
+described below, and `mutationFn` has no diff hits at all in any of the
+three files (the `useMutation({...})` blocks are byte-unchanged).
+
+**The one logic addition — cancel-order confirmation dialog (required, not
+optional).** `PayPage.tsx`'s cancel button (`web.cancel_order`, "Cancel this
+order" / "Batalkan pesanan ini") used to call `cancelMutation.mutate()`
+directly from `onClick` — the exact gap flagged in the Task 1 audit (§F
+escalation #3) and required by the plan's Global Constraints ("Destructive
+actions … MUST show a confirmation dialog … Do not silently keep the old
+direct-execute behavior"). It now opens `<AlertDialog>` (built Task 7)
+instead:
+
+- Trigger `onClick` → `setCancelDialogOpen(true)` only; no mutation call.
+- `AlertDialog onConfirm` → `() => cancelMutation.mutate()` — the exact same
+  call the old `onClick` made, moved verbatim.
+- `onCancel` → closes the dialog, no mutation.
+- `confirmPending={cancelMutation.isPending}`, `tone="danger"`.
+- Copy: title `web.cancel_order_confirm_title` ("Cancel this order?" /
+  "Batalkan pesanan ini?"), description `web.cancel_order_confirm_body`
+  ("Order {code} — this can't be undone." / "Pesanan {code} — tindakan ini
+  tidak bisa dibatalkan.", `{code}` = `order.code`), confirm
+  `web.cancel_order_confirm_yes` ("Yes, cancel" / "Ya, batalkan"), cancel
+  `web.cancel_order_confirm_no` ("No, go back" / "Tidak, kembali"). Sourced
+  from `business-adaptation.md`'s CTA Register (line ~83: canonical app
+  string "Batalkan pesanan ini / Cancel this order", danger tone) — no
+  existing precedent for the confirm/cancel button labels or body copy
+  existed anywhere in the app (grepped for prior `AlertDialog` consumers:
+  none besides the dev gallery and its own test), so these four new keys
+  were written fresh, added to both `en.json`/`id.json`, and pass
+  `packages/core/src/locales.test.ts`'s key-parity + placeholder-parity
+  guard. The trigger button itself keeps its current `ghost`+`text-rust`
+  visual weight rather than converging to the CTA Register's listed
+  canonical `danger` variant — that variant note describes a still-open
+  convergence target (the register itself flags the row as "currently
+  `ghost text-rust`"), and this task's required change is the confirmation
+  step, not the trigger's prominence; changing both at once on a
+  payment-adjacent page seemed like more visual-behavior change than the
+  brief asked for. Left for a later task if wanted.
+
+**Deviations, all deliberate:**
+
+1. **`PayPage`, `WalletTopupPage`, `TrackOrderPage` have no
+   page-templates.md reference layout ("composed" per §3.2 rule 3)** — same
+   reasoning as Task 13's `CartPage` entry. Each keeps its existing shape
+   (payment-instructions card + status strip + countdown; currency-toggle +
+   amount + method-list form; single centered lookup card) restyled onto
+   `<Card>`/`<Button>`/`<Alert>`/`<FormField>`/`<Input>`/`<Badge>`, no
+   template to diverge from.
+
+2. **`StatusStrip` (PayPage's polled status chip) is now `<Badge>`-driven,
+   with the SAME tone-per-state pairing it already had** — `waiting`→
+   `pending` (amberx), `confirming`→ the one new Badge variant this task
+   adds, `info` (pine — an existing token, not an invented color; it's the
+   same pine tint `category` already uses, just paired with the `.chip`
+   shape instead of the pill shape), `delivered`→`success` (grass),
+   `expired`→`failed` (rust), `closed`→`neutral` (sand). **Flagged, not
+   changed:** cross-referencing `business-adaptation.md`'s order-level
+   "Entity States" table (line ~205, ~207) surfaces a real divergence —
+   `PENDING_PAYMENT` (the order-level equivalent of PayPage's `waiting`) is
+   tabled as `pine` ("actionable, not a warning"), and the `PROCESSING`
+   bucket (the equivalent of PayPage's `confirming` — see
+   `payState()`/routes/checkout.ts, which folds
+   `PENDING_VERIFICATION`/`PAID`/`PAYMENT_DETECTED`/`CONFIRMING`/`CONFIRMED`
+   into `confirming`) is tabled as `amberx`. PayPage's own hand-rolled chip
+   has always paired them the other way around (`waiting`=amberx,
+   `confirming`=pine), predating that table. Correcting the pairing to match
+   the table would be a real, payment-page-visible color change on states a
+   buyer is actively watching mid-transaction — out of scope for a task
+   whose brief is "pure re-skin" and whose only sanctioned logic/behavior
+   change is the cancel dialog. Not touched; noted here for a future task to
+   decide deliberately, with sign-off, rather than as an incidental side
+   effect of a component swap. Similarly, `closed` (the catch-all for
+   cancelled/rejected/refunded/underpaid/failed) tables as `rust` under
+   `FAILED`/`REFUNDED`, but PayPage's chip has always shown it as neutral
+   `sand` — same call: flagged, not changed. `Badge.tsx`'s doc comment and
+   `Badge.test.tsx` were updated for the new `info` variant only.
+
+3. **`GatewayDownFallback` (PayPage's TokoPay/PayDisini/NOWPayments
+   gateway-down block) splits into `<Alert variant="banner" tone="warning">`
+   for the icon+title+body message, plus a sibling `flex flex-wrap` row for
+   the Try again/WhatsApp/Telegram action links** — not one bordered box, as
+   before. `Alert`'s banner variant has no action-row slot (`children`
+   renders as inline text under the title), and stuffing block-level
+   buttons into it would mean nesting a `<div>` inside the `<span>` Alert
+   wraps banner `children` in when a `title` is set — invalid HTML nesting.
+   The three action links themselves are untouched raw `<a className="btn
+   btn-soft/ghost btn-sm">` (same convention `StatusScreen.tsx`'s
+   `ActionControl` already uses for anchor-shaped buttons, since neither
+   `Button` nor a router `Link` can render a plain external/full-reload
+   `<a>` with `target="_blank"` semantics the way this needs).
+
+4. **The four terminal-state cards (`delivered`/`confirming`/`expired`/
+   `closed`) are `<Card className="text-center py-10">`, not a literal
+   `StatusScreen`/`EmptyState`.** Per the brief: "don't force them through
+   EmptyState/ErrorState unless the shape genuinely matches (a delivered
+   success card is not an empty state)." `StatusScreen`'s non-`bare` shape
+   also wraps its card in a `min-h-[360px]` viewport-centering box meant for
+   a screen that IS the whole page content — wrong here, where these cards
+   sit inside PayPage's existing `max-w-2xl` column alongside the Stepper
+   and status strip. `Card` + the same `text-center py-10` override the raw
+   markup already used is the direct swap; the `.card-pad` (shorthand
+   `padding`) + `py-10` (longhand `padding-top`/`padding-bottom`) pairing is
+   not new — `StatusScreen.tsx` itself already relies on the identical
+   `card card-pad … py-10` combination rendering correctly, so this is a
+   proven pattern, not a new cascade risk.
+
+5. **`WalletTopupPage`'s currency toggle uses two `<Button variant="primary"
+   | "soft">` inside a `grid grid-cols-2 gap-2`, not a radio group** —
+   unchanged from the pre-migration two-button toggle (it was never a native
+   radio pair); only the raw `<button className="btn …">` elements became
+   `<Button>`.
+
+**`PaymentMethodRow` re-verification (not re-migration).** `WalletTopupPage`
+imports `PaymentMethodRow` from `PaymentMethodSelector.tsx` (already
+migrated in Task 13 — `border-2` card-surfaced `<label>` wrapping a
+`ui/Radio`). Confirmed its exported prop contract (`value`, `checked`,
+`onSelect`, `icon`, `title`, `subtitle`, optional `feeNote`) is unchanged
+and `WalletTopupPage`'s call site still matches it field-for-field; the
+component itself was not touched by this task. `PaymentMethodSelector.tsx`
+was not edited.
+
+**`TrackOrderPage`'s anti-enumeration behavior — confirmed unchanged.** The
+single generic `web.track_not_found` failure message, its `FailureState`
+routing (`not_found`/`throttled`/`error`), and the full-page `window.
+location.assign` redirect on success are byte-unchanged; only the form
+markup (now `<Card><form>…</Card>` + `<FormField>`/`<Input>`/`<Button
+type="submit">`) changed. No secondary hint text was added to any failure
+state.
+
+**Files.** `apps/storefront/client/src/pages/PayPage.tsx`,
+`apps/storefront/client/src/pages/PayPage.test.tsx` (cancel-dialog tests:
+one existing test replaced by three — open-does-not-mutate,
+confirm-mutates, cancel-does-not-mutate — every other test unmodified),
+`apps/storefront/client/src/pages/WalletTopupPage.tsx`,
+`apps/storefront/client/src/pages/TrackOrderPage.tsx`,
+`apps/storefront/client/src/components/ui/Badge.tsx` (new `info` variant),
+`apps/storefront/client/src/components/ui/Badge.test.tsx` (one new case),
+`packages/core/locales/{en,id}.json` (4 new `web.cancel_order_confirm_*`
+keys).

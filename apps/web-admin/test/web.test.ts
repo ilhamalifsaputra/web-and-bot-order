@@ -58,6 +58,7 @@ import { UPLOADS_DIR } from "../src/paths";
 import { setTokenValidator, setChannelValidator } from "../src/lib/telegramCheck";
 import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
+import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import { setFxRateFetcher } from "@app/db";
 import {
   makeSession,
@@ -3909,9 +3910,27 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.headers["content-disposition"]).toContain("stock.csv");
       expect(res.body.split("\r\n")[0]).toBe(
-        "Denomination,Product,Category,Available,Reserved,Sold,Waiting,Status",
+        "Denomination,Product,Category,Catalog Price (IDR),Catalog Price (USD),Available,Reserved,Sold,Waiting,Status",
       );
       expect(res.body).toContain(denom!.name);
+    });
+
+    it("includes the catalog price in rupiah and dollars when a rate is set", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      const denom = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: `PricedDenom${Math.random()}`,
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "40000",
+        description: "x",
+      });
+      const res = await get("/api/stock/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const row = res.body.split("\r\n").find((l: string) => l.startsWith(`${denom.name},`));
+      expect(row).toBeDefined();
+      expect(res.body).toContain(formatIdr("40000")); // "Rp40.000"
+      expect(res.body).toContain(formatUsdt(usdtFromIdr("40000", "16000"))); // "2.5 USDT"
     });
 
     it("rejects missing auth (anon -> 303 /login)", async () => {

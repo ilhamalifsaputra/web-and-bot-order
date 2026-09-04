@@ -86,7 +86,9 @@ describe("ProductCard", () => {
   // task-23: the badge sits over the image well, which since Fase 12 can be
   // the light DefaultThumb placeholder — bg-black/40 + text-grass fell to
   // ~2.3:1 there and failed WCAG AA. It's now an opaque grass chip (solid
-  // background + white text, ~5.9:1), still the grass family, never amber.
+  // background + white text, ~5:1), still the grass family, never amber.
+  // task-24: the chip is also gated on !all_non_auto (dedicated test below);
+  // `base` has all_non_auto:false so the chip still renders here.
   it("gives the instant chip an opaque, legible grass background (not bg-black/40 + text-grass) and no amber", () => {
     render(
       <MemoryRouter>
@@ -97,6 +99,27 @@ describe("ProductCard", () => {
     expect(chip).toHaveClass("bg-grass-dark", "text-white");
     expect(chip.className).not.toContain("bg-black/40");
     expect(chip.className).not.toMatch(/amber/);
+  });
+
+  // task-24: a fully manual-delivery product (all_non_auto) delivers nothing
+  // instantly, so the solid-green "Instant delivery" pill would be false
+  // advertising — it must not render for those.
+  it("shows the instant chip for an auto-delivery product (all_non_auto false)", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={base} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+  });
+
+  it("hides the instant chip when every denomination is manual delivery (all_non_auto)", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={{ ...base, all_non_auto: true }} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
   });
 
   it("renders whole-number ratings without trailing .0", () => {

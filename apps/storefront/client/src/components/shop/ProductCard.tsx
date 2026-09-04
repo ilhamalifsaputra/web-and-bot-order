@@ -122,12 +122,16 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             solid bg-grass-dark + white text stays legible over BOTH a real
             photo and the light DefaultThumb well Fase 12 introduced. The old
             bg-black/40 + text-grass computed to ~2.3:1 over that pale
-            placeholder (fails WCAG AA); white on bg-grass-dark is ~5.9:1.
+            placeholder (fails WCAG AA); white on bg-grass-dark is ~5:1.
             Still the grass family (positive capability), never off-palette
-            amber — same treatment as the sibling bulk-discount badge above. */}
-        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
-          <Zap className="w-3 h-3" /> {t("web.badge_instant")}
-        </span>
+            amber — same treatment as the sibling bulk-discount badge above.
+            Gated on !all_non_auto: when every denomination is manual delivery
+            nothing is delivered instantly, so the pill would mislead the buyer. */}
+        {!p.all_non_auto && (
+          <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
+            <Zap className="w-3 h-3" /> {t("web.badge_instant")}
+          </span>
+        )}
       </div>
       <div className="p-4 flex flex-col flex-1">
         <h3 className="font-semibold text-ink line-clamp-1">{p.name}</h3>

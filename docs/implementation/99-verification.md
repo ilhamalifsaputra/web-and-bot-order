@@ -143,6 +143,22 @@ Catalog, and a before/after of the instant-delivery badge fix.
     Pre-Fase-12 shell behaviour.
 11. **Worktree rebased onto `master`** (was 2 behind — unrelated stock-CSV
     work). 0 behind at time of this sweep.
+12. **Fase 12 whole-branch review — carry-forward.** The review came back
+    "ready to merge, no Critical"; its 3 correctness + 3 stale-text findings
+    were closed (denomIcon `uc`/`voucher` collision, instant-badge gate on
+    `all_non_auto`, plus schema/cart/deviations comment fixes). These lower-
+    priority items were deliberately left for follow-up:
+    - Share the `ThumbnailKind` / `DenomIconKind` unions via `@app/core/enums`
+      (6 copies today) — recommended, not a blocker.
+    - `pageData.ts` "already sorted price-asc" comment nuance (review #6).
+    - `ProductPage.tsx` ~24px vertical misalignment after the `<h1>` hoist
+      (review #8) — design call.
+    - `DefaultThumb` name duplication on the two detail pages (review #9) —
+      design call.
+    - Admin selects key visibility off the loaded row, not the in-progress
+      draft (review #10) — UI-lag only, no data loss.
+    - Test-quality nits (review #11): `currencyIconKind` null-clear coverage,
+      `nextElementSibling` fragility, `image: ""` vs `null` fixtures.
 
 ## 4. §30 acceptance criteria
 

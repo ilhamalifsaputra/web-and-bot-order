@@ -74,6 +74,36 @@ describe("resolveDenomIconKind", () => {
         resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "1000 Points"),
       ).toBe("coin");
     });
+
+    it('resolves "Voucher" to "voucher", NOT "coin" via the "uc" substring in v-o-uc-h-e-r', () => {
+      expect(
+        resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "Voucher"),
+      ).toBe("voucher");
+    });
+
+    it('still resolves a bare "UC" (whole word) to "coin"', () => {
+      expect(resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "UC")).toBe(
+        "coin",
+      );
+    });
+
+    it('still resolves "Diamonds" (word-boundary start + trailing plural) to "diamond"', () => {
+      expect(
+        resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "Diamonds"),
+      ).toBe("diamond");
+    });
+
+    it('resolves "Game Key" to "key"', () => {
+      expect(
+        resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "Game Key"),
+      ).toBe("key");
+    });
+
+    it('does not fire "cp" inside "SCPAY" (word-boundary anchored)', () => {
+      expect(
+        resolveDenomIconKind({ currencyIconKind: null }, { group: null }, "SCPAY"),
+      ).toBeNull();
+    });
   });
 
   it("falls back to diamond for GAME_TOPUP categories when qtyUnit doesn't match", () => {

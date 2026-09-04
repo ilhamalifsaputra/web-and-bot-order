@@ -1618,15 +1618,20 @@ task's admin-configurable currency icon turned out to be a **preset dropdown
 rendered as a lucide icon** (`ICON_KIND_ICONS` in `DenominationCard.tsx` —
 `Gem`/`Coins`/`KeyRound`/`CreditCard`/`Ticket`), not an image asset at all,
 `assets/icons/` ended up NOT used by the currency-icon feature itself. Its
-only actual use anywhere in this plan is as substitute image bytes in the
-gitignored dev-seed script (`tests/e2e/seed-thumbs.ts`, commit `25c31d55`) to
-exercise the "admin uploaded a real photo" WebP-srcset rendering path
-visually during manual QA. That script never commits or ships any of those
-bytes — confirmed directly: `git show --stat 25c31d55` touches exactly one
-file (`tests/e2e/seed-thumbs.ts`) and `git status --porcelain
-gogogo-frontend/` is clean, with every file under `gogogo-frontend/` tracked
-only as the pre-existing reference set (`git ls-files gogogo-frontend/`),
-none of it copied into `data/uploads/` at commit time. Net: this repo ships
+only actual use anywhere in this plan is as substitute image bytes for the
+dev-seed script (`tests/e2e/seed-thumbs.ts`, commit `25c31d55`) to exercise
+the "admin uploaded a real photo" WebP-srcset rendering path visually during
+manual QA. The script itself is committed and tracked (not gitignored — its
+commit subject's "(gitignored)" tag is a misnomer); what is gitignored is
+only its *output*, the `data/uploads/**` tree. It reads two files from
+`gogogo-frontend/assets/icons/` at dev time and copies them into that
+ignored tree — it never commits or ships any of those bytes. Confirmed
+directly: `git diff --stat af54e943..HEAD -- gogogo-frontend data` is empty,
+`git show --stat 25c31d55` touches exactly one file
+(`tests/e2e/seed-thumbs.ts`), and every file under `gogogo-frontend/` is
+tracked only as the pre-existing reference set (`git ls-files
+gogogo-frontend/`), none of it copied into `data/uploads/` at commit time.
+Net: this repo ships
 **zero** third-party/gogogo.id imagery in its production bundle — every
 default visual is a generated design-system placeholder (lucide icon + token
 colours), and the one real per-product photo path (`Product.webImageUrl`) is
@@ -1670,4 +1675,5 @@ added, not something being closed out.
 `apps/storefront/client/src/pages/InstantBuyPage.tsx`,
 `apps/storefront/client/src/pages/CartPage.tsx`,
 `apps/storefront/client/src/api/types.ts`,
-`tests/e2e/seed-thumbs.ts` (new, gitignored dev-only).
+`tests/e2e/seed-thumbs.ts` (new, committed; dev-only — writes only into the
+gitignored `data/uploads/` tree, ships no bytes).

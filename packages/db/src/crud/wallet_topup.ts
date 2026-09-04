@@ -594,7 +594,7 @@ export async function hasPendingWalletTopupOrder(
 export async function creditUnderpaidTopupAnyway(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ credited: Decimal }> {
+): Promise<{ credited: Decimal; currency: string }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
@@ -633,6 +633,11 @@ export async function creditUnderpaidTopupAnyway(
           `to UNDERPAID by hand. If the buyer really did send money, it has to be credited to their balance by hand.`,
       );
     }
-    return { credited: received };
+    // `currency` travels back with the amount because `credited` alone is
+    // ambiguous once a top-up can be underpaid on either an IDR or a USDT
+    // rail — the caller needs both to write an audit line (or a toast) that
+    // says which money moved, and `credited === 0` is the caller's signal
+    // that nothing was credited at all and the buyer needs manual attention.
+    return { credited: received, currency: order.currency };
   });
 }

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OrderStatus, OrderKind } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
@@ -238,13 +239,17 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     };
 
     try {
-      const { refunded } = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
+      const { refunded, currency } = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "underpaid_refund",
         targetType: "order",
         targetId: orderId,
-        details: `Refunded ${refunded.toString()} to the buyer's wallet for an underpaid order.`,
+        // The currency is spelled out because the refund now lands in the
+        // order's own currency (it used to always default to IDR), so a bare
+        // number here would leave the shop admin guessing whether "18500"
+        // means rupiah or USDT.
+        details: `Refunded ${refunded.toString()} ${currency} to the buyer's wallet for an underpaid order.`,
       });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, { error: e.message });
@@ -295,20 +300,31 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
+    let result: { credited: Decimal; currency: string };
     try {
-      const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId, adminId: req.admin!.userId });
+      result = await creditUnderpaidTopupAnyway(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "underpaid_topup_credit_anyway",
         targetType: "order",
         targetId: orderId,
-        details: `Cancelled underpaid top-up order and credited ${credited.toString()} to the buyer's wallet.`,
+        // Two shapes, because "credited 0" is not a smaller version of the
+        // success case — it means the order was cancelled and the buyer got
+        // nothing, which is the one outcome a shop admin has to act on by
+        // hand. The currency is named for the same reason as the refund
+        // route above: a top-up can be underpaid on an IDR or a USDT rail.
+        details: result.credited.greaterThan(0)
+          ? `Cancelled underpaid top-up order and credited ${result.credited.toString()} ${result.currency} to the buyer's wallet.`
+          : "Cancelled underpaid top-up order, but credited nothing to the buyer's wallet because no payment record shows how much they actually sent. Credit them by hand if they really did pay.",
       });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return respond(200, { ok: true });
+    // `credited`/`currency` go back to the browser so the admin panel can tell
+    // the admin whether money actually moved, instead of showing the same
+    // green "credited" toast for a cancellation that credited nothing.
+    return respond(200, { ok: true, credited: result.credited.toString(), currency: result.currency });
   });
 
   app.post("/api/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {

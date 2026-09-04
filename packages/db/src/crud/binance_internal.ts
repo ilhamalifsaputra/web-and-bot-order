@@ -941,7 +941,7 @@ export async function deliverUnderpaidOrder(
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number | null }> {
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
@@ -966,7 +966,7 @@ export async function refundUnderpaidOrder(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
+        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
       },
     });
     // Only write a Refund record when money actually moved (`received > 0`,
@@ -991,8 +991,13 @@ export async function refundUnderpaidOrder(
       to: OrderStatus.REFUNDED,
       meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
-    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
-    return { refunded: received, refundId: refund?.id ?? null };
+    logger.info(
+      `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
+    );
+    // `currency` travels back with the amount so the caller's audit line can
+    // say which money was returned — a bare amount is ambiguous now that the
+    // refund lands in the order's own currency rather than always IDR.
+    return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
   });
 }
 

@@ -871,10 +871,19 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
       }),
     ).toBe(true);
 
-    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+    const { refunded, refundId, currency } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
 
     expect(refunded.toString()).toBe("4.25");
     expect(refundId).not.toBeNull();
+    // The currency comes back with the amount so the calling route's audit
+    // line can name it — "4.25" alone reads the same whether it is USDT or
+    // rupiah, and the refund now lands in the order's own currency.
+    expect(currency).toBe("USDT");
+
+    // Same reason on the order's admin note: it is the record a shop admin
+    // reads months later, so it has to say which money was returned.
+    const noted = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(noted.adminNote).toContain("[refund] 4.25 USDT to wallet");
 
     const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
     expect(new Decimal(buyer.walletBalanceUsdt).toString()).toBe("4.25");

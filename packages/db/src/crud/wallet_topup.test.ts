@@ -952,11 +952,14 @@ describe("creditUnderpaidTopupAnyway", () => {
       await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-topup-underpaid-1", amount: "6.5" }),
     ).toBe(true);
 
-    const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
 
     // The amount received, NOT the 10 USDT the buyer asked to top up.
     expect(credited.toString()).toBe("6.5");
     expect(credited.lessThan(order.totalAmount)).toBe(true);
+    // The currency travels back with it: the calling route writes the audit
+    // line the shop admin reads, and "6.5" alone does not say which money.
+    expect(currency).toBe("USDT");
 
     const resolved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(resolved.status).toBe(OrderStatus.CANCELLED);
@@ -1021,9 +1024,12 @@ describe("creditUnderpaidTopupAnyway", () => {
       }),
     ).toBe(true);
 
-    const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
 
     expect(credited.toString()).toBe("18500");
+    // An IDR rail returns IDR — the counterpart to the USDT case above, and
+    // the reason a bare amount in the audit log is ambiguous at all.
+    expect(currency).toBe("IDR");
     const buyer = await freshUser();
     expect(new Decimal(buyer.walletBalance).toString()).toBe("18500");
     // Currency isolation: an IDR top-up must never touch the USDT balance.

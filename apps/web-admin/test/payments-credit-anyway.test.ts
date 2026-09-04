@@ -84,7 +84,9 @@ describe("POST /api/payments/order/:orderId/credit-anyway", () => {
     const res = await creditAnyway(order.id);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ ok: true });
+    // `credited`/`currency` come back so the admin panel can say how much
+    // actually moved instead of showing an unconditional success toast.
+    expect(res.json()).toEqual({ ok: true, credited: "6.5", currency: "USDT" });
 
     const resolved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(resolved.status).toBe("CANCELLED");
@@ -95,7 +97,35 @@ describe("POST /api/payments/order/:orderId/credit-anyway", () => {
 
     const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_topup_credit_anyway", targetId: order.id } });
     expect(audit).toHaveLength(1);
-    expect(audit[0]!.details).toContain("6.5");
+    // Names the currency: a bare "6.5" in the shop admin's audit log cannot be
+    // told apart from 6.5 rupiah now that a top-up can be underpaid on either
+    // an IDR or a USDT rail.
+    expect(audit[0]!.details).toContain("6.5 USDT");
+  });
+
+  it("reports credited 0 and warns in the audit log when no rail recorded what the buyer sent", async () => {
+    // An order moved to UNDERPAID with no ledger row behind it — the shape
+    // every WALLET_TOPUP order that was already sitting in UNDERPAID before
+    // this branch's QRIS ledger table landed has. The route must cancel it
+    // and say plainly that nothing was credited.
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "10", currency: "USDT", method: PaymentMethod.BINANCE_INTERNAL, rate: "16000" }),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { status: "UNDERPAID" } });
+    const buyerBefore = new Decimal((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalanceUsdt);
+
+    const res = await creditAnyway(order.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, credited: "0", currency: "USDT" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("CANCELLED");
+    const buyerAfter = new Decimal((await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalanceUsdt);
+    expect(buyerAfter.equals(buyerBefore)).toBe(true);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_topup_credit_anyway", targetId: order.id } });
+    expect(audit).toHaveLength(1);
+    expect(audit[0]!.details).toContain("credited nothing");
+    expect(audit[0]!.details).toContain("by hand");
   });
 
   it("refuses a PRODUCT-kind underpaid order with 422 error.order_not_wallet_topup", async () => {
@@ -115,11 +145,11 @@ describe("POST /api/payments/order/:orderId/credit-anyway", () => {
 
       const first = await creditAnyway(order.id, { "idempotency-key": key });
       expect(first.statusCode).toBe(200);
-      expect(first.json()).toEqual({ ok: true });
+      expect(first.json()).toEqual({ ok: true, credited: "6.5", currency: "USDT" });
 
       const second = await creditAnyway(order.id, { "idempotency-key": key });
       expect(second.statusCode).toBe(200);
-      expect(second.json()).toEqual({ ok: true });
+      expect(second.json()).toEqual({ ok: true, credited: "6.5", currency: "USDT" });
 
       // Credited exactly once — the buyer's wallet only moved on the first
       // attempt, and the audit log only recorded one credit-anyway action.
@@ -134,7 +164,7 @@ describe("POST /api/payments/order/:orderId/credit-anyway", () => {
 
       const first = await creditAnyway(order.id);
       expect(first.statusCode).toBe(200);
-      expect(first.json()).toEqual({ ok: true });
+      expect(first.json()).toEqual({ ok: true, credited: "6.5", currency: "USDT" });
 
       const second = await creditAnyway(order.id);
       expect(second.statusCode).toBe(422);

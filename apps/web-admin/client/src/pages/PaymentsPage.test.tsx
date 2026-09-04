@@ -752,7 +752,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     const user = userEvent.setup();
     const topup = { ...UNDERPAID, kind: "WALLET_TOPUP" };
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [topup], pendingInternal: [] });
-    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, credited: "4.25", currency: "USDT" });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
 
@@ -769,6 +769,36 @@ describe("PaymentsPage — underpaid order resolution", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Credit anyway" }));
 
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/credit-anyway", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+    // Names the amount that actually moved, so the admin can check it against
+    // what the buyer says they sent.
+    expect(await screen.findByText("Order cancelled and 4.25 USDT credited to the buyer's balance.")).toBeInTheDocument();
+  });
+
+  // The route cancels the order either way, but credits nothing when no rail
+  // recorded what arrived (every WALLET_TOPUP order already sitting in
+  // UNDERPAID before this branch's QRIS ledger landed is in that state). The
+  // old unconditional success toast told the admin money moved when it had
+  // not, and CANCELLED is terminal — nothing later would correct them.
+  it("warns instead of claiming success when the credit-anyway response credited nothing", async () => {
+    const user = userEvent.setup();
+    const topup = { ...UNDERPAID, kind: "WALLET_TOPUP" };
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [topup], pendingInternal: [] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, credited: "0", currency: "USDT" });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Credit to balance anyway"));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Credit anyway" }));
+
+    // Names the order code: by now the order is CANCELLED and has dropped out
+    // of the Underpaid panel, so the toast is the admin's only handle on it.
+    const warning = await screen.findByText(/ORD-UP1 cancelled but nothing could be credited automatically/);
+    expect(warning).toBeInTheDocument();
+    expect(screen.queryByText(/credited to the buyer's balance\./)).not.toBeInTheDocument();
   });
 
   it("keeps a PRODUCT underpaid row's menu unchanged (all three original actions)", async () => {

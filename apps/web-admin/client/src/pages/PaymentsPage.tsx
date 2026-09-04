@@ -97,6 +97,18 @@ interface UnderpaidOrderRow {
   user: OrderPartyRow | null;
   kind: string;
 }
+/** Shape of POST /api/payments/order/:orderId/credit-anyway's success body
+ *  (apps/web-admin/src/routes/api/payments.ts). `credited` is a decimal string
+ *  — "0" when the order was cancelled but nothing could be credited, because
+ *  no payment rail recorded what the buyer actually sent. Both fields are
+ *  optional so a replayed response stored by an older build (bare `{ ok:
+ *  true }`, from before this branch) still type-checks and falls into the
+ *  "nothing credited" branch rather than claiming a credit it cannot prove. */
+interface CreditAnywayResult {
+  ok: boolean;
+  credited?: string;
+  currency?: string;
+}
 interface PendingInternalOrderRow {
   id: number;
   orderCode: string;
@@ -304,11 +316,30 @@ export function PaymentsPage() {
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
+  // Takes the whole row, not just its id, so the "nothing was credited" branch
+  // below can name the order in its warning — by then the order is CANCELLED
+  // and gone from the Underpaid panel, so the code in the toast is the admin's
+  // only remaining handle on it.
   const creditAnyway = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/credit-anyway`, {}),
-    onSuccess: () => {
+    mutationFn: (order: UnderpaidOrderRow) =>
+      idempotentPost<CreditAnywayResult>(`/api/payments/order/${order.id}/credit-anyway`, {}),
+    onSuccess: (res, order) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Order cancelled and credited to the buyer's balance.");
+      // The route cancels the order either way, but only credits the buyer
+      // when some payment rail recorded what actually arrived. An order that
+      // was already UNDERPAID before this feature shipped has no such record,
+      // so it gets cancelled with nothing credited — a green "credited" toast
+      // there would tell the admin money moved when it did not, and CANCELLED
+      // is terminal, so nothing later would correct them.
+      const credited = res.credited ?? "0";
+      if (Number(credited) > 0) {
+        const amount = formatCurrencyDisplay(credited, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
+        toast.success(`Order cancelled and ${amount} credited to the buyer's balance.`);
+      } else {
+        toast.warning(
+          `Order ${order.orderCode} cancelled but nothing could be credited automatically — check the order's admin note and credit the buyer manually.`,
+        );
+      }
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
@@ -816,7 +847,7 @@ export function PaymentsPage() {
           description={`Order ${pendingCreditAnyway.orderCode} was underpaid. Cancel it and credit the buyer's wallet with the amount actually received.`}
           confirmLabel="Credit anyway"
           variant="default"
-          onConfirm={() => creditAnyway.mutate(pendingCreditAnyway.id)}
+          onConfirm={() => creditAnyway.mutate(pendingCreditAnyway)}
         />
       )}
       {pendingDismiss && (

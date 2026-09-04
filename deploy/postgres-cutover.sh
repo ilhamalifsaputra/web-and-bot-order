@@ -219,7 +219,9 @@ freeze_stack() {
     [ "$CONFIRM" = "yes" ] || fail "§2" "confirmation not given; aborting before touching the live stack."
   fi
 
-  run docker compose down
+  if ! run docker compose down; then
+    fail "§2" "'docker compose down' failed."
+  fi
 
   if [ "$DRY_RUN" = "true" ]; then
     echo "[dry-run] docker compose ps"
@@ -264,7 +266,9 @@ backup_sqlite() {
 # ---------------------------------------------------------------------------
 build_image() {
   echo "==> Building the application image (runbook §3a)"
-  run "${COMPOSE_BASE[@]}" build
+  if ! run "${COMPOSE_BASE[@]}" build; then
+    fail "§3a" "'docker compose ... build' failed."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -273,7 +277,9 @@ build_image() {
 bring_up_postgres() {
   echo "==> Bringing up the Postgres container (runbook §4)"
 
-  run "${COMPOSE_BASE[@]}" up -d postgres
+  if ! run "${COMPOSE_BASE[@]}" up -d postgres; then
+    fail "§4" "'docker compose ... up -d postgres' failed."
+  fi
 
   if [ "$DRY_RUN" = "true" ]; then
     echo "[dry-run] docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps postgres (poll for healthy, ~60s bound)"
@@ -366,12 +372,13 @@ run_reconcile() {
 cutover() {
   echo "==> Cutover — starting the full stack (runbook §8)"
 
-  run "${COMPOSE_BASE[@]}" up -d --build
+  if ! run "${COMPOSE_BASE[@]}" up -d --build; then
+    fail "§8" "'docker compose ... up -d --build' failed."
+  fi
 
   if [ "$DRY_RUN" = "true" ]; then
     WEB_PORT_D="${WEB_PORT:-8000}"
     STOREFRONT_PORT_D="${STOREFRONT_PORT:-8100}"
-    echo "[dry-run] docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps server"
     echo "[dry-run] curl -i http://127.0.0.1:${WEB_PORT_D}/healthz (poll, bounded retries)"
     echo "[dry-run] curl -i http://127.0.0.1:${STOREFRONT_PORT_D}/healthz (poll, bounded retries)"
     return 0

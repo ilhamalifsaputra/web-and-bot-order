@@ -238,24 +238,33 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       return reply.code(statusCode).send(body);
     };
 
+    let result: { refunded: Decimal; refundId: number | null; currency: string };
     try {
-      const { refunded, currency } = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
+      result = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "underpaid_refund",
         targetType: "order",
         targetId: orderId,
-        // The currency is spelled out because the refund now lands in the
-        // order's own currency (it used to always default to IDR), so a bare
-        // number here would leave the shop admin guessing whether "18500"
-        // means rupiah or USDT.
-        details: `Refunded ${refunded.toString()} ${currency} to the buyer's wallet for an underpaid order.`,
+        // Two shapes, same reasoning as the credit-anyway route below:
+        // "refunded 0" is not a smaller version of the success case — it means
+        // the order was marked REFUNDED and the buyer got nothing back, the one
+        // outcome a shop admin has to act on by hand. The currency is spelled
+        // out because the refund lands in the order's own currency (it used to
+        // always default to IDR), so a bare number here would leave the shop
+        // admin guessing whether "18500" means rupiah or USDT.
+        details: result.refunded.greaterThan(0)
+          ? `Refunded ${result.refunded.toString()} ${result.currency} to the buyer's wallet for an underpaid order.`
+          : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
       });
     } catch (e) {
       if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return respond(200, { ok: true });
+    // `refunded`/`currency` go back to the browser so the admin panel can tell
+    // the admin whether money actually moved, instead of showing the same green
+    // "refunded" toast for an order that was marked REFUNDED with no payout.
+    return respond(200, { ok: true, refunded: result.refunded.toString(), currency: result.currency });
   });
 
   app.post("/api/payments/order/:orderId/credit-anyway", { preHandler: csrfProtect }, async (req, reply) => {

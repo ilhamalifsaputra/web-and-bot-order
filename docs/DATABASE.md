@@ -169,7 +169,7 @@ setelah engine-swap ke PostgreSQL — polanya valid di kedua engine):
 | Model | Tabel | Kolom unik | outcome yang mungkin |
 |---|---|---|---|
 | `ProcessedBinanceTx` | `processed_binance_tx` | `binanceTxId` | matched / underpaid / unmatched |
-| `ProcessedBybitTx` | `processed_bybit_tx` | `bybitTxId` | matched / unmatched / delivery_failed / underpaid / underpaid_flag_failed |
+| `ProcessedBybitTx` | `processed_bybit_tx` | `bybitTxId` | matched / unmatched / delivery_failed / underpaid / underpaid_flag_failed / overpaid |
 | `ProcessedTokopayTx` | `processed_tokopay_tx` | `trxId` | matched / unmatched / delivery_failed |
 | `ProcessedPaydisiniTx` | `processed_paydisini_tx` | `trxId` | matched / unmatched / delivery_failed / stale |
 | `ProcessedNowpaymentsTx` | `processed_nowpayments_tx` | `trxId` | matched / unmatched / delivery_failed / stale |

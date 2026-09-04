@@ -26,7 +26,7 @@ stateDiagram-v2
     [*] --> PENDING_PAYMENT: createOrderDirect/createOrderFromCart<br/>(stok DIRESERVASI atomik)
 
     PENDING_PAYMENT --> PENDING_VERIFICATION: deliverPaid*Order (auto-confirm, transien)<br/>ATAU attachPaymentProof (test-only — lihat catatan di bawah)
-    PENDING_PAYMENT --> UNDERPAID: markUnderpaid (Binance: note cocok, amount kurang)<br/>markUnderpaidBybit (Bybit/Bybit BSC)<br/>markOrderUnderpaid (TokoPay/PayDisini/NOWPayments)
+    PENDING_PAYMENT --> UNDERPAID: markUnderpaid (Binance: note cocok, amount kurang)<br/>markUnderpaidBybit (Bybit) / markUnderpaidBybitBsc (Bybit BSC)<br/>markOrderUnderpaid (TokoPay/PayDisini/NOWPayments)
     PENDING_PAYMENT --> CANCELLED: autoCancelExpiredOrders (lewat expiresAt)<br/>ATAU user cancel (HANYA jika belum ada proof)
     PENDING_PAYMENT --> CANCELLED: gateway createTransaction gagal (Checkout-3 fix)
 
@@ -132,7 +132,7 @@ stateDiagram-v2
 |---|---|---|
 | `→ PENDING_PAYMENT` | Checkout bot/storefront | `packages/db/src/crud/orders.ts` (`createOrderDirect`/`createOrderFromCart`) |
 | `PENDING_PAYMENT → PENDING_VERIFICATION → DELIVERED` (auto, satu transaksi) | Webhook/poller gateway | `deliverPaid{Tokopay,Paydisini,Nowpayments,Internal,Bybit}Order` |
-| `PENDING_PAYMENT → UNDERPAID` | Poller Binance (note cocok, amount kurang), poller Bybit/Bybit BSC, ATAU poller rekonsiliasi TokoPay/PayDisini/NOWPayments | `markUnderpaid` (`processed_binance_tx`), `markUnderpaidBybit` (`processed_bybit_tx`), `markOrderUnderpaid` (`qris_underpaid_tx`) |
+| `PENDING_PAYMENT → UNDERPAID` | Poller Binance (note cocok, amount kurang), poller Bybit/Bybit BSC, ATAU poller rekonsiliasi TokoPay/PayDisini/NOWPayments | `markUnderpaid` (`processed_binance_tx`), `markUnderpaidBybit` / `markUnderpaidBybitBsc` (keduanya `processed_bybit_tx`), `markOrderUnderpaid` (`qris_underpaid_tx`) |
 | `PENDING_VERIFICATION → DELIVERED` | Admin approve (manual) ATAU sistem (`adminId: 0`, auto-confirm) | `approveOrder` — **chokepoint tunggal** alokasi stok untuk SEMUA jalur |
 | `PENDING_VERIFICATION → REJECTED` | Admin reject bukti | `rejectOrder` |
 | `UNDERPAID → PENDING_VERIFICATION` | Admin "kirim juga" (terima shortfall) | `deliverUnderpaidOrder` |
@@ -222,8 +222,10 @@ stateDiagram-v2
   menandai order `UNDERPAID`:
   - **Binance Internal Transfer** — `markUnderpaid`, baris `processed_binance_tx`
     dengan `outcome = underpaid`.
-  - **Bybit** dan **Bybit BSC** — `markUnderpaidBybit`, baris
-    `processed_bybit_tx` dengan `outcome = underpaid`.
+  - **Bybit** (`markUnderpaidBybit`, `crud/bybit_deposit.ts`) dan **Bybit BSC**
+    (`markUnderpaidBybitBsc`, `crud/bybit_bsc_deposit.ts`) — dua fungsi
+    terpisah, tapi keduanya menulis ke tabel yang sama, `processed_bybit_tx`,
+    dengan `outcome = underpaid`.
   - **TokoPay**, **PayDisini**, dan **NOWPayments** — poller rekonsiliasi
     masing-masing memanggil `markOrderUnderpaid` (`crud/orderStatus.ts`), yang
     mencatat berapa yang benar-benar masuk di tabel `qris_underpaid_tx`.

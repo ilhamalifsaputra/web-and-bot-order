@@ -101,12 +101,22 @@ interface UnderpaidOrderRow {
  *  (apps/web-admin/src/routes/api/payments.ts). `credited` is a decimal string
  *  — "0" when the order was cancelled but nothing could be credited, because
  *  no payment rail recorded what the buyer actually sent. Both fields are
- *  optional so a replayed response stored by an older build (bare `{ ok:
- *  true }`, from before this branch) still type-checks and falls into the
- *  "nothing credited" branch rather than claiming a credit it cannot prove. */
+ *  optional as defensive typing, not because a known caller omits them: this
+ *  is a hand-written mirror of a response body the client does not control,
+ *  so an absent field must land in the "nothing credited" branch rather than
+ *  be asserted into a credit the response never claimed. */
 interface CreditAnywayResult {
   ok: boolean;
   credited?: string;
+  currency?: string;
+}
+/** Shape of POST /api/payments/order/:orderId/refund's success body — the
+ *  PRODUCT-order sibling of `CreditAnywayResult`, with the same "0 means the
+ *  order moved to REFUNDED but no money went back" contract and the same
+ *  defensive optionality on both fields. */
+interface RefundUnderpaidResult {
+  ok: boolean;
+  refunded?: string;
   currency?: string;
 }
 interface PendingInternalOrderRow {
@@ -298,11 +308,29 @@ export function PaymentsPage() {
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
+  // Takes the whole row for the same reason `creditAnyway` below does: the
+  // "nothing was refunded" branch has to name the order, and by the time the
+  // toast shows the order is REFUNDED and gone from the Underpaid panel.
   const refundUnderpaid = useMutation({
-    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/refund`, {}),
-    onSuccess: () => {
+    mutationFn: (order: UnderpaidOrderRow) =>
+      idempotentPost<RefundUnderpaidResult>(`/api/payments/order/${order.id}/refund`, {}),
+    onSuccess: (res, order) => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
-      toast.success("Order refunded to wallet.");
+      // The route marks the order REFUNDED either way, but only pays the buyer
+      // back when some payment rail recorded what actually arrived. An order
+      // that was already UNDERPAID before this branch's ledger table landed has
+      // no such record, so it ends up REFUNDED with nothing returned — a green
+      // "refunded" toast there would tell the admin money moved when it did
+      // not, and REFUNDED is terminal, so nothing later would correct them.
+      const refunded = res.refunded ?? "0";
+      if (Number(refunded) > 0) {
+        const amount = formatCurrencyDisplay(refunded, (res.currency ?? order.currency) as "IDR" | "USDT" | "USD");
+        toast.success(`Order refunded and ${amount} returned to the buyer's balance.`);
+      } else {
+        toast.warning(
+          `Order ${order.orderCode} marked refunded but nothing could be returned automatically — no payment record shows what the buyer actually sent. Refund them by hand if they really did pay.`,
+        );
+      }
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
@@ -337,7 +365,7 @@ export function PaymentsPage() {
         toast.success(`Order cancelled and ${amount} credited to the buyer's balance.`);
       } else {
         toast.warning(
-          `Order ${order.orderCode} cancelled but nothing could be credited automatically — check the order's admin note and credit the buyer manually.`,
+          `Order ${order.orderCode} cancelled but nothing could be credited automatically — no payment record shows what the buyer actually sent. Credit them by hand if they really did pay.`,
         );
       }
     },
@@ -826,7 +854,7 @@ export function PaymentsPage() {
           description={`Refund order ${pendingRefund.orderCode}'s payment to the buyer's wallet balance.`}
           confirmLabel="Refund"
           variant="default"
-          onConfirm={() => refundUnderpaid.mutate(pendingRefund.id)}
+          onConfirm={() => refundUnderpaid.mutate(pendingRefund)}
         />
       )}
       {pendingCancel && (

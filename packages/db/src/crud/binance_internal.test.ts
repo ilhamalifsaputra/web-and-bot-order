@@ -25,6 +25,7 @@ import {
   markUnderpaidBybit,
   markUnderpaidBybitBsc,
   refundUnderpaidOrder,
+  markOrderUnderpaid,
   recordUnmatchedTx,
   createCategory,
   createCatalogProduct,
@@ -839,6 +840,50 @@ describe("refundUnderpaidOrder — reads the received amount from whichever rail
     expect(refunded.toString()).toBe("0");
     expect(refundId).toBeNull();
     expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  // The refund has to land in the balance column matching the ORDER's own
+  // currency. `adjustWallet` defaults to IDR when no currency is passed, and
+  // this call site passed none — so a USDT order refunded 4.25 USDT into the
+  // buyer's rupiah balance, inventing rupiah out of nothing and leaving the
+  // USDT they actually sent unreturned.
+  //
+  // The bug was unreachable until the QrisUnderpaidTx ledger landed: it is
+  // NOWPayments — a USDT crypto-invoice rail that structurally flags
+  // underpayment through the QRIS/IDR ledger table — that made
+  // `findUnderpaidReceived` resolve a real amount for a USDT order for the
+  // first time. Before that it always read 0 for this rail and the credit was
+  // skipped entirely, so the wrong-column credit never actually ran. This test
+  // therefore drives the exact newly-reachable path: a USDT order flagged via
+  // `markOrderUnderpaid`.
+  it("credits a USDT order's refund to walletBalanceUsdt, leaving the rupiah balance untouched", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentMethod: PaymentMethod.NOWPAYMENTS, currency: "USDT", fxRate: "16000" },
+    });
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: order.id,
+        gateway: "NOWPayments",
+        receivedAmount: "4.25",
+        expectedAmount: "10",
+      }),
+    ).toBe(true);
+
+    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("4.25");
+    expect(refundId).not.toBeNull();
+
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalanceUsdt).toString()).toBe("4.25");
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("0");
+
+    const walletTx = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } });
+    expect(walletTx).toHaveLength(1);
+    expect(walletTx[0]!.currency).toBe("USDT");
+    expect(new Decimal(walletTx[0]!.delta).toString()).toBe("4.25");
   });
 });
 

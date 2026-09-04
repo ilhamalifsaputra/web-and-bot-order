@@ -900,9 +900,14 @@ export async function deliverUnderpaidOrder(
 }
 
 /**
- * Resolve UNDERPAID by refunding the received USDT to the buyer's wallet and
- * marking the order REFUNDED. Rolls back voucher usage so reconciliation stays
- * clean. (UNDERPAID orders never reserved stock, so there is nothing to release.)
+ * Resolve UNDERPAID by refunding what the buyer actually sent to their wallet
+ * and marking the order REFUNDED. Rolls back voucher usage so reconciliation
+ * stays clean. (UNDERPAID orders never reserved stock, so nothing to release.)
+ *
+ * The credit goes to the balance matching the ORDER's own currency, so a USDT
+ * order returns USDT and a rupiah order returns rupiah — `adjustWallet`
+ * silently defaults to IDR when no currency is passed, which would otherwise
+ * pay a crypto buyer back in the wrong money entirely.
  *
  * Also writes a `Refund` record (Trustance Master Architecture Task 8b) so
  * this concrete, already-idempotency-protected payout path shows up in the
@@ -945,7 +950,12 @@ export async function refundUnderpaidOrder(
     }
     const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
     if (received.greaterThan(0)) {
-      await adjustWallet(tx, order.userId, received, { reason: "underpaid_refund", orderId: order.id, adminId: args.adminId });
+      await adjustWallet(tx, order.userId, received, {
+        reason: "underpaid_refund",
+        currency: order.currency as "IDR" | "USDT",
+        orderId: order.id,
+        adminId: args.adminId,
+      });
     }
     if (order.voucherId) {
       const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });

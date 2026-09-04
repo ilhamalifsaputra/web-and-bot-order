@@ -182,19 +182,28 @@ ensure_credential_key() {
 
   if [ -f "$CREDENTIAL_KEY_FILE" ]; then
     _key="$(cat "$CREDENTIAL_KEY_FILE")"
-    if ! printf '%s' "$_key" | grep -Eq '^[0-9a-f]{64}$'; then
+    if ! printf '%s' "$_key" | grep -Eq '^[0-9a-fA-F]{64}$'; then
       log "ERROR: $CREDENTIAL_KEY_FILE does not contain a valid 64-character hex key. Refusing to start: regenerating would silently orphan every credential already encrypted under the old key. Restore the correct file from backup, or if you accept the data loss, remove the file and restart." >&2
       exit 1
     fi
+    # Re-assert permissions in case the file arrived via a restore/tar that
+    # didn't preserve them (e.g. 0644) — cheap no-op otherwise.
+    chmod 600 "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
     export CREDENTIAL_ENCRYPTION_KEY="$_key"
     return 0
   fi
 
   _key="$(openssl rand -hex 32)"
-  printf '%s' "$_key" > "$CREDENTIAL_KEY_FILE"
-  chmod 600 "$CREDENTIAL_KEY_FILE"
+  # umask 077 in the same subshell as the write closes the brief window
+  # where the file would otherwise exist at the image's default mode
+  # (typically 0644) before the chmod below narrows it.
+  if ! (umask 077; printf '%s' "$_key" > "$CREDENTIAL_KEY_FILE"); then
+    log "ERROR: could not write $CREDENTIAL_KEY_FILE — the data directory must be writable to auto-generate the credential encryption key. Either make it writable, or set CREDENTIAL_ENCRYPTION_KEY yourself (see .env.example)." >&2
+    exit 1
+  fi
+  chmod 600 "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
   if [ "$(id -u)" = "0" ]; then
-    chown app:app "$CREDENTIAL_KEY_FILE"
+    chown app:app "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
   fi
   log "Generated a new credential encryption key at $CREDENTIAL_KEY_FILE. This file must be part of your backups — losing it makes every already-encrypted credential (Settings like the Digiflazz API key, and any manual-account stock item) permanently unreadable. The key itself is never written to this log."
   export CREDENTIAL_ENCRYPTION_KEY="$_key"
@@ -226,7 +235,10 @@ main() {
 # ENTRYPOINT_TEST_SOURCE_ONLY lets deploy/test-entrypoint-credential-key.sh
 # source this file (with APP_ROOT pointed at a temp dir) to reuse
 # ensure_credential_key() and its helpers without running the real
-# migration/exec sequence.
+# migration/exec sequence. This must never be set in a real container's
+# environment — if it were (e.g. an accidental line in .env, which compose
+# passes through via env_file), the entrypoint would source the script,
+# call nothing, and exit 0 with no diagnostic at all.
 if [ -z "${ENTRYPOINT_TEST_SOURCE_ONLY:-}" ]; then
   main "$@"
 fi

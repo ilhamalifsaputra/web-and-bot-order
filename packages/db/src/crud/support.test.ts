@@ -33,6 +33,8 @@ import {
   TICKET_LEGAL_TRANSITIONS,
   transitionTicketStatus,
   listStaleRepliedTickets,
+  listUserTicketsPaged,
+  getUserTicketStats,
 } from "./support";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -245,6 +247,250 @@ describe("createTicket + getTicketWithOrder — order linkage", () => {
 
   it("getTicketWithOrder returns null for a non-existent ticket", async () => {
     expect(await getTicketWithOrder(prisma, 999999)).toBeNull();
+  });
+});
+
+// Task 10: createTicket's new 7th opts param (subject/category/productId).
+describe("createTicket — subject/category/productId opts (Task 10)", () => {
+  it("persists subject, category, and productId when passed via opts", async () => {
+    const user = await makeUser(3001n);
+    const category = await prisma.category.create({
+      data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+    });
+    const product = await prisma.product.create({
+      data: { categoryId: category.id, name: "Opts Product", slug: `prod-${Math.random()}` },
+    });
+
+    const ticket = await createTicket(prisma, user.id, "my subscription lapsed", null, null, null, {
+      subject: "Subscription issue",
+      category: TicketCategory.ACCOUNT,
+      productId: product.id,
+    });
+
+    expect(ticket.subject).toBe("Subscription issue");
+    expect(ticket.category).toBe(TicketCategory.ACCOUNT);
+    expect(ticket.productId).toBe(product.id);
+  });
+
+  it("omitting opts leaves subject, category, and productId all null (regression: existing call shapes unaffected)", async () => {
+    const user = await makeUser(3002n);
+    const bare = await createTicket(prisma, user.id, "plain ticket");
+    expect(bare.subject).toBeNull();
+    expect(bare.category).toBeNull();
+    expect(bare.productId).toBeNull();
+
+    // Also the 6-positional-arg shape (photoFileIds/attachmentUrls/orderId, no opts) used elsewhere in this file.
+    const order = await makeOrder(user.id);
+    const withOrder = await createTicket(prisma, user.id, "order ticket", null, null, order.id);
+    expect(withOrder.subject).toBeNull();
+    expect(withOrder.category).toBeNull();
+    expect(withOrder.productId).toBeNull();
+  });
+
+  it("passes opts.category through to enqueueOwnerNewTicketEmail's payload instead of the hardcoded null", async () => {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, "owner_email_on_new_ticket", "true");
+
+    const user = await makeUser(3003n);
+    const ticket = await createTicket(prisma, user.id, "payment problem", null, null, null, {
+      category: TicketCategory.PAYMENT,
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.category).toBe(TicketCategory.PAYMENT);
+    expect(payload.ticket_id).toBe(ticket.id);
+
+    await deleteSetting(prisma, "owner_email_enabled");
+    await deleteSetting(prisma, "owner_email");
+    await deleteSetting(prisma, "owner_email_on_new_ticket");
+  });
+});
+
+describe("listUserTicketsPaged (Task 10)", () => {
+  it("returns only the given user's tickets, total matches count", async () => {
+    const user = await makeUser(3101n);
+    const other = await makeUser(3102n);
+    const t1 = await createTicket(prisma, user.id, "mine 1");
+    const t2 = await createTicket(prisma, user.id, "mine 2");
+    await createTicket(prisma, other.id, "not mine");
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id);
+
+    expect(total).toBe(2);
+    expect(new Set(rows.map((r) => r.id))).toEqual(new Set([t1.id, t2.id]));
+  });
+
+  it("status: waiting_for_you returns only WAITING_CUSTOMER tickets", async () => {
+    const user = await makeUser(3103n);
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+    const replied = await createTicket(prisma, user.id, "replied");
+    await prisma.supportTicket.update({ where: { id: replied.id }, data: { status: TicketStatus.REPLIED } });
+    const resolved = await createTicket(prisma, user.id, "resolved");
+    await prisma.supportTicket.update({ where: { id: resolved.id }, data: { status: TicketStatus.RESOLVED } });
+    const closed = await createTicket(prisma, user.id, "closed");
+    await closeTicket(prisma, closed.id);
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id, { status: "waiting_for_you" });
+    expect(rows.map((r) => r.id)).toEqual([waitingCustomer.id]);
+    expect(total).toBe(1);
+    void open;
+  });
+
+  it("status: waiting_for_support returns both OPEN and WAITING_ADMIN", async () => {
+    const user = await makeUser(3104n);
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id, { status: "waiting_for_support" });
+    expect(new Set(rows.map((r) => r.id))).toEqual(new Set([open.id, waitingAdmin.id]));
+    expect(total).toBe(2);
+  });
+
+  it("q matches on subject, message, and ticketNumber independently, case-insensitively", async () => {
+    const user = await makeUser(3105n);
+    const bySubject = await createTicket(prisma, user.id, "irrelevant body", null, null, null, {
+      subject: "Refund needed ASAP",
+    });
+    const byMessage = await createTicket(prisma, user.id, "my Wallet balance is wrong");
+    const byNumber = await createTicket(prisma, user.id, "another ticket");
+
+    const foundBySubject = await listUserTicketsPaged(prisma, user.id, { q: "refund" });
+    expect(foundBySubject.rows.map((r) => r.id)).toEqual([bySubject.id]);
+
+    const foundByMessage = await listUserTicketsPaged(prisma, user.id, { q: "wallet" });
+    expect(foundByMessage.rows.map((r) => r.id)).toEqual([byMessage.id]);
+
+    const foundByNumber = await listUserTicketsPaged(prisma, user.id, {
+      q: byNumber.ticketNumber!.toLowerCase(),
+    });
+    expect(foundByNumber.rows.map((r) => r.id)).toEqual([byNumber.id]);
+  });
+
+  it("sort: created_asc vs default (latest_update) change row order", async () => {
+    const user = await makeUser(3106n);
+    const t1 = await createTicket(prisma, user.id, "first");
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = await createTicket(prisma, user.id, "second");
+    await new Promise((r) => setTimeout(r, 5));
+    const t3 = await createTicket(prisma, user.id, "third");
+
+    // Bump t1's lastStatusChangeAt to the newest, so latest_update reorders it first.
+    await prisma.supportTicket.update({
+      where: { id: t1.id },
+      data: { lastStatusChangeAt: new Date(Date.now() + 10_000) },
+    });
+
+    const byLatestUpdate = await listUserTicketsPaged(prisma, user.id, { sort: "latest_update" });
+    expect(byLatestUpdate.rows.map((r) => r.id)).toEqual([t1.id, t3.id, t2.id]);
+
+    const byCreatedAsc = await listUserTicketsPaged(prisma, user.id, { sort: "created_asc" });
+    expect(byCreatedAsc.rows.map((r) => r.id)).toEqual([t1.id, t2.id, t3.id]);
+  });
+
+  it("paginates: pageSize 2 page 1 returns 2 rows + total 3, page 2 returns 1 row", async () => {
+    const user = await makeUser(3107n);
+    await createTicket(prisma, user.id, "a");
+    await new Promise((r) => setTimeout(r, 5));
+    await createTicket(prisma, user.id, "b");
+    await new Promise((r) => setTimeout(r, 5));
+    await createTicket(prisma, user.id, "c");
+
+    const page1 = await listUserTicketsPaged(prisma, user.id, { pageSize: 2, page: 1 });
+    expect(page1.rows).toHaveLength(2);
+    expect(page1.total).toBe(3);
+
+    const page2 = await listUserTicketsPaged(prisma, user.id, { pageSize: 2, page: 2 });
+    expect(page2.rows).toHaveLength(1);
+    expect(page2.total).toBe(3);
+  });
+
+  it("includes order/product/messages[0] when linked", async () => {
+    const user = await makeUser(3108n);
+    const order = await makeOrder(user.id);
+    const category = await prisma.category.create({
+      data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+    });
+    const product = await prisma.product.create({
+      data: { categoryId: category.id, name: "Linked Product", slug: `prod-${Math.random()}` },
+    });
+
+    const ticket = await createTicket(prisma, user.id, "issue", null, null, order.id, {
+      productId: product.id,
+    });
+    await prisma.ticketMessage.create({
+      data: { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "first message" },
+    });
+
+    const { rows } = await listUserTicketsPaged(prisma, user.id);
+    const row = rows.find((r) => r.id === ticket.id)!;
+    expect(row.order?.orderCode).toBe(order.orderCode);
+    expect(row.product?.name).toBe("Linked Product");
+    expect(row.messages).toHaveLength(1);
+    expect(row.messages[0]!.createdAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("getUserTicketStats (Task 10)", () => {
+  it("counts each status bucket, scoped to the given user", async () => {
+    const user = await makeUser(3201n);
+    const other = await makeUser(3202n);
+
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+    const replied = await createTicket(prisma, user.id, "in progress");
+    await prisma.supportTicket.update({ where: { id: replied.id }, data: { status: TicketStatus.REPLIED } });
+    const resolved = await createTicket(prisma, user.id, "resolved");
+    await prisma.supportTicket.update({ where: { id: resolved.id }, data: { status: TicketStatus.RESOLVED } });
+    const closed = await createTicket(prisma, user.id, "closed");
+    await closeTicket(prisma, closed.id);
+
+    // Different user's ticket must not leak into the counts.
+    await createTicket(prisma, other.id, "someone else's ticket");
+
+    const stats = await getUserTicketStats(prisma, user.id);
+    expect(stats).toEqual({
+      all: 6,
+      waiting_for_you: 1, // waitingCustomer
+      waiting_for_support: 2, // open + waitingAdmin
+      in_progress: 1, // replied
+      resolved: 1,
+      closed: 1,
+    });
+    void open;
   });
 });
 

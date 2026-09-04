@@ -1275,7 +1275,9 @@ model SupportTicket {
   status         String    @default("OPEN")
   /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
   priority       String    @default("MEDIUM") @map("priority")
-  /// ORDER | PAYMENT | ACCOUNT | PRODUCT | OTHER — admin-set triage field, null until classified.
+  /// Ticket triage category. Customer-set at creation on the /help create
+  /// form; may also be set/changed later by an admin via classifyTicket.
+  /// Null for legacy rows created before either path existed.
   category       String?   @map("category")
   /// Short customer-authored ticket title (≤100 chars), set on the /help
   /// create form. Nullable: historical rows created before this column

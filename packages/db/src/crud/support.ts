@@ -55,9 +55,14 @@ const MAX_TICKET_NUMBER_ATTEMPTS = 25;
  * `uniqueTicketNumberCandidate`), then enqueues the shop owner's "new
  * ticket" email (no-op unless owner-email is configured — see
  * enqueueOwnerNewTicketEmail). Covers both the storefront and the bot's
- * ticket-creation paths from this one call site — `category` is always null
- * here since it's an admin-set triage field (classifyTicket), never set at
- * creation time.
+ * ticket-creation paths from this one call site. `opts` (Task 10) lets a
+ * caller set `subject`/`category`/`productId` at creation time — the /help
+ * create form's customer-picked triage fields; every existing caller that
+ * omits it keeps getting all three as null, exactly as before this param
+ * existed. `category` can also still be set/changed later by an admin via
+ * `classifyTicket`. `opts.category` flows into
+ * `enqueueOwnerNewTicketEmail`'s payload too (previously always hardcoded to
+ * `null` there, back when category was admin-only-post-creation).
  *
  * `ticketNumber` generation retries on a genuine unique-constraint collision
  * (concurrent callers racing for the same candidate) up to
@@ -81,13 +86,22 @@ export async function createTicket(
   photoFileIds: string | null = null,
   attachmentUrls: string | null = null,
   orderId: number | null = null,
+  // Task 10: subject/category/productId, all customer-set on the /help
+  // create form (see subject's/category's/productId's own doc comments in
+  // schema.prisma). Optional and last so every existing call site (2-6
+  // positional args) keeps compiling unchanged.
+  opts: { subject?: string | null; category?: TicketCategory | null; productId?: number | null } = {},
 ) {
+  const subject = opts.subject ?? null;
+  const category = opts.category ?? null;
+  const productId = opts.productId ?? null;
+
   let ticket: SupportTicket | undefined;
   for (let attempt = 0; attempt < MAX_TICKET_NUMBER_ATTEMPTS; attempt++) {
     const ticketNumber = await uniqueTicketNumberCandidate(db);
     try {
       ticket = await db.supportTicket.create({
-        data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber },
+        data: { userId, message, photoFileIds, attachmentUrls, orderId, ticketNumber, subject, category, productId },
       });
       break;
     } catch (e) {
@@ -99,7 +113,7 @@ export async function createTicket(
     }
   }
   if (!ticket) throw new Error("Could not generate a unique ticket number");
-  await enqueueOwnerNewTicketEmail(db, { ticketId: ticket.id, userId, category: null, message });
+  await enqueueOwnerNewTicketEmail(db, { ticketId: ticket.id, userId, category, message });
   return ticket;
 }
 
@@ -806,6 +820,133 @@ export function listUserTickets(db: Db, userId: number, limit = 10) {
     orderBy: { createdAt: "desc" },
     take: limit,
   });
+}
+
+/**
+ * Task 10: the storefront /help page's own status-filter vocabulary — a
+ * customer-facing grouping distinct from the admin queue's raw
+ * `TicketStatus` values (see `TICKET_LEGAL_TRANSITIONS`'s doc comment for
+ * why `OPEN`/`WAITING_ADMIN` and `REPLIED`/`WAITING_CUSTOMER` are separate
+ * live statuses). Shared between `listUserTicketsPaged` and
+ * `getUserTicketStats` below so the two can never disagree on which raw
+ * statuses each bucket maps to — edit this one object, not two copies.
+ */
+const USER_TICKET_STATUS_SETS: Record<Exclude<SupportTicketStatusFilter, "all">, TicketStatus[]> = {
+  waiting_for_you: [TicketStatus.WAITING_CUSTOMER],
+  waiting_for_support: [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN],
+  in_progress: [TicketStatus.REPLIED],
+  resolved: [TicketStatus.RESOLVED],
+  closed: [TicketStatus.CLOSED],
+};
+
+export type SupportTicketListSort = "latest_update" | "created_desc" | "created_asc";
+export type SupportTicketStatusFilter =
+  | "all"
+  | "waiting_for_you"
+  | "waiting_for_support"
+  | "in_progress"
+  | "resolved"
+  | "closed";
+
+export interface ListUserTicketsPagedOpts {
+  status?: SupportTicketStatusFilter;
+  q?: string | null;
+  sort?: SupportTicketListSort;
+  /** 1-based. Default 1. */
+  page?: number;
+  /** Default 10, clamped to [1, 50] — no caller may request an unbounded page. */
+  pageSize?: number;
+}
+
+/**
+ * Paged, filtered, searched, sorted list of ONE customer's own tickets — the
+ * storefront /help page's list view. Distinct from the admin-facing
+ * `listTicketsPaged` above: user-scoped (always `where: { userId, ... }`,
+ * never callable without a userId filter — there is no "all users" mode
+ * here), and a much smaller filter/sort vocabulary
+ * (`SupportTicketStatusFilter`/`SupportTicketListSort`) tailored to what a
+ * customer, not an admin, needs to slice their own ticket list by. Do not
+ * reuse/extend `TicketFilter`/`listTicketsPaged`/`countTickets` for this —
+ * those carry admin-only concerns (raw-SQL priority sort, overdue tracking,
+ * `assigned`/`adminId` filters) this user-scoped list has no business with.
+ */
+export async function listUserTicketsPaged(
+  db: Db,
+  userId: number,
+  opts: ListUserTicketsPagedOpts = {},
+) {
+  const statusFilter = opts.status ?? "all";
+  const statusIn = statusFilter === "all" ? undefined : USER_TICKET_STATUS_SETS[statusFilter];
+
+  const q = opts.q?.trim();
+
+  const where: Prisma.SupportTicketWhereInput = {
+    userId,
+    ...(statusIn ? { status: { in: statusIn } } : {}),
+    ...(q
+      ? {
+          OR: [
+            { subject: { contains: q, mode: "insensitive" as const } },
+            { message: { contains: q, mode: "insensitive" as const } },
+            { ticketNumber: { contains: q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
+
+  const sort = opts.sort ?? "latest_update";
+  const orderBy: Prisma.SupportTicketOrderByWithRelationInput =
+    sort === "created_desc"
+      ? { createdAt: "desc" }
+      : sort === "created_asc"
+        ? { createdAt: "asc" }
+        : { lastStatusChangeAt: "desc" };
+
+  const page = Math.max(1, opts.page ?? 1);
+  const pageSize = Math.min(50, Math.max(1, opts.pageSize ?? 10));
+  const skip = (page - 1) * pageSize;
+
+  const [total, rows] = await Promise.all([
+    db.supportTicket.count({ where }),
+    db.supportTicket.findMany({
+      where,
+      include: {
+        order: { select: { orderCode: true } },
+        product: { select: { name: true } },
+        messages: { orderBy: { createdAt: "desc" }, take: 1, select: { createdAt: true } },
+      },
+      orderBy,
+      skip,
+      take: pageSize,
+    }),
+  ]);
+
+  return { rows, total };
+}
+
+export interface UserTicketStats {
+  all: number;
+  waiting_for_you: number;
+  waiting_for_support: number;
+  in_progress: number;
+  resolved: number;
+  closed: number;
+}
+
+/** Six status-bucket counts for ONE customer's own tickets — the /help page's
+ * status-tab badges. Shares `USER_TICKET_STATUS_SETS` with
+ * `listUserTicketsPaged` above so the tab counts and the filtered list can
+ * never disagree on what each bucket means. */
+export async function getUserTicketStats(db: Db, userId: number): Promise<UserTicketStats> {
+  const [all, waiting_for_you, waiting_for_support, in_progress, resolved, closed] = await Promise.all([
+    db.supportTicket.count({ where: { userId } }),
+    db.supportTicket.count({ where: { userId, status: { in: USER_TICKET_STATUS_SETS.waiting_for_you } } }),
+    db.supportTicket.count({ where: { userId, status: { in: USER_TICKET_STATUS_SETS.waiting_for_support } } }),
+    db.supportTicket.count({ where: { userId, status: { in: USER_TICKET_STATUS_SETS.in_progress } } }),
+    db.supportTicket.count({ where: { userId, status: { in: USER_TICKET_STATUS_SETS.resolved } } }),
+    db.supportTicket.count({ where: { userId, status: { in: USER_TICKET_STATUS_SETS.closed } } }),
+  ]);
+  return { all, waiting_for_you, waiting_for_support, in_progress, resolved, closed };
 }
 
 /** REPLIED/WAITING_CUSTOMER tickets whose replied_at is older than cutoff

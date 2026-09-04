@@ -35,10 +35,11 @@ import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
+import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
-import { getOrder, uniqueOrderCode, customerLabel } from "./orders";
+import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidReceived } from "./orders";
 import { adjustWallet } from "./users";
 import { finalizeOrderPayment } from "./pricing";
 import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
@@ -543,4 +544,95 @@ export async function hasPendingWalletTopupOrder(
     select: { id: true },
   });
   return dupe !== null;
+}
+
+/**
+ * Resolve an UNDERPAID wallet top-up by cancelling the order and manually
+ * crediting the buyer the amount they ACTUALLY sent — the top-up counterpart
+ * of the recovery actions a PRODUCT order already has (deliver-anyway /
+ * `refundUnderpaidOrder` / plain cancel), none of which fit a top-up:
+ *
+ *  - Delivering anyway (`deliverUnderpaidOrder`) cannot even run: it routes
+ *    through `approveOrder`, which refuses a WALLET_TOPUP outright. And the
+ *    top-up equivalent it would have to route through instead,
+ *    `settleWalletTopup`, always credits `order.totalAmount` — the FULL amount
+ *    the buyer asked to top up — so it would give away the shortfall.
+ *  - Refunding (`refundUnderpaidOrder`) marks the order REFUNDED, which claims
+ *    a delivery was undone. A top-up delivered nothing; there is nothing to
+ *    refund, only money sitting in a gateway that was always meant to become
+ *    balance.
+ *  - Cancelling alone strands the buyer's money: the order goes away and the
+ *    amount they really sent is never credited to anyone.
+ *
+ * So: credit what arrived, then cancel. The credit is written with reason
+ * `admin_adjust` — the SAME reason code the existing manual "credit balance"
+ * admin primitive uses (web-admin's users route, the bot's /wallet command),
+ * because that is exactly what this is: an admin moving a balance by hand.
+ * Deliberately NOT `underpaid_refund` (this is not a refund) and NOT
+ * `wallet_topup` (that reason means a top-up settled for its full requested
+ * amount, and `settleWalletTopup` owns it — reusing it here would also collide
+ * with the `wallet_transactions` UNIQUE (orderId, reason) constraint if the
+ * top-up were later settled late).
+ *
+ * The credit is gated on `received > 0`, mirroring `refundUnderpaidOrder`: a
+ * top-up flagged UNDERPAID with no ledger row recording an amount (an IDR/QRIS
+ * top-up records none, and an order moved to UNDERPAID by hand has none either)
+ * is still cancelled, but writes no wallet movement — a 0-amount ledger row
+ * would claim money moved when none did.
+ *
+ * Idempotency is the order's own status: the first call leaves the order
+ * CANCELLED, so a second call fails the UNDERPAID precondition and cannot
+ * credit the buyer twice. The `wallet_transactions` UNIQUE (orderId, reason)
+ * constraint is the backstop underneath that.
+ *
+ * Opens its own `$transaction` (hence `PrismaClient`, not `Db`) so the credit
+ * and the cancellation land together or not at all — the same shape as its
+ * sibling `refundUnderpaidOrder` (crud/binance_internal.ts). The caller is
+ * expected to write its own `logAdminAction` audit entry, exactly as the
+ * existing UNDERPAID resolution routes do.
+ */
+export async function creditUnderpaidTopupAnyway(
+  db: PrismaClient,
+  args: { orderId: number; adminId: number },
+): Promise<{ credited: Decimal }> {
+  return db.$transaction(async (tx: Tx) => {
+    const order = await getOrder(tx, args.orderId);
+    if (!order) throw new ValidationError("error.order_not_found");
+    if (order.kind !== OrderKind.WALLET_TOPUP) {
+      throw new ValidationError("error.order_not_wallet_topup");
+    }
+    if (order.status !== OrderStatus.UNDERPAID) {
+      throw new ValidationError("error.order_not_underpaid");
+    }
+
+    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? ZERO;
+    const anythingReceived = received.greaterThan(0);
+    if (anythingReceived) {
+      await adjustWallet(tx, order.userId, received, {
+        reason: "admin_adjust",
+        currency: order.currency as "IDR" | "USDT",
+        orderId: order.id,
+        adminId: args.adminId,
+        note: `Underpaid top-up order ${order.orderCode}: credited the amount actually received.`,
+      });
+    }
+    await cancelOrder(tx, args.orderId, `underpaid_credited_anyway by admin_id=${args.adminId}`);
+
+    if (anythingReceived) {
+      logger.info(
+        `Resolved underpaid wallet top-up order ${order.orderCode} by cancelling it and crediting the buyer ` +
+          `${received.toString()} ${order.currency} as a manual adjustment by admin ${args.adminId} — the amount ` +
+          `they actually sent, rather than the ${new Decimal(order.totalAmount).toString()} the order asked for. ` +
+          `The shortfall is not credited because it never arrived.`,
+      );
+    } else {
+      logger.warn(
+        `Cancelled underpaid wallet top-up order ${order.orderCode} without crediting the buyer anything, because ` +
+          `no payment rail recorded how much was actually received for it — admin ${args.adminId} resolved it ` +
+          `manually. Only the crypto rails write that ledger row, so an IDR/QRIS top-up always lands here. If the ` +
+          `buyer really did send money, it has to be credited to their balance by hand.`,
+      );
+    }
+    return { credited: received };
+  });
 }

@@ -26,7 +26,7 @@ stateDiagram-v2
     [*] --> PENDING_PAYMENT: createOrderDirect/createOrderFromCart<br/>(stok DIRESERVASI atomik)
 
     PENDING_PAYMENT --> PENDING_VERIFICATION: deliverPaid*Order (auto-confirm, transien)<br/>ATAU attachPaymentProof (test-only — lihat catatan di bawah)
-    PENDING_PAYMENT --> UNDERPAID: markUnderpaid (Binance: note cocok, amount kurang)
+    PENDING_PAYMENT --> UNDERPAID: markUnderpaid (Binance: note cocok, amount kurang)<br/>markUnderpaidBybit (Bybit) / markUnderpaidBybitBsc (Bybit BSC)<br/>markOrderUnderpaid (TokoPay/PayDisini/NOWPayments)
     PENDING_PAYMENT --> CANCELLED: autoCancelExpiredOrders (lewat expiresAt)<br/>ATAU user cancel (HANYA jika belum ada proof)
     PENDING_PAYMENT --> CANCELLED: gateway createTransaction gagal (Checkout-3 fix)
 
@@ -45,6 +45,7 @@ stateDiagram-v2
 
     UNDERPAID --> PENDING_VERIFICATION: deliverUnderpaidOrder (admin pilih "kirim juga")
     UNDERPAID --> REFUNDED: refundUnderpaidOrder (admin pilih "refund ke wallet")
+    UNDERPAID --> CANCELLED: creditUnderpaidTopupAnyway (HANYA order WALLET_TOPUP)<br/>admin pilih "credit ke saldo saja" — wallet dikredit sebesar<br/>yang benar-benar diterima, lalu order dibatalkan
 
     PENDING_PAYMENT --> CANCELLED: creditOrderToBalance (paid-but-undeliverable → store credit)
     PENDING_VERIFICATION --> CANCELLED: creditOrderToBalance
@@ -115,13 +116,13 @@ stateDiagram-v2
 | `CONFIRMING` | **Bybit BSC saja.** Tracker block-explorer sudah melihat ≥1 konfirmasi. `confirmations` terisi (angka asli, bukan fabrikasi). `trackingStaleAt` bisa terisi juga (non-terminal). | RESERVED | Ya → `CONFIRMED`, `PENDING_VERIFICATION`, atau `FAILED` (hanya dari delivery throw) |
 | `CONFIRMED` | **Bybit BSC saja.** `confirmations >= requiredConfirmations` — milestone display-only, BUKAN trigger delivery. `confirmedAt` terisi. | RESERVED | Ya → `PENDING_VERIFICATION` atau `FAILED` (hanya dari delivery throw) |
 | `PENDING_VERIFICATION` | Pembayaran terdeteksi oleh gateway auto-confirm — status **transien**, hampir selalu langsung diikuti `approveOrder` dalam transaksi yang sama. Untuk SKU manual/`manual_with_info`, `settlePaidOrder` mengarahkannya ke `PROCESSING`, bukan `DELIVERED`. | RESERVED | Ya → `DELIVERED` (SKU auto), `PROCESSING` (SKU manual), `REJECTED`, atau `CANCELLED` (`creditOrderToBalance`) |
-| `UNDERPAID` | (Hanya Binance Internal) Note transfer cocok tapi nominal kurang dari total. Menunggu keputusan admin. | RESERVED (tidak pernah dilepas sampai resolve) | Ya → `PENDING_VERIFICATION` atau `REFUNDED` |
+| `UNDERPAID` | Pembayaran masuk tapi nominalnya kurang dari total. Menunggu keputusan admin. Lima rail bisa menandainya: Binance Internal, Bybit, Bybit BSC, dan (lewat tabel `qris_underpaid_tx`) TokoPay/PayDisini/NOWPayments — lihat catatan invariant di bawah. | RESERVED (tidak pernah dilepas sampai resolve) | Ya → `PENDING_VERIFICATION`, `REFUNDED`, atau `CANCELLED` (khusus order `WALLET_TOPUP`, lewat `creditUnderpaidTopupAnyway`) |
 | `PROCESSING` | Pembayaran dikonfirmasi untuk SKU manual/`manual_with_info` — order menunggu difulfil tangan oleh admin (tidak ada stok yang dialokasikan). Hanya dicapai lewat cabang MANUAL `settlePaidOrder`; SKU auto tidak pernah masuk sini. `paidAt` terisi, `deliveredAt` masih null. Sejak Task 3 setiap `OrderItem.status` order ini ikut ditulis `QUEUED` di transaksi yang sama. | Tidak pernah direservasi (SKU manual tidak punya stok) | Ya → `DELIVERED` (`fulfillManualOrder`), atau `CANCELLED` lewat `creditOrderToBalance`. **`cancelOrder` DAN `rejectOrder` sama-sama menolak** order `PROCESSING` selama belum di-credit (keduanya lewat `assertNotPaidWithoutCredit` → `error.order_paid_needs_credit`): order ini sudah dibayar, jadi H-2 mengarahkan admin ke "Credit to Balance" agar pembayaran tidak nyangkut di status terminal. `REJECTED` baru bisa dicapai setelah kredit itu ada |
 | `DELIVERED` | **Terminal.** Stok `SOLD`, kredensial sudah/akan dikirim via outbox. | SOLD | Tidak — `creditOrderToBalance`/`cancelOrder` menolak (`error.order_already_delivered`) |
 | `PARTIALLY_DELIVERED` | **Terminal. BELUM BISA DICAPAI order manapun** — ditambahkan Task 3 (Trustance Phase 1) sebagai fondasi, bukan alur aktif. Artinya: sebagian item terkirim, sisanya `FAILED`/`CANCELLED`, dan tidak ada lagi yang in-flight. Satu-satunya penulis adalah `recomputeOrderStatus`, yang menurunkannya dari himpunan `OrderItem.status`; karena aturan komposisi keranjang (`@app/core/cartComposition`) menjaga semua order homogen, himpunan itu tidak pernah terbelah hari ini (dibuktikan di `packages/db/src/crud/orderItemStatus.test.ts`). | Mengikuti item masing-masing | Tidak (transisi keluar `REFUNDED` menyusul bersama domain Refund) |
 | `CANCELLED` | **Terminal.** Stok dilepas (`AVAILABLE`), wallet/voucher di-refund. | Dilepas | Tidak (re-cancel = no-op idempoten) |
 | `REJECTED` | **Terminal.** Admin menolak bukti bayar manual. Stok dilepas. | Dilepas | Tidak |
-| `REFUNDED` | **Terminal.** Dari `UNDERPAID` (saldo USDT dikembalikan ke wallet) ATAU dari `FAILED` (admin resolve manual). | Tidak pernah direservasi (UNDERPAID) / RESERVED (FAILED, dilepas saat resolve) | Tidak |
+| `REFUNDED` | **Terminal.** Dari `UNDERPAID` (yang benar-benar diterima dikembalikan ke wallet, dalam mata uang order itu sendiri — order USDT kembali USDT, order IDR kembali rupiah) ATAU dari `FAILED` (admin resolve manual). | Tidak pernah direservasi (UNDERPAID) / RESERVED (FAILED, dilepas saat resolve) | Tidak |
 | `FAILED` | **Terminal.** **Bybit BSC saja.** Sejak M-11 (audit backend 2026-07-31), HANYA delivery throw post-konfirmasi (mis. kehabisan stok) yang mengeskalasi ke sini — tracker grace-period habis TIDAK LAGI melakukan ini (dulu iya, tapi `FAILED` bukan bagian dari `PRE_DELIVERY_STATUSES`, jadi laporan "Success" asli dari Bybit yang datang belakangan tidak pernah bisa auto-deliver lagi). Grace-period habis sekarang hanya menyalakan `trackingStaleAt` (non-terminal) + DM admin, order tetap di `PAYMENT_DETECTED`/`CONFIRMING`. Beda dari `CANCELLED`/`REJECTED` — itu selalu inisiatif customer/admin, `FAILED` selalu inisiatif sistem. Admin DM via outbox (`ORDER_PIPELINE_FAILED`). | RESERVED (sampai admin resolve ke `CANCELLED`/`REFUNDED`) | Ya → `CANCELLED` atau `REFUNDED` (admin) |
 | `PAID` | **Status mati** — ada di enum, tidak pernah di-set. Anggap tidak digunakan. | — | — |
 
@@ -131,11 +132,12 @@ stateDiagram-v2
 |---|---|---|
 | `→ PENDING_PAYMENT` | Checkout bot/storefront | `packages/db/src/crud/orders.ts` (`createOrderDirect`/`createOrderFromCart`) |
 | `PENDING_PAYMENT → PENDING_VERIFICATION → DELIVERED` (auto, satu transaksi) | Webhook/poller gateway | `deliverPaid{Tokopay,Paydisini,Nowpayments,Internal,Bybit}Order` |
-| `PENDING_PAYMENT → UNDERPAID` | Binance poller, note cocok amount kurang | `markUnderpaid` |
+| `PENDING_PAYMENT → UNDERPAID` | Poller Binance (note cocok, amount kurang), poller Bybit/Bybit BSC, ATAU poller rekonsiliasi TokoPay/PayDisini/NOWPayments | `markUnderpaid` (`processed_binance_tx`), `markUnderpaidBybit` / `markUnderpaidBybitBsc` (keduanya `processed_bybit_tx`), `markOrderUnderpaid` (`qris_underpaid_tx`) |
 | `PENDING_VERIFICATION → DELIVERED` | Admin approve (manual) ATAU sistem (`adminId: 0`, auto-confirm) | `approveOrder` — **chokepoint tunggal** alokasi stok untuk SEMUA jalur |
 | `PENDING_VERIFICATION → REJECTED` | Admin reject bukti | `rejectOrder` |
 | `UNDERPAID → PENDING_VERIFICATION` | Admin "kirim juga" (terima shortfall) | `deliverUnderpaidOrder` |
 | `UNDERPAID → REFUNDED` | Admin "refund ke wallet" | `refundUnderpaidOrder` |
+| `UNDERPAID → CANCELLED` | Admin "Credit to balance anyway" — **hanya order `WALLET_TOPUP`**. Order dibatalkan dan wallet pembeli dikredit sebesar yang benar-benar diterima (bukan nominal yang diminta), dalam mata uang order itu sendiri. Kalau tidak ada rail yang mencatat berapa yang masuk, order tetap dibatalkan tapi TIDAK ada kredit — admin harus menanganinya manual. | `creditUnderpaidTopupAnyway` (`packages/db/src/crud/wallet_topup.ts`), lewat `POST /api/payments/order/:orderId/credit-anyway` |
 | `→ CANCELLED` (dari PENDING_PAYMENT) | Cron `autoCancelExpiredOrders` (tiap 1 menit, lewat `expiresAt`) | `apps/order-bot/src/jobs/index.ts` + `cancelOrder` |
 | `→ CANCELLED` (manual user) | User cancel di storefront/bot | `cancelOrder` — **ditolak** jika sudah `PENDING_VERIFICATION`/`PAYMENT_DETECTED`/`CONFIRMING`/`CONFIRMED` (`error.cannot_cancel_after_proof`, anti fake-proof-then-cancel / anti cancel-saat-deposit-sudah-jalan) |
 | `→ CANCELLED` (credit) | Admin "Add to buyer's credit balance" (paid-but-undeliverable) | `creditOrderToBalance` |
@@ -212,10 +214,29 @@ stateDiagram-v2
   `PENDING_VERIFICATION` tanpa menjalankan gateway auto-confirm sungguhan.
   Fungsinya tetap ada di `packages/db/src/crud/orders.ts` untuk keperluan
   test itu, bukan sebagai alur produksi aktif.
-- **`UNDERPAID` eksklusif untuk Binance Internal Transfer** — gateway lain
-  (webhook-based) menolak pembayaran kurang sebagai `"amount mismatch"` tanpa
-  pernah mengubah status order (order tetap `PENDING_PAYMENT`, baris ledger
-  ditandai `unmatched`) — lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md).
+- **`UNDERPAID` TIDAK LAGI eksklusif untuk Binance Internal Transfer** — dulu
+  memang begitu (gateway webhook-based menolak pembayaran kurang sebagai
+  `"amount mismatch"` tanpa pernah mengubah status order; order tetap
+  `PENDING_PAYMENT`, baris ledger ditandai `unmatched` — lihat
+  [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md)). Sekarang **lima rail** bisa
+  menandai order `UNDERPAID`:
+  - **Binance Internal Transfer** — `markUnderpaid`, baris `processed_binance_tx`
+    dengan `outcome = underpaid`.
+  - **Bybit** (`markUnderpaidBybit`, `crud/bybit_deposit.ts`) dan **Bybit BSC**
+    (`markUnderpaidBybitBsc`, `crud/bybit_bsc_deposit.ts`) — dua fungsi
+    terpisah, tapi keduanya menulis ke tabel yang sama, `processed_bybit_tx`,
+    dengan `outcome = underpaid`.
+  - **TokoPay**, **PayDisini**, dan **NOWPayments** — poller rekonsiliasi
+    masing-masing memanggil `markOrderUnderpaid` (`crud/orderStatus.ts`), yang
+    mencatat berapa yang benar-benar masuk di tabel `qris_underpaid_tx`.
+
+  Ketiga tabel itu dibaca lewat satu helper, `findUnderpaidReceived`
+  (`crud/orders.ts`), sehingga jalur resolve admin (`refundUnderpaidOrder`,
+  `creditUnderpaidTopupAnyway`) tidak perlu tahu rail mana yang menandai.
+  Order yang sudah duduk di `UNDERPAID` **sebelum** `qris_underpaid_tx` ada
+  tidak punya baris ledger sama sekali: jumlah yang diterima terbaca 0, jadi
+  order hanya dibatalkan/di-refund tanpa kredit dan pembelinya harus
+  ditangani manual.
 - **Confirmation count pada `PAYMENT_DETECTED`/`CONFIRMING`/`CONFIRMED` murni
   display** — dihitung dari block explorer (BscScan-compatible) yang
   terpisah total dari API Bybit sendiri, dan TIDAK PERNAH menjadi gerbang

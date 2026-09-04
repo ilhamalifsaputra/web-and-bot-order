@@ -22,6 +22,10 @@ import {
   createOrderDirect,
   deliverPaidInternalOrder,
   markUnderpaid,
+  markUnderpaidBybit,
+  markUnderpaidBybitBsc,
+  refundUnderpaidOrder,
+  markOrderUnderpaid,
   recordUnmatchedTx,
   createCategory,
   createCatalogProduct,
@@ -765,6 +769,130 @@ describe("markUnderpaid — transactional (Task 18)", () => {
     expect(refreshedOrder!.status).toBe(OrderStatus.CANCELLED);
     expect(refreshedOrder!.adminNote).toBeNull();
     expect(refreshedOrder!.binanceTxid).toBeNull();
+  });
+});
+
+// refundUnderpaidOrder credits the buyer whatever they actually sent, read
+// back from the ledger row the flagging rail wrote. Three rails can flag an
+// order UNDERPAID and they use two different tables: Binance Internal writes
+// `processedBinanceTx`, while Bybit and Bybit BSC share `processedBybitTx`.
+// The lookup used to read only `processedBinanceTx`, so a Bybit-flagged order
+// refunded to 0.00 — the buyer's money silently vanished.
+describe("refundUnderpaidOrder — reads the received amount from whichever rail flagged the order", () => {
+  it("credits the amount from processedBinanceTx for a Binance-Internal-flagged order", async () => {
+    const order = await makePendingInternalOrder();
+    expect(await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-refund-binance-1", amount: "4.25" })).toBe(true);
+
+    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("4.25");
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("4.25");
+  });
+
+  // The regression test: before the fix this credited 0 because the lookup
+  // never looked at processedBybitTx.
+  it("credits the amount from processedBybitTx for a Bybit-flagged order instead of refunding 0", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
+    expect(await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: "tx-refund-bybit-1", amount: "3.75" })).toBe(true);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
+
+    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("3.75");
+    expect(refundId).not.toBeNull();
+
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("3.75");
+
+    const walletTx = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } });
+    expect(walletTx).toHaveLength(1);
+    expect(new Decimal(walletTx[0]!.delta).toString()).toBe("3.75");
+
+    const resolvedOrder = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(resolvedOrder.status).toBe(OrderStatus.REFUNDED);
+  });
+
+  // Bybit BSC shares processedBybitTx with Bybit — one table, no sub-rail
+  // column — so the same lookup already covers it; this pins that.
+  it("credits the amount from processedBybitTx for a Bybit-BSC-flagged order too (both sub-rails share the table)", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
+    expect(await markUnderpaidBybitBsc(prisma, { orderId: order.id, bybitTxId: "0xdeadbeef-refund-1", amount: "2.5" })).toBe(true);
+
+    const { refunded } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("2.5");
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("2.5");
+  });
+
+  // No ledger row at all (e.g. an order moved to UNDERPAID by hand): still
+  // resolves the order, but writes no wallet credit and no Refund record —
+  // a COMPLETED 0.00 refund would imply a payout that never happened.
+  it("refunds nothing and writes no Refund record when no rail recorded a received amount", async () => {
+    const order = await makePendingInternalOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+
+    const { refunded, refundId } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("0");
+    expect(refundId).toBeNull();
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  // The refund has to land in the balance column matching the ORDER's own
+  // currency. `adjustWallet` defaults to IDR when no currency is passed, and
+  // this call site passed none — so a USDT order refunded 4.25 USDT into the
+  // buyer's rupiah balance, inventing rupiah out of nothing and leaving the
+  // USDT they actually sent unreturned.
+  //
+  // The bug was unreachable until the QrisUnderpaidTx ledger landed: it is
+  // NOWPayments — a USDT crypto-invoice rail that structurally flags
+  // underpayment through the QRIS/IDR ledger table — that made
+  // `findUnderpaidReceived` resolve a real amount for a USDT order for the
+  // first time. Before that it always read 0 for this rail and the credit was
+  // skipped entirely, so the wrong-column credit never actually ran. This test
+  // therefore drives the exact newly-reachable path: a USDT order flagged via
+  // `markOrderUnderpaid`.
+  it("credits a USDT order's refund to walletBalanceUsdt, leaving the rupiah balance untouched", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentMethod: PaymentMethod.NOWPAYMENTS, currency: "USDT", fxRate: "16000" },
+    });
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: order.id,
+        gateway: "NOWPayments",
+        receivedAmount: "4.25",
+        expectedAmount: "10",
+      }),
+    ).toBe(true);
+
+    const { refunded, refundId, currency } = await refundUnderpaidOrder(prisma, { orderId: order.id, adminId: 444 });
+
+    expect(refunded.toString()).toBe("4.25");
+    expect(refundId).not.toBeNull();
+    // The currency comes back with the amount so the calling route's audit
+    // line can name it — "4.25" alone reads the same whether it is USDT or
+    // rupiah, and the refund now lands in the order's own currency.
+    expect(currency).toBe("USDT");
+
+    // Same reason on the order's admin note: it is the record a shop admin
+    // reads months later, so it has to say which money was returned.
+    const noted = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(noted.adminNote).toContain("[refund] 4.25 USDT to wallet");
+
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalanceUsdt).toString()).toBe("4.25");
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("0");
+
+    const walletTx = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } });
+    expect(walletTx).toHaveLength(1);
+    expect(walletTx[0]!.currency).toBe("USDT");
+    expect(new Decimal(walletTx[0]!.delta).toString()).toBe("4.25");
   });
 });
 

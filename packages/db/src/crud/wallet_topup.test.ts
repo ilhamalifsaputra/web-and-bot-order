@@ -7,16 +7,21 @@ import { buildSampleData, resetDb, type SampleData } from "../../../../tests/hel
 import { getSetting, setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
-import { cancelOrder } from "./orders";
+import { cancelOrder, createOrderDirect } from "./orders";
+import { markUnderpaid } from "./binance_internal";
+import { markUnderpaidBybit } from "./bybit_deposit";
+import { markOrderUnderpaid } from "./orderStatus";
 import {
   resolveWalletTopupLimits,
   createWalletTopupOrder,
   settleWalletTopup,
+  creditUnderpaidTopupAnyway,
   hasPendingWalletTopupOrder,
   WALLET_TOPUP_MIN_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MIN_AMOUNT_USDT_KEY,
   WALLET_TOPUP_MAX_AMOUNT_USDT_KEY,
+  type WalletTopupUsdtMethod,
 } from "./wallet_topup";
 
 let db: TestDb;
@@ -920,5 +925,204 @@ describe("settleWalletTopup — buyer WALLET_TOPUP_CREDITED_DM (Task E1)", () =>
     expect(payload.currency).toBe("USDT");
     expect(new Decimal(payload.amount as string).equals(order.totalAmount)).toBe(true);
     expect(new Decimal(payload.new_balance as string).equals(order.totalAmount)).toBe(true);
+  });
+});
+
+// A top-up whose buyer sent less than they asked to top up cannot simply be
+// settled (that would credit the full requested amount, giving away the
+// shortfall) and cannot be refunded (nothing was delivered, and the money the
+// buyer sent is meant to become balance in the first place). This is the third
+// resolution: cancel the order and hand the buyer exactly what arrived, as a
+// manual admin adjustment.
+describe("creditUnderpaidTopupAnyway", () => {
+  const ADMIN_ID = 444;
+
+  async function makeUsdtTopupOrder(
+    amount: string,
+    method: WalletTopupUsdtMethod = PaymentMethod.BINANCE_INTERNAL,
+  ) {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "USDT", method, rate: "16000" }),
+    );
+  }
+
+  it("credits what the buyer actually sent, cancels the order, and logs it as an admin adjustment (Binance rail)", async () => {
+    const order = await makeUsdtTopupOrder("10");
+    expect(
+      await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-topup-underpaid-1", amount: "6.5" }),
+    ).toBe(true);
+
+    const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    // The amount received, NOT the 10 USDT the buyer asked to top up.
+    expect(credited.toString()).toBe("6.5");
+    expect(credited.lessThan(order.totalAmount)).toBe(true);
+    // The currency travels back with it: the calling route writes the audit
+    // line the shop admin reads, and "6.5" alone does not say which money.
+    expect(currency).toBe("USDT");
+
+    const resolved = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(resolved.status).toBe(OrderStatus.CANCELLED);
+
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalanceUsdt).toString()).toBe("6.5");
+    // Currency isolation: a USDT top-up must never touch the IDR balance.
+    expect(new Decimal(buyer.walletBalance).equals(0)).toBe(true);
+
+    const ledger = await prisma.walletTransaction.findMany({ where: { orderId: order.id } });
+    expect(ledger).toHaveLength(1);
+    // `admin_adjust`, deliberately: this is the manual "credit balance" admin
+    // primitive, not a refund (`underpaid_refund`) and not a normal top-up
+    // settlement (`wallet_topup`).
+    expect(ledger[0]!.reason).toBe("admin_adjust");
+    expect(ledger[0]!.currency).toBe("USDT");
+    expect(ledger[0]!.adminId).toBe(ADMIN_ID);
+    expect(new Decimal(ledger[0]!.delta).toString()).toBe("6.5");
+    expect(ledger[0]!.note).toContain(order.orderCode);
+  });
+
+  // Bybit and Bybit BSC record their underpaid ledger row in a different table
+  // than Binance Internal does; `findUnderpaidReceived` covers both, and this
+  // pins that this call site reads through it rather than a Binance-only lookup.
+  it("credits the received amount for a Bybit-flagged top-up too", async () => {
+    const order = await makeUsdtTopupOrder("10", PaymentMethod.BYBIT);
+    expect(
+      await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: "byb-topup-underpaid-1", amount: "4.25" }),
+    ).toBe(true);
+
+    const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    expect(credited.toString()).toBe("4.25");
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalanceUsdt).toString()).toBe("4.25");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+  });
+
+  // End-to-end regression for the QRIS/IDR gap: the three IDR gateways flag an
+  // order underpaid through the shared `markOrderUnderpaid`, with no
+  // `order.kind` filter, so a wallet top-up reaches it exactly like a product
+  // order does. Until `markOrderUnderpaid` wrote a structured ledger row, the
+  // amount received survived only as `adminNote` free text, so this whole path
+  // credited the buyer 0 and the money they really sent was lost. Driven
+  // through the real `markOrderUnderpaid`, not a hand-inserted ledger row, so
+  // the regression can only pass if the two halves stay wired together.
+  it("credits the received amount for an IDR top-up flagged underpaid by a QRIS gateway", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "20000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: order.id,
+        gateway: "TokoPay",
+        receivedAmount: "18500",
+        expectedAmount: order.totalAmount,
+      }),
+    ).toBe(true);
+
+    const { credited, currency } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    expect(credited.toString()).toBe("18500");
+    // An IDR rail returns IDR — the counterpart to the USDT case above, and
+    // the reason a bare amount in the audit log is ambiguous at all.
+    expect(currency).toBe("IDR");
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("18500");
+    // Currency isolation: an IDR top-up must never touch the USDT balance.
+    expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const ledger = await prisma.walletTransaction.findMany({ where: { orderId: order.id } });
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.reason).toBe("admin_adjust");
+    expect(ledger[0]!.currency).toBe("IDR");
+    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18500");
+  });
+
+  it("refuses a PRODUCT order even when it is UNDERPAID, and changes nothing", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    expect(
+      await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-product-underpaid-1", amount: "3" }),
+    ).toBe(true);
+
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_not_wallet_topup",
+    });
+
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.UNDERPAID);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(0);
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalance).equals(0)).toBe(true);
+    expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
+  });
+
+  it("refuses a top-up that is still PENDING_PAYMENT, and changes nothing", async () => {
+    const order = await makeUsdtTopupOrder("10");
+
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_not_underpaid",
+    });
+
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("refuses a top-up that was already settled and DELIVERED, and credits nothing further", async () => {
+    const order = await makeUsdtTopupOrder("10");
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    const settledBalance = new Decimal((await freshUser()).walletBalanceUsdt);
+
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_not_underpaid",
+    });
+
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.DELIVERED);
+    expect(new Decimal((await freshUser()).walletBalanceUsdt).equals(settledBalance)).toBe(true);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id, reason: "admin_adjust" } })).toBe(0);
+  });
+
+  // The order's own status is the idempotency gate: the first call leaves it
+  // CANCELLED, which no longer satisfies the UNDERPAID precondition. A
+  // double-tapped admin button therefore cannot credit the buyer twice.
+  it("cannot credit twice — a second call is refused because the order is no longer UNDERPAID", async () => {
+    const order = await makeUsdtTopupOrder("10");
+    expect(
+      await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "bin-topup-underpaid-2", amount: "6.5" }),
+    ).toBe(true);
+
+    await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_not_underpaid",
+    });
+
+    expect(new Decimal((await freshUser()).walletBalanceUsdt).toString()).toBe("6.5");
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(1);
+  });
+
+  // No rail recorded what arrived — every automated rail now writes a ledger
+  // row, so this is an order somebody moved to UNDERPAID by hand. Cancel it,
+  // but write no wallet movement: a 0-amount ledger row would claim money
+  // moved when none did. Same gating as `refundUnderpaidOrder`.
+  it("cancels the order but credits nothing when no rail recorded a received amount", async () => {
+    const order = await makeUsdtTopupOrder("10");
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+
+    const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    expect(credited.toString()).toBe("0");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+    expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(0);
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
+  });
+
+  it("refuses an order id that does not exist", async () => {
+    await expect(creditUnderpaidTopupAnyway(prisma, { orderId: 999_999, adminId: ADMIN_ID })).rejects.toMatchObject({
+      key: "error.order_not_found",
+    });
   });
 });

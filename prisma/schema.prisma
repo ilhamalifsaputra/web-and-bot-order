@@ -1633,6 +1633,25 @@ model ProcessedNowpaymentsTx {
   @@map("processed_nowpayments_tx")
 }
 
+/// Records the amount actually received for a QRIS/IDR order (TokoPay,
+/// PayDisini, NOWPayments) flagged UNDERPAID by markOrderUnderpaid
+/// (packages/db/src/crud/orderStatus.ts). Unlike the crypto rails'
+/// Processed*Tx ledgers, this is not a delivery-dedup table — these three
+/// gateways dedupe via the order's own status (see markOrderUnderpaid's
+/// doc comment) — it exists solely so findUnderpaidReceived (orders.ts)
+/// can read back a structured amount instead of the adminNote free-text
+/// note that was the only record before this table existed.
+model QrisUnderpaidTx {
+  id             Int      @id @default(autoincrement())
+  orderId        Int      @unique @map("order_id")
+  gateway        String
+  receivedAmount Decimal  @map("received_amount")
+  expectedAmount Decimal  @map("expected_amount")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("qris_underpaid_tx")
+}
+
 /// Idempotency ledger for Telegram update_id redelivery — same insert-first-
 /// on-unique pattern as the Processed*Tx ledgers above, but for a different
 /// kind of duplicate: Telegram's long-polling `getUpdates` offset only

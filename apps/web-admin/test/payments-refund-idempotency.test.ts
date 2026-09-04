@@ -5,6 +5,10 @@
  * response instead of hitting refundUnderpaidOrder's own state guard (which
  * would otherwise show a confusing 422 "order not underpaid" on the retry,
  * even though the refund already happened).
+ *
+ * Also covers what the route reports back: `refunded`/`currency` in the success
+ * body, including the zero-refund case where the order goes REFUNDED but no
+ * money moves (see the second describe at the bottom).
  */
 import "./setup-env";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
@@ -68,7 +72,7 @@ describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
 
     const first = await refund(order.id);
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ ok: true });
+    expect(first.json()).toEqual({ ok: true, refunded: "1", currency: order.currency });
 
     const second = await refund(order.id);
     expect(second.statusCode).toBe(422);
@@ -80,11 +84,14 @@ describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
 
     const first = await refund(order.id, { "idempotency-key": key });
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toEqual({ ok: true });
+    // `refunded`/`currency` come back so the admin panel can say how much
+    // actually went back to the buyer instead of showing an unconditional
+    // success toast — mirroring the sibling /credit-anyway route.
+    expect(first.json()).toEqual({ ok: true, refunded: "1", currency: order.currency });
 
     const second = await refund(order.id, { "idempotency-key": key });
     expect(second.statusCode).toBe(200);
-    expect(second.json()).toEqual({ ok: true });
+    expect(second.json()).toEqual({ ok: true, refunded: "1", currency: order.currency });
 
     // Refunded exactly once — the buyer's wallet only got credited on the
     // first attempt, and the audit log only recorded one refund action.
@@ -137,5 +144,35 @@ describe("POST /api/payments/order/:orderId/refund — Idempotency-Key", () => {
     // orderB must NOT have been refunded — the conflict short-circuited before refundUnderpaidOrder ran.
     const orderBRow = await prisma.order.findUnique({ where: { id: orderB.id } });
     expect(orderBRow!.status).toBe("UNDERPAID");
+  });
+});
+
+describe("POST /api/payments/order/:orderId/refund — when no rail recorded what the buyer sent", () => {
+  it("reports refunded 0 and says so in the audit log instead of claiming a payout", async () => {
+    // An order moved to UNDERPAID with no ledger row behind it — the shape
+    // every PRODUCT order that was already sitting in UNDERPAID before this
+    // branch's QRIS ledger table landed has. The route still marks it
+    // REFUNDED (terminal), so it has to say plainly that no money moved.
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: "UNDERPAID" } });
+    const buyerBefore = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString();
+
+    const res = await refund(order.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, refunded: "0", currency: order.currency });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("REFUNDED");
+
+    // No wallet movement, and no COMPLETED Refund row implying a payout.
+    const buyerAfter = (await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } })).walletBalance.toString();
+    expect(buyerAfter).toBe(buyerBefore);
+    expect(await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "underpaid_refund" } })).toHaveLength(0);
+    expect(await prisma.refund.findMany({ where: { orderId: order.id } })).toHaveLength(0);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_refund", targetId: order.id } });
+    expect(audit).toHaveLength(1);
+    // Not "Refunded 0 IDR …", which reads as a completed zero-value payout.
+    expect(audit[0]!.details).toContain("returned nothing");
+    expect(audit[0]!.details).toContain("by hand");
   });
 });

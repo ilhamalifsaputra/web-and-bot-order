@@ -63,6 +63,7 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | POST | `/users/:id/role`, `/users/:id/ban`, `/users/:id/wallet` | `csrfProtect` | Mutasi user (role TIDAK bisa di-set ke ADMIN dari sini — lihat SECURITY.md) |
 | GET | `/payments` | `currentAdmin` | Panel ledger pembayaran (semua gateway) |
 | POST | `/payments/order/:id/deliver`, `/:id/refund`, `/:id/cancel`, `/match`, `/credit`, `/dismiss` | `csrfProtect` | Resolusi manual pembayaran (unmatched/underpaid) |
+| POST | `/payments/order/:id/credit-anyway` | `csrfProtect` | Resolusi order `WALLET_TOPUP` yang underpaid: batalkan order, kredit wallet pembeli sebesar yang benar-benar diterima. Balasannya `{ ok, credited, currency }` — `credited: "0"` berarti tidak ada rail yang mencatat berapa yang masuk, jadi order dibatalkan tanpa kredit dan pembeli harus ditangani manual |
 | GET | `/vouchers` | `currentAdmin` | Lihat voucher |
 | POST | `/vouchers`, `/vouchers/:id/toggle`, `/vouchers/:id/delete` | `csrfProtect` | Mutasi voucher |
 | GET | `/reviews` | `currentAdmin` | Moderasi review |

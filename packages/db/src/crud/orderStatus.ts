@@ -173,16 +173,27 @@ export async function tryTransitionOrderStatus(
  * with no natural "already handled" marker, each of these three pollers
  * re-checks the SAME `order.id` every cycle via its gateway's
  * `checkTransaction`-equivalent — so the order's own status IS the natural
- * idempotency guard, and no new ledger table is needed here. The
- * `tryTransitionOrderStatus` call below IS that guard: once the order has
+ * idempotency guard, and this function needs no ledger table to dedupe with.
+ * The `tryTransitionOrderStatus` call below IS that guard: once the order has
  * left PENDING_PAYMENT (this call already flagged it, or a webhook/another
  * poller settled it first), it returns false and this function is a no-op —
  * exactly how the crypto rails already treat their own idempotent-`false`
  * case.
  *
- * The transition and the `adminNote` write run as one `$transaction` so a
- * crash or thrown error between them can never leave a torn state, mirroring
- * `markUnderpaid`'s own transaction shape.
+ * It nevertheless writes one `QrisUnderpaidTx` row per applied flag, for a
+ * different reason than dedup: the amount that actually arrived has to be
+ * readable later. Every path that pays an underpaid buyer back what they sent
+ * (`refundUnderpaidOrder`, `creditUnderpaidTopupAnyway`) resolves it through
+ * `findUnderpaidReceived` (crud/orders.ts), which reads structured ledger
+ * rows — so while the received amount lived only in the `adminNote` free text
+ * below, a QRIS-flagged order read back as "received 0" and the buyer got
+ * nothing. The row is written only on the applied path, never on the
+ * idempotent no-op, so a poller re-checking the same order cannot append a
+ * second, conflicting record of what arrived.
+ *
+ * The transition, the `adminNote` write and the ledger row run as one
+ * `$transaction` so a crash or thrown error between them can never leave a
+ * torn state, mirroring `markUnderpaid`'s own transaction shape.
  */
 export async function markOrderUnderpaid(
   db: PrismaClient,
@@ -201,6 +212,14 @@ export async function markOrderUnderpaid(
       where: { id: args.orderId },
       data: {
         adminNote: `[underpaid] received ${new Decimal(args.receivedAmount).toString()} via ${args.gateway}, expected ${new Decimal(args.expectedAmount).toString()}`,
+      },
+    });
+    await tx.qrisUnderpaidTx.create({
+      data: {
+        orderId: args.orderId,
+        gateway: args.gateway,
+        receivedAmount: new Decimal(args.receivedAmount),
+        expectedAmount: new Decimal(args.expectedAmount),
       },
     });
     return true;

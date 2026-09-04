@@ -34,6 +34,7 @@ import {
   approveOrder,
   settlePaidOrder,
   applyUsdtWalletToOrder,
+  findUnderpaidReceived,
   ORDER_USER_SELECT,
   type SettleResult,
 } from "./orders";
@@ -858,15 +859,6 @@ export function countProcessedBinanceTxToday(db: Db, now: Date = new Date()): Pr
   return db.processedBinanceTx.count({ where: { createdAt: { gte: startOfDayUtc(now) } } });
 }
 
-/** The amount actually received for an UNDERPAID order, from its ledger row. */
-async function underpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const row = await db.processedBinanceTx.findFirst({
-    where: { orderId, outcome: "underpaid" },
-    orderBy: { createdAt: "desc" },
-  });
-  return row?.amount != null ? new Decimal(row.amount) : null;
-}
-
 /**
  * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
  * Flips UNDERPAID → PENDING_VERIFICATION then runs the normal approve/deliver
@@ -908,9 +900,14 @@ export async function deliverUnderpaidOrder(
 }
 
 /**
- * Resolve UNDERPAID by refunding the received USDT to the buyer's wallet and
- * marking the order REFUNDED. Rolls back voucher usage so reconciliation stays
- * clean. (UNDERPAID orders never reserved stock, so there is nothing to release.)
+ * Resolve UNDERPAID by refunding what the buyer actually sent to their wallet
+ * and marking the order REFUNDED. Rolls back voucher usage so reconciliation
+ * stays clean. (UNDERPAID orders never reserved stock, so nothing to release.)
+ *
+ * The credit goes to the balance matching the ORDER's own currency, so a USDT
+ * order returns USDT and a rupiah order returns rupiah — `adjustWallet`
+ * silently defaults to IDR when no currency is passed, which would otherwise
+ * pay a crypto buyer back in the wrong money entirely.
  *
  * Also writes a `Refund` record (Trustance Master Architecture Task 8b) so
  * this concrete, already-idempotency-protected payout path shows up in the
@@ -944,16 +941,21 @@ export async function deliverUnderpaidOrder(
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal; refundId: number | null }> {
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
     if (order.status !== OrderStatus.UNDERPAID) {
       throw new ValidationError("error.order_not_underpaid");
     }
-    const received = (await underpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
     if (received.greaterThan(0)) {
-      await adjustWallet(tx, order.userId, received, { reason: "underpaid_refund", orderId: order.id, adminId: args.adminId });
+      await adjustWallet(tx, order.userId, received, {
+        reason: "underpaid_refund",
+        currency: order.currency as "IDR" | "USDT",
+        orderId: order.id,
+        adminId: args.adminId,
+      });
     }
     if (order.voucherId) {
       const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
@@ -964,7 +966,7 @@ export async function refundUnderpaidOrder(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
+        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
       },
     });
     // Only write a Refund record when money actually moved (`received > 0`,
@@ -989,8 +991,13 @@ export async function refundUnderpaidOrder(
       to: OrderStatus.REFUNDED,
       meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
-    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
-    return { refunded: received, refundId: refund?.id ?? null };
+    logger.info(
+      `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
+    );
+    // `currency` travels back with the amount so the caller's audit line can
+    // say which money was returned — a bare amount is ambiguous now that the
+    // refund lands in the order's own currency rather than always IDR.
+    return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
   });
 }
 

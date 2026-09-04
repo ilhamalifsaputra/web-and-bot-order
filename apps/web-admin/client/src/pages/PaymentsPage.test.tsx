@@ -748,6 +748,44 @@ describe("PaymentsPage — underpaid order resolution", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/cancel", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
   });
 
+  it("shows only 'Credit to balance anyway' and 'Cancel order' for a WALLET_TOPUP underpaid row, and credits it", async () => {
+    const user = userEvent.setup();
+    const topup = { ...UNDERPAID, kind: "WALLET_TOPUP" };
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [topup], pendingInternal: [] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Credit to balance anyway")).toBeInTheDocument();
+    expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
+    expect(within(menu).queryByText("Deliver anyway")).not.toBeInTheDocument();
+    expect(within(menu).queryByText("Refund")).not.toBeInTheDocument();
+
+    await user.click(within(menu).getByText("Credit to balance anyway"));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Credit anyway" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/credit-anyway", {}, expect.objectContaining({ idempotencyKey: expect.any(String) })));
+  });
+
+  it("keeps a PRODUCT underpaid row's menu unchanged (all three original actions)", async () => {
+    const user = userEvent.setup();
+    const productRow = { ...UNDERPAID, kind: "PRODUCT" };
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [productRow], pendingInternal: [] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Deliver anyway")).toBeInTheDocument();
+    expect(within(menu).getByText("Refund")).toBeInTheDocument();
+    expect(within(menu).getByText("Cancel order")).toBeInTheDocument();
+    expect(within(menu).queryByText("Credit to balance anyway")).not.toBeInTheDocument();
+  });
+
   it("lists pending internal transfers awaiting confirmation", async () => {
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [], pendingInternal: [PENDING_INTERNAL] });
     render(<PaymentsPage />, { wrapper: Wrapper });

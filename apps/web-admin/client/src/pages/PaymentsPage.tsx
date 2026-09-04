@@ -95,6 +95,7 @@ interface UnderpaidOrderRow {
   createdAt: string;
   createdAtDisplay: string | null;
   user: OrderPartyRow | null;
+  kind: string;
 }
 interface PendingInternalOrderRow {
   id: number;
@@ -221,6 +222,7 @@ export function PaymentsPage() {
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
   const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
+  const [pendingCreditAnyway, setPendingCreditAnyway] = useState<UnderpaidOrderRow | null>(null);
   const [pendingDismiss, setPendingDismiss] = useState<TxRow | null>(null);
   const [pendingCredit, setPendingCredit] = useState<TxRow | null>(null);
   const [creditOrderCode, setCreditOrderCode] = useState("");
@@ -298,6 +300,15 @@ export function PaymentsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order cancelled.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const creditAnyway = useMutation({
+    mutationFn: (orderId: number) => idempotentPost(`/api/payments/order/${orderId}/credit-anyway`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order cancelled and credited to the buyer's balance.");
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
@@ -494,19 +505,35 @@ export function PaymentsPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDeliver(o); }}>
-                          <PackageCheck className="h-4 w-4" />
-                          Deliver anyway
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
-                          <Undo2 className="h-4 w-4" />
-                          Refund
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
-                          <X className="h-4 w-4" />
-                          Cancel order
-                        </DropdownMenuItem>
+                        {o.kind === "WALLET_TOPUP" ? (
+                          <>
+                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCreditAnyway(o); }}>
+                              <Wallet className="h-4 w-4" />
+                              Credit to balance anyway
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
+                              <X className="h-4 w-4" />
+                              Cancel order
+                            </DropdownMenuItem>
+                          </>
+                        ) : (
+                          <>
+                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDeliver(o); }}>
+                              <PackageCheck className="h-4 w-4" />
+                              Deliver anyway
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
+                              <Undo2 className="h-4 w-4" />
+                              Refund
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
+                              <X className="h-4 w-4" />
+                              Cancel order
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -779,6 +806,17 @@ export function PaymentsPage() {
           description={`Cancel order ${pendingCancel.orderCode}. Any reserved stock or wallet holds are released.`}
           confirmLabel="Cancel order"
           onConfirm={() => cancelUnderpaid.mutate(pendingCancel.id)}
+        />
+      )}
+      {pendingCreditAnyway && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingCreditAnyway(null); }}
+          title="Credit this top-up to the buyer's balance anyway?"
+          description={`Order ${pendingCreditAnyway.orderCode} was underpaid. Cancel it and credit the buyer's wallet with the amount actually received.`}
+          confirmLabel="Credit anyway"
+          variant="default"
+          onConfirm={() => creditAnyway.mutate(pendingCreditAnyway.id)}
         />
       )}
       {pendingDismiss && (

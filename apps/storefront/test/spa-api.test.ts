@@ -354,6 +354,10 @@ describe("SPA shell wildcard", () => {
     ["/account/support", "Help &amp; support"], // esc()'d — the raw title has an ampersand
     ["/account/support/123", "Help &amp; support"],
     ["/account/settings", "Account settings"],
+    // Task 18: /help — the new consolidated ticket page nav/footer/CTAs now
+    // point at, auth-gated (noindex) like the rest of this table rather than
+    // a STATIC_PAGES entry.
+    ["/help", "Help &amp; Support"],
   ])("200s GET %s with the %s title", async (path, title) => {
     const res = await app.inject({ method: "GET", url: path });
     expect(res.statusCode).toBe(200);

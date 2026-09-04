@@ -33,6 +33,7 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
   [/^\/account\/reviews$/, "web.account_reviews"],
   [/^\/account\/support(\/\d+)?$/, "web.account_support"],
   [/^\/account\/settings$/, "web.settings_title"],
+  [/^\/help$/, "web.help_title"],
   [/^\/about$/, "web.about_title"],
   [/^\/how-to-order$/, "web.hto_title"],
   [/^\/terms$/, "web.terms_title"],

@@ -256,6 +256,7 @@ describe("Layout", () => {
       "/products",
       "/categories",
       "/track",
+      "/help",
       "/about",
       "/how-to-order",
       "/terms",

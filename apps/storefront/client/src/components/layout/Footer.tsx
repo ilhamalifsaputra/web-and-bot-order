@@ -24,6 +24,7 @@ export const FOOTER_LINKS = [
   { to: "/products", key: "web.products_title" },
   { to: "/categories", key: "web.categories_page_title" },
   { to: "/track", key: "web.track_title" },
+  { to: "/help", key: "web.help_title" },
   { to: "/about", key: "web.about_title" },
   { to: "/how-to-order", key: "web.hto_title" },
   { to: "/terms", key: "web.terms_title" },

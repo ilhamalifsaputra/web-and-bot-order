@@ -99,7 +99,7 @@ export default function StaticPage({
       <Card className="mt-12">
         <h2 className="font-display text-lg font-semibold text-ink">{t("web.static_help_title")}</h2>
         <p className="mt-1 text-sm leading-relaxed text-ink-soft">{t("web.static_help_body")}</p>
-        <Link to="/account/support" className="btn btn-primary mt-4">
+        <Link to="/help" className="btn btn-primary mt-4">
           <LifeBuoy className="h-4 w-4" />
           {t("web.static_help_cta")}
         </Link>

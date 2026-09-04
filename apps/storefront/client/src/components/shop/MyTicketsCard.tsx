@@ -131,11 +131,11 @@ export default function MyTicketsCard({
           <table className="data-table w-full">
             <thead>
               <tr>
-                <th>{t("web.help_col_ticket")}</th>
-                <th>{t("web.help_col_subject")}</th>
-                <th>{t("web.help_col_status")}</th>
-                <th>{t("web.help_col_last_update")}</th>
-                <th>{t("web.help_col_date")}</th>
+                <th scope="col">{t("web.help_col_ticket")}</th>
+                <th scope="col">{t("web.help_col_subject")}</th>
+                <th scope="col">{t("web.help_col_status")}</th>
+                <th scope="col">{t("web.help_col_last_update")}</th>
+                <th scope="col">{t("web.help_col_date")}</th>
                 <th aria-hidden="true" />
               </tr>
             </thead>

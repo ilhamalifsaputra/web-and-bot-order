@@ -30,7 +30,7 @@ describe("StaticPage", () => {
     // Forward action is kept.
     expect(screen.getByRole("link", { name: /Open a support ticket/ })).toHaveAttribute(
       "href",
-      "/account/support",
+      "/help",
     );
   });
 

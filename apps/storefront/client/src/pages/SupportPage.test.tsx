@@ -22,6 +22,10 @@ const supportData: SupportData = {
       created_at_display: "2026-07-01 09:00",
       admin_reply: null,
       attachments: [],
+      subject: null,
+      order_code: null,
+      product_name: null,
+      updated_at_iso: "2026-07-01T09:00:00.000Z",
     },
   ],
 };

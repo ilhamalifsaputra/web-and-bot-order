@@ -16,12 +16,17 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { localize, addDays } from "@app/core/datetime";
-import { SenderType, OrderStatus, OrderKind, TicketStatus } from "@app/core/enums";
+import { SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
-import { parseTicketMultipart, writeAttachments, type ParsedAttachment } from "../lib/ticketAttachments";
+import {
+  parseTicketMultipart,
+  parseNewTicketMultipart,
+  writeAttachments,
+  type ParsedAttachment,
+} from "../lib/ticketAttachments";
 import {
   prisma,
   setSetting,
@@ -31,6 +36,8 @@ import {
   updateOrderCustomerData,
   listUserDeliveredOrders,
   listUserTickets,
+  listUserTicketsPaged,
+  getUserTicketStats,
   listTicketMessages,
   getTicket,
   getTicketWithOrder,
@@ -48,6 +55,7 @@ import {
   LOGIN_USERNAME_RE,
   getReferralSummary,
 } from "@app/db";
+import type { SupportTicketListSort, SupportTicketStatusFilter } from "@app/db";
 import {
   newJti,
   shopSessionJtiKey,
@@ -83,6 +91,88 @@ const dt = (d: Date, fmt = "yyyy-LL-dd HH:mm"): string => localize(d, fmt);
 
 /** `attachment_urls` is stored as a comma-joined string (same convention as photo_file_ids). */
 const splitAttachments = (v: string | null): string[] => (v ? v.split(",").filter(Boolean) : []);
+
+/** The /help list-control query vocabularies (Task 11). An unrecognized value
+ * on either falls back to the default (mirrors apiPages.ts's `isSortKey`
+ * handling — a bad `?sort=` there just falls through, it doesn't 400). */
+const SUPPORT_LIST_SORTS: readonly SupportTicketListSort[] = [
+  "latest_update",
+  "created_desc",
+  "created_asc",
+];
+const SUPPORT_STATUS_FILTERS: readonly SupportTicketStatusFilter[] = [
+  "all",
+  "waiting_for_you",
+  "waiting_for_support",
+  "in_progress",
+  "resolved",
+  "closed",
+];
+
+/** Newest activity instant across a ticket's lifecycle stamps, as an ISO
+ * string — the /help list's "last updated" value. `messages[0]` is only
+ * present on rows from `listUserTicketsPaged` (the paged branch); the plain
+ * `listUserTickets` rows just omit that candidate and fall back to
+ * `createdAt` at worst (which is always set, so the result is never
+ * `-Infinity`). */
+function newestActivityIso(tk: {
+  createdAt: Date;
+  repliedAt: Date | null;
+  lastStatusChangeAt: Date;
+  resolvedAt: Date | null;
+  closedAt: Date | null;
+  messages?: { createdAt: Date }[];
+}): string {
+  const stamps: Array<Date | null | undefined> = [
+    tk.createdAt,
+    tk.repliedAt,
+    tk.lastStatusChangeAt,
+    tk.resolvedAt,
+    tk.closedAt,
+    tk.messages?.[0]?.createdAt,
+  ];
+  const newest = Math.max(...stamps.map((d) => d?.getTime() ?? -Infinity));
+  return new Date(newest).toISOString();
+}
+
+/** Buyer-facing support ticket row — shared by the no-query-param branch of
+ * `GET /account/support` (rows from `listUserTickets`) and the paged branch
+ * (rows from `listUserTicketsPaged`). `order`/`product`/`messages` are only
+ * included on the paged rows; on the plain rows `order_code`/`product_name`
+ * resolve to `null`, which is correct — neither existing consumer
+ * (SupportPage.tsx, TicketDetailPage.tsx's sidebar) reads them, and adding a
+ * relation-fetch to the plain path would cost every unaffected caller an
+ * extra query for nothing. */
+function mapSupportTicketRow(tk: {
+  id: number;
+  message: string;
+  status: string;
+  subject: string | null;
+  adminReply: string | null;
+  attachmentUrls: string | null;
+  createdAt: Date;
+  repliedAt: Date | null;
+  lastStatusChangeAt: Date;
+  resolvedAt: Date | null;
+  closedAt: Date | null;
+  order?: { orderCode: string } | null;
+  product?: { name: string } | null;
+  messages?: { createdAt: Date }[];
+}) {
+  return {
+    id: tk.id,
+    message: tk.message,
+    status: tk.status,
+    created_at_display: dt(tk.createdAt),
+    admin_reply: tk.adminReply,
+    attachments: splitAttachments(tk.attachmentUrls),
+    // Additive (Task 11) — see mapSupportTicketRow's own doc comment.
+    subject: tk.subject ?? null,
+    order_code: tk.order?.orderCode ?? null,
+    product_name: tk.product?.name ?? null,
+    updated_at_iso: newestActivityIso(tk),
+  };
+}
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
 async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
@@ -282,19 +372,66 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // ---- Support ----
-  app.get("/account/support", async (req, reply) => {
+  // GET /account/support has TWO shapes (Task 11), chosen by whether ANY
+  // list-control query param is present:
+  //  - none present  → byte-compatible with the pre-Task-11 response
+  //    (`{ tickets: [...] }`, the simple unpaged `listUserTickets` call) so
+  //    SupportPage.tsx / TicketDetailPage.tsx's sidebar keep working
+  //    unchanged. The per-row mapping gains the additive
+  //    subject/order_code/product_name/updated_at_iso fields (order_code /
+  //    product_name always null on this branch — see mapSupportTicketRow).
+  //  - any of status/q/sort/page/page_size present → the /help page's paged
+  //    view: `{ tickets, total, page, page_size, stats }`.
+  app.get<{
+    Querystring: { status?: string; q?: string; sort?: string; page?: string; page_size?: string };
+  }>("/account/support", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const tickets = await listUserTickets(prisma, customer.userId, 20);
+
+    const { status, q, sort, page, page_size } = req.query;
+    const hasListControls =
+      status !== undefined ||
+      q !== undefined ||
+      sort !== undefined ||
+      page !== undefined ||
+      page_size !== undefined;
+
+    if (!hasListControls) {
+      const tickets = await listUserTickets(prisma, customer.userId, 20);
+      return reply.send({ tickets: tickets.map((tk) => mapSupportTicketRow(tk)) });
+    }
+
+    // An unrecognized status/sort value falls back to its default rather than
+    // 400ing (mirrors apiPages.ts's `isSortKey` handling).
+    const statusFilter: SupportTicketStatusFilter = SUPPORT_STATUS_FILTERS.includes(
+      status as SupportTicketStatusFilter,
+    )
+      ? (status as SupportTicketStatusFilter)
+      : "all";
+    const sortValue: SupportTicketListSort = SUPPORT_LIST_SORTS.includes(sort as SupportTicketListSort)
+      ? (sort as SupportTicketListSort)
+      : "latest_update";
+    // Fastify querystring values are always strings — parse + guard NaN.
+    const pageNum = Number(page) || 1;
+    const pageSizeNum = Number(page_size) || 10;
+
+    const [{ rows, total }, stats] = await Promise.all([
+      listUserTicketsPaged(prisma, customer.userId, {
+        status: statusFilter,
+        q: q?.trim() || undefined,
+        sort: sortValue,
+        page: pageNum,
+        pageSize: pageSizeNum,
+      }),
+      getUserTicketStats(prisma, customer.userId),
+    ]);
+
     return reply.send({
-      tickets: tickets.map((tk) => ({
-        id: tk.id,
-        message: tk.message,
-        status: tk.status,
-        created_at_display: dt(tk.createdAt),
-        admin_reply: tk.adminReply,
-        attachments: splitAttachments(tk.attachmentUrls),
-      })),
+      tickets: rows.map((tk) => mapSupportTicketRow(tk)),
+      total,
+      page: pageNum,
+      page_size: pageSizeNum,
+      stats,
     });
   });
 
@@ -344,6 +481,134 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // STO-020: the client shows a "Ticket #N created" success toast — needs
     // the new ticket's id, which `{ ok: true }` alone never carried.
     return reply.send({ ok: true, ticket_id: ticketId });
+  });
+
+  // Form-bootstrap for the /help create-ticket form's Product dropdown (Task
+  // 11). Auth-gated like every other /account/* route here even though the
+  // data isn't sensitive — consistent with this file's "gate the whole
+  // /account/* surface behind requireCustomer" pattern. Static path, so
+  // Fastify routes it ahead of GET /account/support/:id.
+  app.get("/account/support/new", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    const products = await prisma.product.findMany({
+      where: { isActive: true, isArchived: false },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+    return reply.send({ products });
+  });
+
+  // POST /account/support/new — the /help create-ticket form's own endpoint
+  // (Task 11), a SIBLING of the legacy POST /account/support above (left
+  // byte-identical so SupportPage.tsx's bare-`{ message }` composer keeps
+  // working). This one hard-requires the /help form's triage fields:
+  // subject + category + product_id + description. Multipart uses the field
+  // name `description` (not the legacy `message`) and is read by
+  // `parseNewTicketMultipart` — `parseTicketMultipart` is untouched.
+  app.post<{
+    Body: {
+      subject?: string;
+      category?: string;
+      product_id?: number | string;
+      description?: string;
+      order_code?: string;
+    };
+  }>("/account/support/new", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+
+    let subjectInput: string;
+    let categoryInput: string;
+    let productIdInput: string;
+    let descriptionInput: string;
+    let orderCodeInput: string | null = null;
+    let attachments: ParsedAttachment[] = [];
+
+    if (req.isMultipart()) {
+      try {
+        const parsed = await parseNewTicketMultipart(req);
+        subjectInput = parsed.subject;
+        categoryInput = parsed.category;
+        productIdInput = parsed.productId;
+        descriptionInput = parsed.description;
+        orderCodeInput = parsed.orderCode;
+        attachments = parsed.attachments;
+      } catch (e) {
+        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        throw e;
+      }
+    } else {
+      subjectInput = String(req.body?.subject ?? "");
+      categoryInput = String(req.body?.category ?? "");
+      productIdInput =
+        req.body?.product_id === undefined || req.body?.product_id === null
+          ? ""
+          : String(req.body.product_id);
+      descriptionInput = String(req.body?.description ?? "");
+      orderCodeInput = (req.body?.order_code ?? "").trim() || null;
+    }
+
+    // Validation runs BEFORE any DB write or attachment write (M-18
+    // deferred-write discipline): subject/category/product_id/description all
+    // hard-required, then order resolution, then the duplicate check, then
+    // create. `writeAttachments` only runs once every check has passed.
+    const subject = subjectInput.trim();
+    if (subject.length < 1 || subject.length > 100) {
+      return reply.code(400).send({ error: "web.support_subject_required" });
+    }
+    const categoryParsed = zTicketCategory.safeParse(categoryInput.trim());
+    if (!categoryParsed.success) {
+      return reply.code(400).send({ error: "web.support_category_required" });
+    }
+    const category = categoryParsed.data;
+    const productId = Number(productIdInput);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return reply.code(400).send({ error: "web.support_product_invalid" });
+    }
+    const description = descriptionInput.trim().slice(0, 2000);
+    if (description.length < 1) {
+      return reply.code(400).send({ error: "web.support_description_required" });
+    }
+    // "Does this product id exist at all" — active-or-not (a ticket about a
+    // since-archived product is still valid). `isActive`/`isArchived` are
+    // deliberately NOT checked here.
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true },
+    });
+    if (!product) {
+      return reply.code(400).send({ error: "web.support_product_invalid" });
+    }
+
+    let orderId: number | null = null;
+    if (orderCodeInput) {
+      const order = await getOrderByCodeFull(prisma, orderCodeInput);
+      if (!order || order.userId !== customer.userId) {
+        return reply.code(400).send({ error: "error.order_not_found" });
+      }
+      orderId = order.id;
+    }
+
+    if (orderId !== null) {
+      const existingTicket = await getOpenTicketForOrder(prisma, orderId);
+      if (existingTicket) {
+        return reply.send({ ok: false, duplicate: true, ticket_id: existingTicket.id });
+      }
+    }
+
+    const attachmentUrls = await writeAttachments(attachments);
+    const ticket = await createTicket(
+      prisma,
+      customer.userId,
+      description,
+      null,
+      attachmentUrls,
+      orderId,
+      { subject, category, productId },
+    );
+    return reply.send({ ok: true, ticket_id: ticket.id });
   });
 
   app.post<{ Params: { id: string }; Body: { message?: string } }>(

@@ -12,19 +12,15 @@
  * stay recognisably one product, rendered with the storefront's own `.btn`
  * classes and react-router `Link` instead of shadcn + onClick.
  *
- * Task 10 (E4): a bare empty-state card used to sit high in `<main>` with a
- * few hundred px of dead space beneath it on a tall viewport — `<main>` is a
- * `flex-1` column, so it stretches to fill whatever the header/footer leave
- * behind and the short card never claimed any of that height. The non-`bare`
- * shape now centres itself in a floor-height box instead of hugging the top,
- * and can optionally carry a small product shelf (`suggestions`) for the
- * pages where shopping is genuinely the next step — see ProductCard.tsx and
- * pages/*.tsx for the callers that pass it.
+ * The centred, floor-height shell is `StatusScreen` (Fase 6 §16) — this
+ * component composes it and layers on the one thing that is genuinely
+ * empty-state-specific: an optional "you might like" product shelf
+ * (`suggestions`) for the pages where shopping is the honest next step. Its
+ * external API and rendered DOM are unchanged by that extraction.
  */
-import { Link } from "react-router-dom";
-import type { LucideIcon } from "lucide-react";
 import { t } from "../../lib/i18n";
 import ProductCard, { type ProductCardData } from "./ProductCard";
+import StatusScreen, { type StatusScreenProps } from "./StatusScreen";
 
 export interface EmptyStateAction {
   label: string;
@@ -46,7 +42,7 @@ export interface EmptyStateSuggestions {
 const SUGGESTIONS_LIMIT = 4;
 
 export interface EmptyStateProps {
-  icon: LucideIcon;
+  icon: StatusScreenProps["icon"];
   title: string;
   description?: string;
   action?: EmptyStateAction;
@@ -70,21 +66,8 @@ export interface EmptyStateProps {
   suggestions?: EmptyStateSuggestions;
 }
 
-function ActionLink({ action, variant }: { action: EmptyStateAction; variant: "btn-primary" | "btn-ghost" }) {
-  const className = `btn ${variant} w-full sm:w-auto`;
-  return action.href ? (
-    <a href={action.href} className={className}>
-      {action.label}
-    </a>
-  ) : (
-    <Link to={action.to!} className={className}>
-      {action.label}
-    </Link>
-  );
-}
-
 export default function EmptyState({
-  icon: Icon,
+  icon,
   title,
   description,
   action,
@@ -92,27 +75,6 @@ export default function EmptyState({
   bare = false,
   suggestions,
 }: EmptyStateProps) {
-  const card = (
-    // sm:py-16 tightened to sm:py-12 (STO-E4): the card's own padding was part
-    // of what made the "void beneath" read as excessive, on top of `<main>`
-    // stretching underneath it — icon size/type scale are untouched.
-    <div className={bare ? "px-4 py-12 text-center" : "card card-pad w-full py-10 text-center sm:py-12"}>
-      <Icon className="mx-auto h-12 w-12 text-ink-faint" strokeWidth={1.5} aria-hidden="true" />
-      <p className="mt-4 font-display text-base font-semibold text-ink">{title}</p>
-      {description && (
-        <p className="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-ink-soft">{description}</p>
-      )}
-      {(action || secondaryAction) && (
-        // Full-width buttons on a phone (a centred 120px button is a small
-        // target and reads as an afterthought), auto-width once there's room.
-        <div className="mt-6 flex flex-col items-center justify-center gap-2 sm:flex-row sm:gap-3">
-          {action && <ActionLink action={action} variant="btn-primary" />}
-          {secondaryAction && <ActionLink action={secondaryAction} variant="btn-ghost" />}
-        </div>
-      )}
-    </div>
-  );
-
   // `suggestions?.products ?? []` isn't enough on its own: a caller can pass
   // a truthy `suggestions` whose `products` field is missing or malformed
   // (an older/mocked payload, or a page fetching the wrong shape) — guard the
@@ -135,26 +97,19 @@ export default function EmptyState({
     </div>
   );
 
-  if (bare) {
-    // No centring box: `bare` means the caller already has its own card
-    // chrome around this (AccountPage's desktop "Recent Orders" widget), so
-    // stacking the shelf directly underneath is enough.
-    return (
-      <>
-        {card}
-        {shelf && <div className="mt-8">{shelf}</div>}
-      </>
-    );
-  }
-
   return (
-    // A floor height, not the full stretched height of `<main>` (that would
-    // just move the void from below the card to below this box) — enough to
-    // noticeably close the gap the card used to leave, while the block still
-    // grows past it naturally once a suggestions shelf is present below.
-    <div className="flex min-h-[360px] flex-col items-center justify-center gap-10 py-6 sm:min-h-[420px]">
-      {card}
-      {shelf}
-    </div>
+    <StatusScreen
+      icon={icon}
+      title={title}
+      description={description}
+      action={action}
+      secondaryAction={secondaryAction}
+      bare={bare}
+    >
+      {/* `bare` means the caller already has its own card chrome around this
+          (AccountPage's desktop "Recent Orders" widget), so the shelf just
+          stacks directly underneath with its own top margin. */}
+      {bare ? shelf && <div className="mt-8">{shelf}</div> : shelf}
+    </StatusScreen>
   );
 }

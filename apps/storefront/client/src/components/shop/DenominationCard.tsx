@@ -6,10 +6,41 @@
  * page's picker logic controls selection via the `checked`/`onChange` props,
  * so the `<input type="radio">` + `has-[:checked]:` styling contract is kept
  * so the same CSS drives the selected look either way.
+ *
+ * Design-system migration (Task 11, `components.md` "Denomination / package
+ * card"): the surface is composed from token utilities instead of the shared
+ * `.card` class so it takes the spec's `radius 8px` (`rounded-lg`) rather than
+ * `.card`'s 16px. Selected state is a `2px solid pine` border + a translucent
+ * pine focus ring and NO fill (the old `bg-pine-tint/40` wash is dropped —
+ * spec: "never a solid colour fill on the whole card"). The resting border is
+ * 2px `line` (not the spec's literal 1px) so selection is a colour swap with
+ * zero layout reflow when clicking through a grid of cards.
+ *
+ * `iconKind` (Fase 12) adds an optional small currency chip (diamond/coin/
+ * key/card/voucher) to the leading content block — resolved once per PRODUCT
+ * (apps/storefront/src/denomIcon.ts) and passed down identically to every
+ * denomination of that product, since they all share one in-game currency.
+ * It is a per-render prop, not part of `DenominationCardData` (the per-SKU
+ * shape), and its rendering must never touch the `<input type="radio">`,
+ * the `has-[:checked]:` classes, or any `data-*` attribute on the outer
+ * `<label>` — those are read by the product page's picker logic.
  */
+import { Gem, Coins, KeyRound, CreditCard, Ticket, type LucideIcon } from "lucide-react";
 import StockBadge from "./StockBadge";
 import Price from "./Price";
 import FlashBadge, { FlashWasPrice, type FlashInfo } from "./FlashBadge";
+
+/** Mirrors the server's DenomIconKind union (apps/storefront/src/denomIcon.ts)
+ * and the client's own local alias (api/types.ts) verbatim. */
+export type DenomIconKind = "diamond" | "coin" | "key" | "card" | "voucher";
+
+const ICON_KIND_ICONS: Record<DenomIconKind, LucideIcon> = {
+  diamond: Gem,
+  coin: Coins,
+  key: KeyRound,
+  card: CreditCard,
+  voucher: Ticket,
+};
 
 export interface DenominationCardData {
   id: number;
@@ -39,13 +70,17 @@ export interface DenominationCardProps {
   lowThreshold: number;
   checked: boolean;
   onChange: () => void;
+  /** Resolved once per product (apps/storefront/src/denomIcon.ts), shared by
+   * every denomination of that product — null/undefined renders no chip. */
+  iconKind?: DenomIconKind | null;
 }
 
-export default function DenominationCard({ d, fx, lowThreshold, checked, onChange }: DenominationCardProps) {
+export default function DenominationCard({ d, fx, lowThreshold, checked, onChange, iconKind }: DenominationCardProps) {
   const buyable = purchasable(d);
+  const Icon = iconKind ? ICON_KIND_ICONS[iconKind] : null;
   return (
     <label
-      className={`denom-card card card-pad cursor-pointer flex items-center justify-between gap-3 transition-all duration-150 hover:shadow-lift has-[:checked]:ring-2 has-[:checked]:ring-pine has-[:checked]:bg-pine-tint/40 ${!buyable ? "opacity-60" : ""}`}
+      className={`denom-card cursor-pointer flex items-center justify-between gap-3 rounded-lg border-2 border-line bg-card p-4 shadow-soft transition-all duration-150 hover:shadow-lift has-[:checked]:border-pine has-[:checked]:ring-2 has-[:checked]:ring-pine/35 ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}
@@ -62,14 +97,29 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           checked={checked}
           onChange={onChange}
         />
+        {Icon && (
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-pine-tint"
+            aria-hidden="true"
+          >
+            <Icon className="h-4 w-4 text-pine" />
+          </span>
+        )}
         <div className="min-w-0">
           <div className="font-display text-sm font-semibold text-ink leading-snug">
             {d.duration_label || d.name}
           </div>
-          {/* Non-auto plans have no stock concept — showing a stock badge
-              (even a false "in stock") would be misleading, so omit it. */}
+          {/* Non-auto (provider-backed, e.g. Digiflazz) plans have no real
+              stock count — a number would be misleading, but rendering
+              nothing left the buyer with no "purchasable" cue at all. Show
+              the plain "Available" pill (StockBadge's allNonAuto branch,
+              identical markup to the catalog card's). */}
           <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-            {d.delivery_type === "auto" && <StockBadge available={d.available} lowThreshold={lowThreshold} />}
+            {d.delivery_type === "auto" ? (
+              <StockBadge available={d.available} lowThreshold={lowThreshold} />
+            ) : (
+              <StockBadge available={d.available} lowThreshold={lowThreshold} allNonAuto />
+            )}
             {d.flash && <FlashBadge percent={d.flash.discount_percent} endsAt={d.flash.ends_at} />}
           </div>
         </div>

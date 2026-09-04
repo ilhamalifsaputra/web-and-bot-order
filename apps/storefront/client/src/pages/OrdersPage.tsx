@@ -4,8 +4,17 @@
  * columns were both unreadable and behind a sideways scroll. The same rows now
  * render as cards below `md` and as the table from `md` up, one or the other,
  * never both (see lib/useMediaQuery.ts).
+ *
+ * Task 16 (design-system migration, page-templates.md §6): heading + a filter
+ * row (search `Input` + status `Select`), shown only once there is more than
+ * one order to filter (SortSelect's "products.length > 1" precedent). Filtering
+ * is entirely client-side — the endpoint still returns the full list and no
+ * query param is sent. The empty state now distinguishes "no orders yet" (a
+ * first-time visitor — keep the suggestions shelf + catalogue CTA) from "no
+ * orders match this filter" (§16 — a dead end otherwise, so it names a way
+ * out).
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Receipt } from "lucide-react";
@@ -18,7 +27,11 @@ import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
-import StatusBadge from "../components/shop/StatusBadge";
+import StatusBadge, { statusLabel } from "../components/shop/StatusBadge";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import Input from "../components/ui/Input";
+import Select from "../components/ui/Select";
 
 const SKELETON_ROWS = Array.from({ length: 4 }, (_, i) => i);
 
@@ -48,6 +61,8 @@ function OrderCard({ order, fx }: { order: AccountOrderSummary; fx: string | nul
 export default function OrdersPage() {
   const { data: ctx } = useShopContext();
   const isDesktop = useIsDesktop();
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
   const { data, error } = useQuery({
     queryKey: ["account-orders"],
     queryFn: () => apiGet<AccountOrdersData>("/api/v1/account/orders"),
@@ -85,11 +100,54 @@ export default function OrdersPage() {
     );
   }
 
+  const hasOrders = data.orders.length > 0;
+  // A filter over a single order sorts nothing — mirror SortSelect's
+  // "only when there's more than one" gate.
+  const showFilters = data.orders.length > 1;
+  const statuses = [...new Set(data.orders.map((o) => o.status))];
+  const q = search.trim().toLowerCase();
+  const orders = data.orders.filter((o) => {
+    const matchesText = !q || o.code.toLowerCase().includes(q) || o.items.toLowerCase().includes(q);
+    const matchesStatus = statusFilter === "all" || o.status === statusFilter;
+    return matchesText && matchesStatus;
+  });
+
+  function clearFilters() {
+    setSearch("");
+    setStatusFilter("all");
+  }
+
   return (
     <>
       <h1 className="page-title mb-6">{t("web.account_orders")}</h1>
 
-      {data.orders.length === 0 ? (
+      {showFilters && (
+        <div className="mb-6 flex flex-col gap-3 sm:flex-row">
+          <Input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("web.orders_filter_search")}
+            aria-label={t("web.orders_filter_search")}
+            className="sm:flex-1"
+          />
+          <Select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            aria-label={t("web.order_status")}
+            className="sm:w-56"
+          >
+            <option value="all">{t("web.orders_filter_all_status")}</option>
+            {statuses.map((s) => (
+              <option key={s} value={s}>
+                {statusLabel(s)}
+              </option>
+            ))}
+          </Select>
+        </div>
+      )}
+
+      {!hasOrders ? (
         /* STO-016: a bare empty-state sentence with no forward action stranded
            first-time visitors here — it now names the next step. */
         <EmptyState
@@ -100,10 +158,26 @@ export default function OrdersPage() {
           secondaryAction={{ label: t("web.continue_shopping"), to: "/" }}
           suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
+      ) : orders.length === 0 ? (
+        /* §16: a filter that matches nothing is a dead end unless it offers a
+           way back. Distinct copy from "no orders yet" so the two states never
+           read the same. */
+        <>
+          <EmptyState
+            icon={Receipt}
+            title={t("web.orders_no_match")}
+            description={t("web.orders_no_match_desc")}
+          />
+          <div className="mt-2 text-center">
+            <Button variant="soft" onClick={clearFilters}>
+              {t("web.orders_filter_clear")}
+            </Button>
+          </div>
+        </>
       ) : isDesktop ? (
         /* Desktop keeps the table: the columns fit, and comparing many orders
            at a glance is easier in a grid than in a stack of cards. */
-        <div className="card">
+        <Card padded={false}>
           <table className="data-table">
             <thead>
               <tr>
@@ -115,7 +189,7 @@ export default function OrdersPage() {
               </tr>
             </thead>
             <tbody>
-              {data.orders.map((o) => (
+              {orders.map((o) => (
                 <tr key={o.code}>
                   <td>
                     <Link to={`/account/orders/${o.code}`} className="link font-mono text-xs">
@@ -134,10 +208,10 @@ export default function OrdersPage() {
               ))}
             </tbody>
           </table>
-        </div>
+        </Card>
       ) : (
         <ul className="space-y-3">
-          {data.orders.map((o) => (
+          {orders.map((o) => (
             <li key={o.code}>
               <OrderCard order={o} fx={ctx?.fx} />
             </li>

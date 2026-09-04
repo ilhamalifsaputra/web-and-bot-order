@@ -203,6 +203,14 @@ export async function createCatalogProduct(
     gameVariant?: string | null;
     gameVariantEmoji?: string | null;
     gameRegion?: string | null;
+    /** Admin-set default placeholder art style (Fase 12) shown when no
+     * `webImageUrl` is set — null = auto-resolve from category. See
+     * prisma/schema.prisma Product.thumbnailKind for the allowed values. */
+    thumbnailKind?: string | null;
+    /** Admin-set currency-icon style (Fase 12) shown on this product's
+     * DenominationCard chips — null = auto-resolve. See
+     * prisma/schema.prisma Product.currencyIconKind for the allowed values. */
+    currencyIconKind?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
@@ -224,6 +232,8 @@ export async function createCatalogProduct(
       gameVariant: args.gameVariant ?? null,
       gameVariantEmoji: args.gameVariantEmoji ?? null,
       gameRegion: args.gameRegion ?? null,
+      thumbnailKind: args.thumbnailKind ?? null,
+      currencyIconKind: args.currencyIconKind ?? null,
     },
   });
 }

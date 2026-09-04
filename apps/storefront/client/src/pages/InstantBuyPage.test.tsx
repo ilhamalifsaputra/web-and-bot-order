@@ -848,4 +848,31 @@ describe("InstantBuyPage", () => {
       }
     });
   });
+
+  // Fase 12: product.icon_kind is resolved once server-side and forwarded to
+  // every DenominationCard as `iconKind` — same contract ProductPage.tsx
+  // follows for its own (catalog-flow) denom-list.
+  describe("currency-icon chip (Fase 12)", () => {
+    it("forwards product.icon_kind to every DenominationCard as the currency chip", async () => {
+      const withIcon: ProductPageData = {
+        ...productData,
+        product: { ...productData.product, icon_kind: "diamond" },
+      };
+      renderInstantBuy({ product: withIcon });
+      const heading = await screen.findByRole("heading", { name: "Choose a plan" });
+      const denomList = heading.nextElementSibling as HTMLElement;
+      expect(denomList.querySelectorAll(".lucide-gem")).toHaveLength(productData.denominations.length);
+    });
+
+    it("renders no currency chip on any DenominationCard when product.icon_kind is null", async () => {
+      const noIcon: ProductPageData = {
+        ...productData,
+        product: { ...productData.product, icon_kind: null },
+      };
+      renderInstantBuy({ product: noIcon });
+      const heading = await screen.findByRole("heading", { name: "Choose a plan" });
+      const denomList = heading.nextElementSibling as HTMLElement;
+      expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
+    });
+  });
 });

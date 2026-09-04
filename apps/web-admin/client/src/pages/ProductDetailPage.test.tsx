@@ -561,6 +561,91 @@ describe("ProductDetailPage", () => {
     expect(screen.getByRole("checkbox", { name: "Select 1 Month" })).not.toBeChecked();
   });
 
+  // Fase 12 task 22: thumbnailKind (default placeholder art style) and
+  // currencyIconKind (denomination-card currency chip) — optional selects
+  // shown in the edit-mode form, hidden entirely (not disabled) for a
+  // product whose category is in the PREMIUM_APPS group.
+  it("shows the thumbnail style and currency icon selects for a non-PREMIUM_APPS product", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body =
+        url === "/api/games" || url === "/api/catalog"
+          ? { games: [], categories: [], products: [] }
+          : url.startsWith("/api/catalog/1") && !init?.method
+            ? PRODUCT_DETAIL
+            : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+
+    expect(screen.getByRole("combobox", { name: /gaya thumbnail default/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /ikon currency/i })).toBeInTheDocument();
+  });
+
+  it("hides the thumbnail style and currency icon selects for a PREMIUM_APPS product", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const premiumAppsProduct = {
+      ...PRODUCT_DETAIL,
+      product: { ...PRODUCT_DETAIL.product, category: { id: 2, name: "Apps", group: "PREMIUM_APPS" } },
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body =
+        url === "/api/games" || url === "/api/catalog"
+          ? { games: [], categories: [], products: [] }
+          : url.startsWith("/api/catalog/1") && !init?.method
+            ? premiumAppsProduct
+            : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+
+    expect(screen.queryByRole("combobox", { name: /gaya thumbnail default/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /ikon currency/i })).not.toBeInTheDocument();
+  });
+
+  it("submits the chosen thumbnailKind/currencyIconKind in the PATCH body, and 'Automatic' as null", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body =
+        url === "/api/games" || url === "/api/catalog"
+          ? { games: [], categories: [], products: [] }
+          : url.startsWith("/api/catalog/1") && !init?.method
+            ? PRODUCT_DETAIL
+            : { ok: true };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /edit product/i }));
+    await user.click(screen.getByRole("combobox", { name: /gaya thumbnail default/i }));
+    await user.click(await screen.findByRole("option", { name: "Steam" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "PATCH" })),
+    );
+    const patch = fetchSpy.mock.calls.find(
+      ([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH",
+    )!;
+    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({
+      thumbnailKind: "steam",
+      currencyIconKind: null,
+    });
+  });
+
   it("links the category to that category's products", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify(PRODUCT_DETAIL), {

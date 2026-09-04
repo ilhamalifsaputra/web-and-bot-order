@@ -15,6 +15,14 @@
  * Task 16: shares its <main> with <AuthBrandPanel/> — see AuthBrandPanel.tsx
  * for why it sits after the card in the JSX despite rendering to its left on
  * desktop.
+ *
+ * Task 15 (design-system migration, Fase 7d): see LoginPage.tsx's header
+ * comment for the §4 template-mismatch writeup and deviations.md §15-auth
+ * for the one-time record. Email field is `<FormField>` + `<Input>`, submit
+ * is `<Button>`; the three outcome banners are `<Alert variant="banner">`
+ * with the tone the brief calls for — `warning` for the SMTP-unavailable
+ * branch, `success` for the sent confirmation, `error` for a request
+ * failure. No fetch/payload/copy changed, only presentation.
  */
 import { type FormEvent } from "react";
 import { Link } from "react-router-dom";
@@ -23,8 +31,12 @@ import { KeyRound } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
-import Flash from "../components/shop/Flash";
 import Spinner from "../components/shop/Spinner";
+import Alert from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
 
 interface ForgotResponse {
   sent: boolean;
@@ -51,7 +63,7 @@ export default function ForgotPage() {
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
       <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
-        <div className="w-full max-w-md card card-pad">
+        <Card className="w-full max-w-md">
           <Link to="/" className="text-center block">
             <KeyRound className="w-8 h-8 text-pine mx-auto" />
             <h1 className="font-display text-xl font-semibold mt-3">{t("web.forgot_title")}</h1>
@@ -59,29 +71,26 @@ export default function ForgotPage() {
           </Link>
 
           {error ? (
-            <div className="mt-6">
-              <Flash text={error} kind="error" />
-            </div>
+            <Alert variant="banner" tone="error" className="mt-6">
+              {error}
+            </Alert>
           ) : result?.unavailable ? (
-            <div className="mt-6">
-              <Flash text={t("web.forgot_unavailable")} kind="error" />
-            </div>
+            <Alert variant="banner" tone="warning" className="mt-6">
+              {t("web.forgot_unavailable")}
+            </Alert>
           ) : result?.sent ? (
-            <div className="mt-6">
-              <Flash text={t("web.forgot_sent")} kind="info" />
-            </div>
+            <Alert variant="banner" tone="success" className="mt-6">
+              {t("web.forgot_sent")}
+            </Alert>
           ) : (
             <form onSubmit={onSubmit} className="mt-6 space-y-4">
-              <div>
-                <label className="text-sm font-semibold" htmlFor="email">
-                  {t("web.register_email")}
-                </label>
-                <input className="field mt-1" type="email" id="email" name="email" autoComplete="email" required />
-              </div>
-              <button type="submit" className="btn btn-primary w-full" disabled={forgotMutation.isPending}>
+              <FormField label={t("web.register_email")} htmlFor="email">
+                <Input id="email" type="email" name="email" autoComplete="email" required />
+              </FormField>
+              <Button type="submit" variant="primary" fullWidth disabled={forgotMutation.isPending}>
                 {forgotMutation.isPending && <Spinner />}
                 {t("web.forgot_submit")}
-              </button>
+              </Button>
             </form>
           )}
 
@@ -90,7 +99,7 @@ export default function ForgotPage() {
               {t("web.register_have_account")}
             </Link>
           </div>
-        </div>
+        </Card>
 
         <AuthBrandPanel className="max-w-md" />
       </div>

@@ -1,0 +1,64 @@
+/* =============================================================================
+   STOREFRONT DESIGN-TOKEN EXTENSIONS (spec §26.2)
+   ---------------------------------------------------------------------------
+   Values the running app genuinely needs that the design-system spec
+   (src/styles/tokens.css / gogogo-frontend/design-system/tokens.css) does not
+   define. Everything here is a documented, reviewed exception — NOT a second
+   token source. Each entry is logged in docs/implementation/extensions.md with
+   its rationale.
+
+   Rules:
+     - Add a value here ONLY after confirming no existing --gg-* token fits.
+     - Mirror every entry into the `@theme` block in ../index.css so the
+       matching Tailwind utility exists (same literal-value convention as
+       tokens.css — see the note on that block).
+     - Prefer promoting a stable extension into the real spec later over letting
+       this file grow.
+   ========================================================================== */
+
+:root {
+  /* --gg-grass-dark-aa — foreground of the StockBadge "in stock" pill ONLY.
+     The shared --gg-grass-dark (#15803d) on --gg-grass-tint measures 4.49:1,
+     0.01 short of WCAG AA (4.5:1) for the pill's small text. This marginally
+     darker green clears AA (~4.55:1) without shifting the hue perceptibly.
+     Scoped to StockBadge — do NOT substitute for --gg-grass-dark anywhere the
+     shared success green is used (StatusBadge, ProductCard, money deltas).
+     Consuming utility: `text-grass-dark-aa`, resolved from the literal mirror
+     `--color-grass-dark-aa: #157e3b` in the `@theme` block of ../index.css. If
+     you retone this green, update BOTH copies (this one and that @theme line). */
+  --gg-grass-dark-aa: #157e3b;
+
+  /* --gg-radius-xl — corner radius of the full-bleed MARKETING BANDS only: the
+     dark hero band, the pine "Our Promise" band, and the hero's loading-skeleton
+     placeholder (HomePage.tsx), plus AuthBrandPanel's pine brand panel. The
+     design-system radius scale (styles/tokens.css §5) is this project's own
+     small scale and tops out at --gg-radius-lg (1rem / 16px), which is the
+     CONTENT-CARD radius (.card). A band that spans the full content width needs
+     a larger corner to stay proportional; 24px is that step.
+     Scoped to those bands — do NOT use for content cards, buttons, fields or
+     icon wells (those stay on --gg-radius-md / --gg-radius-lg).
+     Consuming utility: `rounded-3xl`. Its value is pinned to this token via the
+     literal mirror `--radius-3xl: 1.5rem` in the `@theme` block of ../index.css.
+     (`rounded-3xl` — not `rounded-xl` — because overriding Tailwind v4's core
+     `--radius-xl` 0.75rem would silently re-radius ~33 existing `rounded-xl`
+     call sites storefront-wide. Tailwind's core `--radius-3xl` is coincidentally
+     also 1.5rem; pinning it makes the storefront own the value and ties the
+     class to this documented exception. See docs/implementation/deviations.md
+     §D2-radius.) If you resize this, update BOTH copies (this one and that
+     @theme line). */
+  --gg-radius-xl: 1.5rem;
+
+  /* --gg-text-2xs — label size of the Badge `discount` / `savings` variants ONLY.
+     The design-system type scale (styles/tokens.css §TYPOGRAPHY, mirrored from
+     gogogo-frontend/design-system/tokens.css) bottoms out at --gg-text-xs
+     (0.75rem / 12px). components.md "Badge & chip" specifies ~10px/700 for the
+     Discount and Savings badges — 2px below the smallest spec token — and the
+     Task 4 ESLint gate bans `text-[10px]` (px arbitrary value), so there is no
+     in-scale way to hit it. This is that one 10px step.
+     Scoped to those two Badge variants — do NOT substitute for --gg-text-xs
+     anywhere the shared 12px chip size is used.
+     Consuming utility: `text-2xs`, resolved from the literal mirror
+     `--text-2xs: 0.625rem` in the `@theme` block of ../index.css. If you resize
+     this step, update BOTH copies (this one and that @theme line). */
+  --gg-text-2xs: 0.625rem;
+}

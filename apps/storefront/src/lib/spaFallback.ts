@@ -16,6 +16,12 @@
  * HTML string with zero template-engine and zero build dependency, styled via
  * `/static/app.css` (a source-controlled file, not a build artifact, so it's
  * always present regardless of whether the SPA has been built).
+ *
+ * The design-token values `/static/app.css`'s component classes reference now
+ * live in the SPA bundle's own CSS (client/src/styles/tokens.css), which this
+ * build-free path never loads — so a tiny literal `:root` block is inlined
+ * below to keep `.card`/`.btn`/`.wait-dot` rendering on the last-resort page.
+ * It is the ONE deliberate duplicate of tokens.css, scoped to this shell only.
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -63,6 +69,11 @@ export function renderSpecialShell(reply: FastifyReply, opts: SpecialShellOpts):
   }
 }
 
+/* Literal mirror of client/src/styles/tokens.css's legacy-name aliases — the
+   values /static/app.css's component classes need when this build-free shell
+   loads app.css without the SPA bundle. Keep in sync with tokens.css. */
+const FALLBACK_TOKENS = `:root{--paper:#f6f8fb;--card:#ffffff;--sand:#eef1f6;--line:#e3e8ef;--ink:#1b2330;--ink-soft:#5a6473;--ink-faint:#677288;--pine:#2563eb;--pine-dark:#1d4ed8;--pine-tint:#e6effe;--grass:#16a34a;--grass-dark:#15803d;--grass-tint:#e7f6ec;--amberx:#b45c0a;--amberx-tint:#fdedcf;--rust:#dc2626;--rust-dark:#b91c1c;--rust-tint:#fde7e7;--accent:#2563eb;--pine-rgb:37 99 235;--r-xs:.25rem;--r-sm:.5rem;--r-md:.75rem;--r-lg:1rem;--r-pill:9999px}`;
+
 function staticFallbackHtml(opts: SpecialShellOpts): string {
   return `<!doctype html>
 <html lang="${esc(opts.lang)}">
@@ -70,6 +81,7 @@ function staticFallbackHtml(opts: SpecialShellOpts): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(opts.title)}</title>
+<style>${FALLBACK_TOKENS}</style>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body class="min-h-screen flex items-center justify-center bg-sand text-ink">

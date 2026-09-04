@@ -1,11 +1,16 @@
 /**
  * TSX port of apps/storefront/views/reviews.njk. The rating field is a plain
- * `<select>` of 5..1 (checked the template — not radios), ported as-is.
+ * `<select>` of 5..1 (checked the template — not radios).
  * Each pending-review card is its own form/component so its rating/comment
  * state stays independent; submitting posts and refetches (mirroring the
- * old 303-back-to-self flow). Markup/classes copied verbatim apart from the
- * mechanical Tailwind v3→v4 rename (docs/REACT_STOREFRONT_MIGRATION.md):
- * `!w-20` → `w-20!`.
+ * old 303-back-to-self flow).
+ *
+ * Task 16 (design-system migration): each card is a `<Card>`, the rating
+ * `<select>` is `<FormField>` + `ui/Select` (kept as a native select, per the
+ * brief — a 5..1 numeric picker is not a star-input case), the comment box is
+ * `ui/Textarea`, the submit control is `<Button type="submit">`. The rating
+ * select keeps a width cap (`w-24!`) so it doesn't stretch to `.field`'s full
+ * width. Rating/comment payload is unchanged.
  */
 import { useEffect, useState, type FormEvent } from "react";
 import { Star } from "lucide-react";
@@ -19,6 +24,11 @@ import Stars from "../components/shop/Stars";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
+import Select from "../components/ui/Select";
+import Textarea from "../components/ui/Textarea";
 
 interface ReviewSubmission {
   order_id: number;
@@ -46,38 +56,37 @@ function PendingReviewCard({
 
   return (
     <form onSubmit={handleSubmit} className="card card-pad">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="font-semibold text-sm">{pending.product_name}</div>
           <div className="text-xs text-ink-faint font-mono">{pending.code}</div>
         </div>
-        <label className="text-xs text-ink-soft">
-          {t("web.your_rating")}
-          <select
+        <FormField label={t("web.your_rating")} className="shrink-0">
+          <Select
             value={rating}
             onChange={(e) => setRating(Number(e.target.value))}
-            className="field w-20! inline-block ml-1"
+            className="w-24!"
           >
             {[5, 4, 3, 2, 1].map((r) => (
               <option key={r} value={r}>
                 {r} ★
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
+        </FormField>
       </div>
-      <textarea
+      <Textarea
         value={comment}
         onChange={(e) => setComment(e.target.value)}
         rows={2}
-        className="field mt-3"
+        className="mt-3"
         placeholder={t("web.review_placeholder")}
       />
       <div className="mt-3 text-right">
-        <button type="submit" className="btn btn-primary btn-sm" disabled={submitting}>
+        <Button type="submit" variant="primary" size="sm" disabled={submitting}>
           {submitting && <Spinner />}
           {t("web.review_submit")}
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -85,7 +94,7 @@ function PendingReviewCard({
 
 function ReviewCard({ review }: { review: AccountReview }) {
   return (
-    <div className="card card-pad">
+    <Card>
       <div className="flex items-center justify-between gap-2">
         <div className="font-semibold text-sm">{review.product_name}</div>
         <Stars rating={review.rating} />
@@ -94,7 +103,7 @@ function ReviewCard({ review }: { review: AccountReview }) {
         <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{review.comment}</p>
       )}
       <div className="text-xs text-ink-faint mt-2">{review.created_at_display}</div>
-    </div>
+    </Card>
   );
 }
 

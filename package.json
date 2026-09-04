@@ -27,7 +27,7 @@
     "check-frontend-boundaries": "tsx scripts/check-frontend-boundaries.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
-    "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-migration-rebuild-quoting && pnpm run check-frontend-boundaries",
+    "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-migration-rebuild-quoting && pnpm run check-frontend-boundaries && pnpm --filter @app/storefront-client lint",
     "test": "vitest run",
     "e2e": "playwright test",
     "dev:web": "pnpm --filter @app/web-admin dev",

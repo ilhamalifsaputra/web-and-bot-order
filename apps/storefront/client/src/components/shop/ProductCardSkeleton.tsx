@@ -7,7 +7,7 @@ import Skeleton from "./Skeleton";
 
 export default function ProductCardSkeleton() {
   return (
-    <div className="overflow-hidden rounded-2xl border border-line bg-card shadow-xs flex flex-col" aria-hidden="true">
+    <div className="overflow-hidden rounded-2xl border border-line bg-card shadow-soft flex flex-col" aria-hidden="true">
       <Skeleton className="h-44 w-full rounded-none" />
       <div className="p-4 flex flex-col gap-2">
         <Skeleton className="h-4 w-3/4" />

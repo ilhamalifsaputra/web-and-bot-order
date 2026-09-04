@@ -7,7 +7,7 @@ import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
 import CategoriesPage from "./pages/CategoriesPage";
-import SearchPage from "./pages/SearchPage";
+import SearchRedirect from "./pages/SearchRedirect";
 import ProductPage from "./pages/ProductPage";
 import ProductsPage from "./pages/ProductsPage";
 import FlashPage from "./pages/FlashPage";
@@ -58,6 +58,15 @@ const TermsPage = lazy(() => import("./pages/TermsPage"));
 const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
 const RefundPage = lazy(() => import("./pages/RefundPage"));
 
+// Dev-only primitive gallery (Fase 6 phase gate + later-task visual-QA
+// surface). `import.meta.env.DEV` is a compile-time constant: in a production
+// build this ternary collapses to `() => null`, the `import()` literal is
+// dead-code-eliminated, and Rollup emits no chunk for it — the route is
+// unreachable and absent from the bundle. Never add it to any nav.
+const UiGalleryPage = import.meta.env.DEV
+  ? lazy(() => import("./pages/dev/UiGalleryPage"))
+  : () => null;
+
 /**
  * Full route table for every storefront URL. Ported cluster by cluster
  * (docs/REACT_STOREFRONT_MIGRATION.md): A catalog+cart, B auth, C
@@ -84,6 +93,10 @@ export default function App() {
         <Route path="/forgot" element={<ForgotPage />} />
         <Route path="/reset/:token" element={<ResetPage />} />
 
+        {/* Dev-only, tree-shaken from production builds (see UiGalleryPage
+            import above). Rendered bare — no shop chrome. */}
+        {import.meta.env.DEV && <Route path="/__ui" element={<UiGalleryPage />} />}
+
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/c/:slug" element={<CategoryPage />} />
@@ -91,7 +104,10 @@ export default function App() {
           <Route path="/products" element={<ProductsPage />} />
           <Route path="/flash" element={<FlashPage />} />
           <Route path="/p/:slug" element={<ProductPage />} />
-          <Route path="/search" element={<SearchPage />} />
+          {/* Search is an overlay (§10), not a page. This keeps old
+              `/search?q=…` links alive: open the overlay pre-filled, replace
+              the URL with `/`. See pages/SearchRedirect.tsx. */}
+          <Route path="/search" element={<SearchRedirect />} />
           <Route path="/cart" element={<CartPage />} />
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/checkout/:code/pay" element={<PayPage />} />

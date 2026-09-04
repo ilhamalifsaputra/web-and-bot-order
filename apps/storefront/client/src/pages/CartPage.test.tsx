@@ -56,6 +56,7 @@ function renderCart(respond: (path: string) => unknown) {
       <MemoryRouter initialEntries={["/cart"]}>
         <Routes>
           <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<div>checkout-page-stub</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -137,12 +138,29 @@ describe("CartPage", () => {
   // jsdom has no matchMedia, so useIsDesktop() reports mobile — this is the
   // small-screen layout: checkout is reachable from the sticky bar, and the
   // summary card drops its own copy of the link so there is only ever one.
+  // The sticky bar's CTA is StickyPurchaseBar's button-based primary action
+  // (Fase 7c — the bar has no Link variant), not a literal <a>, so this now
+  // looks for a button rather than a link; the destination (navigate
+  // ("/checkout")) and the "exactly one control" property are unchanged.
   it("puts the checkout call to action in a single reachable place on mobile", async () => {
     renderCart(() => cartData);
     await screen.findByRole("heading", { name: "Cart (4)" });
-    const checkoutLinks = screen.getAllByRole("link", { name: /Continue to payment/ });
-    expect(checkoutLinks).toHaveLength(1);
-    expect(checkoutLinks[0]).toHaveAttribute("href", "/checkout");
+    expect(screen.queryAllByRole("link", { name: /Continue to payment/ })).toHaveLength(0);
+    const checkoutButtons = screen.getAllByRole("button", { name: /Continue to payment/ });
+    expect(checkoutButtons).toHaveLength(1);
+  });
+
+  // Fix 1 (Task 13 review, Important): the sticky bar's CTA button navigates
+  // programmatically (StickyPurchaseBar has no Link variant), so nothing
+  // else in the suite verified it still lands on /checkout after the
+  // migration off the old <Link href="/checkout">. Same convention as
+  // ProductPage.test.tsx's "buys through the same mutation..." case: assert
+  // the destination route's stub actually mounts after the click.
+  it("navigates to /checkout when the mobile sticky bar's CTA is clicked", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    fireEvent.click(screen.getByRole("button", { name: /Continue to payment/ }));
+    expect(await screen.findByText("checkout-page-stub")).toBeInTheDocument();
   });
 
   it("renders the empty-cart branch when the cart starts empty", async () => {

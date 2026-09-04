@@ -255,10 +255,21 @@ model Product {
   /// Warranty detail for this product, overriding the generic warranty copy.
   warrantyNote String? @map("warranty_note")
   /// Web-facing product photo URL (admin-set, storefront only). Telegram
-  /// imageFileId can't be used as an <img src>; when this is null the
-  /// storefront falls back to its curated Unsplash map (plan.md §8).
+  /// imageFileId can't be used as an <img src>. When null the storefront
+  /// renders a generated DefaultThumb placeholder (a lucide icon in a tinted
+  /// well), keyed by `thumbnailKind` / category `group` / a category-name
+  /// heuristic — see `thumbnailKind` below and `defaultThumbKind` in
+  /// apps/storefront/src/images.ts.
   webImageUrl String?  @map("web_image_url")
   imageFileId String?  @map("image_file_id")
+  /// Default placeholder art style shown when no `webImageUrl` is set —
+  /// admin-set, null = auto-resolve from category. One of "game" | "voucher"
+  /// | "steam" | "entertainment" | "app" | "generic".
+  thumbnailKind     String? @map("thumbnail_kind")
+  /// Currency-icon style shown on this product's DenominationCard chips —
+  /// admin-set, null = auto-resolve (or always null for PREMIUM_APPS
+  /// category). One of "diamond" | "coin" | "key" | "card" | "voucher".
+  currencyIconKind  String? @map("currency_icon_kind")
   /// The exact Digiflazz `brand` string this Product was imported from (Import
   /// Wizard). Null for hand-created products. Re-sync matching key — chosen
   /// over matching by name so the admin can rename the display name freely

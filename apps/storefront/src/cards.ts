@@ -11,7 +11,7 @@ import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { activeBulkPercent } from "@app/core/bulk";
-import { PRODUCT_VARIANT_WIDTHS, productImage, webpSrcset } from "./images";
+import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset, type ThumbnailKind } from "./images";
 
 export type ProductCard = {
   slug: string;
@@ -21,10 +21,18 @@ export type ProductCard = {
   from_price: string;
   /** Number of denominations (plans) the product offers. */
   variant_count: number;
-  image: string;
+  /** The admin's real photo, or null — no stock-photo fallback of any kind.
+   * A null renders the DefaultThumb design-system placeholder client-side,
+   * keyed by `image_kind`. */
+  image: string | null;
   /** WebP `srcset` for `image`, or null when no derivatives exist — see
    *  webpSrcset(). Null means "render a plain <img>", never a broken image. */
   image_srcset: string | null;
+  /** Which DefaultThumb icon to show when `image` is null — see
+   *  defaultThumbKind() in ./images. Always populated, even when `image` is
+   *  set, so a client that later loses the photo still has a kind to fall
+   *  back to. */
+  image_kind: ThumbnailKind;
   /** Available stock across all denominations of this product. */
   available: number;
   rating: number | null;
@@ -163,8 +171,9 @@ export function shapeProducts(
       category_name: p.category.name,
       from_price: fromPrice.toString(),
       variant_count: denoms.length,
-      image: p.webImageUrl ?? productImage(p, p.category.name),
+      image: p.webImageUrl ?? null,
       image_srcset: webpSrcset(p.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+      image_kind: defaultThumbKind(p, p.category),
       available,
       rating,
       rating_count: ratingCount,

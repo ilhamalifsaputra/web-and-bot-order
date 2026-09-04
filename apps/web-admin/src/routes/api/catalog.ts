@@ -84,6 +84,52 @@ function gameNavigationFields(body: Record<string, unknown>) {
   };
 }
 
+const THUMBNAIL_KINDS = ["game", "voucher", "steam", "entertainment", "app", "generic"] as const;
+const CURRENCY_ICON_KINDS = ["diamond", "coin", "key", "card", "voucher"] as const;
+
+/**
+ * A product's optional catalog-presentation classification (Fase 12 task
+ * 22): thumbnailKind (the default placeholder art style shown when no photo
+ * is uploaded) and currencyIconKind (the currency-icon chip shown on that
+ * product's denomination cards on the storefront). Unlike
+ * storefrontDetailFields/gameNavigationFields above, these two are NOT free
+ * text — an explicitly-sent, unrecognized value is rejected with a 400
+ * rather than silently nulled out, the same treatment CategoryGroup gets on
+ * the category routes above. Returns a Fastify reply to send on validation
+ * failure, or null on success (with the validated fields merged into `out`).
+ * Shared by product create and update so the two can't drift apart.
+ */
+function catalogKindFields(
+  body: Record<string, unknown>,
+  out: { thumbnailKind: string | null; currencyIconKind: string | null },
+): { error: string } | null {
+  if (body.thumbnailKind !== undefined && body.thumbnailKind !== null) {
+    if (
+      typeof body.thumbnailKind !== "string" ||
+      !THUMBNAIL_KINDS.includes(body.thumbnailKind as (typeof THUMBNAIL_KINDS)[number])
+    ) {
+      return { error: "Invalid thumbnail kind." };
+    }
+    out.thumbnailKind = body.thumbnailKind;
+  } else {
+    out.thumbnailKind = null;
+  }
+
+  if (body.currencyIconKind !== undefined && body.currencyIconKind !== null) {
+    if (
+      typeof body.currencyIconKind !== "string" ||
+      !CURRENCY_ICON_KINDS.includes(body.currencyIconKind as (typeof CURRENCY_ICON_KINDS)[number])
+    ) {
+      return { error: "Invalid currency icon kind." };
+    }
+    out.currencyIconKind = body.currencyIconKind;
+  } else {
+    out.currencyIconKind = null;
+  }
+
+  return null;
+}
+
 export default async function catalogApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/catalog", { preHandler: currentAdmin }, async (req, reply) => {
     const [categories, products] = await Promise.all([
@@ -104,6 +150,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const category = await getCategory(prisma, categoryId);
     if (!category) return reply.code(400).send({ error: "Category not found." });
 
+    const kindFields = { thumbnailKind: null as string | null, currencyIconKind: null as string | null };
+    const kindError = catalogKindFields(body, kindFields);
+    if (kindError) return reply.code(400).send(kindError);
+
     const product = await createCatalogProduct(prisma, {
       categoryId,
       name,
@@ -111,6 +161,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...storefrontDetailFields(body),
       ...gameNavigationFields(body),
+      ...kindFields,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -462,11 +513,19 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       }
     }
 
+    // thumbnailKind/currencyIconKind (Fase 12 task 22): validated up front,
+    // same as categoryId/gameId above, so a rejected value leaves every
+    // other field on this request untouched too.
+    const kindFields = { thumbnailKind: null as string | null, currencyIconKind: null as string | null };
+    const kindError = catalogKindFields(body, kindFields);
+    if (kindError) return reply.code(400).send(kindError);
+
     await updateCatalogProduct(prisma, id, {
       name,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
       ...storefrontDetailFields(body),
       ...gameNavigationFields(body),
+      ...kindFields,
       ...(gameId !== undefined ? { gameId } : {}),
       ...(newCategory ? { categoryId: newCategory.id } : {}),
     });

@@ -26,6 +26,7 @@ import { Link } from "react-router-dom";
 import { CheckCircle, Headphones, Shield, Store, Zap } from "lucide-react";
 import { useShopContext } from "./Layout";
 import { t } from "../lib/i18n";
+import TrustBadgeRow from "./ui/TrustBadgeRow";
 
 const POLICY_LINKS = [
   { to: "/terms", key: "web.terms_title" },
@@ -58,22 +59,18 @@ export default function AuthBrandPanel({ className = "" }: { className?: string 
 
       <p className="mt-3 text-sm text-pine-tint">{t("web.trust_badge")}</p>
 
-      {/* Same four claims as HomePage's hero trust strip — same icons,
-          colors and copy, just stacked for a narrower column. */}
-      <ul className="mt-6 space-y-3 text-sm">
-        <li className="flex items-center gap-2">
-          <Zap className="h-4 w-4 shrink-0 text-amber-400" /> {t("web.badge_instant")}
-        </li>
-        <li className="flex items-center gap-2">
-          <Shield className="h-4 w-4 shrink-0 text-grass" /> QRIS &amp; USDT
-        </li>
-        <li className="flex items-center gap-2">
-          <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" /> {t("web.feat_warranty")}
-        </li>
-        <li className="flex items-center gap-2">
-          <Headphones className="h-4 w-4 shrink-0 text-violet-400" /> {t("web.badge_support")}
-        </li>
-      </ul>
+      {/* Same four claims as HomePage's hero trust strip — shared
+          <TrustBadgeRow> primitive, stacked for this narrower column. */}
+      <TrustBadgeRow
+        orientation="column"
+        className="mt-6 text-pine-tint"
+        items={[
+          { icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.badge_instant") },
+          { icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: "QRIS & USDT" },
+          { icon: <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.feat_warranty") },
+          { icon: <Headphones className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.badge_support") },
+        ]}
+      />
 
       <ul className="mt-8 flex flex-wrap gap-x-4 gap-y-2 border-t border-white/15 pt-5 text-xs text-pine-tint">
         {POLICY_LINKS.map(({ to, key }) => (

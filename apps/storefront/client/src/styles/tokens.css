@@ -1,0 +1,210 @@
+/* =============================================================================
+   STOREFRONT DESIGN TOKENS — SINGLE SOURCE OF TRUTH
+   ---------------------------------------------------------------------------
+   Every color / typography / spacing / radius / elevation / layout / motion
+   token VALUE the storefront SPA renders is defined here exactly once. Two
+   layers consume these via `var()` and declare no literal values of their own:
+     - apps/storefront/static/app.css        — the plain-CSS component layer
+     - apps/storefront/client/src/index.css  — the Tailwind v4 `@theme` block
+
+   The `--gg-*` set below is copied verbatim from the design-system spec
+   (gogogo-frontend/design-system/tokens.css). The `:root` alias block at the
+   end maps the storefront's historical short names (`--pine`, `--ink`,
+   `--r-lg`, `--accent`, …) onto those `--gg-*` values so no component or page
+   needs a rename. If a value changes, change it here — nowhere else.
+   ========================================================================== */
+
+:root {
+  /* ---------------------------------------------------------------------------
+     1. COLOR — RAW PALETTE ("Clean Modern")
+     ------------------------------------------------------------------------ */
+  --gg-paper:        #f6f8fb; /* page background            */
+  --gg-card:         #ffffff; /* card / field background    */
+  --gg-sand:         #eef1f6; /* subtle fill, table header, ghost-button hover */
+  --gg-line:         #e3e8ef; /* hairline border             */
+  --gg-ink:          #1b2330; /* primary text                */
+  --gg-ink-soft:     #5a6473; /* secondary text, labels      */
+  --gg-ink-faint:    #677288; /* placeholder, tertiary text  */
+
+  --gg-pine:         #2563eb; /* PRIMARY — brand blue        */
+  --gg-pine-dark:    #1d4ed8;
+  --gg-pine-tint:    #e6effe;
+  --gg-pine-rgb:     37 99 235;
+
+  --gg-grass:        #16a34a; /* success / savings / positive money */
+  --gg-grass-dark:   #15803d;
+  --gg-grass-tint:   #e7f6ec;
+
+  --gg-amberx:       #b45c0a; /* warning / pending */
+  --gg-amberx-tint:  #fdedcf;
+
+  --gg-rust:         #dc2626; /* danger / error */
+  --gg-rust-dark:    #b91c1c;
+  --gg-rust-tint:    #fde7e7;
+
+  --gg-white:        #ffffff;
+  --gg-black:        #000000;
+
+  /* ---------------------------------------------------------------------------
+     2. COLOR — SEMANTIC ALIASES (use these in components)
+     ------------------------------------------------------------------------ */
+  --gg-bg:                 var(--gg-paper);
+  --gg-surface:            var(--gg-card);
+  --gg-surface-raised:     var(--gg-sand);
+  --gg-field:              var(--gg-card);
+  --gg-border:             var(--gg-line);
+  --gg-border-strong:      #c5cbd6; /* scrollbar thumb / stronger dividers */
+
+  --gg-text:               var(--gg-ink);
+  --gg-text-muted:         var(--gg-ink-soft);
+  --gg-text-disabled:      var(--gg-ink-faint);
+  --gg-text-on-primary:    var(--gg-white); /* white on pine, not dark-on-light */
+  --gg-text-on-accent:     var(--gg-white);
+
+  --gg-action:             var(--gg-pine);
+  --gg-action-hover:       var(--gg-pine-dark);
+  --gg-action-tint:        var(--gg-pine-tint); /* "soft" button / active-tab fill */
+  --gg-focus-ring:         rgb(var(--gg-pine-rgb) / 0.4);
+
+  --gg-success:            var(--gg-grass);
+  --gg-success-tint:       var(--gg-grass-tint);
+  --gg-price-highlight:    var(--gg-grass-dark);  /* checkout / savings price colour */
+  --gg-discount-bg:        var(--gg-grass-tint);  /* "-15% OFF" badge fill (soft, not solid) */
+  --gg-discount-text:      var(--gg-grass-dark);
+
+  --gg-warning:            var(--gg-amberx);
+  --gg-warning-tint:       var(--gg-amberx-tint);
+
+  --gg-error:              var(--gg-rust);
+  --gg-error-tint:         var(--gg-rust-tint);
+
+  --gg-overlay:            rgba(27, 35, 48, 0.06);  /* neutral-ink icon/hover fill on light */
+  --gg-overlay-strong:     rgba(27, 35, 48, 0.12);
+
+  /* Dark-surface exception: a hero / promo band that inverts to bg-ink or
+     bg-pine (see foundations.md §7). Text and focus ring flip on these only. */
+  --gg-on-dark-text:       var(--gg-white);
+  --gg-on-dark-focus-ring: rgba(255, 255, 255, 0.9);
+
+  /* ---------------------------------------------------------------------------
+     3. TYPOGRAPHY
+     ------------------------------------------------------------------------ */
+  --gg-font-display: Outfit, system-ui, sans-serif;              /* h1–h3, page-title, stat-value */
+  --gg-font-sans:    Manrope, system-ui, sans-serif;              /* body, default */
+  --gg-font-mono:    "JetBrains Mono", ui-monospace, monospace;   /* order/voucher/referral codes */
+
+  --gg-text-xs:           0.75rem;   /* 12px — chips, .codeish, table meta        */
+  --gg-text-sm:           0.8125rem; /* 13px — table header labels                */
+  --gg-text-base:         1rem;      /* 16px — body / field text (mobile-first, iOS-zoom safe) */
+  --gg-text-base-desktop: 0.875rem;  /* 14px — buttons, field text (desktop, ≥640px) */
+  --gg-text-md:           1rem;      /* 16px — field text (mobile, iOS-zoom safe) */
+  --gg-text-lg:           1.125rem;  /* 18px — section-title                     */
+  --gg-text-xl:   1.5rem;    /* 24px — page-title (mobile)                */
+  --gg-text-2xl:  1.875rem;  /* 30px — page-title (desktop), stat-value   */
+
+  --gg-font-normal:   400;
+  --gg-font-medium:   500;
+  --gg-font-semibold: 600; /* headings, buttons, field labels, stat-value */
+  --gg-font-bold:     700;
+
+  --gg-leading-tight:  1.25;
+  --gg-leading-normal: 1.5;
+
+  --gg-tracking-normal: 0;
+  --gg-tracking-tight:  -0.025em; /* page-title */
+  --gg-tracking-wide:   0.03em;   /* table header labels (uppercase) */
+  --gg-tracking-wider:  0.05em;   /* field-label / stat-label (uppercase) */
+
+  /* ---------------------------------------------------------------------------
+     4. SPACING — 4px base grid
+     ------------------------------------------------------------------------ */
+  --gg-space-0:  0;
+  --gg-space-1:  0.25rem; /*  4px */
+  --gg-space-2:  0.5rem;  /*  8px — button/field horizontal rhythm */
+  --gg-space-3:  0.75rem; /* 12px */
+  --gg-space-4:  1rem;    /* 16px — btn padding-x, field padding-x, card-pad (mobile) */
+  --gg-space-5:  1.25rem; /* 20px — card-pad (mobile) */
+  --gg-space-6:  1.5rem;  /* 24px — card-pad (desktop, ≥640px) */
+  --gg-space-8:  2rem;    /* 32px */
+  --gg-space-10: 2.5rem;  /* 40px */
+  --gg-space-12: 3rem;    /* 48px */
+  --gg-space-16: 4rem;    /* 64px */
+
+  --gg-tap-target: 2.75rem; /* 44px — WCAG/iOS minimum, used on .btn and .field */
+
+  /* ---------------------------------------------------------------------------
+     5. RADIUS — the project's real (small) scale, not gogogo.id's
+     ------------------------------------------------------------------------ */
+  --gg-radius-xs:   0.25rem; /*  4px — .codeish             */
+  --gg-radius-sm:   0.5rem;  /*  8px — .btn-sm, admin .field */
+  --gg-radius-md:   0.75rem; /* 12px — .btn, .field default  */
+  --gg-radius-lg:   1rem;    /* 16px — .card                 */
+  --gg-radius-full: 9999px;  /* .chip, avatar, pill tabs     */
+
+  /* ---------------------------------------------------------------------------
+     6. ELEVATION — real shadows (this brand is NOT flat)
+     ------------------------------------------------------------------------ */
+  --gg-shadow-none: none;
+  --gg-shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -14px rgba(16, 24, 40, 0.12);
+  --gg-shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.06), 0 16px 36px -18px rgba(16, 24, 40, 0.18);
+  --gg-shadow-focus: 0 0 0 3px rgb(var(--gg-pine-rgb) / 0.35); /* button/field focus ring */
+
+  /* Depth = white .card on --paper + --gg-shadow-soft + 1px --line border.
+     Hover / active states step up to --gg-shadow-lift, not a darker fill. */
+
+  /* ---------------------------------------------------------------------------
+     7. LAYOUT
+     ------------------------------------------------------------------------ */
+  --gg-container-max:   72rem;   /* 1152px — max-w-6xl, confirmed repo-wide   */
+  --gg-container-prose: 48rem;   /* 768px  — long-form legal/help pages       */
+  --gg-bottom-nav-height: 3.5rem;
+
+  --gg-bp-sm:  640px;
+  --gg-bp-md:  768px;
+  --gg-bp-lg:  1024px;
+  --gg-bp-xl:  1280px;
+  --gg-bp-2xl: 1536px;
+
+  /* ---------------------------------------------------------------------------
+     8. MOTION
+     ------------------------------------------------------------------------ */
+  --gg-duration-fast:     0.15s;  /* buttons, fields, cards */
+  --gg-duration-entrance: 0.5s;   /* page-content "rise" on load */
+  --gg-ease: cubic-bezier(0.22, 1, 0.36, 1); /* this project's signature ease-out */
+}
+
+/* =============================================================================
+   LEGACY NAME ALIASES
+   ---------------------------------------------------------------------------
+   The storefront's component layer and 40+ TSX files reference these short
+   names. They are kept as thin `var()` forwards to the `--gg-*` values above
+   so single-sourcing needs zero renames. Mirrors, name-for-name, the `:root`
+   block that used to live in apps/storefront/static/app.css (lines 4–30).
+   ========================================================================== */
+:root {
+  --paper:      var(--gg-paper);
+  --card:       var(--gg-card);
+  --sand:       var(--gg-sand);
+  --line:       var(--gg-line);
+  --ink:        var(--gg-ink);
+  --ink-soft:   var(--gg-ink-soft);
+  --ink-faint:  var(--gg-ink-faint);
+  --pine:       var(--gg-pine);
+  --pine-dark:  var(--gg-pine-dark);
+  --pine-tint:  var(--gg-pine-tint);
+  --grass:      var(--gg-grass);
+  --grass-dark: var(--gg-grass-dark);
+  --grass-tint: var(--gg-grass-tint);
+  --amberx:     var(--gg-amberx);
+  --amberx-tint: var(--gg-amberx-tint);
+  --rust:       var(--gg-rust);
+  --rust-dark:  var(--gg-rust-dark);
+  --rust-tint:  var(--gg-rust-tint);
+  --accent:     var(--gg-pine);
+  --pine-rgb:   var(--gg-pine-rgb);
+  --r-xs:       var(--gg-radius-xs);
+  --r-sm:       var(--gg-radius-sm);
+  --r-md:       var(--gg-radius-md);
+  --r-lg:       var(--gg-radius-lg);
+  --r-pill:     var(--gg-radius-full);
+}

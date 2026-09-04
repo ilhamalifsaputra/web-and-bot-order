@@ -107,3 +107,6 @@ Thumbs.db
 .idea/
 project-design/
 gogogo-frontend/
+
+# --- Fase 12 storefront audit screenshots (local QA artifacts, not shipped) ---
+capture-storefront/

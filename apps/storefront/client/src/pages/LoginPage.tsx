@@ -11,6 +11,22 @@
  * the panel comes *after* the card in the JSX/DOM despite sitting visually to
  * its left on desktop (`lg:order-first`), and why that also means these
  * pages still don't need a skip-to-content link.
+ *
+ * Task 15 (design-system migration, Fase 7d): page-templates.md §4 describes
+ * gogogo.id's identifier→OTP auth flow (email/phone step → Flip consent
+ * modal → 6-box OTP). This app has no OTP step anywhere — real auth is
+ * identifier+password plus Telegram-widget OAuth (Task 1 audit already
+ * flagged `ui/OtpInput` as deferred, no call site). Only the template's
+ * visual shell is reused here (full-screen, no chrome, centered card +
+ * `AuthBrandPanel`, full-width primary CTA) — see deviations.md §15-auth for
+ * the one-time writeup, referenced rather than repeated on every auth page.
+ * The card itself is now `<Card>`, the identifier field is `<FormField>` +
+ * `<Input>`, the password field `<FormField>` + `<PasswordInput>`, the
+ * submit `<Button>`, and both banners are `<Alert variant="banner">`
+ * (replacing the `Flash` shim — this migration standardizes on calling
+ * `Alert` directly across all four auth pages, see deviations.md §15-auth).
+ * All of `safeNext`, the mutation payload, and the full-page-load redirect
+ * on success are untouched.
  */
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -19,10 +35,14 @@ import { LogIn } from "lucide-react";
 import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import AuthBrandPanel from "../components/AuthBrandPanel";
-import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
 import TelegramLoginButton from "../components/shop/TelegramLoginButton";
+import Alert, { type AlertTone } from "../components/ui/Alert";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
 
 /** Only ever a local path — client-side twin of routes/auth.ts `safeNext`
  * (open-redirect guard); the server re-checks this itself on every POST, this
@@ -86,6 +106,12 @@ export default function LoginPage() {
       : err === "tg_unlinked"
         ? t("web.login_tg_unlinked")
         : null;
+  // Task 15: Flash's flat info/error split collapses everything non-error
+  // into "info" grey. Alert's tone set lets the reset-password notice read
+  // as the genuine success it is; the two `err` branches (tg_failed/
+  // tg_unlinked) both mean the Telegram flow didn't complete, so both read
+  // as `error`. Presentation only — the copy/keys themselves are unchanged.
+  const noticeTone: AlertTone = resetDone ? "success" : "error";
 
   return (
     // tabIndex=-1: RouteEffects.tsx moves focus here on client-side
@@ -93,7 +119,7 @@ export default function LoginPage() {
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
       <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
-        <div className="w-full max-w-md card card-pad">
+        <Card className="w-full max-w-md">
           <Link to="/" className="text-center block">
             <LogIn className="w-8 h-8 text-pine mx-auto" />
             <h1 className="font-display text-xl font-semibold mt-3">{t("web.login_title")}</h1>
@@ -103,48 +129,40 @@ export default function LoginPage() {
           {/* login.njk renders error and notice from two independent `{% if %}`s
               (not an elif) — both can show at once. */}
           {error && (
-            <div className="mt-4">
-              <Flash text={error} kind="error" />
-            </div>
+            <Alert variant="banner" tone="error" className="mt-4">
+              {error}
+            </Alert>
           )}
           {notice && (
-            <div className="mt-4">
-              <Flash text={notice} kind="info" />
-            </div>
+            <Alert variant="banner" tone={noticeTone} className="mt-4">
+              {notice}
+            </Alert>
           )}
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
-            <div>
-              <label className="text-sm font-semibold" htmlFor="identifier">
-                {t("web.login_identifier")}
-              </label>
-              <input
-                className="field mt-1"
-                type="text"
+            <FormField label={t("web.login_identifier")} htmlFor="identifier">
+              <Input
                 id="identifier"
+                type="text"
                 name="identifier"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 autoComplete="username"
                 required
               />
-            </div>
-            <div>
-              <label className="text-sm font-semibold" htmlFor="password">
-                {t("web.login_password")}
-              </label>
+            </FormField>
+            <FormField label={t("web.login_password")} htmlFor="password">
               <PasswordInput
-                className="field mt-1"
                 id="password"
                 name="password"
                 autoComplete="current-password"
                 required
               />
-            </div>
-            <button type="submit" className="btn btn-primary w-full" disabled={loginMutation.isPending}>
+            </FormField>
+            <Button type="submit" variant="primary" fullWidth disabled={loginMutation.isPending}>
               {loginMutation.isPending && <Spinner />}
               {t("web.login_submit")}
-            </button>
+            </Button>
             <div className="flex items-center justify-between text-sm">
               <Link to="/forgot" className="text-pine hover:underline">
                 {t("web.forgot_link")}
@@ -179,7 +197,7 @@ export default function LoginPage() {
               </div>
             </>
           )}
-        </div>
+        </Card>
 
         <AuthBrandPanel className="max-w-md" />
       </div>

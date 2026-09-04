@@ -1,4 +1,3 @@
-import { CircleCheck, CircleX, ShieldQuestionMark, Ticket, Wallet } from "lucide-react";
 import StaticPage from "../components/shop/StaticPage";
 
 export default function RefundPage() {
@@ -6,13 +5,9 @@ export default function RefundPage() {
     <StaticPage
       prefix="refund"
       blocks={5}
-      steps={[
-        { icon: CircleCheck, callout: "tip" },
-        { icon: CircleX, callout: "warning" },
-        { icon: Ticket },
-        { icon: Wallet },
-        { icon: ShieldQuestionMark },
-      ]}
+      // Block 1 (when a refund applies) stays a tip, block 2 (when it doesn't)
+      // stays a warning — same Callout wrappers as the timeline layout.
+      steps={[{ callout: "tip" }, { callout: "warning" }, {}, {}, {}]}
     />
   );
 }

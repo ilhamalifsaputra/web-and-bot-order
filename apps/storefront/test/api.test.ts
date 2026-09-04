@@ -177,7 +177,10 @@ describe("GET /api/v1/products/:slug", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.product.slug).toBe(productSlug);
-    expect(body.product.image).toBeTruthy(); // category-fallback image, never null here
+    // Fase 12: no more category-fallback stock photo — a product with no
+    // admin-set webImageUrl now reports a null image (client renders the
+    // DefaultThumb design-system placeholder instead).
+    expect(body.product.image).toBeNull();
     expect(body.product.denominations).toHaveLength(1);
   });
 

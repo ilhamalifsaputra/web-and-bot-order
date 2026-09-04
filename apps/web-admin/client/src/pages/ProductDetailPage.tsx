@@ -59,8 +59,15 @@ interface ProductDetail {
   warrantyNote: string | null;
   isActive: boolean;
   webImageUrl: string | null;
-  category: { id: number; name: string } | null;
+  category: { id: number; name: string; group: string | null } | null;
   denominations: DenominationRow[];
+  /** Catalog-presentation classification (Fase 12 task 22) — the default
+   * placeholder art style (thumbnailKind) and the currency-icon chip shown
+   * on this product's denomination cards (currencyIconKind) on the
+   * storefront. Both null until an admin sets them; both hidden entirely
+   * from the edit form for a product in a PREMIUM_APPS-group category. */
+  thumbnailKind: string | null;
+  currencyIconKind: string | null;
   /** Admin-authored game-navigation classification (Task 8/14) — the bot's
    * catalog navigation and denomination labeling (Tasks 11-13) key off
    * these three, null until an admin sets them. */
@@ -85,6 +92,28 @@ interface ProductDetailData {
   product: ProductDetail;
   statsByDenom: Record<string, DenomStat>;
 }
+
+// Sentinel for "automatic/none" on the thumbnailKind/currencyIconKind
+// selects below — shadcn's Select rejects an empty-string item value, same
+// reasoning as CategoryDialog.tsx's NO_GROUP.
+const AUTO_KIND = "auto";
+
+const THUMBNAIL_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "game", label: "Game" },
+  { value: "voucher", label: "Voucher" },
+  { value: "steam", label: "Steam" },
+  { value: "entertainment", label: "Hiburan" },
+  { value: "app", label: "Aplikasi" },
+  { value: "generic", label: "Umum" },
+];
+
+const CURRENCY_ICON_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "diamond", label: "Diamond" },
+  { value: "coin", label: "Koin" },
+  { value: "key", label: "Key" },
+  { value: "card", label: "Kartu" },
+  { value: "voucher", label: "Voucher" },
+];
 
 function useProductDetail(productId: string) {
   return useQuery<ProductDetailData>({
@@ -124,6 +153,10 @@ export function ProductDetailPage() {
   const [termsDraft, setTermsDraft] = useState("");
   const [warrantyNoteDraft, setWarrantyNoteDraft] = useState("");
   const [categoryDraft, setCategoryDraft] = useState<string>("");
+  // Catalog-presentation classification (Fase 12 task 22) — AUTO_KIND means
+  // "no override set" (null), mapped at the save-payload boundary below.
+  const [thumbnailKindDraft, setThumbnailKindDraft] = useState<string>(AUTO_KIND);
+  const [currencyIconKindDraft, setCurrencyIconKindDraft] = useState<string>(AUTO_KIND);
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
   const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
@@ -152,6 +185,8 @@ export function ProductDetailPage() {
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
+        thumbnailKind: thumbnailKindDraft === AUTO_KIND ? null : thumbnailKindDraft,
+        currencyIconKind: currencyIconKindDraft === AUTO_KIND ? null : currencyIconKindDraft,
         ...(categoryDraft ? { categoryId: Number(categoryDraft) } : {}),
       });
       setEditingProduct(false);
@@ -317,6 +352,8 @@ export function ProductDetailPage() {
                 setTermsDraft(product.terms ?? "");
                 setWarrantyNoteDraft(product.warrantyNote ?? "");
                 setCategoryDraft(product.category ? String(product.category.id) : "");
+                setThumbnailKindDraft(product.thumbnailKind ?? AUTO_KIND);
+                setCurrencyIconKindDraft(product.currencyIconKind ?? AUTO_KIND);
                 setEditingProduct(true);
               }}
             >
@@ -355,6 +392,50 @@ export function ProductDetailPage() {
               <label className="text-sm font-medium text-ink">Description</label>
               <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
             </div>
+            {/* Catalog-presentation classification (Fase 12 task 22) —
+                optional; hidden entirely (not disabled) for a product whose
+                category is in the PREMIUM_APPS group, which uses its own
+                presentation instead. */}
+            {product.category?.group !== "PREMIUM_APPS" && (
+              <>
+                <div>
+                  <label className="text-sm font-medium text-ink" id="product-thumbnail-kind-label">
+                    Gaya thumbnail default
+                  </label>
+                  <Select value={thumbnailKindDraft} onValueChange={setThumbnailKindDraft}>
+                    <SelectTrigger className="mt-1" aria-labelledby="product-thumbnail-kind-label">
+                      <SelectValue placeholder="Otomatis" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={AUTO_KIND}>Otomatis</SelectItem>
+                      {THUMBNAIL_KIND_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-ink" id="product-currency-icon-kind-label">
+                    Ikon currency
+                  </label>
+                  <Select value={currencyIconKindDraft} onValueChange={setCurrencyIconKindDraft}>
+                    <SelectTrigger className="mt-1" aria-labelledby="product-currency-icon-kind-label">
+                      <SelectValue placeholder="Otomatis" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={AUTO_KIND}>Otomatis</SelectItem>
+                      {CURRENCY_ICON_KIND_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
             {/* Game-navigation classification (Task 8/14) — optional, powers
                 the bot's catalog navigation and denomination labeling for
                 game top-up products (e.g. Mobile Legends' Diamonds variant). */}

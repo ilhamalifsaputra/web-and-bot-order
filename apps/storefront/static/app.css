@@ -1,33 +1,7 @@
 /* Clean Modern — plain-CSS layer for the storefront. Mirrors the web-admin
    app.css so both webs feel like one product; storefront-only bits at the end. */
 
-:root {
-  --paper:      #f6f8fb;
-  --card:       #ffffff;
-  --sand:       #eef1f6;
-  --line:       #e3e8ef;
-  --ink:        #1b2330;
-  --ink-soft:   #5a6473;
-  --ink-faint:  #677288;
-  --pine:       #2563eb;
-  --pine-dark:  #1d4ed8;
-  --pine-tint:  #e6effe;
-  --grass:      #16a34a;
-  --grass-dark: #15803d;
-  --grass-tint: #e7f6ec;
-  --amberx:     #b45c0a;
-  --amberx-tint:#fdedcf;
-  --rust:       #dc2626;
-  --rust-dark:  #b91c1c;
-  --rust-tint:  #fde7e7;
-  --accent:     #2563eb;
-  --pine-rgb:   37 99 235;
-  --r-xs:       .25rem;
-  --r-sm:       .5rem;
-  --r-md:       .75rem;
-  --r-lg:       1rem;
-  --r-pill:     9999px;
-}
+/* Design tokens now single-sourced in apps/storefront/client/src/styles/tokens.css */
 
 /* A barely-there cool wash for depth, not decoration. */
 body {
@@ -115,6 +89,10 @@ h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 @media (pointer: coarse) {
   .btn-sm    { min-height: 2.75rem; padding: .5rem 1rem; font-size: .875rem; }
 }
+/* components.md "Button" → "Disabled" row: sand fill, ink-faint text, no
+   shadow — for every variant. Specificity (class + pseudo-class) clears the
+   per-variant fills and their :hover rules above without !important. */
+.btn:disabled { background: var(--sand); color: var(--ink-faint); box-shadow: none; cursor: not-allowed; }
 
 .field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); margin-bottom: .375rem; }
 /* 16px on small screens is not a style choice: Safari on iOS zooms the whole

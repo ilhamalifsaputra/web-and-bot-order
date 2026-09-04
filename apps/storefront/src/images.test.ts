@@ -33,6 +33,109 @@ afterAll(() => {
   }
 });
 
+describe("defaultThumbKind", () => {
+  it("uses the admin's thumbnailKind override when set", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(
+      defaultThumbKind(
+        { thumbnailKind: "voucher" },
+        { group: null, name: "Anything" },
+      ),
+    ).toBe("voucher");
+  });
+
+  it("forces generic for PREMIUM_APPS even when an admin override is set", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(
+      defaultThumbKind(
+        { thumbnailKind: "game" },
+        { group: "PREMIUM_APPS", name: "Design Software" },
+      ),
+    ).toBe("generic");
+  });
+
+  it("forces generic for PREMIUM_APPS even with no thumbnailKind set", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(
+      defaultThumbKind(
+        { thumbnailKind: null },
+        { group: "PREMIUM_APPS", name: "Netflix-ish App" },
+      ),
+    ).toBe("generic");
+  });
+
+  it("falls back to game for GAME_TOPUP categories with no override", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(
+      defaultThumbKind({ thumbnailKind: null }, { group: "GAME_TOPUP", name: "Mobile Legends" }),
+    ).toBe("game");
+  });
+
+  it("matches heuristic substrings on the category name, in priority order", async () => {
+    const { defaultThumbKind } = await import("./images");
+    const cases: Array<[string, string]> = [
+      ["Voucher Game", "voucher"],
+      ["Gift Card", "voucher"],
+      ["Steam Wallet", "steam"],
+      ["Netflix", "entertainment"],
+      ["Spotify Premium", "entertainment"],
+      ["HBO Max", "entertainment"],
+      ["Disney+", "entertainment"],
+      ["Live Streaming", "entertainment"],
+      ["Film & Series", "entertainment"],
+      ["Music Pass", "entertainment"],
+      ["Aplikasi Musik", "entertainment"],
+      ["Aplikasi Kantor", "app"],
+      ["App Store Gift", "voucher"], // "gift" substring wins over "app"
+      ["Software Design", "app"],
+    ];
+    for (const [name, expected] of cases) {
+      expect(
+        defaultThumbKind({ thumbnailKind: null }, { group: null, name }),
+        `category name "${name}"`,
+      ).toBe(expected);
+    }
+  });
+
+  it("falls back to generic when nothing matches", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(defaultThumbKind({ thumbnailKind: null }, { group: null, name: "Miscellaneous" })).toBe(
+      "generic",
+    );
+  });
+
+  it("treats a null/undefined category as no match (generic)", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(defaultThumbKind({ thumbnailKind: null }, null)).toBe("generic");
+    expect(defaultThumbKind({ thumbnailKind: null }, undefined)).toBe("generic");
+  });
+
+  it("ignores an unrecognized thumbnailKind value and falls through to the heuristic", async () => {
+    const { defaultThumbKind } = await import("./images");
+    expect(
+      defaultThumbKind(
+        { thumbnailKind: "not-a-real-kind" },
+        { group: null, name: "Netflix" },
+      ),
+    ).toBe("entertainment");
+  });
+});
+
+describe("productImage", () => {
+  it("returns the admin-set webImageUrl verbatim", async () => {
+    const { productImage } = await import("./images");
+    expect(productImage({ webImageUrl: "/uploads/products/a.jpg" })).toBe(
+      "/uploads/products/a.jpg",
+    );
+  });
+
+  it("returns null (no stock-photo fallback of any kind) when there is no webImageUrl", async () => {
+    const { productImage } = await import("./images");
+    expect(productImage({ webImageUrl: null })).toBeNull();
+    expect(productImage({})).toBeNull();
+  });
+});
+
 describe("webpSrcset", () => {
   it("lists only the derivatives that exist on disk", async () => {
     const { webpSrcset, clearSrcsetCache } = await import("./images");

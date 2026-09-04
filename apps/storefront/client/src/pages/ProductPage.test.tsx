@@ -527,10 +527,36 @@ describe("ProductPage", () => {
     renderProduct("netflix-premium", () => manualOnly);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
-    // Only one denomination and no related products here, so this is
-    // unambiguous — it's the live-summary badge.
-    const badge = screen.getByText("Available");
+    // The DenominationCard now also renders an "Available" pill for a
+    // non-auto plan (task-23), so scope this to the live-summary badge.
+    const badge = document.querySelector("#buy-summary .rounded-full");
+    expect(badge).toHaveTextContent("Available");
     expect(badge).toHaveClass("bg-grass-tint");
+  });
+
+  // task-23 (Fase 12 audit follow-up): the short lead paragraph moved OUT of
+  // the right column (under the <h1>) and INTO the left column, below the
+  // image card — a photo-less Digiflazz product otherwise left a tall empty
+  // DefaultThumb well with dead space beside the much taller picker column.
+  it("renders product.description in the left column below the image, not inside #product-detail", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const desc = screen.getByText("Shared account, instant delivery.");
+    expect(desc).toHaveClass("whitespace-pre-line", "text-ink-soft", "mt-4");
+    // No longer nested under the facts / picker column…
+    expect(desc.closest("#product-detail")).toBeNull();
+    // …and it sits after the image card in document order.
+    const imageCard = document.querySelector(".card.overflow-hidden")!;
+    expect(imageCard.compareDocumentPosition(desc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("renders no description block for a product with description: null (Digiflazz import)", async () => {
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      product: { ...productData.product, description: null },
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText("Shared account, instant delivery.")).not.toBeInTheDocument();
   });
 });
 
@@ -674,6 +700,31 @@ describe("ProductPage sharing and image formats", () => {
     expect(screen.getByLabelText("Quantity")).toHaveAttribute("inputmode", "numeric");
   });
 
+  // Fase 12: the hardcoded Unsplash fallback is gone — a product with no
+  // admin-set webImageUrl now renders the DefaultThumb design-system
+  // placeholder, keyed by the server-resolved `image_kind`, instead of an
+  // unconditional <img> (there used to be no no-image branch at all here).
+  it("renders DefaultThumb (no <img>) when the product has no image", async () => {
+    const noImage: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, image: null, image_kind: "voucher" },
+    };
+    renderProduct("netflix-premium", () => noImage);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByAltText("Netflix Premium")).not.toBeInTheDocument();
+    expect(document.querySelector(".lucide-ticket")).toBeInTheDocument();
+  });
+
+  it("defaults DefaultThumb to the generic icon when image_kind is absent", async () => {
+    const noImage: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, image: null, image_kind: undefined },
+    };
+    renderProduct("netflix-premium", () => noImage);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(document.querySelector(".lucide-package")).toBeInTheDocument();
+  });
+
   it("offers the WebP derivatives as a <source> when they exist", async () => {
     const withSrcset: ProductPageData = {
       ...productData,
@@ -692,5 +743,31 @@ describe("ProductPage sharing and image formats", () => {
     expect(source?.getAttribute("srcset")).toContain("product-abc-800.webp 800w");
     // The original stays the fallback, so a browser without WebP still works.
     expect(img.getAttribute("src")).toBe("/uploads/products/product-abc.jpg");
+  });
+
+  // Fase 12: product.icon_kind is resolved once server-side and forwarded to
+  // every DenominationCard as `iconKind` (denom-list has 3 plans in
+  // productData, so this also proves it's the SAME icon on every card, not
+  // something computed per-denomination).
+  it("forwards product.icon_kind to every DenominationCard as the currency chip", async () => {
+    const withIcon: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, icon_kind: "voucher" },
+    };
+    renderProduct("netflix-premium", () => withIcon);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const denomList = document.querySelector("#denom-list")!;
+    expect(denomList.querySelectorAll(".lucide-ticket")).toHaveLength(productData.denominations.length);
+  });
+
+  it("renders no currency chip on any DenominationCard when product.icon_kind is null", async () => {
+    const noIcon: ProductPageData = {
+      ...productData,
+      product: { ...productData.product, icon_kind: null },
+    };
+    renderProduct("netflix-premium", () => noIcon);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const denomList = document.querySelector("#denom-list")!;
+    expect(denomList.querySelectorAll("label.denom-card svg")).toHaveLength(0);
   });
 });

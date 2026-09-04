@@ -181,9 +181,39 @@ check_prereqs() {
 }
 
 # ---------------------------------------------------------------------------
+# 1a. check_not_already_cut_over (§1) — read-only, runs even under --dry-run.
+#
+# Guards against re-running this script against a stack that already cut
+# over. freeze_stack (§2) intentionally runs a BARE `docker compose down` /
+# `docker compose ps` (no -f docker-compose.postgres.prod.yml overlay) —
+# correct for the first run, which matches runbook §2's SQLite-stack-only
+# invocation. But after a successful cutover, the live stack runs WITH that
+# overlay, and `postgres` is defined only in it. On a second run, the bare
+# `docker compose down` would stop `server` (real downtime) while Compose
+# leaves the still-running `postgres` container as an unmanaged orphan (no
+# --remove-orphans), and the bare `docker compose ps` right after would then
+# report nothing app-related running — a false "stack is down, OK" that
+# masks a live Postgres holding production data. Catch that BEFORE
+# freeze_stack touches anything, using the exact same `(healthy)` parsing of
+# `docker compose ... ps postgres` that bring_up_postgres already uses, for
+# consistency.
+# ---------------------------------------------------------------------------
+check_not_already_cut_over() {
+  echo "==> Checking this stack has not already been cut over (runbook §1)"
+
+  if "${COMPOSE_BASE[@]}" ps postgres 2>/dev/null | grep -q '(healthy)'; then
+    fail "§9 (rollback)" "postgres is already up and healthy via docker-compose.postgres.prod.yml — this stack looks like it already cut over. Re-running this script would stop the live app stack (freeze_stack's bare 'docker compose down' does not target the postgres overlay) while leaving a now-orphaned Postgres holding production data running. If you need to undo a cutover, follow the rollback procedure instead of re-running this script."
+  fi
+  echo "    no already-healthy postgres found via the full overlay OK"
+}
+
+# ---------------------------------------------------------------------------
 # 2. tag_pre_migration_image (§1)
 # ---------------------------------------------------------------------------
-PRE_POSTGRES_COMMIT_FILE="deploy/backup/pre-postgres-commit.txt"
+# Lives under data/ (gitignored runtime output), not deploy/backup/ (tracked
+# source) — a real run must never leave an untracked file next to committed
+# scripts for `git add -A` to pick up accidentally.
+PRE_POSTGRES_COMMIT_FILE="data/pre-postgres-commit.txt"
 
 tag_pre_migration_image() {
   echo "==> Tagging pre-migration image (runbook §1)"
@@ -200,8 +230,14 @@ tag_pre_migration_image() {
     return 0
   fi
 
-  docker tag bot-order-node:latest bot-order-node:pre-postgres
-  git rev-parse HEAD > "$PRE_POSTGRES_COMMIT_FILE"
+  mkdir -p "$(dirname "$PRE_POSTGRES_COMMIT_FILE")"
+
+  if ! docker tag bot-order-node:latest bot-order-node:pre-postgres; then
+    fail "§1" "'docker tag bot-order-node:latest bot-order-node:pre-postgres' failed."
+  fi
+  if ! git rev-parse HEAD > "$PRE_POSTGRES_COMMIT_FILE"; then
+    fail "§1" "'git rev-parse HEAD' failed while recording the pre-migration commit to $PRE_POSTGRES_COMMIT_FILE."
+  fi
   echo "    tagged bot-order-node:pre-postgres; commit recorded in $PRE_POSTGRES_COMMIT_FILE"
 }
 
@@ -282,12 +318,16 @@ bring_up_postgres() {
   fi
 
   if [ "$DRY_RUN" = "true" ]; then
-    echo "[dry-run] docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps postgres (poll for healthy, ~60s bound)"
+    echo "[dry-run] docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps postgres (poll for healthy, ~90s bound)"
     return 0
   fi
 
   echo -n "    waiting for postgres to report healthy "
-  for i in $(seq 1 30); do
+  # 45 x 2s = 90s: kept comfortably above the healthcheck's own worst case
+  # (~50s: interval 10s, retries 5, no start_period, per
+  # docker-compose.postgres.prod.yml) so ordinary hardware variance doesn't
+  # cause a false timeout on an otherwise-healthy container.
+  for i in $(seq 1 45); do
     if "${COMPOSE_BASE[@]}" ps postgres | grep -q '(healthy)'; then
       echo "OK"
       return 0
@@ -296,7 +336,7 @@ bring_up_postgres() {
     sleep 2
   done
   echo
-  fail "§4" "postgres never reported (healthy) within ~60s of 'docker compose ... up -d postgres'."
+  fail "§4" "postgres never reported (healthy) within ~90s of 'docker compose ... up -d postgres'."
 }
 
 # ---------------------------------------------------------------------------
@@ -316,13 +356,13 @@ run_migrate() {
   echo "==> Running the data-transform script (runbook §6)"
 
   if [ "$DRY_RUN" = "true" ]; then
-    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "data/backups/$BACKUP_FILENAME"
+    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME"
     return 0
   fi
 
   # if/else (not a bare assignment) so `set -e` does not abort before we get
   # a chance to inspect $? and print our own fail() message below.
-  if MIGRATE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "data/backups/$BACKUP_FILENAME" 2>&1)"; then
+  if MIGRATE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/migrate-sqlite-to-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
     MIGRATE_STATUS=0
   else
     MIGRATE_STATUS=$?
@@ -343,13 +383,13 @@ run_reconcile() {
   echo "==> Running reconciliation (runbook §7 — required gate)"
 
   if [ "$DRY_RUN" = "true" ]; then
-    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "data/backups/$BACKUP_FILENAME"
+    run "${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME"
     return 0
   fi
 
   # if/else (not a bare assignment) so `set -e` does not abort before we get
   # a chance to inspect $? and print our own fail() message below.
-  if RECONCILE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "data/backups/$BACKUP_FILENAME" 2>&1)"; then
+  if RECONCILE_OUTPUT="$("${COMPOSE_BASE[@]}" run --rm server pnpm exec tsx scripts/reconcile-sqlite-postgres.ts "$DEST/$BACKUP_FILENAME" 2>&1)"; then
     RECONCILE_STATUS=0
   else
     RECONCILE_STATUS=$?
@@ -419,6 +459,7 @@ main() {
     echo "==> --dry-run: no docker/git/compose commands below will actually execute."
   fi
   check_prereqs
+  check_not_already_cut_over
   tag_pre_migration_image
   freeze_stack
   backup_sqlite

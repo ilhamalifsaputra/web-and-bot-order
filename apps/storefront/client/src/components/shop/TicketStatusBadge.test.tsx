@@ -13,14 +13,19 @@ describe("TicketStatusBadge", () => {
     expect(screen.getByText("Waiting for Support")).toBeInTheDocument();
   });
 
-  it("shows the friendly label for REPLIED (case-insensitive input)", () => {
+  it("shows the 'In Progress' label for REPLIED (case-insensitive input)", () => {
     render(<TicketStatusBadge value="replied" />);
-    expect(screen.getByText("Waiting for Your Reply")).toBeInTheDocument();
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
   });
 
   it("shows the friendly label for CLOSED", () => {
     render(<TicketStatusBadge value="CLOSED" />);
     expect(screen.getByText("Closed")).toBeInTheDocument();
+  });
+
+  it("shows the 'Resolved' label for RESOLVED", () => {
+    render(<TicketStatusBadge value="RESOLVED" />);
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
   });
 
   // Whole-branch review fix: before this, a ticket that had already gone
@@ -32,13 +37,21 @@ describe("TicketStatusBadge", () => {
     expect(screen.getByText("Waiting for Support")).toBeInTheDocument();
   });
 
-  it("buckets WAITING_CUSTOMER under the REPLIED label (Task 1's automatic transition)", () => {
+  it("shows the 'Waiting for You' label for WAITING_CUSTOMER (Task 1's automatic transition)", () => {
     render(<TicketStatusBadge value="waiting_customer" />);
-    expect(screen.getByText("Waiting for Your Reply")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for You")).toBeInTheDocument();
   });
 
   it("falls back to the raw value for an unknown status", () => {
     render(<TicketStatusBadge value="WEIRD" />);
     expect(screen.getByText("WEIRD")).toBeInTheDocument();
+  });
+
+  it("tones the OPEN bucket amber and the WAITING_CUSTOMER bucket plum", () => {
+    const { container: openBadge } = render(<TicketStatusBadge value="open" />);
+    expect(openBadge.querySelector(".chip")?.className).toContain("bg-amberx-tint");
+
+    const { container: youBadge } = render(<TicketStatusBadge value="waiting_customer" />);
+    expect(youBadge.querySelector(".chip")?.className).toContain("bg-plum-tint");
   });
 });

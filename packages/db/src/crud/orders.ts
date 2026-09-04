@@ -534,15 +534,23 @@ type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
 /** The amount actually received for an UNDERPAID order, regardless of which
  *  amount-matching rail flagged it. Binance Internal writes its ledger row to
  *  `processedBinanceTx`; Bybit AND Bybit BSC share `processedBybitTx` (one
- *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment).
- *  Checks both; at most one will ever have a matching row for a given order. */
+ *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment);
+ *  the three QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share
+ *  `qrisUnderpaidTx`, written by `markOrderUnderpaid` (crud/orderStatus.ts).
+ *  Checks all three; at most one will ever have a matching row for a given
+ *  order. Each candidate is tested on its own nullable amount column rather
+ *  than falling through on the row as a whole, so a row that exists but
+ *  records no amount cannot mask a later table that does record one. */
 export async function findUnderpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const [binance, bybit] = await Promise.all([
+  const [binance, bybit, qris] = await Promise.all([
     db.processedBinanceTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
     db.processedBybitTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
+    db.qrisUnderpaidTx.findFirst({ where: { orderId } }),
   ]);
-  const row = binance ?? bybit;
-  return row?.amount != null ? new Decimal(row.amount) : null;
+  if (binance?.amount != null) return new Decimal(binance.amount);
+  if (bybit?.amount != null) return new Decimal(bybit.amount);
+  if (qris?.receivedAmount != null) return new Decimal(qris.receivedAmount);
+  return null;
 }
 
 export async function createOrderFromCart(

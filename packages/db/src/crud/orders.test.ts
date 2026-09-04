@@ -1332,15 +1332,18 @@ describe("customerLabel", () => {
   });
 });
 
-// Three amount-matching rails can flag an order UNDERPAID, and they do not all
+// Four amount-matching rails can flag an order UNDERPAID, and they do not all
 // write to the same ledger table: Binance Internal writes `processedBinanceTx`,
-// while Bybit and Bybit BSC both write `processedBybitTx`. A lookup that only
-// checks one of the two tables reports "nothing received" for orders flagged by
-// the other rail — which is how the buyer's refund used to come out as zero.
+// Bybit and Bybit BSC both write `processedBybitTx`, and the three QRIS/IDR
+// gateways share `qrisUnderpaidTx` (written by markOrderUnderpaid). A lookup
+// that only checks some of those tables reports "nothing received" for orders
+// flagged by the others — which is how the buyer's refund used to come out as
+// zero.
 describe("findUnderpaidReceived", () => {
   beforeEach(async () => {
     await prisma.processedBinanceTx.deleteMany();
     await prisma.processedBybitTx.deleteMany();
+    await prisma.qrisUnderpaidTx.deleteMany();
   });
 
   it("returns the received amount when the ledger row is in processedBinanceTx", async () => {
@@ -1365,7 +1368,26 @@ describe("findUnderpaidReceived", () => {
     expect(received!.toString()).toBe("3.5");
   });
 
-  it("returns null when neither ledger table has an underpaid row for the order", async () => {
+  // The QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share one table,
+  // written by markOrderUnderpaid — before it existed the amount they received
+  // lived only in `order.adminNote` free text and read back here as null.
+  it("returns the received amount when the ledger row is in qrisUnderpaidTx (the QRIS/IDR gateways)", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.qrisUnderpaidTx.create({
+      data: {
+        orderId: order.id,
+        gateway: "TokoPay",
+        receivedAmount: new Decimal("18500"),
+        expectedAmount: new Decimal("20000"),
+      },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("18500");
+  });
+
+  it("returns null when no ledger table has an underpaid row for the order", async () => {
     const order = await makeOrder("UNDERPAID");
     const other = await makeOrder("UNDERPAID");
     // Rows that must NOT match: a different order's underpaid row, and this

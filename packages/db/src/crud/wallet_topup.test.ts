@@ -10,6 +10,7 @@ import { config } from "@app/core/config";
 import { cancelOrder, createOrderDirect } from "./orders";
 import { markUnderpaid } from "./binance_internal";
 import { markUnderpaidBybit } from "./bybit_deposit";
+import { markOrderUnderpaid } from "./orderStatus";
 import {
   resolveWalletTopupLimits,
   createWalletTopupOrder,
@@ -994,6 +995,48 @@ describe("creditUnderpaidTopupAnyway", () => {
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
   });
 
+  // End-to-end regression for the QRIS/IDR gap: the three IDR gateways flag an
+  // order underpaid through the shared `markOrderUnderpaid`, with no
+  // `order.kind` filter, so a wallet top-up reaches it exactly like a product
+  // order does. Until `markOrderUnderpaid` wrote a structured ledger row, the
+  // amount received survived only as `adminNote` free text, so this whole path
+  // credited the buyer 0 and the money they really sent was lost. Driven
+  // through the real `markOrderUnderpaid`, not a hand-inserted ledger row, so
+  // the regression can only pass if the two halves stay wired together.
+  it("credits the received amount for an IDR top-up flagged underpaid by a QRIS gateway", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "20000",
+        currency: "IDR",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    );
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: order.id,
+        gateway: "TokoPay",
+        receivedAmount: "18500",
+        expectedAmount: order.totalAmount,
+      }),
+    ).toBe(true);
+
+    const { credited } = await creditUnderpaidTopupAnyway(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    expect(credited.toString()).toBe("18500");
+    const buyer = await freshUser();
+    expect(new Decimal(buyer.walletBalance).toString()).toBe("18500");
+    // Currency isolation: an IDR top-up must never touch the USDT balance.
+    expect(new Decimal(buyer.walletBalanceUsdt).equals(0)).toBe(true);
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
+
+    const ledger = await prisma.walletTransaction.findMany({ where: { orderId: order.id } });
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]!.reason).toBe("admin_adjust");
+    expect(ledger[0]!.currency).toBe("IDR");
+    expect(new Decimal(ledger[0]!.delta).toString()).toBe("18500");
+  });
+
   it("refuses a PRODUCT order even when it is UNDERPAID, and changes nothing", async () => {
     const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
     expect(
@@ -1054,11 +1097,10 @@ describe("creditUnderpaidTopupAnyway", () => {
     expect(await prisma.walletTransaction.count({ where: { orderId: order.id } })).toBe(1);
   });
 
-  // No rail recorded what arrived (e.g. an IDR/QRIS top-up, whose underpaid
-  // flag writes no per-gateway ledger row, or an order moved to UNDERPAID by
-  // hand). Cancel it, but write no wallet movement: a 0-amount ledger row
-  // would claim money moved when none did. Same gating as
-  // `refundUnderpaidOrder`.
+  // No rail recorded what arrived — every automated rail now writes a ledger
+  // row, so this is an order somebody moved to UNDERPAID by hand. Cancel it,
+  // but write no wallet movement: a 0-amount ledger row would claim money
+  // moved when none did. Same gating as `refundUnderpaidOrder`.
   it("cancels the order but credits nothing when no rail recorded a received amount", async () => {
     const order = await makeUsdtTopupOrder("10");
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });

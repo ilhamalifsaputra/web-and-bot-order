@@ -575,10 +575,10 @@ export async function hasPendingWalletTopupOrder(
  * top-up were later settled late).
  *
  * The credit is gated on `received > 0`, mirroring `refundUnderpaidOrder`: a
- * top-up flagged UNDERPAID with no ledger row recording an amount (an IDR/QRIS
- * top-up records none, and an order moved to UNDERPAID by hand has none either)
- * is still cancelled, but writes no wallet movement — a 0-amount ledger row
- * would claim money moved when none did.
+ * top-up flagged UNDERPAID with no ledger row recording an amount (every
+ * automated rail writes one, so in practice an order an admin moved to
+ * UNDERPAID by hand) is still cancelled, but writes no wallet movement — a
+ * 0-amount ledger row would claim money moved when none did.
  *
  * Idempotency is the order's own status: the first call leaves the order
  * CANCELLED, so a second call fails the UNDERPAID precondition and cannot
@@ -629,8 +629,8 @@ export async function creditUnderpaidTopupAnyway(
       logger.warn(
         `Cancelled underpaid wallet top-up order ${order.orderCode} without crediting the buyer anything, because ` +
           `no payment rail recorded how much was actually received for it — admin ${args.adminId} resolved it ` +
-          `manually. Only the crypto rails write that ledger row, so an IDR/QRIS top-up always lands here. If the ` +
-          `buyer really did send money, it has to be credited to their balance by hand.`,
+          `manually. Every automated rail writes that ledger row, so this is most likely an order somebody moved ` +
+          `to UNDERPAID by hand. If the buyer really did send money, it has to be credited to their balance by hand.`,
       );
     }
     return { credited: received };

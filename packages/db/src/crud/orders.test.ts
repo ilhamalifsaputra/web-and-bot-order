@@ -29,6 +29,7 @@ import {
   computeOrderEligibility,
   channelMaskedBuyerId,
   customerLabel,
+  findUnderpaidReceived,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
 import { VoucherType, VoucherScope, OrderKind } from "@app/core/enums";
@@ -1328,5 +1329,79 @@ describe("customerLabel", () => {
 
   it("returns an empty string for a null user, matching the CSV export's prior behavior", () => {
     expect(customerLabel(null)).toBe("");
+  });
+});
+
+// Three amount-matching rails can flag an order UNDERPAID, and they do not all
+// write to the same ledger table: Binance Internal writes `processedBinanceTx`,
+// while Bybit and Bybit BSC both write `processedBybitTx`. A lookup that only
+// checks one of the two tables reports "nothing received" for orders flagged by
+// the other rail — which is how the buyer's refund used to come out as zero.
+describe("findUnderpaidReceived", () => {
+  beforeEach(async () => {
+    await prisma.processedBinanceTx.deleteMany();
+    await prisma.processedBybitTx.deleteMany();
+  });
+
+  it("returns the received amount when the ledger row is in processedBinanceTx", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "bin-underpaid-1", orderId: order.id, amount: new Decimal("7.25"), outcome: "underpaid" },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("7.25");
+  });
+
+  it("returns the received amount when the ledger row is in processedBybitTx (Bybit and Bybit BSC share it)", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "byb-underpaid-1", orderId: order.id, amount: new Decimal("3.5"), outcome: "underpaid" },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("3.5");
+  });
+
+  it("returns null when neither ledger table has an underpaid row for the order", async () => {
+    const order = await makeOrder("UNDERPAID");
+    const other = await makeOrder("UNDERPAID");
+    // Rows that must NOT match: a different order's underpaid row, and this
+    // order's own row under a different outcome.
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "bin-other-1", orderId: other.id, amount: new Decimal("9"), outcome: "underpaid" },
+    });
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "byb-matched-1", orderId: order.id, amount: new Decimal("9"), outcome: "matched" },
+    });
+
+    expect(await findUnderpaidReceived(prisma, order.id)).toBeNull();
+  });
+
+  it("returns the newest underpaid row when a rail recorded more than one for the order", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBybitTx.create({
+      data: {
+        bybitTxId: "byb-underpaid-old",
+        orderId: order.id,
+        amount: new Decimal("1"),
+        outcome: "underpaid",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    });
+    await prisma.processedBybitTx.create({
+      data: {
+        bybitTxId: "byb-underpaid-new",
+        orderId: order.id,
+        amount: new Decimal("2"),
+        outcome: "underpaid",
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received!.toString()).toBe("2");
   });
 });

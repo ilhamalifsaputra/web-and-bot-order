@@ -34,6 +34,7 @@ import {
   approveOrder,
   settlePaidOrder,
   applyUsdtWalletToOrder,
+  findUnderpaidReceived,
   ORDER_USER_SELECT,
   type SettleResult,
 } from "./orders";
@@ -858,15 +859,6 @@ export function countProcessedBinanceTxToday(db: Db, now: Date = new Date()): Pr
   return db.processedBinanceTx.count({ where: { createdAt: { gte: startOfDayUtc(now) } } });
 }
 
-/** The amount actually received for an UNDERPAID order, from its ledger row. */
-async function underpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const row = await db.processedBinanceTx.findFirst({
-    where: { orderId, outcome: "underpaid" },
-    orderBy: { createdAt: "desc" },
-  });
-  return row?.amount != null ? new Decimal(row.amount) : null;
-}
-
 /**
  * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
  * Flips UNDERPAID → PENDING_VERIFICATION then runs the normal approve/deliver
@@ -951,7 +943,7 @@ export async function refundUnderpaidOrder(
     if (order.status !== OrderStatus.UNDERPAID) {
       throw new ValidationError("error.order_not_underpaid");
     }
-    const received = (await underpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
     if (received.greaterThan(0)) {
       await adjustWallet(tx, order.userId, received, { reason: "underpaid_refund", orderId: order.id, adminId: args.adminId });
     }

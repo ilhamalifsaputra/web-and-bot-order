@@ -531,6 +531,20 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
 type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
 
+/** The amount actually received for an UNDERPAID order, regardless of which
+ *  amount-matching rail flagged it. Binance Internal writes its ledger row to
+ *  `processedBinanceTx`; Bybit AND Bybit BSC share `processedBybitTx` (one
+ *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment).
+ *  Checks both; at most one will ever have a matching row for a given order. */
+export async function findUnderpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
+  const [binance, bybit] = await Promise.all([
+    db.processedBinanceTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
+    db.processedBybitTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
+  ]);
+  const row = binance ?? bybit;
+  return row?.amount != null ? new Decimal(row.amount) : null;
+}
+
 export async function createOrderFromCart(
   db: Db,
   args: {

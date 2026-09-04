@@ -28,6 +28,7 @@ SKIP_SENTINEL="$DATA_DIR/SKIP_AUTO_MIGRATE"
 PRISMA="$APP_ROOT/node_modules/.bin/prisma"
 SCHEMA="$APP_ROOT/prisma/schema.prisma"
 BACKUP="$APP_ROOT/deploy/backup/backup.sh"
+CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
 
 # Set once the effective user is known: the prefix that runs a command as the
 # unprivileged `app` user (empty when we are already that user).
@@ -164,22 +165,68 @@ auto_migrate() {
   log "Schema updated. The snapshot taken just before the change is in $DATA_DIR/backups (roll back with deploy/backup/restore.sh)."
 }
 
-# chown only when needed (cheap no-op once owned; tolerate read-only mounts).
-if [ "$(id -u)" = "0" ]; then
-  chown -R app:app "$DATA_DIR" 2>/dev/null || true
-  # gosu does not reset HOME; point it at app's home so pnpm/corepack caches are
-  # writable (PNPM_HOME is already /pnpm via ENV).
-  export HOME=/home/app
-  # Run the schema work as `app` too, so the SQLite sidecars (-wal/-shm) and the
-  # backup files it creates are owned by the user that later runs the app.
-  RUN_AS="gosu app"
+# Auto-generates CREDENTIAL_ENCRYPTION_KEY on first boot so a production
+# deploy needs no manual secret setup (see .env.example's CREDENTIAL
+# ENCRYPTION section for the manual-key path this replaces). Persisted to
+# $CREDENTIAL_KEY_FILE — deliberately NOT in .env or the database, so a
+# Postgres-only compromise doesn't also leak the key that decrypts what it
+# stores (encrypted Settings like the Digiflazz API key, and manual-account
+# stock credentials). Losing this file makes all of that permanently
+# unreadable, so it must be part of whatever backs up the host's ./data.
+ensure_credential_key() {
+  if [ -n "${CREDENTIAL_ENCRYPTION_KEY:-}" ]; then
+    # Operator already configured it (e.g. multi-instance, or a deliberate
+    # rotation in progress) — never override.
+    return 0
+  fi
+
+  if [ -f "$CREDENTIAL_KEY_FILE" ]; then
+    _key="$(cat "$CREDENTIAL_KEY_FILE")"
+    if ! printf '%s' "$_key" | grep -Eq '^[0-9a-f]{64}$'; then
+      log "ERROR: $CREDENTIAL_KEY_FILE does not contain a valid 64-character hex key. Refusing to start: regenerating would silently orphan every credential already encrypted under the old key. Restore the correct file from backup, or if you accept the data loss, remove the file and restart." >&2
+      exit 1
+    fi
+    export CREDENTIAL_ENCRYPTION_KEY="$_key"
+    return 0
+  fi
+
+  _key="$(openssl rand -hex 32)"
+  printf '%s' "$_key" > "$CREDENTIAL_KEY_FILE"
+  chmod 600 "$CREDENTIAL_KEY_FILE"
+  if [ "$(id -u)" = "0" ]; then
+    chown app:app "$CREDENTIAL_KEY_FILE"
+  fi
+  log "Generated a new credential encryption key at $CREDENTIAL_KEY_FILE. This file must be part of your backups — losing it makes every already-encrypted credential (Settings like the Digiflazz API key, and any manual-account stock item) permanently unreadable. The key itself is never written to this log."
+  export CREDENTIAL_ENCRYPTION_KEY="$_key"
+}
+
+main() {
+  # chown only when needed (cheap no-op once owned; tolerate read-only mounts).
+  if [ "$(id -u)" = "0" ]; then
+    chown -R app:app "$DATA_DIR" 2>/dev/null || true
+    # gosu does not reset HOME; point it at app's home so pnpm/corepack caches are
+    # writable (PNPM_HOME is already /pnpm via ENV).
+    export HOME=/home/app
+    # Run the schema work as `app` too, so the SQLite sidecars (-wal/-shm) and the
+    # backup files it creates are owned by the user that later runs the app.
+    RUN_AS="gosu app"
+  fi
+
+  ensure_credential_key
+  auto_migrate
+
+  if [ -n "$RUN_AS" ]; then
+    exec gosu app "$@"
+  fi
+
+  # Already non-root (e.g. compose `user:` override) — run as-is.
+  exec "$@"
+}
+
+# ENTRYPOINT_TEST_SOURCE_ONLY lets deploy/test-entrypoint-credential-key.sh
+# source this file (with APP_ROOT pointed at a temp dir) to reuse
+# ensure_credential_key() and its helpers without running the real
+# migration/exec sequence.
+if [ -z "${ENTRYPOINT_TEST_SOURCE_ONLY:-}" ]; then
+  main "$@"
 fi
-
-auto_migrate
-
-if [ -n "$RUN_AS" ]; then
-  exec gosu app "$@"
-fi
-
-# Already non-root (e.g. compose `user:` override) — run as-is.
-exec "$@"

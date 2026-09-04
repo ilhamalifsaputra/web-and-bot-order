@@ -1041,6 +1041,8 @@
   "web.refund_p4": "We can return it as account credit — available immediately and usable on your next purchase — or to your original payment method. The second depends on the payment provider and usually takes a few working days.",
   "web.refund_h5": "Refund or warranty?",
   "web.refund_p5": "If a product dies or misbehaves during the warranty period, the warranty is the first route: we repair or replace the unit at no cost. A refund is the last resort, for when a replacement genuinely isn't possible.",
+  "web.help_title": "Help & Support",
+  "web.help_subtitle": "We're here to help. Send us a ticket and we'll get back to you as soon as possible.",
   "admin.processing": "⏳ Processing…",
   "admin.stock_err_txt": "⚠️ Please send a <b>.txt</b> file.",
   "admin.stock_err_too_large": "⚠️ File too large (max 1MB).",

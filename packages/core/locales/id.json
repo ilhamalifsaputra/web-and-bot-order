@@ -1041,6 +1041,8 @@
   "web.refund_p4": "Bisa kami kembalikan sebagai kredit saldo di akunmu — langsung masuk dan bisa dipakai untuk pembelian berikutnya — atau ke metode pembayaran asalmu. Yang kedua bergantung pada penyedia pembayaran dan biasanya makan waktu beberapa hari kerja.",
   "web.refund_h5": "Refund atau garansi?",
   "web.refund_p5": "Kalau produk mati atau bermasalah di tengah masa garansi, jalur pertamanya adalah garansi: kami perbaiki atau ganti unitnya tanpa biaya. Refund adalah jalan terakhir ketika penggantian memang tidak memungkinkan.",
+  "web.help_title": "Bantuan & Dukungan",
+  "web.help_subtitle": "Kami siap membantu. Kirim tiket dan kami akan membalas secepatnya.",
   "admin.processing": "⏳ Memproses…",
   "admin.stock_err_txt": "⚠️ Mohon kirim file <b>.txt</b>.",
   "admin.stock_err_too_large": "⚠️ File terlalu besar (maks 1MB).",

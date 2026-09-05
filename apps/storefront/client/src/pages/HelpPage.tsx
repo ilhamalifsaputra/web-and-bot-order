@@ -15,20 +15,33 @@
  * out at max-w-6xl (~1152px), but this page's two-column form+list layout
  * wants more room, so it breaks out to a ~1440px container via the
  * `mx-[calc(50%_-_50vw)]` full-bleed technique below (escaping a centered
- * parent's max-width without touching the parent itself). Deliberately NOT
- * the more common `w-screen` + `-mx-[50vw]` + `left-1/2` version of this
- * trick: `100vw` includes the vertical scrollbar's width wherever the OS
- * renders one inline (Windows/Linux Chrome), which is narrower than the
- * page's real available width — that mismatch pushed this wrapper a
- * scrollbar's-width past the right edge and produced a real horizontal
- * overflow (reported: page not fitting at 100% zoom). `calc(50% - 50vw)`
- * margins avoid a `width` override entirely: the box keeps its normal
- * block-level width (100% of its true, scrollbar-excluded containing
- * block), and the two margins pull its edges out to the actual viewport
- * edges using the same scrollbar-inclusive `vw` unit only as an offset, not
- * as the box's own size — so the arithmetic self-corrects regardless of
- * whether a scrollbar is present. `overflow-x-clip` stays on as a defensive
- * backstop against any residual sub-pixel rounding.
+ * parent's max-width without touching the parent itself).
+ *
+ * That margin trick does NOT, by itself, avoid scrollbar-width overflow —
+ * an earlier version of this comment claimed it "self-corrects regardless
+ * of whether a scrollbar is present," which is false and was disproven by
+ * measuring actual DOM geometry in a browser. `width: auto` with both
+ * margins set still resolves to exactly `100vw` (same as the more common
+ * `w-screen` + `-mx-[50vw]` + `left-1/2` version of this trick) — and
+ * `100vw` includes the OS scrollbar's width wherever one renders inline
+ * (Windows/Linux Chrome), so both techniques produce an identically-sized
+ * box that overflows the real scrollport by half a scrollbar width. This
+ * wrapper's own `overflow-x-clip` can't fix that either: clipping only
+ * takes effect at an element's own overflow container, and this element IS
+ * the thing overflowing — it can't clip its own margin box.
+ *
+ * The actual fix lives in ../index.css: `overflow-x: clip` on `#root` (in
+ * the `@layer base` block) — NOT on `body`/`html`. `body { overflow-x: clip
+ * }` was tried first and measured, in a real browser, to do nothing (the
+ * viewport still scrolled a full scrollbar-width horizontally regardless):
+ * the UA only propagates body's overflow to the viewport's real scrolling
+ * behavior when both `overflow-x` AND `overflow-y` are non-`visible`
+ * together, and forcing `overflow-y` non-`visible` too would break this
+ * page's normal vertical scrolling. `#root` sidesteps that entirely — it's
+ * an ordinary block box already sized to the true content width (not
+ * `100vw`), so its own `overflow-x: clip` clips this wrapper's overflow
+ * directly, with vertical scrolling completely unaffected. See index.css's
+ * comment on `#root` for the full explanation and how it was verified.
  */
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -228,7 +241,7 @@ export default function HelpPage() {
   const selectedSummary = listData?.tickets.find((tk) => tk.id === selectedTicketId);
 
   return (
-    <div className="mx-[calc(50%_-_50vw)] overflow-x-clip">
+    <div className="mx-[calc(50%_-_50vw)]">
       <div className="mx-auto max-w-[1440px] px-6 lg:px-12">
         <Toast text={toastText} onDismiss={() => setToastText(null)} kind={toastKind} />
 
@@ -267,6 +280,7 @@ export default function HelpPage() {
         {selectedTicketId != null && (
           <div className="mt-7">
             <InlineTicketPanel
+              key={selectedTicketId}
               ticketId={selectedTicketId}
               summary={selectedSummary}
               onClose={() => setParam("ticket", null)}

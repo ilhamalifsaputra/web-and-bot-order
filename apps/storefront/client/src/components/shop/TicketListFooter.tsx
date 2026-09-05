@@ -20,7 +20,13 @@ export interface TicketListFooterProps {
 export default function TicketListFooter({ page, pageSize, total, onPageChange }: TicketListFooterProps) {
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
-  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  // Also folds in `page` itself (not just total/pageSize): a shareable URL
+  // can carry a `page` beyond what the current filter/search actually has
+  // (e.g. a stale bookmark, or switching filters while parked on page 5).
+  // Without this, an out-of-range page whose filter only has one real page
+  // of results would compute pageCount=1 and hide the prev/next controls
+  // entirely, stranding the buyer with no in-page way back to page 1.
+  const pageCount = Math.max(1, Math.ceil(total / pageSize), page);
 
   return (
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">

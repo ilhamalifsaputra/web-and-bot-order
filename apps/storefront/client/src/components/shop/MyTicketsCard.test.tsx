@@ -84,6 +84,21 @@ describe("MyTicketsCard", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
+  it("keeps a working pager visible when an out-of-range page has no tickets", () => {
+    // e.g. a shareable URL like /help?status=resolved&page=5 when that filter
+    // only has one real page of results — the buyer must still get a
+    // clickable way back to page 1, not just the bare EmptyState.
+    render(<MyTicketsCard {...makeProps({ tickets: [], total: 3, page: 5 })} />);
+    expect(screen.getByText(t("web.no_tickets"))).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: t("web.help_pager_prev") })).toBeEnabled();
+  });
+
+  it("hides the pager when there really are no tickets at all (page 1)", () => {
+    render(<MyTicketsCard {...makeProps({ tickets: [], total: 0, page: 1 })} />);
+    expect(screen.getByText(t("web.no_tickets"))).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: t("web.help_pager_prev") })).toBeNull();
+  });
+
   it("shows a busy skeleton while loading and no rows", () => {
     render(<MyTicketsCard {...makeProps({ isLoading: true })} />);
     expect(document.querySelector('[aria-busy="true"]')).not.toBeNull();

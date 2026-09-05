@@ -184,7 +184,7 @@ export default function MyTicketsCard({
         )}
       </div>
 
-      {!isLoading && tickets.length > 0 && (
+      {!isLoading && (tickets.length > 0 || page > 1) && (
         <TicketListFooter page={page} pageSize={pageSize} total={total} onPageChange={onPageChange} />
       )}
     </section>

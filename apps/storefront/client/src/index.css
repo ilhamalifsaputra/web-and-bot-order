@@ -112,12 +112,43 @@
 
 @layer base {
   /* base.njk put these classes on <body>; the SPA's <body> only holds #root,
-     so the flex column moves here (header / main flex-1 / footer). */
+     so the flex column moves here (header / main flex-1 / footer).
+     `overflow-x: clip` also lives here, not on `body` — see the long comment
+     below for why body/html-level clipping doesn't actually work here. */
   #root {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow-x: clip;
   }
+
+  /* /help's full-bleed breakout (HelpPage.tsx's `mx-[calc(50%_-_50vw)]`
+     wrapper) produces a box whose used width is exactly 100vw, which
+     includes the OS scrollbar's width wherever one renders inline — that
+     overflows the real scrollport by half a scrollbar width. The
+     overflowing element can't clip its own margin box, so the clip has to
+     happen at an ancestor's actual overflow container instead.
+
+     That ancestor is `#root`, not `body`/`html`. `overflow-x: clip` (or
+     `hidden`) set on `body` alone was tried first and measured, in a real
+     browser, to do NOTHING: `window.scrollTo(99999, 0)` still moved the
+     viewport by a full scrollbar-width regardless of body's `overflow-x`
+     value. Root cause: the UA only propagates `body`'s overflow to become
+     the viewport's real scrolling behavior when BOTH `overflow-x` AND
+     `overflow-y` are non-`visible` at once — set `overflow-x` alone (leaving
+     `overflow-y` at its default `visible`) and neither axis gets clipped
+     anywhere. Forcing `overflow-y` non-`visible` too isn't an option — that
+     would kill the page's normal vertical scrolling.
+
+     `#root` sidesteps all of that: it's an ordinary block box already sized
+     to the page's true content width (not `100vw`), sitting between `body`
+     and the breakout div, so its own `overflow-x: clip` clips the
+     overflowing child directly — no viewport-propagation algorithm, no
+     x/y-pairing requirement, and vertical scrolling is completely
+     unaffected (verified: `window.scrollTo(0, 99999)` still scrolls
+     normally). `clip` (not `hidden`) still allows `position: sticky`
+     elsewhere in the app (Layout.tsx's header) since neither axis is
+     scrollable on this box. */
 
   /* Tailwind v4 preflight regressions vs the v3 CDN the templates assume:
      buttons became cursor:default, placeholders became 50% currentColor. */

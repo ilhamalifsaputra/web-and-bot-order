@@ -45,4 +45,17 @@ describe("TicketListFooter", () => {
     render(<TicketListFooter page={1} pageSize={10} total={0} onPageChange={vi.fn()} />);
     expect(screen.getByText("Showing 0–0 of 0 tickets")).toBeInTheDocument();
   });
+
+  it("still shows a working Previous control when page is beyond the filter's real page count", async () => {
+    // e.g. a shareable/bookmarked URL like ?status=resolved&page=5 when that
+    // filter only has one real page of results (total <= pageSize) — without
+    // folding `page` into pageCount, this would compute pageCount=1 and hide
+    // the pager entirely, stranding the buyer.
+    const onPageChange = vi.fn();
+    render(<TicketListFooter page={5} pageSize={10} total={3} onPageChange={onPageChange} />);
+    const prev = screen.getByRole("button", { name: "Previous page" });
+    expect(prev).toBeEnabled();
+    await userEvent.click(prev);
+    expect(onPageChange).toHaveBeenCalledWith(4);
+  });
 });

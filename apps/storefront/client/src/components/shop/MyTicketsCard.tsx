@@ -73,7 +73,18 @@ export default function MyTicketsCard({
   const isDesktop = useIsDesktop();
 
   return (
-    <section className="card card-pad">
+    // min-w-0: this section IS the grid item in HelpPage.tsx's lg:grid-cols-2
+    // track (repeat(2, minmax(0, 1fr))). A grid item's automatic minimum size
+    // defaults to its content's min-content width unless the item's own
+    // min-width is overridden — without this, the table's ~837px intrinsic
+    // width (6 columns) beat the track's minmax(0, ...) floor and grew this
+    // card past its 1fr share regardless of the table's own overflow-x-auto
+    // wrapper below (that wrapper only ever gets a chance to scroll once
+    // ITS parent's width is actually constrained). The page's outer
+    // overflow-x-clip then silently clipped — not scrolled — whatever still
+    // didn't fit, hiding the DATE column entirely instead of offering a way
+    // to reach it.
+    <section className="card card-pad min-w-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <FileText className="h-4 w-4 text-pine" aria-hidden="true" />

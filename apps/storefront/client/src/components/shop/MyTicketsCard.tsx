@@ -87,7 +87,7 @@ export default function MyTicketsCard({
             />
             <input
               type="search"
-              className="field !min-h-0 h-9 w-40 pl-8 text-sm sm:w-52"
+              className="field !min-h-0 h-9 w-40 !pl-8 text-sm sm:w-52"
               placeholder={t("web.help_search_tickets")}
               aria-label={t("web.help_search_tickets")}
               value={search}

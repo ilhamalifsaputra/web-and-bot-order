@@ -61,7 +61,11 @@ export default function TicketStatusBadge({ value }: { value: string }) {
   const variant = VARIANT[v] ?? "neutral";
   const label = LABEL_KEY[v] ? t(LABEL_KEY[v]!) : value;
   return (
-    <Badge variant={variant} icon={<Icon className="w-3.5 h-3.5" />}>
+    // whitespace-nowrap: live /help testing showed the two-word labels
+    // ("Waiting for Support", "Waiting for You") wrapping inside the STATUS
+    // table cell, which made the pills different heights down the column.
+    // `.chip` sets no white-space of its own, so this stays explicit.
+    <Badge variant={variant} className="whitespace-nowrap" icon={<Icon className="w-3.5 h-3.5" />}>
       {label}
     </Badge>
   );

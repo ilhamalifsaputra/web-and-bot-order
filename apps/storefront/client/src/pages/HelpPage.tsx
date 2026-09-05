@@ -14,10 +14,21 @@
  * Wider than every other account page: the shared <main> in Layout.tsx caps
  * out at max-w-6xl (~1152px), but this page's two-column form+list layout
  * wants more room, so it breaks out to a ~1440px container via the
- * relative/left-1/2/-mx-[50vw]/w-screen technique below (the standard way to
- * escape a centered parent's max-width without touching the parent itself).
- * `overflow-x-clip` on the outer wrapper is what keeps that technique from
- * adding a horizontal scrollbar — remove it and one reappears.
+ * `mx-[calc(50%_-_50vw)]` full-bleed technique below (escaping a centered
+ * parent's max-width without touching the parent itself). Deliberately NOT
+ * the more common `w-screen` + `-mx-[50vw]` + `left-1/2` version of this
+ * trick: `100vw` includes the vertical scrollbar's width wherever the OS
+ * renders one inline (Windows/Linux Chrome), which is narrower than the
+ * page's real available width — that mismatch pushed this wrapper a
+ * scrollbar's-width past the right edge and produced a real horizontal
+ * overflow (reported: page not fitting at 100% zoom). `calc(50% - 50vw)`
+ * margins avoid a `width` override entirely: the box keeps its normal
+ * block-level width (100% of its true, scrollbar-excluded containing
+ * block), and the two margins pull its edges out to the actual viewport
+ * edges using the same scrollbar-inclusive `vw` unit only as an offset, not
+ * as the box's own size — so the arithmetic self-corrects regardless of
+ * whether a scrollbar is present. `overflow-x-clip` stays on as a defensive
+ * backstop against any residual sub-pixel rounding.
  */
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -217,7 +228,7 @@ export default function HelpPage() {
   const selectedSummary = listData?.tickets.find((tk) => tk.id === selectedTicketId);
 
   return (
-    <div className="relative left-1/2 right-1/2 -mx-[50vw] w-screen overflow-x-clip">
+    <div className="mx-[calc(50%_-_50vw)] overflow-x-clip">
       <div className="mx-auto max-w-[1440px] px-6 lg:px-12">
         <Toast text={toastText} onDismiss={() => setToastText(null)} kind={toastKind} />
 

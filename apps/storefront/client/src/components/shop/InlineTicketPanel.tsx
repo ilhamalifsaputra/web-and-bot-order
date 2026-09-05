@@ -135,7 +135,11 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
     // Element-locked: a <section> landmark, and the <Card> primitive renders a
     // <div>. The raw `.card card-pad` classes are the sanctioned usage here —
     // do NOT convert this to <Card>, it would drop the landmark semantics.
-    <section id="inline-ticket-panel" className="card card-pad">
+    // `enter-rise` (app.css): fade + 8px rise on mount, .15s / --gg-ease, and
+    // only under `prefers-reduced-motion: no-preference`. The panel mounts the
+    // moment `?ticket=` is set, and HelpPage keys it by ticket id, so switching
+    // tickets replays it.
+    <section id="inline-ticket-panel" className="card card-pad enter-rise">
       <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
 
       <div className="mb-4">{backLink}</div>

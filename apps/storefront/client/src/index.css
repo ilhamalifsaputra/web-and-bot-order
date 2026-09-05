@@ -105,6 +105,13 @@
      (src/components/layout/MobileTabBar.tsx). */
   --spacing-bottom-nav: 3.5rem;
   --container-wide: 90rem; /* §26.2 extension — the /help full-bleed breakout container (max-w-wide) only; mirrors styles/tokens.extensions.css --gg-container-wide. */
+  /* Literal mirror of --gg-ease (styles/tokens.css §8 MOTION) — this project's
+     signature ease-out. NOT an extension: the token already exists in the spec,
+     it simply had no Tailwind utility name, so `transition-*` utilities were
+     falling back to the framework's own cubic-bezier(.4,0,.2,1). `ease-gg`
+     lets a transition authored in TSX use the same curve the CSS component
+     layer in static/app.css already writes out by hand. */
+  --ease-gg: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* v3 CDN applied hover: styles unconditionally; v4 gates them behind

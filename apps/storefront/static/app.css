@@ -37,6 +37,21 @@ input, select, textarea, button { accent-color: var(--accent); }
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* Same entrance for a panel that appears mid-page rather than on page load —
+     /help's InlineTicketPanel, which pops in when `?ticket=` is set. Reuses the
+     `rise` keyframe above at --gg-duration-fast (.15s) / --gg-ease: present and
+     plain, not a slow reveal.
+
+     `backwards`, NOT `both`. An animation left with `both` keeps a non-`none`
+     `transform` on the element forever after, which makes it the containing
+     block for its own `position: fixed` descendants — the exact bug `main`'s
+     `both` above causes for sticky bars (deviations.md §11-product-detail item
+     10). This panel renders a fixed-position <Toast> as a direct child, so the
+     transform must not outlive the animation. `backwards` still applies the
+     from-state before the first frame (no flash of the final position) and
+     leaves nothing behind once it ends. */
+  .enter-rise { animation: rise .15s cubic-bezier(.22, 1, .36, 1) backwards; }
 }
 
 /* Pulsing "waiting" indicator — the setup-pending screen (React SetupPendingPage,

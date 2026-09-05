@@ -47,7 +47,10 @@ export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
     <tr
       onClick={() => onSelect(ticket.id)}
       aria-current={selected ? "true" : undefined}
-      className={`cursor-pointer transition-colors hover:bg-sand/40 ${
+      // box-shadow is in the transition list, not just colours: the selected
+      // state's `ring-1` compiles to a box-shadow, so without it the ring
+      // snaps on/off while the background fades.
+      className={`cursor-pointer transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${
         selected ? "bg-pine-tint/40 ring-1 ring-inset ring-pine" : ""
       }`}
     >
@@ -94,7 +97,9 @@ export function TicketCard({ ticket, onSelect, selected }: TicketRowProps) {
       aria-label={label}
       aria-current={selected ? "true" : undefined}
       onClick={() => onSelect(ticket.id)}
-      className={`card block w-full p-4 text-left transition-colors hover:bg-sand/40 ${
+      // Same as the table row: the selected `ring-1` is a box-shadow, so it
+      // belongs in the transition list alongside the background colour.
+      className={`card block w-full p-4 text-left transition-[background-color,box-shadow] ease-gg hover:bg-sand/40 ${
         selected ? "bg-pine-tint/40 ring-1 ring-pine" : ""
       }`}
     >

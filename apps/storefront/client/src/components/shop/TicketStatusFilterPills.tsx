@@ -46,7 +46,7 @@ export default function TicketStatusFilterPills({ active, counts, onChange }: Ti
             type="button"
             aria-pressed={isActive}
             onClick={() => onChange(key)}
-            className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+            className={`whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors ease-gg ${
               isActive
                 ? "bg-pine text-white"
                 : "border border-line bg-card text-ink-soft hover:bg-sand"

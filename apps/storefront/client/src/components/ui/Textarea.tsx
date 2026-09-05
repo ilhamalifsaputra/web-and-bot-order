@@ -19,7 +19,9 @@ const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textare
   return (
     <textarea
       ref={ref}
-      className={cn("field", invalid && "border-rust", className)}
+      // `!border-rust` — see the note in Input.tsx: `.field`'s `border`
+      // shorthand in app.css wins on source order without the important flag.
+      className={cn("field", invalid && "!border-rust", className)}
       {...rest}
       aria-invalid={rest["aria-invalid"] ?? (invalid || undefined)}
     />

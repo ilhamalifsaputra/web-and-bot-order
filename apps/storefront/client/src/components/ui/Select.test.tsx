@@ -24,7 +24,7 @@ describe("Select", () => {
       </Select>,
     );
     const el = screen.getByRole("combobox", { name: "pick" });
-    expect(el).toHaveClass("border-rust");
+    expect(el).toHaveClass("!border-rust");
     expect(el).toHaveAttribute("aria-invalid", "true");
   });
 

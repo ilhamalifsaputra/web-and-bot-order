@@ -22,7 +22,14 @@ const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   return (
     <input
       ref={ref}
-      className={cn("field", invalid && "border-rust", className)}
+      // `!border-rust`, not `border-rust`: `.field` (app.css) sets the `border`
+      // SHORTHAND, and app.css is imported after `tailwindcss` in index.css, so
+      // at equal specificity (0,1,0) the shorthand wins on source order and a
+      // plain `border-rust` never rendered — verified in the built bundle,
+      // where `.border-rust` sits ~40KB ahead of `.field`. Same root cause as
+      // MyTicketsCard's `!pl-8`. The unit tests below assert the class is
+      // present, which it was; only a computed-style check catches this.
+      className={cn("field", invalid && "!border-rust", className)}
       {...rest}
       // After the spread so an explicit caller value still wins; falls back to
       // the `invalid` prop otherwise.

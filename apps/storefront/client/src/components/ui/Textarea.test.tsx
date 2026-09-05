@@ -13,7 +13,7 @@ describe("Textarea", () => {
   it("invalid → border-rust + aria-invalid", () => {
     render(<Textarea placeholder="Notes" invalid />);
     const el = screen.getByPlaceholderText("Notes");
-    expect(el).toHaveClass("border-rust");
+    expect(el).toHaveClass("!border-rust");
     expect(el).toHaveAttribute("aria-invalid", "true");
   });
 

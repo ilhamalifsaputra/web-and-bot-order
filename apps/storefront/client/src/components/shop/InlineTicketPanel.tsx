@@ -21,6 +21,7 @@ import { t } from "../../lib/i18n";
 import { formatRelativeTime } from "../../lib/formatRelativeTime";
 import { buildTicketTimeline } from "../../lib/ticketTimeline";
 import { loadTicketDraft, clearTicketDraft } from "../../lib/ticketDraft";
+import Button from "../ui/Button";
 import TicketStatusBadge from "./TicketStatusBadge";
 import TicketMessageThread from "./TicketMessageThread";
 import TicketComposer from "./TicketComposer";
@@ -125,12 +126,15 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
   const timeline = useMemo(() => (data ? buildTicketTimeline(data.ticket, data.messages) : []), [data]);
 
   const backLink = (
-    <button type="button" onClick={onClose} className="btn btn-ghost btn-sm">
+    <Button variant="ghost" size="sm" onClick={onClose}>
       <ArrowLeft className="w-3.5 h-3.5" /> {t("web.help_back_to_tickets")}
-    </button>
+    </Button>
   );
 
   return (
+    // Element-locked: a <section> landmark, and the <Card> primitive renders a
+    // <div>. The raw `.card card-pad` classes are the sanctioned usage here —
+    // do NOT convert this to <Card>, it would drop the landmark semantics.
     <section id="inline-ticket-panel" className="card card-pad">
       <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
 
@@ -248,15 +252,15 @@ function TicketActions({
           {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}
         </div>
         {ticket.reopenable && (
-          <button
-            type="button"
-            className="btn btn-soft btn-sm"
+          <Button
+            variant="soft"
+            size="sm"
             disabled={reopenMutation.isPending}
             onClick={() => reopenMutation.mutate()}
           >
             {reopenMutation.isPending && <Spinner />}
             <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
-          </button>
+          </Button>
         )}
       </div>
     );
@@ -266,15 +270,15 @@ function TicketActions({
     <>
       {hasSupportReplied && (
         <div className="mt-4">
-          <button
-            type="button"
-            className="btn btn-soft btn-sm"
+          <Button
+            variant="soft"
+            size="sm"
             disabled={closeMutation.isPending}
             onClick={() => closeMutation.mutate()}
           >
             {closeMutation.isPending && <Spinner />}
             <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
-          </button>
+          </Button>
         </div>
       )}
       <TicketComposer

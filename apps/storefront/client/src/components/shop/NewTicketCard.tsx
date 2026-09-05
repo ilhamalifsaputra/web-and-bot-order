@@ -8,10 +8,25 @@
  * and calls `onSubmit()` when that pass is clean.
  *
  * The five field controls are small internal function components rather than
- * five separate files: each is a thin wrapper over a `.field` input/select
- * plus (for the two text fields) a character counter, so keeping them here
- * keeps the controlled wiring readable in one place. Their DOM/behaviour
- * matches the task-14 brief.
+ * five separate files: each composes the shared <FormField> + <Input> /
+ * <Select> / <Textarea> primitives, plus (for the two text fields) a character
+ * counter, so keeping them here keeps the controlled wiring readable in one
+ * place. Their DOM/behaviour matches the task-14 brief.
+ *
+ * ### Why the counter is FormField's `hint` and the error keeps `role="alert"`
+ * The counter goes through the `hint` slot rather than being rendered as a
+ * loose sibling: that is the only way it lands *between* the control and the
+ * error message (the original order) AND gets picked up by FormField's
+ * `aria-describedby` merge, which is what the old hand-written
+ * `aria-describedby="support-subject-counter"` did by hand.
+ *
+ * The error text is passed as a `<span role="alert">` rather than a bare
+ * string. FormField's own error `<p>` has no live-region role, and dropping
+ * the role would be a real regression on the *server*-error path: a 400 from
+ * POST /api/v1/account/support/new sets `errors` without moving focus, so
+ * nothing would announce it. (On the client-validation path focus does move to
+ * the first invalid control, which now carries `aria-describedby` pointing at
+ * the message — wiring the old markup did not have.)
  *
  * The nine TicketCategory values are mirrored locally (CATEGORY_VALUES)
  * rather than imported from `@app/core/enums`: neither React SPA in this repo
@@ -23,6 +38,11 @@
 import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
 import { Send, SquarePen } from "lucide-react";
 import { t } from "../../lib/i18n";
+import Button from "../ui/Button";
+import FormField from "../ui/FormField";
+import Input from "../ui/Input";
+import Select from "../ui/Select";
+import Textarea from "../ui/Textarea";
 import Spinner from "./Spinner";
 import ProgressBar from "./ProgressBar";
 import EvidenceUploader from "./EvidenceUploader";
@@ -73,35 +93,26 @@ export interface NewTicketCardProps {
   uploadProgress: number;
 }
 
-const REQUIRED_MARK = (
-  <span aria-hidden="true" className="text-rust">
-    {" "}
-    *
-  </span>
-);
-
 function OptionalSuffix() {
   return (
     <span className="font-normal normal-case text-ink-faint"> {t("web.support_field_optional")}</span>
   );
 }
 
-function InlineError({ message }: { message?: string | null }) {
-  if (!message) return null;
-  return (
-    <p role="alert" className="mt-1 text-xs text-rust">
-      {message}
-    </p>
-  );
+/** FormField's error `<p>` carries no live-region role; this keeps the
+ * announcement the hand-rolled markup used to have — see the file header. */
+function alertOf(message?: string | null): ReactNode {
+  return message ? <span role="alert">{message}</span> : undefined;
 }
 
-function Counter({ id, length, max }: { id: string; length: number; max: number }) {
+/** The `x/max` character counter, shaped to sit inside FormField's hint `<p>`
+ * (which supplies `mt-1 text-xs` and the describedby id) — hence `block
+ * text-right` + the `ink-faint` colour override rather than its own wrapper. */
+function counterHint(length: number, max: number): ReactNode {
   return (
-    <div className="mt-1 text-right">
-      <span id={id} aria-live="polite" className="text-xs text-ink-faint">
-        {length}/{max}
-      </span>
-    </div>
+    <span aria-live="polite" className="block text-right text-ink-faint">
+      {length}/{max}
+    </span>
   );
 }
 
@@ -117,27 +128,23 @@ function SubjectField({
   inputRef: RefObject<HTMLInputElement>;
 }) {
   return (
-    <div>
-      <label className="field-label" htmlFor="support-subject">
-        {t("web.support_field_subject")}
-        {REQUIRED_MARK}
-      </label>
-      <input
-        id="support-subject"
+    <FormField
+      htmlFor="support-subject"
+      label={t("web.support_field_subject")}
+      required
+      hint={counterHint(value.length, 100)}
+      error={alertOf(error)}
+    >
+      <Input
         ref={inputRef}
         type="text"
-        className="field"
         maxLength={100}
         required
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={t("web.support_field_subject_placeholder")}
-        aria-describedby="support-subject-counter"
-        aria-invalid={error ? true : undefined}
       />
-      <Counter id="support-subject-counter" length={value.length} max={100} />
-      <InlineError message={error} />
-    </div>
+    </FormField>
   );
 }
 
@@ -153,20 +160,13 @@ function CategorySelect({
   selectRef: RefObject<HTMLSelectElement>;
 }) {
   return (
-    <div>
-      <label className="field-label" htmlFor="support-category">
-        {t("web.support_field_category")}
-        {REQUIRED_MARK}
-      </label>
-      <select
-        id="support-category"
-        ref={selectRef}
-        className="field"
-        required
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-invalid={error ? true : undefined}
-      >
+    <FormField
+      htmlFor="support-category"
+      label={t("web.support_field_category")}
+      required
+      error={alertOf(error)}
+    >
+      <Select ref={selectRef} required value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="" disabled>
           {t("web.support_field_category_placeholder")}
         </option>
@@ -175,9 +175,8 @@ function CategorySelect({
             {t(categoryLabelKey(c))}
           </option>
         ))}
-      </select>
-      <InlineError message={error} />
-    </div>
+      </Select>
+    </FormField>
   );
 }
 
@@ -195,20 +194,13 @@ function ProductSelect({
   selectRef: RefObject<HTMLSelectElement>;
 }) {
   return (
-    <div>
-      <label className="field-label" htmlFor="support-product">
-        {t("web.support_field_product")}
-        {REQUIRED_MARK}
-      </label>
-      <select
-        id="support-product"
-        ref={selectRef}
-        className="field"
-        required
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-invalid={error ? true : undefined}
-      >
+    <FormField
+      htmlFor="support-product"
+      label={t("web.support_field_product")}
+      required
+      error={alertOf(error)}
+    >
+      <Select ref={selectRef} required value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="" disabled>
           {t("web.support_field_product_placeholder")}
         </option>
@@ -217,9 +209,8 @@ function ProductSelect({
             {p.name}
           </option>
         ))}
-      </select>
-      <InlineError message={error} />
-    </div>
+      </Select>
+    </FormField>
   );
 }
 
@@ -233,25 +224,24 @@ function OrderSelect({
   orders: { code: string; items: string }[];
 }) {
   return (
-    <div>
-      <label className="field-label" htmlFor="support-order">
-        {t("web.support_field_order")}
-        <OptionalSuffix />
-      </label>
-      <select
-        id="support-order"
-        className="field"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
+    <FormField
+      htmlFor="support-order"
+      label={
+        <>
+          {t("web.support_field_order")}
+          <OptionalSuffix />
+        </>
+      }
+    >
+      <Select value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{t("web.ticket_order_picker_none")}</option>
         {orders.map((o) => (
           <option key={o.code} value={o.code}>
             #{o.code} — {o.items}
           </option>
         ))}
-      </select>
-    </div>
+      </Select>
+    </FormField>
   );
 }
 
@@ -267,27 +257,24 @@ function DescriptionField({
   textareaRef: RefObject<HTMLTextAreaElement>;
 }) {
   return (
-    <div>
-      <label className="field-label" htmlFor="support-description">
-        {t("web.support_field_description")}
-        {REQUIRED_MARK}
-      </label>
-      <textarea
-        id="support-description"
+    <FormField
+      htmlFor="support-description"
+      label={t("web.support_field_description")}
+      required
+      hint={counterHint(value.length, 1000)}
+      error={alertOf(error)}
+    >
+      <Textarea
         ref={textareaRef}
-        className="field min-h-[9rem] resize-y"
+        className="min-h-[9rem] resize-y"
         maxLength={1000}
         rows={6}
         required
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={t("web.support_field_description_placeholder")}
-        aria-describedby="support-description-counter"
-        aria-invalid={error ? true : undefined}
       />
-      <Counter id="support-description-counter" length={value.length} max={1000} />
-      <InlineError message={error} />
-    </div>
+    </FormField>
   );
 }
 
@@ -353,7 +340,13 @@ export default function NewTicketCard({
   );
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="card p-6 sm:p-7">
+    // Element-locked: this surface is a <form>, and the <Card> primitive
+    // renders a <div>. The raw `.card card-pad` classes here are the sanctioned
+    // usage for that case, not legacy debt — do NOT "fix" them into <Card>,
+    // which would cost the form semantics. (`card-pad` replaced a hand-rolled
+    // `p-6 sm:p-7` so the padding comes from the token-driven class the rest of
+    // the page's surfaces use.)
+    <form onSubmit={handleSubmit} noValidate className="card card-pad">
       <div className="flex items-start gap-3">
         <span className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-pine-tint text-pine">
           <SquarePen className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
@@ -416,14 +409,16 @@ export default function NewTicketCard({
 
       <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <DataSafetyNotice />
-        <button
+        <Button
           type="submit"
-          className="btn btn-primary w-full sm:w-auto"
+          variant="primary"
+          fullWidth
+          className="sm:w-auto"
           disabled={isSubmitting}
           aria-busy={isSubmitting}
         >
           {submitLabel}
-        </button>
+        </Button>
       </div>
 
       {isSubmitting && value.files.length > 0 && (

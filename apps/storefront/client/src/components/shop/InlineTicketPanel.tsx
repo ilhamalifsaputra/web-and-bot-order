@@ -246,7 +246,10 @@ function TicketActions({
 
   if (ticket.closed) {
     return (
-      <div className="mt-4 card card-pad flex items-center justify-between gap-3 flex-wrap bg-sand">
+      // L2 nested surface: a recessed sand panel inside the L1 `card card-pad`
+      // section above (was a `.card` whose white fill was immediately undone by
+      // a `bg-sand` utility — same intent, said once). See app.css `.card-2`.
+      <div className="mt-4 card-2 card-pad-2 flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 text-sm text-ink-soft">
           <CheckCircle2 className="w-4 h-4 text-grass" />
           {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}

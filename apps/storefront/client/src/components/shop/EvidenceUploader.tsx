@@ -109,9 +109,14 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
       {files.length > 0 && (
         <ul className="mt-2 flex flex-wrap gap-2">
           {files.map((file, idx) => (
+            // L2 nested surface. These rows sit inside NewTicketCard's white
+            // `.card` form; the old `bg-card` made them white-on-white, the one
+            // real camouflage instance on /help. `.card-2` recesses them onto
+            // sand. Padding stays the compact `px-2 py-1` — `card-pad-2`'s 1rem
+            // is a panel padding, not a chip padding.
             <li
               key={`${file.name}-${idx}`}
-              className="flex items-center gap-2 rounded-md border border-line bg-card px-2 py-1 text-xs"
+              className="card-2 flex items-center gap-2 px-2 py-1 text-xs"
             >
               {previewUrls[idx] ? (
                 <img src={previewUrls[idx]!} alt="" className="w-6 h-6 rounded object-cover" />

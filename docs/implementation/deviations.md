@@ -1677,3 +1677,91 @@ added, not something being closed out.
 `apps/storefront/client/src/api/types.ts`,
 `tests/e2e/seed-thumbs.ts` (new, committed; dev-only — writes only into the
 gitignored `data/uploads/` tree, ships no bytes).
+
+---
+
+## 20-nested-surface — `.card-2`: containment depth may use a fill; §6's shadow-only rule now covers interaction depth only (/help)
+
+Type: §26.1 amendment to a documented design-system rule. **Written before the
+code/spec change, per §26.1.**
+
+**The rule as it stood.** `apps/storefront/client/src/styles/tokens.css` §6
+ELEVATION ends with:
+
+> Depth = white `.card` on `--paper` + `--gg-shadow-soft` + 1px `--line` border.
+> Hover / active states step up to `--gg-shadow-lift`, **not a darker fill**.
+
+Read literally, that forbids ever expressing depth with a background change.
+
+**The requirement it collides with.** `/help` is the first storefront surface
+that genuinely nests one card inside another (the closed-ticket notice inside
+`InlineTicketPanel`'s `card card-pad` section; the staged-attachment rows
+inside `NewTicketCard`'s `card` form). The user's requirement for this page is
+that nesting be a real, named pattern and that *"jangan ada yang nyaru"* —
+nothing may blend into its container. A second **white** `.card` on a white
+`.card` is exactly that camouflage: `--card` on `--card`, separated only by a
+1px `--line` hairline and a soft shadow that a white-on-white pairing barely
+resolves. `EvidenceUploader`'s staged-file rows
+(`rounded-md border border-line bg-card` inside the white form) are the
+concrete instance already on the page today.
+
+**The amendment.** §6's rule is split into its two real halves:
+
+- **Interaction depth — unchanged, still shadow-only.** Hover / active / press
+  states step `--gg-shadow-soft` → `--gg-shadow-lift`. They must not recolour
+  a surface. This is the half the original sentence was written for, and every
+  existing consumer (`.card`, `ProductCard`, the category tiles) keeps it.
+- **Containment depth — may use a fill (new).** A panel nested *inside* a card
+  is a different axis from a card reacting to a pointer. L1 is a **raised**
+  white card on `--paper`; L2 is a **recessed** `--sand` panel inside it — not
+  a second raised white card. A recessed inset reads as recessed precisely by
+  being darker than its container and casting no shadow of its own, which is
+  what makes it impossible to confuse with the surface it sits on.
+
+`tokens.css` §6's comment is updated to state both halves rather than only the
+first.
+
+**The implementation.** Two plain classes next to `.card` in
+`apps/storefront/static/app.css` (same layer, same file, so they inherit the
+"authoritative CSS" precedence the rest of the component layer has):
+
+```css
+.card-2     { background: var(--sand); border: 1px solid var(--line);
+              border-radius: var(--r-md); box-shadow: none; }
+.card-pad-2 { padding: 1rem; }
+```
+
+`--r-md` (12px), one step below `.card`'s `--r-lg` (16px): an inset must never
+carry a larger corner radius than the container it sits in, or the two
+outlines visibly fight along the shared edge. `box-shadow: none` is explicit,
+not incidental — the absence of a cast shadow is half of what makes L2 read as
+recessed rather than raised. `card-pad-2` is a flat `1rem`, deliberately
+*not* the responsive 1.25→1.5rem of `.card-pad`: an inset does not need to
+grow with the viewport the way its container does, and a nested panel that
+tracked its parent's padding would eat the width it saves.
+
+**Nesting is capped at depth 2 on this page.** There is no `.card-3`, and none
+should be added: a third level has nowhere left to go except back toward white
+(re-introducing the camouflage) or darker still (which starts reading as a
+disabled/inactive surface, a meaning `--sand` does not otherwise carry).
+
+**Applied at two sites, both already-existing surfaces:**
+
+1. `InlineTicketPanel.tsx`'s closed-ticket notice had reached the right answer
+   ad hoc — `card card-pad … bg-sand`, i.e. a `.card` whose white fill was
+   immediately overridden back to sand by a utility. It becomes
+   `card-2 card-pad-2`, which is the same rendered intent expressed once
+   instead of twice, and drops the now-meaningless `.card` shadow.
+2. `EvidenceUploader.tsx`'s staged-file rows were
+   `rounded-md border border-line bg-card px-2 py-1 text-xs` — white chips on
+   the white create-ticket card, the actual camouflage instance on `/help`.
+   They move onto `.card-2` (keeping their own compact `px-2 py-1`, since
+   `card-pad-2`'s 1rem is a panel padding, not a chip padding).
+
+**Not a §28.2 escalation** — no pricing, auth, legal or destructive semantics
+are touched; this is surface treatment only.
+
+**Files.** `apps/storefront/static/app.css`,
+`apps/storefront/client/src/styles/tokens.css` (§6 comment),
+`apps/storefront/client/src/components/shop/InlineTicketPanel.tsx`,
+`apps/storefront/client/src/components/shop/EvidenceUploader.tsx`.

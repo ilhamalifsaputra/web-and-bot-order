@@ -58,4 +58,12 @@ describe("TicketListFooter", () => {
     await userEvent.click(prev);
     expect(onPageChange).toHaveBeenCalledWith(4);
   });
+
+  it("shows a zero range (not a negative/nonsensical one) for that same out-of-range page", () => {
+    // (page-1)*pageSize = 40, past total=3 — naive math renders
+    // "Showing 41–3 of 3 tickets" (from > to > total). Read as "no rows on
+    // this page" instead, same as the total===0 case.
+    render(<TicketListFooter page={5} pageSize={10} total={3} onPageChange={vi.fn()} />);
+    expect(screen.getByText("Showing 0–0 of 3 tickets")).toBeInTheDocument();
+  });
 });

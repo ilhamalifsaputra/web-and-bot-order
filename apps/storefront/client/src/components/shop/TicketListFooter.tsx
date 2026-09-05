@@ -18,8 +18,14 @@ export interface TicketListFooterProps {
 }
 
 export default function TicketListFooter({ page, pageSize, total, onPageChange }: TicketListFooterProps) {
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = Math.min(page * pageSize, total);
+  // Out-of-range (a stale bookmark, or switching filters while parked on a
+  // later page — see pageCount's own comment below): (page-1)*pageSize can
+  // land past `total` entirely, which would otherwise render nonsense like
+  // "Showing 41–3 of 3 tickets". Read as "no rows on this page" instead,
+  // same as the total===0 case.
+  const isPageInRange = total > 0 && (page - 1) * pageSize < total;
+  const from = isPageInRange ? (page - 1) * pageSize + 1 : 0;
+  const to = isPageInRange ? Math.min(page * pageSize, total) : 0;
   // Also folds in `page` itself (not just total/pageSize): a shareable URL
   // can carry a `page` beyond what the current filter/search actually has
   // (e.g. a stale bookmark, or switching filters while parked on page 5).

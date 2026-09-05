@@ -128,28 +128,36 @@ export default function MyTicketsCard({
             description={t("web.no_tickets_desc")}
           />
         ) : isDesktop ? (
-          <table className="data-table w-full">
-            <thead>
-              <tr>
-                <th scope="col">{t("web.help_col_ticket")}</th>
-                <th scope="col">{t("web.help_col_subject")}</th>
-                <th scope="col">{t("web.help_col_status")}</th>
-                <th scope="col">{t("web.help_col_last_update")}</th>
-                <th scope="col">{t("web.help_col_date")}</th>
-                <th aria-hidden="true" />
-              </tr>
-            </thead>
-            <tbody>
-              {tickets.map((ticket) => (
-                <TicketTableRow
-                  key={ticket.id}
-                  ticket={ticket}
-                  onSelect={onSelectTicket}
-                  selected={ticket.id === selectedTicketId}
-                />
-              ))}
-            </tbody>
-          </table>
+          // This card sits in a two-column grid (~650px available, not the
+          // ~1100px a full-width page gives OrdersPage/SupportPage's own
+          // data-table) — six columns don't comfortably fit that budget, so
+          // unlike those pages this one needs its own scroll boundary: without
+          // it, the table's min-content width forces the grid track (and the
+          // page) wider instead of scrolling in place.
+          <div className="overflow-x-auto">
+            <table className="data-table w-full">
+              <thead>
+                <tr>
+                  <th scope="col">{t("web.help_col_ticket")}</th>
+                  <th scope="col">{t("web.help_col_subject")}</th>
+                  <th scope="col">{t("web.help_col_status")}</th>
+                  <th scope="col">{t("web.help_col_last_update")}</th>
+                  <th scope="col">{t("web.help_col_date")}</th>
+                  <th aria-hidden="true" />
+                </tr>
+              </thead>
+              <tbody>
+                {tickets.map((ticket) => (
+                  <TicketTableRow
+                    key={ticket.id}
+                    ticket={ticket}
+                    onSelect={onSelectTicket}
+                    selected={ticket.id === selectedTicketId}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <ul className="space-y-3">
             {tickets.map((ticket) => (

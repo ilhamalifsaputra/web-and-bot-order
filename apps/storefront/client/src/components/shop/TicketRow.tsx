@@ -67,7 +67,13 @@ export function TicketTableRow({ ticket, onSelect, selected }: TicketRowProps) {
           <span className="block text-xs text-ink-faint">Order #{ticket.order_code}</span>
         )}
       </td>
-      <td className="max-w-[22rem] truncate text-sm text-ink">{subjectOf(ticket)}</td>
+      {/* 12rem (not the more generous 22rem a full-width table could afford):
+          this table lives in a ~650px two-column card, not a ~1100px
+          full-width page like OrdersPage/SupportPage — the wider value left
+          almost no room for STATUS/LAST UPDATE/DATE and forced a scroll on
+          every row. The card's overflow-x-auto wrapper is still the real
+          safety net for the rest. */}
+      <td className="max-w-[12rem] truncate text-sm text-ink">{subjectOf(ticket)}</td>
       <td>
         <TicketStatusBadge value={ticket.status} />
       </td>

@@ -46,7 +46,7 @@ export function SetupOwnerPage() {
           <h1 className="mt-1 font-display text-2xl font-semibold tracking-tight text-ink">Create owner account</h1>
           <p className="mt-2 text-sm text-ink-soft">
             This will be the main admin account. Get your Telegram ID from{" "}
-            <a href="https://t.me/userinfobot" className="text-accent underline" target="_blank" rel="noreferrer">
+            <a href="https://t.me/userinfobot" className="text-pine underline" target="_blank" rel="noreferrer">
               @userinfobot
             </a>
             .
@@ -58,7 +58,7 @@ export function SetupOwnerPage() {
         )}
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="telegram_id">
               Telegram ID <span className="text-red-500">*</span>
             </Label>
@@ -73,7 +73,7 @@ export function SetupOwnerPage() {
             />
           </div>
 
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="username">
               Username <span className="text-ink-soft text-xs">(optional)</span>
             </Label>
@@ -87,7 +87,7 @@ export function SetupOwnerPage() {
             />
           </div>
 
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="password">
               Password <span className="text-red-500">*</span>
             </Label>
@@ -103,7 +103,7 @@ export function SetupOwnerPage() {
             />
           </div>
 
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="password_confirm">
               Confirm password <span className="text-red-500">*</span>
             </Label>

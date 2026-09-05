@@ -11,6 +11,25 @@ reconciliation gate) no matter how confident section 6 looked.
 
 ---
 
+## Automation: `deploy/postgres-cutover.sh`
+
+`deploy/postgres-cutover.sh` automates sections **2–8** below (freeze,
+backup, build, bring up Postgres, push schema, run the data migration, run
+the reconciliation gate, cutover) — it runs the exact `docker compose`
+commands documented in those sections, in order, gated on each step
+succeeding, and stops with the relevant section number printed if any step
+fails. Run `deploy/postgres-cutover.sh --help` for its flags, or
+`deploy/postgres-cutover.sh --dry-run` to preview every command it would run
+without executing any of them.
+
+Sections **1** (prerequisites), **8a** (point the backup cron at Postgres),
+**9** (rollback), and **10** (post-cutover monitoring) are **not** automated
+— they need human judgment and remain manual steps below. This runbook stays
+the source of truth for *why* each step exists; the script is what an
+operator actually runs for sections 2–8.
+
+---
+
 ## 1. Prerequisites
 
 - **Docker + Docker Compose v2.24+** on the VPS (the app's `server` service

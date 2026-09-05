@@ -144,3 +144,99 @@ No skips, no out-of-order jumps, nothing unreachable.
   confirm existing seed data before deciding whether to re-seed) deleted.
 - Storefront dev server stopped.
 - `help_check_visual` Postgres schema and its seed rows left in place per the brief.
+
+## Follow-up: My-tickets table overflow (min-w-0 fix verification)
+
+Verifies commits `acd2a8ec` (table wrapped in `overflow-x-auto`) and `31a94510`
+(`min-w-0` added to `MyTicketsCard`'s root `<section>`, the `lg:grid-cols-2` grid
+item) against the same rebuilt client and the same `help_check_visual` seed data/user
+(`help-qa-209493`) reused from the pass above. New screenshots: `10-desktop-1024-
+table-overflow-fixed.png`, `11-desktop-1440-table-overflow-fixed.png` (both captured
+after scrolling the table's `overflow-x-auto` wrapper to its max `scrollLeft`, so the
+"Date" column and chevron are visible in-frame — proving the scroll actually reaches
+them, not just that a scrollbar renders).
+
+### Card vs. table width
+
+| Viewport | Card width | Card content-box width (minus 24px padding × 2) | Table width | Table fits directly? |
+|---|---|---|---|---|
+| 1024px | 450px | 402px | 677px | No (275px over) |
+| 1440px | 658px | 610px | 677px | No (67px over) |
+
+The table's intrinsic width dropped from Task 20's measured ~837px to ~677px (the
+`min-w-0` fix lets the card's own width finally reach its correct `1fr`-track value —
+450px/658px, unchanged from Task 20's pre-fix numbers, confirming the CARD was never
+the thing that needed to shrink; what changed is that the table can now shrink too,
+since its parent finally has a real constrained width to shrink against). It's still
+wider than the card's content box at both required widths, so this is not a "table now
+fits" fix — it's a "table's overflow is now genuinely contained and scrollable
+in-place instead of silently clipped by the page's outer `overflow-x-clip`" fix, which
+is exactly what commit `31a94510`'s message describes.
+
+### Is the overflow reachable now?
+
+Yes, confirmed programmatically at both viewports, not just visually:
+
+- **1024px**: `overflow-x-auto` wrapper reports `clientWidth` 398 / `scrollWidth` 677
+  (`scrollWidth > clientWidth` → real, working scroll range). At `scrollLeft = 0` the
+  "Date" `<th>` is off-screen (outside the wrapper's visible rect). After setting
+  `scroller.scrollLeft = scroller.scrollWidth`, the "Date" header's rect falls fully
+  inside the wrapper's visible rect. **Scrolls into view.**
+- **1440px**: wrapper `clientWidth` 606 / `scrollWidth` 677. At `scrollLeft = 0`,
+  "Date" and the trailing chevron column are both outside the visible rect (only
+  Ticket/Subject/Status/Last update show). After scrolling to max `scrollLeft`, both
+  become visible (the "Ticket" column scrolls out on the left instead, which is
+  expected trade-off behavior for a horizontally-scrolling table). **Scrolls into
+  view.**
+
+So: table does not fit directly at either required width, but the DATE column (and
+chevron) is now reachable by scrolling the table's own `overflow-x-auto` wrapper —
+verified via `scroller.scrollLeft = scroller.scrollWidth` plus a `getBoundingClientRect`
+visibility check on the "Date" `<th>` before and after, not just a visual screenshot.
+This directly fixes Task 20's reported defect: previously this overflow was silently
+clipped by the page's outer `overflow-x-clip` wrapper with **no way to reach it at
+all**; now it's contained by the table's own scroll wrapper and is reachable.
+
+### Page-level scrollWidth vs. clientWidth re-check (brief step 4.8, re-run)
+
+| Viewport | scrollWidth | clientWidth | Diff |
+|---|---|---|---|
+| 1024px | 1010 | 994 | 16 |
+| 1440px | 1426 | 1410 | 16 |
+| 390px | 376 | 360 | 16 |
+
+Task 20's own numbers for this same check were 1024/1024 (equal) and 1440/1440
+(equal), so a flat 16px gap at every width now stands out. Traced it before treating
+it as a regression: `document.body`'s single direct child (the app's React root div)
+measures exactly 0 to `clientWidth` at every one of these viewports — i.e., no
+user-visible element extends past the actual viewport edge. The only element whose own
+box geometry extends past its immediate parent is the intentional
+`mx-[calc(50%_-_50vw)] overflow-x-clip` breakout wrapper itself (documented at the top
+of `HelpPage.tsx`), which is inherently sensitive to the exact reported `vw` value.
+This same environment already had documented `devicePixelRatio` instability in Task
+20's own report (drifting 0.75-0.333 with no action causing it); the 16px figure here
+is constant in absolute pixels across three different viewport widths (not
+proportional to width, as a genuine content-overflow would be), which points to a
+fixed scrollbar-width/DPR artifact of this browser-automation session rather than a
+real, newly-introduced layout defect. It reproduces even on `/` (the unrelated
+homepage, no `MyTicketsCard`, no `min-w-0` in its diff) as an `innerWidth`-vs-
+`clientWidth` gap of the same 30px, half of which (15-16px) leaks into the `vw`-based
+breakout math on `/help` specifically because `/help` is the one page using that
+technique. The `31a94510` commit diff touches only `MyTicketsCard.tsx`'s `className`
+(one line), nothing on `HelpPage.tsx`'s breakout wrapper, so this can't be something
+that commit introduced. Not re-confirmed outside this session's browser automation, so
+flagging it rather than asserting it's definitely benign — but it is not visible in
+any screenshot taken (10, 11, or Task 20's originals) and does not hide any element
+that matters.
+
+### Verdict: PASS
+
+The `min-w-0` fix does what its commit message claims: the My-tickets table's
+overflow, previously invisible and permanently unreachable (silently clipped by the
+page's outer wrapper), is now contained by the table's own `overflow-x-auto` scroll
+region and reachable by scrolling at both 1024px and 1440px. The table does not
+shrink to fully fit the card at either width, but that was never the fix's claim — the
+claim was that the already-in-place `overflow-x-auto` wrapper would finally get a
+chance to do its job, which is confirmed. The 16px page-level residual noted above is
+flagged as a likely environment/DPR artifact (present identically on an unrelated page
+and not attributable to this commit's diff), not treated as a fail of this check.

@@ -450,6 +450,12 @@ permanen.
 
 `WEB_COOKIE_SECRET` boleh dikosongkan (di-generate & disimpan otomatis saat boot).
 
+`CREDENTIAL_ENCRYPTION_KEY` juga boleh dikosongkan di deploy Docker — di-generate
+otomatis sekali oleh `docker-entrypoint.sh` dan disimpan di
+`data/credential_encryption.key` (lihat `.env.example`). Pastikan file itu ikut
+ter-backup: kalau hilang, semua credential yang sudah terenkripsi (Digiflazz
+API key, akun manual di stok) tidak bisa dibaca lagi selamanya.
+
 ### Jalur manual `/bootstrap` (deploy lama)
 
 1. Isi `.env` minimum + `prisma db push`.

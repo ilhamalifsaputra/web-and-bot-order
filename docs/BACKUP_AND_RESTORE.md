@@ -128,6 +128,28 @@ Jalankan pada jadwal yang sama dengan backup DB (cron 6 jam) supaya snapshot
 DB dan file referensinya (`Product.webImageUrl`, `banner_image`, dst.) tidak
 terlalu jauh berbeda waktu.
 
+## Credential encryption key backup
+
+`data/credential_encryption.key` (kalau ada — dibuat otomatis oleh
+`docker-entrypoint.sh` saat toko pertama kali menyimpan credential
+terenkripsi, mis. Digiflazz API key atau akun manual di stok) **juga tidak
+tercakup** `backup.sh`. Backup terpisah, sama seperti `uploads/`:
+
+```bash
+cp data/credential_encryption.key "credential-key-$(date +%F).bak"
+```
+
+**Jangan** taruh file ini di archive yang sama dengan dump database (mis.
+`tar czf backup.tar.gz data/` yang juga berisi `data/backups/` dari
+`backup.sh`) — itu menyatukan kembali key dan ciphertext yang sengaja
+dipisahkan, menghilangkan proteksi enkripsi-saat-disimpan kalau archive itu
+bocor. Simpan di lokasi off-box yang terpisah dari backup database.
+
+**Kalau file ini hilang tanpa backup, semua credential yang sudah
+terenkripsi (Settings seperti Digiflazz API key, dan akun manual apa pun di
+stok) tidak bisa dibaca lagi selamanya** — restart hanya men-generate key
+baru yang tidak bisa mendekripsi data lama.
+
 ## Off-box (aturan 3-2-1)
 
 Backup yang hanya ada di disk yang sama dengan DB live **hilang bersama
@@ -178,7 +200,7 @@ umum di kedua jalur (detail lengkap per-jalur, termasuk sentinel
 
 | Skenario | Langkah |
 |---|---|
-| Host VPS mati total, ada off-box backup | Provision VPS baru → clone repo → `restore.sh` dari backup off-box (SQLite atau Postgres, sesuai jalur toko) → restore `uploads/` dari rsync/tar terakhir → bawa stack naik (`docker compose up -d`, tambah overlay `docker-compose.postgres.prod.yml` bila sudah cutover) → update DNS jika IP berubah |
+| Host VPS mati total, ada off-box backup | Provision VPS baru → clone repo → `restore.sh` dari backup off-box (SQLite atau Postgres, sesuai jalur toko) → restore `uploads/` dari rsync/tar terakhir → **restore `data/credential_encryption.key` dari backup terpisah SEBELUM start pertama** (kalau toko ini punya credential terenkripsi — key baru yang di-generate otomatis TIDAK bisa mendekripsi data lama) → bawa stack naik (`docker compose up -d`, tambah overlay `docker-compose.postgres.prod.yml` bila sudah cutover) → update DNS jika IP berubah |
 | DB korup (`integrity_check`/`pg_restore --list` gagal di live) | `docker compose stop server` → `restore.sh <backup-terakhir-yang-valid>` → terima kehilangan data sejak backup terakhir (lihat RPO di bawah) |
 | Migrasi/deploy gagal di tengah jalan | Lihat [ROLLBACK.md](ROLLBACK.md) — `restore.sh` ke backup pra-migrasi adalah jalur utama. Untuk rollback cutover SQLite→Postgres itu sendiri (bukan migrasi skema biasa), lihat §9 [`POSTGRES_MIGRATION.md`](POSTGRES_MIGRATION.md) |
 | `uploads/` terhapus tidak sengaja | Restore dari tar/rsync terakhir — gambar yang hilang sejak backup terakhir kembali ke fallback (Unsplash map / placeholder) sampai admin upload ulang |

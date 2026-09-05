@@ -13,9 +13,10 @@
  *
  * Wider than every other account page: the shared <main> in Layout.tsx caps
  * out at max-w-6xl (~1152px), but this page's two-column form+list layout
- * wants more room, so it breaks out to a ~1440px container via the
- * `mx-[calc(50%_-_50vw)]` full-bleed technique below (escaping a centered
- * parent's max-width without touching the parent itself).
+ * wants more room, so it breaks out to a ~1440px container (`max-w-wide`, the
+ * §26.2 `--gg-container-wide` extension token) via the `mx-[calc(50%_-_50vw)]`
+ * full-bleed technique below (escaping a centered parent's max-width without
+ * touching the parent itself).
  *
  * That margin trick does NOT, by itself, avoid scrollbar-width overflow —
  * an earlier version of this comment claimed it "self-corrects regardless
@@ -242,7 +243,7 @@ export default function HelpPage() {
 
   return (
     <div className="mx-[calc(50%_-_50vw)]">
-      <div className="mx-auto max-w-[1440px] px-6 lg:px-12">
+      <div className="mx-auto max-w-wide px-6 lg:px-12">
         <Toast text={toastText} onDismiss={() => setToastText(null)} kind={toastKind} />
 
         <SupportHero />

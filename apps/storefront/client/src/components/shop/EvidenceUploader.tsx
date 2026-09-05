@@ -82,7 +82,7 @@ export default function EvidenceUploader({ files, onChange, disabled }: Evidence
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         disabled={disabled || atLimit}
-        className={`flex min-h-[92px] w-full flex-col items-start gap-1 rounded-xl border-2 border-dashed px-4 py-5 text-left disabled:opacity-50 ${
+        className={`flex min-h-24 w-full flex-col items-start gap-1 rounded-xl border-2 border-dashed px-4 py-5 text-left disabled:opacity-50 ${
           isDragOver ? "border-pine bg-pine-tint/30" : "border-line bg-paper"
         }`}
       >

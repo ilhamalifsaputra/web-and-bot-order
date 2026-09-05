@@ -104,6 +104,7 @@
      Enables h-bottom-nav / pb-bottom-nav for the fixed mobile tab bar
      (src/components/layout/MobileTabBar.tsx). */
   --spacing-bottom-nav: 3.5rem;
+  --container-wide: 90rem; /* §26.2 extension — the /help full-bleed breakout container (max-w-wide) only; mirrors styles/tokens.extensions.css --gg-container-wide. */
 }
 
 /* v3 CDN applied hover: styles unconditionally; v4 gates them behind

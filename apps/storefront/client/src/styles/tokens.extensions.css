@@ -82,4 +82,24 @@
      BOTH copies (these two and those @theme lines). */
   --gg-plum: #6d28d9;
   --gg-plum-tint: #f1ebfe;
+
+  /* --gg-container-wide — the /help page's full-bleed breakout container ONLY
+     (HelpPage.tsx's `mx-[calc(50%_-_50vw)]` wrapper > inner centred div).
+     The layout scale (styles/tokens.css §7 LAYOUT) has exactly two container
+     widths and neither fits: --gg-container-max (72rem / 1152px) is the shared
+     <main> cap in Layout.tsx, which is precisely what /help breaks out of, and
+     --gg-container-prose (48rem / 768px) is the long-form legal/help *reading*
+     column — narrower still. Tailwind's own container scale has no step here
+     either (`--container-7xl` is 80rem, the next named step after that is
+     nothing), and the ESLint gate bans the `max-w-[1440px]` arbitrary value
+     this page shipped with. 90rem (1440px) is that one step: wide enough for
+     /help's create-ticket form and its ticket table to sit side by side in the
+     `lg:grid-cols-2` layout without the table clipping its DATE column.
+     Scoped to that one page — do NOT widen any other page with it; every other
+     route stays on the shared --gg-container-max cap.
+     Consuming utility: `max-w-wide`, resolved from the literal mirror
+     `--container-wide: 90rem` in the `@theme` block of ../index.css. If you
+     resize this container, update BOTH copies (this one and that @theme
+     line). */
+  --gg-container-wide: 90rem;
 }

@@ -1,11 +1,13 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DigiflazzSyncPage } from "./DigiflazzSyncPage";
 import { apiGet, apiPost } from "../api/client";
+
+const PREVIEW_STORAGE_KEY = "digiflazz-sync-preview";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -114,6 +116,7 @@ const EXISTING_NO_REGION_RESPONSE = {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  sessionStorage.clear();
   vi.mocked(apiGet).mockResolvedValue({ categories: [{ id: 1, name: "Top Up Game" }] });
   // Radix Select uses pointer-capture APIs and scrollIntoView — jsdom doesn't
   // implement them (same mocks as DenominationCreatePage.test.tsx).
@@ -131,9 +134,10 @@ afterEach(() => {
 
 async function syncWizard(user: ReturnType<typeof userEvent.setup>) {
   vi.mocked(apiPost).mockResolvedValueOnce(PREVIEW_RESPONSE);
-  render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+  const utils = render(<DigiflazzSyncPage />, { wrapper: Wrapper });
   await user.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
   await waitFor(() => screen.getByText(/mobile legends/i));
+  return utils;
 }
 
 async function selectCategory(user: ReturnType<typeof userEvent.setup>) {
@@ -348,5 +352,110 @@ describe("DigiflazzSyncPage — hourly sync status card", () => {
   it("still renders the existing wizard UI alongside the new card", () => {
     render(<DigiflazzSyncPage />, { wrapper: Wrapper });
     expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
+  });
+});
+
+describe("DigiflazzSyncPage — preview persistence and elapsed-time counter", () => {
+  it("Task 1: persists the fetched preview across an unmount/remount without re-fetching", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const { unmount } = await syncWizard(user);
+
+    unmount();
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+
+    expect(screen.getByText(/mobile legends/i)).toBeInTheDocument();
+    const previewCalls = vi
+      .mocked(apiPost)
+      .mock.calls.filter(([url]) => url === "/api/catalog/digiflazz/sync/preview");
+    expect(previewCalls.length).toBe(1);
+  });
+
+  it("Task 1: clears the persisted preview after a successful import", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const { unmount } = await syncWizard(user);
+    await selectCategory(user);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, brandsImported: 2, denominationsImported: 2 });
+
+    await user.click(screen.getByRole("button", { name: /impor terpilih/i }));
+    await waitFor(() => expect(findApplyCall()).toBeTruthy());
+    expect(sessionStorage.getItem(PREVIEW_STORAGE_KEY)).toBeNull();
+
+    unmount();
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+
+    expect(screen.queryByText(/mobile legends/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
+  });
+
+  it("Task 1: shows a live elapsed-seconds count on the button while syncing, then reverts once done", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolvePreview: (value: typeof PREVIEW_RESPONSE) => void = () => {};
+      vi.mocked(apiPost).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePreview = resolve;
+          }),
+      );
+      render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+
+      fireEvent.click(screen.getByRole("button", { name: /sync dari digiflazz/i }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(screen.getByRole("button", { name: /syncing.*1s/i })).toBeInTheDocument();
+
+      await act(async () => {
+        resolvePreview(PREVIEW_RESPONSE);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("DigiflazzSyncPage — fix round: guarded sessionStorage writes + full persistence deps", () => {
+  it("does not crash the page when sessionStorage.setItem throws (e.g. private browsing / QuotaExceededError)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    // jsdom's sessionStorage isn't a plain Storage.prototype instance
+    // (spying on Storage.prototype.setItem doesn't intercept calls made
+    // through it), so replace the global binding outright — this is exactly
+    // what the component reads via the bare `sessionStorage` identifier.
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => {},
+      clear: () => {},
+    });
+
+    await syncWizard(user);
+
+    // The page must keep rendering normally — no error boundary swallowing
+    // the tree into a generic "Something went wrong" screen.
+    expect(screen.getByText(/mobile legends/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
+  });
+
+  it("persists a category/filter change made AFTER the preview loads, not just the fetch-time values", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+
+    // At this point sessionStorage already holds categoryId: "" and
+    // filter: "" from the initial persist alongside the fetched preview.
+    await selectCategory(user);
+    fireEvent.change(screen.getByPlaceholderText(/filter by game name/i), { target: { value: "Mobile" } });
+
+    await waitFor(() => {
+      const raw = sessionStorage.getItem(PREVIEW_STORAGE_KEY);
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!) as { categoryId: string; filter: string };
+      expect(parsed.categoryId).toBe("1");
+      expect(parsed.filter).toBe("Mobile");
+    });
   });
 });

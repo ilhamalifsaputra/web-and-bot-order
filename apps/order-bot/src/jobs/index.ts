@@ -52,6 +52,8 @@ import {
   clearOrderPaymentMessage,
   resyncDigiflazzCatalog,
   dispatchPendingDigiflazzOrders,
+  bumpCatalogRevision,
+  runDetectionForCatalog,
   pruneProcessedTelegramUpdates,
   pruneExpiredBotSessions,
 } from "@app/db";
@@ -1456,21 +1458,45 @@ export function scheduleFxRefresh(): Cron {
 }
 
 /**
- * Hourly Digiflazz catalog re-sync — refreshes costPrice/price/isActive on
- * every already-imported denomination (never creates/renames anything; new
- * SKUs only ever enter the catalog via the admin's Import Wizard). No `Api`
- * needed, so this runs even on a web-only boot, same as scheduleFxRefresh.
+ * One hourly Digiflazz catalog re-sync tick — refreshes costPrice/price/
+ * isActive on every already-imported denomination (never creates/renames
+ * anything; new SKUs only ever enter the catalog via the admin's Import
+ * Wizard), then (Task 10, shadow mode) invalidates the Detection Engine's
+ * catalog index and re-runs detection over the whole catalog so its review
+ * queue and run-status blob (packages/db/src/crud/detectionRun.ts) reflect
+ * this tick's writes. No `Api` needed, so this runs even on a web-only boot,
+ * same as scheduleFxRefresh.
+ *
+ * Exported so the tick can be exercised directly in tests without a live
+ * cron. The detection pass is best-effort and fully isolated: a failure in
+ * it is logged and swallowed, so a successful resync is never undone by a
+ * detection-pass error, and it is skipped entirely when the resync itself
+ * failed.
  */
+export async function runDigiflazzCatalogSyncTick(): Promise<void> {
+  try {
+    const r = await resyncDigiflazzCatalog(prisma);
+    if (r.updated || r.deactivated) {
+      logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated.`);
+    }
+  } catch (err) {
+    logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick");
+    return;
+  }
+
+  try {
+    await bumpCatalogRevision(prisma);
+    await runDetectionForCatalog(prisma);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "The shadow-mode detection pass after the Digiflazz catalog resync failed; the catalog resync itself succeeded and its results stand, and the detection pass will be retried on the next hourly tick.",
+    );
+  }
+}
+
 export function scheduleDigiflazzCatalogSync(): Cron {
-  const run = () =>
-    resyncDigiflazzCatalog(prisma)
-      .then((r) => {
-        if (r.updated || r.deactivated) {
-          logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated.`);
-        }
-      })
-      .catch((err) => logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick"));
-  return new Cron("15 * * * *", { protect: true }, run);
+  return new Cron("15 * * * *", { protect: true }, () => runDigiflazzCatalogSyncTick());
 }
 
 /**

@@ -68,5 +68,23 @@ export default defineConfig({
     // `node:sqlite` is a recent built-in not yet in Vite's auto-externalised
     // builtins list — externalise it so vite-node leaves the import alone.
     server: { deps: { external: [/^node:sqlite$/] } },
+    // No coverage tooling existed in this repo before the detection engine
+    // (docs/DETECTION_ENGINE.md "Baseline"). Global coverage is recorded for
+    // visibility but NOT enforced — retrofitting a threshold onto a decade of
+    // untested code is a separate, unrelated project. The threshold below is
+    // scoped to only the new engine, where 100% test-first coverage is a
+    // realistic bar this change actually earns.
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      thresholds: {
+        "packages/core/src/detection/**": {
+          statements: 90,
+          branches: 90,
+          functions: 90,
+          lines: 90,
+        },
+      },
+    },
   },
 });

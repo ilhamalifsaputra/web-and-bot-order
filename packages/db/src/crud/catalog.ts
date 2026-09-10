@@ -214,6 +214,18 @@ export async function createCatalogProduct(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — this function
+  // is called in loops (CSV bulk-import's resolveOrCreateProduct per row;
+  // splitMixedDigiflazzProducts), both inside their own $transactions. A
+  // per-call bump would serialize a setting.upsert on one row across a long
+  // batch transaction and risks two concurrent upsert(create)s P2002-aborting
+  // each other. The catalog-index revision is bumped only at batch-operation
+  // boundaries instead — importDigiflazzBrand post-commit, and the hourly job
+  // before runDetectionForCatalog — so single admin creates rely on
+  // getCatalogIndex's 30s TTL for eventual invalidation, acceptable while
+  // detection is shadow-mode-only (no production consumer of the index yet).
+  // Revisit at the Task 12/13 cutover, when immediate invalidation on every
+  // catalog edit matters.
   return db.product.create({
     data: {
       categoryId: args.categoryId,
@@ -241,6 +253,13 @@ export async function createCatalogProduct(
 export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the
+  // rationale on createCatalogProduct above (called in loops such as
+  // splitMixedDigiflazzProducts, each inside its own $transaction; a
+  // per-call bump risks serializing/aborting concurrent batch writes for no
+  // benefit while detection is shadow-mode-only). The catalog-index revision
+  // is bumped only at batch-operation boundaries instead — importDigiflazzBrand
+  // post-commit, and the hourly job before runDetectionForCatalog.
 }
 
 export function getCatalogProduct(db: Db, productId: number) {
@@ -400,6 +419,10 @@ export async function createDenomination(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the note on
+  // updateDenomination below. The Detection Engine's catalog index
+  // (crud/detectionIndex.ts) is built from Product.name only, so no
+  // denomination mutation can stale it.
   return db.denomination.create({
     data: {
       productId: args.productId,
@@ -433,6 +456,10 @@ export async function createDenomination(
 export async function updateDenomination(db: Db, denominationId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.denomination.update({ where: { id: denominationId }, data: fields });
+  // Task 10: deliberately does NOT call bumpCatalogRevision. The Detection
+  // Engine's catalog index (crud/detectionIndex.ts) is built from Product.name
+  // only — no denomination field feeds it — so a denomination mutation cannot
+  // stale it. Revisit if the index ever indexes denomination-level data.
 }
 
 export function getDenomination(db: Db, denominationId: number) {

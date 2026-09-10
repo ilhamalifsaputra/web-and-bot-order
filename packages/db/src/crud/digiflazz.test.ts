@@ -909,6 +909,25 @@ describe("groupDigiflazzPriceListByBrand", () => {
     const plain = groups.find((g) => g.brand === "Mobile Legends")!;
     expect(plain.existingProductId).toBeNull();
   });
+
+  // Task 10 (shadow mode): every group additionally carries a `detection`
+  // field — the DetectionResult for its items[0]. It never influences
+  // brand/region/existingProductId (every assertion above still holds
+  // unchanged); this only checks the new field is populated and well-shaped.
+  it("Task 10: attaches a shadow-mode detection result to every group", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends" }),
+      priceListItem({ buyerSkuCode: "ff100", brand: "Free Fire", productName: "Free Fire 100 Diamond" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(2);
+    for (const group of groups) {
+      expect(group.detection).toBeDefined();
+      expect(["resolved", "ambiguous", "unknown"]).toContain(group.detection!.status);
+      expect(typeof group.detection!.detectorVersion).toBe("string");
+      expect(group.detection!.detectorVersion.length).toBeGreaterThan(0);
+    }
+  });
 });
 
 describe("computeDigiflazzMarkupPrice", () => {
@@ -1092,6 +1111,45 @@ describe("importDigiflazzBrand", () => {
     expect(denom.name).toBe("Mobile Legends 100 Diamond");
     expect(denom.durationLabel).toBe("Mobile Legends 100 Diamond");
     expect(denom.supplierSku).toBe("ml100id"); // resync matching key — exact, untouched by the strip
+  });
+
+  // Task 10 (shadow mode): the created Product and denominations carry
+  // non-null detection* columns after import. The just-created Product is
+  // visible to getCatalogIndex(tx) within the same transaction, so it
+  // self-matches by name and detection resolves. This is additive — none of
+  // the brand/price/isActive/supplierSku assertions above change.
+  it("Task 10: writes non-null detection columns onto the created Product and denominations", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [
+        { buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" },
+        { buyerSkuCode: "ml250", productName: "Mobile Legends 250 Diamond", price: "41000", costPrice: "38000" },
+      ],
+    });
+    const product = await prisma.product.findUniqueOrThrow({
+      where: { id: productId },
+      include: { denominations: true },
+    });
+    expect(product.detectionStatus).toBe("resolved");
+    expect(product.detectionProductKey).not.toBeNull();
+    expect(product.detectionBaseProductKey).not.toBeNull();
+    expect(product.detectionStamp).not.toBeNull();
+    expect(product.detectionConfidence).not.toBeNull();
+    // Decimal column (schema type Decimal?), not a JS float.
+    expect(product.detectionConfidence!.toNumber()).toBeGreaterThan(0);
+
+    expect(product.denominations).toHaveLength(2);
+    for (const denom of product.denominations) {
+      expect(denom.detectionSkuKey).not.toBeNull();
+      expect(denom.detectionStamp).not.toBeNull();
+      expect(denom.detectionSkuKey!.startsWith(product.detectionProductKey!)).toBe(true);
+      expect(denom.detectionStamp).toBe(product.detectionStamp);
+    }
+    // Distinct denominations get distinct SKU keys (AC-04's differentiation).
+    const skuKeys = new Set(product.denominations.map((d) => d.detectionSkuKey));
+    expect(skuKeys.size).toBe(2);
   });
 });
 
@@ -1572,6 +1630,37 @@ describe("resyncDigiflazzCatalog", () => {
     expect(status!.abortReason).toBeNull();
     const finishedAtMs = new Date(status!.finishedAt).getTime();
     expect(Date.now() - finishedAtMs).toBeLessThan(5_000);
+  });
+
+  // Task 10 sentinel: the shadow-wiring must not change resyncDigiflazzCatalog's
+  // return shape or its price/status/breaker behavior. Mirrors the return-shape
+  // assertions the tests above already make ({ updated, deactivated } and
+  // nothing else), kept as an explicit guard for a future Task 10 change (e.g.
+  // wiring in runDetectionForCatalog) that must stay behind this contract.
+  it("Task 10 sentinel: return shape is exactly { updated, deactivated } after a real run", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    digiflazzMock.getPriceList.mockResolvedValue([
+      priceListItem({ buyerSkuCode: "ml100", price: new Decimal(20000), buyerProductStatus: true }),
+    ]);
+
+    const result = await resyncDigiflazzCatalog(prisma);
+
+    expect(Object.keys(result).sort()).toEqual(["deactivated", "updated"]);
+    expect(typeof result.updated).toBe("number");
+    expect(typeof result.deactivated).toBe("number");
+  });
+
+  // Also mirror the "no-op when Digiflazz isn't configured" return-shape
+  // assertion verbatim as a second sentinel on the early-return path.
+  it("Task 10 sentinel: still returns { updated: 0, deactivated: 0 } when Digiflazz isn't configured", async () => {
+    await deleteSetting(prisma, DIGIFLAZZ_API_KEY_KEY);
+    const result = await resyncDigiflazzCatalog(prisma);
+    expect(result).toEqual({ updated: 0, deactivated: 0 });
   });
 });
 

@@ -8,9 +8,17 @@ import {
   importDigiflazzBrand,
   listAllCategories,
   logAdminAction,
+  listDetectionIssues,
+  resolveDetectionIssue,
+  dismissDetectionIssue,
+  getLatestDetectionRunStatus,
+  DETECTION_REVIEW_OPEN,
+  DETECTION_REVIEW_RESOLVED,
+  DETECTION_REVIEW_IGNORED,
 } from "@app/db";
 import { getPriceList } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
+import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
@@ -153,4 +161,67 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
   app.get("/api/catalog/digiflazz/categories", { preHandler: currentAdmin }, async (_req, reply) => {
     return reply.send({ categories: await listAllCategories(prisma) });
   });
+
+  // === Detection Engine review queue (Task 9, AC-16/AC-20) ===
+  // Reads use `currentAdmin` like the rest of this file's GETs; the state
+  // transition uses `csrfProtect` (auth -> CSRF -> RBAC gate — `/api/catalog`
+  // is a super-only mutation prefix per plugins/auth.ts).
+
+  const DETECTION_REVIEW_VALUES = new Set([
+    DETECTION_REVIEW_OPEN,
+    DETECTION_REVIEW_RESOLVED,
+    DETECTION_REVIEW_IGNORED,
+  ]);
+
+  // Latest full-catalog detection run summary (resolved/ambiguous/unknown
+  // counts, confidence distribution, override hits). `null` until a run has
+  // ever completed.
+  app.get("/api/catalog/detection/metrics", { preHandler: currentAdmin }, async (_req, reply) => {
+    return reply.send({ metrics: await getLatestDetectionRunStatus(prisma) });
+  });
+
+  // The review queue. `?reviewStatus=OPEN|RESOLVED|IGNORED` narrows it; an
+  // unrecognized value is ignored and every row is returned.
+  app.get("/api/catalog/detection/issues", { preHandler: currentAdmin }, async (req, reply) => {
+    const q = (req.query ?? {}) as { reviewStatus?: string };
+    const reviewStatus =
+      q.reviewStatus && DETECTION_REVIEW_VALUES.has(q.reviewStatus) ? q.reviewStatus : undefined;
+    return reply.send({ issues: await listDetectionIssues(prisma, { reviewStatus }) });
+  });
+
+  // Resolve an OPEN issue (its underlying input is now handled). A re-call on
+  // an already-resolved/ignored issue is a caller bug -> 422.
+  app.post(
+    "/api/catalog/detection/issues/:id/resolve",
+    { preHandler: csrfProtect },
+    async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid issue id." });
+      try {
+        await resolveDetectionIssue(prisma, id, req.admin!.userId);
+      } catch (e) {
+        if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+        throw e;
+      }
+      return reply.send({ ok: true });
+    },
+  );
+
+  // Dismiss an OPEN issue (reviewed, no action needed). Same 422-on-re-call
+  // contract as /resolve.
+  app.post(
+    "/api/catalog/detection/issues/:id/dismiss",
+    { preHandler: csrfProtect },
+    async (req, reply) => {
+      const id = Number((req.params as { id: string }).id);
+      if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid issue id." });
+      try {
+        await dismissDetectionIssue(prisma, id, req.admin!.userId);
+      } catch (e) {
+        if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+        throw e;
+      }
+      return reply.send({ ok: true });
+    },
+  );
 }

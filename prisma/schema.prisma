@@ -311,6 +311,23 @@ model Product {
   /// per-Denomination nicknameCheckGameCode/expectedRegionCode fields, which
   /// keep working completely unchanged.
   gameId      Int?     @map("game_id")
+  /// Detection Engine (packages/core/src/detection) output, cached on the
+  /// Product row so read paths never call detect() inline. Null = never run
+  /// / not yet classified. All five fields are written together by the
+  /// detection sync job (a later task) — never partially.
+  detectionBaseProductKey String?  @map("detection_base_product_key")
+  /// The full product key (base key + defining-token suffix) this Product
+  /// was resolved to — see packages/core/src/detection/keys.ts.
+  detectionProductKey     String?  @map("detection_product_key")
+  /// detect()'s DetectionResult.status ("resolved" | "ambiguous" | "unknown")
+  /// for this Product's most recent classification run.
+  detectionStatus         String?  @map("detection_status")
+  /// detect()'s confidence score [0,1] for the most recent classification.
+  detectionConfidence     Decimal? @map("detection_confidence")
+  /// Opaque cache-invalidation stamp (knowledge revision + catalog stamp) the
+  /// classification was produced with — a mismatch against the current live
+  /// stamp means this row's detection fields are stale and due a re-run.
+  detectionStamp          String?  @map("detection_stamp")
 
   category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
   game            Game?          @relation(fields: [gameId], references: [id], onUpdate: NoAction)
@@ -320,6 +337,7 @@ model Product {
 
   @@index([categoryId], map: "ix_products_category_id")
   @@index([gameId], map: "ix_products_game_id")
+  @@index([detectionProductKey], map: "ix_products_detection_product_key")
   @@map("products")
 }
 
@@ -463,6 +481,13 @@ model Denomination {
   /// announce job can't fan it out twice. Reset to null whenever the schedule
   /// is rewritten or cleared, which is what lets the same SKU be flashed again.
   flashAnnouncedAt     DateTime? @map("flash_announced_at")
+  /// Detection Engine (packages/core/src/detection) SKU-level key this
+  /// Denomination was resolved to (denomination category, e.g. which
+  /// diamond-pack tier). Null = never classified. Companion to
+  /// Product.detectionProductKey, not a duplicate of it.
+  detectionSkuKey      String?   @map("detection_sku_key")
+  /// Same cache-invalidation stamp convention as Product.detectionStamp.
+  detectionStamp       String?   @map("detection_stamp")
 
   product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
@@ -477,6 +502,7 @@ model Denomination {
   // The announce job scans for flash sales that have started but not yet been
   // broadcast; both it and the catalog reads filter on the window's end.
   @@index([flashEndsAt], map: "ix_denominations_flash_ends_at")
+  @@index([detectionSkuKey], map: "ix_denominations_detection_sku_key")
   @@map("denominations")
 }
 
@@ -1747,4 +1773,100 @@ model BotSession {
 
   @@index([expiresAt], map: "ix_bot_session_expires_at")
   @@map("bot_sessions")
+}
+
+/// Detection Engine (packages/core/src/detection) vocabulary row: a single
+/// normalized word/phrase classified into a TokenCategory (platform,
+/// distribution, region, edition, denomination, noise) with a canonical
+/// spelling and whether it's product-defining (splits the base product into
+/// distinct product keys) or just descriptive. Seeded from
+/// DEFAULT_KNOWLEDGE_BASE by scripts/seed-detection-knowledge.ts on first
+/// run; admin-editable afterwards via the (future) detection-review UI.
+model DetectionToken {
+  id                Int     @id @default(autoincrement())
+  category          String
+  token             String
+  canonical         String
+  /// Whether this token splits the base product into a distinct product key
+  /// (e.g. "pc" vs "mobile") rather than being purely descriptive.
+  isProductDefining Boolean @map("is_product_defining")
+  /// Soft-disable without deleting — a disabled token is excluded from the
+  /// loaded KnowledgeBase but keeps its row (and edit history) intact.
+  enabled           Boolean @default(true)
+
+  @@unique([category, token], map: "ix_detection_tokens_category_token")
+  @@map("detection_tokens")
+}
+
+/// Maps a normalized alias phrase to the canonical normalized phrase it
+/// should expand to before tokenization (e.g. a common misspelling or
+/// supplier-specific shorthand) — see packages/core/src/detection/tokenize.ts.
+model DetectionAlias {
+  id        Int     @id @default(autoincrement())
+  alias     String  @unique(map: "ix_detection_aliases_alias")
+  expandsTo String  @map("expands_to")
+  /// Free-text note on why this alias exists (e.g. "Digiflazz typo seen in
+  /// prod"). Null = no note recorded.
+  reason    String?
+
+  @@map("detection_aliases")
+}
+
+/// Manual admin override for a single catalog input that the automatic
+/// detector gets wrong (or can't resolve) — matched by either the
+/// normalized product name or the supplier external id (`matchKind`) before
+/// the automatic scoring path runs at all. `reason` is required (unlike
+/// DetectionAlias.reason) so every override is self-documenting in the
+/// review UI.
+model DetectionOverride {
+  id             Int      @id @default(autoincrement())
+  matchKind      String   @map("match_kind")
+  matchValue     String   @map("match_value")
+  productKey     String   @map("product_key")
+  baseProductKey String   @map("base_product_key")
+  reason         String
+  /// User.id of the admin who created this override. Null for a
+  /// pre-attribution row or a CLI/break-glass write.
+  createdBy      Int?     @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  /// Incremented each time detect() actually applies this override — lets
+  /// the review UI show which overrides are still load-bearing vs. dead.
+  hitCount       Int      @default(0) @map("hit_count")
+
+  @@unique([matchKind, matchValue], map: "ix_detection_overrides_match")
+  @@map("detection_overrides")
+}
+
+/// A DetectionInput the engine could not confidently resolve ("ambiguous" or
+/// "unknown" DetectionResult), queued for admin review. `inputFingerprint` is
+/// a hash of the normalized input so the same recurring unresolved input
+/// (e.g. every sync tick for the same supplier product) accumulates into one
+/// row (`occurrences`/`lastSeenAt`) instead of spamming the review queue.
+model DetectionIssue {
+  id               Int      @id @default(autoincrement())
+  /// DetectionResult.status for the most recent run that produced this issue
+  /// ("ambiguous" | "unknown").
+  status           String
+  /// Admin review workflow state, independent of `status` above. One of
+  /// "OPEN" | "RESOLVED" | "IGNORED" (enforced at the application layer, not
+  /// the DB, matching this schema's existing free-text status-field
+  /// convention — see Order.status / AdminTask.status).
+  reviewStatus     String   @default("OPEN") @map("review_status")
+  inputFingerprint String   @unique(map: "ix_detection_issues_fingerprint") @map("input_fingerprint")
+  /// JSON-encoded DetectionInput that produced this issue, for the review UI
+  /// to re-display without re-deriving it from the live catalog row.
+  rawInput         String   @map("raw_input")
+  reason           String
+  /// JSON-encoded Candidate[] when status is "ambiguous"; null for "unknown".
+  candidates       String?
+  /// The detection-stamp (knowledge revision + catalog stamp) this issue was
+  /// last produced under — a re-run under a newer stamp that still fails
+  /// bumps `occurrences`/`lastSeenAt` rather than creating a duplicate row.
+  detectorStamp    String   @map("detector_stamp")
+  occurrences      Int      @default(1)
+  firstSeenAt      DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt       DateTime @updatedAt @map("last_seen_at")
+
+  @@index([reviewStatus, lastSeenAt], map: "ix_detection_issues_status_seen")
+  @@map("detection_issues")
 }

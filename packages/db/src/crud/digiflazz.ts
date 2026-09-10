@@ -72,6 +72,17 @@ import { nextDigiflazzRecheckAt } from "./digiflazzBackoff";
 import { emitDigiflazzOrderStatusChanged, emitDigiflazzCatalogSyncChanged } from "@app/core/realtime/digiflazzEvents";
 import { recordDigiflazzSyncStatus } from "./digiflazzSyncStatus";
 import { recordPollHealth } from "./poll_health";
+import {
+  detect,
+  normalize,
+  extractFeatures,
+  buildSkuKey,
+  type DetectionResult,
+  type KnowledgeBase,
+  type CatalogIndex,
+} from "@app/core/detection";
+import { loadKnowledgeBase } from "./detectionKnowledge";
+import { getCatalogIndex, bumpCatalogRevision } from "./detectionIndex";
 
 /** Setting keys — not yet wired to any admin UI (a later task adds that);
  * this module is only the read-side resolver, matching the shape every other
@@ -704,6 +715,12 @@ export interface DigiflazzBrandGroup {
    * the wizard renders this group read-only ("Sudah ada"; updates flow
    * through resyncDigiflazzCatalog, not a re-import). */
   existingProductId: number | null;
+  /** Shadow-mode detection result for this group's items[0], informational
+   * only until the Task 12 cutover gate. Never feeds back into
+   * brand/region/existingProductId above (those are the production re-sync
+   * matching keys). Undefined when the detection engine could not be set up
+   * for this call (a load failure is logged and swallowed). */
+  detection?: DetectionResult;
 }
 
 /**
@@ -744,14 +761,41 @@ export async function groupDigiflazzPriceListByBrand(
     select: { id: true, digiflazzBrand: true },
   });
   const existingByBrand = new Map(existing.map((p) => [p.digiflazzBrand!, p.id]));
+
+  // Shadow-mode detection (Task 10): classify each group's representative
+  // item and attach the DetectionResult for informational use only. This is
+  // additive — it never influences `brand`/`region`/`existingProductId`,
+  // which stay byte-identical to their pre-Task-10 values. A setup failure
+  // (e.g. the detection tables are unavailable) is logged and swallowed so
+  // grouping never regresses.
+  let knowledge: KnowledgeBase | null = null;
+  let catalogIndex: CatalogIndex | null = null;
+  try {
+    [knowledge, catalogIndex] = await Promise.all([loadKnowledgeBase(db), getCatalogIndex(db)]);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "Shadow-mode detection setup failed while grouping the Digiflazz price list — groups are returned without a detection field for this run.",
+    );
+  }
+
   return brands.map((brand) => {
     const group = byBrand.get(brand)!;
+    const representative = group.items[0];
+    const detection =
+      knowledge && catalogIndex && representative
+        ? detect(
+            { productName: representative.productName, externalId: representative.buyerSkuCode },
+            { knowledge, index: catalogIndex, supplier: "digiflazz" },
+          )
+        : undefined;
     return {
       brand,
       rawBrand: group.rawBrand,
       region: group.region,
       items: group.items,
       existingProductId: existingByBrand.get(brand) ?? null,
+      detection,
     };
   });
 }
@@ -835,6 +879,67 @@ export interface DigiflazzImportRow {
 }
 
 /**
+ * Task 10 shadow-mode side effect: run `detect()` over a just-imported
+ * Digiflazz brand and record its `DetectionResult` on the Product's
+ * `detection*` columns and each denomination's `detectionSkuKey` /
+ * `detectionStamp`. Purely informational until the Task 12 cutover gate —
+ * the import/resync matching logic never reads these columns back.
+ *
+ * Runs on `tx` inside `importDigiflazzBrand`'s own transaction (so the
+ * detection columns land atomically with the rows they describe) and reads
+ * the catalog index off that same `tx`, which already sees the Product/
+ * denominations created earlier in the transaction. Deliberately touches
+ * ONLY the `detection*` columns — never `brand` / `digiflazzBrand` / `price`
+ * / `costPrice` / `isActive` / `supplierSku`.
+ *
+ * `detectionConfidence` is written as a Decimal (schema type `Decimal?`),
+ * never a JS float.
+ */
+async function writeShadowDetectionForImport(
+  tx: Db,
+  productId: number,
+  brand: string,
+  rows: DigiflazzImportRow[],
+): Promise<void> {
+  const [knowledge, index] = await Promise.all([loadKnowledgeBase(tx), getCatalogIndex(tx)]);
+  const detection = detect({ productName: brand }, { knowledge, index, supplier: "digiflazz" });
+  const detectionStamp = index.stamp;
+  const resolved = detection.status === "resolved" ? detection : null;
+
+  await tx.product.update({
+    where: { id: productId },
+    data: {
+      detectionStatus: detection.status,
+      detectionStamp,
+      detectionProductKey: resolved ? resolved.productKey : null,
+      detectionBaseProductKey: resolved ? resolved.baseProductKey : null,
+      detectionConfidence: resolved ? new Decimal(resolved.confidence) : null,
+    },
+  });
+
+  // DetectionInput carries no denomination field, so detect() always returns
+  // skuKey: null — compose the SKU-level key here via buildSkuKey (same
+  // pattern as engine.acceptance.test.ts's AC-04). Distribution tokens come
+  // from the brand name's own feature extraction.
+  const distributionTokens = extractFeatures(normalize(brand), knowledge).distributionTokens;
+  for (const row of rows) {
+    const denom = await tx.denomination.findFirst({
+      where: { productId, supplierSku: row.buyerSkuCode },
+      select: { id: true },
+    });
+    if (!denom) continue;
+    const denomName = stripRegionSuffix(row.productName);
+    const skuKey = resolved
+      ? buildSkuKey(resolved.productKey, normalize(denomName), distributionTokens)
+      : null;
+    await tx.denomination.update({
+      where: { id: denom.id },
+      data: { detectionSkuKey: skuKey, detectionStamp },
+    });
+  }
+}
+
+/**
  * Bulk-create (or add to, on a repeat call for the same brand) one Product +
  * one Denomination per row, all inside one transaction. Imported inactive —
  * "review before it goes live" per the design: the import itself is
@@ -858,7 +963,7 @@ export async function importDigiflazzBrand(
   db: PrismaClient,
   args: { brand: string; categoryId: number; rows: DigiflazzImportRow[] },
 ): Promise<{ productId: number; denominationCount: number }> {
-  return db.$transaction(async (tx) => {
+  const result = await db.$transaction(async (tx) => {
     let product = await tx.product.findFirst({ where: { digiflazzBrand: args.brand } });
     if (!product) {
       product = await createCatalogProduct(tx, {
@@ -914,8 +1019,28 @@ export async function importDigiflazzBrand(
         });
       }
     }
+
+    // Task 10 shadow wiring: record the detection result on the new
+    // Product/denomination rows. A failure here must not roll back the
+    // catalog import, so it is caught and logged — the next full detection
+    // sync (runDetectionForCatalog) fills the columns in on its next tick.
+    try {
+      await writeShadowDetectionForImport(tx, product.id, args.brand, args.rows);
+    } catch (err) {
+      logger.warn(
+        { err },
+        `Shadow-mode detection wiring failed while importing the Digiflazz brand "${args.brand}" — the catalog import itself is committed; the detection columns were left unset for this run.`,
+      );
+    }
+
     return { productId: product.id, denominationCount: args.rows.length };
   });
+
+  // Invalidate every Db handle's cached CatalogIndex so the next
+  // getCatalogIndex()/detection run picks up the newly-imported Product and
+  // denominations (Task 8). Done after the transaction commits.
+  await bumpCatalogRevision(db);
+  return result;
 }
 
 /**

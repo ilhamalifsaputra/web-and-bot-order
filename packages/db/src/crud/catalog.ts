@@ -23,6 +23,7 @@ import type { Category, Denomination, Product } from "@prisma/client";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
+import { bumpCatalogRevision } from "./detectionIndex";
 
 // ---- Slugs ----
 
@@ -241,6 +242,11 @@ export async function createCatalogProduct(
 export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
+  // Task 10: a Product's name/digiflazzBrand feeds the Detection Engine's
+  // catalog index (crud/detectionIndex.ts) — invalidate the cache so the
+  // next getCatalogIndex()/detection run reflects this edit without waiting
+  // out the 30s TTL. Additive; nothing here reads the index back.
+  await bumpCatalogRevision(db);
 }
 
 export function getCatalogProduct(db: Db, productId: number) {

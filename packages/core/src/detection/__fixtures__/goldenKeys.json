@@ -1,0 +1,1394 @@
+[
+  {
+    "buyerSkuCode": "ML1050",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml1050",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML1220",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml1220",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML1412",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml1412",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML172",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml172",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML2195",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml2195",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML257",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml257",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML344",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml344",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML3688",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml3688",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML429",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml429",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML514",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml514",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML600",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml600",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML706",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml706",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML86",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml86",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML878",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml878",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "ML963",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=ml963",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "MLWDP",
+    "productKey": "legends::distribution=global,platform=mobile",
+    "skuKey": "legends::distribution=global,platform=mobile::denom=mlwdp",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980296",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980296",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980297",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980297",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980298",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980298",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980299",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980299",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980300",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980300",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980301",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980301",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980302",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980302",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980303",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980303",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980304",
+    "productKey": "where winds meet",
+    "skuKey": "where winds meet::denom=pre29980304",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980307",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980307",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980308",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980308",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980309",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980309",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980310",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980310",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980311",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980311",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980312",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980312",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980313",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980313",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980314",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980314",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980315",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980315",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980316",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980316",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980318",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980318",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980319",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980319",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980321",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980321",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980322",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980322",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980323",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980323",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980324",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980324",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980325",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980325",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980326",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980326",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980328",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980328",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980329",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980329",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980330",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980330",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980331",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980331",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980332",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980332",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980334",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980334",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980335",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980335",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980336",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980336",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980337",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980337",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980419",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980419",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980420",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980420",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980421",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980421",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980422",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980422",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980423",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980423",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980424",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980424",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980425",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980425",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980426",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980426",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980427",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980427",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980428",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980428",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980429",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980429",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980430",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980430",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980431",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980431",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980432",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980432",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980433",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980433",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980434",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980434",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980435",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980435",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980436",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980436",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980437",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980437",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980438",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980438",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980439",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980439",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980440",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980440",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980441",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980441",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980442",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980442",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980443",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980443",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980444",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980444",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980445",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980445",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980446",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980446",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980447",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980447",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980448",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980448",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980449",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980449",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980450",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980450",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980451",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980451",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980452",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980452",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980453",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980453",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980454",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980454",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980455",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980455",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980456",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980456",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980457",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980457",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980458",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980458",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980459",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980459",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980460",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980460",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980461",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980461",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980462",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980462",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980463",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980463",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980464",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980464",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980465",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980465",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980466",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980466",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980467",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980467",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980468",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980468",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980469",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980469",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980470",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980470",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980471",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980471",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980472",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980472",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980473",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980473",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980474",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980474",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980475",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980475",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980476",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980476",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980477",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980477",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980478",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980478",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980479",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980479",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980480",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980480",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980481",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980481",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980482",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980482",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29980542",
+    "productKey": "legends::platform=mobile",
+    "skuKey": "legends::platform=mobile::denom=pre29980542",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992407",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992407",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992408",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992408",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992409",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992409",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992410",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992410",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992411",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992411",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992412",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992412",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992413",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992413",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992414",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992414",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992415",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992415",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992416",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992416",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992417",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992417",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992418",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992418",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992419",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992419",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992420",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992420",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992421",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992421",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992422",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992422",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992423",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992423",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992424",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992424",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992425",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992425",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992426",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992426",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992427",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992427",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992428",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992428",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992429",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992429",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992430",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992430",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992431",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992431",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992432",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992432",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992433",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992433",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992434",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992434",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992435",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992435",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre29992436",
+    "productKey": "pubg::platform=mobile",
+    "skuKey": "pubg::platform=mobile::denom=pre29992436",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023961",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023961",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023962",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023962",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023963",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023963",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023964",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023964",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023965",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023965",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023966",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023966",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30023967",
+    "productKey": "growtopia",
+    "skuKey": "growtopia::denom=pre30023967",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024254",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024254",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024255",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024255",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024256",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024256",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024257",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024257",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024258",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024258",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024259",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024259",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024716",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024716",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024717",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024717",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024718",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024718",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024719",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024719",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024720",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024720",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024721",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024721",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024722",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024722",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024723",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024723",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024724",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024724",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024725",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024725",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024726",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024726",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024727",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024727",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024728",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024728",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024729",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024729",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024730",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024730",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30024731",
+    "productKey": "valorant",
+    "skuKey": "valorant::denom=pre30024731",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025104",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025104",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025105",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025105",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025107",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025107",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025110",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025110",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025111",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025111",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025112",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025112",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025114",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025114",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025115",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025115",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025116",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025116",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025117",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025117",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025118",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025118",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30025119",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30025119",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048918",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048918",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048919",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048919",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048920",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048920",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048921",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048921",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048922",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048922",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048923",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048923",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048980",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048980",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048981",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048981",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048982",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048982",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048983",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048983",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048984",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048984",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30048985",
+    "productKey": "arena breakout",
+    "skuKey": "arena breakout::denom=pre30048985",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049023",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049023",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049024",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049024",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049025",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049025",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049026",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049026",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049027",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049027",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049028",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049028",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049029",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049029",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049030",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049030",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049031",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049031",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049032",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049032",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30049033",
+    "productKey": "delta force",
+    "skuKey": "delta force::denom=pre30049033",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541312",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541312",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541313",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541313",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541314",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541314",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541315",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541315",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541316",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541316",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541317",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541317",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541318",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541318",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541319",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541319",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541320",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541320",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541321",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541321",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541322",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541322",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541323",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541323",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541324",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541324",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541325",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541325",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541326",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541326",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541327",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541327",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541328",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541328",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541329",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541329",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541330",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541330",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541331",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541331",
+    "detectorStamp": "1.0.0+kdefault"
+  },
+  {
+    "buyerSkuCode": "pre30541353",
+    "productKey": "free fire",
+    "skuKey": "free fire::denom=pre30541353",
+    "detectorStamp": "1.0.0+kdefault"
+  }
+]

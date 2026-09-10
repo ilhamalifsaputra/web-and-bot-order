@@ -416,3 +416,46 @@ describe("DigiflazzSyncPage — preview persistence and elapsed-time counter", (
     }
   });
 });
+
+describe("DigiflazzSyncPage — fix round: guarded sessionStorage writes + full persistence deps", () => {
+  it("does not crash the page when sessionStorage.setItem throws (e.g. private browsing / QuotaExceededError)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    // jsdom's sessionStorage isn't a plain Storage.prototype instance
+    // (spying on Storage.prototype.setItem doesn't intercept calls made
+    // through it), so replace the global binding outright — this is exactly
+    // what the component reads via the bare `sessionStorage` identifier.
+    vi.stubGlobal("sessionStorage", {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => {},
+      clear: () => {},
+    });
+
+    await syncWizard(user);
+
+    // The page must keep rendering normally — no error boundary swallowing
+    // the tree into a generic "Something went wrong" screen.
+    expect(screen.getByText(/mobile legends/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /sync dari digiflazz/i })).toBeInTheDocument();
+  });
+
+  it("persists a category/filter change made AFTER the preview loads, not just the fetch-time values", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    await syncWizard(user);
+
+    // At this point sessionStorage already holds categoryId: "" and
+    // filter: "" from the initial persist alongside the fetched preview.
+    await selectCategory(user);
+    fireEvent.change(screen.getByPlaceholderText(/filter by game name/i), { target: { value: "Mobile" } });
+
+    await waitFor(() => {
+      const raw = sessionStorage.getItem(PREVIEW_STORAGE_KEY);
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!) as { categoryId: string; filter: string };
+      expect(parsed.categoryId).toBe("1");
+      expect(parsed.filter).toBe("Mobile");
+    });
+  });
+});

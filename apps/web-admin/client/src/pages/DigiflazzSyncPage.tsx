@@ -106,14 +106,31 @@ export function DigiflazzSyncPage() {
   // refreshing or navigating away and back within the same tab restores it
   // instead of re-hitting Digiflazz's live price-list API. A fresh mount with
   // no prior sync (preview === null) must never leave a stale key behind.
+  // Depends on categoryId/filter too (not just preview) so a category or
+  // filter change made after the preview has already loaded is actually
+  // saved — those controls only render inside `{preview && ...}`, so without
+  // this the persisted values would always be whatever they were the moment
+  // `preview` last changed.
+  //
+  // Wrapped in try/catch, mirroring readPersistedState's read guard (and
+  // SettingsNav.tsx's writeExpandedStorage): private-browsing modes in
+  // Safari/Firefox, or "block site data" settings, throw on any
+  // sessionStorage access, and a full Digiflazz price list can serialize to
+  // roughly 1MB, making QuotaExceededError realistic too. A failed persist
+  // is not user-facing-error-worthy — it just means the next visit won't
+  // have the restored state — so this silently no-ops rather than crashing
+  // the page or surfacing a toast.
   useEffect(() => {
-    if (preview === null) {
-      sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
-      return;
+    try {
+      if (preview === null) {
+        sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
+        return;
+      }
+      sessionStorage.setItem(PREVIEW_STORAGE_KEY, JSON.stringify({ preview, categoryId, filter }));
+    } catch {
+      // Ignore — nothing to persist to in this environment.
     }
-    sessionStorage.setItem(PREVIEW_STORAGE_KEY, JSON.stringify({ preview, categoryId, filter }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preview]);
+  }, [preview, categoryId, filter]);
 
   async function runSync() {
     setLoadingPreview(true);
@@ -211,7 +228,16 @@ export function DigiflazzSyncPage() {
         { categoryId: Number(categoryId), brands },
       );
       toast.success(`Imported ${res.brandsImported} game(s), ${res.denominationsImported} denomination(s). Activate them from the Catalog page when ready.`);
-      sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
+      // Imperative here (not left to the persisting effect above) because
+      // this function never calls setPreview(null) before navigating away —
+      // it jumps straight to /catalog, so the effect never gets a chance to
+      // re-run and remove the key itself. Guarded the same way as the
+      // effect: a failed removal here is not user-facing-error-worthy.
+      try {
+        sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
+      } catch {
+        // Ignore — nothing to clear in this environment.
+      }
       await queryClient.invalidateQueries({ queryKey: ["catalog"] });
       navigate("/catalog");
     } catch (err) {

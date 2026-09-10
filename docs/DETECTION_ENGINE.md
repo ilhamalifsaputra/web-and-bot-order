@@ -44,7 +44,7 @@ is normally a **data** fix, not a code change.
 | Where | `packages/core/src/detection/*.ts` | Postgres tables `detection_tokens` / `detection_aliases` / `detection_overrides`, seeded from `detection/knowledge/defaultVocabulary.ts` |
 | Contains | normalization, tokenization, classification, key serialization, scoring, index lookup, the decision rule | which words are platform/edition/region/distribution/noise, which are product-defining, aliases, per-name overrides |
 | May contain literal product names | **No** (AC-01) | Yes — this and `detection/__fixtures__/**` are the only places |
-| Changing it means | a deploy + a `DETECTOR_VERSION` bump if keys can move | a DB row (admin panel / seed script) |
+| Changing it means | a deploy + a `DETECTOR_VERSION` bump if keys can move | a DB row (crud helper call / seed script — no admin-panel UI yet, see [§7](#7-adding-a-new-product-in-5-steps)) |
 | Loaded by | direct import | `loadKnowledgeBase(db)` — `packages/db/src/crud/detectionKnowledge.ts:66` |
 
 The dependency direction of the monorepo enforces purity: `@app/core` has no
@@ -256,9 +256,15 @@ Why these numbers:
 - **`DEFINING_TOKEN_CAP = 30`.** At most three defining tokens count, so a
   long name cannot win on length alone.
 - **`W_EXTERNAL_ID = 60`** only applies when
-  `knowledge.externalIdStableBySupplier[supplier] === true`. If a supplier's
-  ids turn out not to be stable, flip that flag in the knowledge base — the
-  signal drops out without any code change.
+  `knowledge.externalIdStableBySupplier[supplier] === true`. Unlike tokens,
+  aliases and overrides, **`externalIdStableBySupplier` is not admin-editable
+  data** — `loadKnowledgeBase` (`packages/db/src/crud/detectionKnowledge.ts:122`)
+  always reads this field straight off the static `DEFAULT_KNOWLEDGE_BASE`,
+  regardless of what the DB tables contain. There is no `DetectionToken`-style
+  table, column, or admin upsert helper for it. If a supplier's ids turn out
+  not to be stable, turning the signal off means editing
+  `defaultVocabulary.ts` and deploying — a known asymmetry in the knowledge
+  layer, see [§9](#9-known-limitations).
 
 `computeConfidence(score, maxAttainable)` (`scoring.ts:39`) =
 `Math.round((score / max) * 100) / 100`, returning `0` (never `NaN`) when
@@ -292,6 +298,26 @@ Categories: `platform`, `distribution`, `region`, `edition`, `denomination`,
 - `noise` — dropped entirely; this is where the old Digiflazz denylist
   (`instant`, `proses cepat`) now lives.
 
+**"Global" is not a region, and this is an easy trap to fall into.** Every
+region suffix (`indonesia`, `malaysia`, `brazil`, `russia`, `filipina`,
+`singapore`, plus the 2-letter codes) is category `region` /
+`isProductDefining: false`, so they all collapse onto one `productKey`
+(AC-04). `"global"`, by contrast, is classified `category: "distribution"`,
+`isProductDefining: true` (`defaultVocabulary.ts:74-79`) — it is *not* in the
+region list at all. This is intentional: "Global" describes a distribution
+channel, not a geography, so `"MOBILE LEGENDS (Global)"` gets its own
+distinct `productKey` (`legends::distribution=global,platform=mobile`)
+instead of collapsing with `"MOBILE LEGENDS (Indonesia)"` and its regional
+siblings (`legends::platform=mobile`) — confirmed correct in
+`defaultVocabulary.ts`'s own comment and exercised by
+`collision.test.ts`'s `ALLOWLISTED_COLLISIONS` (it explicitly notes "Global"
+is NOT in the Mobile Legends collision bucket). The practical consequence:
+when adding a new token, pick the category that is *semantically* correct —
+"is this word a geography that should collapse with other regions?" vs. "is
+this word a distribution channel/client that changes the product?" — don't
+default to `region` just because the word visually looks like the other
+parenthetical suffixes you've seen.
+
 Validation is a zod schema (`knowledge/schema.ts`), which also rejects
 duplicate `[category, token]` pairs. The loader throws on invalid data rather
 than silently degrading.
@@ -314,8 +340,10 @@ pattern as `crud/settings.ts`) and:
 
 ### Editing it
 
-Admin/programmatic path (each audits via `logAdminAction` and bumps
-`detection_knowledge_revision`, which invalidates both caches):
+Programmatic path — call these directly (there is no admin-panel UI for
+tokens/aliases/overrides yet, see [§7](#7-adding-a-new-product-in-5-steps));
+each audits via `logAdminAction` and bumps `detection_knowledge_revision`,
+which invalidates both caches:
 
 - `upsertDetectionToken(db, args, adminId)` — `detectionKnowledge.ts:140`
 - `upsertDetectionAlias(db, args, adminId)` — `detectionKnowledge.ts:179`
@@ -332,24 +360,32 @@ will serve stale data for up to 30 seconds and the index will not rebuild.
 
 ## 7. Adding a new product in ≤5 steps
 
-You almost never touch engine code. In order of preference:
+You almost never touch engine code. In order of preference. **Read this whole
+section before running any verification command** — steps 2-4 (the DB-row
+path) and step 5's scripts (the static-vocabulary path) verify two genuinely
+different things, and using the wrong one for what you changed will make you
+wrongly conclude your edit had no effect.
 
-**Step 1 — Do nothing and check.** Most names already work. Run the row
-through the engine:
+**Step 1 — Do nothing and check.** Most names already work. Read the review
+queue in the admin panel (Digiflazz Sync → "Deteksi"), or run the
+whole-catalog comparison:
 
 ```
-npx tsx scripts/detection-key-diff.ts     # compares engine grouping vs. legacy digiflazzGroupKey
+npx tsx scripts/detection-key-diff.ts     # whole-catalog batch comparison: engine productKey grouping vs.
+                                           # legacy digiflazzGroupKey grouping. NOT a single-row/single-name
+                                           # checker — there is no "run just this row through the engine" mode.
 ```
 
-or read the review queue in the admin panel (Digiflazz Sync → "Deteksi").
 If the name already resolves to the right `productKey`, you are done.
 
 **Step 2 — Is a word being classified wrongly (or not at all)?** Add or edit
 a `DetectionToken` row. Pick the category (`platform`/`edition`/
 `distribution`/`region`/`noise`) and, critically, `isProductDefining`:
 `true` means the word creates a *different product*, `false` means it only
-distinguishes a SKU/region of the same product. Region words are `false`.
-This changes both grouping and keys for every row containing that word.
+distinguishes a SKU/region of the same product. Region words are `false`,
+and see [§6](#6-knowledge-layer)'s "Global is not a region" note before
+copying the region pattern for a new distribution-channel-like word. This
+changes both grouping and keys for every row containing that word.
 
 **Step 3 — Is it a spelling/shorthand problem?** Add a `DetectionAlias`
 (`alias` → `expandsTo`, both normalized). This is the fix for
@@ -364,22 +400,62 @@ short-circuits everything. Use this last — if overrides exceed 5% of the
 catalog, a run logs a warning and raises a review-queue issue, because that
 means the engine's logic needs fixing rather than more overrides.
 
-**Step 5 — Make the change take effect, and prove it.**
+Steps 2-4 are all **data**, written through
+`upsertDetectionToken`/`upsertDetectionAlias`/`upsertDetectionOverride`
+(`packages/db/src/crud/detectionKnowledge.ts:140,179,202`). **There is
+currently no admin-panel UI for these three tables** — call the helper
+directly from a one-off script/REPL with a `Db` handle and an `adminId`
+(each call audits via `logAdminAction` and bumps
+`detection_knowledge_revision` itself, invalidating the knowledge/index
+caches immediately, no 30s wait needed).
+
+**Step 5 — Make the change take effect, and prove it.** This step forks
+depending on *where* you made the change:
+
+**(A) You edited `defaultVocabulary.ts` (code — needs a deploy):**
 
 ```
-pnpm seed-detection-knowledge                 # REQUIRED if you edited defaultVocabulary.ts
-npx vitest run packages/core/src/detection    # keyStability.test.ts will flag any key drift
+pnpm seed-detection-knowledge                 # REQUIRED — upserts the new/changed rows into the DB tables
+npx vitest run packages/core/src/detection    # keyStability.test.ts flags any key drift
 npx tsx scripts/recompute-detection-keys.ts   # dry-run: shows exactly which keys moved
 ```
+
+`detection-key-diff.ts` and `recompute-detection-keys.ts` both import
+`DEFAULT_KNOWLEDGE_BASE` directly and compute keys from it — **neither ever
+calls `loadKnowledgeBase(db)`**. That is exactly right for verifying a
+`defaultVocabulary.ts` edit, because after `pnpm seed-detection-knowledge`
+the DB rows are upserted to mirror the static source, so these scripts stay
+a valid proxy for "did my static-vocabulary change compute the keys I
+expect."
 
 If keys moved on purpose: bump `DETECTOR_VERSION` when the cause was engine
 logic, regenerate `goldenKeys.json` with `--apply`, review the diff, and
 commit both together.
 
+**(B) You added/edited a row directly via the upsert helpers in step 2-4
+(data — live immediately, no deploy):**
+
+**`detection-key-diff.ts` and `recompute-detection-keys.ts` will show ZERO
+change for this edit.** They read only `DEFAULT_KNOWLEDGE_BASE`, never the
+DB, so they cannot see a DB-only row no matter how correct it is — running
+them here proves nothing about whether your edit took effect, and will
+mislead you into thinking it didn't. To actually verify a DB-row change:
+
+- trigger a DB-backed detection pass — either wait for the next hourly
+  `runDetectionForCatalog` tick, or invoke it directly in a script — which
+  *does* call `loadKnowledgeBase(db)` (`packages/db/src/crud/detectionRun.ts:180`),
+  so it picks up your row immediately (the cache was already invalidated by
+  the upsert call in step 2-4); then check the admin panel's Digiflazz Sync →
+  "Deteksi" review queue and metrics for the affected record(s);
+- or, for a quick one-off check without waiting for a run, write a small
+  script that calls `loadKnowledgeBase(db)` + `getCatalogIndex(db)`
+  (`packages/db/src/crud/detectionIndex.ts`) and feeds the result into
+  `detect()` directly for the input you care about.
+
 Only if none of steps 2-4 can express the fix (for example: a *multi-word*
 region such as "Hong Kong", which per-word tokenization cannot classify) do
 you change `features.ts` — and then you are changing the engine, which means
-a `DETECTOR_VERSION` bump and a full golden-key review.
+a `DETECTOR_VERSION` bump and a full golden-key review (path A above).
 
 ---
 
@@ -451,20 +527,76 @@ the migration surface for a future cutover.
    scope here.
 6. **Shadow denomination writes are N+1 separate auto-committed statements**
    (`crud/digiflazz.ts:942-950`), deliberately outside the import
-   transaction. A crash mid-loop leaves a product partially stamped; the next
-   hourly `runDetectionForCatalog` heals it. `bumpCatalogRevision` at
-   `crud/digiflazz.ts:1046` is likewise unguarded — a failure there just means
-   the index waits out its 30s TTL.
-7. **`DetectionOverride.hitCount` is declared but never incremented.** The
-   run-level `overrideHits` count in the metrics blob is real; the per-row
-   counter is currently a dead column.
-8. **Coverage is enforced at 90% for `packages/core/src/detection/**` only**,
-   not repo-wide (`vitest.config.ts` `coverage.thresholds`). No coverage
-   tooling existed in this repo before this work; retrofitting a global
-   threshold is a separate project. This was an explicit, approved trade-off.
+   transaction. A crash mid-loop leaves some denominations of that one
+   import batch stamped and others not. **There is no automatic healing for
+   this partial-stamp case.** `runDetectionForCatalog` (the hourly job) does
+   *not* write `Product.detection*`/`Denomination.detectionSkuKey`/
+   `detectionStamp` at all — it only counts, upserts `DetectionIssue` rows,
+   bumps override `hitCount`, and stores the run-summary blob. Only
+   `writeShadowDetectionForImport` writes those columns, and only at import
+   time. The only way to retry a partially-stamped batch today is to re-run
+   the same import (`importDigiflazzBrand` for that brand).
+   `bumpCatalogRevision` at `crud/digiflazz.ts:1046` is likewise unguarded —
+   a failure there just means the index waits out its 30s TTL.
+7. ~~`DetectionOverride.hitCount` is declared but never incremented.~~
+   **Fixed in commit `c77827ef`.** `incrementOverrideHitCount`
+   (`packages/db/src/crud/detectionRun.ts`) now bumps the matched override
+   row's `hitCount` on every real override hit inside `runDetectionForCatalog`,
+   verified by a test asserting a running 0→1→2 counter. The run-level
+   `overrideHits` count in the metrics blob was always real and remains so.
+8. **Coverage is *configured* at a 90% threshold for
+   `packages/core/src/detection/**` only** (`vitest.config.ts`
+   `coverage.thresholds`), not repo-wide — but that threshold is **not wired
+   into any automated gate**. `package.json`'s `test` script is plain
+   `vitest run` (no `--coverage`), and `pretest` never invokes coverage
+   either, so the threshold only actually fires when a human manually runs
+   `npx vitest run --coverage`. No coverage tooling existed in this repo
+   before this work; retrofitting a global threshold, and wiring this one
+   into CI, are both separate, explicitly-approved-as-deferred projects.
 9. **Keys are opaque.** `baseProductKey` for "MOBILE LEGENDS" is `"legends"`,
    because `mobile` is a platform token. Never render a detection key to a
    buyer or an admin as a product name.
+10. **`externalIdStableBySupplier` is code-level configuration, not
+    admin-editable data**, unlike tokens/aliases/overrides. See
+    [§5](#5-scoring)'s note on `W_EXTERNAL_ID` for the mechanism — this is a
+    known asymmetry in the knowledge layer, not something this pass fixes.
+11. **Confidence is computed on two different scales depending on the call
+    site, and the admin panel's number is systematically deflated.**
+    `engine.ts`'s `maxAttainableScore` budgets `W_EXTERNAL_ID = 60` whenever
+    `isExternalIdActive` is true (caller passed a `supplier` +
+    non-null `externalId`, and that supplier is flagged stable) — but
+    `crud/detectionIndex.ts`'s `CatalogEntry` mapping always sets
+    `externalId: null` in production (a known, separately-documented
+    limitation — "not exhaustive by design"), so `index.byExternalId` is
+    always empty and that 60-point budget line is **structurally
+    unreachable** in production even when it's counted in the denominator.
+    Three call sites pass different `externalId`/`supplier` combinations to
+    `detect()` for the conceptually same product —
+    `groupDigiflazzPriceListByBrand` passes both, `writeShadowDetectionForImport`
+    passes neither, `runDetectionForCatalog` passes neither — so the *same*
+    product can report a different confidence in different code paths for
+    an identical, perfectly-matched resolution. **The "Distribusi keyakinan"
+    confidence distribution in the admin Deteksi panel is not currently a
+    reliable signal for judging detection health before a production
+    cutover.** Candidate fixes (neither implemented — needs a follow-up
+    task): (i) exclude `W_EXTERNAL_ID` from `maxAttainableScore` when
+    `index.byExternalId.size === 0`, or (ii) actually populate
+    `externalId`/`category`/`type` in `detectionIndex.ts`'s `CatalogEntry`
+    mapping (which would also make scoring levels 2 and 4 functional in
+    production — currently structurally dead there too).
+12. **A resolved/dismissed review-queue issue can never automatically
+    re-open.** `detectionRun.ts`'s `upsertDetectionIssue` `update` branch
+    refreshes `status`/`reason`/`candidates`/`detectorStamp` and increments
+    `occurrences` on a repeat fingerprint, but never resets `reviewStatus`
+    back to `"OPEN"` — and the admin panel only queries `reviewStatus=OPEN`
+    issues. So if an admin resolves/dismisses an issue believing a knowledge
+    edit fixed it, but the edit didn't actually work, every later detection
+    run keeps silently re-upserting the same fingerprint with a climbing
+    `occurrences` count, permanently invisible to the review queue. Needs a
+    follow-up task deciding the right re-open policy (e.g. always reset to
+    `OPEN` on any re-occurrence after resolution, or only reset if
+    `detectorStamp` changed, or add a distinct "recurred after resolution"
+    signal) — not implemented here.
 
 ---
 
@@ -506,8 +638,20 @@ overrides, the run emits a `logger.warn` and raises a single sentinel issue
 runs in `pretest`. It scans every non-test, non-`knowledge/`, non-`__fixtures__/`
 file under `detection/` and fails on `localeCompare`, `Date.now(`, zero-arg
 `new Date()`, `Math.random(`, imports of `@prisma/client`/`@app/db`, and any
-product-name token **derived at runtime from the fixture files** (so adding a
-fixture automatically widens the check — the denylist can never go stale):
+product-name token **derived at runtime from the `.ts` fixture files**
+(`walkTsFiles`, `scripts/check-detection-engine-purity.ts:139`, matches only
+`*.ts` — so adding a new `.ts` fixture automatically widens the check).
+**Known gap:** the JSON data fixtures —
+`__fixtures__/catalogSnapshot.json` and `__fixtures__/goldenKeys.json`,
+holding all 232 real production brand names (Task 11) — are never walked by
+`walkTsFiles`, so none of those real brand-name tokens ever feed the
+denylist derivation; only the synthetic `.ts` fixture
+(`syntheticGameA.ts`) does, confirmed by the checker's own output below ("4
+product-name token(s) derived from fixtures" — all 4 come from the
+synthetic `.ts` fixture, none from the 232-row real JSON data). The denylist
+is **not** immune to staleness with respect to real brand names that only
+ever appear in the JSON fixtures. A future improvement would extend the
+derivation to also parse `.json` fixture files — not attempted here:
 
 ```
 $ npx tsx scripts/check-detection-engine-purity.ts
@@ -518,8 +662,21 @@ Detection engine purity check passed: 10 file(s) scanned, 4 product-name token(s
 caches per-`Db` handle with a 30s TTL plus a composite revision key of
 `detection_catalog_revision` **and** `detection_knowledge_revision`, so a
 vocabulary edit invalidates the index too. `bumpCatalogRevision(db)`
-(`:92`) is the invalidation primitive; it is called after
-`importDigiflazzBrand` commits and from admin product creation.
+(`:92`) is the invalidation primitive; it has exactly **two** call sites —
+after `importDigiflazzBrand` commits
+(`packages/db/src/crud/digiflazz.ts:1046`) and in the hourly Digiflazz
+catalog-sync job, before `runDetectionForCatalog`
+(`apps/order-bot/src/jobs/index.ts:1488`). **It is deliberately not called
+from admin product mutations.** `createCatalogProduct`/`updateCatalogProduct`
+(`packages/db/src/crud/catalog.ts`) do not call it — that call was added and
+then reverted (`ccd1f798` → `f437d0a3`) once it became clear both functions
+run inside per-row loops under their own `$transaction`s (CSV bulk-import's
+`resolveOrCreateProduct`, `splitMixedDigiflazzProducts`), where a per-call
+bump would serialize a `Settings` upsert across a long batch transaction and
+risks two concurrent upsert(create)s P2002-aborting each other. Admin
+single-mutations instead rely on the index's own 30s cache TTL to pick up
+the change — see `catalog.ts`'s own comments on those two functions for the
+full reasoning.
 
 ---
 
@@ -548,5 +705,5 @@ Run the engine suite with:
 
 ```
 npx vitest run packages/core/src/detection
-npx vitest run --coverage packages/core/src/detection   # 90% threshold, scoped
+npx vitest run --coverage packages/core/src/detection   # 90% threshold, scoped — run manually; not in pretest/CI, see §9 item 8
 ```

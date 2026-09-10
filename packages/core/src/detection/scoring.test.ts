@@ -12,7 +12,7 @@ import {
   ACCEPT_THRESHOLD,
   MARGIN,
   computeConfidence,
-} from "./scoring.js";
+} from "./scoring";
 
 describe("scoring", () => {
   // AC-02 Enforcement: W_STRUCTURED_META + DISTRIBUTION_CAP must be less than ACCEPT_THRESHOLD

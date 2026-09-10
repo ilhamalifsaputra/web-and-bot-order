@@ -82,30 +82,40 @@ interface CatalogSnapshotRow {
  * productKey, different skuKey"), not an engine bug, and NOT something a
  * vocabulary addition would fix at the productKey level.
  *
- * What actually explains these SPECIFIC rows colliding today: the country
- * names in these brands' parenthetical suffixes ("Indonesia"/"Filipina"/
- * "Russia"/"Brazil"/"Malaysia"/"Singapore") don't match ANY token in
- * DEFAULT_KNOWLEDGE_BASE at all (only the 2-letter codes "id"/"sg"/"my" are
- * present, under `region`). extractFeatures's parenthetical-token
- * classification loop silently drops any token with no knowledge-base
- * match — it lands in neither `definingTokens` nor `distributionTokens`
- * (only the raw `parentheticalSuffix` string retains it verbatim). So all of
- * these rows end up with an EMPTY `definingTokens` list and therefore an
- * identical `productKey`. "MOBILE LEGENDS (Global)" escapes this because
- * "global" DOES match a knowledge-base token — category `distribution`, but
- * `isProductDefining: true` — so it contributes a defining pair and earns
- * its own distinct productKey; this is unrelated to region classification.
+ * What actually explains these SPECIFIC rows colliding today (updated post
+ * Task 12b — this paragraph previously said these region suffixes matched no
+ * knowledge-base token at all; that is no longer true): the country names in
+ * these brands' parenthetical suffixes ("Indonesia"/"Filipina"/"Russia"/
+ * "Brazil"/"Malaysia"/"Singapore") DO now match tokens in
+ * DEFAULT_KNOWLEDGE_BASE — Task 12b added them as `region`-category tokens
+ * alongside the pre-existing 2-letter codes ("id"/"sg"/"my"). Being
+ * classified `region`, they are `isProductDefining: false`, so
+ * extractFeatures routes them into `distributionTokens`, not
+ * `definingTokens` — the same net effect on `productKey` as if they had
+ * never matched at all, since `buildProductKey` only serializes
+ * `definingTokens`. So all of these rows still end up with an EMPTY
+ * `definingTokens` list and therefore an identical `productKey` — not
+ * because the words are unrecognized, but because their correctly-recognized
+ * category is structurally excluded from `productKey` by design. The
+ * practical upshot (and the reason Task 12b was worth doing): these tokens
+ * now DO contribute to `skuKey`/`attributes.region`, which is what closed
+ * the separate skuKey-collision gap below without touching `productKey`.
+ * "MOBILE LEGENDS (Global)" escapes the productKey collision because
+ * "global" matches a DIFFERENT knowledge-base token — category
+ * `distribution`, `isProductDefining: true` — so it contributes a defining
+ * pair and earns its own distinct productKey; this is unrelated to region
+ * classification.
  *
- * Consequently, even adding "indonesia"/"brazil"/etc. as `region` tokens
- * would NOT resolve this productKey collision (region tokens are
- * non-defining by design); it would only improve skuKey/attributes.region
- * fidelity — a separate, legitimate, but different improvement, and not
- * this task's job either way (Task 11 is tooling-only, no
- * production-behavior changes). This is real signal Task 12 (the cutover
- * human-gate) needs to see before relying on productKey to distinguish
- * these region variants — and see this file's top-of-file "Scope note" /
- * task-11-report.md's "Known Gap" section for the SEPARATE skuKey-over-
- * denomination-name risk this test does not check at all.
+ * Consequently, this productKey collision was never a vocabulary gap and
+ * adding more region tokens would not change it (region tokens are
+ * non-defining by design, and the tokens covering these specific brands are
+ * already present as of Task 12b) — it is AC-04's intended coarseness. This
+ * is real signal Task 12 (the cutover human-gate) needs to see before
+ * relying on productKey to distinguish these region variants — and see this
+ * file's top-of-file "Scope note" / task-11-report.md's "Known Gap" section
+ * for the SEPARATE skuKey-over-denomination-name risk this test does not
+ * check at all (closed for the dev fixture by `skuKeyCollision.test.ts`,
+ * Task 12b).
  *
  * Headline count note: the "13 collisions" figure some earlier docs cite is
  * the number of pairwise brand COMBINATIONS across the two buckets below
@@ -125,23 +135,24 @@ const ALLOWLISTED_COLLISIONS: ReadonlyArray<{ productKey: string; brands: readon
       "MOBILE LEGENDS (Malaysia)",
     ],
     reason:
-      "5 region-split Mobile Legends Products collapse onto one productKey because none of their region " +
-      "suffixes (Indonesia/Filipina/Russia/Brazil/Malaysia) match any token in DEFAULT_KNOWLEDGE_BASE, so " +
-      "extractFeatures contributes nothing from them to definingTokens — see this file's ALLOWLISTED_COLLISIONS " +
-      "doc comment for the full mechanism. This is NOT a vocabulary gap productKey would benefit from fixing: " +
-      "region tokens are isProductDefining: false BY DESIGN (AC-04), so they're structurally excluded from " +
-      "productKey regardless of vocabulary size. Note MOBILE LEGENDS (Global) is NOT in this bucket: 'global' " +
-      "matches a real knowledge-base token in the 'distribution' category with isProductDefining: true, so it " +
-      "correctly gets its own distinct productKey.",
+      "5 region-split Mobile Legends Products collapse onto one productKey because their region suffixes " +
+      "(Indonesia/Filipina/Russia/Brazil/Malaysia) ARE present in DEFAULT_KNOWLEDGE_BASE as 'region' tokens " +
+      "(added Task 12b) but classified isProductDefining: false, so extractFeatures routes them into " +
+      "distributionTokens, not definingTokens — see this file's ALLOWLISTED_COLLISIONS doc comment for the " +
+      "full mechanism. This is NOT a vocabulary gap productKey would benefit from fixing: region tokens are " +
+      "isProductDefining: false BY DESIGN (AC-04), so they're structurally excluded from productKey regardless " +
+      "of vocabulary size — this is the intended collapsing-across-regions behavior, not a bug. Note MOBILE " +
+      "LEGENDS (Global) is NOT in this bucket: 'global' matches a real knowledge-base token in the " +
+      "'distribution' category with isProductDefining: true, so it correctly gets its own distinct productKey.",
   },
   {
     productKey: "valorant",
     brands: ["Valorant", "Valorant (Malaysia)", "Valorant (Singapore)"],
     reason:
       "3 Valorant Products (unsuffixed + 2 region-split) collapse onto the same productKey — same root cause " +
-      "as the Mobile Legends entry above: the Malaysia/Singapore suffixes match no knowledge-base token, so " +
-      "they contribute nothing to definingTokens, and productKey would exclude them even if they did match, " +
-      "since region tokens are isProductDefining: false by design.",
+      "as the Mobile Legends entry above: the Malaysia/Singapore suffixes ARE present as 'region' tokens " +
+      "(added Task 12b) and correctly contribute to distributionTokens, but productKey excludes them because " +
+      "region tokens are isProductDefining: false by design — not because they're unrecognized vocabulary.",
   },
 ];
 

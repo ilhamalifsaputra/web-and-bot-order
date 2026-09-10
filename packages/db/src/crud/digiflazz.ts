@@ -1050,9 +1050,13 @@ export async function importDigiflazzBrand(
   // committed (on `db`, not `tx`) — a failure inside an interactive
   // transaction aborts the whole transaction block regardless of any JS
   // try/catch, so running this here is what actually keeps a shadow-mode
-  // failure from ever taking the catalog import down with it. The next full
-  // detection sync (runDetectionForCatalog) fills the columns in on its next
-  // tick if this pass itself fails.
+  // failure from ever taking the catalog import down with it. NOTE: there is
+  // no automatic healing if this fails partway through — runDetectionForCatalog
+  // (the hourly job) never writes these Product/Denomination detection
+  // columns, it only counts/upserts DetectionIssue rows and bumps override
+  // hitCount. A crash mid-loop here leaves some denominations of THIS import
+  // batch stamped and others not; the only retry path is re-running
+  // importDigiflazzBrand for this brand.
   try {
     await writeShadowDetectionForImport(db, productId, args.brand, touchedDenoms);
   } catch (err) {

@@ -3,7 +3,7 @@
  * All weights are integers applied cumulatively across evidence bands.
  */
 
-import type { Evidence } from "./types.js";
+import type { Evidence } from "./types";
 
 // === Weight Constants ===
 

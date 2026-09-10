@@ -96,10 +96,11 @@ function classifyToken(
  * parenthetical is detected against the pre-alias-expansion string and is
  * "tokenized away" before general tokenization; matching aliases against a
  * name that still has "(...)" attached would make every alias fail to
- * match on any input that carries a parenthetical annotation (e.g. "mlbb
- * (indonesia)" would never match alias "mlbb"), which would defeat the
- * point of the mechanism. Matching against the paren-stripped name is the
- * interpretation that keeps alias expansion useful across such inputs.
+ * match on any input that carries a parenthetical annotation (an alias
+ * "abc" would never match the full string "abc (indonesia)"), which would
+ * defeat the point of the mechanism. Matching against the paren-stripped
+ * name is the interpretation that keeps alias expansion useful across such
+ * inputs.
  */
 function expandAlias(name: string, knowledge: KnowledgeBase): string {
   const despacedName = despace(name);

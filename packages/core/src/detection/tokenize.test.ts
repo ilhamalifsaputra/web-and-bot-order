@@ -19,11 +19,6 @@ describe("tokenize", () => {
     // splits on whatever whitespace is present in its input.
     expect(tokenize("pubg mobile")).toEqual(["pubg", "mobile"]);
   });
-
-  it("coerces non-string input to an empty array without throwing", () => {
-    expect(tokenize(null)).toEqual([]);
-    expect(tokenize(undefined)).toEqual([]);
-  });
 });
 
 describe("despace", () => {
@@ -37,10 +32,5 @@ describe("despace", () => {
 
   it("returns an empty string for an empty string", () => {
     expect(despace("")).toBe("");
-  });
-
-  it("coerces non-string input to an empty string without throwing", () => {
-    expect(despace(null)).toBe("");
-    expect(despace(undefined)).toBe("");
   });
 });

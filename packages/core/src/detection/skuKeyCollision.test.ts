@@ -156,6 +156,7 @@ function buildBrandInfos(rows: CatalogSnapshotRow[]): Map<string, BrandInfo> {
 function findUnexplainedSkuKeyCollisions(brandInfos: Map<string, BrandInfo>): {
   unexplained: string[];
   totalRawCollisionGroups: number;
+  sharedProductKeyGroupCount: number;
 } {
   const byProductKey = new Map<string, BrandInfo[]>();
   for (const info of brandInfos.values()) {
@@ -166,9 +167,12 @@ function findUnexplainedSkuKeyCollisions(brandInfos: Map<string, BrandInfo>): {
 
   const unexplained: string[] = [];
   let totalRawCollisionGroups = 0;
+  let sharedProductKeyGroupCount = 0;
 
   for (const [, brands] of byProductKey) {
     if (brands.length < 2) continue; // no cross-brand collision possible
+
+    sharedProductKeyGroupCount += 1;
 
     // skuKey -> "brand::denominationName" pairs that produced it
     const bySkuKey = new Map<string, string[]>();
@@ -200,14 +204,14 @@ function findUnexplainedSkuKeyCollisions(brandInfos: Map<string, BrandInfo>): {
     }
   }
 
-  return { unexplained, totalRawCollisionGroups };
+  return { unexplained, totalRawCollisionGroups, sharedProductKeyGroupCount };
 }
 
 describe("skuKeyCollision (Task 12b): real-catalog skuKey collisions across region-collapsed products", () => {
   it("never assigns the same skuKey to a (product, denomination) pair from two different brands sharing a productKey, unless allowlisted with a reason", () => {
     const rows = loadRows();
     const brandInfos = buildBrandInfos(rows);
-    const { unexplained, totalRawCollisionGroups } = findUnexplainedSkuKeyCollisions(brandInfos);
+    const { unexplained, totalRawCollisionGroups, sharedProductKeyGroupCount } = findUnexplainedSkuKeyCollisions(brandInfos);
 
     // Printed unconditionally (not just on failure) so `vitest run` output
     // carries the real before/after collision count for the task report,
@@ -217,6 +221,11 @@ describe("skuKeyCollision (Task 12b): real-catalog skuKey collisions across regi
       `[skuKeyCollision] ${totalRawCollisionGroups} raw cross-brand skuKey collision group(s) found ` +
         `(${unexplained.length} unexplained after the allowlist).`,
     );
+
+    // Coverage guard: ensure the test examined at least one productKey group
+    // with 2+ brands, so a fixture regression (e.g. every productKey becoming
+    // unique) would fail loudly rather than pass vacuously.
+    expect(sharedProductKeyGroupCount, "test should examine at least one multi-brand productKey group").toBeGreaterThan(0);
 
     expect(
       unexplained,

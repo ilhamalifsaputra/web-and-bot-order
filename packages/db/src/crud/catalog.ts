@@ -23,7 +23,6 @@ import type { Category, Denomination, Product } from "@prisma/client";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
-import { bumpCatalogRevision } from "./detectionIndex";
 
 // ---- Slugs ----
 
@@ -215,7 +214,19 @@ export async function createCatalogProduct(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
-  const product = await db.product.create({
+  // Task 10: deliberately does NOT call bumpCatalogRevision — this function
+  // is called in loops (CSV bulk-import's resolveOrCreateProduct per row;
+  // splitMixedDigiflazzProducts), both inside their own $transactions. A
+  // per-call bump would serialize a setting.upsert on one row across a long
+  // batch transaction and risks two concurrent upsert(create)s P2002-aborting
+  // each other. The catalog-index revision is bumped only at batch-operation
+  // boundaries instead — importDigiflazzBrand post-commit, and the hourly job
+  // before runDetectionForCatalog — so single admin creates rely on
+  // getCatalogIndex's 30s TTL for eventual invalidation, acceptable while
+  // detection is shadow-mode-only (no production consumer of the index yet).
+  // Revisit at the Task 12/13 cutover, when immediate invalidation on every
+  // catalog edit matters.
+  return db.product.create({
     data: {
       categoryId: args.categoryId,
       name: args.name,
@@ -237,23 +248,18 @@ export async function createCatalogProduct(
       currencyIconKind: args.currencyIconKind ?? null,
     },
   });
-  // Task 10: a new Product row is a new Detection Engine catalog entry
-  // (crud/detectionIndex.ts). This is an admin-triggered single create — not
-  // a hot loop (the Digiflazz batch path uses importDigiflazzBrand's own
-  // post-commit bump) — so an immediate index invalidation is correct and
-  // cheap. Additive; nothing here reads the index back.
-  await bumpCatalogRevision(db);
-  return product;
 }
 
 export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
-  // Task 10: a Product's name/digiflazzBrand feeds the Detection Engine's
-  // catalog index (crud/detectionIndex.ts) — invalidate the cache so the
-  // next getCatalogIndex()/detection run reflects this edit without waiting
-  // out the 30s TTL. Additive; nothing here reads the index back.
-  await bumpCatalogRevision(db);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the
+  // rationale on createCatalogProduct above (called in loops such as
+  // splitMixedDigiflazzProducts, each inside its own $transaction; a
+  // per-call bump risks serializing/aborting concurrent batch writes for no
+  // benefit while detection is shadow-mode-only). The catalog-index revision
+  // is bumped only at batch-operation boundaries instead — importDigiflazzBrand
+  // post-commit, and the hourly job before runDetectionForCatalog.
 }
 
 export function getCatalogProduct(db: Db, productId: number) {

@@ -42,10 +42,11 @@ async function makeProduct(categoryId: number, name: string, digiflazzBrand: str
   return createCatalogProduct(prisma, { categoryId, name, digiflazzBrand });
 }
 
-/** Insert a catalog-row Product straight through the Prisma client. Unlike
- * makeProduct/createCatalogProduct — which, as of Task 10, calls
- * bumpCatalogRevision — this lands a row in the DB with NO revision bump: the
- * honest way to exercise the index cache's TTL-only staleness path. */
+/** Insert a catalog-row Product straight through the Prisma client, bypassing
+ * createCatalogProduct entirely. Lands a row in the DB with NO revision bump
+ * unconditionally — the honest way to exercise the index cache's TTL-only
+ * staleness path regardless of whether createCatalogProduct itself bumps
+ * (Task 10: currently it deliberately does not, see its own doc comment). */
 async function rawCatalogRow(categoryId: number, name: string, digiflazzBrand: string) {
   const slug = `${name.toLowerCase().replace(/\s+/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
   return prisma.product.create({ data: { categoryId, name, slug, digiflazzBrand } });
@@ -96,8 +97,7 @@ describe("getCatalogIndex", () => {
   it("serves a cached value within the TTL, even after a catalog row is added underneath it", async () => {
     const category = await makeCategory();
     // Raw prisma.product.create so the rows land with NO catalog-revision
-    // bump (createCatalogProduct now bumps) — this test is about TTL-only
-    // staleness.
+    // bump, unconditionally — this test is about TTL-only staleness.
     await rawCatalogRow(category.id, "First Product", "FIRST");
     const first = await getCatalogIndex(prisma);
     expect(first.entryCount).toBe(1);

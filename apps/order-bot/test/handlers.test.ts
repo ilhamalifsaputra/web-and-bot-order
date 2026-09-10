@@ -1625,6 +1625,25 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(scratch.resolvedGameVariant).toBe("Standard");
   });
 
+  it("B3: a variant-less GAME_TOPUP category still shows its region picker (unvariantedCount > 0 alone must not skip the region step)", async () => {
+    const cat = await createCategory(prisma, { name: "Region Only", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "RO Asia Pack" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: null, gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "RO Europe Pack" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: null, gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(true);
+    const scratch = ctx.session.scratch as { gameVariantDimensionSkipped?: boolean; resolvedGameVariant?: string | null };
+    expect(scratch.gameVariantDimensionSkipped).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeNull();
+  });
+
   it("region step mirrors the skip logic: a single resolved variant with exactly 1 distinct region skips the region picker too", async () => {
     const cat = await createCategory(prisma, { name: "PUBG Mobile", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });

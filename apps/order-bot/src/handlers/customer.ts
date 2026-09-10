@@ -437,12 +437,16 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   const variants = await listCategoryGameVariants(prisma, categoryId);
   const unvariantedCount = await countCategoryProductsWithoutGameVariant(prisma, categoryId);
 
-  // A mixed category — some catalog-eligible products carry a gameVariant,
-  // some don't. A variant picker (or the single-variant auto-resolve) would
-  // filter the flat list down to the picked value and hide every unlabelled
-  // product. Show one flat list of everything instead, exactly like a
-  // non-GAME_TOPUP category, and skip the variant/region dimension.
-  if (unvariantedCount > 0) {
+  // A genuinely MIXED category — at least one catalog-eligible product carries
+  // a gameVariant AND at least one doesn't. A variant picker (or the
+  // single-variant auto-resolve) would filter the flat list down to the
+  // picked value and hide every unlabelled product. Show one flat list of
+  // everything instead, exactly like a non-GAME_TOPUP category, and skip the
+  // variant/region dimension. `variants.length > 0` is required so a
+  // variant-less category that still has a region picker (listCategoryGameRegions
+  // supports gameVariant: null) keeps falling through to enterGameVariant
+  // below and renders its region step.
+  if (variants.length > 0 && unvariantedCount > 0) {
     delete sc(ctx).resolvedGameVariant;
     delete sc(ctx).resolvedGameRegion;
     delete sc(ctx).gameVariantEmoji;

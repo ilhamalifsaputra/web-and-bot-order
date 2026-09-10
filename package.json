@@ -13,6 +13,7 @@
     "build:bundle": "tsx scripts/build-bundle.ts",
     "reset-admin-password": "tsx scripts/reset-admin-password.ts",
     "migrate-catalog-rename": "tsx scripts/migrate-catalog-rename.ts",
+    "inspect-digiflazz-catalog": "tsx scripts/inspect-digiflazz-catalog.ts",
     "split-digiflazz-regions": "tsx scripts/split-digiflazz-regions.ts",
     "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
     "backfill-encrypt-stock-credentials": "tsx scripts/backfill-encrypt-stock-credentials.ts",

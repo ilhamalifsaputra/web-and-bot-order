@@ -29,10 +29,29 @@ export interface ExtractedFeatures {
   parentheticalSuffix: string | null;
 }
 
-// Matches a trailing "(...)" group, mirroring parseProductRegion's regex
-// intent (packages/core/src/suppliers/digiflazz.ts:170-190), reimplemented
-// here as pure knowledge-driven logic rather than importing that file.
+// Matches a trailing "(...)" group. Shared (via extractTrailingParenthetical
+// below, re-exported through detection/index.ts's `export * from "./features"`)
+// with packages/core/src/suppliers/digiflazz.ts's parseProductRegion and
+// stripRegionSuffix, so the "what counts as a trailing parenthetical" SHAPE
+// stays in exactly one place — only the denylist DECISION (noise tokens,
+// DURATION_RANGE_PATTERN) differs by caller.
 const TRAILING_PARENTHETICAL = /\s*\(([^)]+)\)\s*$/;
+
+/**
+ * Locates a trailing "(...)" group at the end of `name`. Purely structural —
+ * finds the substring, makes no denylist/business-logic decision. Returns
+ * the untrimmed captured text plus the match's start index (the index of
+ * the leading `\s*`, i.e. where a caller would slice to remove the whole
+ * annotation including any whitespace before it), or `null` if `name` has
+ * no trailing parenthetical.
+ */
+export function extractTrailingParenthetical(
+  name: string,
+): { captured: string; index: number } | null {
+  const match = name.match(TRAILING_PARENTHETICAL);
+  if (!match) return null;
+  return { captured: match[1]!, index: match.index! };
+}
 
 // Duration-range shape, in its POST-`normalize()` form. `capturedRaw` below
 // is sliced out of `normalizedName`, which has already gone through
@@ -40,11 +59,16 @@ const TRAILING_PARENTHETICAL = /\s*\(([^)]+)\)\s*$/;
 // space (SEPARATOR_CHARS) and then collapses any whitespace run, including
 // the one that produces, to a single space (WHITESPACE_RUN) before trim.
 // So a raw "1-3 Menit" arrives here as "1 3 menit" — never with a literal
-// hyphen — and is always separated by exactly one space, not a run. This is
-// the one structural pattern allowed to live in code rather than in the
-// Knowledge layer's data, since it's a shape (N N unit) rather than a fixed
-// vocabulary word — enumerating it as data tokens isn't practical.
-const DURATION_RANGE_PATTERN = /^\d+\s\d+\s(menit|jam|hari)$/;
+// hyphen — and the two numbers are always separated by exactly one space,
+// not a run: that gap is mandatory (`\s`). The gap before the unit word is
+// NOT guaranteed, though — a raw name can write the unit glued to the second
+// number with no space at all (e.g. "1-3Menit" -> normalize() -> "1 3menit"),
+// and the pre-cutover regex (`\s*` there) correctly denylisted that; this
+// pattern must keep that gap optional (`\s*`) to match. This is the one
+// structural pattern allowed to live in code rather than in the Knowledge
+// layer's data, since it's a shape (N N unit) rather than a fixed vocabulary
+// word — enumerating it as data tokens isn't practical.
+const DURATION_RANGE_PATTERN = /^\d+\s\d+\s*(menit|jam|hari)$/;
 
 /**
  * Looks up an enabled knowledge token by its exact (already-normalized)
@@ -126,10 +150,10 @@ export function extractFeatures(
   // pre-alias-expansion string): detect + strip the trailing parenthetical
   // before anything else runs, so downstream tokenization never sees a
   // literal "(" / ")" attached to a word.
-  const parenMatch = normalizedName.match(TRAILING_PARENTHETICAL);
-  const capturedRaw = parenMatch ? parenMatch[1]!.trim() : null;
+  const parenMatch = extractTrailingParenthetical(normalizedName);
+  const capturedRaw = parenMatch ? parenMatch.captured.trim() : null;
   const nameSansParenthetical = parenMatch
-    ? normalizedName.slice(0, parenMatch.index!).trim()
+    ? normalizedName.slice(0, parenMatch.index).trim()
     : normalizedName;
 
   const coreTokens: string[] = [];

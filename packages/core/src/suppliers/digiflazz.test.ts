@@ -367,9 +367,17 @@ describe("parseProductRegion", () => {
     expect(parseProductRegion("Foo (12-24 Jam)")).toBeNull();
   });
 
-  it("recognizes a real region name added to the knowledge base (Task 12b)", () => {
+  it("returns a parenthetical suffix verbatim, whether or not it matches a known region token", () => {
     expect(parseProductRegion("Foo (Russia)")).toBe("Russia");
     expect(parseProductRegion("Foo (Singapore)")).toBe("Singapore");
+  });
+
+  it("returns null for a duration range with no space before the unit word (review fix regression)", () => {
+    // "1-3Menit" (unit glued to the second number) normalizes to "1 3menit";
+    // the pre-fix DURATION_RANGE_PATTERN required a mandatory space before
+    // the unit and missed this, so parseProductRegion returned "1-3Menit"
+    // instead of null. See detection/features.ts's DURATION_RANGE_PATTERN.
+    expect(parseProductRegion("Foo (1-3Menit)")).toBeNull();
   });
 });
 

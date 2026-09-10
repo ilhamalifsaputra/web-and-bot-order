@@ -136,6 +136,18 @@ describe("extractFeatures", () => {
     expect(result.parentheticalSuffix).toBeNull();
   });
 
+  it("suppresses a duration-range parenthetical with no space before the unit word (review fix regression)", () => {
+    // Digiflazz product names are free text: "1-3Menit" (unit glued to the
+    // second number, no space) is a realistic variant, not hypothetical.
+    // normalize() collapses the hyphen to a space but does nothing to insert
+    // a space before "menit", so this arrives here as "1 3menit". The old
+    // (pre-fix) DURATION_RANGE_PATTERN required a mandatory space before the
+    // unit and missed this case, letting a spurious "Foo (1-3Menit)" region
+    // split slip through. See features.ts's DURATION_RANGE_PATTERN comment.
+    const result = extractFeatures(normalize("Foo (1-3Menit)"), TEST_KNOWLEDGE);
+    expect(result.parentheticalSuffix).toBeNull();
+  });
+
   it("does not leak a literal paren character into coreTokens", () => {
     const result = extractFeatures("legends (unknown suffix)", TEST_KNOWLEDGE);
     expect(result.coreTokens).toEqual(["legends"]);

@@ -418,7 +418,14 @@ function strongestEvidence(evidence: readonly Evidence[]): Evidence | null {
   return best;
 }
 
-/** Records a conflict for every level-4/5 signal that favored a candidate other than the winner. */
+/**
+ * Records a conflict for every level-4/5 signal on a losing candidate that
+ * actually pointed away from the winner — i.e. the winner's own evidence
+ * does NOT carry that same signal at an equal-or-greater weight. A signal
+ * both the winner and the loser hold (e.g. both share `category`/`type`
+ * from the same catalog category) didn't discriminate between them, so it
+ * is not a genuine conflict and must not be reported as one.
+ */
 function buildConflicts(scored: readonly InternalScored[], winner: InternalScored): Conflict[] {
   const winnerStrongest = strongestEvidence(winner.evidence);
   const winnerSignal = winnerStrongest?.signal ?? "none";
@@ -429,14 +436,17 @@ function buildConflicts(scored: readonly InternalScored[], winner: InternalScore
     if (candidate.productKey === winner.productKey) continue;
     for (const evidence of candidate.evidence) {
       const level = ladderLevel(evidence.signal);
-      if (level === 4 || level === 5) {
-        conflicts.push({
-          losingSignal: evidence.signal,
-          winningSignal: winnerSignal,
-          winningLevel,
-          reason: `Candidate "${candidate.productKey}" had ${evidence.signal} evidence (${evidence.value}) favoring it, but "${winner.productKey}" won on a stronger ${winnerSignal} signal (ladder level ${winningLevel}).`,
-        });
-      }
+      if (level !== 4 && level !== 5) continue;
+      const winnerAlsoHasIt = winner.evidence.some(
+        (winnerEvidence) => winnerEvidence.signal === evidence.signal && winnerEvidence.weight >= evidence.weight,
+      );
+      if (winnerAlsoHasIt) continue;
+      conflicts.push({
+        losingSignal: evidence.signal,
+        winningSignal: winnerSignal,
+        winningLevel,
+        reason: `Candidate "${candidate.productKey}" had ${evidence.signal} evidence (${evidence.value}) favoring it, but "${winner.productKey}" won on a stronger ${winnerSignal} signal (ladder level ${winningLevel}).`,
+      });
     }
   }
   return conflicts;

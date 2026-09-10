@@ -141,15 +141,20 @@ describe("detect() — INV-1 determinism (1000x on genuinely conflicting scenari
   // and produce a resolved result with conflicts[] populated.
   const nameVsMetadataConflictInput = { productName: "legends mobile", category: "games", type: "topup", country: "sg" };
 
-  // Scenario 3: despaced-only weak match against a two-word core name that
-  // doesn't exist as a distinct candidate under its own base key — forces
-  // the weak name_core_despaced path plus distribution tie-breaking.
+  // Scenario 3: despaced-only weak match against a two-word core name —
+  // exercises the weak name_core_despaced path (weight 25) in isolation.
+  // The "id" country field doesn't overlap either candidate's name tokens,
+  // so distribution contributes 0 and r2 ("legends pc") never becomes a
+  // candidate at all — the resulting score (25) falls below ACCEPT_THRESHOLD
+  // (40), so this scenario deterministically resolves to status "unknown".
+  // No tie-breaking occurs; determinism of the "unknown" outcome (and its
+  // reason string) is what's under test here.
   const despacedInput = { productName: "legendsmobile", country: "id" };
 
   const scenarios = [
     { label: "ambiguous tie between platform variants", input: ambiguousInput },
     { label: "name-core vs metadata/distribution conflict", input: nameVsMetadataConflictInput },
-    { label: "despaced weak match with distribution tie-break", input: despacedInput },
+    { label: "despaced weak match scoring below threshold (unknown)", input: despacedInput },
   ];
 
   for (const { label, input } of scenarios) {
@@ -164,14 +169,15 @@ describe("detect() — INV-1 determinism (1000x on genuinely conflicting scenari
 });
 
 describe("detect() — AC-07 conflicts[]", () => {
-  // A self-contained catalog for these three scenarios: r1 shares the
-  // input's core name (level 3), r-decoy shares nothing name-wise but gets
-  // pulled into the candidate set through a bucket OTHER than name — either
-  // a (coincidentally) shared external id looked up while stability is off
+  // A self-contained catalog for these scenarios: r1 shares the input's
+  // core name (level 3), r-decoy shares nothing name-wise but gets pulled
+  // into the candidate set through a bucket OTHER than name — either a
+  // (coincidentally) shared external id looked up while stability is off
   // (so it never earns level-2 credit) or an unrelated product that just
-  // happens to carry the same category/type/country. Either way, r-decoy's
-  // only possible evidence lives at level 4/5, so it can never outscore
-  // r1's level-3 match by itself, but it DOES generate a conflicts[] entry.
+  // happens to carry the same category/type/country. Both r1 and r-decoy
+  // carry category "games"/type "topup" here, so they share the SAME
+  // structured_meta evidence at equal weight — that signal never
+  // discriminated between them, so it must NOT surface as a conflict.
   const conflictCatalog: CatalogEntry[] = [
     entry({ refId: "r1", productName: "legends mobile", externalId: "SKU-SHARED", category: "games", type: "topup" }),
     entry({ refId: "r-decoy", productName: "unrelated item", externalId: "SKU-SHARED", category: "games", type: "topup" }),
@@ -180,12 +186,35 @@ describe("detect() — AC-07 conflicts[]", () => {
   // No `supplier` set: external id lookup still happens (so r-decoy is
   // pulled in via the shared externalId), but isExternalIdActive is false,
   // so neither candidate scores level-2 evidence from it — r-decoy's only
-  // possible evidence is its level-4 structured-metadata match.
+  // possible evidence is its level-4 structured-metadata match, which the
+  // winner also holds (see catalog comment above).
   const conflictDeps: DetectionDeps = { knowledge: KNOWLEDGE, index: conflictIndex };
 
-  it("names losing/winning signals and the winner is always the stronger (lower) ladder level", () => {
+  it("does not report a conflict for a signal both the winner and the loser hold at equal weight", () => {
     const input = { productName: "legends mobile", externalId: "SKU-SHARED", category: "games", type: "topup" };
     const result = detect(input, conflictDeps);
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.productKey).toContain("legends");
+    // r-decoy's only evidence (structured_meta) is also held by the winner
+    // r1 at equal weight, so it did not discriminate between them — no
+    // conflict should be reported at all.
+    expect(result.conflicts).toEqual([]);
+  });
+
+  it("reports a genuine structured_meta conflict when only the loser holds the signal", () => {
+    // Here r1 (the name-core winner) carries no category/type at all, so it
+    // never earns structured_meta evidence — while r-decoy's category/type
+    // do match the input's. This time the signal genuinely points away from
+    // the winner, so it must surface as a conflict.
+    const structuredMetaOnlyLoserCatalog: CatalogEntry[] = [
+      entry({ refId: "r1", productName: "legends mobile", externalId: "SKU-SHARED", category: null, type: null }),
+      entry({ refId: "r-decoy", productName: "unrelated item", externalId: "SKU-SHARED", category: "games", type: "topup" }),
+    ];
+    const structuredMetaOnlyLoserIndex = buildCatalogIndex(structuredMetaOnlyLoserCatalog, KNOWLEDGE, "1.0.0+ktest");
+    const structuredMetaOnlyLoserDeps: DetectionDeps = { knowledge: KNOWLEDGE, index: structuredMetaOnlyLoserIndex };
+    const input = { productName: "legends mobile", externalId: "SKU-SHARED", category: "games", type: "topup" };
+    const result = detect(input, structuredMetaOnlyLoserDeps);
     expect(result.status).toBe("resolved");
     if (result.status !== "resolved") return;
     expect(result.productKey).toContain("legends");
@@ -223,7 +252,7 @@ describe("detect() — AC-07 conflicts[]", () => {
     expect(result.conflicts.some((c) => c.losingSignal === "distribution")).toBe(true);
   });
 
-  it("constructs a third concrete conflict scenario: two independent level-4/5 losers against one level-3 winner", () => {
+  it("constructs a third concrete conflict scenario: one shared and one genuinely-discriminating loser against one level-3 winner", () => {
     const multiDecoyCatalog: CatalogEntry[] = [
       entry({ refId: "r1", productName: "legends mobile", externalId: "SKU-SHARED", category: "games", type: "topup" }),
       entry({ refId: "r-decoy-a", productName: "unrelated item", externalId: "SKU-SHARED", category: "games", type: "topup" }),
@@ -236,11 +265,15 @@ describe("detect() — AC-07 conflicts[]", () => {
     expect(result.status).toBe("resolved");
     if (result.status !== "resolved") return;
     // Both decoys share the external id (so both get pulled in as
-    // candidates) but neither shares the core name, so both can only ever
-    // score via level 4/5 signals — decoy-a via structured_meta, decoy-b
-    // via distribution. Both must show up as conflicts against the winner.
-    expect(result.conflicts.length).toBeGreaterThanOrEqual(2);
-    expect(result.conflicts.some((c) => c.losingSignal === "structured_meta")).toBe(true);
+    // candidates) but neither shares the core name. decoy-a's category/type
+    // match the input the same way the winner r1's do, so its
+    // structured_meta evidence is also held by the winner at equal weight —
+    // that's not a genuine conflict and must be excluded. decoy-b has no
+    // category/type at all, so it can only ever score via distribution
+    // (the "zeta" token), which the winner does NOT hold — that IS a
+    // genuine conflict.
+    expect(result.conflicts.length).toBe(1);
+    expect(result.conflicts.some((c) => c.losingSignal === "structured_meta")).toBe(false);
     expect(result.conflicts.some((c) => c.losingSignal === "distribution")).toBe(true);
     for (const conflict of result.conflicts) {
       expect(conflict.winningLevel).toBeLessThan(4);

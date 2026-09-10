@@ -489,7 +489,15 @@ export function detect(input: unknown, deps: DetectionDeps): DetectionResult {
       attributes: EMPTY_ATTRIBUTES,
       confidence: 1,
       score: W_OVERRIDE,
-      evidence: [{ signal: "override", value: overrideMatch.matchValue, weight: W_OVERRIDE }],
+      // `value` encodes `${matchKind}:${matchValue}` (not matchValue alone) so a DB-layer
+      // consumer (packages/db/src/crud/detectionRun.ts) can identify the exact
+      // DetectionOverride row to credit a hit to — matchKind+matchValue is the model's
+      // compound unique key, and matchValue alone is not guaranteed unique across kinds.
+      // Safe to split on the first ":" because matchKind is a fixed, colon-free enum
+      // ("normalized_name" | "external_id"); matchValue may itself contain ":".
+      evidence: [
+        { signal: "override", value: `${overrideMatch.matchKind}:${overrideMatch.matchValue}`, weight: W_OVERRIDE },
+      ],
       conflicts: [],
       detectorVersion,
     };

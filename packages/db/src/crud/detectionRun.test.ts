@@ -214,3 +214,44 @@ describe("runDetectionForCatalog — override-rate guard", () => {
     expect(sentinel).toBeNull();
   });
 });
+
+describe("runDetectionForCatalog — DetectionOverride.hitCount", () => {
+  it("increments hitCount on every real override hit, as a running counter (not a boolean flag)", async () => {
+    const admin = await makeAdmin();
+    const cat = await makeCategory();
+    await makeProduct(cat.id, "Hit Count Game");
+
+    const matchValue = normalize("Hit Count Game");
+    await upsertDetectionOverride(
+      prisma,
+      {
+        matchKind: "normalized_name",
+        matchValue,
+        productKey: "hit~count~game",
+        baseProductKey: "hit~count~game",
+        reason: "pin this SKU for the hitCount test",
+      },
+      admin.id,
+    );
+    __clearDetectionKnowledgeCacheForTests(prisma);
+    __clearDetectionIndexCacheForTests(prisma);
+
+    const overrideKey = { matchKind_matchValue: { matchKind: "normalized_name", matchValue } } as const;
+
+    const before = await prisma.detectionOverride.findUnique({ where: overrideKey });
+    expect(before!.hitCount).toBe(0);
+
+    await runDetectionForCatalog(prisma);
+
+    const afterFirstRun = await prisma.detectionOverride.findUnique({ where: overrideKey });
+    expect(afterFirstRun!.hitCount).toBe(1);
+
+    // A second full-catalog run against the same (still-matching) product
+    // hits the same override row again — hitCount must keep counting, not
+    // clamp at 1.
+    await runDetectionForCatalog(prisma);
+
+    const afterSecondRun = await prisma.detectionOverride.findUnique({ where: overrideKey });
+    expect(afterSecondRun!.hitCount).toBe(2);
+  });
+});

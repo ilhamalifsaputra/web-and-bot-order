@@ -291,4 +291,11 @@ describe("detect() — override short-circuit", () => {
     expect(result.evidence[0]!.signal).toBe("override");
     expect(result.conflicts).toEqual([]);
   });
+
+  it("encodes the winning matchKind into the override evidence value as `${matchKind}:${matchValue}`", () => {
+    const result = detect({ productName: "Override Target" }, DEPS);
+    expect(result.status).toBe("resolved");
+    if (result.status !== "resolved") return;
+    expect(result.evidence[0]!.value).toBe("normalized_name:override target");
+  });
 });

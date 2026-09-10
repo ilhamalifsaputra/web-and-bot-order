@@ -88,6 +88,36 @@ function isOverrideHit(result: DetectionResult): boolean {
 }
 
 /**
+ * Extracts the `DetectionOverride` compound key (`matchKind` + `matchValue`)
+ * from a resolved result's `override` evidence entry. The engine
+ * (`packages/core/src/detection/engine.ts`) encodes both into `value` as
+ * `${matchKind}:${matchValue}` — split on the first ":" only, since
+ * `matchKind` is a fixed colon-free enum but `matchValue` may itself contain
+ * ":". Returns null when the result isn't an override hit or the evidence is
+ * malformed (defensive — should not happen against the real engine).
+ */
+function overrideHitKey(result: DetectionResult): { matchKind: string; matchValue: string } | null {
+  if (result.status !== "resolved") return null;
+  const overrideEvidence = result.evidence.find((e) => e.signal === "override");
+  if (!overrideEvidence) return null;
+  const separatorIndex = overrideEvidence.value.indexOf(":");
+  if (separatorIndex === -1) return null;
+  const matchKind = overrideEvidence.value.slice(0, separatorIndex);
+  const matchValue = overrideEvidence.value.slice(separatorIndex + 1);
+  return { matchKind, matchValue };
+}
+
+/** Bump the matched `DetectionOverride` row's running usage counter. This is
+ * an automated, system-driven increment (not an admin action), so it does
+ * not go through `logAdminAction`. */
+async function incrementOverrideHitCount(db: Db, key: { matchKind: string; matchValue: string }): Promise<void> {
+  await db.detectionOverride.update({
+    where: { matchKind_matchValue: { matchKind: key.matchKind, matchValue: key.matchValue } },
+    data: { hitCount: { increment: 1 } },
+  });
+}
+
+/**
  * Deterministic fingerprint of a detection input: sha256 over a
  * canonical-key-order JSON of the input with the product name normalized
  * the same way the engine normalizes it, truncated to 16 hex chars. Two
@@ -170,7 +200,13 @@ export async function runDetectionForCatalog(db: Db): Promise<DetectionRunSummar
       resolved += 1;
       const band = confidenceBand(result.confidence);
       confidenceBuckets[band] = (confidenceBuckets[band] ?? 0) + 1;
-      if (isOverrideHit(result)) overrideHits += 1;
+      if (isOverrideHit(result)) {
+        overrideHits += 1;
+        const key = overrideHitKey(result);
+        // Every real override hit bumps the row's running usage counter,
+        // independent of the >5% rate-ceiling warning below.
+        if (key) await incrementOverrideHitCount(db, key);
+      }
       continue;
     }
 

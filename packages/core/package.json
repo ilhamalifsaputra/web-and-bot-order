@@ -49,7 +49,9 @@
     "./nickname/melostoreProvider": "./src/nickname/melostoreProvider.ts",
     "./nudge": "./src/nudge.ts",
     "./realtime/digiflazzEvents": "./src/realtime/digiflazzEvents.ts",
-    "./realtime/sseRoute": "./src/realtime/sseRoute.ts"
+    "./realtime/sseRoute": "./src/realtime/sseRoute.ts",
+    "./detection": "./src/detection/index.ts",
+    "./detection/knowledge": "./src/detection/knowledge/defaultVocabulary.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

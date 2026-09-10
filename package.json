@@ -26,6 +26,7 @@
     "check-migration-rebuild-quoting": "tsx scripts/check-migration-rebuild-quoting.ts",
     "check-frontend-boundaries": "tsx scripts/check-frontend-boundaries.ts",
     "check-detection-engine-purity": "tsx scripts/check-detection-engine-purity.ts",
+    "seed-detection-knowledge": "tsx scripts/seed-detection-knowledge.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
     "pretest": "pnpm run check-migration-drift && pnpm run check-migration-timestamps && pnpm run check-migration-rebuild-quoting && pnpm run check-frontend-boundaries && pnpm --filter @app/storefront-client lint && pnpm run check-detection-engine-purity",

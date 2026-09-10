@@ -53,3 +53,5 @@ export * from "./crud/adminTasks";
 export * from "./crud/payments";
 export * from "./crud/telegramUpdates";
 export * from "./crud/botSession";
+export * from "./crud/detectionKnowledge";
+export * from "./crud/detectionIndex";

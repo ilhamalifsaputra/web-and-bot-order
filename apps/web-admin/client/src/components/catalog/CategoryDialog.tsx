@@ -89,7 +89,7 @@ export function CategoryDialog({
           <DialogTitle>{editing ? "Edit category" : "New category"}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-name">Name</Label>
             <Input
               id="cat-name"
@@ -98,7 +98,7 @@ export function CategoryDialog({
               autoFocus
             />
           </div>
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-emoji">Emoji</Label>
             <Input
               id="cat-emoji"
@@ -107,7 +107,7 @@ export function CategoryDialog({
               className="max-w-[100px]"
             />
           </div>
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-desc">Description</Label>
             <Textarea
               id="cat-desc"
@@ -149,7 +149,7 @@ export function CategoryDialog({
               </label>
             </RadioGroup>
           </div>
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-group">Group</Label>
             <Select value={group} onValueChange={setGroup}>
               <SelectTrigger id="cat-group" aria-label="Group">

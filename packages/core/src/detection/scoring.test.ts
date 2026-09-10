@@ -79,7 +79,7 @@ describe("scoring", () => {
     });
 
     it("returns a value in [0, 1]", () => {
-      const testCases = [
+      const testCases: [number, number][] = [
         [0, 100],
         [25, 100],
         [50, 100],

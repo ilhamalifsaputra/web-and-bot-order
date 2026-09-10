@@ -782,13 +782,23 @@ export async function groupDigiflazzPriceListByBrand(
   return brands.map((brand) => {
     const group = byBrand.get(brand)!;
     const representative = group.items[0];
-    const detection =
-      knowledge && catalogIndex && representative
-        ? detect(
-            { productName: representative.productName, externalId: representative.buyerSkuCode },
-            { knowledge, index: catalogIndex, supplier: "digiflazz" },
-          )
-        : undefined;
+    let detection: DetectionResult | undefined;
+    if (knowledge && catalogIndex && representative) {
+      // detect() is documented as never throwing, but a shadow-mode field
+      // must never be able to break production grouping regardless — guard
+      // per-group so one bad group can't take out the whole batch either.
+      try {
+        detection = detect(
+          { productName: representative.productName, externalId: representative.buyerSkuCode },
+          { knowledge, index: catalogIndex, supplier: "digiflazz" },
+        );
+      } catch (err) {
+        logger.warn(
+          { err },
+          `Shadow-mode detection threw while grouping the Digiflazz brand "${brand}" — that group is returned without a detection field.`,
+        );
+      }
+    }
     return {
       brand,
       rawBrand: group.rawBrand,

@@ -40,10 +40,27 @@ const knowledgeOverrideSchema = z.object({
   reason: z.string(),
 });
 
-export const knowledgeBaseSchema: z.ZodType<KnowledgeBase> = z.object({
-  tokens: z.array(knowledgeTokenSchema).readonly(),
-  aliases: z.array(knowledgeAliasSchema).readonly(),
-  overrides: z.array(knowledgeOverrideSchema).readonly(),
-  externalIdStableBySupplier: z.record(z.string(), z.boolean()).readonly(),
-  revision: z.string(),
-});
+export const knowledgeBaseSchema: z.ZodType<KnowledgeBase> = z
+  .object({
+    tokens: z.array(knowledgeTokenSchema).readonly(),
+    aliases: z.array(knowledgeAliasSchema).readonly(),
+    overrides: z.array(knowledgeOverrideSchema).readonly(),
+    externalIdStableBySupplier: z.record(z.string(), z.boolean()).readonly(),
+    revision: z.string(),
+  })
+  .superRefine((data, ctx) => {
+    // Check for duplicate [category, token] pairs
+    const seen = new Set<string>();
+    for (const token of data.tokens) {
+      const key = `${token.category}:${token.token}`;
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["tokens"],
+          message: `Duplicate [category, token] pair: category="${token.category}", token="${token.token}"`,
+        });
+        return; // Stop after first duplicate found
+      }
+      seen.add(key);
+    }
+  });

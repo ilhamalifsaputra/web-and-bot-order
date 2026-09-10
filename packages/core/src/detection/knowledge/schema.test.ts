@@ -352,6 +352,101 @@ describe("knowledgeBaseSchema", () => {
     });
   });
 
+  describe("invalid data — duplicate [category, token] pairs", () => {
+    it("rejects duplicate [category, token] pairs", () => {
+      const invalid = {
+        tokens: [
+          {
+            category: "platform",
+            token: "test",
+            canonical: "test",
+            isProductDefining: true,
+            enabled: true,
+          },
+          {
+            category: "platform",
+            token: "test",
+            canonical: "test-canonical",
+            isProductDefining: false,
+            enabled: false,
+          },
+        ],
+        aliases: [],
+        overrides: [],
+        externalIdStableBySupplier: {},
+        revision: "v1",
+      };
+      const result = knowledgeBaseSchema.safeParse(invalid);
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        const error = result.error!;
+        expect(error.issues.length).toBeGreaterThan(0);
+        const issue = error.issues.find((i) =>
+          i.message.includes("Duplicate [category, token] pair")
+        );
+        expect(issue).toBeDefined();
+        if (issue) {
+          expect(issue.message).toContain('category="platform"');
+          expect(issue.message).toContain('token="test"');
+        }
+      }
+    });
+
+    it("allows multiple tokens with same category but different token", () => {
+      const valid = {
+        tokens: [
+          {
+            category: "platform",
+            token: "test1",
+            canonical: "test1",
+            isProductDefining: true,
+            enabled: true,
+          },
+          {
+            category: "platform",
+            token: "test2",
+            canonical: "test2",
+            isProductDefining: false,
+            enabled: true,
+          },
+        ],
+        aliases: [],
+        overrides: [],
+        externalIdStableBySupplier: {},
+        revision: "v1",
+      };
+      const result = knowledgeBaseSchema.safeParse(valid);
+      expect(result.success).toBe(true);
+    });
+
+    it("allows same token in different categories", () => {
+      const valid = {
+        tokens: [
+          {
+            category: "platform",
+            token: "test",
+            canonical: "test",
+            isProductDefining: true,
+            enabled: true,
+          },
+          {
+            category: "region",
+            token: "test",
+            canonical: "test-region",
+            isProductDefining: false,
+            enabled: true,
+          },
+        ],
+        aliases: [],
+        overrides: [],
+        externalIdStableBySupplier: {},
+        revision: "v1",
+      };
+      const result = knowledgeBaseSchema.safeParse(valid);
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("schema provides clear error messages", () => {
     it("error for missing field identifies the field", () => {
       const invalid = {

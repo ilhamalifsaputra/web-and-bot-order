@@ -104,11 +104,13 @@ async function main(): Promise<void> {
   }
 
   const disagreements: Row[] = [];
+  let disagreeingBucketCount = 0;
   for (const bucket of byEngineKey.values()) {
     if (bucket.length < 2) continue;
     // Every member of this bucket has its own distinct legacyGroup (per this
     // file's doc comment), so a bucket with 2+ members IS a disagreement:
     // the engine merged products legacy has always kept separate.
+    disagreeingBucketCount++;
     disagreements.push(...bucket);
   }
 
@@ -122,7 +124,7 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `${disagreements.length} product(s) across ${byEngineKey.size} engine productKey bucket(s) DISAGREE with legacy grouping:\n`,
+    `${disagreements.length} product(s) across ${disagreeingBucketCount} engine productKey bucket(s) DISAGREE with legacy grouping:\n`,
   );
   console.log(
     `${"product id".padEnd(12)} ${"legacy group (digiflazzGroupKey)".padEnd(40)} ${"engine productKey".padEnd(30)} name`,

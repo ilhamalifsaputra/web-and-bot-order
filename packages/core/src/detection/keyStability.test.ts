@@ -66,6 +66,29 @@ function computeGoldenEntry(row: CatalogSnapshotRow): GoldenKeyEntry {
   return { buyerSkuCode: row.buyerSkuCode, productKey, skuKey, detectorStamp };
 }
 
+/**
+ * The SAME comparison the main test below uses to decide whether a freshly
+ * computed entry drifted from its golden counterpart. Both the main test and
+ * the "(self-check)" test call this one function — not two independently
+ * written checks — so a real regression in the comparison logic itself
+ * (e.g. someone "fixing" this to always return null) is caught by the
+ * self-check too, not just by the main assertion.
+ */
+function compareToGolden(fresh: GoldenKeyEntry, goldenEntry: GoldenKeyEntry): string | null {
+  if (
+    goldenEntry.productKey !== fresh.productKey ||
+    goldenEntry.skuKey !== fresh.skuKey ||
+    goldenEntry.detectorStamp !== fresh.detectorStamp
+  ) {
+    return (
+      `${fresh.buyerSkuCode}: golden productKey="${goldenEntry.productKey}" skuKey="${goldenEntry.skuKey}" ` +
+      `detectorStamp="${goldenEntry.detectorStamp}" vs current productKey="${fresh.productKey}" ` +
+      `skuKey="${fresh.skuKey}" detectorStamp="${fresh.detectorStamp}"`
+    );
+  }
+  return null;
+}
+
 describe("keyStability (AC-15): productKey/skuKey golden file", () => {
   it("matches goldenKeys.json for every row of the real-catalog fixture", () => {
     const rows = loadJson<CatalogSnapshotRow[]>("catalogSnapshot.json");
@@ -82,17 +105,8 @@ describe("keyStability (AC-15): productKey/skuKey golden file", () => {
         mismatches.push(`${row.buyerSkuCode}: missing from goldenKeys.json`);
         continue;
       }
-      if (
-        goldenEntry.productKey !== fresh.productKey ||
-        goldenEntry.skuKey !== fresh.skuKey ||
-        goldenEntry.detectorStamp !== fresh.detectorStamp
-      ) {
-        mismatches.push(
-          `${row.buyerSkuCode}: golden productKey="${goldenEntry.productKey}" skuKey="${goldenEntry.skuKey}" ` +
-            `detectorStamp="${goldenEntry.detectorStamp}" vs current productKey="${fresh.productKey}" ` +
-            `skuKey="${fresh.skuKey}" detectorStamp="${fresh.detectorStamp}"`,
-        );
-      }
+      const mismatch = compareToGolden(fresh, goldenEntry);
+      if (mismatch) mismatches.push(mismatch);
     }
 
     expect(
@@ -106,19 +120,40 @@ describe("keyStability (AC-15): productKey/skuKey golden file", () => {
     ).toEqual([]);
   });
 
-  it("(self-check) actually fails when goldenKeys.json disagrees with the current engine", () => {
-    // Proves the comparison above is load-bearing: build a deliberately wrong
-    // golden entry for a real fixture row and assert the mismatch is
-    // detected — mirrors collision.test.ts's own injected-failure self-check.
+  it("(self-check) compareToGolden actually detects a real mismatch", () => {
+    // Proves compareToGolden — the SAME comparison function the main test
+    // above calls — is load-bearing, not vacuously true. Rather than
+    // tampering a string and asserting two different strings differ (true
+    // by construction, and doesn't exercise compareToGolden at all), this
+    // computes row A's CURRENT key normally, then compares it against a
+    // DIFFERENT real fixture row's stored golden entry — a genuine,
+    // realistic mismatch — and asserts compareToGolden reports it.
     const rows = loadJson<CatalogSnapshotRow[]>("catalogSnapshot.json");
-    const firstRow = rows[0];
-    if (!firstRow) {
-      // Fixture is empty (fresh/empty dev DB) — nothing to self-check against
-      // real data; skip rather than fail for a reason unrelated to this test.
+    const golden = loadJson<GoldenKeyEntry[]>("goldenKeys.json");
+    if (rows.length < 2 || golden.length < 2) {
+      // Fixture too small (fresh/empty dev DB) to pick two distinct rows —
+      // nothing meaningful to self-check against; skip rather than fail for
+      // a reason unrelated to this test.
       return;
     }
-    const fresh = computeGoldenEntry(firstRow);
-    const tamperedGolden: GoldenKeyEntry = { ...fresh, productKey: `${fresh.productKey}::tampered` };
-    expect(tamperedGolden.productKey).not.toBe(fresh.productKey);
+
+    const rowA = rows[0]!;
+    const freshA = computeGoldenEntry(rowA);
+
+    // Pick another row's golden entry whose stored productKey genuinely
+    // differs from freshA's, so this is guaranteed to be a real mismatch —
+    // not an accidental pass because two different buyerSkuCodes happen to
+    // share the same product's productKey.
+    const mismatchedGolden = golden.find(
+      (entry) => entry.buyerSkuCode !== rowA.buyerSkuCode && entry.productKey !== freshA.productKey,
+    );
+    if (!mismatchedGolden) {
+      // Every other row happens to share row A's productKey (fixture has
+      // only one distinct product) — nothing to self-check against; skip.
+      return;
+    }
+
+    const result = compareToGolden(freshA, mismatchedGolden);
+    expect(result, "expected compareToGolden to detect two genuinely different rows' keys as a mismatch").not.toBeNull();
   });
 });

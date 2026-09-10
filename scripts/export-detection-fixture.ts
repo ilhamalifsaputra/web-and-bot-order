@@ -33,11 +33,16 @@
  *
  *   pnpm export-detection-fixture
  *
- * Degrades gracefully: if `DATABASE_URL_PRISMA` is unreachable (or the query
- * itself fails for any other reason), this logs a warning and writes an
- * EMPTY fixture array rather than throwing — a worktree's dev DB commonly has
- * no Digiflazz-imported catalog at all, and that is an expected, fine
- * outcome for this script, not a failure.
+ * Fails loudly on any DB error: if connecting to or querying
+ * `DATABASE_URL_PRISMA` throws for any reason, this logs an error and exits
+ * non-zero WITHOUT writing anything — it must never overwrite an existing
+ * committed `catalogSnapshot.json` with an empty array just because this
+ * particular run's connection failed transiently. A genuinely empty (but
+ * reachable) catalog is a different, legitimate case: the query itself
+ * succeeds and simply returns zero rows, and that zero-row result IS written
+ * normally (there's nothing wrong with a worktree's dev DB having no
+ * Digiflazz-imported catalog yet) — see the try/catch in `main()` for
+ * exactly where that line is drawn.
  */
 import { config as loadEnv } from "dotenv";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -138,12 +143,13 @@ async function main(): Promise<void> {
       return 0;
     });
   } catch (err) {
-    console.warn(
-      "[export-detection-fixture] Could not read the catalog from DATABASE_URL_PRISMA " +
-        `(${err instanceof Error ? err.message : String(err)}) — writing an empty fixture. ` +
-        "This is expected on a worktree dev DB with no Digiflazz-imported catalog.",
+    console.error(
+      "[export-detection-fixture] Failed to connect to or query the catalog via DATABASE_URL_PRISMA " +
+        `(${err instanceof Error ? err.message : String(err)}). Leaving the existing committed ` +
+        `${OUTPUT_PATH} untouched — re-run once the connection issue is resolved.`,
     );
-    rows = [];
+    await prisma.$disconnect().catch(() => {});
+    process.exit(1);
   }
 
   writeSnapshot(rows);

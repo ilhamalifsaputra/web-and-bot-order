@@ -215,15 +215,7 @@ export async function createCatalogProduct(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
-  // Task 10: a bumpCatalogRevision(db) call belongs here (a new Product is a
-  // new Detection Engine catalog row), but adding it breaks
-  // detectionIndex.test.ts's "serves a cached value within the TTL, even
-  // after a catalog row is added underneath it" — that test adds a row via
-  // this function and asserts the cache is NOT invalidated. Pending a
-  // coordinator decision on updating that test; see task-10-report.md
-  // "Fix round". The 30s index TTL bounds the staleness meanwhile, and the
-  // Digiflazz import path already bumps explicitly after its transaction.
-  return db.product.create({
+  const product = await db.product.create({
     data: {
       categoryId: args.categoryId,
       name: args.name,
@@ -245,6 +237,13 @@ export async function createCatalogProduct(
       currencyIconKind: args.currencyIconKind ?? null,
     },
   });
+  // Task 10: a new Product row is a new Detection Engine catalog entry
+  // (crud/detectionIndex.ts). This is an admin-triggered single create — not
+  // a hot loop (the Digiflazz batch path uses importDigiflazzBrand's own
+  // post-commit bump) — so an immediate index invalidation is correct and
+  // cheap. Additive; nothing here reads the index back.
+  await bumpCatalogRevision(db);
+  return product;
 }
 
 export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {

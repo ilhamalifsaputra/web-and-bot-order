@@ -42,6 +42,15 @@ async function makeProduct(categoryId: number, name: string, digiflazzBrand: str
   return createCatalogProduct(prisma, { categoryId, name, digiflazzBrand });
 }
 
+/** Insert a catalog-row Product straight through the Prisma client. Unlike
+ * makeProduct/createCatalogProduct — which, as of Task 10, calls
+ * bumpCatalogRevision — this lands a row in the DB with NO revision bump: the
+ * honest way to exercise the index cache's TTL-only staleness path. */
+async function rawCatalogRow(categoryId: number, name: string, digiflazzBrand: string) {
+  const slug = `${name.toLowerCase().replace(/\s+/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
+  return prisma.product.create({ data: { categoryId, name, slug, digiflazzBrand } });
+}
+
 describe("getCatalogIndex", () => {
   it("reflects every Product that has a non-null digiflazzBrand", async () => {
     const category = await makeCategory();
@@ -86,13 +95,16 @@ describe("getCatalogIndex", () => {
 
   it("serves a cached value within the TTL, even after a catalog row is added underneath it", async () => {
     const category = await makeCategory();
-    await makeProduct(category.id, "First Product", "FIRST");
+    // Raw prisma.product.create so the rows land with NO catalog-revision
+    // bump (createCatalogProduct now bumps) — this test is about TTL-only
+    // staleness.
+    await rawCatalogRow(category.id, "First Product", "FIRST");
     const first = await getCatalogIndex(prisma);
     expect(first.entryCount).toBe(1);
 
     // Add a row WITHOUT bumping the catalog revision — the cache should not
     // notice it until the TTL lapses or the revision is bumped.
-    await makeProduct(category.id, "Second Product", "SECOND");
+    await rawCatalogRow(category.id, "Second Product", "SECOND");
 
     const second = await getCatalogIndex(prisma);
     expect(second.entryCount).toBe(1);
@@ -102,10 +114,12 @@ describe("getCatalogIndex", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const category = await makeCategory();
-    await makeProduct(category.id, "First Product", "FIRST");
+    // Raw prisma.product.create so neither row bumps the catalog revision —
+    // the rebuild below must be driven purely by the 30s TTL lapsing.
+    await rawCatalogRow(category.id, "First Product", "FIRST");
     await getCatalogIndex(prisma);
 
-    await makeProduct(category.id, "Second Product", "SECOND");
+    await rawCatalogRow(category.id, "Second Product", "SECOND");
     vi.setSystemTime(31_000); // past the 30s TTL
 
     const afterTtl = await getCatalogIndex(prisma);

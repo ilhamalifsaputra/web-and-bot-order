@@ -55,3 +55,5 @@ export * from "./crud/telegramUpdates";
 export * from "./crud/botSession";
 export * from "./crud/detectionKnowledge";
 export * from "./crud/detectionIndex";
+export * from "./crud/detectionRun";
+export * from "./crud/detectionIssues";

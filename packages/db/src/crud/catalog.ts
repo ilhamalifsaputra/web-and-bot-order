@@ -215,6 +215,14 @@ export async function createCatalogProduct(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
+  // Task 10: a bumpCatalogRevision(db) call belongs here (a new Product is a
+  // new Detection Engine catalog row), but adding it breaks
+  // detectionIndex.test.ts's "serves a cached value within the TTL, even
+  // after a catalog row is added underneath it" — that test adds a row via
+  // this function and asserts the cache is NOT invalidated. Pending a
+  // coordinator decision on updating that test; see task-10-report.md
+  // "Fix round". The 30s index TTL bounds the staleness meanwhile, and the
+  // Digiflazz import path already bumps explicitly after its transaction.
   return db.product.create({
     data: {
       categoryId: args.categoryId,
@@ -406,6 +414,10 @@ export async function createDenomination(
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the note on
+  // updateDenomination below. The Detection Engine's catalog index
+  // (crud/detectionIndex.ts) is built from Product.name only, so no
+  // denomination mutation can stale it.
   return db.denomination.create({
     data: {
       productId: args.productId,
@@ -439,6 +451,10 @@ export async function createDenomination(
 export async function updateDenomination(db: Db, denominationId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.denomination.update({ where: { id: denominationId }, data: fields });
+  // Task 10: deliberately does NOT call bumpCatalogRevision. The Detection
+  // Engine's catalog index (crud/detectionIndex.ts) is built from Product.name
+  // only — no denomination field feeds it — so a denomination mutation cannot
+  // stale it. Revisit if the index ever indexes denomination-level data.
 }
 
 export function getDenomination(db: Db, denominationId: number) {

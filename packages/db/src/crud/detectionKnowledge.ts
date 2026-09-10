@@ -41,7 +41,11 @@ import {
 import { DEFAULT_KNOWLEDGE_BASE } from "@app/core/detection/knowledge";
 
 const KNOWLEDGE_TTL_MS = 30_000;
-const KNOWLEDGE_REVISION_KEY = "detection_knowledge_revision";
+/** Settings key holding the monotonically-incremented knowledge-base
+ * revision. Exported so crud/detectionIndex.ts can fold it into its own
+ * cache key (the catalog index bakes in a knowledge-base snapshot, so a
+ * knowledge edit must invalidate it too). */
+export const KNOWLEDGE_REVISION_KEY = "detection_knowledge_revision";
 
 interface KnowledgeCacheEntry {
   value: KnowledgeBase;
@@ -214,6 +218,10 @@ export async function upsertDetectionOverride(
       productKey: args.productKey,
       baseProductKey: args.baseProductKey,
       reason: args.reason,
+      // `createdBy` is set on create ONLY — it records the override's
+      // original author, not its last editor, so an update by a different
+      // admin must not overwrite it.
+      createdBy: adminId,
     },
     update: {
       productKey: args.productKey,
@@ -231,6 +239,73 @@ export async function upsertDetectionOverride(
   });
 
   await bumpDetectionKnowledgeRevision(db);
+}
+
+/**
+ * Bulk-seed the knowledge base from a default vocabulary
+ * (scripts/seed-detection-knowledge.ts). Unlike the per-row `upsert*`
+ * helpers — which each write an audit-log row and bump the revision counter
+ * — this writes exactly ONE summary audit entry and bumps the knowledge
+ * revision exactly once for the whole batch, so re-running the seed does not
+ * accumulate N audit rows or advance the revision N times on every run.
+ *
+ * Still row-level idempotent: each upsert keys on its unique constraint
+ * (`[category, token]`, `alias`), so a second run updates the same rows in
+ * place rather than duplicating them.
+ */
+export async function seedDetectionKnowledge(
+  db: Db,
+  vocabulary: {
+    tokens: readonly {
+      category: TokenCategory;
+      token: string;
+      canonical: string;
+      isProductDefining: boolean;
+      enabled: boolean;
+    }[];
+    aliases: readonly { alias: string; expandsTo: string; reason: string | null }[];
+  },
+  adminId: number | null,
+): Promise<{ tokenCount: number; aliasCount: number }> {
+  for (const token of vocabulary.tokens) {
+    await db.detectionToken.upsert({
+      where: { category_token: { category: token.category, token: token.token } },
+      create: {
+        category: token.category,
+        token: token.token,
+        canonical: token.canonical,
+        isProductDefining: token.isProductDefining,
+        enabled: token.enabled,
+      },
+      update: {
+        canonical: token.canonical,
+        isProductDefining: token.isProductDefining,
+        enabled: token.enabled,
+      },
+    });
+  }
+
+  for (const alias of vocabulary.aliases) {
+    await db.detectionAlias.upsert({
+      where: { alias: alias.alias },
+      create: { alias: alias.alias, expandsTo: alias.expandsTo, reason: alias.reason },
+      update: { expandsTo: alias.expandsTo, reason: alias.reason },
+    });
+  }
+
+  const tokenCount = vocabulary.tokens.length;
+  const aliasCount = vocabulary.aliases.length;
+
+  await logAdminAction(db, {
+    adminId,
+    action: "detection_knowledge_seed",
+    targetType: "detection_knowledge",
+    details: `Seeded ${tokenCount} detection ${tokenCount === 1 ? "token" : "tokens"} and ${aliasCount} ${aliasCount === 1 ? "alias" : "aliases"} from the default vocabulary.`,
+  });
+
+  await bumpDetectionKnowledgeRevision(db);
+
+  return { tokenCount, aliasCount };
 }
 
 /** Test-only escape hatch: drops `db`'s cached KnowledgeBase entry. Test

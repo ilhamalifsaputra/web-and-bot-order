@@ -1790,8 +1790,11 @@ model DetectionToken {
   /// Whether this token splits the base product into a distinct product key
   /// (e.g. "pc" vs "mobile") rather than being purely descriptive.
   isProductDefining Boolean @map("is_product_defining")
-  /// Soft-disable without deleting — a disabled token is excluded from the
-  /// loaded KnowledgeBase but keeps its row (and edit history) intact.
+  /// Soft-disable without deleting — a disabled token is still loaded into
+  /// the KnowledgeBase (loadKnowledgeBase maps every row, enabled or not),
+  /// but is excluded from feature extraction: the classifier in
+  /// packages/core/src/detection/features.ts skips tokens where
+  /// `enabled` is false. The row (and its edit history) is kept intact.
   enabled           Boolean @default(true)
 
   @@unique([category, token], map: "ix_detection_tokens_category_token")

@@ -104,6 +104,13 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.voucher.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.broadcast.deleteMany();
+  // Detection Engine knowledge/index tables. No FKs among them, and
+  // DetectionOverride.createdBy → User is a plain nullable column (no
+  // relation/cascade), so ordering vs. user.deleteMany() below is flexible.
+  await prisma.detectionIssue.deleteMany();
+  await prisma.detectionOverride.deleteMany();
+  await prisma.detectionAlias.deleteMany();
+  await prisma.detectionToken.deleteMany();
   await prisma.setting.deleteMany();
   // WalletTransaction.user is onDelete:Restrict (Infra-5 fix, security audit
   // 2026-06-23 — it's an append-only ledger, never auto-erased alongside its

@@ -8,7 +8,10 @@ import {
   bumpCatalogRevision,
   __clearDetectionIndexCacheForTests,
 } from "./detectionIndex";
-import { __clearDetectionKnowledgeCacheForTests } from "./detectionKnowledge";
+import {
+  __clearDetectionKnowledgeCacheForTests,
+  upsertDetectionToken,
+} from "./detectionKnowledge";
 import { normalize } from "@app/core/detection";
 
 let db: TestDb;
@@ -22,12 +25,7 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await resetDb(prisma);
-  // Detection tables are not covered by the shared resetDb (added after it
-  // was written); getCatalogIndex reads the knowledge base too, so wipe both.
-  await prisma.detectionOverride.deleteMany();
-  await prisma.detectionAlias.deleteMany();
-  await prisma.detectionToken.deleteMany();
+  await resetDb(prisma); // clears the detection_* tables too
   __clearDetectionIndexCacheForTests(prisma);
   __clearDetectionKnowledgeCacheForTests(prisma);
 });
@@ -136,6 +134,37 @@ describe("getCatalogIndex", () => {
 
     const afterClear = await getCatalogIndex(prisma);
     expect(afterClear.entryCount).toBe(2);
+  });
+
+  it("invalidates the cached index when a knowledge-token edit bumps only the knowledge revision (not the catalog revision)", async () => {
+    const category = await makeCategory();
+    // "turbo" is not a known token yet, so it classifies as a core token and
+    // is baked into this product's base/product key.
+    await makeProduct(category.id, "Zeta Quest Turbo", "ZETA QUEST TURBO");
+
+    const before = await getCatalogIndex(prisma);
+    const beforeProductKeys = [...before.byProductKey.keys()].sort();
+    expect(before.byNormalizedName.has(normalize("Zeta Quest Turbo"))).toBe(true);
+
+    // Promote "turbo" to a product-defining edition token. This bumps
+    // detection_knowledge_revision but NOT detection_catalog_revision, and
+    // does not touch any Product row — so without folding the knowledge
+    // revision into the index cache key, getCatalogIndex would keep serving
+    // the pre-edit index until the 30s TTL lapsed.
+    await upsertDetectionToken(
+      prisma,
+      { category: "edition", token: "turbo", canonical: "turbo", isProductDefining: true },
+      null,
+    );
+
+    const after = await getCatalogIndex(prisma);
+
+    // The rebuilt index reflects the new knowledge: the stamp advanced with
+    // the knowledge revision, and "turbo" now splits into a defining token so
+    // the product's key changed.
+    expect(after.stamp).not.toBe(before.stamp);
+    const afterProductKeys = [...after.byProductKey.keys()].sort();
+    expect(afterProductKeys).not.toEqual(beforeProductKeys);
   });
 });
 

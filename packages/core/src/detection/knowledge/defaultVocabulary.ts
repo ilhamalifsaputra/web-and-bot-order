@@ -118,12 +118,18 @@ const defaultTokens = [
   },
 ] as const;
 
-export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = {
-  tokens: defaultTokens,
-  aliases: [],
-  overrides: [],
-  externalIdStableBySupplier: {
+// Frozen at the definition site: `loadKnowledgeBase` returns this object BY
+// REFERENCE on the empty-tables fallback path (no clone), and it is a shared
+// module singleton imported directly by fixtures and the engine. Freezing the
+// object AND its nested arrays/record here means a stray JS-level mutation
+// throws in strict mode instead of silently corrupting the process-wide
+// singleton — O(1), and it protects every consumer, not just the loader.
+export const DEFAULT_KNOWLEDGE_BASE: KnowledgeBase = Object.freeze({
+  tokens: Object.freeze(defaultTokens),
+  aliases: Object.freeze([]),
+  overrides: Object.freeze([]),
+  externalIdStableBySupplier: Object.freeze({
     digiflazz: true,
-  },
+  }),
   revision: "default",
-};
+});

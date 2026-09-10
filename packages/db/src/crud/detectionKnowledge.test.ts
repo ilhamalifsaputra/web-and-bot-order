@@ -4,6 +4,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
 import {
   loadKnowledgeBase,
+  seedDetectionKnowledge,
   upsertDetectionToken,
   upsertDetectionAlias,
   upsertDetectionOverride,
@@ -23,11 +24,7 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  await resetDb(prisma);
-  // Not covered by the shared resetDb (added after it was written).
-  await prisma.detectionOverride.deleteMany();
-  await prisma.detectionAlias.deleteMany();
-  await prisma.detectionToken.deleteMany();
+  await resetDb(prisma); // clears the detection_* tables too
   __clearDetectionKnowledgeCacheForTests(prisma);
 });
 afterEach(() => {
@@ -245,6 +242,38 @@ describe("upsertDetectionToken", () => {
     );
     const row = await prisma.setting.findUnique({ where: { key: "detection_knowledge_revision" } });
     expect(row?.value).toBe("1");
+  });
+});
+
+describe("seedDetectionKnowledge", () => {
+  it("writes ONE summary audit row and bumps the revision ONCE per run, not per row", async () => {
+    const vocabulary = {
+      tokens: [
+        { category: "platform" as const, token: "aa", canonical: "aa", isProductDefining: true, enabled: true },
+        { category: "edition" as const, token: "bb", canonical: "bb", isProductDefining: false, enabled: true },
+      ],
+      aliases: [{ alias: "cc", expandsTo: "c c", reason: null }],
+    };
+
+    const first = await seedDetectionKnowledge(prisma, vocabulary, null);
+    expect(first).toEqual({ tokenCount: 2, aliasCount: 1 });
+
+    // Re-run: row-level no-op (upserts key on the unique constraints).
+    await seedDetectionKnowledge(prisma, vocabulary, null);
+
+    expect(await prisma.detectionToken.count()).toBe(2);
+    expect(await prisma.detectionAlias.count()).toBe(1);
+
+    const seedLogs = await listAuditLogs(prisma, { action: "detection_knowledge_seed" });
+    expect(seedLogs).toHaveLength(2); // one per run — NOT one per token/alias
+    expect(seedLogs[0]?.details).toBe(
+      "Seeded 2 detection tokens and 1 alias from the default vocabulary.",
+    );
+
+    const revision = await prisma.setting.findUnique({
+      where: { key: "detection_knowledge_revision" },
+    });
+    expect(revision?.value).toBe("2"); // 2 runs — NOT 6 (2 runs x 3 rows)
   });
 });
 

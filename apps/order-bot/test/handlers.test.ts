@@ -1560,6 +1560,71 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
     expect(scratch.gameVariantEntries?.length).toBe(2);
   });
 
+  it("B3: a MIXED GAME_TOPUP category (1 variant + 1 unlabelled product) shows a flat list of everything, never a variant picker", async () => {
+    const cat = await createCategory(prisma, { name: "Mixed ML", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Labelled Diamonds" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Regular", gameVariantEmoji: "🎮" } });
+    await createDenomination(prisma, { productId: a.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Unlabelled Weekly Pass" });
+    await createDenomination(prisma, { productId: b.id, name: "Weekly", type: "SHARED", durationLabel: "Weekly Pass", price: "30000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    expect(sentIncludes(sink, "ML Labelled Diamonds")).toBe(true);
+    expect(sentIncludes(sink, "ML Unlabelled Weekly Pass")).toBe(true);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null; gameVariantDimensionSkipped?: boolean };
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.gameVariantDimensionSkipped).toBe(true);
+  });
+
+  it("B3: a MIXED GAME_TOPUP category (2 variants + 1 unlabelled product) still shows one flat list of all three, no picker", async () => {
+    const cat = await createCategory(prisma, { name: "Mixed FF", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Global Diamonds" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Max Diamonds" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Unlabelled Bundle" });
+    await createDenomination(prisma, { productId: c.id, name: "Bundle", type: "SHARED", durationLabel: "Starter Bundle", price: "25000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    expect(sentIncludes(sink, "FF Global Diamonds")).toBe(true);
+    expect(sentIncludes(sink, "FF Max Diamonds")).toBe(true);
+    expect(sentIncludes(sink, "FF Unlabelled Bundle")).toBe(true);
+    const scratch = ctx.session.scratch as { gameVariantDimensionSkipped?: boolean };
+    expect(scratch.gameVariantDimensionSkipped).toBe(true);
+  });
+
+  it("B3: re-entering a PURE single-variant GAME_TOPUP category after a mixed one clears gameVariantDimensionSkipped and resolves the variant", async () => {
+    const mixed = await createCategory(prisma, { name: "Mixed Then Pure - Mixed", group: CategoryGroup.GAME_TOPUP });
+    const m1 = await createCatalogProduct(prisma, { categoryId: mixed.id, name: "MTP Labelled" });
+    await prisma.product.update({ where: { id: m1.id }, data: { gameVariant: "Regular" } });
+    await createDenomination(prisma, { productId: m1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const m2 = await createCatalogProduct(prisma, { categoryId: mixed.id, name: "MTP Unlabelled" });
+    await createDenomination(prisma, { productId: m2.id, name: "Pass", type: "SHARED", durationLabel: "Pass", price: "20000" });
+
+    const pure = await createCategory(prisma, { name: "Mixed Then Pure - Pure", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: pure.id, name: "MTP Pure Diamonds" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameVariantEmoji: "🎮" } });
+    await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, mixed.id);
+    const scratchMixed = ctx.session.scratch as { gameVariantDimensionSkipped?: boolean };
+    expect(scratchMixed.gameVariantDimensionSkipped).toBe(true);
+
+    await customer.browseCategoryEntry(ctx, pure.id);
+    const scratch = ctx.session.scratch as { gameVariantDimensionSkipped?: boolean; resolvedGameVariant?: string | null };
+    expect(scratch.gameVariantDimensionSkipped).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBe("Standard");
+  });
+
   it("region step mirrors the skip logic: a single resolved variant with exactly 1 distinct region skips the region picker too", async () => {
     const cat = await createCategory(prisma, { name: "PUBG Mobile", group: CategoryGroup.GAME_TOPUP });
     const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });

@@ -22,6 +22,7 @@ import {
   listCatalogProducts,
   listActiveCategoriesByGroup,
   listCategoryGameVariants,
+  countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
   getCategory,
   soldCountsByProduct,
@@ -132,6 +133,12 @@ interface BrowseScratch {
   /** The Game Top Up region resolved for the active browse session — same
    * null-vs-undefined contract as resolvedGameVariant. */
   resolvedGameRegion?: string | null;
+  /** Set true by browseCategoryEntry when the active category is a mixed
+   * GAME_TOPUP category (some products carry a gameVariant, some don't):
+   * the variant/region pickers are skipped entirely and browseProductsFlat
+   * must NOT apply the gameVariant/gameRegion filter, or the labelled
+   * products would vanish. Deleted on every non-mixed path. */
+  gameVariantDimensionSkipped?: boolean;
   productId?: number;
   variantId?: number;
   quantity?: number;
@@ -405,6 +412,7 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     delete sc(ctx).gameVariantEmoji;
     delete sc(ctx).gameVariantEntries;
     delete sc(ctx).gameRegionEntries;
+    delete sc(ctx).gameVariantDimensionSkipped;
     await browseProductsFlat(ctx, 0);
     return;
   }
@@ -427,6 +435,25 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     effectiveBackTarget = groupCategories.length <= 1 ? ckb.cb("browse", "grps") : ckb.cb("browse", "grp", group);
   }
   const variants = await listCategoryGameVariants(prisma, categoryId);
+  const unvariantedCount = await countCategoryProductsWithoutGameVariant(prisma, categoryId);
+
+  // A mixed category — some catalog-eligible products carry a gameVariant,
+  // some don't. A variant picker (or the single-variant auto-resolve) would
+  // filter the flat list down to the picked value and hide every unlabelled
+  // product. Show one flat list of everything instead, exactly like a
+  // non-GAME_TOPUP category, and skip the variant/region dimension.
+  if (unvariantedCount > 0) {
+    delete sc(ctx).resolvedGameVariant;
+    delete sc(ctx).resolvedGameRegion;
+    delete sc(ctx).gameVariantEmoji;
+    delete sc(ctx).gameVariantEntries;
+    delete sc(ctx).gameRegionEntries;
+    sc(ctx).gameVariantDimensionSkipped = true;
+    await browseProductsFlat(ctx, 0);
+    return;
+  }
+  delete sc(ctx).gameVariantDimensionSkipped;
+
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
     // Back goes UP to the category picker (Finding I2/3 of the final-review)
@@ -479,6 +506,10 @@ async function enterGameVariant(
   regionBackTarget: string,
 ): Promise<void> {
   sc(ctx).resolvedGameVariant = gameVariant;
+  // Every path here (browseCategoryEntry's pure-category tail, pickGameVariant
+  // on a real picker tap) is by definition NOT the mixed-skip path — clear the
+  // flag so it can't linger from an earlier category this session.
+  delete sc(ctx).gameVariantDimensionSkipped;
   sc(ctx).gameVariantEmoji = gameVariantEmoji;
 
   const regions = await listCategoryGameRegions(prisma, categoryId, gameVariant);
@@ -575,9 +606,16 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // region dimension" filter value) — sc(ctx).group already carries the
   // active category's group (set alongside categoryId by every entry point
   // into this function), so no extra category query is needed here.
+  //
+  // Exception: a MIXED Game Top Up category (browseCategoryEntry set
+  // gameVariantDimensionSkipped because some products carry a gameVariant
+  // and some don't). There the picker flow never ran, so applying a
+  // `{ gameVariant: null, gameRegion: null }` filter would hide every
+  // labelled product — skip the filter entirely and show one flat list of
+  // everything, exactly like a non-GAME_TOPUP category.
   const categoryId = sc(ctx).categoryId;
   const filter =
-    sc(ctx).group === CategoryGroup.GAME_TOPUP
+    sc(ctx).group === CategoryGroup.GAME_TOPUP && !sc(ctx).gameVariantDimensionSkipped
       ? { gameVariant: sc(ctx).resolvedGameVariant ?? null, gameRegion: sc(ctx).resolvedGameRegion ?? null }
       : undefined;
   const products = await listCatalogProducts(prisma, categoryId, filter);

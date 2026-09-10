@@ -7,13 +7,27 @@
  *
  * Reads every `Product` with a non-null `digiflazzBrand`, joined to its
  * `Denomination`s, and writes ONE row per denomination:
- *   { productName, brand, category, type, buyerSkuCode }
+ *   { productName, brand, category, type, buyerSkuCode, denominationName }
+ *
+ * `denominationName` (Task 12b addition) is the Denomination's own display
+ * name (e.g. "86 Diamond") — added because
+ * packages/core/src/detection/skuKeyCollision.test.ts needs it to reproduce
+ * production's actual `buildSkuKey(productKey, normalize(denomination.name),
+ * distributionTokens)` composition (packages/db/src/crud/digiflazz.ts's
+ * `writeShadowDetectionForImport`), which this fixture previously had no way
+ * to exercise (see collision.test.ts's "Scope note" / task-11-report.md's
+ * "Known Gap"). Kept as a singular per-row field, not a `denominationNames:
+ * string[]` aggregate, because this export already writes one row per
+ * denomination (see the `for (const denom of product.denominations)` loop
+ * below) — the row's own denomination name is exactly as available as its
+ * own `buyerSkuCode` already is.
  *
  * Field provenance (confirmed against prisma/schema.prisma before writing
  * this):
- *   - productName  <- Product.name
- *   - brand        <- Product.digiflazzBrand
- *   - buyerSkuCode <- Denomination.supplierSku
+ *   - productName      <- Product.name
+ *   - brand            <- Product.digiflazzBrand
+ *   - buyerSkuCode     <- Denomination.supplierSku
+ *   - denominationName <- Denomination.name
  *   - category/type: Digiflazz's raw price-list `category`/`type` strings
  *     (DigiflazzPriceListItem, @app/core/suppliers/digiflazz) are used only
  *     transiently during import/grouping (groupDigiflazzPriceListByBrand) and
@@ -24,9 +38,10 @@
  *
  * Deliberately excludes EVERY other field by construction: the Prisma
  * `select` clauses below name only `name`/`digiflazzBrand` (Product) and
- * `supplierSku` (Denomination) — no `price`/`costPrice`, no customer/order
- * data, no credentials. Adding a field to this export requires deliberately
- * widening those `select` clauses, not just editing the code further down.
+ * `supplierSku`/`name` (Denomination) — no `price`/`costPrice`, no
+ * customer/order data, no credentials. Adding a field to this export requires
+ * deliberately widening those `select` clauses, not just editing the code
+ * further down.
  *
  * Read-only: issues a single `findMany`, no writes, never migrates the
  * schema. Never wired into `pretest` — run by hand:
@@ -77,6 +92,7 @@ export interface CatalogSnapshotRow {
   category: string | null;
   type: string | null;
   buyerSkuCode: string;
+  denominationName: string;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -109,7 +125,7 @@ async function main(): Promise<void> {
         digiflazzBrand: true,
         denominations: {
           where: { supplierSku: { not: null } },
-          select: { supplierSku: true },
+          select: { supplierSku: true, name: true },
         },
       },
     });
@@ -129,6 +145,7 @@ async function main(): Promise<void> {
           category: null,
           type: null,
           buyerSkuCode: denom.supplierSku,
+          denominationName: denom.name,
         });
       }
     }

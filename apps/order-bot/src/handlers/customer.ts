@@ -236,7 +236,15 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
   // the group wasn't recorded (shouldn't normally happen — defensive only).
   if (sc(ctx).categoryId != null) {
     if (sc(ctx).group) {
-      await browseCategoriesInGroup(ctx, sc(ctx).group!);
+      // Recomputed fresh, not trusted from a stored "was it skipped" flag
+      // (mirrors enterGameRegion's own products.length===1 recheck) — stays
+      // correct even if an admin adds/removes a category between screens.
+      const categories = await listActiveCategoriesByGroup(prisma, sc(ctx).group!);
+      if (categories.length <= 1) {
+        await browseGroups(ctx);
+      } else {
+        await browseCategoriesInGroup(ctx, sc(ctx).group!);
+      }
     } else {
       await browseGroups(ctx);
     }
@@ -345,6 +353,13 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
     await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang));
     return;
   }
+  if (categories.length === 1) {
+    // Mirrors browseCategoryEntry's variant/region skip: a single active
+    // category is no real choice, so skip this picker entirely. Back target
+    // is the group picker (`grps`), not this now-never-shown screen.
+    await browseCategoryEntry(ctx, categories[0]!.id, ckb.cb("browse", "grps"));
+    return;
+  }
   await smartEdit(ctx, t(ctx, "browse.category_picker_title", { group: groupLabel }), ckb.categoryPickerKb(categories, ctx.session.lang));
 }
 
@@ -363,7 +378,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
  * a category with a single edition/region never shows a pointless 1-button
  * picker.
  */
-export async function browseCategoryEntry(ctx: MyContext, categoryId: number): Promise<void> {
+export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string): Promise<void> {
   sc(ctx).categoryId = categoryId;
   const category = await getCategory(prisma, categoryId);
   if (!category || !category.isActive) {
@@ -397,6 +412,11 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number): P
   // Guaranteed non-null: the branch above already returned for every other
   // value, so `category.group` here is exactly CategoryGroup.GAME_TOPUP.
   const group = category.group;
+  // Defaults to the category picker (today's behavior for the normal "cat"
+  // callback route) — but browseCategoriesInGroup's own 1-category auto-skip
+  // passes the group picker's target instead, since its category picker was
+  // never shown.
+  const effectiveBackTarget = backTarget ?? ckb.cb("browse", "grp", group);
   const variants = await listCategoryGameVariants(prisma, categoryId);
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;
@@ -406,14 +426,14 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number): P
     await smartEdit(
       ctx,
       t(ctx, "browse.choose_variant"),
-      ckb.gameVariantPickerKb(variants, categoryId, ckb.cb("browse", "grp", group), ctx.session.lang),
+      ckb.gameVariantPickerKb(variants, categoryId, effectiveBackTarget, ctx.session.lang),
     );
     return;
   }
   // Variant step auto-skipped (0/1 distinct variant) — no picker was shown,
   // so if the region step DOES render, its own Back must skip straight to
   // the category picker, not re-render this same (skipped) step.
-  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, ckb.cb("browse", "grp", group));
+  await enterGameVariant(ctx, categoryId, variants[0]?.label ?? null, variants[0]?.emoji ?? null, effectiveBackTarget);
 }
 
 /** A customer tapped one entry on the variant picker rendered by

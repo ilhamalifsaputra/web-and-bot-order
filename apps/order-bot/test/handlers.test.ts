@@ -872,7 +872,12 @@ describe("Home screen (persistent keyboard)", () => {
   });
 
   it(`router wires v1:browse:grp:${CategoryGroup.GAME_TOPUP} to browseCategoriesInGroup`, async () => {
+    // Two categories on purpose: with only one, browseCategoriesInGroup
+    // auto-skips straight to browseCategoryEntry (see the dedicated
+    // "auto-skip" tests below) and this router-wiring assertion would be
+    // exercising that skip path instead of the picker it names.
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
     const { ctx, sink } = customerCtx({ callbackData: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
     await routeCallback(ctx);
     expect(sentIncludes(sink, cat.name)).toBe(true);
@@ -1349,11 +1354,31 @@ describe("group/category browsing handlers", () => {
   });
 
   it("browseCategoriesInGroup lists active categories in that group and records the group in scratch", async () => {
+    // Two categories on purpose — see the auto-skip tests below for the
+    // single-category case, which this picker-rendering test must not
+    // accidentally exercise.
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
     const { ctx, sink } = customerCtx();
     await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
     expect(sentIncludes(sink, cat.name)).toBe(true);
     expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("browseCategoriesInGroup auto-skips the picker and goes straight to the sole category's entry point when the group has exactly one active category", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+
+    // No "Choose one" category picker rendered — straight to the product.
+    expect(sentIncludes(sink, t(ctx, "browse.category_picker_title", { group: t(ctx, "browse.group_game_topup") }))).toBe(false);
+    expect(sentIncludes(sink, "ML Diamonds")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
   });
 
   it("browseCategoriesInGroup renders the empty state without dead-ending when the group has no categories", async () => {
@@ -1437,7 +1462,11 @@ describe("group/category browsing handlers", () => {
   });
 
   it("Back from a category-scoped product list returns to that category's group's category picker, not Home", async () => {
+    // Two categories in the group on purpose: the group's category picker
+    // genuinely renders in this path (unlike the single-category auto-skip
+    // case covered by the next test), so Back must still land there.
     const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
     const { ctx, sink } = customerCtx({
       text: persistentLabel("back", "en"),
       session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
@@ -1445,6 +1474,20 @@ describe("group/category browsing handlers", () => {
     await customer.handleProductNumber(ctx);
     expect(sentIncludes(sink, cat.name)).toBe(true);
     expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
+  it("Back from a category-scoped list reached via the 1-category auto-skip goes to the group picker, not the (skipped) category picker", async () => {
+    // Only one active category in the group — browseCategoriesInGroup would
+    // have auto-skipped its picker to reach this product list, so Back must
+    // recompute that same condition and land on browseGroups, not re-render
+    // a category picker that was never shown.
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
   });
 
   it("Back from a category-scoped list with no recorded group falls back to the group picker (never Home)", async () => {
@@ -1774,6 +1817,31 @@ describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
     const backRow = flat[flat.length - 1]!;
     expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
     expect(backRow.callback_data).not.toBe(`v1:browse:gvars:${cat.id}`);
+  });
+
+  it("the variant picker's Back button targets the GROUP picker (not the skipped category picker) when reached via browseCategoriesInGroup's 1-category auto-skip", async () => {
+    // Only one active category in the group, so browseCategoriesInGroup
+    // never shows its own picker — the category itself has 2+ variants, so
+    // ITS picker does render, and that picker's Back must skip past the
+    // never-shown category picker straight to the group picker.
+    const cat = await createCategory(prisma, { name: "Solo Category Two Variants", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP); // 1 category -> auto-skip -> 2 variants -> variant picker
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe("v1:browse:grps");
+    expect(backRow.callback_data).not.toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe(`v1:browse:cat:${cat.id}`);
   });
 });
 

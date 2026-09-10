@@ -415,8 +415,17 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
   // Defaults to the category picker (today's behavior for the normal "cat"
   // callback route) — but browseCategoriesInGroup's own 1-category auto-skip
   // passes the group picker's target instead, since its category picker was
-  // never shown.
-  const effectiveBackTarget = backTarget ?? ckb.cb("browse", "grp", group);
+  // never shown. When the caller omits backTarget entirely — both the "cat"
+  // AND "gvars" callback routes do this, the latter being the region
+  // picker's own Back button re-entering here — recompute fresh whether this
+  // group's category picker would itself be skipped today (mirrors
+  // handleBackButton's own Task-3 fix above): don't trust which path
+  // originally got us here, recheck reality.
+  let effectiveBackTarget = backTarget;
+  if (effectiveBackTarget == null) {
+    const groupCategories = await listActiveCategoriesByGroup(prisma, group);
+    effectiveBackTarget = groupCategories.length <= 1 ? ckb.cb("browse", "grps") : ckb.cb("browse", "grp", group);
+  }
   const variants = await listCategoryGameVariants(prisma, categoryId);
   if (variants.length > 1) {
     sc(ctx).gameVariantEntries = variants;

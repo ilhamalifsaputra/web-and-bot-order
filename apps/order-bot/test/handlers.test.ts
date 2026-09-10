@@ -1749,6 +1749,12 @@ describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO s
 describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
   it("the variant picker's Back button targets the CATEGORY picker, not a re-render of itself", async () => {
     const cat = await createCategory(prisma, { name: "Free Fire Back Test", group: CategoryGroup.GAME_TOPUP });
+    // Sibling category so the group's category picker is genuinely reachable
+    // (Task 3 fix: browseCategoryEntry's default backTarget now recomputes
+    // listActiveCategoriesByGroup fresh — with only 1 category in the group
+    // it would (correctly) default to the GROUP picker instead, since the
+    // category picker itself would never have been shown).
+    await createCategory(prisma, { name: "Free Fire Back Test Sibling", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
     await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
@@ -1801,6 +1807,12 @@ describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
     // `gvars:<id>` (that would re-render a variant picker that never existed
     // for this navigation) — it must skip straight to the category picker.
     const cat = await createCategory(prisma, { name: "PUBG Back Test", group: CategoryGroup.GAME_TOPUP });
+    // Sibling category so the group's category picker is genuinely reachable
+    // (Task 3 fix: browseCategoryEntry's default backTarget now recomputes
+    // listActiveCategoriesByGroup fresh — with only 1 category in the group
+    // it would (correctly) default to the GROUP picker instead, since the
+    // category picker itself would never have been shown).
+    await createCategory(prisma, { name: "PUBG Back Test Sibling", group: CategoryGroup.GAME_TOPUP });
     const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG A" });
     await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
     await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
@@ -1842,6 +1854,89 @@ describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
     expect(backRow.callback_data).toBe("v1:browse:grps");
     expect(backRow.callback_data).not.toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
     expect(backRow.callback_data).not.toBe(`v1:browse:cat:${cat.id}`);
+  });
+});
+
+// Task 3 fix (post-merge review finding): the "gvars" callback route
+// (callbacks.ts:87, the region picker's own Back target) re-enters
+// browseCategoryEntry with NO backTarget — same as the "cat" route. Before
+// this fix, the omitted-backTarget default unconditionally pointed at the
+// category picker (`grp:<group>`), even when the category was originally
+// reached via browseCategoriesInGroup's 1-category auto-skip (where the
+// category picker was never shown). The fix recomputes
+// listActiveCategoriesByGroup fresh (mirroring handleBackButton's own
+// Task-3 fix) so the default is `grps` when the group has <=1 active
+// category, matching whatever entry path actually applies today.
+describe("Task 3 fix: 'gvars' reentry recomputes the group's category-picker skip state", () => {
+  it("the region picker's Back tap ('gvars' route, no backTarget) re-renders the variant picker targeting the GROUP picker when the category was reached via the 1-category auto-skip", async () => {
+    // Sole active category in its group -> browseCategoriesInGroup auto-skips
+    // the category picker entirely (Task 3). 2 distinct variants so the
+    // variant picker itself renders; the "Standard" variant has 2 distinct
+    // regions so tapping it renders the region picker, whose Back button
+    // re-enters browseCategoryEntry via the "gvars" route with NO backTarget.
+    const cat = await createCategory(prisma, { name: "Solo Regioned Category", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP); // 1 category -> auto-skip -> 2 variants -> variant picker (Back correctly targets grps)
+
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((btn) => btn.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0); // "Standard" (alphabetically first) is index 0
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions), Back targets gvars:<id>
+
+    // Simulate the region picker's Back tap: the "gvars" callback route calls
+    // browseCategoryEntry with NO backTarget (callbacks.ts:87).
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe("v1:browse:grps");
+    // Pre-fix bug: this unconditionally re-pointed at the (never-shown)
+    // category picker.
+    expect(backRow.callback_data).not.toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+  });
+
+  it("regression guard: the same 'gvars' reentry still targets the CATEGORY picker when the group has 2+ active categories", async () => {
+    const cat = await createCategory(prisma, { name: "Multi Cat Regioned Category", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Sibling Category", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2+ categories in group -> "cat" route (no auto-skip) -> 2 variants -> variant picker
+
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((btn) => btn.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0);
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions)
+
+    // Simulate the region picker's Back tap via the "gvars" route again.
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe("v1:browse:grps");
   });
 });
 

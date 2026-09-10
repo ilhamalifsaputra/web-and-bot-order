@@ -33,7 +33,13 @@ import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../s
  * needed because `vi.mock` factories run before ordinary module-level `let`s
  * are initialised.
  */
-const dbMockState = vi.hoisted(() => ({ progressFlushError: null as Error | null }));
+const dbMockState = vi.hoisted(() => ({
+  progressFlushError: null as Error | null,
+  // Task 10: per-test overrides for the two calls runDigiflazzCatalogSyncTick
+  // makes. null => use the real implementation.
+  resyncDigiflazzCatalog: null as null | (() => Promise<{ updated: number; deactivated: number }>),
+  runDetectionForCatalog: null as null | (() => Promise<unknown>),
+}));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
   return {
@@ -42,6 +48,14 @@ vi.mock("@app/db", async () => {
       if (dbMockState.progressFlushError) throw dbMockState.progressFlushError;
       return actual.updateBroadcastProgress(...args);
     },
+    resyncDigiflazzCatalog: (...args: Parameters<typeof actual.resyncDigiflazzCatalog>) =>
+      dbMockState.resyncDigiflazzCatalog
+        ? dbMockState.resyncDigiflazzCatalog()
+        : actual.resyncDigiflazzCatalog(...args),
+    runDetectionForCatalog: (...args: Parameters<typeof actual.runDetectionForCatalog>) =>
+      dbMockState.runDetectionForCatalog
+        ? dbMockState.runDetectionForCatalog()
+        : actual.runDetectionForCatalog(...args),
   };
 });
 
@@ -70,6 +84,7 @@ import {
   nowpaymentsPollWatchdog,
   outboxDispatcherPollWatchdog,
   scheduleOutboxDispatcherWatchdog,
+  runDigiflazzCatalogSyncTick,
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
@@ -79,6 +94,8 @@ let sample: SampleData;
 
 beforeEach(async () => {
   dbMockState.progressFlushError = null;
+  dbMockState.resyncDigiflazzCatalog = null;
+  dbMockState.runDetectionForCatalog = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -2213,6 +2230,64 @@ describe("scheduleOutboxDispatcherWatchdog (Task 15 / I-3, Part C)", () => {
       expect(seconds).not.toContain(19); // nowpaymentsPollWatchdog
     } finally {
       cron.stop();
+    }
+  });
+});
+
+/**
+ * Task 10: runDigiflazzCatalogSyncTick chains a shadow-mode detection pass
+ * (bumpCatalogRevision + runDetectionForCatalog) after the hourly Digiflazz
+ * catalog resync. The detection pass must be fully isolated — a failure in it
+ * must neither reject the tick nor undo/suppress the successful resync — and
+ * it must be skipped entirely when the resync itself failed.
+ */
+describe("runDigiflazzCatalogSyncTick (Task 10 shadow-mode detection pass)", () => {
+  it("runs runDetectionForCatalog after a successful resync; a detection-pass error neither rejects the tick nor suppresses the resync log", async () => {
+    const calls: string[] = [];
+    dbMockState.resyncDigiflazzCatalog = async () => {
+      calls.push("resync");
+      return { updated: 1, deactivated: 0 };
+    };
+    dbMockState.runDetectionForCatalog = async () => {
+      calls.push("detect");
+      throw new Error("detection engine blew up");
+    };
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    try {
+      // Does not reject even though runDetectionForCatalog throws.
+      await expect(runDigiflazzCatalogSyncTick()).resolves.toBeUndefined();
+
+      // Detection ran, and it ran AFTER the resync.
+      expect(calls).toEqual(["resync", "detect"]);
+      // The resync's own success log still fired — not suppressed by the later failure.
+      expect(info.mock.calls.some((c) => String(c[0]).includes("Digiflazz catalog re-sync"))).toBe(true);
+      // The detection failure surfaced as a warning, not a throw.
+      expect(warn.mock.calls.some((c) => String(c[1]).includes("shadow-mode detection pass"))).toBe(true);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("skips the detection pass entirely when the resync itself throws", async () => {
+    const calls: string[] = [];
+    dbMockState.resyncDigiflazzCatalog = async () => {
+      calls.push("resync");
+      throw new Error("resync failed");
+    };
+    dbMockState.runDetectionForCatalog = async () => {
+      calls.push("detect");
+      return {};
+    };
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await expect(runDigiflazzCatalogSyncTick()).resolves.toBeUndefined();
+
+      expect(calls).toEqual(["resync"]); // detection never ran
+      expect(error.mock.calls.some((c) => String(c[1]).includes("Digiflazz catalog re-sync failed"))).toBe(true);
+    } finally {
+      error.mockRestore();
     }
   });
 });

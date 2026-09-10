@@ -101,6 +101,63 @@ const defaultTokens = [
     enabled: true,
   },
 
+  // Region tokens (Task 12b): full country names, as they actually appear in
+  // real Digiflazz product-name parenthetical suffixes — e.g.
+  // "MOBILE LEGENDS (Indonesia)", "Valorant (Singapore)". Derived by scanning
+  // every distinct `\(([^)]+)\)$` suffix in
+  // __fixtures__/catalogSnapshot.json (232-row real-catalog export, Task 11)
+  // and adding every genuine country/region name found that wasn't already
+  // covered. "Global" is deliberately NOT added here: it already matches the
+  // existing "distribution" category token above (isProductDefining: true)
+  // and re-adding it under "region" would be redundant, not a gap. Same
+  // isProductDefining: false as id/sg/my above — distribution-only per spec;
+  // do NOT flip these to true, that would break AC-04's intentional
+  // productKey collapsing across region variants (see collision.test.ts's
+  // ALLOWLISTED_COLLISIONS doc comment for why productKey must stay
+  // region-agnostic).
+  {
+    category: "region" as const,
+    token: "indonesia",
+    canonical: "indonesia",
+    isProductDefining: false,
+    enabled: true,
+  },
+  {
+    category: "region" as const,
+    token: "filipina",
+    canonical: "filipina",
+    isProductDefining: false,
+    enabled: true,
+  },
+  {
+    category: "region" as const,
+    token: "russia",
+    canonical: "russia",
+    isProductDefining: false,
+    enabled: true,
+  },
+  {
+    category: "region" as const,
+    token: "brazil",
+    canonical: "brazil",
+    isProductDefining: false,
+    enabled: true,
+  },
+  {
+    category: "region" as const,
+    token: "malaysia",
+    canonical: "malaysia",
+    isProductDefining: false,
+    enabled: true,
+  },
+  {
+    category: "region" as const,
+    token: "singapore",
+    canonical: "singapore",
+    isProductDefining: false,
+    enabled: true,
+  },
+
   // Noise tokens (ported from packages/core/src/suppliers/digiflazz.ts:180-186)
   {
     category: "noise" as const,

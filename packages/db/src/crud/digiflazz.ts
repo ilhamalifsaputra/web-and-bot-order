@@ -895,28 +895,35 @@ export interface DigiflazzImportRow {
  * `detectionStamp`. Purely informational until the Task 12 cutover gate —
  * the import/resync matching logic never reads these columns back.
  *
- * Runs on `tx` inside `importDigiflazzBrand`'s own transaction (so the
- * detection columns land atomically with the rows they describe) and reads
- * the catalog index off that same `tx`, which already sees the Product/
- * denominations created earlier in the transaction. Deliberately touches
- * ONLY the `detection*` columns — never `brand` / `digiflazzBrand` / `price`
- * / `costPrice` / `isActive` / `supplierSku`.
+ * Runs on `db` (the real client) AFTER `importDigiflazzBrand`'s transaction
+ * has committed — NOT on `tx` inside it. A `tx.*.update` failure inside a
+ * Prisma interactive transaction aborts the whole transaction block; a JS
+ * `try/catch` around it cannot un-abort it, so if this ran on `tx` and the
+ * `detection_*` columns didn't exist yet (a migration-ordering hazard),
+ * the entire brand import would fail where it used to succeed. Post-commit,
+ * a failure here is genuinely isolated from the catalog import (the
+ * try/catch at the call site actually holds).
+ *
+ * `denoms` is the exact set of denomination rows this import created/updated
+ * (threaded out of `importDigiflazzBrand`'s main loop — no re-query needed).
+ * Deliberately touches ONLY the `detection*` columns — never `brand` /
+ * `digiflazzBrand` / `price` / `costPrice` / `isActive` / `supplierSku`.
  *
  * `detectionConfidence` is written as a Decimal (schema type `Decimal?`),
  * never a JS float.
  */
 async function writeShadowDetectionForImport(
-  tx: Db,
+  db: Db,
   productId: number,
   brand: string,
-  rows: DigiflazzImportRow[],
+  denoms: { id: number; name: string }[],
 ): Promise<void> {
-  const [knowledge, index] = await Promise.all([loadKnowledgeBase(tx), getCatalogIndex(tx)]);
+  const [knowledge, index] = await Promise.all([loadKnowledgeBase(db), getCatalogIndex(db)]);
   const detection = detect({ productName: brand }, { knowledge, index, supplier: "digiflazz" });
   const detectionStamp = index.stamp;
   const resolved = detection.status === "resolved" ? detection : null;
 
-  await tx.product.update({
+  await db.product.update({
     where: { id: productId },
     data: {
       detectionStatus: detection.status,
@@ -932,17 +939,11 @@ async function writeShadowDetectionForImport(
   // pattern as engine.acceptance.test.ts's AC-04). Distribution tokens come
   // from the brand name's own feature extraction.
   const distributionTokens = extractFeatures(normalize(brand), knowledge).distributionTokens;
-  for (const row of rows) {
-    const denom = await tx.denomination.findFirst({
-      where: { productId, supplierSku: row.buyerSkuCode },
-      select: { id: true },
-    });
-    if (!denom) continue;
-    const denomName = stripRegionSuffix(row.productName);
+  for (const denom of denoms) {
     const skuKey = resolved
-      ? buildSkuKey(resolved.productKey, normalize(denomName), distributionTokens)
+      ? buildSkuKey(resolved.productKey, normalize(denom.name), distributionTokens)
       : null;
-    await tx.denomination.update({
+    await db.denomination.update({
       where: { id: denom.id },
       data: { detectionSkuKey: skuKey, detectionStamp },
     });
@@ -973,7 +974,7 @@ export async function importDigiflazzBrand(
   db: PrismaClient,
   args: { brand: string; categoryId: number; rows: DigiflazzImportRow[] },
 ): Promise<{ productId: number; denominationCount: number }> {
-  const result = await db.$transaction(async (tx) => {
+  const { productId, touchedDenoms } = await db.$transaction(async (tx) => {
     let product = await tx.product.findFirst({ where: { digiflazzBrand: args.brand } });
     if (!product) {
       product = await createCatalogProduct(tx, {
@@ -984,6 +985,10 @@ export async function importDigiflazzBrand(
       });
     }
     const markupSettings = await getDigiflazzMarkupSettings(tx);
+    // Threaded out to the post-commit Task 10 shadow-detection pass below —
+    // {id, name} of every denomination this call created/updated, so that
+    // pass never has to re-query for rows this same loop already touched.
+    const touchedDenoms: { id: number; name: string }[] = [];
     for (const row of args.rows) {
       const price = quantizeMoney(row.price, 4);
       const costPrice = quantizeMoney(row.costPrice, 4);
@@ -1009,8 +1014,9 @@ export async function importDigiflazzBrand(
           costPrice,
           priceOverridden,
         });
+        touchedDenoms.push({ id: existingDenom.id, name: denomName });
       } else {
-        await createDenomination(tx, {
+        const created = await createDenomination(tx, {
           productId: product.id,
           name: denomName,
           // ProductType only accepts SHARED | PRIVATE (packages/core/src/enums.ts)
@@ -1027,30 +1033,36 @@ export async function importDigiflazzBrand(
           additionalFields: JSON.stringify(DEFAULT_DIGIFLAZZ_FIELDS),
           isActive: false,
         });
+        touchedDenoms.push({ id: created.id, name: denomName });
       }
     }
 
-    // Task 10 shadow wiring: record the detection result on the new
-    // Product/denomination rows. A failure here must not roll back the
-    // catalog import, so it is caught and logged — the next full detection
-    // sync (runDetectionForCatalog) fills the columns in on its next tick.
-    try {
-      await writeShadowDetectionForImport(tx, product.id, args.brand, args.rows);
-    } catch (err) {
-      logger.warn(
-        { err },
-        `Shadow-mode detection wiring failed while importing the Digiflazz brand "${args.brand}" — the catalog import itself is committed; the detection columns were left unset for this run.`,
-      );
-    }
-
-    return { productId: product.id, denominationCount: args.rows.length };
+    return { productId: product.id, touchedDenoms };
   });
 
   // Invalidate every Db handle's cached CatalogIndex so the next
   // getCatalogIndex()/detection run picks up the newly-imported Product and
   // denominations (Task 8). Done after the transaction commits.
   await bumpCatalogRevision(db);
-  return result;
+
+  // Task 10 shadow wiring: record the detection result on the new
+  // Product/denomination rows. Deliberately runs AFTER the transaction has
+  // committed (on `db`, not `tx`) — a failure inside an interactive
+  // transaction aborts the whole transaction block regardless of any JS
+  // try/catch, so running this here is what actually keeps a shadow-mode
+  // failure from ever taking the catalog import down with it. The next full
+  // detection sync (runDetectionForCatalog) fills the columns in on its next
+  // tick if this pass itself fails.
+  try {
+    await writeShadowDetectionForImport(db, productId, args.brand, touchedDenoms);
+  } catch (err) {
+    logger.warn(
+      { err },
+      `Shadow-mode detection wiring failed while importing the Digiflazz brand "${args.brand}" — the catalog import itself is committed; the detection columns were left unset for this run.`,
+    );
+  }
+
+  return { productId, denominationCount: args.rows.length };
 }
 
 /**

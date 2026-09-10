@@ -34,11 +34,17 @@ export interface ExtractedFeatures {
 // here as pure knowledge-driven logic rather than importing that file.
 const TRAILING_PARENTHETICAL = /\s*\(([^)]+)\)\s*$/;
 
-// Duration-range shape (e.g. "1-3 menit", "2-5 jam", "1-2 hari"). This is
+// Duration-range shape, in its POST-`normalize()` form. `capturedRaw` below
+// is sliced out of `normalizedName`, which has already gone through
+// `normalize()` (Task 2) — and `normalize()` maps the "-" separator to a
+// space (SEPARATOR_CHARS) and then collapses any whitespace run, including
+// the one that produces, to a single space (WHITESPACE_RUN) before trim.
+// So a raw "1-3 Menit" arrives here as "1 3 menit" — never with a literal
+// hyphen — and is always separated by exactly one space, not a run. This is
 // the one structural pattern allowed to live in code rather than in the
-// Knowledge layer's data, since it's a shape (N-N unit) rather than a fixed
+// Knowledge layer's data, since it's a shape (N N unit) rather than a fixed
 // vocabulary word — enumerating it as data tokens isn't practical.
-const DURATION_RANGE_PATTERN = /^\d+-\d+\s*(menit|jam|hari)$/;
+const DURATION_RANGE_PATTERN = /^\d+\s\d+\s(menit|jam|hari)$/;
 
 /**
  * Looks up an enabled knowledge token by its exact (already-normalized)

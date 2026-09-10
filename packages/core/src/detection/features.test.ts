@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { extractFeatures } from "./features";
+import { normalize } from "./normalize";
 import type { KnowledgeBase } from "./types";
 
 // Small, self-contained knowledge base for these tests — deliberately not
@@ -106,21 +107,33 @@ describe("extractFeatures", () => {
     expect(result.coreTokens).toEqual(["legends"]);
   });
 
-  it("suppresses a duration-range parenthetical to null", () => {
-    const result = extractFeatures("legends (1-3 menit)", TEST_KNOWLEDGE);
+  it("suppresses a duration-range parenthetical to null (through the real normalize() -> extractFeatures() pipeline)", () => {
+    // Raw input has the literal hyphen a real Digiflazz product name would
+    // carry; normalize() collapses "1-3" to "1 3" before extractFeatures
+    // ever sees it, which is the shape DURATION_RANGE_PATTERN must match.
+    const result = extractFeatures(normalize("Legends (1-3 Menit)"), TEST_KNOWLEDGE);
     expect(result.parentheticalSuffix).toBeNull();
     expect(result.coreTokens).toEqual(["legends"]);
   });
 
-  it("suppresses duration-range parentheticals for jam and hari units too", () => {
-    expect(extractFeatures("legends (2-5 jam)", TEST_KNOWLEDGE).parentheticalSuffix).toBeNull();
-    expect(extractFeatures("legends (1-2 hari)", TEST_KNOWLEDGE).parentheticalSuffix).toBeNull();
+  it("suppresses duration-range parentheticals for jam and hari units too (through normalize())", () => {
+    expect(extractFeatures(normalize("Legends (2-5 Jam)"), TEST_KNOWLEDGE).parentheticalSuffix).toBeNull();
+    expect(extractFeatures(normalize("Legends (1-2 Hari)"), TEST_KNOWLEDGE).parentheticalSuffix).toBeNull();
   });
 
   it("does not suppress a single-count duration-like parenthetical (no range dash)", () => {
-    // "2 jam" has no "N-N" shape, so the duration-range pattern must not match.
-    const result = extractFeatures("legends (2 jam)", TEST_KNOWLEDGE);
+    // "2 jam" has no "N N" shape, so the duration-range pattern must not match.
+    const result = extractFeatures(normalize("Legends (2 Jam)"), TEST_KNOWLEDGE);
     expect(result.parentheticalSuffix).toBe("2 jam");
+  });
+
+  it("end-to-end regression: a genuine raw Digiflazz-style duration-range name is denylisted, not misread as a real annotation", () => {
+    // This is the exact shape Task 13's cutover fed through the pipeline
+    // that caught the bug: DURATION_RANGE_PATTERN previously required a
+    // literal hyphen, but normalize() always removes it before
+    // extractFeatures runs, so the denylist never actually fired.
+    const result = extractFeatures(normalize("Some Product (1-3 Menit)"), TEST_KNOWLEDGE);
+    expect(result.parentheticalSuffix).toBeNull();
   });
 
   it("does not leak a literal paren character into coreTokens", () => {

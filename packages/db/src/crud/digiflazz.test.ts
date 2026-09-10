@@ -930,6 +930,226 @@ describe("groupDigiflazzPriceListByBrand", () => {
   });
 });
 
+describe("groupDigiflazzPriceListByBrand — type-split by Digiflazz `type` (Task 21)", () => {
+  // 1 — the split itself
+  it("splits one brand into a base group and a variant group when it reports >= 2 distinct types", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ab-umum-3200", brand: "Arena Breakout", type: "Umum", productName: "Arena Breakout 3.200 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-umum-6400", brand: "Arena Breakout", type: "Umum", productName: "Arena Breakout 6.400 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-inf-1000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(2);
+
+    const base = groups.find((g) => g.brand === "Arena Breakout")!;
+    expect(base.gameVariant).toBe("Umum");
+    expect(base.rawBrand).toBe("Arena Breakout");
+    expect(base.items).toHaveLength(2);
+
+    const infinite = groups.find((g) => g.brand === "Arena Breakout Infinite")!;
+    expect(infinite.gameVariant).toBe("Infinite");
+    expect(infinite.rawBrand).toBe("Arena Breakout");
+    expect(infinite.items).toHaveLength(1);
+  });
+
+  // 2 — non-regression #1: no type variation
+  it("non-regression #1: a brand with no type variation stays one group, gameVariant null", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ml100", brand: "Mobile Legends" }),
+      priceListItem({ buyerSkuCode: "ml250", brand: "Mobile Legends", productName: "Mobile Legends 250 Diamond" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.brand).toBe("Mobile Legends");
+    expect(groups[0]!.brand).toBe(groups[0]!.rawBrand);
+    expect(groups[0]!.gameVariant).toBeNull();
+  });
+
+  // 3 — non-regression #2 (most important): 100% one non-"Umum" type
+  it('non-regression #2: a brand that is 100% one non-"Umum" type stays one group under the plain brand name, gameVariant null', async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ab-inf-1000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-inf-2000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 2.000 Bonds" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.brand).toBe("Arena Breakout");
+    expect(groups[0]!.gameVariant).toBeNull();
+    expect(groups[0]!.items).toHaveLength(2);
+  });
+
+  // 4 — base-type casing tolerance
+  it("treats UMUM / ' umum ' / null type as the base subset (case + whitespace tolerant) when splitting", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ab-a", brand: "Arena Breakout", type: "UMUM", productName: "Arena Breakout 3.200 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-b", brand: "Arena Breakout", type: " umum ", productName: "Arena Breakout 6.400 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-c", brand: "Arena Breakout", type: null, productName: "Arena Breakout 12.800 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-inf", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(2);
+    const base = groups.find((g) => g.brand === "Arena Breakout")!;
+    expect(base.gameVariant).toBe("Umum");
+    expect(base.items).toHaveLength(3);
+    const infinite = groups.find((g) => g.brand === "Arena Breakout Infinite")!;
+    expect(infinite.items).toHaveLength(1);
+  });
+
+  // 5 — region x type dedupe
+  it("region x type dedupe: when the type suffix repeats the (Region) paren, uses the suffix once and drops the region", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ff-umum-100", brand: "Free Fire", type: "Umum", productName: "Free Fire 100 Diamond" }),
+      priceListItem({ buyerSkuCode: "ff-global-100", brand: "Free Fire", type: "Global", productName: "Free Fire 100 Diamond (Global)" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(groups).toHaveLength(2);
+    const global = groups.find((g) => g.gameVariant === "Global")!;
+    expect(global.brand).toBe("Free Fire Global");
+    expect(global.region).toBeNull();
+    const base = groups.find((g) => g.gameVariant === "Umum")!;
+    expect(base.brand).toBe("Free Fire");
+  });
+
+  // 6 — region x type, non-overlapping
+  it("region x type non-overlapping: a genuine region paren is kept alongside the type suffix", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ff-umum-100", brand: "Free Fire", type: "Umum", productName: "Free Fire 100 Diamond" }),
+      priceListItem({ buyerSkuCode: "ff-global-id-100", brand: "Free Fire", type: "Global", productName: "Free Fire 100 Diamond (Indonesia)" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    const global = groups.find((g) => g.gameVariant === "Global")!;
+    expect(global.brand).toBe("Free Fire Global (Indonesia)");
+    expect(global.region).toBe("Indonesia");
+    expect(global.gameVariant).toBe("Global");
+  });
+
+  // 7 — existing-Product match after split
+  it("computes existingProductId against the post-split displayName set", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const infiniteProduct = await prisma.product.create({
+      data: {
+        categoryId: category.id,
+        name: "Arena Breakout Infinite",
+        slug: "arena-breakout-infinite",
+        digiflazzBrand: "Arena Breakout Infinite",
+      },
+    });
+    const items = [
+      priceListItem({ buyerSkuCode: "ab-umum-3200", brand: "Arena Breakout", type: "Umum", productName: "Arena Breakout 3.200 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-inf-1000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds" }),
+    ];
+    const groups = await groupDigiflazzPriceListByBrand(prisma, items);
+    const infinite = groups.find((g) => g.brand === "Arena Breakout Infinite")!;
+    expect(infinite.existingProductId).toBe(infiniteProduct.id);
+    const base = groups.find((g) => g.brand === "Arena Breakout")!;
+    expect(base.existingProductId).toBeNull();
+  });
+
+  // 8 — deterministic order
+  it("emits groups in a deterministic order across repeated runs over the same input", async () => {
+    const items = [
+      priceListItem({ buyerSkuCode: "ab-umum-3200", brand: "Arena Breakout", type: "Umum", productName: "Arena Breakout 3.200 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-inf-1000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds" }),
+      priceListItem({ buyerSkuCode: "ab-gar-1000", brand: "Arena Breakout", type: "Garena", productName: "Arena Breakout Garena 1.000 Bonds" }),
+    ];
+    const first = await groupDigiflazzPriceListByBrand(prisma, items);
+    const second = await groupDigiflazzPriceListByBrand(prisma, items);
+    expect(first.map((g) => g.brand)).toEqual(second.map((g) => g.brand));
+    // base first, then the non-null suffixes ascending by `<`
+    expect(first.map((g) => g.brand)).toEqual([
+      "Arena Breakout",
+      "Arena Breakout Garena",
+      "Arena Breakout Infinite",
+    ]);
+  });
+});
+
+describe("importDigiflazzBrand — gameVariant seeding (Task 21)", () => {
+  // 9 — with gameVariant
+  it("writes gameVariant onto the Product it creates when the arg is passed", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Arena Breakout Infinite",
+      categoryId: category.id,
+      gameVariant: "Infinite",
+      rows: [{ buyerSkuCode: "ab-inf-1000", productName: "Arena Breakout Infinite 1.000 Bonds", price: "16500", costPrice: "15000" }],
+    });
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    expect(product.gameVariant).toBe("Infinite");
+    expect(product.digiflazzBrand).toBe("Arena Breakout Infinite");
+  });
+
+  // 10 — without gameVariant
+  it("leaves gameVariant null on the created Product when the arg is omitted", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { productId } = await importDigiflazzBrand(prisma, {
+      brand: "Mobile Legends",
+      categoryId: category.id,
+      rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+    });
+    const product = await prisma.product.findUniqueOrThrow({ where: { id: productId } });
+    expect(product.gameVariant).toBeNull();
+  });
+
+  // 11 — re-import never overwrites
+  it("never overwrites an existing Product's admin-set gameVariant on re-import", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    await prisma.product.create({
+      data: {
+        categoryId: category.id,
+        name: "X",
+        slug: "x-existing",
+        digiflazzBrand: "X",
+        gameVariant: "AdminChose",
+      },
+    });
+    await importDigiflazzBrand(prisma, {
+      brand: "X",
+      categoryId: category.id,
+      gameVariant: "Infinite",
+      rows: [{ buyerSkuCode: "x-100", productName: "X 100", price: "16500", costPrice: "15000" }],
+    });
+    const product = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "X" } });
+    expect(product.gameVariant).toBe("AdminChose");
+  });
+
+  // 12 — idempotency of group + import over a split price list
+  it("is idempotent: grouping + importing the same split price list twice does not duplicate products or denominations", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const rawItems = [
+      priceListItem({ buyerSkuCode: "ab-umum-3200", brand: "Arena Breakout", type: "Umum", productName: "Arena Breakout 3.200 Bonds", price: new Decimal(15000) }),
+      priceListItem({ buyerSkuCode: "ab-inf-1000", brand: "Arena Breakout", type: "Infinite", productName: "Arena Breakout Infinite 1.000 Bonds", price: new Decimal(15000) }),
+    ];
+    const runOnce = async () => {
+      const groups = await groupDigiflazzPriceListByBrand(prisma, rawItems);
+      for (const g of groups) {
+        await importDigiflazzBrand(prisma, {
+          brand: g.brand,
+          categoryId: category.id,
+          gameVariant: g.gameVariant,
+          rows: g.items.map((i) => ({
+            buyerSkuCode: i.buyerSkuCode,
+            productName: i.productName,
+            price: i.price.toString(),
+            costPrice: i.price.toString(),
+          })),
+        });
+      }
+    };
+    await runOnce();
+    await runOnce();
+
+    const products = await prisma.product.findMany({
+      where: { digiflazzBrand: { in: ["Arena Breakout", "Arena Breakout Infinite"] } },
+      include: { denominations: true },
+    });
+    expect(products).toHaveLength(2);
+    for (const p of products) {
+      expect(p.denominations).toHaveLength(1);
+    }
+  });
+});
+
 describe("computeDigiflazzMarkupPrice", () => {
   it("applies a percent markup", async () => {
     await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");

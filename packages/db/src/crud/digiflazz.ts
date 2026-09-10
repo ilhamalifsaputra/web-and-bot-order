@@ -696,6 +696,29 @@ export function collapseToCheapestSeller(items: DigiflazzPriceListItem[]): Digif
   return [...bySku.values()];
 }
 
+/** Digiflazz's price-list `type` value for a brand's base edition. Rows with
+ * this type (case-insensitively), or with no type at all, carry no variant
+ * suffix. */
+export const DIGIFLAZZ_BASE_TYPE = "Umum";
+
+/** The Product.gameVariant label written to the BASE subset when a brand is
+ * split by type. Matches the term the shop owner sees in the Digiflazz
+ * dashboard. */
+export const DIGIFLAZZ_BASE_GAME_VARIANT = "Umum";
+
+/**
+ * Normalise a Digiflazz `type` value to a variant suffix, or null when it is
+ * the base edition. null / "" / whitespace / case-insensitive "Umum" → null.
+ * Otherwise the trimmed value in its original surface casing ("Infinite",
+ * "Garena", "Global").
+ */
+export function digiflazzTypeSuffix(type: string | null | undefined): string | null {
+  if (type == null) return null;
+  const trimmed = type.trim();
+  if (trimmed === "" || trimmed.toLowerCase() === DIGIFLAZZ_BASE_TYPE.toLowerCase()) return null;
+  return trimmed;
+}
+
 export interface DigiflazzBrandGroup {
   /** Composite display name — `` `${rawBrand} (${region})` `` when a region
    * suffix was found on any row's productName, otherwise identical to
@@ -711,6 +734,12 @@ export interface DigiflazzBrandGroup {
    * or null when no row had a (non-denylisted) region suffix. */
   region: string | null;
   items: DigiflazzPriceListItem[];
+  /** Sub-edition label taken from Digiflazz's `type` field ("Infinite",
+   * "Garena", "Global", …), or "Umum" for the base subset when this brand
+   * was split by type; null when the brand was not split. Seeded into
+   * Product.gameVariant on CREATE only (importDigiflazzBrand), never on
+   * re-import of an existing Product. */
+  gameVariant: string | null;
   /** Non-null when a Product with this exact digiflazzBrand already exists —
    * the wizard renders this group read-only ("Sudah ada"; updates flow
    * through resyncDigiflazzCatalog, not a re-import). */
@@ -735,29 +764,134 @@ export interface DigiflazzBrandGroup {
  * first (see collapseToCheapestSeller) — a group's `items` never contains two
  * rows for the same SKU.
  *
- * Non-regression: for a brand where no row's productName has a
+ * Non-regression (region): for a brand where no row's productName has a
  * (non-denylisted) region suffix, digiflazzGroupKey's displayName equals the
  * raw brand string, so the composite key is byte-identical to today's plain
  * `item.brand` — every brand already imported into the DB continues to match
  * on the next sync (see digiflazzGroupKey/parseProductRegion's denylist in
  * @app/core/suppliers/digiflazz).
+ *
+ * Non-regression (type): for a brand whose rows all normalise to the same
+ * `digiflazzTypeSuffix` (including every row `type:"Umum"` and every row a
+ * single other type), the distinct-suffix count is 1, the split branch never
+ * runs, and `displayName` is byte-identical to the pre-change value, so
+ * `existingProductId` and `importDigiflazzBrand`'s `findFirst` both still
+ * match every already-imported Product. A split only happens when one brand
+ * reports ≥ 2 different `type` values — a two-stage grouping: Stage 1 buckets
+ * by the region-aware display key (unchanged), Stage 2 sub-groups a bucket by
+ * `digiflazzTypeSuffix` into a base subset (`gameVariant: "Umum"`) plus one
+ * group per non-null suffix (`gameVariant` = that suffix). Existing catalog
+ * data and every test fixture use `type:"Umum"` only, so this is inert until
+ * the import wizard runs against a brand Digiflazz reports with mixed types.
  */
 export async function groupDigiflazzPriceListByBrand(
   db: Db,
   rawItems: DigiflazzPriceListItem[],
 ): Promise<DigiflazzBrandGroup[]> {
   const items = collapseToCheapestSeller(rawItems);
-  const byBrand = new Map<string, { rawBrand: string; region: string | null; items: DigiflazzPriceListItem[] }>();
+
+  // Stage 1 (unchanged): bucket every item by its region-aware display key
+  // (digiflazzGroupKey) — the raw brand plus any "(Region)" suffix parsed off
+  // productName. Map insertion order is preserved for deterministic output.
+  const stage1 = new Map<string, { rawBrand: string; region: string | null; items: DigiflazzPriceListItem[] }>();
+  // Distinct digiflazzTypeSuffix values seen per RAW Digiflazz brand, across
+  // every region bucket — a brand is type-split only when this set has ≥ 2
+  // entries (null, the base edition, counts as one). Keyed by rawBrand, not by
+  // the Stage-1 key, so a brand's "Umum" rows and its "Global" rows still
+  // count together even when they land in different region buckets.
+  const suffixesByRawBrand = new Map<string, Set<string | null>>();
   for (const item of items) {
     if (!item.brand) continue;
     const { displayName, region } = digiflazzGroupKey(item.brand, item.productName);
-    const group = byBrand.get(displayName) ?? { rawBrand: item.brand, region, items: [] };
-    group.items.push(item);
-    byBrand.set(displayName, group);
+    const bucket = stage1.get(displayName) ?? { rawBrand: item.brand, region, items: [] };
+    bucket.items.push(item);
+    stage1.set(displayName, bucket);
+
+    const suffixes = suffixesByRawBrand.get(item.brand) ?? new Set<string | null>();
+    suffixes.add(digiflazzTypeSuffix(item.type));
+    suffixesByRawBrand.set(item.brand, suffixes);
   }
-  const brands = [...byBrand.keys()];
+
+  // Stage 2 (new): within each Stage-1 bucket whose rawBrand reports ≥ 2
+  // distinct type suffixes, sub-group by digiflazzTypeSuffix — base subset
+  // (suffix null) first, then the non-null suffixes ascending by `<`. A bucket
+  // whose rawBrand has ≤ 1 distinct suffix is emitted unchanged (byte-
+  // identical displayName, gameVariant null), so every brand already in the
+  // catalog is untouched.
+  type PreGroup = {
+    brand: string;
+    rawBrand: string;
+    region: string | null;
+    gameVariant: string | null;
+    items: DigiflazzPriceListItem[];
+  };
+  const preGroups: PreGroup[] = [];
+  for (const [displayName, bucket] of stage1) {
+    const distinctSuffixes = suffixesByRawBrand.get(bucket.rawBrand)!;
+    if (distinctSuffixes.size <= 1) {
+      preGroups.push({
+        brand: displayName,
+        rawBrand: bucket.rawBrand,
+        region: bucket.region,
+        gameVariant: null,
+        items: bucket.items,
+      });
+      continue;
+    }
+
+    // Type-split this bucket, preserving item order within each sub-group.
+    const bySuffix = new Map<string | null, DigiflazzPriceListItem[]>();
+    for (const item of bucket.items) {
+      const suffix = digiflazzTypeSuffix(item.type);
+      const list = bySuffix.get(suffix) ?? [];
+      list.push(item);
+      bySuffix.set(suffix, list);
+    }
+
+    // Base subset first — byte-identical displayName, only gameVariant differs.
+    const baseItems = bySuffix.get(null);
+    if (baseItems && baseItems.length > 0) {
+      preGroups.push({
+        brand: displayName,
+        rawBrand: bucket.rawBrand,
+        region: bucket.region,
+        gameVariant: DIGIFLAZZ_BASE_GAME_VARIANT,
+        items: baseItems,
+      });
+    }
+
+    // Then each non-null suffix, ascending by `<`.
+    const nonNullSuffixes = [...bySuffix.keys()]
+      .filter((s): s is string => s !== null)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    for (const suffix of nonNullSuffixes) {
+      const subItems = bySuffix.get(suffix)!;
+      const representativeProductName = subItems[0]!.productName;
+      // Region dedupe: when the type suffix already names this bucket's region
+      // (e.g. type:"Global" on rows all ending "(Global)"), the region is
+      // expressed twice — fold it into the suffix and drop the paren so the
+      // displayName is "Free Fire Global", not "Free Fire Global (Global)".
+      const regionDuplicatesSuffix =
+        bucket.region != null && bucket.region.toLowerCase() === suffix.toLowerCase();
+      const nameForKey = regionDuplicatesSuffix
+        ? stripRegionSuffix(representativeProductName)
+        : representativeProductName;
+      const split = digiflazzGroupKey(`${bucket.rawBrand} ${suffix}`, nameForKey);
+      preGroups.push({
+        brand: split.displayName,
+        rawBrand: bucket.rawBrand,
+        region: regionDuplicatesSuffix ? null : split.region,
+        gameVariant: suffix,
+        items: subItems,
+      });
+    }
+  }
+
+  // existingProductId + shadow detection are computed against the FINAL
+  // (post-split) displayName set — one findMany over every emitted brand.
+  const finalBrands = preGroups.map((g) => g.brand);
   const existing = await db.product.findMany({
-    where: { digiflazzBrand: { in: brands } },
+    where: { digiflazzBrand: { in: finalBrands } },
     select: { id: true, digiflazzBrand: true },
   });
   const existingByBrand = new Map(existing.map((p) => [p.digiflazzBrand!, p.id]));
@@ -779,8 +913,7 @@ export async function groupDigiflazzPriceListByBrand(
     );
   }
 
-  return brands.map((brand) => {
-    const group = byBrand.get(brand)!;
+  return preGroups.map((group) => {
     const representative = group.items[0];
     let detection: DetectionResult | undefined;
     if (knowledge && catalogIndex && representative) {
@@ -795,16 +928,17 @@ export async function groupDigiflazzPriceListByBrand(
       } catch (err) {
         logger.warn(
           { err },
-          `Shadow-mode detection threw while grouping the Digiflazz brand "${brand}" — that group is returned without a detection field.`,
+          `Shadow-mode detection threw while grouping the Digiflazz brand "${group.brand}" — that group is returned without a detection field.`,
         );
       }
     }
     return {
-      brand,
+      brand: group.brand,
       rawBrand: group.rawBrand,
       region: group.region,
       items: group.items,
-      existingProductId: existingByBrand.get(brand) ?? null,
+      gameVariant: group.gameVariant,
+      existingProductId: existingByBrand.get(group.brand) ?? null,
       detection,
     };
   });
@@ -972,7 +1106,15 @@ async function writeShadowDetectionForImport(
  */
 export async function importDigiflazzBrand(
   db: PrismaClient,
-  args: { brand: string; categoryId: number; rows: DigiflazzImportRow[] },
+  args: {
+    brand: string;
+    categoryId: number;
+    rows: DigiflazzImportRow[];
+    /** Seeded into Product.gameVariant on the CREATE path only (from
+     * groupDigiflazzPriceListByBrand's type-split). Never written on the
+     * reuse-existing path — after birth, gameVariant is admin-owned. */
+    gameVariant?: string | null;
+  },
 ): Promise<{ productId: number; denominationCount: number }> {
   const { productId, touchedDenoms } = await db.$transaction(async (tx) => {
     let product = await tx.product.findFirst({ where: { digiflazzBrand: args.brand } });
@@ -981,6 +1123,7 @@ export async function importDigiflazzBrand(
         categoryId: args.categoryId,
         name: args.brand,
         digiflazzBrand: args.brand,
+        gameVariant: args.gameVariant ?? null,
         isActive: false,
       });
     }

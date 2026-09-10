@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -35,6 +35,47 @@ interface Category {
   name: string;
 }
 
+const PREVIEW_STORAGE_KEY = "digiflazz-sync-preview";
+
+interface PersistedSyncState {
+  preview: PreviewResponse | null;
+  categoryId: string;
+  filter: string;
+}
+
+// Restores a prior sync preview from sessionStorage so navigating away and
+// back (or refreshing) within the same tab session doesn't force a slow
+// re-fetch from Digiflazz's live price-list API. Falls back to the current
+// defaults on a missing or corrupted value — a corrupted key must never
+// throw and break the page.
+function readPersistedState(): PersistedSyncState {
+  try {
+    const raw = sessionStorage.getItem(PREVIEW_STORAGE_KEY);
+    if (!raw) return { preview: null, categoryId: "", filter: "" };
+    const parsed = JSON.parse(raw) as Partial<PersistedSyncState>;
+    return {
+      preview: parsed.preview ?? null,
+      categoryId: parsed.categoryId ?? "",
+      filter: parsed.filter ?? "",
+    };
+  } catch {
+    return { preview: null, categoryId: "", filter: "" };
+  }
+}
+
+// New brands default to fully checked; existing brands stay unchecked
+// (they're read-only previews here — see the group-level note below). Shared
+// by runSync's fresh-fetch path and the sessionStorage-restore path on mount
+// so the two derivations never drift apart.
+function defaultCheckedSkus(groups: BrandGroup[]): Set<string> {
+  const next = new Set<string>();
+  for (const g of groups) {
+    if (g.existingProductId) continue;
+    for (const s of g.skus) next.add(`${g.brand}::${s.buyerSkuCode}`);
+  }
+  return next;
+}
+
 export function DigiflazzSyncPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -45,33 +86,49 @@ export function DigiflazzSyncPage() {
   });
   const categories = categoriesData?.categories ?? [];
 
-  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [preview, setPreview] = useState<PreviewResponse | null>(() => readPersistedState().preview);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [categoryId, setCategoryId] = useState<string>("");
-  const [filter, setFilter] = useState("");
+  const [categoryId, setCategoryId] = useState<string>(() => readPersistedState().categoryId);
+  const [filter, setFilter] = useState(() => readPersistedState().filter);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [checkedSkus, setCheckedSkus] = useState<Set<string>>(new Set()); // key: `${brand}::${buyerSkuCode}`
+  // key: `${brand}::${buyerSkuCode}`. Not persisted, but on a restored preview
+  // it's re-derived (not just reset to empty) so a remount doesn't silently
+  // uncheck every new brand's SKUs.
+  const [checkedSkus, setCheckedSkus] = useState<Set<string>>(() =>
+    defaultCheckedSkus(readPersistedState().preview?.groups ?? []),
+  );
   const [priceEdits, setPriceEdits] = useState<Record<string, string>>({}); // key: same as above
   const [importing, setImporting] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  // Persist the preview (plus the category/filter picked alongside it) so
+  // refreshing or navigating away and back within the same tab restores it
+  // instead of re-hitting Digiflazz's live price-list API. A fresh mount with
+  // no prior sync (preview === null) must never leave a stale key behind.
+  useEffect(() => {
+    if (preview === null) {
+      sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(PREVIEW_STORAGE_KEY, JSON.stringify({ preview, categoryId, filter }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview]);
 
   async function runSync() {
     setLoadingPreview(true);
     setPreviewError(null);
+    const startedAt = Date.now();
+    setElapsedMs(0);
+    const elapsedInterval = setInterval(() => setElapsedMs(Date.now() - startedAt), 250);
     try {
       const res = await apiPost<PreviewResponse>("/api/catalog/digiflazz/sync/preview", {});
       setPreview(res);
-      // New brands default to fully checked; existing brands stay unchecked
-      // (they're read-only previews here — see the group-level note below).
-      const next = new Set<string>();
-      for (const g of res.groups) {
-        if (g.existingProductId) continue;
-        for (const s of g.skus) next.add(`${g.brand}::${s.buyerSkuCode}`);
-      }
-      setCheckedSkus(next);
+      setCheckedSkus(defaultCheckedSkus(res.groups));
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : "Failed to sync from Digiflazz.");
     } finally {
+      clearInterval(elapsedInterval);
       setLoadingPreview(false);
     }
   }
@@ -154,6 +211,7 @@ export function DigiflazzSyncPage() {
         { categoryId: Number(categoryId), brands },
       );
       toast.success(`Imported ${res.brandsImported} game(s), ${res.denominationsImported} denomination(s). Activate them from the Catalog page when ready.`);
+      sessionStorage.removeItem(PREVIEW_STORAGE_KEY);
       await queryClient.invalidateQueries({ queryKey: ["catalog"] });
       navigate("/catalog");
     } catch (err) {
@@ -205,7 +263,7 @@ export function DigiflazzSyncPage() {
         description="Pull Digiflazz's Game price list, review, and bulk-import new titles into the catalog."
         actions={
           <Button size="sm" onClick={() => void runSync()} disabled={loadingPreview}>
-            {loadingPreview ? "Syncing…" : "Sync dari Digiflazz"}
+            {loadingPreview ? `Syncing… ${Math.floor(elapsedMs / 1000)}s` : "Sync dari Digiflazz"}
           </Button>
         }
       />

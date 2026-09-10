@@ -459,3 +459,95 @@ describe("DigiflazzSyncPage — fix round: guarded sessionStorage writes + full 
     });
   });
 });
+
+describe("DigiflazzSyncPage — Deteksi panel", () => {
+  const SUMMARY = {
+    detectorStamp: "1.0.0+k3",
+    totalRecords: 12,
+    resolved: 10,
+    ambiguous: 1,
+    unknown: 1,
+    confidenceBuckets: { "0.90-1.00": 8, "0.75-0.90": 2, "0.50-0.75": 0, "0.00-0.50": 0 },
+    overrideHits: 0,
+    finishedAt: new Date().toISOString(),
+  };
+  const OPEN_ISSUE = {
+    id: 7,
+    status: "unknown",
+    reviewStatus: "OPEN",
+    reason: "no catalog candidates matched this product name",
+    rawInput: JSON.stringify({ productName: "Mystery SKU" }),
+    occurrences: 3,
+    lastSeenAt: new Date().toISOString(),
+  };
+
+  /** Route apiGet by URL: categories for the wizard, plus the two detection
+   * endpoints the panel reads. `issues` is read from a mutable holder so a
+   * test can change what a refetch (after a resolve/dismiss) returns. */
+  function stubDetectionGets(opts: { metrics: unknown; issuesHolder: { current: unknown } }) {
+    vi.mocked(apiGet).mockImplementation((url: string) => {
+      if (url.startsWith("/api/catalog/detection/metrics")) return Promise.resolve(opts.metrics);
+      if (url.startsWith("/api/catalog/detection/issues")) return Promise.resolve(opts.issuesHolder.current);
+      return Promise.resolve({ categories: [{ id: 1, name: "Top Up Game" }] });
+    });
+  }
+
+  it("shows the empty summary and empty queue states before any run", async () => {
+    stubDetectionGets({ metrics: { metrics: null }, issuesHolder: { current: { issues: [] } } });
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(await screen.findByText(/deteksi katalog belum pernah dijalankan/i)).toBeInTheDocument();
+    expect(await screen.findByText(/tidak ada isu deteksi yang perlu ditinjau/i)).toBeInTheDocument();
+  });
+
+  it("renders the run summary counts and the confidence distribution", async () => {
+    stubDetectionGets({ metrics: { metrics: SUMMARY }, issuesHolder: { current: { issues: [] } } });
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(
+      await screen.findByText(/10 cocok, 1 ambigu, 1 tidak dikenali dari 12 produk/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/0\.90-1\.00 → 8/)).toBeInTheDocument();
+  });
+
+  it("lists an OPEN issue and resolving it POSTs to /resolve then refetches the queue", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const issuesHolder = { current: { issues: [OPEN_ISSUE] } };
+    stubDetectionGets({ metrics: { metrics: SUMMARY }, issuesHolder });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    expect(await screen.findByText(/no catalog candidates matched/i)).toBeInTheDocument();
+    expect(screen.getByText(/antrean tinjauan \(1\)/i)).toBeInTheDocument();
+
+    // The resolve refetch should now see an empty queue.
+    issuesHolder.current = { issues: [] };
+    await user.click(screen.getByRole("button", { name: /^resolve$/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(apiPost)).toHaveBeenCalledWith(
+        "/api/catalog/detection/issues/7/resolve",
+        {},
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/tidak ada isu deteksi yang perlu ditinjau/i)).toBeInTheDocument(),
+    );
+  });
+
+  it("dismissing an OPEN issue POSTs to /dismiss", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const issuesHolder = { current: { issues: [OPEN_ISSUE] } };
+    stubDetectionGets({ metrics: { metrics: SUMMARY }, issuesHolder });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+
+    render(<DigiflazzSyncPage />, { wrapper: Wrapper });
+    await screen.findByText(/no catalog candidates matched/i);
+    await user.click(screen.getByRole("button", { name: /^dismiss$/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(apiPost)).toHaveBeenCalledWith(
+        "/api/catalog/detection/issues/7/dismiss",
+        {},
+      ),
+    );
+  });
+});

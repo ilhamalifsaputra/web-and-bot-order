@@ -76,6 +76,143 @@ function defaultCheckedSkus(groups: BrandGroup[]): Set<string> {
   return next;
 }
 
+interface DetectionMetrics {
+  detectorStamp: string;
+  totalRecords: number;
+  resolved: number;
+  ambiguous: number;
+  unknown: number;
+  confidenceBuckets: Record<string, number>;
+  overrideHits: number;
+  finishedAt: string;
+}
+interface DetectionIssue {
+  id: number;
+  status: string;
+  reviewStatus: string;
+  reason: string;
+  rawInput: string;
+  occurrences: number;
+  lastSeenAt: string;
+}
+
+/**
+ * "Deteksi" panel — the admin-facing view over the Detection Engine's
+ * last full-catalog run (Task 9, AC-16/AC-20): a one-line summary of the
+ * run plus the queue of OPEN `DetectionIssue` rows, each with a
+ * Resolve/Dismiss action. Reads `GET /api/catalog/detection/metrics` and
+ * `.../issues`; the actions POST to `.../issues/:id/resolve` and
+ * `.../dismiss` and then refetch both queries.
+ */
+function DetectionPanel() {
+  const queryClient = useQueryClient();
+  const metricsQuery = useQuery({
+    queryKey: ["detection-metrics"],
+    queryFn: () => apiGet<{ metrics: DetectionMetrics | null }>("/api/catalog/detection/metrics"),
+  });
+  const issuesQuery = useQuery({
+    queryKey: ["detection-issues", "OPEN"],
+    queryFn: () =>
+      apiGet<{ issues: DetectionIssue[] }>("/api/catalog/detection/issues?reviewStatus=OPEN"),
+  });
+  const [busyId, setBusyId] = useState<number | null>(null);
+
+  async function review(id: number, action: "resolve" | "dismiss") {
+    setBusyId(id);
+    try {
+      await apiPost(`/api/catalog/detection/issues/${id}/${action}`, {});
+      toast.success(action === "resolve" ? "Isu deteksi ditandai selesai." : "Isu deteksi diabaikan.");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["detection-issues"] }),
+        queryClient.invalidateQueries({ queryKey: ["detection-metrics"] }),
+      ]);
+    } catch (err) {
+      toast.error(describeError(err instanceof Error ? err.message : "Gagal memperbarui isu deteksi."));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const metrics = metricsQuery.data?.metrics ?? null;
+  const issues = issuesQuery.data?.issues ?? [];
+
+  return (
+    <Card className="mb-6">
+      <CardHeader>
+        <CardTitle>Deteksi</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {metricsQuery.isLoading && <p className="text-sm text-ink-soft">Memuat ringkasan deteksi…</p>}
+        {!metricsQuery.isLoading && !metrics && (
+          <p className="text-sm text-ink-soft">Deteksi katalog belum pernah dijalankan.</p>
+        )}
+        {metrics && (
+          <div className="space-y-1 text-sm">
+            <p className="text-ink">
+              {metrics.resolved} cocok, {metrics.ambiguous} ambigu, {metrics.unknown} tidak dikenali dari{" "}
+              {metrics.totalRecords} produk.
+            </p>
+            <p className="text-ink-soft">
+              Distribusi keyakinan:{" "}
+              {Object.entries(metrics.confidenceBuckets)
+                .map(([band, n]) => `${band} → ${n}`)
+                .join(" · ")}
+            </p>
+            <p className="text-ink-soft">
+              {metrics.overrideHits} lewat override manual · terakhir dijalankan{" "}
+              {formatRelativeTime(metrics.finishedAt, metrics.finishedAt)}
+            </p>
+          </div>
+        )}
+
+        <div>
+          <p className="mb-2 text-sm font-medium text-ink">Antrean tinjauan ({issues.length})</p>
+          {issuesQuery.isLoading && <p className="text-sm text-ink-soft">Memuat isu deteksi…</p>}
+          {!issuesQuery.isLoading && issues.length === 0 && (
+            <p className="text-sm text-ink-soft">Tidak ada isu deteksi yang perlu ditinjau.</p>
+          )}
+          <ul className="space-y-2">
+            {issues.map((issue) => (
+              <li
+                key={issue.id}
+                className="flex flex-col gap-2 border-b border-line pb-2 last:border-0 last:pb-0 sm:flex-row sm:items-start sm:justify-between sm:gap-3"
+              >
+                <div className="min-w-0 text-sm">
+                  <p className="text-ink">
+                    <span className="text-ink-soft uppercase">{issue.status}</span> — {issue.reason}
+                  </p>
+                  <p className="truncate text-xs text-ink-soft">
+                    {issue.rawInput}
+                    {issue.occurrences > 1 ? ` · ${issue.occurrences}×` : ""}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busyId === issue.id}
+                    onClick={() => void review(issue.id, "resolve")}
+                  >
+                    Resolve
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={busyId === issue.id}
+                    onClick={() => void review(issue.id, "dismiss")}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function DigiflazzSyncPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -283,6 +420,8 @@ export function DigiflazzSyncPage() {
           )}
         </CardContent>
       </Card>
+
+      <DetectionPanel />
 
       <PageHeader
         title="Sync Digiflazz"

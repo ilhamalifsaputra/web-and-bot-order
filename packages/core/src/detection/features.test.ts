@@ -11,7 +11,7 @@ const TEST_KNOWLEDGE: KnowledgeBase = {
     { category: "platform", token: "mobile", canonical: "mobile", isProductDefining: true, enabled: true },
     { category: "platform", token: "pc", canonical: "pc", isProductDefining: true, enabled: true },
     { category: "edition", token: "pro", canonical: "pro", isProductDefining: true, enabled: true },
-    { category: "distribution", token: "garena", canonical: "garena", isProductDefining: true, enabled: true },
+    { category: "distribution", token: "zeta", canonical: "zeta", isProductDefining: true, enabled: true },
     { category: "region", token: "id", canonical: "id", isProductDefining: false, enabled: true },
     { category: "region", token: "indonesia", canonical: "id", isProductDefining: false, enabled: true },
     { category: "noise", token: "instant", canonical: "instant", isProductDefining: false, enabled: true },
@@ -56,9 +56,9 @@ describe("extractFeatures", () => {
   });
 
   it("classifies a distribution-category token as defining (per isProductDefining, not category name)", () => {
-    const result = extractFeatures("legends garena", TEST_KNOWLEDGE);
+    const result = extractFeatures("legends zeta", TEST_KNOWLEDGE);
     expect(result.coreTokens).toEqual(["legends"]);
-    expect(result.definingTokens).toEqual([{ category: "distribution", canonical: "garena" }]);
+    expect(result.definingTokens).toEqual([{ category: "distribution", canonical: "zeta" }]);
     expect(result.distributionTokens).toEqual([]);
   });
 

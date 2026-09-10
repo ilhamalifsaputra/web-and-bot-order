@@ -5,7 +5,7 @@ import type { TokenCategory } from "./types";
 const platform = { category: "platform" as TokenCategory, canonical: "mobile" };
 const edition = { category: "edition" as TokenCategory, canonical: "pro" };
 const region = { category: "region" as TokenCategory, canonical: "id" };
-const distribution = { category: "distribution" as TokenCategory, canonical: "garena" };
+const distribution = { category: "distribution" as TokenCategory, canonical: "zeta" };
 
 describe("buildBaseProductKey", () => {
   it("joins core tokens with a single space, preserving order", () => {
@@ -69,14 +69,14 @@ describe("buildSkuKey", () => {
 
   it("appends sorted distribution pairs after the denom segment", () => {
     const key = buildSkuKey("legends", "100", [region, distribution]);
-    expect(key).toBe("legends::denom=100,distribution=garena,region=id");
+    expect(key).toBe("legends::denom=100,distribution=zeta,region=id");
   });
 
   it("is stable (INV-4) regardless of distribution-token array order", () => {
     const a = buildSkuKey("legends", "100", [region, distribution]);
     const b = buildSkuKey("legends", "100", [distribution, region]);
     expect(a).toBe(b);
-    expect(a).toBe("legends::denom=100,distribution=garena,region=id");
+    expect(a).toBe("legends::denom=100,distribution=zeta,region=id");
   });
 
   it("deduplicates distribution tokens by [category, canonical]", () => {

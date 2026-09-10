@@ -357,6 +357,20 @@ describe("parseProductRegion", () => {
     expect(parseProductRegion("Foo ( Indonesia )")).toBe("Indonesia");
     expect(parseProductRegion("Foo (  Filipina  )")).toBe("Filipina");
   });
+
+  // Task 13 cutover: this function is now a thin wrapper delegating its
+  // denylist decision to the Detection Engine's extractFeatures() against
+  // DEFAULT_KNOWLEDGE_BASE (packages/core/src/detection). These cases add
+  // coverage the pre-cutover regex-only implementation didn't exercise.
+  it("returns null for multi-digit duration ranges (engine-backed denylist)", () => {
+    expect(parseProductRegion("Foo (10-20 Menit)")).toBeNull();
+    expect(parseProductRegion("Foo (12-24 Jam)")).toBeNull();
+  });
+
+  it("recognizes a real region name added to the knowledge base (Task 12b)", () => {
+    expect(parseProductRegion("Foo (Russia)")).toBe("Russia");
+    expect(parseProductRegion("Foo (Singapore)")).toBe("Singapore");
+  });
 });
 
 describe("stripRegionSuffix", () => {
@@ -402,6 +416,13 @@ describe("stripRegionSuffix", () => {
     expect(stripRegionSuffix("   (Indonesia)   ")).toBe("   (Indonesia)   ");
     expect(stripRegionSuffix("(Filipina)")).toBe("(Filipina)");
   });
+
+  // Task 13 cutover: parseProductRegion (which this function delegates to)
+  // is now engine-backed — a multi-digit duration range must still be
+  // treated as denylisted noise, not a region, so nothing gets stripped.
+  it("does not strip a multi-digit duration range (engine-backed denylist)", () => {
+    expect(stripRegionSuffix("Foo (10-20 Menit)")).toBe("Foo (10-20 Menit)");
+  });
 });
 
 describe("digiflazzGroupKey", () => {
@@ -440,5 +461,14 @@ describe("digiflazzGroupKey", () => {
     const input2 = digiflazzGroupKey("ML", "Mobile Legends (Filipina)");
     expect(input1.region).toBe(input2.region);
     expect(input1.displayName).toBe(input2.displayName);
+  });
+
+  // Task 13 cutover: end-to-end through the engine-backed parseProductRegion
+  // for a multi-digit duration range — must still collapse to region: null,
+  // displayName === brand, exactly like the pre-cutover regex.
+  it("returns region: null for a multi-digit duration range (engine-backed denylist)", () => {
+    const result = digiflazzGroupKey("Bar", "Bar (10-20 Menit)");
+    expect(result.region).toBeNull();
+    expect(result.displayName).toBe("Bar");
   });
 });

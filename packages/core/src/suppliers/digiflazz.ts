@@ -14,6 +14,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
+import { normalize, extractFeatures } from "../detection";
+import { DEFAULT_KNOWLEDGE_BASE } from "../detection/knowledge/defaultVocabulary";
 
 const API_BASE = process.env.DIGIFLAZZ_API_BASE ?? "https://api.digiflazz.com/v1";
 
@@ -148,6 +150,16 @@ function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem | n
   };
 }
 
+// Matches a trailing "(...)" group — purely structural (find the substring),
+// never a denylist decision. Mirrors detection/features.ts's own
+// TRAILING_PARENTHETICAL, which independently applies the same shape to the
+// normalize()-d name; kept as a local constant here (rather than importing
+// that private regex) because this one is used only to recover the ORIGINAL,
+// non-normalized substring for parseProductRegion's return value — the
+// denylist decision itself (the part that used to duplicate business logic)
+// is fully delegated to extractFeatures() below.
+const TRAILING_PARENTHETICAL = /\s*\(([^)]+)\)\s*$/;
+
 /**
  * Extract a region code from the trailing parenthetical of a Digiflazz product name.
  *
@@ -156,35 +168,29 @@ function toPriceListItem(d: Record<string, unknown>): DigiflazzPriceListItem | n
  *
  * **Denylist guard**: Not every trailing parenthetical is a region — Digiflazz also uses
  * parens for delivery-speed annotations like `"(Instant)"`, `"(1-3 Menit)"`, or
- * `"(Proses Cepat)"`. The denylist is case-insensitive and includes:
- * - `INSTANT`
- * - `/^\d+-\d+\s*(menit|jam|hari)$/i` (duration range patterns like "1-3 Menit", "2-5 Jam", "1-2 Hari")
- * - `PROSES CEPAT`
+ * `"(Proses Cepat)"`. The denylist decision is delegated to the Detection Engine's
+ * `extractFeatures()` (`@app/core/detection`), which classifies the same trailing
+ * parenthetical against the Knowledge layer's `noise`-category tokens (`instant`,
+ * `proses cepat` — `detection/knowledge/defaultVocabulary.ts`) plus one hardcoded
+ * structural duration-range pattern (`N N menit|jam|hari`, post-`normalize()` shape —
+ * see `features.ts`'s own comment). Extending the denylist going forward means adding a
+ * `noise`-category `DetectionToken` row, not editing this function.
  *
- * A denylisted match always returns `null`, never a false split.
- *
- * **Note**: This denylist should be extended (verified against the admin's `/sync/preview`
- * screen) if a future non-region annotation starts incorrectly splitting a brand.
- * This is the highest-risk part of catalog sync; test coverage is critical.
+ * A denylisted match always returns `null`, never a false split. The returned string
+ * (when non-null) is re-sliced from the ORIGINAL, non-normalized `productName` — not
+ * `extractFeatures().parentheticalSuffix` — because `normalize()` lowercases, and this
+ * function's contract (see the test suite) is to return the captured text in its
+ * original casing, only trimmed.
  */
 export function parseProductRegion(productName: string): string | null {
-  const match = productName.match(/\s*\(([^)]+)\)\s*$/);
+  const match = productName.match(TRAILING_PARENTHETICAL);
   if (!match) return null;
 
   const captured = match[1]!.trim();
 
-  // Check denylist (case-insensitive)
-  const upper = captured.toUpperCase();
-
-  // Exact matches
-  if (upper === "INSTANT" || upper === "PROSES CEPAT") {
-    return null;
-  }
-
-  // Duration range pattern: e.g., "1-3 Menit", "2-5 Jam", "1-2 Hari" (single-count durations like "2 Jam" do not match)
-  if (/^\d+-\d+\s*(menit|jam|hari)$/i.test(captured)) {
-    return null;
-  }
+  const isDenylisted =
+    extractFeatures(normalize(productName), DEFAULT_KNOWLEDGE_BASE).parentheticalSuffix === null;
+  if (isDenylisted) return null;
 
   return captured;
 }

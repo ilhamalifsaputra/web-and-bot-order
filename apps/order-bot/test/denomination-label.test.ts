@@ -45,6 +45,36 @@ describe("formatDenominationLabel", () => {
     expect(tahun).toBe("1 Tahun");
     expect(tahun).not.toBe(bulan);
   });
+
+  // Regression: the quantity regex used to be /\d+/, which stopped at the "."
+  // in an Indonesian thousands separator — "Arena Breakout 3.200 Bonds" split
+  // into qty "3" + leftover ".200 Bonds" and rendered "3 .200 Bonds", and for
+  // an edition denom the stripped product-name leftover landed before the
+  // ".NNN" as "1 Infinite .000 Bonds". Every fixture above uses un-separated
+  // numbers ("Bonds 1580"), so the bug went uncaught for months.
+  it('keeps a thousands separator whole: "Arena Breakout 3.200 Bonds" → "3.200 Bonds"', () => {
+    const out = formatDenominationLabel("Arena Breakout", "Arena Breakout 3.200 Bonds");
+    expect(out).toBe("3.200 Bonds");
+    expect(out).not.toContain(" .");
+  });
+
+  it('keeps a thousands separator whole with an edition word: "Arena Breakout Infinite 1.000 Bonds" → "1.000 Infinite Bonds"', () => {
+    const out = formatDenominationLabel("Arena Breakout", "Arena Breakout Infinite 1.000 Bonds");
+    expect(out).toBe("1.000 Infinite Bonds");
+    expect(out).not.toContain(" .");
+  });
+
+  it('keeps a trailing thousands separator whole: "Bonds 10.000" → "10.000 Bonds"', () => {
+    expect(formatDenominationLabel("Bonds", "Bonds 10.000")).toBe("10.000 Bonds");
+  });
+
+  it('separator + diamond suffix: "1.050 Diamonds" → "1.050 Diamonds 💎"', () => {
+    expect(formatDenominationLabel("Diamonds", "1.050 Diamonds")).toBe("1.050 Diamonds 💎");
+  });
+
+  it('is idempotent on an already-formatted separated label: "3.200 Bonds" stays "3.200 Bonds"', () => {
+    expect(formatDenominationLabel("Bonds", "3.200 Bonds")).toBe("3.200 Bonds");
+  });
 });
 
 describe("gameTopUpDenomLabel", () => {

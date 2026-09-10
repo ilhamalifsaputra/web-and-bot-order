@@ -35,7 +35,7 @@ describe("FormField", () => {
     );
     const input = screen.getByLabelText("User ID");
     expect(input).toHaveAttribute("aria-invalid", "true");
-    expect(input).toHaveClass("border-rust"); // `invalid` prop forwarded to <Input>
+    expect(input).toHaveClass("!border-rust"); // `invalid` prop forwarded to <Input>
     expect(input).toHaveAttribute("aria-describedby", "uid-error");
     const err = screen.getByText("Isi User ID kamu dulu ya.");
     expect(err).toHaveAttribute("id", "uid-error");

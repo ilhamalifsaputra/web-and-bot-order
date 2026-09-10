@@ -34,6 +34,7 @@ export type BadgeVariant =
   | "success"
   | "pending"
   | "info"
+  | "attention"
   | "failed";
 
 const VARIANTS: Record<BadgeVariant, string> = {
@@ -48,6 +49,7 @@ const VARIANTS: Record<BadgeVariant, string> = {
   success: "chip bg-grass-tint text-grass-dark",
   pending: "chip bg-amberx-tint text-amberx",
   info: "chip bg-pine-tint text-pine-dark",
+  attention: "chip bg-plum-tint text-plum",
   failed: "chip bg-rust-tint text-rust-dark",
 };
 

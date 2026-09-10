@@ -49,6 +49,7 @@ const ReferralPage = lazy(() => import("./pages/ReferralPage"));
 const ReviewsPage = lazy(() => import("./pages/ReviewsPage"));
 const SupportPage = lazy(() => import("./pages/SupportPage"));
 const TicketDetailPage = lazy(() => import("./pages/TicketDetailPage"));
+const HelpPage = lazy(() => import("./pages/HelpPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 // Informational pages: read once, if ever, and never on the path to a
 // purchase — they have no business in the catalog bundle.
@@ -124,6 +125,7 @@ export default function App() {
           <Route path="/account/support" element={<SupportPage />} />
           <Route path="/account/support/:id" element={<TicketDetailPage />} />
           <Route path="/account/settings" element={<SettingsPage />} />
+          <Route path="/help" element={<HelpPage />} />
 
           <Route path="/about" element={<AboutPage />} />
           <Route path="/how-to-order" element={<HowToOrderPage />} />

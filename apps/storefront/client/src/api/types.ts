@@ -583,10 +583,43 @@ export interface SupportTicketSummary {
   admin_reply: string | null;
   /** Evidence uploaded with the ticket — `/uploads/tickets/...` URLs. */
   attachments: string[];
+  /** New (Task 11): the ticket's subject/title — null for legacy rows created
+   * before this field existed. */
+  subject: string | null;
+  /** New (Task 11): the linked order's code, when this row came from the paged
+   * /account/support?… query (listUserTicketsPaged). Always null on rows from
+   * the plain (no-query-param) GET /account/support call. */
+  order_code: string | null;
+  /** New (Task 11): same paged-only availability as order_code. */
+  product_name: string | null;
+  /** New (Task 11): ISO timestamp of the ticket's most recent activity. */
+  updated_at_iso: string;
+}
+
+export interface SupportTicketStats {
+  all: number;
+  waiting_for_you: number;
+  waiting_for_support: number;
+  in_progress: number;
+  resolved: number;
+  closed: number;
 }
 
 export interface SupportData {
   tickets: SupportTicketSummary[];
+  /** Present only when GET /account/support was called with any list-control
+   * query param. */
+  total?: number;
+  page?: number;
+  page_size?: number;
+  stats?: SupportTicketStats;
+}
+
+/** GET /api/v1/account/support/new — form-bootstrap for the /help create
+ * form's Product dropdown. The create POST (/account/support/new) answers
+ * `{ ok: boolean; ticket_id: number | null; duplicate?: boolean }`. */
+export interface SupportFormOptions {
+  products: { id: number; name: string }[];
 }
 
 /** A single message on the ticket thread (either side). */

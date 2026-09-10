@@ -61,4 +61,45 @@
      `--text-2xs: 0.625rem` in the `@theme` block of ../index.css. If you resize
      this step, update BOTH copies (this one and that @theme line). */
   --gg-text-2xs: 0.625rem;
+
+  /* --gg-plum / --gg-plum-tint — the Badge `attention` variant ONLY, which in
+     turn is used by exactly one component: TicketStatusBadge's
+     `waiting_customer` ("Waiting for you") bucket on /help.
+     The design-system palette (styles/tokens.css §1) has no purple. It does
+     not need one for anything else: pine carries "informational", amberx
+     "waiting", grass "done", rust "failed". /help's status filter pills,
+     however, expose "waiting for you" as its own filter with its own count
+     (`SupportTicketStats.waiting_for_you`), so that bucket needs a chip tone
+     that is not any of the other four — otherwise the filter and the list
+     contradict each other on screen. This is that fifth tone.
+     Contrast: #6d28d9 on #f1ebfe measures ~7.1:1, clearing WCAG AA (4.5:1)
+     for the chip's small text with room to spare.
+     Scoped to that one Badge variant — do NOT introduce purple anywhere else
+     without promoting it into the real palette in styles/tokens.css first.
+     Consuming utilities: `bg-plum-tint` / `text-plum`, resolved from the
+     literal mirrors `--color-plum: #6d28d9` and `--color-plum-tint: #f1ebfe`
+     in the `@theme` block of ../index.css. If you retone this purple, update
+     BOTH copies (these two and those @theme lines). */
+  --gg-plum: #6d28d9;
+  --gg-plum-tint: #f1ebfe;
+
+  /* --gg-container-wide — the /help page's full-bleed breakout container ONLY
+     (HelpPage.tsx's `mx-[calc(50%_-_50vw)]` wrapper > inner centred div).
+     The layout scale (styles/tokens.css §7 LAYOUT) has exactly two container
+     widths and neither fits: --gg-container-max (72rem / 1152px) is the shared
+     <main> cap in Layout.tsx, which is precisely what /help breaks out of, and
+     --gg-container-prose (48rem / 768px) is the long-form legal/help *reading*
+     column — narrower still. Tailwind's own container scale has no step here
+     either (`--container-7xl` is 80rem, the next named step after that is
+     nothing), and the ESLint gate bans the `max-w-[1440px]` arbitrary value
+     this page shipped with. 90rem (1440px) is that one step: wide enough for
+     /help's create-ticket form and its ticket table to sit side by side in the
+     `lg:grid-cols-2` layout without the table clipping its DATE column.
+     Scoped to that one page — do NOT widen any other page with it; every other
+     route stays on the shared --gg-container-max cap.
+     Consuming utility: `max-w-wide`, resolved from the literal mirror
+     `--container-wide: 90rem` in the `@theme` block of ../index.css. If you
+     resize this container, update BOTH copies (this one and that @theme
+     line). */
+  --gg-container-wide: 90rem;
 }

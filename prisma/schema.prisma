@@ -316,6 +316,7 @@ model Product {
   game            Game?          @relation(fields: [gameId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
+  supportTickets  SupportTicket[]
 
   @@index([categoryId], map: "ix_products_category_id")
   @@index([gameId], map: "ix_products_game_id")
@@ -1274,8 +1275,15 @@ model SupportTicket {
   status         String    @default("OPEN")
   /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
   priority       String    @default("MEDIUM") @map("priority")
-  /// ORDER | PAYMENT | ACCOUNT | PRODUCT | OTHER — admin-set triage field, null until classified.
+  /// Ticket triage category. Customer-set at creation on the /help create
+  /// form; may also be set/changed later by an admin via classifyTicket.
+  /// Null for legacy rows created before either path existed.
   category       String?   @map("category")
+  /// Short customer-authored ticket title (≤100 chars), set on the /help
+  /// create form. Nullable: historical rows created before this column
+  /// existed have none — the storefront falls back to the first line of
+  /// `message` for display.
+  subject   String?   @map("subject")
   adminReply     String?   @map("admin_reply")
   adminId        Int?      @map("admin_id")
   /// TCK-YYYYMMDD-NNNNN, minted once at creation (createTicket/
@@ -1308,6 +1316,11 @@ model SupportTicket {
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
   /// Product Summary sidebar and warranty/credential context.
   orderId        Int?      @map("order_id")
+  /// Optional link to the catalog Product this ticket is about — customer-
+  /// picked on the /help create form. Distinct from `orderId` (a specific
+  /// past purchase); this is "which product", set even for pre-purchase
+  /// questions. Null for general tickets.
+  productId Int?      @map("product_id")
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
@@ -1360,11 +1373,13 @@ model SupportTicket {
   // the order/customer this ticket is about.
   assignedByAdmin User?           @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
   order           Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  product         Product?        @relation(fields: [productId], references: [id], onUpdate: NoAction)
   messages        TicketMessage[]
 
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@index([orderId], map: "ix_support_tickets_order_id")
+  @@index([productId], map: "ix_support_tickets_product_id")
   @@index([status], map: "ix_support_tickets_status")
   @@index([priority], map: "ix_support_tickets_priority")
   @@map("support_tickets")

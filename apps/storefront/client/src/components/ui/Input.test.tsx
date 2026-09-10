@@ -9,14 +9,14 @@ describe("Input", () => {
     render(<Input placeholder="Email" />);
     const el = screen.getByPlaceholderText("Email");
     expect(el).toHaveClass("field");
-    expect(el).not.toHaveClass("border-rust");
+    expect(el).not.toHaveClass("!border-rust");
     expect(el).not.toHaveAttribute("aria-invalid");
   });
 
   it("invalid → border-rust + aria-invalid=true", () => {
     render(<Input placeholder="Email" invalid />);
     const el = screen.getByPlaceholderText("Email");
-    expect(el).toHaveClass("field", "border-rust");
+    expect(el).toHaveClass("field", "!border-rust");
     expect(el).toHaveAttribute("aria-invalid", "true");
   });
 

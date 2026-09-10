@@ -69,7 +69,7 @@ describe("informational pages", () => {
     expect(screen.getByRole("heading", { name: "How to reach us" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open a support ticket/ })).toHaveAttribute(
       "href",
-      "/account/support",
+      "/help",
     );
   });
 

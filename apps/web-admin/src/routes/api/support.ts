@@ -185,7 +185,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
     const items = tickets.map((t) => ({
       ...t,
-      subject: deriveSubject(t.message),
+      subject: t.subject?.trim() || deriveSubject(t.message),
       createdAtDisplay: displayDate(t.createdAt),
       repliedAtDisplay: displayDateTime(t.repliedAt),
       waitingSince: displayDateTime(t.lastStatusChangeAt),
@@ -211,7 +211,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         ticket.admin?.fullName ?? ticket.admin?.username ?? (ticket.adminId != null ? `Admin #${ticket.adminId}` : "");
       csv += csvRow([
         String(ticket.id),
-        deriveSubject(ticket.message),
+        ticket.subject?.trim() || deriveSubject(ticket.message),
         customer,
         ticket.status,
         ticket.priority,
@@ -266,7 +266,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({
       ticket: {
         ...ticket,
-        subject: deriveSubject(ticket.message),
+        subject: ticket.subject?.trim() || deriveSubject(ticket.message),
         createdAtDisplay: displayDateTime(ticket.createdAt),
         waitingSince: displayDateTime(ticket.lastStatusChangeAt),
         isOverdue: isTicketOverdue(ticket, cutoff),

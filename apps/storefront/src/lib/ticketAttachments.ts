@@ -115,6 +115,80 @@ export async function parseTicketMultipart(req: FastifyRequest): Promise<TicketS
   };
 }
 
+export interface NewTicketSubmission {
+  subject: string;
+  category: string;
+  productId: string;
+  description: string;
+  attachments: ParsedAttachment[];
+  orderCode: string | null;
+}
+
+/**
+ * Multipart reader for the /help create-ticket form (POST
+ * /account/support/new, Task 11). Same file-part handling as
+ * `parseTicketMultipart` — up to `MAX_TICKET_ATTACHMENTS` `attachments`
+ * parts, each buffered + validated (magic-byte sniff, size cap) in memory
+ * and NEVER written to disk here (M-18: the route calls `writeAttachments`
+ * only after its own validation passes) — but it reads the /help form's
+ * richer text fields instead of the legacy single `message`: `subject`,
+ * `category`, `product_id`, `description` (the body text — this form names it
+ * `description`, not `message`), and the optional `order_code`. Field-level
+ * validation (required / length / enum / product existence) is the route's
+ * job, not this parser's: it only returns the raw values (trimmed, and
+ * `description` capped at `MAX_MESSAGE_LENGTH`, mirroring
+ * `parseTicketMultipart`'s own `message` handling).
+ *
+ * A DEDICATED function rather than an extension of `parseTicketMultipart`:
+ * that helper is shared by the legacy POST /account/support route AND the
+ * reply route, both of which must keep byte-identical behavior — so it is
+ * left completely untouched.
+ */
+export async function parseNewTicketMultipart(req: FastifyRequest): Promise<NewTicketSubmission> {
+  let subject = "";
+  let category = "";
+  let productId = "";
+  let description = "";
+  let orderCode = "";
+  const attachments: ParsedAttachment[] = [];
+  let fileCount = 0;
+  for await (const part of req.parts({ limits: { fileSize: MAX_VIDEO_BYTES } })) {
+    if (part.type === "field") {
+      if (part.fieldname === "subject") subject = String(part.value ?? "");
+      else if (part.fieldname === "category") category = String(part.value ?? "");
+      else if (part.fieldname === "product_id") productId = String(part.value ?? "");
+      else if (part.fieldname === "description") description = String(part.value ?? "");
+      else if (part.fieldname === "order_code") orderCode = String(part.value ?? "");
+      continue;
+    }
+    if (part.type !== "file") continue;
+    if (part.fieldname !== "attachments") {
+      part.file.resume();
+      continue;
+    }
+    fileCount += 1;
+    if (fileCount > MAX_TICKET_ATTACHMENTS) {
+      part.file.resume();
+      throw new ValidationError("web.support_attach_error_count");
+    }
+    const mimetype = part.mimetype;
+    const chunks: Buffer[] = [];
+    for await (const chunk of part.file) chunks.push(chunk);
+    if (part.file.truncated) throw new ValidationError("web.support_attach_error_size");
+    const buffer = Buffer.concat(chunks);
+    if (buffer.length === 0) continue; // an <input> with no file chosen still sends an empty part
+    attachments.push(await validateAttachment(buffer, mimetype));
+  }
+  return {
+    subject: subject.trim(),
+    category: category.trim(),
+    productId: productId.trim(),
+    description: description.trim().slice(0, MAX_MESSAGE_LENGTH),
+    attachments,
+    orderCode: orderCode.trim() || null,
+  };
+}
+
 /** Validates a buffered attachment (magic-byte sniff for images, size caps)
  * without touching disk — returns the buffer + resolved extension for
  * `writeAttachments` to persist later, once the caller's own validation has

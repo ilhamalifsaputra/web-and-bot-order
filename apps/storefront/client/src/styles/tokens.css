@@ -150,7 +150,19 @@
   --gg-shadow-focus: 0 0 0 3px rgb(var(--gg-pine-rgb) / 0.35); /* button/field focus ring */
 
   /* Depth = white .card on --paper + --gg-shadow-soft + 1px --line border.
-     Hover / active states step up to --gg-shadow-lift, not a darker fill. */
+
+     There are two kinds of depth and they use different means:
+       - INTERACTION depth (hover / active / press) is shadow-only: step
+         --gg-shadow-soft up to --gg-shadow-lift, NOT a darker fill. Never
+         recolour a surface to signal a pointer state.
+       - CONTAINMENT depth (a panel nested inside a card) MAY use a fill.
+         L1 is a raised white .card on --paper; L2 (.card-2 in
+         apps/storefront/static/app.css) is a recessed --sand panel inside it,
+         one radius step smaller and with no shadow of its own — not a second
+         raised white card, which on a white parent reads as camouflage.
+         Capped at depth 2; there is no L3.
+     The containment half is a §26.1 amendment to this rule — see
+     docs/implementation/deviations.md §20-nested-surface. */
 
   /* ---------------------------------------------------------------------------
      7. LAYOUT

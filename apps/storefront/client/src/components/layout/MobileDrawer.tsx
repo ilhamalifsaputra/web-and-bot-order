@@ -320,8 +320,8 @@ export default function MobileDrawer({
               <DrawerRow
                 icon={LifeBuoy}
                 label={t("web.nav_help")}
-                to="/account/support"
-                active={location.pathname.startsWith("/account/support")}
+                to="/help"
+                active={location.pathname === "/help"}
                 onNavigate={onClose}
               />
             </nav>

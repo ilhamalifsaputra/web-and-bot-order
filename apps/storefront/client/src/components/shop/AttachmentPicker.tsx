@@ -10,12 +10,10 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Paperclip, FileVideo, X } from "lucide-react";
 import { t } from "../../lib/i18n";
+import { MAX_TICKET_ATTACHMENTS, IMAGE_TYPES, validateNewFiles } from "../../lib/attachmentValidation";
 
-export const MAX_TICKET_ATTACHMENTS = 3;
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MAX_VIDEO_BYTES = 20 * 1024 * 1024;
-const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
-const VIDEO_TYPES = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+// Re-exported for back-compat: other files import this constant from here.
+export { MAX_TICKET_ATTACHMENTS };
 
 export interface AttachmentPickerProps {
   files: File[];
@@ -42,25 +40,9 @@ export default function AttachmentPicker({ files, onChange, disabled }: Attachme
     e.target.value = "";
     if (picked.length === 0) return;
     setError(null);
-    const next = [...files];
-    for (const file of picked) {
-      if (next.length >= MAX_TICKET_ATTACHMENTS) {
-        setError(t("web.support_attach_error_count"));
-        break;
-      }
-      const isImage = IMAGE_TYPES.has(file.type);
-      const isVideo = VIDEO_TYPES.has(file.type);
-      if (!isImage && !isVideo) {
-        setError(t("web.support_attach_error_type"));
-        continue;
-      }
-      if ((isImage && file.size > MAX_IMAGE_BYTES) || (isVideo && file.size > MAX_VIDEO_BYTES)) {
-        setError(t("web.support_attach_error_size"));
-        continue;
-      }
-      next.push(file);
-    }
-    onChange(next);
+    const { accepted, errorKey } = validateNewFiles(files, picked);
+    if (errorKey) setError(t(errorKey));
+    onChange([...files, ...accepted]);
   }
 
   function removeAt(idx: number) {

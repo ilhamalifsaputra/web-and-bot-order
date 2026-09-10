@@ -37,6 +37,21 @@ input, select, textarea, button { accent-color: var(--accent); }
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* Same entrance for a panel that appears mid-page rather than on page load —
+     /help's InlineTicketPanel, which pops in when `?ticket=` is set. Reuses the
+     `rise` keyframe above at --gg-duration-fast (.15s) / --gg-ease: present and
+     plain, not a slow reveal.
+
+     `backwards`, NOT `both`. An animation left with `both` keeps a non-`none`
+     `transform` on the element forever after, which makes it the containing
+     block for its own `position: fixed` descendants — the exact bug `main`'s
+     `both` above causes for sticky bars (deviations.md §11-product-detail item
+     10). This panel renders a fixed-position <Toast> as a direct child, so the
+     transform must not outlive the animation. `backwards` still applies the
+     from-state before the first frame (no flash of the final position) and
+     leaves nothing behind once it ends. */
+  .enter-rise { animation: rise .15s cubic-bezier(.22, 1, .36, 1) backwards; }
 }
 
 /* Pulsing "waiting" indicator — the setup-pending screen (React SetupPendingPage,
@@ -56,9 +71,35 @@ input, select, textarea, button { accent-color: var(--accent); }
 body { font-family: 'Manrope', system-ui, sans-serif; background-color: var(--paper); color: var(--ink); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 
-.card     { background: var(--card); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); transition: background-color .15s cubic-bezier(.22,1,.36,1), transform .15s cubic-bezier(.22,1,.36,1); }
+.card     { background: var(--card); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); transition: background-color .15s cubic-bezier(.22,1,.36,1), box-shadow .15s cubic-bezier(.22,1,.36,1), transform .15s cubic-bezier(.22,1,.36,1); }
 .card-pad { padding: 1.25rem; }
 @media (min-width: 640px) { .card-pad { padding: 1.5rem; } }
+
+/* Nested surface, level 2. L1 (.card) is a RAISED white card on --paper; L2 is
+   a RECESSED sand panel inside it — deliberately NOT a second raised white
+   card, which on a white parent is separated only by a 1px hairline and reads
+   as camouflage. Being darker than its container and casting no shadow of its
+   own is exactly what makes an inset read as inset, so `box-shadow: none` here
+   is explicit, not incidental.
+
+   --r-md (12px) is one radius step below .card's --r-lg (16px): an inset must
+   never carry a larger corner than the container it sits in.
+
+   This is the "containment depth may use a fill" half of the amended
+   tokens.css §6 rule — INTERACTION depth (hover/active) is still shadow-only
+   and must not recolour a surface. See docs/implementation/deviations.md
+   §20-nested-surface. Cap nesting at this level: there is no .card-3.
+
+   .card-pad-2 is a flat 1rem, not .card-pad's responsive 1.25→1.5rem — an
+   inset does not need to grow with the viewport the way its container does.
+
+   (Durations/easing are written as literals, matching every other rule in this
+   file: app.css is also served standalone by the build-free fallback shell in
+   src/lib/spaFallback.ts, whose inlined :root block carries only the legacy
+   short names — no --gg-duration-fast / --gg-ease. The literals ARE those two
+   token values.) */
+.card-2     { background: var(--sand); border: 1px solid var(--line); border-radius: var(--r-md); box-shadow: none; transition: background-color .15s cubic-bezier(.22,1,.36,1), border-color .15s cubic-bezier(.22,1,.36,1); }
+.card-pad-2 { padding: 1rem; }
 
 /* 30px is a desktop heading; at 320px it eats two lines before the content
    starts. Steps up at the sm breakpoint instead. */

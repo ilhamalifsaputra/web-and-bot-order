@@ -87,12 +87,12 @@ matches the existing codebase split.
 | Utility | CSS var | Value | Use |
 |---|---|---|---|
 | `bg-background` / `text-foreground` | `--background` / `--foreground` | `#f6f8fb` / `#1b2330` | Page canvas |
-| `bg-card` / `text-card-foreground` | `--card` / `--card-foreground` | `#ffffff` / `#1b2330` | Card, dialog, dropdown surfaces |
-| `bg-popover` / `text-popover-foreground` | `--popover` / `--popover-foreground` | `#ffffff` / `#1b2330` | Popover/tooltip surfaces |
+| `bg-card` / `text-card-foreground` | `--card` / `--card-foreground` | `#ffffff` / `#1b2330` | Card and Alert surfaces |
+| `bg-popover` / `text-popover-foreground` | `--popover` / `--popover-foreground` | `#ffffff` / `#1b2330` | Dialog/AlertDialog surfaces only — `Select`/`DropdownMenu`/`Popover` moved to `bg-sand` (§7.1); `Tooltip` uses `bg-foreground`, not this token |
 | `bg-primary` / `text-primary-foreground` | `--primary` / `--primary-foreground` | `#2563eb` / `#ffffff` | Primary actions |
 | `bg-secondary` / `text-secondary-foreground` | `--secondary` / `--secondary-foreground` | `#eef1f6` / `#1b2330` | Secondary actions/fills |
 | `bg-muted` / `text-muted-foreground` | `--muted` / `--muted-foreground` | `#eef1f6` / `#5a6473` | Muted backgrounds, secondary text |
-| `bg-accent` / `text-accent-foreground` | `--accent` / `--accent-foreground` | `#eef1f6` / `#1b2330` | Hover/active fills |
+| `bg-accent` / `text-accent-foreground` | `--accent` / `--accent-foreground` | `#eef1f6` / `#1b2330` | No longer used for Select/DropdownMenu item highlights — those use `bg-pine-tint` (§7.1) to stay visible against the `bg-sand` panel fill, since `--accent` is numerically identical to `--sand`. The only remaining call site is `ForgotPage`'s reset-code CTA link; treat `bg-accent` as effectively reserved/legacy rather than reaching for it in new hover/active-fill code — prefer `bg-pine-tint` or `bg-sand` depending on context. |
 | `bg-destructive` | `--destructive` | `#dc2626` | Destructive actions |
 | `border-border` | `--border` | `#e3e8ef` | Default border |
 | `border-input` | `--input` | `#e3e8ef` | Form control border |
@@ -238,6 +238,52 @@ Two elevation tokens only — this is a flat system, not a multi-level shadow ra
 
 Never author a custom `box-shadow` value. If neither token is elevated enough for a
 new case, that's a design-system gap to raise, not a reason to freehand a shadow.
+
+### 7.1 Nested / recessed surfaces
+
+§7's tokens cover **interaction depth** only — a surface stepping `shadow-soft` →
+`shadow-lift` on hover/press. They say nothing about **containment depth**: a
+Card-shaped panel living *inside* another Card. Stacking a second `bg-card` white
+surface on a white surface is exactly the "nyaru" (blend-together) failure this
+system exists to prevent — two identical white fills separated only by a 1px
+`border-border` hairline that barely resolves.
+
+`Card` (`components/ui/card.tsx`) exposes `variant="nested"` for this case:
+
+| | `variant="default"` (raised) | `variant="nested"` (recessed) |
+|---|---|---|
+| Fill | `bg-card` (`#ffffff`) | `bg-sand` (`#eef1f6`) |
+| Radius | `rounded-xl` (16px) | `rounded-lg` (12px) — one step down; an inset must never carry a *larger* radius than its container |
+| Shadow | `shadow-soft` | `shadow-none` |
+| Border | `border-border` | `border-border` (unchanged) |
+
+Use `variant="nested"` on any Card-shaped panel that lives inside another Card.
+`DataTable`'s `nested` prop (`components/shared/DataTable.tsx`) is the concrete
+example already wired to it — when a table sits inside a page-level Card, its
+mobile card-stack rows render as `bg-sand` panels instead of a second stack of
+white cards.
+
+Nesting is capped at depth 2 — there is no `variant="nested-2"` and none is
+planned. A third level has nowhere sensible to go: back to white re-introduces
+the collision, and a darker fill starts reading as disabled rather than as
+depth.
+
+The same reasoning extends to floating content that opens over a Card: `Select`,
+`DropdownMenu`, and `Popover` panels use `bg-sand` instead of `bg-popover`/white,
+since they routinely float over a Card rather than only the plain page
+background. `Dialog` and `AlertDialog` are deliberately unaffected — as centered
+modals over a dimmed backdrop they are never stacked on another surface, so they
+keep the white `--popover` fill.
+
+**Known limitation:** when one of these `bg-sand` floating panels opens over an
+already-`nested` (`bg-sand`) `DataTable` row or Card, the two surfaces share the
+same fill and are distinguished only by `border-border` + `shadow-lift` — one
+level deeper than this pattern's depth-2 design intends. This is not a
+regression introduced by moving panels to `bg-sand`: the exact same pairing was
+equally indistinguishable when both surfaces were white. It's an accepted gap
+for now; if this layout (a floating panel opening over nested content) becomes
+frequent, a future iteration may need to introduce a third tone rather than
+stretch this two-tone system further.
 
 ## 8. Motion, animation, transition
 

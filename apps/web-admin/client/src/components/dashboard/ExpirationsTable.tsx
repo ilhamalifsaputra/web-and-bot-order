@@ -16,6 +16,7 @@ export function ExpirationsTable() {
           <p className="text-sm text-rust">Couldn't load expirations.</p>
         ) : (
           <DataTable
+            nested
             columns={[
               {
                 key: "product",

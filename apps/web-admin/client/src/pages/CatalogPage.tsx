@@ -474,6 +474,7 @@ export function CatalogPage() {
                   )}
                 </p>
                 <DataTable
+                  nested
                   columns={[
                     { key: "line", header: "#", render: (row) => row.line },
                     {

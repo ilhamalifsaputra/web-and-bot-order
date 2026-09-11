@@ -296,7 +296,7 @@ function ProductScopePicker({
                   {(byCategory.get(c.id) ?? []).map((p) => (
                     <label
                       key={p.id}
-                      className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-sand"
+                      className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-pine-tint"
                     >
                       <Checkbox
                         className="shrink-0"

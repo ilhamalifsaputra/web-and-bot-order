@@ -67,6 +67,8 @@ import {
   resyncDigiflazzCatalog,
   detectMixedDigiflazzProducts,
   splitMixedDigiflazzProducts,
+  detectMixedTypeProducts,
+  splitMixedTypeProducts,
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
   getDigiflazzSyncStatus,
@@ -74,6 +76,7 @@ import {
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 // I3 test: spy on getSetting itself (not just the underlying Prisma query,
@@ -2543,5 +2546,467 @@ describe("splitMixedDigiflazzProducts / detectMixedDigiflazzProducts", () => {
     // silently rewriting a live storefront URL for a product whose name
     // never changed. The fix keeps it at "valorant-2".
     expect(winner.slug).toBe("valorant-2");
+  });
+});
+
+describe("splitMixedTypeProducts / detectMixedTypeProducts", () => {
+  /** Seed one Digiflazz Product ("Arena Breakout") whose denominations split
+   * across 2 type buckets (base "Umum" + "Infinite") with UNEVEN counts, and
+   * build the `typeMap` a fresh `getPriceList()` fetch would have produced
+   * for these SKUs. `baseCount`/`suffixCount` let callers control which
+   * bucket wins (larger count) without duplicating this setup per test. */
+  async function seedMixedTypeProduct(
+    categoryId: number,
+    opts: { brand?: string; baseCount: number; suffixCount: number; suffix?: string } = { baseCount: 3, suffixCount: 5 },
+  ) {
+    const brand = opts.brand ?? "Arena Breakout";
+    const suffix = opts.suffix ?? "Infinite";
+    const product = await createCatalogProduct(prisma, {
+      categoryId,
+      name: brand,
+      digiflazzBrand: brand,
+    });
+    const typeMap = new Map<string, string | null>();
+    const denomsBySuffix = new Map<string | null, { id: number; name: string }[]>();
+
+    const buckets: [string | null, number][] = [
+      [null, opts.baseCount],
+      [suffix, opts.suffixCount],
+    ];
+    let sku = 0;
+    for (const [bucketSuffix, count] of buckets) {
+      const records: { id: number; name: string }[] = [];
+      for (let i = 0; i < count; i++) {
+        sku++;
+        const name = bucketSuffix
+          ? `${brand} ${bucketSuffix} ${1000 * (i + 1)} Bonds`
+          : `${brand} ${1000 * (i + 1)} Bonds`;
+        const supplierSku = `ab-${bucketSuffix ?? "umum"}-${sku}`;
+        const denom = await createDenomination(prisma, {
+          productId: product.id,
+          name,
+          type: "SHARED",
+          durationLabel: name,
+          price: "16500",
+          autoDeliverySource: "digiflazz",
+          supplierSku,
+        });
+        records.push({ id: denom.id, name });
+        typeMap.set(supplierSku, bucketSuffix);
+      }
+      denomsBySuffix.set(bucketSuffix, records);
+    }
+    return { product, denomsBySuffix, typeMap, brand, suffix };
+  }
+
+  it("1. detects and splits a product whose denominations map to 2 distinct suffixes into 2 products, with correct gameVariant and bucket sizes", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // Infinite (5) > Umum (3) — Infinite is the unambiguous winner.
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result).toEqual({
+      productsSplit: 1,
+      productsCreated: 1,
+      denominationsMoved: 3,
+      skipped: [],
+      conflicts: [],
+      unmapped: [],
+      failures: [],
+    });
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Arena Breakout Infinite");
+    expect(winner.digiflazzBrand).toBe("Arena Breakout Infinite");
+    expect(winner.gameVariant).toBe("Infinite");
+    const winnerDenoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(winnerDenoms).toHaveLength(5);
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout" } });
+    expect(created.id).not.toBe(product.id);
+    expect(created.gameVariant).toBe("Umum");
+    const createdDenoms = await prisma.denomination.findMany({ where: { productId: created.id } });
+    expect(createdDenoms).toHaveLength(3);
+  });
+
+  it("2. winner keeps productId and slug unchanged when the winning (larger) bucket is the base edition; the smaller bucket becomes a new product", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // Umum (5) > Infinite (3) — base bucket wins, and its displayName equals
+    // the product's current name/digiflazzBrand, so nothing is "renamed".
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 5, suffixCount: 3 });
+    const originalSlug = product.slug;
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.productsSplit).toBe(1);
+    expect(result.productsCreated).toBe(1);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.id).toBe(product.id);
+    expect(winner.slug).toBe(originalSlug);
+    expect(winner.name).toBe("Arena Breakout");
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout Infinite" } });
+    expect(created.id).not.toBe(product.id);
+  });
+
+  it("3. tie-break: equal bucket sizes resolve to the base (null suffix) edition winning", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // 6 Umum / 6 Infinite, matching the plan's own worked example.
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 6, suffixCount: 6 });
+
+    await splitMixedTypeProducts(prisma, typeMap);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Arena Breakout");
+    expect(winner.digiflazzBrand).toBe("Arena Breakout");
+    const winnerDenoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(winnerDenoms).toHaveLength(6);
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout Infinite" } });
+    const createdDenoms = await prisma.denomination.findMany({ where: { productId: created.id } });
+    expect(createdDenoms).toHaveLength(6);
+  });
+
+  it("4. gameVariant is non-null on both sides of a real split, even when the winner is the base bucket", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 6, suffixCount: 6 });
+
+    await splitMixedTypeProducts(prisma, typeMap);
+
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.gameVariant).toBe("Umum"); // NOT null — this product is provably mixed
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout Infinite" } });
+    expect(created.gameVariant).toBe("Infinite");
+  });
+
+  it("5. the new product's digiflazzBrand matches what a fresh import of equivalent data would produce", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+
+    await splitMixedTypeProducts(prisma, typeMap);
+    const createdWinnerBucket = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout" } });
+
+    // Cross-check against groupDigiflazzPriceListByBrand's own displayName
+    // for equivalent fresh-import input — the two paths must never name a
+    // split differently.
+    const freshRows: DigiflazzPriceListItem[] = [
+      {
+        buyerSkuCode: "fresh-umum-1",
+        productName: "Arena Breakout 1000 Bonds",
+        category: "Games",
+        brand: "Arena Breakout",
+        type: "Umum",
+        price: new Decimal(1000),
+        buyerProductStatus: true,
+        sellerProductStatus: true,
+        stock: null,
+      },
+      {
+        buyerSkuCode: "fresh-inf-1",
+        productName: "Arena Breakout Infinite 1000 Bonds",
+        category: "Games",
+        brand: "Arena Breakout",
+        type: "Infinite",
+        price: new Decimal(1000),
+        buyerProductStatus: true,
+        sellerProductStatus: true,
+        stock: null,
+      },
+    ];
+    const freshGroups = await groupDigiflazzPriceListByBrand(prisma, freshRows);
+    const freshBaseGroup = freshGroups.find((g) => g.gameVariant === "Umum")!;
+    const freshInfiniteGroup = freshGroups.find((g) => g.gameVariant === "Infinite")!;
+
+    expect(createdWinnerBucket.digiflazzBrand).toBe(freshBaseGroup.brand);
+    const migratedInfinite = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Arena Breakout Infinite" } });
+    expect(migratedInfinite.digiflazzBrand).toBe(freshInfiniteGroup.brand);
+  });
+
+  it("6. denomination names/durationLabels are NOT rewritten — byte-identical before and after, for both a staying and a moved denomination", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { denomsBySuffix, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+    const beforeByName = new Map<number, string>();
+    for (const records of denomsBySuffix.values()) {
+      for (const r of records) beforeByName.set(r.id, r.name);
+    }
+
+    await splitMixedTypeProducts(prisma, typeMap);
+
+    for (const [id, nameBefore] of beforeByName) {
+      const denom = await prisma.denomination.findUniqueOrThrow({ where: { id } });
+      expect(denom.name).toBe(nameBefore);
+      expect(denom.durationLabel).toBe(nameBefore);
+    }
+  });
+
+  it("7. is a full no-op on a second run over the same (now-split) data", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+    await splitMixedTypeProducts(prisma, typeMap);
+
+    const second = await splitMixedTypeProducts(prisma, typeMap);
+    expect(second.productsSplit).toBe(0);
+    expect(second.productsCreated).toBe(0);
+    expect(second.denominationsMoved).toBe(0);
+    expect(second.unmapped).toEqual([]);
+    expect(second.skipped.sort()).toEqual(["Arena Breakout Infinite", "Arena Breakout"].sort());
+
+    const detection = await detectMixedTypeProducts(prisma, typeMap);
+    expect(detection.mixed).toHaveLength(0);
+  });
+
+  it("8. collision guard: a target displayName already belongs to a different existing product excludes the whole plan into conflicts, product completely untouched", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+    const denomsBefore = await prisma.denomination.findMany({ where: { productId: product.id } });
+
+    // Simulate: a fresh type-aware import already created the "Infinite"
+    // edition product before this migration ran on the old mixed data.
+    const preExisting = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Arena Breakout Infinite",
+      digiflazzBrand: "Arena Breakout Infinite",
+    });
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.productsSplit).toBe(0);
+    expect(result.productsCreated).toBe(0);
+    expect(result.denominationsMoved).toBe(0);
+    expect(result.conflicts).toHaveLength(1);
+    expect(result.conflicts[0]).toContain("Arena Breakout Infinite");
+    expect(result.conflicts[0]).toContain(String(preExisting.id));
+    expect(result.conflicts[0]).toContain(String(product.id));
+
+    const original = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(original.name).toBe("Arena Breakout");
+    expect(original.digiflazzBrand).toBe("Arena Breakout");
+    const denomsAfter = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(denomsAfter.map((d) => d.id).sort()).toEqual(denomsBefore.map((d) => d.id).sort());
+
+    const detection = await detectMixedTypeProducts(prisma, typeMap);
+    expect(detection.mixed).toHaveLength(0);
+    expect(detection.conflicts).toHaveLength(1);
+  });
+
+  it("9. detectMixedTypeProducts is read-only — computes the plan without writing anything", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+
+    const detection = await detectMixedTypeProducts(prisma, typeMap);
+    expect(detection.mixed).toHaveLength(1);
+    expect(detection.mixed[0]!.productId).toBe(product.id);
+    // Winning bucket (largest count) is first.
+    expect(detection.mixed[0]!.groups[0]!.suffix).toBe("Infinite");
+
+    const unchanged = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(unchanged.name).toBe("Arena Breakout");
+    expect(unchanged.gameVariant).toBeNull();
+    const denoms = await prisma.denomination.findMany({ where: { productId: product.id } });
+    expect(denoms).toHaveLength(8);
+  });
+
+  describe("10. per-product failure isolation", () => {
+    it("continues splitting the other product when one product's transaction throws, and reports the failure without losing the other's result", async () => {
+      const category = await prisma.category.findFirstOrThrow();
+      const first = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+      const second = await seedMixedTypeProduct(category.id, {
+        brand: "Free Fire Max",
+        baseCount: 2,
+        suffixCount: 1,
+        suffix: "Garena",
+      });
+      const combinedTypeMap = new Map<string, string | null>([...first.typeMap, ...second.typeMap]);
+
+      const originalTransaction = prisma.$transaction.bind(prisma);
+      let callIndex = 0;
+      const spy = vi.spyOn(prisma, "$transaction").mockImplementation((async (...args: unknown[]) => {
+        callIndex++;
+        if (callIndex === 2) {
+          throw new Error("Simulated transient DB failure");
+        }
+        return (originalTransaction as (...a: unknown[]) => unknown)(...args);
+      }) as typeof prisma.$transaction);
+
+      try {
+        const result = await splitMixedTypeProducts(prisma, combinedTypeMap);
+
+        expect(result.failures).toHaveLength(1);
+        expect(result.productsSplit).toBe(1);
+        expect(result.failures[0]!.error).toContain("Simulated transient DB failure");
+        expect(["Arena Breakout", "Free Fire Max"]).toContain(result.failures[0]!.productName);
+
+        if (result.failures[0]!.productName === "Free Fire Max") {
+          const ab = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Arena Breakout" } } });
+          expect(ab).toHaveLength(2); // fully split and committed
+          const ffAfter = await prisma.product.findUniqueOrThrow({ where: { id: second.product.id } });
+          expect(ffAfter.name).toBe("Free Fire Max"); // untouched — its transaction rolled back
+          const ffDenoms = await prisma.denomination.findMany({ where: { productId: second.product.id } });
+          expect(ffDenoms).toHaveLength(3); // neither moved nor rewritten
+        } else {
+          const ff = await prisma.product.findMany({ where: { digiflazzBrand: { startsWith: "Free Fire Max" } } });
+          expect(ff).toHaveLength(2); // fully split and committed
+          const abAfter = await prisma.product.findFirstOrThrow({ where: { name: "Arena Breakout" } });
+          const abDenoms = await prisma.denomination.findMany({ where: { productId: abAfter.id } });
+          expect(abDenoms).toHaveLength(8); // untouched — its transaction rolled back
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  it("11. calls logAdminAction exactly once per split product, with adminId: null and action digiflazz_catalog_type_split", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { product, typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+
+    await splitMixedTypeProducts(prisma, typeMap);
+
+    const entries = await prisma.auditLog.findMany({
+      where: { action: "digiflazz_catalog_type_split", targetId: product.id },
+    });
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.adminId).toBeNull();
+    expect(entries[0]!.details).toContain("Arena Breakout");
+    expect(entries[0]!.details).toContain("2 edition products");
+  });
+
+  it("12. a denomination that can't be mapped to a type excludes the whole product into unmapped, leaving it completely untouched", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Genshin Impact",
+      digiflazzBrand: "Genshin Impact",
+    });
+    // This denomination WOULD otherwise indicate a split (maps to "Infinite")...
+    const mapped = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Genshin Impact Infinite 100 Crystal",
+      type: "SHARED",
+      durationLabel: "Genshin Impact Infinite 100 Crystal",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "gi-inf-1",
+    });
+    // ...but this one's supplierSku is absent from typeMap (a manually-added
+    // SKU, or one Digiflazz has retired).
+    const unmappedDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Genshin Impact 100 Crystal",
+      type: "SHARED",
+      durationLabel: "Genshin Impact 100 Crystal",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "gi-manual-1",
+    });
+    const typeMap = new Map<string, string | null>([["gi-inf-1", "Infinite"]]);
+
+    const detection = await detectMixedTypeProducts(prisma, typeMap);
+    expect(detection.mixed).toHaveLength(0);
+    expect(detection.skipped).toEqual([]);
+    expect(detection.unmapped).toHaveLength(1);
+    expect(detection.unmapped[0]!.productId).toBe(product.id);
+    expect(detection.unmapped[0]!.productName).toBe("Genshin Impact");
+    expect(detection.unmapped[0]!.denominationNames).toEqual(["Genshin Impact 100 Crystal"]);
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.productsSplit).toBe(0);
+    expect(result.productsCreated).toBe(0);
+    expect(result.unmapped).toHaveLength(1);
+
+    const unchanged = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(unchanged.name).toBe("Genshin Impact");
+    const mappedAfter = await prisma.denomination.findUniqueOrThrow({ where: { id: mapped.id } });
+    expect(mappedAfter.productId).toBe(product.id);
+    const unmappedAfter = await prisma.denomination.findUniqueOrThrow({ where: { id: unmappedDenom.id } });
+    expect(unmappedAfter.productId).toBe(product.id);
+  });
+
+  it("13. region-then-type: a product already split by region (digiflazzBrand carries a region parenthetical) produces correctly-composed names, not a malformed concatenation", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    // Simulates a product that already went through the region migration —
+    // its digiflazzBrand carries a trailing region suffix.
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Foo (Indonesia)",
+      digiflazzBrand: "Foo (Indonesia)",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Foo 100 Gold (Indonesia)",
+      type: "SHARED",
+      durationLabel: "Foo 100 Gold (Indonesia)",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "foo-umum-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Foo Infinite 100 Gold (Indonesia)",
+      type: "SHARED",
+      durationLabel: "Foo Infinite 100 Gold (Indonesia)",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "foo-inf-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "Foo Infinite 200 Gold (Indonesia)",
+      type: "SHARED",
+      durationLabel: "Foo Infinite 200 Gold (Indonesia)",
+      price: "31000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "foo-inf-2",
+    });
+    const typeMap = new Map<string, string | null>([
+      ["foo-umum-1", null],
+      ["foo-inf-1", "Infinite"],
+      ["foo-inf-2", "Infinite"],
+    ]);
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.productsSplit).toBe(1);
+    expect(result.productsCreated).toBe(1);
+    expect(result.failures).toEqual([]);
+
+    // Infinite (2) wins over Umum (1) and keeps the original product id.
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.name).toBe("Foo Infinite (Indonesia)");
+    expect(winner.digiflazzBrand).toBe("Foo Infinite (Indonesia)");
+    expect(winner.name).not.toBe("Foo (Indonesia) Infinite"); // malformed concatenation
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Foo (Indonesia)" } });
+    expect(created.id).not.toBe(product.id);
+    expect(created.name).toBe("Foo (Indonesia)");
+  });
+
+  it("14. a non-mixed product (all denominations map to the same suffix, including all-base) stays in skipped, untouched", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const { typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });
+
+    // All-base product: every denomination maps to null (Umum).
+    const allBaseProduct = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Pulsa Telkomsel",
+      digiflazzBrand: "Pulsa Telkomsel",
+    });
+    const pulsaDenom = await createDenomination(prisma, {
+      productId: allBaseProduct.id,
+      name: "Pulsa 10.000",
+      type: "SHARED",
+      durationLabel: "Pulsa 10.000",
+      price: "10500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "pulsa-10k",
+    });
+    typeMap.set("pulsa-10k", null);
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.skipped).toContain("Pulsa Telkomsel");
+    expect(result.productsSplit).toBe(1); // only the seeded mixed product
+
+    const pulsaAfter = await prisma.product.findUniqueOrThrow({ where: { id: allBaseProduct.id } });
+    expect(pulsaAfter.name).toBe("Pulsa Telkomsel");
+    const pulsaDenomAfter = await prisma.denomination.findUniqueOrThrow({ where: { id: pulsaDenom.id } });
+    expect(pulsaDenomAfter.productId).toBe(allBaseProduct.id);
   });
 });

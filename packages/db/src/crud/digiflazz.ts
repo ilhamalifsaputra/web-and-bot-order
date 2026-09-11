@@ -1778,3 +1778,369 @@ export async function splitMixedDigiflazzProducts(
 
   return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts, failures };
 }
+
+// ---- One-time migration: split already-mixed-type Digiflazz products ----
+//
+// Task 21's groupDigiflazzPriceListByBrand/importDigiflazzBrand (above) only
+// fix NEW imports going forward: a brand Digiflazz reports with ≥2 distinct
+// `type` values (e.g. "Arena Breakout" base + "Arena Breakout Infinite") now
+// splits into one Product per edition at import time. A live catalog can
+// already hold a Product imported BEFORE that fix, whose denominations mix
+// multiple editions together under one brand. This section is the one-time
+// fix-up for that pre-existing data; scripts/split-digiflazz-types.ts is its
+// CLI entry point. Closely mirrors the region-splitter pair immediately
+// above — see that section's doc comments for the reasoning shared by both;
+// comments here call out only what's genuinely different for `type`.
+//
+// Key difference from the region splitter: Digiflazz's `type` value is not
+// persisted anywhere in this DB (not on Product, not on Denomination —
+// Denomination.type is the unrelated ProductType enum, NOT NULL, already
+// used for SHARED/PRIVATE). The region splitter can compute everything by
+// reading parseProductRegion(denom.name) from data already in the DB; this
+// migration cannot, so the caller (the CLI) fetches a live price list ONCE
+// and passes in a `typeMap: Map<supplierSku, normalizedTypeSuffix>` as a
+// plain parameter — this keeps detectMixedTypeProducts/splitMixedTypeProducts
+// pure, DB-only, and unit-testable with a fake Map, and preserves the "one
+// read-only planner shared by dry-run and apply" contract the region
+// splitter already has.
+
+/** One type-suffix bucket found on a mixed Product's denominations.
+ * `suffix: null` is the base ("Umum") bucket. `displayName` is the composite
+ * name/digiflazzBrand this bucket's Product will end up with — built via the
+ * same digiflazzGroupKey composer groupDigiflazzPriceListByBrand uses for
+ * fresh imports, so a migrated Product's digiflazzBrand always matches what a
+ * fresh import of the same data would produce. */
+export interface DigiflazzTypeGroup {
+  suffix: string | null;
+  displayName: string;
+  denominations: { id: number; name: string }[];
+}
+
+/** One mixed Product's split plan — read-only, no DB writes implied. `groups`
+ * is sorted winning-bucket-first (see detectMixedTypeProducts), so
+ * `groups[0]` is always the bucket that keeps `productId`. */
+export interface DigiflazzMixedTypeProductPlan {
+  productId: number;
+  originalName: string;
+  originalSlug: string;
+  categoryId: number;
+  isActive: boolean;
+  groups: DigiflazzTypeGroup[];
+}
+
+export interface DigiflazzMixedTypeDetection {
+  /** Products found with 2+ distinct type suffixes — need splitting. Never
+   * includes a plan that has a digiflazzBrand collision; see `conflicts`. */
+  mixed: DigiflazzMixedTypeProductPlan[];
+  /** Names of candidate Digiflazz products that are NOT mixed (a single type
+   * suffix — including "every denomination base/Umum") and are left
+   * untouched. */
+  skipped: string[];
+  /** Human-readable descriptions of mixed products that were found but
+   * CANNOT be split because one of their target names (a group's
+   * `displayName`) already matches a DIFFERENT existing product's
+   * digiflazzBrand — same collision reasoning as detectMixedDigiflazzProducts's
+   * `conflicts`. These products are entirely excluded from `mixed` (not
+   * partially split) — a human must resolve the collision and re-run. */
+  conflicts: string[];
+  /** Candidate products excluded entirely because at least one denomination
+   * could not be mapped to a type (its supplierSku is null — a manually-added
+   * SKU — or the supplierSku is absent from `typeMap`, e.g. Digiflazz retired
+   * it). Never partially split: one unmapped denomination excludes the WHOLE
+   * product. Each entry names the product and lists the unmapped
+   * denomination names (capped) so an operator can see why. */
+  unmapped: { productName: string; productId: number; denominationNames: string[] }[];
+}
+
+/** Cap on how many unmapped denomination names are listed per product in
+ * `DigiflazzMixedTypeDetection.unmapped` — an operator only needs enough to
+ * recognize the product, not an exhaustive dump. */
+const UNMAPPED_DENOM_NAMES_CAP = 10;
+
+/**
+ * Read-only detection: find every non-archived, Digiflazz-backed Product and
+ * bucket its denominations by type suffix, using `typeMap` (built by the CLI
+ * from one fresh `getPriceList()` call — see this file's module-level "Key
+ * difference" comment above) to map each denomination's `supplierSku` to its
+ * normalized suffix. `typeMap`'s values are already normalized
+ * (digiflazzTypeSuffix's output — null for base, the trimmed original-case
+ * string otherwise), never a raw Digiflazz `type` string — this keeps this
+ * function simple and lets tests build a fake Map directly with the values
+ * they want to assert against.
+ *
+ * Pure/no-write — this is the single place the type-grouping and
+ * winner-selection logic lives. Both `splitMixedTypeProducts` (the writer)
+ * and the migration script's `--dry-run`-by-default plan output call this,
+ * so the two can never drift out of sync with each other.
+ */
+export async function detectMixedTypeProducts(
+  db: Db,
+  typeMap: Map<string, string | null>,
+): Promise<DigiflazzMixedTypeDetection> {
+  const candidates = await db.product.findMany({
+    where: { digiflazzBrand: { not: null }, isArchived: false },
+    include: { denominations: true },
+  });
+
+  const mixedCandidates: DigiflazzMixedTypeProductPlan[] = [];
+  const skipped: string[] = [];
+  const unmapped: { productName: string; productId: number; denominationNames: string[] }[] = [];
+
+  for (const product of candidates) {
+    const unmappedNames: string[] = [];
+    const bySuffix = new Map<string | null, { id: number; name: string }[]>();
+    for (const denom of product.denominations) {
+      if (denom.supplierSku == null || !typeMap.has(denom.supplierSku)) {
+        unmappedNames.push(denom.name);
+        continue;
+      }
+      const suffix = typeMap.get(denom.supplierSku) ?? null;
+      const bucket = bySuffix.get(suffix);
+      if (bucket) bucket.push({ id: denom.id, name: denom.name });
+      else bySuffix.set(suffix, [{ id: denom.id, name: denom.name }]);
+    }
+
+    // Never partially split: one denomination that can't be mapped to a
+    // type excludes the WHOLE product from this run, regardless of what the
+    // rest of its denominations would otherwise indicate.
+    if (unmappedNames.length > 0) {
+      unmapped.push({
+        productName: product.name,
+        productId: product.id,
+        denominationNames: unmappedNames.slice(0, UNMAPPED_DENOM_NAMES_CAP),
+      });
+      continue;
+    }
+
+    // Every mapped denomination shares the same suffix (including "all
+    // base"), or the product has no denominations at all: nothing to split.
+    // Recording it here (rather than only in the writer) is what makes a
+    // second run a true no-op end to end.
+    if (bySuffix.size <= 1) {
+      skipped.push(product.name);
+      continue;
+    }
+
+    // stripRegionSuffix is REQUIRED here — a product already split by the
+    // region migration (e.g. digiflazzBrand: "Arena Breakout (Indonesia)")
+    // must recover the pre-region brand ("Arena Breakout") before this
+    // composes a type-suffixed name, or a region-then-type-mixed product
+    // would produce a malformed concatenated name like
+    // "Arena Breakout (Indonesia) Infinite" instead of the correct
+    // "Arena Breakout Infinite (Indonesia)" (the region, if any, is
+    // recovered from the denomination name itself by digiflazzGroupKey below).
+    const brandBase = stripRegionSuffix(product.digiflazzBrand!);
+    const groups: DigiflazzTypeGroup[] = [...bySuffix.entries()].map(([suffix, denominations]) => {
+      const groupBrand = suffix === null ? brandBase : `${brandBase} ${suffix}`;
+      const { displayName } = digiflazzGroupKey(groupBrand, denominations[0]!.name);
+      return { suffix, displayName, denominations };
+    });
+
+    // Winning bucket (keeps the original Product id): largest denomination
+    // count; ties broken alphabetically by suffix, with the base ("Umum")
+    // bucket sorting first (suffix ?? "" — an empty string sorts before any
+    // named suffix) — identical comparator shape to the region splitter's
+    // own tie-break, so a tie between base and a named suffix always
+    // resolves to base first.
+    groups.sort((a, b) => {
+      if (b.denominations.length !== a.denominations.length) {
+        return b.denominations.length - a.denominations.length;
+      }
+      return (a.suffix ?? "").localeCompare(b.suffix ?? "");
+    });
+
+    mixedCandidates.push({
+      productId: product.id,
+      originalName: product.name,
+      originalSlug: product.slug,
+      categoryId: product.categoryId,
+      isActive: product.isActive,
+      groups,
+    });
+  }
+
+  // Collision guard — identical logic to detectMixedDigiflazzProducts: check
+  // every candidate's target displayNames against the WHOLE catalog (not
+  // just the mixed candidates) in one query, then exclude any plan with a
+  // collision from `mixed` entirely rather than partially splitting it.
+  const allTargetNames = [...new Set(mixedCandidates.flatMap((plan) => plan.groups.map((g) => g.displayName)))];
+  const existingByTargetName =
+    allTargetNames.length === 0
+      ? []
+      : await db.product.findMany({
+          where: { digiflazzBrand: { in: allTargetNames } },
+          select: { id: true, name: true, digiflazzBrand: true },
+        });
+  const existingByBrand = new Map(existingByTargetName.map((p) => [p.digiflazzBrand!, p]));
+
+  const mixed: DigiflazzMixedTypeProductPlan[] = [];
+  const conflicts: string[] = [];
+  for (const plan of mixedCandidates) {
+    const collidingGroup = plan.groups.find((g) => {
+      const existing = existingByBrand.get(g.displayName);
+      return existing != null && existing.id !== plan.productId;
+    });
+    if (collidingGroup) {
+      const existing = existingByBrand.get(collidingGroup.displayName)!;
+      conflicts.push(
+        `"${plan.originalName}" (product id ${plan.productId}) cannot be split: target name "${collidingGroup.displayName}" already belongs to a different existing product, "${existing.name}" (product id ${existing.id}). Resolve manually (e.g. delete or merge the stray duplicate) and re-run.`,
+      );
+      continue;
+    }
+    mixed.push(plan);
+  }
+
+  return { mixed, skipped, conflicts, unmapped };
+}
+
+/**
+ * The one-time write: split every already-mixed-type Digiflazz Product
+ * `detectMixedTypeProducts` finds into one Product per edition.
+ *
+ * Mirrors splitMixedDigiflazzProducts's structure exactly (repurpose the
+ * winning bucket's Product in place, one $transaction per product, TOCTOU
+ * re-check, per-product failure isolation — see that function's doc comment
+ * for the full reasoning), with two DELIBERATE DIFFERENCES:
+ *
+ * 1. Never rewrites a moved denomination's name/durationLabel. The region
+ *    splitter strips the region suffix off moved denominations because the
+ *    new product is now region-specific and the suffix is redundant — there
+ *    is no equivalent here. Reasons: (a) formatDenominationLabel
+ *    (apps/order-bot/src/util/denominationLabel.ts) already strips the
+ *    product-name prefix at render time, so the bot never shows the raw
+ *    stored name verbatim — no display bug to fix by rewriting; (b) the
+ *    denomination name should keep matching the Digiflazz vendor's own
+ *    naming for support/reconciliation; (c) OrderItem carries no name
+ *    snapshot, so rewriting would silently change how a past order renders
+ *    even though nothing about that order actually changed. Only productId
+ *    moves.
+ * 2. Every bucket's gameVariant is set, even the base ("Umum") one, on
+ *    WHICHEVER side of the split it ends up on. Unlike a fresh import's
+ *    ≤1-suffix path (Task 21, gameVariant: null when nothing splits), a
+ *    product reaching this function is provably mixed (bySuffix.size >= 2 in
+ *    detectMixedTypeProducts) — every bucket, including the winner, is one
+ *    side of a real split. Both the winner and every created product get
+ *    `<group>.suffix ?? DIGIFLAZZ_BASE_GAME_VARIANT` (so a base-bucket gets
+ *    "Umum", never null) — the SAME fallback on both sides, deliberately,
+ *    because the winning bucket is decided by denomination count, not by
+ *    suffix: the base bucket can just as easily end up the non-winning
+ *    (created) side of a split as the winning one. gameVariant must be
+ *    non-null on BOTH sides of a real split, or listCategoryGameVariants can
+ *    never report length > 1 for this pair.
+ *
+ * Return shape adds `unmapped` (passed through from detectMixedTypeProducts)
+ * alongside the region splitter's existing fields. Does NOT call
+ * bumpCatalogRevision — splitMixedDigiflazzProducts doesn't either.
+ */
+export async function splitMixedTypeProducts(
+  db: PrismaClient,
+  typeMap: Map<string, string | null>,
+): Promise<{
+  productsSplit: number;
+  productsCreated: number;
+  denominationsMoved: number;
+  skipped: string[];
+  conflicts: string[];
+  unmapped: { productName: string; productId: number; denominationNames: string[] }[];
+  failures: { productName: string; error: string }[];
+}> {
+  const { mixed, skipped, conflicts, unmapped } = await detectMixedTypeProducts(db, typeMap);
+
+  let productsSplit = 0;
+  let productsCreated = 0;
+  let denominationsMoved = 0;
+  const failures: { productName: string; error: string }[] = [];
+
+  for (const plan of mixed) {
+    const [winningGroup, ...otherGroups] = plan.groups;
+    const allNewNames = plan.groups.map((g) => g.displayName);
+
+    try {
+      const movedThisProduct = await db.$transaction(async (tx) => {
+        // Same slug-preservation guard as splitMixedDigiflazzProducts — see
+        // its doc comment for why both the name-unchanged AND
+        // slug-matches-current guards are needed together.
+        const winningSlug =
+          winningGroup!.displayName === plan.originalName || slugify(winningGroup!.displayName) === plan.originalSlug
+            ? plan.originalSlug
+            : await ensureUniqueSlug(tx, "product", winningGroup!.displayName);
+
+        // TOCTOU re-check — same reasoning as splitMixedDigiflazzProducts:
+        // detectMixedTypeProducts checked for a collision once, up front,
+        // before any product's transaction ran; re-check here,
+        // transactionally, immediately before writing the target
+        // digiflazzBrand.
+        const winningCollision = await tx.product.findFirst({
+          where: { digiflazzBrand: winningGroup!.displayName, NOT: { id: plan.productId } },
+        });
+        if (winningCollision) {
+          throw new Error(
+            `digiflazzBrand collision detected inside transaction: target name "${winningGroup!.displayName}" now belongs to product id ${winningCollision.id} ("${winningCollision.name}") — a concurrent import must have created it after detection ran. Aborting this product's split; re-run the migration once the collision is resolved.`,
+          );
+        }
+        await updateCatalogProduct(tx, plan.productId, {
+          name: winningGroup!.displayName,
+          digiflazzBrand: winningGroup!.displayName,
+          slug: winningSlug,
+          // Deliberate difference #2 — see doc comment above: this product is
+          // provably mixed, so the winner (even the base bucket) gets a
+          // non-null gameVariant.
+          gameVariant: winningGroup!.suffix ?? DIGIFLAZZ_BASE_GAME_VARIANT,
+        });
+
+        let moved = 0;
+        for (const group of otherGroups) {
+          const groupCollision = await tx.product.findFirst({ where: { digiflazzBrand: group.displayName } });
+          if (groupCollision) {
+            throw new Error(
+              `digiflazzBrand collision detected inside transaction: target name "${group.displayName}" now belongs to product id ${groupCollision.id} ("${groupCollision.name}") — a concurrent import must have created it after detection ran. Aborting this product's split; re-run the migration once the collision is resolved.`,
+            );
+          }
+          const newProduct = await createCatalogProduct(tx, {
+            categoryId: plan.categoryId,
+            name: group.displayName,
+            digiflazzBrand: group.displayName,
+            // Same `?? DIGIFLAZZ_BASE_GAME_VARIANT` fallback as the winner,
+            // above: the winning bucket isn't always the base one (a larger
+            // non-null-suffix bucket can win), so a non-winning group can
+            // itself be the base bucket — it must still get "Umum", not
+            // null, or the base/suffix pair fails the same
+            // "non-null on both sides" requirement this whole difference
+            // exists for.
+            gameVariant: group.suffix ?? DIGIFLAZZ_BASE_GAME_VARIANT,
+            isActive: plan.isActive,
+          });
+          for (const denom of group.denominations) {
+            // Deliberate difference #1 — see doc comment above: name/
+            // durationLabel are NEVER rewritten here. Only productId moves.
+            await updateDenomination(tx, denom.id, { productId: newProduct.id });
+            moved++;
+          }
+        }
+
+        await logAdminAction(tx, {
+          adminId: null,
+          action: "digiflazz_catalog_type_split",
+          targetType: "product",
+          targetId: plan.productId,
+          details: `Split mixed-edition product "${plan.originalName}" into ${plan.groups.length} edition products: ${allNewNames.join(", ")}.`,
+        });
+
+        return moved;
+      });
+
+      productsSplit++;
+      productsCreated += otherGroups.length;
+      denominationsMoved += movedThisProduct;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failures.push({ productName: plan.originalName, error: message });
+      logger.warn(
+        `Digiflazz type-split failed for product "${plan.originalName}" (product id ${plan.productId}): ${message}. ` +
+          "This product's transaction rolled back and was left untouched — earlier products already split in this run are unaffected, and the migration is idempotent, so re-running --apply will retry this one.",
+      );
+    }
+  }
+
+  return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts, unmapped, failures };
+}

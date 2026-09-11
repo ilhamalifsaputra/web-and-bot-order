@@ -52,6 +52,7 @@ import {
   countCategoryProductsWithoutGameVariant,
   getCategory,
   digiflazzTypeSuffix,
+  collapseToCheapestSeller,
 } from "@app/db";
 import { getPriceList } from "@app/core/suppliers/digiflazz";
 
@@ -140,8 +141,12 @@ async function main(): Promise<void> {
     console.error(`Failed to fetch the Digiflazz price list: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+  // Collapse to one row per SKU first — same as groupDigiflazzPriceListByBrand
+  // — so two sellers disagreeing on a SKU's type can't make this map's
+  // winner depend on array order instead of the same cheapest-seller
+  // selection the rest of the import path already treats as authoritative.
   const typeMap = new Map<string, string | null>(
-    priceList.map((item) => [item.buyerSkuCode, digiflazzTypeSuffix(item.type)]),
+    collapseToCheapestSeller(priceList).map((item) => [item.buyerSkuCode, digiflazzTypeSuffix(item.type)]),
   );
 
   if (!apply) {

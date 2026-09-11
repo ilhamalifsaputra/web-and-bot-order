@@ -639,6 +639,26 @@ export async function listCategoryGameVariants(db: Db, categoryId: number): Prom
 }
 
 /**
+ * Count of a category's catalog-eligible products (active, not archived, ≥1
+ * active denomination priced > 0) that have NO gameVariant set. The bot uses
+ * this together with listCategoryGameVariants to decide whether a GAME_TOPUP
+ * category is "pure" (every product labelled → variant picker is safe) or
+ * "mixed" (a picked variant would hide the unlabelled products → show a flat
+ * list instead).
+ */
+export async function countCategoryProductsWithoutGameVariant(db: Db, categoryId: number): Promise<number> {
+  return db.product.count({
+    where: {
+      categoryId,
+      isActive: true,
+      isArchived: false,
+      gameVariant: null,
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+  });
+}
+
+/**
  * Distinct gameRegion values among a category's catalog-eligible products,
  * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
  * category with no variant picker but still a region picker). Same

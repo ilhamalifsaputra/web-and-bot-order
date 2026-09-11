@@ -12,12 +12,17 @@ import { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
  * idempotent on labels with no digits or whose digits already sit at
  * position 0 with no product-name text in the rest (e.g. "1 Month", "1
  * month preorder") — those round-trip unchanged.
+ *
+ * An Indonesian-style thousands separator is kept whole: "3.200" and
+ * "10.000" are a single quantity token, not "3" + ".200" — the dot may sit
+ * between digits but never at the token's end, so "1.5 Jam" still yields
+ * "1.5 Jam". Comma is not treated as a separator (Digiflazz uses the dot).
  */
 export function formatDenominationLabel(productName: string, rawLabel: string): string {
   const raw = rawLabel.trim();
   if (!raw) return raw;
 
-  const match = raw.match(/\d+/);
+  const match = raw.match(/\d(?:[\d.]*\d)?/);
   if (!match) {
     return collapseWhole(productName, raw) || raw;
   }

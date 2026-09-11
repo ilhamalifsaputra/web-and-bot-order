@@ -31,6 +31,7 @@ import {
   listActiveCategoriesByGroup,
   listCatalogProducts,
   listCategoryGameVariants,
+  countCategoryProductsWithoutGameVariant,
   listCategoryGameRegions,
   listNewestCatalogProducts,
   listFlashSaleProducts,
@@ -657,6 +658,70 @@ describe("listCategoryGameVariants", () => {
     const p = await makeProduct(cat.id, "No Eligible Denom");
     await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Solo" } });
     expect(await listCategoryGameVariants(prisma, cat.id)).toEqual([]);
+  });
+});
+
+describe("countCategoryProductsWithoutGameVariant", () => {
+  it("counts the category's products with gameVariant null and ≥1 active priced denom", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Unlabelled A");
+    await makeDenom(a.id, "1 Month", "10");
+    const b = await makeProduct(cat.id, "Unlabelled B");
+    await makeDenom(b.id, "1 Month", "10");
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(2);
+  });
+
+  it("excludes a product whose only denomination is inactive or priced 0", async () => {
+    const cat = await makeCategory();
+    const inactive = await makeProduct(cat.id, "Only Inactive Denom");
+    const d = await makeDenom(inactive.id, "1 Month", "10");
+    await prisma.denomination.update({ where: { id: d.id }, data: { isActive: false } });
+    const freePriced = await makeProduct(cat.id, "Only Zero-Priced Denom");
+    const d2 = await makeDenom(freePriced.id, "1 Month", "10");
+    await prisma.denomination.update({ where: { id: d2.id }, data: { price: "0" } });
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(0);
+  });
+
+  it("excludes an archived or inactive product", async () => {
+    const cat = await makeCategory();
+    const archived = await makeProduct(cat.id, "Archived Unlabelled");
+    await makeDenom(archived.id, "1 Month", "10");
+    await setCatalogProductArchived(prisma, archived.id, true);
+    const inactive = await makeProduct(cat.id, "Inactive Unlabelled");
+    await makeDenom(inactive.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: inactive.id }, data: { isActive: false } });
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(0);
+  });
+
+  it("excludes a product that has a non-null gameVariant", async () => {
+    const cat = await makeCategory();
+    const labelled = await makeProduct(cat.id, "Labelled");
+    await makeDenom(labelled.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: labelled.id }, data: { gameVariant: "Regular" } });
+    const unlabelled = await makeProduct(cat.id, "Unlabelled");
+    await makeDenom(unlabelled.id, "1 Month", "10");
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(1);
+  });
+
+  it("returns 0 for a category where every eligible product is labelled", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Labelled A");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    const b = await makeProduct(cat.id, "Labelled B");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(0);
+  });
+
+  it("scopes strictly to the given category — a sibling category's unlabelled product is not counted", async () => {
+    const cat = await makeCategory();
+    const sibling = await makeCategory();
+    const own = await makeProduct(cat.id, "Own Unlabelled");
+    await makeDenom(own.id, "1 Month", "10");
+    const siblingProduct = await makeProduct(sibling.id, "Sibling Unlabelled");
+    await makeDenom(siblingProduct.id, "1 Month", "10");
+    expect(await countCategoryProductsWithoutGameVariant(prisma, cat.id)).toBe(1);
   });
 });
 

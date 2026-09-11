@@ -85,6 +85,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       brand: g.brand,
       rawBrand: g.rawBrand,
       region: g.region,
+      gameVariant: g.gameVariant,
       existingProductId: g.existingProductId,
       skus: g.items.map((item) => ({
         buyerSkuCode: item.buyerSkuCode,
@@ -106,6 +107,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
         brands?: Array<{
           brand: string;
           rows: Array<{ buyerSkuCode: string; productName: string; price: string; costPrice: string }>;
+          gameVariant?: unknown;
         }>;
       };
       const categoryId = Number(body.categoryId);
@@ -120,6 +122,11 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       if (totalRows > MAX_APPLY_ROWS) {
         return reply.code(400).send({ error: "Too many rows in one import — narrow the filter or import in smaller batches." });
       }
+      // N-variant: normalised per-brand gameVariant, aligned by index with
+      // `brands` — computed in this same validation pass so a malformed
+      // value rejects the whole request before any import runs, same as the
+      // price/costPrice checks below.
+      const gameVariants: Array<string | null> = [];
       for (const b of brands) {
         for (const row of b.rows) {
           const price = row.price ? parsePrice(row.price) : null;
@@ -135,12 +142,33 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
             return reply.code(400).send({ error: `Invalid cost price for "${row.productName || row.buyerSkuCode}".` });
           }
         }
+
+        const rawVariant = b.gameVariant;
+        if (rawVariant === undefined || rawVariant === null) {
+          gameVariants.push(null);
+        } else if (typeof rawVariant === "string") {
+          const trimmed = rawVariant.trim();
+          if (trimmed.length === 0) {
+            gameVariants.push(null);
+          } else if (trimmed.length > 32) {
+            return reply.code(400).send({ error: `gameVariant is too long for "${b.brand}".` });
+          } else {
+            gameVariants.push(trimmed);
+          }
+        } else {
+          return reply.code(400).send({ error: `Invalid gameVariant for "${b.brand}".` });
+        }
       }
 
       let brandsImported = 0;
       let denominationsImported = 0;
-      for (const b of brands) {
-        const result = await importDigiflazzBrand(prisma, { brand: b.brand, categoryId, rows: b.rows });
+      for (const [i, b] of brands.entries()) {
+        const result = await importDigiflazzBrand(prisma, {
+          brand: b.brand,
+          categoryId,
+          rows: b.rows,
+          gameVariant: gameVariants[i] ?? null,
+        });
         brandsImported++;
         denominationsImported += result.denominationCount;
       }

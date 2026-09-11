@@ -277,13 +277,18 @@ model Product {
   digiflazzBrand String? @map("digiflazz_brand")
   /// Game Top Up display grouping only (Category.group === "GAME_TOPUP");
   /// Premium Apps products leave this null and render exactly as today.
-  /// Free-text edition label an admin sets when one Category (a "Game")
-  /// sells more than one purchasable edition, e.g. "Infinite" vs "Regular"
-  /// for Arena Breakout. Null = no variant distinction; the bot nav skips
-  /// the variant-picker screen entirely for this category. Deliberately
-  /// independent of (never synced from) the existing Digiflazz Product-name
-  /// "(Region)" suffix convention (packages/core/src/suppliers/digiflazz.ts) —
-  /// that's a supplier re-sync mechanism, unrelated to this display field.
+  /// Free-text edition label distinguishing multiple purchasable editions of
+  /// one game, e.g. "Infinite" vs "Umum" for Arena Breakout. Null = no
+  /// variant distinction; the bot nav skips the variant-picker screen for
+  /// this category.
+  /// Auto-seeded by the Digiflazz import (groupDigiflazzPriceListByBrand)
+  /// when one brand reports >= 2 distinct Digiflazz `type` values, and by the
+  /// split-digiflazz-types migration for products imported before that
+  /// existed. Import writes it on Product CREATE only and never overwrites an
+  /// existing value, so an admin edit always wins. Otherwise admin-set.
+  /// The value mirrors Digiflazz's own `type` term ("Umum" for the base
+  /// edition); it is unrelated to the Digiflazz Product-name "(Region)"
+  /// suffix, which is a separate supplier re-sync mechanism.
   gameVariant      String? @map("game_variant")
   /// Admin-set emoji shown on the variant-picker button (prefixed to
   /// gameVariant's label) and reused as a prefix on denomination buttons

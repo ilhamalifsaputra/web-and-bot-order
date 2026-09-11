@@ -19,6 +19,7 @@ import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import Breadcrumb from "../components/shop/Breadcrumb";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -43,10 +44,11 @@ export default function FlashPage() {
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-40" />
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {SKELETON_CARDS.map((i) => (
             <ProductCardSkeleton key={i} />
           ))}
@@ -59,6 +61,12 @@ export default function FlashPage() {
 
   return (
     <>
+      <Breadcrumb
+        items={[
+          { label: t("web.nav_home"), href: "/" },
+          { label: t("web.flash_title") },
+        ]}
+      />
       <div className="mb-6">
         <h1 className="page-title flex items-center gap-2">
           <Zap className="w-5 h-5 shrink-0 text-amberx" />
@@ -74,7 +82,7 @@ export default function FlashPage() {
             </div>
           )}
           <motion.div
-            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"}`}
+            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
             variants={staggerContainer}
             initial="initial"
             animate="animate"

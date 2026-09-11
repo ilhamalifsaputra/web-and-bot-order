@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 260" fill="none">
+  <!-- Decorative support-agent illustration for the /help hero.
+       Flat vector, token colours only: pine #2563eb, pine-dark #1d4ed8,
+       pine-tint #e6effe, ink-soft #5a6473, white #ffffff. -->
+
+  <!-- Background clouds / soft texture (very low visual weight) -->
+  <g fill="#e6effe">
+    <ellipse cx="160" cy="246" rx="112" ry="26" />
+    <g>
+      <circle cx="234" cy="70" r="11" />
+      <circle cx="250" cy="62" r="16" />
+      <circle cx="268" cy="68" r="12" />
+      <rect x="232" y="64" width="40" height="16" rx="8" />
+    </g>
+    <g>
+      <circle cx="40" cy="118" r="13" />
+      <circle cx="54" cy="122" r="10" />
+      <rect x="40" y="112" width="18" height="12" rx="6" />
+    </g>
+  </g>
+
+  <!-- Dotted connector paths (texture) -->
+  <g fill="none" stroke="#5a6473" stroke-width="2" stroke-linecap="round" stroke-dasharray="0.1 8">
+    <path d="M128 78 Q182 92 214 128" />
+    <path d="M82 168 Q110 178 128 192" />
+  </g>
+
+  <!-- Small plus marks (texture) -->
+  <g stroke="#2563eb" stroke-width="3" stroke-linecap="round">
+    <path d="M286 160 V172 M280 166 H292" />
+    <path d="M30 150 V162 M24 156 H36" />
+    <path d="M250 198 V208 M245 203 H255" />
+  </g>
+
+  <!-- Envelopes -->
+  <g transform="translate(214 118)">
+    <rect x="0" y="0" width="44" height="32" rx="4" fill="#ffffff" stroke="#5a6473" stroke-width="2" />
+    <path d="M2 3 L22 19 L42 3" fill="none" stroke="#5a6473" stroke-width="2" stroke-linejoin="round" />
+  </g>
+  <g transform="translate(44 150)">
+    <rect x="0" y="0" width="36" height="26" rx="4" fill="#e6effe" stroke="#2563eb" stroke-width="2" />
+    <path d="M2 3 L18 16 L34 3" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" />
+  </g>
+
+  <!-- Speech bubble (typing motif) -->
+  <path d="M78 84 L80 104 L98 84 Z" fill="#ffffff" stroke="#2563eb" stroke-width="2.5" stroke-linejoin="round" />
+  <rect x="36" y="40" width="92" height="48" rx="14" fill="#ffffff" stroke="#2563eb" stroke-width="2.5" />
+  <g fill="#2563eb">
+    <circle cx="62" cy="64" r="5" />
+    <circle cx="82" cy="64" r="5" />
+    <circle cx="102" cy="64" r="5" />
+  </g>
+
+  <!-- Support agent bust -->
+  <g>
+    <path d="M100 260 C100 214 122 196 158 196 C194 196 216 214 216 260 Z" fill="#2563eb" />
+    <path d="M144 182 h28 v18 a14 14 0 0 1 -28 0 Z" fill="#1d4ed8" />
+    <circle cx="158" cy="148" r="34" fill="#e6effe" stroke="#1d4ed8" stroke-width="3" />
+    <path d="M124 146 A34 34 0 0 1 192 146 L182 146 A24 24 0 0 0 134 146 Z" fill="#1d4ed8" />
+    <g fill="#5a6473">
+      <circle cx="150" cy="150" r="2.6" />
+      <circle cx="166" cy="150" r="2.6" />
+    </g>
+    <path d="M150 161 Q158 168 166 161" fill="none" stroke="#5a6473" stroke-width="2.5" stroke-linecap="round" />
+    <path d="M120 150 A40 40 0 0 1 196 150" fill="none" stroke="#2563eb" stroke-width="8" stroke-linecap="round" />
+    <rect x="112" y="138" width="16" height="26" rx="8" fill="#1d4ed8" />
+    <rect x="188" y="138" width="16" height="26" rx="8" fill="#1d4ed8" />
+    <path d="M196 150 Q208 178 184 190" fill="none" stroke="#2563eb" stroke-width="6" stroke-linecap="round" />
+    <circle cx="182" cy="191" r="6" fill="#1d4ed8" />
+  </g>
+</svg>

@@ -11,6 +11,10 @@
     "apps/**/*.test.ts",
     "scripts/lib/**/*.ts",
     "scripts/check-migration-rebuild-quoting.ts",
-    "vitest.config.ts"
+    "scripts/check-frontend-boundaries.ts",
+    "scripts/check-detection-engine-purity.ts",
+    "scripts/check-detection-engine-purity.test.ts",
+    "vitest.config.ts",
+    "playwright.config.ts"
   ]
 }

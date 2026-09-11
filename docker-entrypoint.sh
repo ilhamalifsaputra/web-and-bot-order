@@ -28,6 +28,7 @@ SKIP_SENTINEL="$DATA_DIR/SKIP_AUTO_MIGRATE"
 PRISMA="$APP_ROOT/node_modules/.bin/prisma"
 SCHEMA="$APP_ROOT/prisma/schema.prisma"
 BACKUP="$APP_ROOT/deploy/backup/backup.sh"
+CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
 
 # Set once the effective user is known: the prefix that runs a command as the
 # unprivileged `app` user (empty when we are already that user).
@@ -86,12 +87,14 @@ auto_migrate() {
     return 0
   fi
 
-  # packages/core/src/config.ts defaults this when unset, but the Prisma CLI has
-  # no such default. Mirror it, otherwise a stack booted without a .env file
-  # (docker-compose.yml marks .env optional) cannot resolve env("DATABASE_URL_PRISMA").
+  # schema.prisma's datasource provider is "postgresql" (engine-swap) — there
+  # is no SQLite fallback to default to any more. Fail loud and immediately
+  # instead of silently substituting the old file: URL, which used to produce
+  # a confusing SQLite-flavored `prisma db push` failure instead of a clear
+  # "you forgot to set this" error.
   if [ -z "${DATABASE_URL_PRISMA:-}" ]; then
-    DATABASE_URL_PRISMA="file:../data/bot.db"
-    export DATABASE_URL_PRISMA
+    log "ERROR: DATABASE_URL_PRISMA is not set. schema.prisma requires a postgresql:// connection string — set DATABASE_URL_PRISMA=postgresql://<user>:<password>@postgres:5432/<db> in .env (see .env.example and docs/POSTGRES_MIGRATION.md). Refusing to start." >&2
+    exit 1
   fi
 
   if ! db_path="$(resolve_db_path)"; then
@@ -162,22 +165,80 @@ auto_migrate() {
   log "Schema updated. The snapshot taken just before the change is in $DATA_DIR/backups (roll back with deploy/backup/restore.sh)."
 }
 
-# chown only when needed (cheap no-op once owned; tolerate read-only mounts).
-if [ "$(id -u)" = "0" ]; then
-  chown -R app:app "$DATA_DIR" 2>/dev/null || true
-  # gosu does not reset HOME; point it at app's home so pnpm/corepack caches are
-  # writable (PNPM_HOME is already /pnpm via ENV).
-  export HOME=/home/app
-  # Run the schema work as `app` too, so the SQLite sidecars (-wal/-shm) and the
-  # backup files it creates are owned by the user that later runs the app.
-  RUN_AS="gosu app"
+# Auto-generates CREDENTIAL_ENCRYPTION_KEY on first boot so a production
+# deploy needs no manual secret setup (see .env.example's CREDENTIAL
+# ENCRYPTION section for the manual-key path this replaces). Persisted to
+# $CREDENTIAL_KEY_FILE — deliberately NOT in .env or the database, so a
+# Postgres-only compromise doesn't also leak the key that decrypts what it
+# stores (encrypted Settings like the Digiflazz API key, and manual-account
+# stock credentials). Losing this file makes all of that permanently
+# unreadable, so it must be part of whatever backs up the host's ./data.
+ensure_credential_key() {
+  if [ -n "${CREDENTIAL_ENCRYPTION_KEY:-}" ]; then
+    # Operator already configured it (e.g. multi-instance, or a deliberate
+    # rotation in progress) — never override.
+    return 0
+  fi
+
+  if [ -f "$CREDENTIAL_KEY_FILE" ]; then
+    _key="$(cat "$CREDENTIAL_KEY_FILE")"
+    if ! printf '%s' "$_key" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+      log "ERROR: $CREDENTIAL_KEY_FILE does not contain a valid 64-character hex key. Refusing to start: regenerating would silently orphan every credential already encrypted under the old key. Restore the correct file from backup, or if you accept the data loss, remove the file and restart." >&2
+      exit 1
+    fi
+    # Re-assert permissions in case the file arrived via a restore/tar that
+    # didn't preserve them (e.g. 0644) — cheap no-op otherwise.
+    chmod 600 "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
+    export CREDENTIAL_ENCRYPTION_KEY="$_key"
+    return 0
+  fi
+
+  _key="$(openssl rand -hex 32)"
+  # umask 077 in the same subshell as the write closes the brief window
+  # where the file would otherwise exist at the image's default mode
+  # (typically 0644) before the chmod below narrows it.
+  if ! (umask 077; printf '%s' "$_key" > "$CREDENTIAL_KEY_FILE"); then
+    log "ERROR: could not write $CREDENTIAL_KEY_FILE — the data directory must be writable to auto-generate the credential encryption key. Either make it writable, or set CREDENTIAL_ENCRYPTION_KEY yourself (see .env.example)." >&2
+    exit 1
+  fi
+  chmod 600 "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
+  if [ "$(id -u)" = "0" ]; then
+    chown app:app "$CREDENTIAL_KEY_FILE" 2>/dev/null || true
+  fi
+  log "Generated a new credential encryption key at $CREDENTIAL_KEY_FILE. This file must be part of your backups — losing it makes every already-encrypted credential (Settings like the Digiflazz API key, and any manual-account stock item) permanently unreadable. The key itself is never written to this log."
+  export CREDENTIAL_ENCRYPTION_KEY="$_key"
+}
+
+main() {
+  # chown only when needed (cheap no-op once owned; tolerate read-only mounts).
+  if [ "$(id -u)" = "0" ]; then
+    chown -R app:app "$DATA_DIR" 2>/dev/null || true
+    # gosu does not reset HOME; point it at app's home so pnpm/corepack caches are
+    # writable (PNPM_HOME is already /pnpm via ENV).
+    export HOME=/home/app
+    # Run the schema work as `app` too, so the SQLite sidecars (-wal/-shm) and the
+    # backup files it creates are owned by the user that later runs the app.
+    RUN_AS="gosu app"
+  fi
+
+  ensure_credential_key
+  auto_migrate
+
+  if [ -n "$RUN_AS" ]; then
+    exec gosu app "$@"
+  fi
+
+  # Already non-root (e.g. compose `user:` override) — run as-is.
+  exec "$@"
+}
+
+# ENTRYPOINT_TEST_SOURCE_ONLY lets deploy/test-entrypoint-credential-key.sh
+# source this file (with APP_ROOT pointed at a temp dir) to reuse
+# ensure_credential_key() and its helpers without running the real
+# migration/exec sequence. This must never be set in a real container's
+# environment — if it were (e.g. an accidental line in .env, which compose
+# passes through via env_file), the entrypoint would source the script,
+# call nothing, and exit 0 with no diagnostic at all.
+if [ -z "${ENTRYPOINT_TEST_SOURCE_ONLY:-}" ]; then
+  main "$@"
 fi
-
-auto_migrate
-
-if [ -n "$RUN_AS" ]; then
-  exec gosu app "$@"
-fi
-
-# Already non-root (e.g. compose `user:` override) — run as-is.
-exec "$@"

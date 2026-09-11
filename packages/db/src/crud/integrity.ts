@@ -1,5 +1,5 @@
 /**
- * DB schema integrity checks. SQLite has no migration enforcement at runtime, so
+ * DB schema integrity checks. Postgres has no migration enforcement at runtime, so
  * a live DB can drift (e.g. a migration that was never `prisma db push`-ed),
  * which silently breaks code paths that write to the missing table — most
  * dangerously the payment-delivery ledgers (`processed_*_tx`), where a missing
@@ -9,17 +9,19 @@
 import type { Db } from "./_types";
 
 /**
- * Of the given table names, return those that DO NOT exist in the SQLite DB.
- * Empty result = all present. Names are matched verbatim against `sqlite_master`.
+ * Of the given table names, return those that DO NOT exist in the Postgres DB's
+ * `public` schema. Empty result = all present. Queries
+ * `information_schema.tables` with the name list bound as a single array
+ * parameter (`= ANY($1)`), rather than building a hand-rolled `IN (...)`
+ * placeholder list — Postgres supports passing an array directly.
  */
 export async function missingTables(db: Db, names: string[]): Promise<string[]> {
   if (names.length === 0) return [];
-  const placeholders = names.map(() => "?").join(", ");
-  const rows = await db.$queryRawUnsafe<{ name: string }[]>(
-    `SELECT name FROM sqlite_master WHERE type='table' AND name IN (${placeholders})`,
-    ...names,
+  const rows = await db.$queryRawUnsafe<{ table_name: string }[]>(
+    `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY($1)`,
+    names,
   );
-  const present = new Set(rows.map((r) => r.name));
+  const present = new Set(rows.map((r) => r.table_name));
   return names.filter((n) => !present.has(n));
 }
 

@@ -27,7 +27,11 @@ import {
   bulkSetCatalogProductsArchived,
   listProducts,
   listAllCategories,
+  listActiveCategories,
+  listActiveCategoriesByGroup,
   listCatalogProducts,
+  listCategoryGameVariants,
+  listCategoryGameRegions,
   listNewestCatalogProducts,
   listFlashSaleProducts,
   hasActiveFlashSale,
@@ -43,6 +47,7 @@ import {
   flashSalePerformance,
   CategoryMismatchError,
 } from "./catalog";
+import { createGame } from "./games";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 
@@ -119,6 +124,56 @@ describe("createDenomination — deliveryType/additionalFields", () => {
     });
     expect(denom.deliveryType).toBe("manual_with_info");
     expect(denom.additionalFields).toBe(fieldsJson);
+  });
+});
+
+describe("createCatalogProduct — game-navigation fields (Task 14)", () => {
+  it("defaults gameVariant/gameVariantEmoji/gameRegion to null when omitted", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Defaults");
+    expect(product.gameVariant).toBeNull();
+    expect(product.gameVariantEmoji).toBeNull();
+    expect(product.gameRegion).toBeNull();
+  });
+
+  it("persists explicit gameVariant/gameVariantEmoji/gameRegion", async () => {
+    const cat = await makeCategory();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Mobile Legends",
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    });
+    expect(product.gameVariant).toBe("Diamonds");
+    expect(product.gameVariantEmoji).toBe("💎");
+    expect(product.gameRegion).toBe("Global");
+  });
+});
+
+describe("createDenomination — qtyValue/qtyUnit (Task 14)", () => {
+  it("defaults qtyValue/qtyUnit to null when omitted", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Defaults");
+    const denom = await makeDenom(product.id, "86 Diamonds", "15000");
+    expect(denom.qtyValue).toBeNull();
+    expect(denom.qtyUnit).toBeNull();
+  });
+
+  it("persists explicit qtyValue/qtyUnit", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Explicit");
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 86,
+      qtyUnit: "Diamonds",
+    });
+    expect(denom.qtyValue).toBe(86);
+    expect(denom.qtyUnit).toBe("Diamonds");
   });
 });
 
@@ -387,6 +442,32 @@ describe("getCatalogProductWithDenominations / getDenominationWithProduct", () =
     expect(got!.product.id).toBe(p.id);
     expect(got!.product.category.id).toBe(cat.id);
   });
+
+  // Final-review fix, Finding 3: apiTopup.ts's gameId nickname-check branch
+  // needs product.game's isActive/nicknameSupported to enforce those flags,
+  // which it can't see through product.gameId alone.
+  it("also loads the linked Game when the product has a gameId", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Parent With Game");
+    const game = await createGame(prisma, { slug: "catalog-test-game", name: "Catalog Test Game" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameId: game.id } });
+    const d = await makeDenom(p.id, "1 Month", "5");
+
+    const got = await getDenominationWithProduct(prisma, d.id);
+    expect(got!.product.game).not.toBeNull();
+    expect(got!.product.game!.id).toBe(game.id);
+    expect(got!.product.game!.isActive).toBe(true);
+    expect(got!.product.game!.nicknameSupported).toBe(true);
+  });
+
+  it("has a null game when the product has no gameId", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Parent No Game");
+    const d = await makeDenom(p.id, "1 Month", "5");
+
+    const got = await getDenominationWithProduct(prisma, d.id);
+    expect(got!.product.game).toBeNull();
+  });
 });
 
 describe("storefront detail blocks (whatYouGet / terms / warrantyNote)", () => {
@@ -417,6 +498,50 @@ describe("storefront detail blocks (whatYouGet / terms / warrantyNote)", () => {
     expect(after!.warrantyNote).toBeNull();
     expect(after!.terms).toBe("New terms.");
     expect(after!.whatYouGet).toBe("Private account, 1 device");
+  });
+});
+
+describe("thumbnailKind / currencyIconKind (Fase 12)", () => {
+  it("defaults both to null when omitted", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Kind Set");
+    expect(p.thumbnailKind).toBeNull();
+    expect(p.currencyIconKind).toBeNull();
+  });
+
+  it("persists explicit thumbnailKind/currencyIconKind on create", async () => {
+    const cat = await makeCategory();
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "With Kinds",
+      thumbnailKind: "game",
+      currencyIconKind: "diamond",
+    });
+    expect(p.thumbnailKind).toBe("game");
+    expect(p.currencyIconKind).toBe("diamond");
+
+    const fresh = await getCatalogProduct(prisma, p.id);
+    expect(fresh!.thumbnailKind).toBe("game");
+    expect(fresh!.currencyIconKind).toBe("diamond");
+  });
+
+  it("updateCatalogProduct sets and clears both fields (blind passthrough)", async () => {
+    const cat = await makeCategory();
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Round Trip",
+      thumbnailKind: "voucher",
+      currencyIconKind: "coin",
+    });
+
+    await updateCatalogProduct(prisma, p.id, { thumbnailKind: "steam", currencyIconKind: null });
+    const afterSet = await getCatalogProduct(prisma, p.id);
+    expect(afterSet!.thumbnailKind).toBe("steam");
+    expect(afterSet!.currencyIconKind).toBeNull();
+
+    await updateCatalogProduct(prisma, p.id, { thumbnailKind: null });
+    const afterClear = await getCatalogProduct(prisma, p.id);
+    expect(afterClear!.thumbnailKind).toBeNull();
   });
 });
 
@@ -452,6 +577,123 @@ describe("listCatalogProducts", () => {
     await setCatalogProductArchived(prisma, p.id, true);
     const list = await listCatalogProducts(prisma, cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(false);
+  });
+
+  it("filters by gameVariant/gameRegion when the third argument is passed", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Variant A Region X");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "X", gameRegion: null } });
+    const b = await makeProduct(cat.id, "Variant A Region Y");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const c = await makeProduct(cat.id, "Variant Z");
+    await makeDenom(c.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Z", gameRegion: null } });
+
+    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X", gameRegion: null });
+    const ids = list.map((x) => x.id);
+    expect(ids).toContain(a.id);
+    expect(ids).not.toContain(b.id);
+    expect(ids).not.toContain(c.id);
+  });
+
+  it("does not filter on a key absent from the filter object", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "No Filter A");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const b = await makeProduct(cat.id, "No Filter B");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "X", gameRegion: "Z" } });
+
+    // only gameVariant is present in the filter — gameRegion should be untouched
+    const list = await listCatalogProducts(prisma, cat.id, { gameVariant: "X" });
+    const ids = list.map((x) => x.id);
+    expect(ids).toContain(a.id);
+    expect(ids).toContain(b.id);
+  });
+
+  it("existing two-argument call sites are unaffected by the new optional filter param", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Unaffected");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "X", gameRegion: "Y" } });
+    const list = await listCatalogProducts(prisma, cat.id);
+    expect(list.some((x) => x.id === p.id)).toBe(true);
+  });
+});
+
+describe("listCategoryGameVariants", () => {
+  it("returns distinct (gameVariant, gameVariantEmoji) pairs for a category", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Variant Alpha 1");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Alpha", gameVariantEmoji: "🅰️" } });
+    const a2 = await makeProduct(cat.id, "Variant Alpha 2");
+    await makeDenom(a2.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a2.id }, data: { gameVariant: "Alpha", gameVariantEmoji: "🅰️" } });
+    const b = await makeProduct(cat.id, "Variant Beta");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Beta", gameVariantEmoji: "🅱️" } });
+
+    const variants = await listCategoryGameVariants(prisma, cat.id);
+    expect(variants).toHaveLength(2);
+    const alpha = variants.find((v) => v.label === "Alpha");
+    expect(alpha).toEqual({ label: "Alpha", emoji: "🅰️" });
+    const beta = variants.find((v) => v.label === "Beta");
+    expect(beta).toEqual({ label: "Beta", emoji: "🅱️" });
+  });
+
+  it("returns [] when no product in the category has gameVariant set", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Plain Product");
+    await makeDenom(p.id, "1 Month", "10");
+    expect(await listCategoryGameVariants(prisma, cat.id)).toEqual([]);
+  });
+
+  it("excludes a product with no active/eligible denomination", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Eligible Denom");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Solo" } });
+    expect(await listCategoryGameVariants(prisma, cat.id)).toEqual([]);
+  });
+});
+
+describe("listCategoryGameRegions", () => {
+  it("returns [] when gameVariant is set but no product has gameRegion", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Variant No Region");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Gamma", gameRegion: null } });
+
+    expect(await listCategoryGameRegions(prisma, cat.id, "Gamma")).toEqual([]);
+  });
+
+  it("returns distinct gameRegion values scoped to the given gameVariant", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "Region A");
+    await makeDenom(a.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Delta", gameRegion: "Asia" } });
+    const b = await makeProduct(cat.id, "Region B");
+    await makeDenom(b.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Delta", gameRegion: "Europe" } });
+    const c = await makeProduct(cat.id, "Region C other variant");
+    await makeDenom(c.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Epsilon", gameRegion: "Asia" } });
+
+    const regions = await listCategoryGameRegions(prisma, cat.id, "Delta");
+    expect(regions.sort()).toEqual(["Asia", "Europe"]);
+  });
+
+  it("scopes to products with gameVariant null when null is passed", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Variant Dimension");
+    await makeDenom(p.id, "1 Month", "10");
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: null, gameRegion: "NA" } });
+
+    const regions = await listCategoryGameRegions(prisma, cat.id, null);
+    expect(regions).toEqual(["NA"]);
   });
 });
 
@@ -1031,5 +1273,139 @@ describe("flash-sale shelves", () => {
     // Ask as of a moment after the last window ends, rather than mutating rows.
     expect(await hasActiveFlashSale(prisma, inHours(48))).toBe(false);
     expect(await listFlashSaleProducts(prisma, inHours(48))).toEqual([]);
+  });
+});
+
+describe("listActiveCategoriesByGroup", () => {
+  it("returns only active categories in the specified group, ordered by sortOrder then name", async () => {
+    // Create categories in different groups
+    const gameTopup1 = await createCategory(prisma, { name: "Game A", group: "GAME_TOPUP", sortOrder: 2 });
+    const gameTopup2 = await createCategory(prisma, { name: "Game B", group: "GAME_TOPUP", sortOrder: 1 });
+    const premiumApps1 = await createCategory(prisma, { name: "Premium A", group: "PREMIUM_APPS", sortOrder: 0 });
+
+    // Create an inactive category in GAME_TOPUP
+    const inactiveGameTopup = await prisma.category.create({
+      data: {
+        name: "Inactive Game",
+        slug: "inactive-game",
+        group: "GAME_TOPUP",
+        isActive: false,
+        sortOrder: 0,
+      },
+    });
+
+    // Test listing GAME_TOPUP categories
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    expect(gameTopupList).toHaveLength(2);
+    expect(gameTopupList.map((c) => c.id)).toEqual([gameTopup2.id, gameTopup1.id]); // sorted by sortOrder (1, 2)
+    expect(gameTopupList.map((c) => c.name)).toEqual(["Game B", "Game A"]);
+
+    // Verify inactive category is not included
+    expect(gameTopupList.some((c) => c.id === inactiveGameTopup.id)).toBe(false);
+
+    // Verify PREMIUM_APPS category is not included
+    expect(gameTopupList.some((c) => c.id === premiumApps1.id)).toBe(false);
+
+    // Test listing PREMIUM_APPS categories. Not asserting an exact length here
+    // (unlike GAME_TOPUP above): by design (Finding 1's display-time
+    // fallback), a null-group category also counts as PREMIUM_APPS, and this
+    // suite's many earlier `createCategory(prisma, name)` calls (via the
+    // `makeCategory` helper, no group) have already populated the shared test
+    // DB with plenty of those — a fixed-length assertion here would be
+    // asserting an accident of test order, not this function's contract.
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    const premiumIds = premiumAppsList.map((c) => c.id);
+    expect(premiumIds).toContain(premiumApps1.id);
+    expect(premiumAppsList.find((c) => c.id === premiumApps1.id)!.name).toBe("Premium A");
+    // The GAME_TOPUP-tagged categories must never leak into PREMIUM_APPS.
+    expect(premiumIds).not.toContain(gameTopup1.id);
+    expect(premiumIds).not.toContain(gameTopup2.id);
+    expect(premiumIds).not.toContain(inactiveGameTopup.id);
+  });
+
+  // Finding 1 (final-review C1-fix): Category.group shipped nullable with no
+  // backfill, so every pre-existing category reads group: null and would
+  // otherwise vanish from the group→category picker. A null group is treated
+  // as PREMIUM_APPS at DISPLAY time only (no DB/migration change) — GAME_TOPUP
+  // stays an exact match, since it's the new opt-in bucket.
+  it("treats a null-group category as PREMIUM_APPS (display-time fallback, no migration)", async () => {
+    const nullGroupCat = await createCategory(prisma, { name: `Legacy No Group ${Math.random()}` }); // group omitted -> null
+    const explicitPremiumCat = await createCategory(prisma, { name: `Explicit Premium ${Math.random()}`, group: "PREMIUM_APPS" });
+    const gameTopupCat = await createCategory(prisma, { name: `Game Only ${Math.random()}`, group: "GAME_TOPUP" });
+
+    const premiumAppsList = await listActiveCategoriesByGroup(prisma, "PREMIUM_APPS");
+    const premiumIds = premiumAppsList.map((c) => c.id);
+    // Null-group category appears under PREMIUM_APPS...
+    expect(premiumIds).toContain(nullGroupCat.id);
+    // ...alongside an explicitly-tagged PREMIUM_APPS category (no regression)...
+    expect(premiumIds).toContain(explicitPremiumCat.id);
+    // ...with no duplicates...
+    expect(premiumIds.filter((id) => id === nullGroupCat.id)).toHaveLength(1);
+    // ...and a GAME_TOPUP category never leaks in.
+    expect(premiumIds).not.toContain(gameTopupCat.id);
+
+    // The null-group category must NOT appear under GAME_TOPUP — that bucket
+    // stays an exact match (Game Top Up is the new, opt-in bucket).
+    const gameTopupList = await listActiveCategoriesByGroup(prisma, "GAME_TOPUP");
+    const gameTopupIds = gameTopupList.map((c) => c.id);
+    expect(gameTopupIds).toContain(gameTopupCat.id);
+    expect(gameTopupIds).not.toContain(nullGroupCat.id);
+  });
+
+  it("returns empty array when no active categories match the group", async () => {
+    // Create only inactive categories in a unique group
+    const uniqueGroup = `EMPTY_TEST_${Math.random()}`;
+    await prisma.category.create({
+      data: {
+        name: "Only Inactive",
+        slug: `only-inactive-${Math.random()}`,
+        group: uniqueGroup,
+        isActive: false,
+        sortOrder: 0,
+      },
+    });
+
+    const result = await listActiveCategoriesByGroup(prisma, uniqueGroup);
+    expect(result).toEqual([]);
+  });
+});
+
+describe("createCategory with group", () => {
+  it("persists group when provided", async () => {
+    const cat = await createCategory(prisma, { name: "Game Topup Cat", group: "GAME_TOPUP" });
+    expect(cat.group).toBe("GAME_TOPUP");
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBe("GAME_TOPUP");
+  });
+
+  it("defaults group to null when omitted", async () => {
+    const cat = await createCategory(prisma, { name: "No Group Cat" });
+    expect(cat.group).toBeNull();
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBeNull();
+  });
+
+  it("supports legacy createCategory(db, name) signature without group", async () => {
+    const cat = await createCategory(prisma, "Legacy Cat");
+    expect(cat.group).toBeNull();
+
+    const fresh = await prisma.category.findUnique({ where: { id: cat.id } });
+    expect(fresh!.group).toBeNull();
+  });
+
+  it("persists group along with other optional fields", async () => {
+    const cat = await createCategory(prisma, {
+      name: "Full Featured",
+      emoji: "🎮",
+      description: "Game top-ups",
+      group: "GAME_TOPUP",
+      sortOrder: 5,
+    });
+    expect(cat.group).toBe("GAME_TOPUP");
+    expect(cat.emoji).toBe("🎮");
+    expect(cat.description).toBe("Game top-ups");
+    expect(cat.sortOrder).toBe(5);
   });
 });

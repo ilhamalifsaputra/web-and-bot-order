@@ -2,17 +2,30 @@
  * TSX port of apps/storefront/views/support.njk. Submitting the new-ticket
  * form posts + refetches (mirroring the old 303-back-to-self flow) and
  * clears the textarea, matching what a full page reload would have done.
- * Markup/classes copied verbatim — no v3→v4 renames apply to this page.
+ *
+ * Task 17 (design-system migration, Fase 7f): this shop's `/account/support`
+ * is a **ticket inbox + new-ticket form**, not `page-templates.md` §8's
+ * FAQ-only "Layanan Pengaduan Konsumen" page — a business-specific superset
+ * the reference site never had (`business-adaptation.md` "Pages" +
+ * "Terminology": FAQ content lives in the Home FAQ accordion; any
+ * regulator/entity disclosure is shop-configured, not a fixed block). The
+ * inbox + composer are kept and re-skinned onto `FormField`/`Textarea`/
+ * `Select`/`Button`; the FAQ-vs-inbox divergence is logged in
+ * deviations.md §17-support. Endpoints, the multipart create-ticket flow, the
+ * duplicate-redirect and the order-picker payload are untouched.
  */
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Send } from "lucide-react";
+import { Send, Inbox } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { AccountOrdersData, SupportData } from "../api/types";
 import { t } from "../lib/i18n";
-import { Inbox } from "lucide-react";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import Button from "../components/ui/Button";
+import FormField from "../components/ui/FormField";
+import Select from "../components/ui/Select";
+import Textarea from "../components/ui/Textarea";
 import EmptyState from "../components/shop/EmptyState";
 import ErrorPage from "./ErrorPage";
 import Skeleton from "../components/shop/Skeleton";
@@ -25,14 +38,16 @@ import ProgressBar from "../components/shop/ProgressBar";
 const SKELETON_ROWS = Array.from({ length: 3 }, (_, i) => i);
 
 export default function SupportPage() {
-  // Pre-filled skeleton so customers know what info to include — they edit
-  // it in place rather than starting from a blank box.
-  const [message, setMessage] = useState(() => t("web.support_template"));
+  // Starts empty — order selection lives solely in the dropdown below, so the
+  // textarea only hints at Product/What-happened/When via its placeholder
+  // instead of pre-filling an editable "Order number:" line that duplicated it.
+  const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [toastText, setToastText] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<"success" | "error">("success");
   const isDesktop = useIsDesktop();
+  const navigate = useNavigate();
   const { data, error, refetch } = useQuery({
     queryKey: ["account-support"],
     queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
@@ -56,7 +71,7 @@ export default function SupportPage() {
   const createMutation = useMutation({
     mutationFn: (vars: { message: string; files: File[]; orderCode: string }) => {
       if (vars.files.length === 0) {
-        return apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", {
+        return apiPost<{ ok: boolean; ticket_id: number | null; duplicate?: boolean }>("/api/v1/account/support", {
           message: vars.message,
           ...(vars.orderCode ? { order_code: vars.orderCode } : {}),
         });
@@ -65,14 +80,21 @@ export default function SupportPage() {
       form.append("message", vars.message);
       if (vars.orderCode) form.append("order_code", vars.orderCode);
       for (const file of vars.files) form.append("attachments", file);
-      return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null }>(
+      return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null; duplicate?: boolean }>(
         "/api/v1/account/support",
         form,
         setUploadProgress,
       );
     },
     onSuccess: (resp) => {
-      setMessage(t("web.support_template"));
+      if (resp.duplicate && resp.ticket_id != null) {
+        // A toast set here would never paint — navigate() unmounts this page
+        // in the same render. Hand the notice to the destination via router
+        // state instead; TicketDetailPage shows it as its own Toast on mount.
+        navigate(`/account/support/${resp.ticket_id}`, { state: { notice: t("web.support_duplicate_redirect") } });
+        return;
+      }
+      setMessage("");
       setFiles([]);
       setOrderCode("");
       refetch();
@@ -121,32 +143,35 @@ export default function SupportPage() {
       <h1 className="page-title mb-6">{t("web.account_support")}</h1>
 
       <form onSubmit={onSubmit} className="card card-pad mb-6">
-        <div className="field-label">{t("web.support_new")}</div>
-        <textarea
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          rows={6}
-          required
-          className="field"
-          placeholder={t("web.support_placeholder")}
-        />
-        <label className="field-label mt-3" htmlFor="ticket-order-picker">
-          {t("web.ticket_order_picker_label")}
-        </label>
-        <select
-          id="ticket-order-picker"
-          value={orderCode}
-          onChange={(e) => setOrderCode(e.target.value)}
-          className="field"
-          disabled={createMutation.isPending}
+        <FormField label={t("web.support_new")} htmlFor="ticket-message">
+          <Textarea
+            id="ticket-message"
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            rows={6}
+            required
+            placeholder={t("web.support_new_placeholder")}
+          />
+        </FormField>
+        <FormField
+          label={t("web.ticket_order_picker_label")}
+          htmlFor="ticket-order-picker"
+          className="mt-3"
         >
-          <option value="">{t("web.ticket_order_picker_none")}</option>
-          {ordersData?.orders.map((o) => (
-            <option key={o.code} value={o.code}>
-              {o.code} — {o.items}
-            </option>
-          ))}
-        </select>
+          <Select
+            id="ticket-order-picker"
+            value={orderCode}
+            onChange={(e) => setOrderCode(e.target.value)}
+            disabled={createMutation.isPending}
+          >
+            <option value="">{t("web.ticket_order_picker_none")}</option>
+            {ordersData?.orders.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.code} — {o.items}
+              </option>
+            ))}
+          </Select>
+        </FormField>
         <AttachmentPicker files={files} onChange={setFiles} disabled={createMutation.isPending} />
         {createMutation.isPending && files.length > 0 && (
           <div className="mt-2">
@@ -154,10 +179,10 @@ export default function SupportPage() {
           </div>
         )}
         <div className="mt-3 text-right">
-          <button type="submit" className="btn btn-primary btn-sm" disabled={createMutation.isPending}>
+          <Button type="submit" variant="primary" size="sm" disabled={createMutation.isPending}>
             {createMutation.isPending && <Spinner />}
             <Send className="w-3.5 h-3.5" /> {t("web.support_send")}
-          </button>
+          </Button>
         </div>
       </form>
 

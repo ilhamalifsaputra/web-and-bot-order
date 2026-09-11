@@ -17,6 +17,14 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This order is no longer awaiting fulfilment — it may have already been processed.",
   "error.order_paid_needs_credit":
     "This order was already paid — use \"Credit to Balance\" instead of Reject/Cancel, so the payment isn't lost.",
+  "error.illegal_admin_task_status_transition":
+    "This task's status just changed — refresh the page and try again.",
+  "error.admin_task_assignee_not_found":
+    "That admin account could not be found.",
+  "error.admin_task_assignee_not_admin":
+    "That user isn't an admin and can't be assigned tasks.",
+  "error.rate_limited":
+    "You're doing that too quickly — wait a minute and try again.",
 };
 
 /** Looks up a known `ValidationError` key and returns a readable English

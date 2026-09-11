@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import OrdersPage from "./OrdersPage";
@@ -21,7 +22,18 @@ const context: ShopContext = {
   favicon_url: "/static/favicon.svg",
   logo_url: "",
   bot_username: "tokobot",
+  wa_number: null,
   tzname: "Asia/Jakarta",
+};
+
+// Task 16 (page-templates.md §6): two distinguishable orders — different codes,
+// different item names, different statuses — so a search substring or a status
+// pick can narrow to exactly one.
+const TWO_ORDERS: AccountOrdersData = {
+  orders: [
+    { code: "ORD-NFLX", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+    { code: "ORD-SPOT", status: "pending", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify Premium" },
+  ],
 };
 
 function renderOrders(respond: (path: string) => unknown) {
@@ -93,5 +105,74 @@ describe("OrdersPage", () => {
     renderOrders(() => ({ orders: [] }));
     expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
+  });
+
+  // ---- Task 16: client-side filter row (page-templates.md §6) ----
+
+  // Render gate: the filter row mirrors SortSelect's "more than one to filter"
+  // precedent — a filter over a single order narrows nothing.
+  it("hides the filter row when there is only one order to filter", async () => {
+    renderOrders(() => ({
+      orders: [
+        { code: "ORD1", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+      ],
+    }));
+    await screen.findByRole("link", { name: "ORD1" });
+    expect(screen.queryByRole("searchbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Status" })).not.toBeInTheDocument();
+  });
+
+  it("shows the search input and status select once there are at least two orders", async () => {
+    renderOrders(() => TWO_ORDERS);
+    await screen.findByRole("link", { name: "ORD-NFLX" });
+    expect(screen.getByRole("searchbox", { name: "Search by code or item" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Status" })).toBeInTheDocument();
+  });
+
+  it("narrows the visible list to the matching order when a search term is typed", async () => {
+    const user = userEvent.setup();
+    renderOrders(() => TWO_ORDERS);
+    await screen.findByRole("link", { name: "ORD-NFLX" });
+    await user.type(screen.getByRole("searchbox", { name: "Search by code or item" }), "spotify");
+    expect(screen.queryByRole("link", { name: "ORD-NFLX" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ORD-SPOT" })).toBeInTheDocument();
+  });
+
+  it("filters by status, and restores the full list when 'All statuses' is reselected", async () => {
+    const user = userEvent.setup();
+    renderOrders(() => TWO_ORDERS);
+    await screen.findByRole("link", { name: "ORD-NFLX" });
+    const statusSelect = screen.getByRole("combobox", { name: "Status" });
+    await user.selectOptions(statusSelect, "delivered");
+    expect(screen.getByRole("link", { name: "ORD-NFLX" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "ORD-SPOT" })).not.toBeInTheDocument();
+    await user.selectOptions(statusSelect, "all");
+    expect(screen.getByRole("link", { name: "ORD-NFLX" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ORD-SPOT" })).toBeInTheDocument();
+  });
+
+  // §16: a filter that matches nothing gets its own copy (web.orders_no_match),
+  // never the first-time "no orders yet" wording, plus a way back out.
+  it("shows the no-match empty state (distinct from 'no orders yet') and a working Clear filters reset", async () => {
+    const user = userEvent.setup();
+    renderOrders(() => TWO_ORDERS);
+    await screen.findByRole("link", { name: "ORD-NFLX" });
+    await user.type(screen.getByRole("searchbox", { name: "Search by code or item" }), "no-such-order");
+    // web.orders_no_match — NOT web.no_orders.
+    expect(screen.getByText("No orders match your filter")).toBeInTheDocument();
+    expect(screen.queryByText("No orders yet — your purchases will show up here.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByRole("link", { name: "ORD-NFLX" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "ORD-SPOT" })).toBeInTheDocument();
+    expect(screen.queryByText("No orders match your filter")).not.toBeInTheDocument();
+  });
+
+  // The two empty states never collide: zero orders keeps the first-time copy
+  // (web.no_orders) and its catalogue CTA.
+  it("shows the first-time 'no orders yet' empty state, not the no-match one, when there are zero orders", async () => {
+    renderOrders(() => ({ orders: [] }));
+    expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
+    expect(screen.queryByText("No orders match your filter")).not.toBeInTheDocument();
   });
 });

@@ -58,17 +58,43 @@ export async function apiGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** No caller yet in this plan — foundational plumbing for the first future
- * mutating dashboard action. Attaches the page's CSRF token as a header
- * (see apps/web-admin/src/plugins/auth.ts's csrfCheck, which accepts this
- * header as an alternative to the form-field token HTML forms use). */
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+/** Everything `apiPost` can be asked to do beyond "POST this body". Both are
+ * optional; a call that passes neither behaves exactly as it always has. */
+export interface PostOptions {
+  /** Opaque per-operation key sent as `Idempotency-Key`. The six payment
+   * mutations in apps/web-admin/src/routes/api/payments.ts (deliver, refund,
+   * cancel, match, credit, dismiss) replay the first attempt's stored response
+   * when a retry arrives with the same key and the same request, instead of
+   * running the mutation a second time. Minting and holding the key is
+   * `useIdempotentPost`'s job (api/idempotency.ts) — pages should call that
+   * rather than passing this by hand. */
+  idempotencyKey?: string;
+  /** Fired the moment the server's response is in hand, before its body is
+   * read and whatever the status, with that status. This is what lets
+   * `useIdempotentPost` tell a KNOWN outcome from an UNKNOWN one — see its
+   * own comment for why the 5xx half of "a response arrived" still counts as
+   * unknown. */
+  onResponse?: (status: number) => void;
+}
+
+/** Attaches the page's CSRF token as a header (see
+ * apps/web-admin/src/plugins/auth.ts's csrfCheck, which accepts this header as
+ * an alternative to the form-field token HTML forms use). */
+export async function apiPost<T>(path: string, body: unknown, options?: PostOptions): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-CSRF-Token": csrfToken(),
+  };
+  // Sent in the header's canonical mixed casing; Fastify lowercases incoming
+  // header names, so the routes read it as `req.headers["idempotency-key"]`.
+  if (options?.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
   const res = await fetch(path, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+    headers,
     body: JSON.stringify(body),
   });
+  options?.onResponse?.(res.status);
   if (!res.ok) return throwForResponse(res, path);
   return res.json() as Promise<T>;
 }

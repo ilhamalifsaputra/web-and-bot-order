@@ -8,6 +8,7 @@ import type { MyContext, MyConversation } from "../context";
 import { ticketUserReplyConversation } from "./customer";
 import { voucherConversation } from "./checkout";
 import { customerInfoConversation } from "./customerInfo";
+import { nicknameCheckConversation } from "./nicknameCheck";
 import { editCustomerInfoConversation } from "./editCustomerInfo";
 import { supportConversation } from "./support";
 import { rejectConversation } from "./reject";
@@ -51,6 +52,11 @@ export const CONVERSATIONS: ConvSpec[] = [
   // loop right after it just no-ops for a spec with none (each `if
   // (spec.callback)`/`if (spec.command)`/`if (spec.hears)` simply skips).
   { name: "customerInfo", fn: customerInfoConversation },
+  // Entered programmatically only (checkout.ts's showOrderConfirmation calls
+  // ctx.conversation.enter("nicknameCheck") for an AUTO SKU whose linked Game
+  // has nickname-check configured — Trustance reconciliation Phase B Task 2)
+  // — same no-trigger shape as customerInfo above.
+  { name: "nicknameCheck", fn: nicknameCheckConversation },
   // Entered programmatically only (callbacks.ts's dispatchOrder calls
   // ctx.conversation.enter("editCustomerInfo") for a v1:order:editinfo:<id>
   // tap on a PROCESSING manual_with_info order) — same no-trigger shape as

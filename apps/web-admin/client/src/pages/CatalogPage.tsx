@@ -345,6 +345,9 @@ export function CatalogPage() {
             >
               Import CSV
             </Button>
+            <Button variant="ghost" size="sm" onClick={() => navigate("/catalog/digiflazz-sync")}>
+              Sync Digiflazz
+            </Button>
             <Button size="sm" onClick={() => navigate("/catalog/new")}>
               <Plus className="h-4 w-4" />
               Add Product

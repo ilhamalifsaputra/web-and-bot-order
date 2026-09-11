@@ -33,7 +33,13 @@ import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../s
  * needed because `vi.mock` factories run before ordinary module-level `let`s
  * are initialised.
  */
-const dbMockState = vi.hoisted(() => ({ progressFlushError: null as Error | null }));
+const dbMockState = vi.hoisted(() => ({
+  progressFlushError: null as Error | null,
+  // Task 10: per-test overrides for the two calls runDigiflazzCatalogSyncTick
+  // makes. null => use the real implementation.
+  resyncDigiflazzCatalog: null as null | (() => Promise<{ updated: number; deactivated: number }>),
+  runDetectionForCatalog: null as null | (() => Promise<unknown>),
+}));
 vi.mock("@app/db", async () => {
   const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
   return {
@@ -42,6 +48,14 @@ vi.mock("@app/db", async () => {
       if (dbMockState.progressFlushError) throw dbMockState.progressFlushError;
       return actual.updateBroadcastProgress(...args);
     },
+    resyncDigiflazzCatalog: (...args: Parameters<typeof actual.resyncDigiflazzCatalog>) =>
+      dbMockState.resyncDigiflazzCatalog
+        ? dbMockState.resyncDigiflazzCatalog()
+        : actual.resyncDigiflazzCatalog(...args),
+    runDetectionForCatalog: (...args: Parameters<typeof actual.runDetectionForCatalog>) =>
+      dbMockState.runDetectionForCatalog
+        ? dbMockState.runDetectionForCatalog()
+        : actual.runDetectionForCatalog(...args),
   };
 });
 
@@ -68,6 +82,9 @@ import {
   tokopayPollWatchdog,
   paydisiniPollWatchdog,
   nowpaymentsPollWatchdog,
+  outboxDispatcherPollWatchdog,
+  scheduleOutboxDispatcherWatchdog,
+  runDigiflazzCatalogSyncTick,
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
@@ -77,6 +94,8 @@ let sample: SampleData;
 
 beforeEach(async () => {
   dbMockState.progressFlushError = null;
+  dbMockState.resyncDigiflazzCatalog = null;
+  dbMockState.runDetectionForCatalog = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -1575,7 +1594,8 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
     //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog,
     //  tokopayPollWatchdog, paydisiniPollWatchdog, nowpaymentsPollWatchdog,
-    //  drainBroadcasts, announceStartedFlashSales, storageCleanupJob].
+    //  drainBroadcasts, announceStartedFlashSales, storageCleanupJob,
+    //  cleanupProcessedTelegramUpdatesJob, cleanupExpiredBotSessionsJob].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
@@ -1621,13 +1641,26 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // other job's minutely/hourly ticks.
       expect(crons[11]!.getPattern()).toBe("30 15 3 * * *");
       expect(crons[11]!.options.protect).toBe(true);
+      // cleanupProcessedTelegramUpdatesJob (Task 1, Phase D) — same daily
+      // off-peak slot as storageCleanupJob just above, one minute later and
+      // on a distinct second (10) so it never shares a firing second with
+      // any other registered job.
+      expect(crons[12]!.getPattern()).toBe("10 16 3 * * *");
+      expect(crons[12]!.options.protect).toBe(true);
+      // cleanupExpiredBotSessionsJob (Task 2, Phase D) — same daily off-peak
+      // slot, on second 45 (NOT 20 — drainBroadcasts already fires every
+      // minute at :20, so that second would be a genuine collision at
+      // 03:16:20, not just a test-flagged one) so it never shares a firing
+      // second with any other registered job.
+      expect(crons[13]!.getPattern()).toBe("45 16 3 * * *");
+      expect(crons[13]!.options.protect).toBe(true);
       // sweepPaidOrderBubbles (T2-E) — every minute, but on second 25: it
       // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing rows back to back,
       // exactly the profile behind the P1008/P2028 write-lock pile-up on
       // second 0 (2026-07-20). :25 is ≥5s clear of every other second in this
-      // list (0, 5/20/35/50, 40, 15/17/19, 30).
-      expect(crons[12]!.getPattern()).toBe("25 * * * * *");
-      expect(crons[12]!.options.protect).toBe(true);
+      // list (0, 5/20/35/50, 40, 15/17/19, 30, 10, 45).
+      expect(crons[14]!.getPattern()).toBe("25 * * * * *");
+      expect(crons[14]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second
@@ -2088,5 +2121,173 @@ describe("paydisiniPollWatchdog / nowpaymentsPollWatchdog wiring (Task 12)", () 
 
     expect(api.sendMessage).toHaveBeenCalledTimes(2);
     expect(await getSetting(prisma, "nowpayments_poll_alert_sent")).toBe("1");
+  });
+});
+
+/**
+ * Task 15 (I-3, fresh backend audit 2026-08-21): the outbox dispatcher is the
+ * sole delivery path for every buyer credential DM and every admin alert this
+ * codebase enqueues, but unlike the six payment reconcile pollers above it had
+ * no watchdog at all — a bad notifier token or an unhandled exception class
+ * silently stopped all Telegram delivery with nothing but one log line, no
+ * admin ever told. `outboxDispatcherPollWatchdog` is the seventh rail wrapper
+ * around the same shared `pollWatchdog`, but `isEnabled` is hardcoded to
+ * `async () => true` — always armed, unlike the six credential-gated rails
+ * above — since whether a notifier token is configured at all is a decision
+ * apps/server makes, not this module (see scheduleOutboxDispatcherWatchdog's
+ * own doc-comment for the full reasoning and why its Cron registration lives
+ * in apps/server/src/index.ts instead of scheduleJobs here).
+ */
+describe("outboxDispatcherPollWatchdog (Task 15 / I-3)", () => {
+  it("pages admins once when the outbox dispatcher has never recorded a heartbeat (never run)", async () => {
+    // No POLL_HEALTH_KEYS.outbox setting written at all — getPollHealth
+    // returns the all-null "never run" shape, which evaluatePollHealth's own
+    // Rule 3 always pages on (see packages/core/src/payments/pollHealth.ts).
+    const api = fakeApi();
+
+    await outboxDispatcherPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // both admins paged once
+    expect(await getSetting(prisma, "outbox_watchdog_alerted")).toBe("1");
+    const dm = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(dm).toContain("Outbox dispatcher");
+    // The impact sentence must be more severe than any single payment rail's
+    // — this is the sole delivery path for every buyer credential DM AND
+    // every admin alert, not just one gateway's auto-confirm.
+    expect(dm).toContain("credential");
+    expect(dm).toContain("admin alert");
+  });
+
+  it("pages admins once when the outbox dispatcher heartbeat is stale (over five minutes since the last completed cycle)", async () => {
+    const at = new Date(Date.now() - 20 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.outbox,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await outboxDispatcherPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "outbox_watchdog_alerted")).toBe("1");
+  });
+
+  it("clears the outbox dispatcher alert state on recovery", async () => {
+    await setSetting(prisma, "outbox_watchdog_alerted", "1");
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.outbox,
+      JSON.stringify({
+        lastRun: new Date().toISOString(),
+        lastSuccessAt: new Date().toISOString(),
+        lastTxCount: 3,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await outboxDispatcherPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "outbox_watchdog_alerted")).toBe("0");
+  });
+});
+
+/**
+ * Task 15 (I-3) Part C: `scheduleOutboxDispatcherWatchdog`'s Cron shape and
+ * offset-second — pinned directly (unlike the six watchdogs above, this one
+ * is deliberately NOT part of `scheduleJobs`' returned array, so it can't be
+ * asserted via the index-based "scheduleJobs cron registration" test above;
+ * see that function's own doc-comment for why).
+ */
+describe("scheduleOutboxDispatcherWatchdog (Task 15 / I-3, Part C)", () => {
+  it("registers a protected Cron on its own offset-second, clear of the six existing watchdogs' seconds (0, 15, 17, 19)", () => {
+    const cron = scheduleOutboxDispatcherWatchdog(fakeApi());
+    try {
+      expect(cron.options.protect).toBe(true);
+      const pattern = cron.getPattern()!;
+      const fields = pattern.split(" ");
+      expect(fields.length).toBeGreaterThanOrEqual(6); // seconds-resolution expression
+      const seconds = fields[0]!.split(",").map(Number);
+      expect(seconds.every(Number.isInteger)).toBe(true);
+      expect(seconds).not.toContain(0); // crypto three's implicit second
+      expect(seconds).not.toContain(15); // tokopayPollWatchdog
+      expect(seconds).not.toContain(17); // paydisiniPollWatchdog
+      expect(seconds).not.toContain(19); // nowpaymentsPollWatchdog
+    } finally {
+      cron.stop();
+    }
+  });
+});
+
+/**
+ * Task 10: runDigiflazzCatalogSyncTick chains a shadow-mode detection pass
+ * (bumpCatalogRevision + runDetectionForCatalog) after the hourly Digiflazz
+ * catalog resync. The detection pass must be fully isolated — a failure in it
+ * must neither reject the tick nor undo/suppress the successful resync — and
+ * it must be skipped entirely when the resync itself failed.
+ */
+describe("runDigiflazzCatalogSyncTick (Task 10 shadow-mode detection pass)", () => {
+  it("runs runDetectionForCatalog after a successful resync; a detection-pass error neither rejects the tick nor suppresses the resync log", async () => {
+    const calls: string[] = [];
+    dbMockState.resyncDigiflazzCatalog = async () => {
+      calls.push("resync");
+      return { updated: 1, deactivated: 0 };
+    };
+    dbMockState.runDetectionForCatalog = async () => {
+      calls.push("detect");
+      throw new Error("detection engine blew up");
+    };
+    const info = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    try {
+      // Does not reject even though runDetectionForCatalog throws.
+      await expect(runDigiflazzCatalogSyncTick()).resolves.toBeUndefined();
+
+      // Detection ran, and it ran AFTER the resync.
+      expect(calls).toEqual(["resync", "detect"]);
+      // The resync's own success log still fired — not suppressed by the later failure.
+      expect(info.mock.calls.some((c) => String(c[0]).includes("Digiflazz catalog re-sync"))).toBe(true);
+      // The detection failure surfaced as a warning, not a throw.
+      expect(warn.mock.calls.some((c) => String(c[1]).includes("shadow-mode detection pass"))).toBe(true);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("skips the detection pass entirely when the resync itself throws", async () => {
+    const calls: string[] = [];
+    dbMockState.resyncDigiflazzCatalog = async () => {
+      calls.push("resync");
+      throw new Error("resync failed");
+    };
+    dbMockState.runDetectionForCatalog = async () => {
+      calls.push("detect");
+      return {};
+    };
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await expect(runDigiflazzCatalogSyncTick()).resolves.toBeUndefined();
+
+      expect(calls).toEqual(["resync"]); // detection never ran
+      expect(error.mock.calls.some((c) => String(c[1]).includes("Digiflazz catalog re-sync failed"))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
   });
 });

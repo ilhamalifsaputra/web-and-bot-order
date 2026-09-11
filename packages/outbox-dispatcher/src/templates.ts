@@ -190,6 +190,16 @@ interface WalletTopupCreditedPayload {
   new_balance?: unknown;
 }
 
+interface AdminDigiflazzResyncAbortedPayload {
+  kind?: unknown;
+  sharp_changes?: unknown;
+  considered_rows?: unknown;
+}
+
+interface TicketClosedPayload {
+  buyer_language?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -203,8 +213,27 @@ export function render(
     ManualOrderQueuedPayload &
     BulkPurchaseBroadcastPayload &
     AdminStalePaymentPayload &
-    WalletTopupCreditedPayload,
+    WalletTopupCreditedPayload &
+    AdminDigiflazzResyncAbortedPayload &
+    TicketClosedPayload,
 ): string {
+  if (event === NotificationEvent.TICKET_CLOSED_DM) {
+    // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored
+    // language — a single-locale pick, not the bilingual EN+ID pattern most
+    // of this file's other DM templates use — mirroring exactly what
+    // handlers/admin.ts's closeTicketAdmin sent directly before this event
+    // existed (coreT("support.ticket_closed", buyerLang)). ADMIN_NEW_TICKET
+    // and TICKET_REPLY_DM (the other two ticket events from the same task)
+    // are NOT rendered here — they need a reply_markup keyboard (and, for
+    // ADMIN_NEW_TICKET, a photo media-group send) that this plain-text
+    // render() has no way to carry, so dispatcher.ts builds and sends their
+    // text itself, the same way it already does for
+    // ORDER_DELIVERED_DM/ORDER_MANUAL_DELIVERED_DM.
+    const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : "en";
+    return lang === "id"
+      ? "Tiket ditutup. Buka tiket baru jika masih butuh bantuan."
+      : "Your ticket has been closed. Open a new one if you need further help.";
+  }
   if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
     // Buyer DM: the single producer for a wallet top-up's success message
     // across ALL SIX top-up rails — enqueued exactly once, from inside
@@ -361,6 +390,44 @@ export function render(
       `Transaksi: <code>${trxId}</code>\n` +
       `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
+  }
+  if (event === NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED) {
+    // Admin DM: resyncDigiflazzCatalog's own blast-radius circuit breaker
+    // tripped and wrote nothing. Two distinct trip reasons (digiflazz.ts's
+    // local AbortReason union, mirrored in the enqueue payload's `kind`
+    // field), each with its own sentence — an admin skimming the DM needs to
+    // know which one actually happened, not always read the sharp-change
+    // wording:
+    //   - "sharp_change" (default/legacy payloads without `kind`): too many
+    //     denominations would have repriced by more than 50% in one run.
+    //     Payload carries plain counts, no SKU/price detail.
+    //   - "no_usable_rows": the supplier's fetch returned no usable price
+    //     data at all, even though this shop has Digiflazz-routed
+    //     denominations to check against it. No counts to report.
+    const header = `⚠️ <b>Digiflazz catalog sync aborted — nothing was updated</b>\n`;
+    const headerId = `⚠️ <b>Sinkronisasi katalog Digiflazz dibatalkan — tidak ada yang diperbarui</b>\n`;
+    let bodyEn: string;
+    let bodyId: string;
+    if (payload.kind === "no_usable_rows") {
+      bodyEn =
+        `The supplier returned no usable price data at all, even though this shop has Digiflazz-routed ` +
+        `denominations to check. This usually means a field rename, a partial outage, or the wrong endpoint — ` +
+        `please check the Digiflazz connection before the next hourly sync.`;
+      bodyId =
+        `Supplier tidak mengembalikan data harga yang bisa dipakai sama sekali, padahal toko ini punya denominasi ` +
+        `yang terhubung ke Digiflazz untuk dicek. Ini biasanya berarti ada penggantian nama field, gangguan ` +
+        `sebagian, atau endpoint yang salah — mohon periksa koneksi Digiflazz sebelum sinkronisasi berikutnya.`;
+    } else {
+      const sharpChanges = escape(String(payload.sharp_changes ?? "0"));
+      const consideredRows = escape(String(payload.considered_rows ?? "0"));
+      bodyEn =
+        `${sharpChanges} of ${consideredRows} prices would have moved by more than 50% in this run.\n` +
+        `This usually means the supplier's response is malformed, not a real price change — please check the Digiflazz connection before the next hourly sync.`;
+      bodyId =
+        `${sharpChanges} dari ${consideredRows} harga akan berubah lebih dari 50% pada proses ini.\n` +
+        `Ini biasanya berarti respons dari supplier tidak valid, bukan perubahan harga asli — mohon periksa koneksi Digiflazz sebelum sinkronisasi berikutnya.`;
+    }
+    return `${header}${bodyEn}\n\n${headerId}${bodyId}`;
   }
   if (event === NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT) {
     // Admin DM: the gateway says this order is paid, but returned no

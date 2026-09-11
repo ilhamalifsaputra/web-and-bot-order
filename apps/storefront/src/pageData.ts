@@ -28,7 +28,8 @@ import {
   shopFulfilmentStats,
   type CatalogProduct,
 } from "@app/db";
-import { PRODUCT_VARIANT_WIDTHS, categoryImage, productImage, webpSrcset } from "./images";
+import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
+import { resolveDenomIconKind } from "./denomIcon";
 import { resolveBotUsername } from "./shop";
 import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
@@ -94,7 +95,10 @@ export async function homePageData() {
 
   return {
     hero_image: heroUrl || null,
-    categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
+    // No more stock-photo fallback for category tiles either — HomePage.tsx/
+    // CategoriesPage.tsx never read `image` (only emoji/name/slug/description),
+    // so this passes the raw (always-null-today) Category.image column through.
+    categories,
     products: cards,
     stats,
     testimonials,
@@ -193,6 +197,15 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       // parsed manual_with_info field spec ([] for auto/manual).
       delivery_type: d.deliveryType,
       additional_fields: parseAdditionalFields(d.additionalFields),
+      // Region-check Task C: admin-authored precautionary copy (Region-check
+      // Task B's `regionWarning` field) shown near the account field on
+      // InstantBuyPage.tsx, null when the admin hasn't set one. Already
+      // available on `d` via getCatalogProductBySlugWithDenominations's
+      // `include` (no narrowing `select`) — same zero-crud-change wiring as
+      // `checkout_flow` above. `expectedRegionCode` is deliberately NOT sent
+      // here — it's a server-side comparison value only, used by
+      // apiTopup.ts's check-account endpoint.
+      region_warning: d.regionWarning,
     };
   });
   // Default restock-form target (Task 10 fix): "first in-stock denomination,
@@ -235,10 +248,22 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       warranty_note: product.warrantyNote,
       category_name: catName,
       category_slug: product.category.slug,
-      image: product.webImageUrl ?? productImage(product, catName),
+      image: product.webImageUrl ?? null,
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+      image_kind: defaultThumbKind(product, product.category),
+      // Per-product currency chip on DenominationCard — resolved ONCE here
+      // (not per-denomination) since every plan under one product shares the
+      // same in-game currency. `product.denominations` is already sorted
+      // price-asc (getCatalogProductBySlugWithDenominations's query), so
+      // `[0]` is the cheapest/first one without a new sort.
+      icon_kind: resolveDenomIconKind(product, product.category, product.denominations[0]?.qtyUnit ?? null),
       rating: productRatingAvg,
       rating_count: productRatingCount,
+      // Task 6 (Digiflazz instant-buy pilot): already fetched via
+      // getCatalogProductBySlugWithDenominations's `include: { category: true }`
+      // — no crud-layer change needed. Drives ProductPage.tsx's branch to
+      // InstantBuyPage.tsx.
+      checkout_flow: product.category.checkoutFlow,
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,
@@ -317,9 +342,10 @@ export async function flashPageData(sort: SortKey = "default") {
   return shelfFrom(await listFlashSaleProducts(prisma), sort);
 }
 
-/** The category index (GET /api/v1/pages/categories). `image` is resolved the
- * same way the homepage tiles do, so both surfaces show the same artwork. */
+/** The category index (GET /api/v1/pages/categories). No stock-photo fallback
+ * for `image` anymore (Fase 12) — same raw (always-null-today) Category.image
+ * column the homepage tiles now pass through. */
 export async function categoriesPageData() {
   const categories = await listActiveCategories(prisma);
-  return { categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })) };
+  return { categories };
 }

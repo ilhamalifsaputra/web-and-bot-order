@@ -15,6 +15,7 @@ import {
   commitGatewayResult,
   releaseGatewaySlot,
   gatewayClaimSentinel,
+  setOrderPaymentRail,
   createOrderFromCart,
   createOrderDirect,
   rejectOrder,
@@ -28,6 +29,7 @@ import {
   computeOrderEligibility,
   channelMaskedBuyerId,
   customerLabel,
+  findUnderpaidReceived,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
 import { VoucherType, VoucherScope, OrderKind } from "@app/core/enums";
@@ -495,6 +497,159 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
       // fail, since its paymentRef isn't null and isn't ITS OWN sentinel.
       expect(await claimGatewaySlot(prisma, orderB.id)).toBeNull();
     });
+  });
+});
+
+// setOrderPaymentRail is the guarded, crud-layer replacement for the bare
+// `tx.order.update` the bot's changePaymentRail used to run
+// (apps/order-bot/src/handlers/checkout.ts). Its whole reason to exist is the
+// TOCTOU window between that handler's pre-checks and its write, so the two
+// race tests below are the point of this block: they use a REAL second
+// Postgres transaction that takes the order row's write lock and holds it
+// while the rail change reads a still-stale view of the order and then
+// reaches its own write. Sequential calls could never tell "the
+// compare-and-swap held under a genuine race" apart from "the second call
+// happened to run after the first committed" — same reasoning as
+// checkout_intent_concurrency.test.ts and payments.test.ts's
+// one-PENDING-per-order block.
+describe("setOrderPaymentRail", () => {
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  it("switches paymentMethod, clears paymentRef, and hands the outgoing reference back to the caller", async () => {
+    const order = await makeOrder("PENDING_PAYMENT", { paymentMethod: "TOKOPAY", paymentRef: "TOKOPAY-INV-1" });
+
+    const { previousPaymentRef } = await setOrderPaymentRail(prisma, {
+      orderId: order.id,
+      method: "PAYDISINI",
+      expectedStatus: "PENDING_PAYMENT",
+    });
+
+    // The old reference is returned rather than silently dropped — it is the
+    // matching key the rails reconcile against, and the caller carries it
+    // into the retiring Payment row's `reference` (see payments.test.ts).
+    expect(previousPaymentRef).toBe("TOKOPAY-INV-1");
+
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.paymentMethod).toBe("PAYDISINI");
+    expect(after.paymentRef).toBeNull();
+    expect(after.status).toBe("PENDING_PAYMENT");
+  });
+
+  it("returns a null previousPaymentRef for an order that had no reference yet", async () => {
+    const order = await makeOrder("PENDING_PAYMENT", { paymentMethod: "TOKOPAY" });
+
+    const { previousPaymentRef } = await setOrderPaymentRail(prisma, {
+      orderId: order.id,
+      method: "PAYDISINI",
+      expectedStatus: "PENDING_PAYMENT",
+    });
+
+    expect(previousPaymentRef).toBeNull();
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.paymentMethod).toBe("PAYDISINI");
+  });
+
+  it("rejects a switch on an order that already moved off the expected status, changing nothing", async () => {
+    const order = await makeOrder("PAID", { paymentMethod: "TOKOPAY", paymentRef: "TOKOPAY-INV-2" });
+
+    await expect(
+      setOrderPaymentRail(prisma, { orderId: order.id, method: "PAYDISINI", expectedStatus: "PENDING_PAYMENT" }),
+    ).rejects.toThrow(ValidationError);
+
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.paymentMethod).toBe("TOKOPAY");
+    expect(after.paymentRef).toBe("TOKOPAY-INV-2");
+  });
+
+  it("rejects a non-existent order", async () => {
+    await expect(
+      setOrderPaymentRail(prisma, { orderId: 999_999_999, method: "PAYDISINI", expectedStatus: "PENDING_PAYMENT" }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("loses cleanly to a payment confirmation that commits while it waits on the order row (true Postgres race)", async () => {
+    const order = await makeOrder("PENDING_PAYMENT", { paymentMethod: "TOKOPAY", paymentRef: "TOKOPAY-INV-3" });
+
+    // A reconciler-shaped transaction: take the order row's write lock, mark
+    // the order PAID, then hold the transaction open. Everything the rail
+    // change does between here and the commit below sees the PRE-payment
+    // order, which is exactly the stale view the old unguarded update acted on.
+    let confirmerHasLock!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      confirmerHasLock = resolve;
+    });
+    const confirming = prisma.$transaction(
+      async (tx) => {
+        await tx.order.update({ where: { id: order.id }, data: { status: "PAID" } });
+        confirmerHasLock();
+        await sleep(400);
+      },
+      { timeout: 20_000 },
+    );
+
+    await lockTaken;
+    const railChange = setOrderPaymentRail(prisma, {
+      orderId: order.id,
+      method: "PAYDISINI",
+      expectedStatus: "PENDING_PAYMENT",
+    });
+
+    const [confirmed, rail] = await Promise.allSettled([confirming, railChange]);
+
+    // The payment confirmation wins outright; the rail change is rejected by
+    // the compare-and-swap rather than overwriting it.
+    expect(confirmed.status).toBe("fulfilled");
+    expect(rail.status).toBe("rejected");
+    expect((rail as PromiseRejectedResult).reason).toBeInstanceOf(ValidationError);
+
+    // Proof the loser wrote nothing: the paid order still names the rail the
+    // buyer actually paid on, and still holds the reference that payment will
+    // be reconciled against.
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.status).toBe("PAID");
+    expect(after.paymentMethod).toBe("TOKOPAY");
+    expect(after.paymentRef).toBe("TOKOPAY-INV-3");
+  });
+
+  it("loses cleanly to a gateway claim that commits while it waits, instead of nulling an in-flight claim's paymentRef", async () => {
+    const order = await makeOrder("PENDING_PAYMENT", { paymentMethod: "TOKOPAY" });
+
+    // The storefront's pay page lazily claiming this same order's gateway
+    // slot (claimGatewaySlot) while the buyer taps "change rail" in the bot.
+    // Nulling paymentRef out from under that claim would orphan the invoice
+    // the gateway is about to return, so the paymentRef half of the
+    // compare-and-swap has to catch it too — not just the status half.
+    let claimTaken!: () => void;
+    const claimed = new Promise<void>((resolve) => {
+      claimTaken = resolve;
+    });
+    let sentinel: string | null = null;
+    const claiming = prisma.$transaction(
+      async (tx) => {
+        sentinel = await claimGatewaySlot(tx, order.id);
+        claimTaken();
+        await sleep(400);
+      },
+      { timeout: 20_000 },
+    );
+
+    await claimed;
+    const railChange = setOrderPaymentRail(prisma, {
+      orderId: order.id,
+      method: "PAYDISINI",
+      expectedStatus: "PENDING_PAYMENT",
+    });
+
+    const [claimResult, rail] = await Promise.allSettled([claiming, railChange]);
+
+    expect(claimResult.status).toBe("fulfilled");
+    expect(sentinel).toEqual(expect.any(String));
+    expect(rail.status).toBe("rejected");
+    expect((rail as PromiseRejectedResult).reason).toBeInstanceOf(ValidationError);
+
+    const after = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(after.paymentRef).toBe(sentinel);
+    expect(after.paymentMethod).toBe("TOKOPAY");
   });
 });
 
@@ -1174,5 +1329,101 @@ describe("customerLabel", () => {
 
   it("returns an empty string for a null user, matching the CSV export's prior behavior", () => {
     expect(customerLabel(null)).toBe("");
+  });
+});
+
+// Four amount-matching rails can flag an order UNDERPAID, and they do not all
+// write to the same ledger table: Binance Internal writes `processedBinanceTx`,
+// Bybit and Bybit BSC both write `processedBybitTx`, and the three QRIS/IDR
+// gateways share `qrisUnderpaidTx` (written by markOrderUnderpaid). A lookup
+// that only checks some of those tables reports "nothing received" for orders
+// flagged by the others — which is how the buyer's refund used to come out as
+// zero.
+describe("findUnderpaidReceived", () => {
+  beforeEach(async () => {
+    await prisma.processedBinanceTx.deleteMany();
+    await prisma.processedBybitTx.deleteMany();
+    await prisma.qrisUnderpaidTx.deleteMany();
+  });
+
+  it("returns the received amount when the ledger row is in processedBinanceTx", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "bin-underpaid-1", orderId: order.id, amount: new Decimal("7.25"), outcome: "underpaid" },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("7.25");
+  });
+
+  it("returns the received amount when the ledger row is in processedBybitTx (Bybit and Bybit BSC share it)", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "byb-underpaid-1", orderId: order.id, amount: new Decimal("3.5"), outcome: "underpaid" },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("3.5");
+  });
+
+  // The QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share one table,
+  // written by markOrderUnderpaid — before it existed the amount they received
+  // lived only in `order.adminNote` free text and read back here as null.
+  it("returns the received amount when the ledger row is in qrisUnderpaidTx (the QRIS/IDR gateways)", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.qrisUnderpaidTx.create({
+      data: {
+        orderId: order.id,
+        gateway: "TokoPay",
+        receivedAmount: new Decimal("18500"),
+        expectedAmount: new Decimal("20000"),
+      },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received).not.toBeNull();
+    expect(received!.toString()).toBe("18500");
+  });
+
+  it("returns null when no ledger table has an underpaid row for the order", async () => {
+    const order = await makeOrder("UNDERPAID");
+    const other = await makeOrder("UNDERPAID");
+    // Rows that must NOT match: a different order's underpaid row, and this
+    // order's own row under a different outcome.
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: "bin-other-1", orderId: other.id, amount: new Decimal("9"), outcome: "underpaid" },
+    });
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: "byb-matched-1", orderId: order.id, amount: new Decimal("9"), outcome: "matched" },
+    });
+
+    expect(await findUnderpaidReceived(prisma, order.id)).toBeNull();
+  });
+
+  it("returns the newest underpaid row when a rail recorded more than one for the order", async () => {
+    const order = await makeOrder("UNDERPAID");
+    await prisma.processedBybitTx.create({
+      data: {
+        bybitTxId: "byb-underpaid-old",
+        orderId: order.id,
+        amount: new Decimal("1"),
+        outcome: "underpaid",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+      },
+    });
+    await prisma.processedBybitTx.create({
+      data: {
+        bybitTxId: "byb-underpaid-new",
+        orderId: order.id,
+        amount: new Decimal("2"),
+        outcome: "underpaid",
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    });
+
+    const received = await findUnderpaidReceived(prisma, order.id);
+    expect(received!.toString()).toBe("2");
   });
 });

@@ -197,7 +197,7 @@ describe("SupportPage", () => {
 
     // `sort` is always sent (DEFAULT_SORT is a non-empty string), so the
     // quick-filter's request is "the default sort plus overdue=true".
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest&overdue=true"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest&overdue=true", expect.objectContaining({ credentials: "include" })));
 
     // Clicking a second time toggles the quick-filter back off.
     fetchSpy.mockImplementation(async (input, init) => {
@@ -208,7 +208,7 @@ describe("SupportPage", () => {
       return jsonResponse(supportData([TICKET_OPEN, TICKET_REPLIED]));
     });
     await user.click(overdueCard!);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest", expect.objectContaining({ credentials: "include" })));
   });
 
   it("shows an Overdue chip only for rows flagged isOverdue", async () => {
@@ -221,6 +221,23 @@ describe("SupportPage", () => {
 
     expect(within(rowFor("#1")!).getByText("Overdue")).toBeInTheDocument();
     expect(within(rowFor("#2")!).queryByText("Overdue")).not.toBeInTheDocument();
+  });
+
+  // Task 3: ticketNumber (Task 1) displayed prominently in the Ticket cell,
+  // falling back to the old #id label for historical rows where it's null
+  // (every fixture above omits ticketNumber, which already exercises that
+  // fallback — this test covers the other half, a ticket that HAS one).
+  it("shows the ticketNumber in the Ticket cell when present, instead of #id", async () => {
+    mockFetchRouter({
+      support: supportData([{ ...TICKET_OPEN, ticketNumber: "TCK-20260828-00001" }, TICKET_REPLIED]),
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    expect(screen.getByText("TCK-20260828-00001")).toBeInTheDocument();
+    expect(screen.queryByText("#1")).not.toBeInTheDocument();
+    // TICKET_REPLIED has no ticketNumber — still falls back to #id.
+    expect(screen.getByText("#2")).toBeInTheDocument();
   });
 
   it("shows the full message text in a popover on hovering the Ticket cell", async () => {
@@ -276,10 +293,18 @@ describe("SupportPage", () => {
 
     const search = screen.getByPlaceholderText(/search ticket message/i);
     fireEvent.change(search, { target: { value: "refund" } });
-    expect(fetchSpy).not.toHaveBeenCalledWith(expect.stringContaining("q=refund"));
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("q=refund"),
+      expect.objectContaining({ credentials: "include" }),
+    );
 
     vi.advanceTimersByTime(300);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=refund")));
+    await vi.waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("q=refund"),
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
     vi.useRealTimers();
   });
 
@@ -305,7 +330,31 @@ describe("SupportPage", () => {
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/support?status=REPLIED&priority=HIGH&assigned=unassigned&sort=priority",
+        "/api/support?status=REPLIED%2CWAITING_CUSTOMER&priority=HIGH&assigned=unassigned&sort=priority",
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
+  });
+
+  // Task 1 fix review (Important finding): selecting "Open" must query both
+  // OPEN and WAITING_ADMIN, or a ticket that already advanced through the
+  // Task 1 fix's automatic transition would silently vanish from this filter
+  // while still counting toward the (correctly {in:[...]}-based) KPI tiles.
+  it("queries both statuses in the Open/Waiting Admin pair when 'Open' is selected", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Status filter" }));
+    await user.click(await screen.findByRole("option", { name: "Open" }));
+
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/support?status=OPEN%2CWAITING_ADMIN&sort=newest",
+        expect.objectContaining({ credentials: "include" }),
       ),
     );
   });
@@ -570,11 +619,15 @@ describe("SupportPage", () => {
       return jsonResponse(supportData([TICKET_OPEN], { total: 45, page: 2 }));
     });
     await user.click(screen.getByRole("button", { name: "Go to page 2" }));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2")));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2"), expect.objectContaining({ credentials: "include" })),
+    );
 
     await user.click(screen.getByRole("combobox", { name: /rows per page/i }));
     await user.click(await screen.findByText("50 / page"));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("pageSize=50")));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("pageSize=50"), expect.objectContaining({ credentials: "include" })),
+    );
     // Changing the page size resets to page 1 — the request must not still carry page=2.
     const lastPageSizeCall = fetchSpy.mock.calls
       .map(([url]) => (typeof url === "string" ? url : url!.toString()))
@@ -672,7 +725,9 @@ describe("SupportPage", () => {
     await user.click(await screen.findByRole("option", { name: "Payment" }));
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?category=PAYMENT&sort=newest"));
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/support?category=PAYMENT&sort=newest", expect.objectContaining({ credentials: "include" })),
+    );
   });
 
   it("Export CSV link carries the active filters through to /api/support/export", async () => {

@@ -49,7 +49,7 @@ import {
 } from "lucide-react";
 import { ticketStatusLabel } from "../lib/ticketStatus";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
 
@@ -64,6 +64,7 @@ interface TicketUser {
 // the bug this rewrite fixes).
 interface TicketRow {
   id: number;
+  ticketNumber: string | null;
   userId: number;
   message: string;
   status: string;
@@ -122,12 +123,34 @@ const ALL_PRIORITIES = "_all_";
 const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
 const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
+/** Task 1 fix review (Important finding): the dropdown still shows the 4
+ *  legacy buckets — matching ticketStatusLabel's OPEN/WAITING_ADMIN and
+ *  REPLIED/WAITING_CUSTOMER pairing — but each selection must query BOTH
+ *  statuses in its pair, or filtering by "Open"/"Waiting Customer" would
+ *  silently under-report every ticket that has already gone through the
+ *  Task 1 fix's automatic WAITING_ADMIN/WAITING_CUSTOMER transition. The
+ *  server's `parseCsvFilter` (apps/web-admin/src/routes/api/support.ts)
+ *  already accepts a comma-separated status list, same as the KPI tiles use. */
+const STATUS_FILTER_QUERY: Record<string, string> = {
+  OPEN: "OPEN,WAITING_ADMIN",
+  REPLIED: "REPLIED,WAITING_CUSTOMER",
+  RESOLVED: "RESOLVED",
+  CLOSED: "CLOSED",
+};
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
 const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
 const DEFAULT_SORT = "newest";
 
 function categoryLabel(category: string): string {
   return category.charAt(0) + category.slice(1).toLowerCase();
+}
+
+/** Task 3: `ticketNumber` (Task 1) is null for every ticket created before
+ * that migration shipped — historical rows fall back to the old `#id`
+ * label so they never render blank. Mirrors TicketDetailPage.tsx's own
+ * ticketDisplayLabel. */
+function ticketDisplayLabel(row: { id: number; ticketNumber: string | null }): string {
+  return row.ticketNumber ?? `#${row.id}`;
 }
 
 function useTickets(q: string, filters: Filters) {
@@ -144,9 +167,7 @@ function useTickets(q: string, filters: Filters) {
       if (filters.overdue) params.set("overdue", "true");
       if (filters.page > 1) params.set("page", String(filters.page));
       if (filters.pageSize !== 20) params.set("pageSize", String(filters.pageSize));
-      const res = await fetch(`/api/support?${params.toString()}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<SupportData>;
+      return apiGet<SupportData>(`/api/support?${params.toString()}`);
     },
     refetchInterval: 30_000,
   });
@@ -155,11 +176,7 @@ function useTickets(q: string, filters: Filters) {
 function useAdmins() {
   return useQuery<{ admins: AdminOption[] }>({
     queryKey: ["admins"],
-    queryFn: async () => {
-      const res = await fetch("/api/admins");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ admins: AdminOption[] }>;
-    },
+    queryFn: () => apiGet<{ admins: AdminOption[] }>("/api/admins"),
   });
 }
 
@@ -390,7 +407,7 @@ export function SupportPage() {
   function applyFilters() {
     setFilters((f) => ({
       ...f,
-      status: draft.status,
+      status: draft.status ? (STATUS_FILTER_QUERY[draft.status] ?? draft.status) : "",
       priority: draft.priority,
       category: draft.category,
       assigned: draft.assigned,
@@ -693,7 +710,7 @@ export function SupportPage() {
                     onMouseEnter={() => setHoveredMessageId(row.id)}
                     onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
                   >
-                    <span className="font-mono text-xs text-ink-soft">#{row.id}</span>
+                    <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
                     {/* `items-start` (no cross-axis stretch) would let this span grow to its
                         unwrapped content width and overflow past 240px into neighboring
                         columns — line-clamp can only truncate a width-CONSTRAINED box. */}
@@ -839,7 +856,11 @@ export function SupportPage() {
                         ))}
                       </DropdownMenuSubContent>
                     </DropdownMenuSub>
-                    {(row.status === "OPEN" || row.status === "REPLIED") && (
+                    {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
+                        (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
+                        whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
+                        and were silently losing this button under the old check. */}
+                    {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
                       <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
                         <CheckCircle2 className="h-4 w-4" />
                         Resolve

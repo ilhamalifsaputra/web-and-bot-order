@@ -1,8 +1,7 @@
 /**
- * TSX port of apps/storefront/views/catalog.njk — breadcrumb-free category
- * header, pills to switch category (active one highlighted), product grid,
- * empty state. Markup/classes copied verbatim apart from the mechanical
- * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
+ * TSX port of apps/storefront/views/catalog.njk — breadcrumb, category header,
+ * pills to switch category (active one highlighted), product grid, empty state.
+ * Restyled onto the design system in Task 10 (page-templates.md §2).
  */
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -15,6 +14,7 @@ import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import Breadcrumb from "../components/shop/Breadcrumb";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -56,6 +56,7 @@ export default function CategoryPage() {
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-48" />
         </div>
@@ -64,7 +65,7 @@ export default function CategoryPage() {
             <Skeleton key={i} className="h-8 w-24 shrink-0 rounded-full" />
           ))}
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
           {SKELETON_CARDS.map((i) => (
             <ProductCardSkeleton key={i} />
           ))}
@@ -78,6 +79,12 @@ export default function CategoryPage() {
 
   return (
     <>
+      <Breadcrumb
+        items={[
+          { label: t("web.nav_home"), href: "/" },
+          { label: category.name },
+        ]}
+      />
       <div className="mb-6">
         <h1 className="page-title">
           {category.emoji ? `${category.emoji} ` : ""}
@@ -92,14 +99,17 @@ export default function CategoryPage() {
         )}
       </div>
 
-      {/* Pills for switching category */}
+      {/* Category-switch pills — components.md "Segmented control / tabs" visual.
+          Still <Link>s (they navigate, they don't filter in place). */}
       <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 mb-6">
         {categories.map((c) => (
           <Link
             key={c.slug}
             to={`/c/${c.slug}`}
-            className={`chip whitespace-nowrap px-3.5! py-1.5! transition-colors ${
-              c.id === category.id ? "bg-pine text-white" : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
+            className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-semibold transition-colors ${
+              c.id === category.id
+                ? "bg-pine-tint text-pine-dark"
+                : "bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark"
             }`}
           >
             {c.emoji ? `${c.emoji} ` : ""}
@@ -120,7 +130,7 @@ export default function CategoryPage() {
           {/* STO-018: same fix as the homepage's "Latest products" grid — a
               single product left two-thirds of the row empty. */}
           <motion.div
-            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"}`}
+            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"}`}
             variants={staggerContainer}
             initial="initial"
             animate="animate"

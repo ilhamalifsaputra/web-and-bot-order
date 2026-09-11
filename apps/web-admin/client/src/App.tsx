@@ -2,7 +2,10 @@ import { Routes, Route } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CatalogPage } from "./pages/CatalogPage";
+import { DigiflazzSyncPage } from "./pages/DigiflazzSyncPage";
 import { CategoriesPage } from "./pages/CategoriesPage";
+import { GamesPage } from "./pages/GamesPage";
+import { GameDetailPage } from "./pages/GameDetailPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductCreatePage } from "./pages/ProductCreatePage";
 import { DenominationCreatePage } from "./pages/DenominationCreatePage";
@@ -26,6 +29,7 @@ import { UserDetailPage } from "./pages/UserDetailPage";
 import { BroadcastPage } from "./pages/BroadcastPage";
 import { SupportPage } from "./pages/SupportPage";
 import { TicketDetailPage } from "./pages/TicketDetailPage";
+import { TasksPage } from "./pages/TasksPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BrandingPage } from "./pages/BrandingPage";
 import { StoragePage } from "./pages/StoragePage";
@@ -55,6 +59,7 @@ export default function App() {
         <Route path="/orders" element={<OrdersPage />} />
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />
         <Route path="/catalog" element={<CatalogPage />} />
+        <Route path="/catalog/digiflazz-sync" element={<DigiflazzSyncPage />} />
         <Route path="/catalog/new" element={<ProductCreatePage />} />
         <Route path="/catalog/:productId/denominations/new" element={<DenominationCreatePage />} />
         <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditPage />} />
@@ -62,6 +67,8 @@ export default function App() {
         {/* Deliberately not nested under /catalog: the sidebar's NavLink matches
             by prefix, so /catalog/categories would light up both entries. */}
         <Route path="/categories" element={<CategoriesPage />} />
+        <Route path="/games" element={<GamesPage />} />
+        <Route path="/games/:gameId" element={<GameDetailPage />} />
         <Route path="/stock" element={<StockPage />} />
         <Route path="/stock/:productId" element={<StockProductPage />} />
         <Route path="/flash-sales" element={<FlashSalesPage />} />
@@ -78,6 +85,7 @@ export default function App() {
         <Route path="/broadcast" element={<BroadcastPage />} />
         <Route path="/support" element={<SupportPage />} />
         <Route path="/support/:ticketId" element={<TicketDetailPage />} />
+        <Route path="/tasks" element={<TasksPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/branding" element={<BrandingPage />} />
         <Route path="/storage" element={<StoragePage />} />

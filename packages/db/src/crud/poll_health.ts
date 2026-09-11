@@ -28,6 +28,13 @@ export const POLL_HEALTH_KEYS = {
   tokopay: "tokopay_poll_health",
   paydisini: "paydisini_poll_health",
   nowpayments: "nowpayments_poll_health",
+  /** The outbox dispatcher (Task 15 / I-3) — not a payment poller, but the
+   * same heartbeat shape/storage fits it exactly: `recordPollHealth` is
+   * called from `runDispatcher`'s per-tick success/failure paths
+   * (packages/outbox-dispatcher/src/dispatcher.ts), read by
+   * `outboxDispatcherPollWatchdog` (apps/order-bot/src/jobs/index.ts). */
+  outbox: "outbox_dispatcher_poll_health",
+  digiflazzCatalogSync: "digiflazz_catalog_sync_poll_health",
 } as const;
 
 export type PollRail = keyof typeof POLL_HEALTH_KEYS;

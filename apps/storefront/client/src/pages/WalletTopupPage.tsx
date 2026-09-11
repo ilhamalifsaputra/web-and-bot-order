@@ -10,7 +10,17 @@
  * currency toggle → amount input (server limits are the real gate;
  * client-side min/max is a UX hint only) → gateway picker → POST
  * /api/v1/wallet/topup → navigate to the pay screen.
+ *
+ * Design-system migration (Task 14): mirrors CheckoutPage.tsx's card/field/
+ * button treatment — `<Card>`, `<FormField>`+`<Input>` for the amount,
+ * `<Alert variant="banner" tone="error">` for the submit-error banner,
+ * `<Button>` for the currency toggle + submit. `PaymentMethodRow` (from
+ * `PaymentMethodSelector.tsx`) is unchanged — already migrated in Task 13,
+ * re-verified here, not re-migrated. See deviations.md
+ * §14-pay-topup-track. No mutation payload, endpoint, or gating logic
+ * changed.
  */
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -22,6 +32,14 @@ import { formatIdr, formatNativeUsdt } from "../lib/format";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
 import Spinner from "../components/shop/Spinner";
+import { PaymentMethodRow } from "../components/shop/PaymentMethodSelector";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Alert from "../components/ui/Alert";
+import FormField from "../components/ui/FormField";
+import Input from "../components/ui/Input";
+import Label from "../components/ui/Label";
+import { cn } from "../components/ui/cn";
 
 type Currency = "IDR" | "USDT";
 
@@ -51,8 +69,9 @@ const USDT_METHODS: MethodOption[] = [
 
 /** Which of a currency's methods the server says are actually configured —
  * mirrors CheckoutPage.tsx's per-flag gating, just table-driven instead of
- * eight near-identical `{page.x_enabled && ...}` blocks (there's no fee-note/
- * icon variance here to justify the longer form). */
+ * eight near-identical `{page.x_enabled && ...}` blocks (there's no fee-note
+ * variance here to justify the longer form; per-method icons are looked up
+ * separately via iconFor()). */
 function methodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
   const enabledMap: Record<string, boolean> =
     currency === "IDR"
@@ -91,40 +110,44 @@ function amountValid(data: WalletTopupData, currency: Currency, amount: string):
   return true;
 }
 
-/** One gateway radio row — same visual treatment as CheckoutPage.tsx's
- * PaymentMethodRow. Not imported from there: that component is a private,
- * unexported helper local to CheckoutPage's module, so this reproduces its
- * markup/classes rather than reaching into another page for it. */
-function MethodRow({
-  value,
-  checked,
-  onSelect,
-  title,
-  subtitle,
-}: {
-  value: string;
-  checked: boolean;
-  onSelect: () => void;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <label className="flex items-start gap-3 p-3 rounded-xl border border-line transition-colors cursor-pointer hover:border-pine focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:bg-pine-tint">
-      <input
-        type="radio"
-        name="topup_method"
-        value={value}
-        className="mt-1 size-4 shrink-0 accent-pine"
-        checked={checked}
-        onChange={onSelect}
-      />
-      <Wallet className="h-6 w-6 shrink-0 mt-0.5 text-pine" aria-hidden="true" />
-      <span className="min-w-0">
-        <span className="font-semibold text-sm block">{title}</span>
-        <span className="text-xs text-ink-soft block mt-0.5">{subtitle}</span>
-      </span>
-    </label>
-  );
+/** Same gateway → logo mapping PaymentMethodSelector.tsx uses for
+ * CheckoutPage/InstantBuyPage, so the top-up picker shows the real QRIS/
+ * Binance/Bybit marks instead of a generic wallet glyph for every row. */
+function iconFor(value: string): ReactNode {
+  switch (value) {
+    case "qris":
+    case "paydisini":
+      return (
+        <img
+          src="/static/pay/qris.png"
+          alt={value === "qris" ? "QRIS" : "PayDisini"}
+          className="h-7 w-auto max-w-20 object-contain shrink-0 mt-0.5"
+        />
+      );
+    case "binance":
+      return (
+        <img src="/static/pay/binance.png" alt="Binance" className="h-7 w-7 object-contain shrink-0 mt-0.5" />
+      );
+    case "bybit":
+    case "bybit_bsc":
+      return (
+        <img
+          src="/static/pay/bybit.png"
+          alt="Bybit"
+          className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+        />
+      );
+    case "nowpayments":
+      return (
+        <img
+          src="/static/pay/nowpayments.png"
+          alt="NOWPayments"
+          className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+        />
+      );
+    default:
+      return <Wallet className="h-6 w-6 shrink-0 mt-0.5 text-pine" aria-hidden="true" />;
+  }
 }
 
 export default function WalletTopupPage() {
@@ -170,13 +193,13 @@ export default function WalletTopupPage() {
       return (
         <div aria-busy="true" aria-label={t("web.loading")}>
           <Skeleton className="mb-5 h-8 w-48" />
-          <div className="card card-pad space-y-3 max-w-lg">
+          <Card className="space-y-3 max-w-lg">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-10 w-full" />
             {[0, 1].map((i) => (
               <Skeleton key={i} className="h-14 w-full rounded-xl" />
             ))}
-          </div>
+          </Card>
         </div>
       );
     }
@@ -204,63 +227,54 @@ export default function WalletTopupPage() {
       <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
 
       {submitErrorKey && (
-        <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5 flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 shrink-0" /> {humanError(submitErrorKey)}
-        </div>
+        <Alert variant="banner" tone="error">
+          {humanError(submitErrorKey)}
+        </Alert>
       )}
 
       <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
-        <div className="card card-pad space-y-4">
+        <Card className="space-y-4">
           {/* Currency toggle */}
           <div>
-            <label className="field-label mb-2 block">{t("web.wallet_topup_currency_label")}</label>
+            <Label className="mb-2 block">{t("web.wallet_topup_currency_label")}</Label>
             <div className="grid grid-cols-2 gap-2">
               {(["IDR", "USDT"] as const).map((cur) => (
-                <button
+                <Button
                   key={cur}
-                  type="button"
-                  className={
-                    cur === currency
-                      ? "btn btn-primary"
-                      : "btn btn-soft"
-                  }
+                  variant={cur === currency ? "primary" : "soft"}
                   onClick={() => setCurrency(cur)}
                 >
                   {cur === "IDR" ? t("web.wallet_topup_currency_idr") : t("web.wallet_topup_currency_usdt")}
-                </button>
+                </Button>
               ))}
             </div>
           </div>
 
           {/* Amount */}
-          <div>
-            <label className="field-label" htmlFor="topup_amount">
-              {t("web.wallet_topup_amount_label")}
-            </label>
-            <input
+          <FormField label={t("web.wallet_topup_amount_label")} htmlFor="topup_amount" hint={hint ?? undefined}>
+            <Input
               id="topup_amount"
               type="number"
               inputMode="decimal"
               min="0"
               step="any"
-              className="field"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder={currency === "IDR" ? "50000" : "10"}
             />
-            {hint && <p className="mt-1.5 text-xs text-ink-soft">{hint}</p>}
-          </div>
-        </div>
+          </FormField>
+        </Card>
 
-        <div className="card card-pad">
+        <Card>
           <h2 className="section-title mb-3">{t("web.wallet_topup_method_label")}</h2>
           <div className="space-y-3">
             {options.map((opt) => (
-              <MethodRow
+              <PaymentMethodRow
                 key={opt.value}
                 value={opt.value}
                 checked={method === opt.value}
                 onSelect={() => setMethod(opt.value)}
+                icon={iconFor(opt.value)}
                 title={t(opt.titleKey)}
                 subtitle={t(opt.subtitleKey)}
               />
@@ -272,18 +286,18 @@ export default function WalletTopupPage() {
               </div>
             )}
           </div>
-        </div>
+        </Card>
 
-        <button
-          type="button"
-          className="btn btn-primary w-full"
+        <Button
+          variant="primary"
+          fullWidth
+          className={cn(submitBlocked && "opacity-50")}
           disabled={submitDisabled}
-          style={submitBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
           onClick={() => submitMutation.mutate()}
         >
           {submitMutation.isPending && <Spinner />}
           {t("web.wallet_topup_submit")}
-        </button>
+        </Button>
       </form>
     </div>
   );

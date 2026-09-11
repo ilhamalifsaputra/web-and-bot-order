@@ -226,6 +226,41 @@ describe("reconcileOrder (NOWPayments poller safety net)", () => {
     const tx = await prisma.processedNowpaymentsTx.findFirst({ where: { orderId: pending!.id } });
     expect(tx).toBeNull();
   });
+
+  it("never delivers on an underpayment (finished but short), flags the order UNDERPAID, and alerts admins", async () => {
+    const created = await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", payment_id: "TRX-SHORT", actually_paid: pending!.totalAmount.minus(1).toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
+    // ADMIN_IDS = "999,1000" in test setup — one alert per admin.
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const [, text] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(text)).toMatch(/[Uu]nderpaid/);
+    expect(String(text)).toContain(created!.orderCode);
+    expect(String(text)).toContain("NOWPayments");
+  });
+
+  // The poller re-checks the same order.id every cycle — the order's own
+  // status IS the idempotency guard (no separate ledger table needed, unlike
+  // the crypto rails). A second cycle before a human resolves the order must
+  // be a silent no-op: no double alert, no throw.
+  it("does not alert a second time when an already-UNDERPAID order is reconciled again", async () => {
+    await makeNowpaymentsOrder();
+    const [pending] = await listPendingNowpaymentsOrders(prisma, new Date());
+    stubStatus({ payment_status: "finished", payment_id: "TRX-SHORT-2", actually_paid: pending!.totalAmount.minus(1).toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+
+    await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // no additional alert on the second cycle
+  });
 });
 
 /**

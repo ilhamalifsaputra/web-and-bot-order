@@ -25,7 +25,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 
@@ -96,11 +96,7 @@ const isInFlight = (row: BroadcastRow) =>
 function useBroadcast() {
   return useQuery<BroadcastData>({
     queryKey: ["broadcast"],
-    queryFn: async () => {
-      const res = await fetch("/api/broadcast");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<BroadcastData>;
-    },
+    queryFn: () => apiGet<BroadcastData>("/api/broadcast"),
     // Refetch ONLY while something is actually in flight, so the Sent counter
     // the drainer writes every 25 recipients is visible without a manual
     // reload — and so an idle History table costs nothing once everything has

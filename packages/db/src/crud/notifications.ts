@@ -20,7 +20,6 @@ import {
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
-import { isUniqueViolation } from "./_types";
 import { resolveAdminIds } from "./admins";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
@@ -30,12 +29,17 @@ type Db = PrismaClient | Tx;
  * Insert one outbox row. Caller's transaction owns the commit.
  *
  * `dedupeKey` is optional and defaults to null. When given, it is written to
- * the UNIQUE `notification_outbox.dedupe_key` column and a UNIQUE violation
- * (P2002) is swallowed: the row already exists, the notification is already
- * queued or sent, and re-enqueueing is a no-op rather than an error. That is
- * the same insert-first-on-unique idiom the payment ledgers use
- * (`isUniqueViolation`, crud/tokopay.ts) — the database, not the placement of
- * the call, is what makes the enqueue happen at most once.
+ * the UNIQUE `notification_outbox.dedupe_key` column via a raw
+ * `INSERT ... ON CONFLICT (dedupe_key) DO NOTHING RETURNING id`: a collision
+ * with an existing key resolves as a no-op (the row already exists, the
+ * notification is already queued or sent, and re-enqueueing is a no-op
+ * rather than an error) instead of a thrown UNIQUE violation — the database,
+ * not the placement of the call, is what makes the enqueue happen at most
+ * once. `RETURNING id` gives a precise "did THIS call insert a row" signal
+ * (empty result = collision), which a payload-equality check on `upsert`
+ * couldn't: the two real dedupeKey call sites retry with a byte-identical
+ * payload on collision, so comparing payloads can't tell a genuine insert
+ * apart from a same-payload collision.
  *
  * Two events set a key today:
  *  - `WALLET_TOPUP_CREDITED_DM`, as `topup-credited:<orderId>` — genuinely one
@@ -56,18 +60,6 @@ type Db = PrismaClient | Tx;
  *
  * Note the swallow is per row, not per call: a caller that loops over admins
  * gets exactly the rows whose keys were new.
- *
- * ⚠ SQLite-specific, and a landmine for the Postgres migration CLAUDE.md
- * anticipates (its trigger is ≥2 concurrent writers). Catching a UNIQUE
- * violation and CONTINUING works here because SQLite tolerates a failed
- * statement mid-transaction — and most callers do pass a `tx`. PostgreSQL
- * does not: a constraint violation aborts the whole transaction, and every
- * later statement in it fails with `25P02 current transaction is aborted`,
- * so a deduped enqueue would take its caller's settlement down with it. The
- * payment ledgers' own `isUniqueViolation` claims share this shape, but they
- * return immediately rather than continuing inside someone else's
- * transaction. On Postgres this needs a SAVEPOINT, or an upsert on the
- * dedupe key instead of catch-and-continue.
  */
 export async function enqueueNotification(
   db: Db,
@@ -76,26 +68,32 @@ export async function enqueueNotification(
   payload: Record<string, unknown>,
   dedupeKey?: string,
 ): Promise<void> {
-  try {
+  const payloadJson = JSON.stringify(payload);
+  if (dedupeKey !== undefined) {
+    // Raw INSERT ... ON CONFLICT DO NOTHING on the UNIQUE dedupeKey: a
+    // collision resolves as a no-op (keeping the first row's payload)
+    // instead of a thrown UNIQUE violation, so it can never abort an open
+    // caller transaction on Postgres. RETURNING id gives a precise signal
+    // for whether THIS call inserted a row — unlike a payload comparison,
+    // it isn't fooled by a same-payload retry (the realistic case for both
+    // call sites that pass a key).
+    const inserted = await db.$queryRaw<{ id: number }[]>`
+      INSERT INTO notification_outbox (event, order_id, payload_json, dedupe_key)
+      VALUES (${event}, ${orderId}, ${payloadJson}, ${dedupeKey})
+      ON CONFLICT (dedupe_key) DO NOTHING
+      RETURNING id
+    `;
+    if (inserted.length === 0) {
+      // Collision: no row was written by this call — an earlier call
+      // already owns this dedupe key. Deliberately silent, and no
+      // NOTIFICATION_CREATED log below — claiming one was created here
+      // would be a lie even when the colliding payload happens to match.
+      return;
+    }
+  } else {
     await db.notificationOutbox.create({
-      data: {
-        event,
-        orderId,
-        payloadJson: JSON.stringify(payload),
-        dedupeKey: dedupeKey ?? null,
-      },
+      data: { event, orderId, payloadJson, dedupeKey: null },
     });
-  } catch (e) {
-    // Only the dedupe-key collision is a no-op. Anything else — including a
-    // FK violation on orderId — is a real failure and must still throw.
-    if (!(dedupeKey !== undefined && isUniqueViolation(e))) throw e;
-    // Deliberately silent, and NOT a NOTIFICATION_CREATED: no row was
-    // written, so claiming one was created would be a lie, and a line per
-    // swallowed duplicate would be noise — the dedupe key exists precisely
-    // because the caller is expected to try more than once (the NOWPayments
-    // poller re-enters its alert branch every cycle). The row that WAS created
-    // is already logged below.
-    return;
   }
   // The one line that says a notification now exists for this order. Logged
   // here rather than at each of the dozen enqueue* wrappers because this is
@@ -280,6 +278,54 @@ export async function enqueueAdminStalePayment(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that the hourly Digiflazz
+ * catalog resync (`resyncDigiflazzCatalog`) tripped its own blast-radius
+ * circuit breaker and wrote nothing (Task 10, backend audit 2026-08-21 C-1,
+ * second half). Two distinct trip reasons, mirroring `resyncDigiflazzCatalog`'s
+ * own local `AbortReason` union — kept as an equivalent inline union here
+ * rather than importing it, matching this file's existing plain-object-args
+ * style for `enqueueAdmin*` functions:
+ *   - `"sharp_change"`: more than 20% of the denominations it would have
+ *     repriced (out of at least 5 considered) moved by more than 50% in one
+ *     direction.
+ *   - `"no_usable_rows"`: the supplier's price-list fetch returned no usable
+ *     rows at all, even though this shop has Digiflazz-routed denominations
+ *     to check against it — the most total form of the same "malformed
+ *     response" scenario.
+ * Both usually mean the supplier's price-list response is malformed (a field
+ * rename, a partial outage, the wrong endpoint) rather than a genuine
+ * market-wide price swing or a legitimately empty catalog. Nothing else
+ * surfaces this — the next hourly tick would otherwise silently retry the
+ * same malformed data, over and over, with only a routine-looking audit
+ * entry to notice by. Not order-scoped (`orderId: null`) — this is a
+ * catalog-wide event, not tied to any single order. Same fan-out-per-admin
+ * shape as `enqueueAdminStalePayment`. No-op if no admin is resolved.
+ */
+export async function enqueueAdminDigiflazzResyncAborted(
+  db: Db,
+  args: { kind: "sharp_change"; sharpChanges: number; consideredRows: number } | { kind: "no_usable_rows" },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          kind: args.kind,
+          // sharp_changes/considered_rows are only meaningful for the
+          // sharp_change kind — omitted (not 0) for no_usable_rows so the
+          // template can tell "not applicable" apart from "zero of zero".
+          ...(args.kind === "sharp_change"
+            ? { sharp_changes: args.sharpChanges, considered_rows: args.consideredRows }
+            : {}),
+        }),
+      },
+    });
+  }
+}
+
+/**
  * Tell every admin that an order's payment may have succeeded at the gateway
  * while nothing in the system can confirm it — so a human can settle it before
  * the payment window closes and the order auto-cancels with the buyer's money
@@ -314,6 +360,110 @@ export async function enqueueAdminUnconfirmablePayment(
       `unconfirmable-payment:${args.orderId}:${adminId}`,
     );
   }
+}
+
+// ---- Support ticket DMs (Task 2, Phase C) ----------------------------------
+// The three sites below used to call ctx.api.sendMessage() directly from
+// apps/order-bot — a deliberate-looking exception to the rule every other
+// buyer/admin DM in this codebase already follows. These route them through
+// the outbox like everything else, so a bot crash or a Telegram flood-control
+// hiccup no longer silently drops a ticket notification with only a caught
+// `logger.error` to show for it (retried by the dispatcher instead).
+
+/**
+ * Enqueue the "new support ticket" forward to the support group (or, with no
+ * group configured, every resolved admin) — one outbox row per target,
+ * mirroring `enqueueAdminOverpaid`/`enqueueManualOrderAdminAlert`'s
+ * fan-out-per-admin shape, except the fan-out set is `config.SUPPORT_GROUP_ID`
+ * when set (a single-element target list) rather than always
+ * `resolveAdminIds`. Same target-resolution fallback the pre-outbox direct
+ * send used (`conversations/support.ts`). Not routed through
+ * `enqueueNotification` — like `enqueueAdminDigiflazzResyncAborted`, this is
+ * not order-scoped (`orderId: null`), and `enqueueNotification`'s `orderId`
+ * parameter is non-nullable.
+ *
+ * `photoFileIds` carries Telegram file ids only (never binary) — the
+ * dispatcher re-sends them via `sendMediaGroup` right after the text, same
+ * "file id, not the file itself" rule every credential-safe payload in this
+ * file follows.
+ */
+export async function enqueueAdminNewTicketDm(
+  db: Db,
+  args: {
+    ticketId: number;
+    fromUserId: number;
+    fromUsername: string | null;
+    message: string;
+    photoFileIds: string[];
+  },
+): Promise<void> {
+  const targets: number[] = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : await resolveAdminIds(db);
+  for (const chatId of targets) {
+    if (!chatId) continue;
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_NEW_TICKET,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: chatId,
+          ticket_id: args.ticketId,
+          from_user_id: args.fromUserId,
+          from_username: args.fromUsername,
+          message: args.message,
+          photo_file_ids: args.photoFileIds,
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue the buyer's "admin replied to your ticket" DM
+ * (`conversations/admin.ts`'s `ticketReplyConversation`). Always rendered in
+ * English by the dispatcher — see `NotificationEvent.TICKET_REPLY_DM`'s own
+ * doc comment for why (preserves the pre-outbox direct send's behavior
+ * byte-for-byte). Not order-scoped (`orderId: null`) — tickets have no order.
+ */
+export async function enqueueTicketReplyDm(
+  db: Db,
+  args: { ticketId: number; chatId: number; message: string },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.TICKET_REPLY_DM,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.chatId,
+        ticket_id: args.ticketId,
+        message: args.message,
+      }),
+    },
+  });
+}
+
+/**
+ * Enqueue the buyer's "your ticket was closed" DM (`handlers/admin.ts`'s
+ * `closeTicketAdmin`). Rendered in the buyer's own stored language
+ * (`buyerLanguage`, normalized via `langCode` the same way
+ * `enqueueOrderDeliveredDm`/`enqueueOrderProcessingDm` normalize
+ * `buyer_language`) — unlike `enqueueTicketReplyDm` above, which is always
+ * English. Not order-scoped (`orderId: null`) — tickets have no order.
+ */
+export async function enqueueTicketClosedDm(
+  db: Db,
+  args: { ticketId: number; chatId: number; buyerLanguage: string | null },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.TICKET_CLOSED_DM,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.chatId,
+        ticket_id: args.ticketId,
+        buyer_language: langCode(args.buyerLanguage),
+      }),
+    },
+  });
 }
 
 /**
@@ -745,10 +895,29 @@ export function notificationBackoffMs(attempts: number): number {
 }
 
 /**
- * Increment attempts and record the error (truncated to 500 chars). Flip to
- * FAILED only once attempts >= maxAttempts; otherwise back to PENDING with an
- * exponential-backoff `nextRetryAt`, for a later retry. No-op if the row is
- * gone.
+ * Increment attempts and record the error (truncated to 500 chars). Once
+ * attempts >= maxAttempts the row goes terminal (nextRetryAt cleared);
+ * otherwise it goes back to PENDING with an exponential-backoff
+ * `nextRetryAt`, for a later retry. No-op if the row is gone.
+ *
+ * The terminal status depends on whether the row was ever actually eligible
+ * for retry:
+ * - `maxAttempts > 1`: the row went through real exponential-backoff retries
+ *   and still exhausted them all → DEAD_LETTER ("retried to the ceiling,
+ *   still failing" — worth paging an operator about).
+ * - `maxAttempts <= 1`: the row was terminal on its very first and only
+ *   call — a permanently invalid row (malformed payload, missing template,
+ *   missing chat_id, etc.) that retrying would never fix → FAILED, same as
+ *   before this split existed.
+ *
+ * Worst-case time-to-DEAD_LETTER under the current default
+ * (`NOTIF_MAX_ATTEMPTS=10`, `NOTIF_RETRY_BASE_MS=30s` doubling, capped at
+ * `NOTIF_RETRY_MAX_MS=10min`) is ~55.5 minutes (30+60+120+240+480+600×4) —
+ * up from ~7.5 minutes under the old default of 5. The row stays visible via
+ * the `/metrics` `outbox_backlog_size`/`outbox_oldest_unsent_age_seconds`
+ * gauges throughout that window, so an operator alerting only on
+ * `outbox_dead_letter_count` should also watch those two for an earlier
+ * signal.
  */
 export async function markNotificationFailed(
   db: Db,
@@ -760,15 +929,16 @@ export async function markNotificationFailed(
   const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
   if (!row) return;
   const attempts = row.attempts + 1;
-  const failed = attempts >= maxAttempts;
+  const terminal = attempts >= maxAttempts;
+  const terminalStatus = maxAttempts > 1 ? NotificationStatus.DEAD_LETTER : NotificationStatus.FAILED;
   await db.notificationOutbox.update({
     where: { id: notifId },
     data: {
       attempts,
       lastError: error.slice(0, 500),
       claimedAt: null,
-      status: failed ? NotificationStatus.FAILED : NotificationStatus.PENDING,
-      nextRetryAt: failed ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
+      status: terminal ? terminalStatus : NotificationStatus.PENDING,
+      nextRetryAt: terminal ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
     },
   });
 }
@@ -1199,6 +1369,36 @@ export function listNotifications(
 
 export function countNotifications(db: Db, opts: { status?: string | null } = {}) {
   return db.notificationOutbox.count({ where: opts.status ? { status: opts.status } : {} });
+}
+
+/**
+ * Age in seconds of the single oldest unsent outbox row — "unsent" meaning
+ * PENDING, or SENDING with a claim older than STALE_CLAIM_MS (an abandoned
+ * claim from a dispatcher that died mid-send effectively never sent, exactly
+ * like fetchPendingNotifications/claimNotification already treat it
+ * elsewhere in this file). Drives the /metrics `outbox_oldest_unsent_age_seconds`
+ * gauge (apps/web-admin/src/routes/metrics.ts). A single query — `MIN(createdAt)`
+ * over that set via `findFirst`/`orderBy` — not a fetch-then-compute-in-app-code.
+ *
+ * Returns `null` when no such row exists (an empty/healthy outbox) rather
+ * than `0`: a Prometheus gauge should simply not report a sample in that
+ * case, since `0` would misleadingly read as "a row aged out at exactly this
+ * instant."
+ */
+export async function oldestUnsentNotificationAge(db: Db, now: Date = new Date()): Promise<number | null> {
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
+  const row = await db.notificationOutbox.findFirst({
+    where: {
+      OR: [
+        { status: NotificationStatus.PENDING },
+        { status: NotificationStatus.SENDING, claimedAt: { lt: staleCutoff } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
+  if (!row) return null;
+  return Math.floor((now.getTime() - row.createdAt.getTime()) / 1000);
 }
 
 /** Count of outbox rows per status — drives the summary cards. */

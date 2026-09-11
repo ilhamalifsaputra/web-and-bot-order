@@ -16,6 +16,10 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   PAID: "Paid",
   PROCESSING: "Processing",
   DELIVERED: "Delivered",
+  // No order can reach this yet (see OrderStatus.PARTIALLY_DELIVERED in
+  // @app/core/enums) — mapped now so that when one can, an admin sees a label
+  // rather than the raw enum value the fallback below would otherwise show.
+  PARTIALLY_DELIVERED: "Partially Delivered",
   CANCELLED: "Cancelled",
   REJECTED: "Rejected",
   REFUNDED: "Refunded",

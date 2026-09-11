@@ -8,6 +8,8 @@ import { useEffect, useRef, type KeyboardEvent } from "react";
 import { Send } from "lucide-react";
 import { t } from "../../lib/i18n";
 import { saveTicketDraft } from "../../lib/ticketDraft";
+import Button from "../ui/Button";
+import Textarea from "../ui/Textarea";
 import AttachmentPicker from "./AttachmentPicker";
 import ProgressBar from "./ProgressBar";
 import Spinner from "./Spinner";
@@ -61,14 +63,13 @@ export default function TicketComposer({
       }}
       className="card card-pad mt-5"
     >
-      <textarea
+      <Textarea
         value={message}
         onChange={(e) => onMessageChange(e.target.value)}
         onKeyDown={handleKeyDown}
         rows={3}
         required
         maxLength={MAX_MESSAGE_LENGTH}
-        className="field"
         placeholder={t("web.support_placeholder")}
       />
       <div className="mt-1 flex items-center justify-between text-xs text-ink-faint">
@@ -84,10 +85,10 @@ export default function TicketComposer({
         </div>
       )}
       <div className="mt-3 text-right">
-        <button type="submit" className="btn btn-primary btn-sm" disabled={pending || !message.trim()}>
+        <Button type="submit" variant="primary" size="sm" disabled={pending || !message.trim()}>
           {pending && <Spinner />}
           <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}
-        </button>
+        </Button>
       </div>
     </form>
   );

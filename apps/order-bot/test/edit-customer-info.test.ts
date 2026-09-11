@@ -179,6 +179,19 @@ describe("editCustomerInfoConversation — happy paths", () => {
     const fresh = await getOrder(prisma, orderId);
     expect(JSON.parse(fresh!.customerData!)).toEqual([{ game_id: "NEW-1" }]);
     expect(sentIncludes(sink, fresh!.orderCode)).toBe(true); // viewOrder re-rendered
+
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: orderId } });
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.action).toBe("order_edit_info");
+    expect(audit?.details).toBe("Updated the submitted order information via Telegram.");
+    // I-2 (final whole-branch review): correlationId is the one field that
+    // lets this row be joined back to the exact update that submitted the
+    // new value — assert equality against this test's own ctx, not just
+    // truthiness (editCustomerInfo.ts's logCustomerAction call uses `u`, the
+    // waited ctx, which is `answerMsg` here — the conversation's only wait).
+    expect(audit?.correlationId).toBe(String(answerMsg.update.update_id));
   });
 
   it("re-prompts the SAME field on a validation error, then proceeds once the retry is valid", async () => {
@@ -305,6 +318,9 @@ describe("editCustomerInfoConversation — mid-edit race (order leaves PROCESSIN
     const fresh = await getOrder(prisma, orderId);
     expect(fresh!.deliveredContent).toBe("raced delivery"); // untouched by the raced edit
     expect(JSON.parse(fresh!.customerData!)).toEqual([{ game_id: "OLD-1" }]); // customerData unchanged
+    // Phase H regression guard: the edit was rejected, so nothing actually
+    // succeeded from the buyer's point of view — no customer-audit row either.
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER", targetType: "order", targetId: orderId } })).toBe(0);
   });
 });
 

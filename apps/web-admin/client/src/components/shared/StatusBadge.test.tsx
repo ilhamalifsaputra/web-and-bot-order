@@ -130,4 +130,29 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="NEGATIVE" />);
     expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
   });
+
+  it("uses the amber tone for a pending admin task", () => {
+    const { container } = render(<StatusBadge status="PENDING" />);
+    expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
+  });
+
+  it("uses the neutral tone for an assigned admin task", () => {
+    const { container } = render(<StatusBadge status="ASSIGNED" />);
+    expect(container.querySelector(".bg-sand")).not.toBeNull();
+  });
+
+  it("renders a Title-Case label for an in-progress admin task", () => {
+    render(<StatusBadge status="IN_PROGRESS" />);
+    expect(screen.getByText("In Progress")).toBeInTheDocument();
+  });
+
+  it("uses the red tone for an escalated admin task", () => {
+    const { container } = render(<StatusBadge status="ESCALATED" />);
+    expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
+  });
+
+  it("uses the green tone for a completed admin task", () => {
+    const { container } = render(<StatusBadge status="COMPLETED" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
 });

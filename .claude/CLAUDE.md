@@ -111,32 +111,77 @@ A fresh worktree is a fresh checkout — the ignored files do not come with it:
 - **Change `WEB_PORT` and `STOREFRONT_PORT` in the worktree's `.env`.** The
   defaults (8109/8110) are identical in every worktree, so two sessions running
   dev servers collide. Give each session its own port pair.
-- `DATABASE_URL_PRISMA=file:../data/bot.db` resolves relative to the worktree,
-  so each worktree gets its own empty SQLite file — copy `data/bot.db` from the
-  main directory if the task needs real data. Do not repoint it at the main
-  directory's DB: shared SQLite is single-writer.
+- **SQLite-per-worktree no longer applies** — the schema is Postgres-only
+  post engine-swap. A worktree that needs a database brings up its own dev
+  Postgres with `docker compose -f docker-compose.postgres.yml up -d` and
+  points `DATABASE_URL_PRISMA` at it (see README.md's "Untuk Developer"
+  section for the exact commands/env). That compose file publishes a fixed
+  local port, so **only one worktree can run it at a time** — do not run it
+  from two worktrees concurrently.
 - **Only one worktree may run order-bot at a time.** The bot token lives in the
-  DB, so a copied `data/bot.db` means two pollers on one token, which Telegram
-  rejects with a 409.
+  DB, so pointing two worktrees at the same Postgres means two pollers on one
+  token, which Telegram rejects with a 409.
 
 ## Graphify knowledge graph
 
 This project has a graphify knowledge graph at `graphify-out/` (committed to
-git, kept fresh by a `Stop` hook in `.claude/settings.json` that runs
+git, kept fresh two ways: a `Stop` hook in `.claude/settings.json` that runs
 `graphify update .` in the background after any turn with uncommitted
-changes — no manual update needed).
+changes, and a repo-wide `post-commit`/`post-checkout` git hook. **The git
+hooks only fire from the main checkout, not from worktrees** — a worktree
+session that needs fresher results mid-task should run
+`graphify update . --force` itself rather than assume the hook covers it).
 
 **For codebase/architecture questions, consult it before grepping or reading
 raw files** — it returns a scoped answer instead of burning tokens on raw
 file contents:
-- `graphify query "<question>"` — general codebase/architecture questions
+- `graphify query "<question>"` — general codebase/architecture questions;
+  once you know the relevant community/relation, add `--context <relation>`
+  to target it instead of eating the `--budget` on an undifferentiated batch
 - `graphify path "<A>" "<B>"` — how two things relate
 - `graphify explain "<concept>"` — focused explanation of one concept/symbol
 - `graphify-out/GRAPH_REPORT.md` — only for broad architecture review, or
   when query/path/explain don't surface enough
 
+`.graphifyignore` excludes `package.json`/`tsconfig*.json`/lockfiles/
+`components.json` from extraction — their JSON keys (`dependencies`,
+`scripts`, `compilerOptions`, ...) have no edges to real code and were
+showing up as junk community-hub names in `GRAPH_REPORT.md`. Don't remove
+those excludes without re-checking the "Community Hubs" list stays clean.
+
+Community labels come from `graphify label`, which calls an LLM and costs
+tokens to (re)generate. No cloud API key (`GEMINI_API_KEY` etc.) is
+configured for graphify's backend, so re-labeling today means either setting
+one (cheapest) or using the `claude-cli` backend, which shells out to this
+CLI and spends Claude usage instead. Don't re-run `graphify label`
+speculatively — only when hub names in `GRAPH_REPORT.md` have visibly
+degraded back to raw filenames/JSON keys.
+
 Fall back to Glob/Grep/Read when the question is about exact current file
 contents (e.g. verifying a specific line before editing), not architecture.
+
+## Context7 (library/framework docs)
+
+Use the `context7-mcp` skill (or the `context7` MCP tools directly) before
+guessing at an external library's current API — training data goes stale,
+and this stack moves fast (grammY, Fastify, Prisma, React, Tailwind, Radix).
+Resolve the library ID, then pull docs scoped to the specific API surface
+you're touching rather than the whole doc set. Skip it for this repo's own
+code (graphify/Grep already cover that) and for stable APIs you're already
+confident about — it's for closing a real knowledge gap, not a default
+first step.
+
+## Sequential-thinking (structured reasoning)
+
+A `sequential-thinking` MCP server is installed for problems that genuinely
+need an explicit, revisable chain of intermediate steps — a root cause with
+several competing hypotheses, a design tradeoff spanning multiple files, a
+plan whose steps depend on each other in ways worth double-checking before
+committing to them. It's not a default for every task: anything with a
+dedicated skill (`systematic-debugging`, `writing-plans`, `brainstorming`)
+should use that skill's process first, and reach for sequential-thinking
+only if its structure doesn't fit the problem. Skip it for straightforward
+or mechanical work — it costs tokens without adding value there.
 
 ## Task tracking
 
@@ -174,8 +219,11 @@ checklist for the task list.
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).
 - **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
 - **Audit every state change** with the acting admin id (`logAdminAction`).
-- **Shared SQLite is single-writer** — keep each `$transaction` short; the trigger
-  to move to Postgres is ≥2 concurrent writers.
+- **The database is PostgreSQL** (engine-swap, merged 2026-08-27) — the old
+  "shared SQLite is single-writer" constraint no longer applies; Postgres
+  handles concurrent writers itself (`packages/db/src/client.ts`'s own header
+  comment). Still keep each `$transaction` short — that's just good practice
+  under any engine, not a SQLite-specific workaround anymore.
 - **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.

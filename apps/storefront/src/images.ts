@@ -1,74 +1,98 @@
 /**
- * Central image map (design.md §6). Product.imageFileId is a Telegram file_id —
- * unusable as an <img src> — so the web resolves images in this order:
- *   1. Product.webImageUrl (admin-set, added in plan.md §8) — wired in Phase 4;
- *   2. a curated Unsplash photo per CATEGORY name (below);
- *   3. a neutral placeholder.
- * Everything lives in this one file so swapping imagery = editing one map.
- * TODO: ganti dengan foto produk asli sebelum produksi (jangan hotlink Unsplash
- * pada skala besar — lihat plan.md §17.2 #8).
+ * Central image resolution (design.md §6, reworked Fase 12). Product.imageFileId
+ * is a Telegram file_id — unusable as an <img src> — so the web resolves a
+ * product's real photo in one step:
+ *   1. Product.webImageUrl (admin-set, added in plan.md §8) — the only source
+ *      of a real <img>; there is no photo fallback of any kind anymore.
+ * When there is no real photo, the client renders a business-agnostic
+ * design-system placeholder (DefaultThumb.tsx, a lucide icon in a tinted
+ * well) instead of hotlinking a third-party stock photo. `defaultThumbKind()`
+ * below computes WHICH icon that placeholder shows, in priority order:
+ *   1. category.group === "PREMIUM_APPS" -> always "generic" (even over a
+ *      stale admin override, so this rule can't be defeated by data that
+ *      predates a category's reclassification).
+ *   2. product.thumbnailKind, when it's a recognized admin-set value.
+ *   3. a heuristic keyed on the category (GAME_TOPUP group, then a
+ *      substring match on the category name) — reused verbatim from the
+ *      Unsplash-era CATEGORY_IMAGES needle list below, just re-targeted from
+ *      URLs to icon kinds.
  */
 
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CategoryGroup } from "@app/core/enums";
 
-/** Keep images light: card-sized, compressed, cropped. */
-const UNSPLASH_PARAMS = "?w=800&q=80&auto=format&fit=crop";
+export type ThumbnailKind = "game" | "voucher" | "steam" | "entertainment" | "app" | "generic";
 
-const u = (id: string) => `https://images.unsplash.com/${id}${UNSPLASH_PARAMS}`;
+const RECOGNIZED_THUMBNAIL_KINDS: ReadonlySet<string> = new Set<ThumbnailKind>([
+  "game",
+  "voucher",
+  "steam",
+  "entertainment",
+  "app",
+  "generic",
+]);
 
-/** Neutral fallback — soft tech desk shot that fits any digital product. */
-export const PLACEHOLDER = u("photo-1498050108023-c5249f4df085");
-
-/**
- * Category name (lowercased, contains-match) → Unsplash photo. Order matters:
- * the first key contained in the category name wins.
- */
-const CATEGORY_IMAGES: Array<[needle: string, url: string]> = [
-  ["netflix", u("photo-1574375927938-d5a98e8ffe85")], // TV remote / dark screen
-  ["stream", u("photo-1522869635100-9f4c5e86aa37")], // movie night
-  ["film", u("photo-1489599849927-2ee91cede3ba")], // cinema
-  ["spotify", u("photo-1611339555312-e607c8352fd7")], // headphones green
-  ["music", u("photo-1493225457124-a3eb161ffa5f")], // concert
-  ["musik", u("photo-1493225457124-a3eb161ffa5f")],
-  ["game", u("photo-1542751371-adc38448a05e")], // gaming setup
-  ["gaming", u("photo-1593305841991-05c297ba4575")],
-  ["vpn", u("photo-1563013544-824ae1b704d3")], // security lock
-  ["keamanan", u("photo-1563013544-824ae1b704d3")],
-  ["software", u("photo-1461749280684-dccba630e2f6")], // code editor
-  ["aplikasi", u("photo-1551650975-87deedd944c3")],
-  ["app", u("photo-1551650975-87deedd944c3")],
-  ["edu", u("photo-1456513080510-7bf3a84b82f8")], // study desk
-  ["kursus", u("photo-1456513080510-7bf3a84b82f8")],
-  ["ai", u("photo-1677442136019-21780ecad995")], // abstract AI
-  ["cloud", u("photo-1544197150-b99a580bb7a8")], // server / network
-  ["hosting", u("photo-1558494949-ef010cbdcc31")],
-  ["design", u("photo-1626785774573-4b799315345d")],
-  ["desain", u("photo-1626785774573-4b799315345d")],
-  ["office", u("photo-1497032628192-86f99bcd76bc")],
-  ["produktivitas", u("photo-1497032628192-86f99bcd76bc")],
-];
-
-/** Best Unsplash image for a category name; placeholder when nothing matches. */
-export function categoryImage(name: string | null | undefined): string {
-  const n = (name ?? "").toLowerCase();
-  for (const [needle, url] of CATEGORY_IMAGES) {
-    if (n.includes(needle)) return url;
-  }
-  return PLACEHOLDER;
+function isThumbnailKind(value: string | null | undefined): value is ThumbnailKind {
+  return value != null && RECOGNIZED_THUMBNAIL_KINDS.has(value);
 }
 
 /**
- * Image for a product card/detail. `webImageUrl` (admin override, Phase 4
- * column) wins; falls back to the category map, then the placeholder.
+ * Category name (lowercased, contains-match) -> heuristic ThumbnailKind.
+ * Order matters: the first key contained in the category name wins. This is
+ * the pre-Fase-12 CATEGORY_IMAGES needle list, unchanged in substance — only
+ * re-targeted from an Unsplash URL per entry to an icon kind, and pruned to
+ * the kinds `defaultThumbKind` actually distinguishes (vpn/edu/ai/cloud/
+ * design/office etc. had no dedicated icon before or after; they fall
+ * through to "generic" either way, same as an unmatched name always did).
  */
-export function productImage(
-  p: { webImageUrl?: string | null },
-  categoryName: string | null | undefined,
-): string {
-  if (p.webImageUrl) return p.webImageUrl;
-  return categoryImage(categoryName);
+const CATEGORY_NAME_KINDS: Array<[needle: string, kind: ThumbnailKind]> = [
+  ["voucher", "voucher"],
+  ["gift", "voucher"],
+  ["steam", "steam"],
+  ["netflix", "entertainment"],
+  ["stream", "entertainment"],
+  ["film", "entertainment"],
+  ["spotify", "entertainment"],
+  ["hbo", "entertainment"],
+  ["disney", "entertainment"],
+  ["music", "entertainment"],
+  ["musik", "entertainment"],
+  ["software", "app"],
+  ["aplikasi", "app"],
+  ["app", "app"],
+];
+
+/**
+ * Resolves which design-system placeholder icon a product falls back to when
+ * it has no real photo (see productImage()). Read the file header for the
+ * full priority order — the PREMIUM_APPS override in step 1 is intentionally
+ * unconditional: it ignores `product.thumbnailKind` even when set, so a
+ * category re-classified to PREMIUM_APPS after an admin set a game-ish
+ * override can't keep showing game art.
+ */
+export function defaultThumbKind(
+  product: { thumbnailKind?: string | null },
+  category: { group: string | null; name: string } | null | undefined,
+): ThumbnailKind {
+  if (category?.group === CategoryGroup.PREMIUM_APPS) return "generic";
+  if (isThumbnailKind(product.thumbnailKind)) return product.thumbnailKind;
+  if (category?.group === CategoryGroup.GAME_TOPUP) return "game";
+  const n = (category?.name ?? "").toLowerCase();
+  for (const [needle, kind] of CATEGORY_NAME_KINDS) {
+    if (n.includes(needle)) return kind;
+  }
+  return "generic";
+}
+
+/**
+ * The product's real photo, or null when there isn't one — a null means
+ * "render the DefaultThumb placeholder (keyed by defaultThumbKind)", never a
+ * broken <img> and never a hotlinked stock photo standing in for one.
+ */
+export function productImage(p: { webImageUrl?: string | null }): string | null {
+  return p.webImageUrl ?? null;
 }
 
 // --------------------------------------------------------------- WebP srcset

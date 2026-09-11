@@ -15,6 +15,7 @@ import {
   createCategory,
   createCatalogProduct,
   getCatalogProduct,
+  updateCatalogProduct,
   getCatalogProductWithDenominations,
   getDenomination,
   createDenomination,
@@ -33,6 +34,7 @@ import {
   listTicketMessages,
   setSetting,
   getSetting,
+  getDecryptedSetting,
   deleteSetting,
   getVoucherByCode,
   countAvailableStock,
@@ -56,6 +58,7 @@ import { UPLOADS_DIR } from "../src/paths";
 import { setTokenValidator, setChannelValidator } from "../src/lib/telegramCheck";
 import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
+import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import { setFxRateFetcher } from "@app/db";
 import {
   makeSession,
@@ -78,8 +81,12 @@ import {
   accountLockedOut,
   recordAccountFailure,
   resetAccountFailures,
+  paymentsMutationRateLimited,
+  resetPaymentsMutationRateLimit,
+  PAYMENTS_MUTATION_RATE_LIMIT_MAX,
 } from "../src/auth";
 import { registerOutboxNudge } from "@app/core/nudge";
+import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
@@ -121,6 +128,7 @@ beforeEach(async () => {
   resetAccountFailures(1000);
   resetBotIdentity();
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
+  resetPaymentsMutationRateLimit(admin.id);
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
   const parentProduct = await createCatalogProduct(prisma, {
@@ -502,6 +510,23 @@ describe("account lockout", () => {
   });
 });
 
+describe("payments mutation rate limit", () => {
+  it("allows up to the cap for one admin, trips on the next call, leaves other admins unaffected, and clears on reset", () => {
+    const adminId = 8888881; // dedicated id, untouched elsewhere
+    const otherAdminId = 8888882;
+    resetPaymentsMutationRateLimit(adminId);
+    resetPaymentsMutationRateLimit(otherAdminId);
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      expect(paymentsMutationRateLimited(adminId)).toBe(false);
+    }
+    expect(paymentsMutationRateLimited(adminId)).toBe(true);
+    // A different admin id shares no budget with the one above.
+    expect(paymentsMutationRateLimited(otherAdminId)).toBe(false);
+    resetPaymentsMutationRateLimit(adminId);
+    expect(paymentsMutationRateLimited(adminId)).toBe(false);
+  });
+});
+
 // ---- per-IP login throttle is not spoofable via X-Forwarded-For -----------
 // Security patch: trustProxy is unset (false) by default, so a caller cannot
 // evade loginRateLimited(ip) by sending a different X-Forwarded-For header on
@@ -789,6 +814,68 @@ describe("orders", () => {
     const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: "wrong-token" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+  // check above — same 403 "CSRF check failed" response either way, so an
+  // attacker can't distinguish "bad token" from "bad origin".
+  it("approve rejects a valid CSRF token when Origin is present but mismatched (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://evil.example" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("approve accepts a valid CSRF token with no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("approve accepts a valid CSRF token with an Origin header matching this request's own host", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "http://localhost" },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({ csrf_token: seed.csrf }),
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  // Whole-branch review finding I-3: when ADMIN_PUBLIC_URL IS configured,
+  // the Origin check must prefer it over req.hostname — this is the
+  // deploy-time availability gap the fix closes: a reverse proxy that
+  // mangles the Host header must not 403 every mutation as long as the
+  // admin's browser really is on the configured public origin. setup-env.ts
+  // leaves ADMIN_PUBLIC_URL unset by default, so it's set here just for this
+  // one case and restored afterwards.
+  it("approve accepts a valid CSRF token with an Origin header matching the configured ADMIN_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    const original = config.ADMIN_PUBLIC_URL;
+    config.ADMIN_PUBLIC_URL = "https://admin.test.invalid";
+    try {
+      const orderId = await makePendingOrder();
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/orders/${orderId}/approve`,
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "https://admin.test.invalid" },
+        cookies: { [COOKIE]: seed.cookie },
+        payload: form({ csrf_token: seed.csrf }),
+      });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      config.ADMIN_PUBLIC_URL = original;
+    }
   });
 
   it("approve accepts the CSRF token via an X-CSRF-Token header, with no body field at all", async () => {
@@ -1484,6 +1571,38 @@ describe("catalog JSON API — create product", () => {
     expect(audit.length).toBe(1);
   });
 
+  // Task 14: gameVariant/gameVariantEmoji/gameRegion — the admin-authored
+  // game-navigation classification Tasks 11-13's bot navigation and
+  // denomination labeling consume. Independent of every other field.
+  it("persists gameVariant, gameVariantEmoji and gameRegion", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, {
+      name: "Mobile Legends",
+      categoryId: seed.categoryId,
+      gameVariant: "Diamonds",
+      gameVariantEmoji: "💎",
+      gameRegion: "Global",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const product = await getCatalogProduct(prisma, body.id);
+    expect(product!.gameVariant).toBe("Diamonds");
+    expect(product!.gameVariantEmoji).toBe("💎");
+    expect(product!.gameRegion).toBe("Global");
+  });
+
+  it("defaults gameVariant, gameVariantEmoji and gameRegion to null when omitted", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, {
+      name: "Plain Product",
+      categoryId: seed.categoryId,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const product = await getCatalogProduct(prisma, body.id);
+    expect(product!.gameVariant).toBeNull();
+    expect(product!.gameVariantEmoji).toBeNull();
+    expect(product!.gameRegion).toBeNull();
+  });
+
   it("rejects missing name with 400", async () => {
     const res = await postProductJson(seed.cookie, seed.csrf, { categoryId: seed.categoryId });
     expect(res.statusCode).toBe(400);
@@ -1565,6 +1684,54 @@ describe("catalog JSON API — create category", () => {
     expect(cat!.emoji).toBe("🎬");
     expect(cat!.description).toBe("Video streaming subscriptions");
     expect(cat!.sortOrder).toBe(3);
+  });
+
+  it("defaults checkoutFlow to \"catalog\" when omitted", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
+  it("persists checkoutFlow \"instant\" when given", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Top-ups", checkoutFlow: "instant" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("instant");
+  });
+
+  it("silently falls back to \"catalog\" for an invalid checkoutFlow instead of rejecting the request", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Flow", checkoutFlow: "bogus" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.checkoutFlow).toBe("catalog");
+  });
+
+  it("persists a valid group", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Mobile Legends", group: "GAME_TOPUP" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.group).toBe("GAME_TOPUP");
+  });
+
+  it("defaults group to null when omitted", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "No Group" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number } };
+    const cat = await prisma.category.findUnique({ where: { id: body.category.id } });
+    expect(cat!.group).toBeNull();
+  });
+
+  it("rejects an invalid group with 400 and creates nothing", async () => {
+    const before = await prisma.category.count();
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Bogus Group", group: "NOT_A_GROUP" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.category.count()).toBe(before);
   });
 
   it("rejects empty name with 400", async () => {
@@ -1836,6 +2003,245 @@ describe("catalog JSON API — create denomination", () => {
     const row = await getDenomination(prisma, body.id);
     expect(row!.additionalFields).toBeNull();
   });
+
+  const DIGIFLAZZ_FIELDS = [
+    { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+  ];
+
+  it("creates a denomination with autoDeliverySource digiflazz and a supplierSku, persisting both fields, alongside manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBe("digiflazz");
+    expect(row!.supplierSku).toBe("mlbb86");
+  });
+
+  it("rejects autoDeliverySource digiflazz with an empty supplierSku (400) and writes nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      autoDeliverySource: "digiflazz",
+      supplierSku: "   ",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("defaults autoDeliverySource and supplierSku to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Regression test for the review finding: autoDeliverySource/supplierSku
+  // must be coupled to deliveryType === manual_with_info the same way
+  // additionalFields already is above ("ignores a stray additionalFields
+  // payload when deliveryType is not manual_with_info") — a denomination
+  // outside Manual + Info has no buyer-submitted Game ID/Server info for a
+  // supplier to fulfill against, so it can't carry a live Digiflazz link.
+  it("ignores autoDeliverySource/supplierSku when deliveryType is not manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "auto",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "mlbb86",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.autoDeliverySource).toBeNull();
+    expect(row!.supplierSku).toBeNull();
+  });
+
+  // Task 7: nicknameCheckGameCode is independent of autoDeliverySource — a
+  // manual_with_info denomination with no Digiflazz link can still offer a
+  // live nickname check, so it needs none of the digiflazz-only coupling
+  // tested above.
+  it("creates a denomination with nicknameCheckGameCode, with no autoDeliverySource required", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      nicknameCheckGameCode: "mobile-legends",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBe("mobile-legends");
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("defaults nicknameCheckGameCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.nicknameCheckGameCode).toBeNull();
+  });
+
+  // Region-check Task B: regionWarning and expectedRegionCode are independent
+  // of autoDeliverySource/nicknameCheckGameCode/supplierSku AND of each other —
+  // a denomination can have either, both, or neither.
+  it("creates a denomination with regionWarning and expectedRegionCode, independent of each other and of nicknameCheckGameCode", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: DIGIFLAZZ_FIELDS,
+      regionWarning: "Hanya untuk akun region Indonesia",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.nicknameCheckGameCode).toBeNull();
+    expect(row!.autoDeliverySource).toBeNull();
+  });
+
+  it("creates a denomination with only regionWarning set (no expectedRegionCode)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      regionWarning: "Hanya untuk akun region Indonesia",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+
+  it("creates a denomination with only expectedRegionCode set (no regionWarning)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      expectedRegionCode: "ID",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.expectedRegionCode).toBe("ID");
+    expect(row!.regionWarning).toBeNull();
+  });
+
+  it("defaults regionWarning and expectedRegionCode to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.regionWarning).toBeNull();
+    expect(row!.expectedRegionCode).toBeNull();
+  });
+
+  // Task 14: qtyValue/qtyUnit — the compact-button quantity ("86 Diamonds")
+  // Tasks 11-13's bot labeling logic consumes. Independent of every other
+  // field on the row.
+  it("creates a denomination with qtyValue and qtyUnit", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 86,
+      qtyUnit: "Diamonds",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.qtyValue).toBe(86);
+    expect(row!.qtyUnit).toBe("Diamonds");
+  });
+
+  it("defaults qtyValue and qtyUnit to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.qtyValue).toBeNull();
+    expect(row!.qtyUnit).toBeNull();
+  });
+
+  it("rejects a negative qtyValue with 400 and creates nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: -1,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("rejects a non-integer qtyValue with 400 and creates nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "86 Diamonds",
+      type: "SHARED",
+      durationLabel: "One-time",
+      price: "15000",
+      qtyValue: 4.5,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
 });
 
 // ---- catalog JSON API — active toggle --------------------------------------
@@ -2001,6 +2407,56 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     it("rejects empty name with 400", async () => {
       const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, { name: "" });
       expect(res.statusCode).toBe(400);
+    });
+
+    it("persists checkoutFlow \"instant\"", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "instant",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.checkoutFlow).toBe("instant");
+    });
+
+    it("rejects an invalid checkoutFlow with 400 and writes nothing", async () => {
+      const before = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        checkoutFlow: "bogus",
+      });
+      expect(res.statusCode).toBe(400);
+      const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(after!.checkoutFlow).toBe(before!.checkoutFlow);
+    });
+
+    it("persists a valid group", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "PREMIUM_APPS",
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.group).toBe("PREMIUM_APPS");
+    });
+
+    it("clears the group back to null when explicitly sent null", async () => {
+      await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "GAME_TOPUP",
+      });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: null,
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.group).toBeNull();
+    });
+
+    it("rejects an invalid group with 400 and writes nothing", async () => {
+      const before = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        group: "NOT_A_GROUP",
+      });
+      expect(res.statusCode).toBe(400);
+      const after = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(after!.group).toBe(before!.group);
     });
 
     it("rejects a non-existent category id with 404", async () => {
@@ -2234,6 +2690,54 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     });
   });
 
+  describe("POST /api/catalog/denominations/bulk-active", () => {
+    it("happy path: activates multiple denominations and audits with a count", async () => {
+      await prisma.denomination.update({ where: { id: seed.productId }, data: { isActive: false } });
+      const other = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: "Other Denom",
+        type: ProductType.SHARED,
+        durationLabel: "3 Months",
+        price: "15.00",
+        isActive: false,
+      });
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId, other.id],
+        active: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getDenomination(prisma, seed.productId))!.isActive).toBe(true);
+      expect((await getDenomination(prisma, other.id))!.isActive).toBe(true);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "denomination_bulk_active" } });
+      expect(audit?.details).toBe("Activated 2 denominations.");
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, { ids: [], active: false });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.productId],
+        active: "yes",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, null, "x", { ids: [seed.productId], active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/bulk-active`, seed.cookie, "bad-token", { ids: [seed.productId], active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("PATCH /api/catalog/products/:id", () => {
     it("happy path: updates name without changing category", async () => {
       const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
@@ -2268,6 +2772,40 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(res.statusCode).toBe(200);
       const audit = await prisma.auditLog.findFirst({ where: { action: "product_update", targetId: seed.catalogProductId } });
       expect(audit?.details).toBe(`Updated product "${product.name}".`);
+    });
+
+    // Task 14: gameVariant/gameVariantEmoji/gameRegion round-trip on update,
+    // same "trim, blank means null" rule as storefrontDetailFields.
+    it("persists gameVariant, gameVariantEmoji and gameRegion", async () => {
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+        gameVariant: "UC",
+        gameVariantEmoji: "🔫",
+        gameRegion: "Indonesia",
+      });
+      expect(res.statusCode).toBe(200);
+      const updated = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(updated!.gameVariant).toBe("UC");
+      expect(updated!.gameVariantEmoji).toBe("🔫");
+      expect(updated!.gameRegion).toBe("Indonesia");
+    });
+
+    it("clears gameVariant, gameVariantEmoji and gameRegion when omitted", async () => {
+      await updateCatalogProduct(prisma, seed.catalogProductId, {
+        gameVariant: "UC",
+        gameVariantEmoji: "🔫",
+        gameRegion: "Indonesia",
+      });
+      const product = (await getCatalogProduct(prisma, seed.catalogProductId))!;
+      const res = await patchJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf, {
+        name: product.name,
+      });
+      expect(res.statusCode).toBe(200);
+      const updated = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(updated!.gameVariant).toBeNull();
+      expect(updated!.gameVariantEmoji).toBeNull();
+      expect(updated!.gameRegion).toBeNull();
     });
 
     it("rejects an unknown categoryId with 400", async () => {
@@ -2790,6 +3328,52 @@ describe("denominations (leaf SKU, inside product detail)", () => {
     expect(d!.description).toBeNull();
   });
 
+  // Task 14: qtyValue/qtyUnit round-trip on update, same always-set
+  // convention as nicknameCheckGameCode/regionWarning above.
+  it("persists qtyValue and qtyUnit on update", async () => {
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+      qtyValue: "86",
+      qtyUnit: "Diamonds",
+    });
+    expect(res.statusCode).toBe(200);
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.qtyValue).toBe(86);
+    expect(d!.qtyUnit).toBe("Diamonds");
+  });
+
+  it("clears qtyValue and qtyUnit when omitted on update", async () => {
+    await updateDenomination(prisma, seed.productId, { qtyValue: 86, qtyUnit: "Diamonds" });
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+    });
+    expect(res.statusCode).toBe(200);
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.qtyValue).toBeNull();
+    expect(d!.qtyUnit).toBeNull();
+  });
+
+  it("rejects a negative qtyValue on update with 400", async () => {
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "7.00",
+      qtyValue: "-1",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
   it("update denomination requires auth", async () => {
     const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, null, { name: "Hax", type: "SHARED", durationLabel: "x", price: "1" });
     expect(res.statusCode).toBe(303);
@@ -2915,6 +3499,27 @@ describe("stock", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  // Final whole-branch review finding — see the matching reveal-route test's
+  // comment above for the full rationale; bulkAddStock is the other named
+  // call site (it decrypts existing rows to dedupe, then encrypts new ones).
+  it("a malformed CREDENTIAL_ENCRYPTION_KEY surfaces as a JSON 500, not an HTML error page", async () => {
+    const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+    try {
+      const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
+        csrf_token: seed.csrf,
+        credentials: `keyerr${counter}@e.com:p`,
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["content-type"]).toContain("application/json");
+      const body = JSON.parse(res.body) as { error: string };
+      expect(body.error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+    } finally {
+      if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+    }
+  });
+
   // Data-1: bulkAddStock is called inside prisma.$transaction (see
   // routes/api/stock.ts) so two concurrent uploads of the SAME fresh
   // credential can't both pass the "not already present" check and both
@@ -2938,8 +3543,12 @@ describe("stock", () => {
     expect(bodies.reduce((sum, b) => sum + b.skipped, 0)).toBe(1);
 
     expect(await countAvailableStock(prisma, seed.productId)).toBe(before + 1);
-    const rows = await prisma.stockItem.findMany({ where: { productId: seed.productId, credentials: dupCred } });
-    expect(rows.length).toBe(1);
+    // Credentials are encrypted at rest (fresh IV per row) — decrypt to find
+    // the one row that actually holds dupCred instead of matching the column
+    // literally.
+    const allRows = await prisma.stockItem.findMany({ where: { productId: seed.productId } });
+    const matching = allRows.filter((r) => decryptCredentials(r.credentials) === dupCred);
+    expect(matching.length).toBe(1);
   });
 
   it("restock broadcast message names both the product type and the denomination", async () => {
@@ -2981,10 +3590,11 @@ describe("stock", () => {
     expect(res.headers.location).toBe("/login");
   });
 
-  // The Stock Items table shows the account credential (masked, with a reveal
-  // toggle), so the detail payload must carry it — but nothing more of the raw
-  // row than the page actually renders.
-  it("detail returns each item's credential and no order linkage", async () => {
+  // The Stock Items table shows the account credential masked by default,
+  // with an explicit per-row reveal (Task 2: StockItem.credentials is
+  // encrypted at rest) — the list payload must never carry a decrypted
+  // value, and nothing more of the raw row than the page actually renders.
+  it("detail returns each item's credential MASKED (never the decrypted value) and no order linkage", async () => {
     const res = await get(`/api/stock/${seed.productId}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { items: Record<string, unknown>[] };
@@ -2993,8 +3603,82 @@ describe("stock", () => {
     expect(Object.keys(item).sort()).toEqual(
       ["createdAtDisplay", "credentials", "id", "note", "status"],
     );
-    expect(typeof item.credentials).toBe("string");
+    expect(item.credentials).toBe("••••••••");
     expect(item).not.toHaveProperty("orderId");
+  });
+
+  describe("POST /api/stock/item/:stockId/reveal", () => {
+    it("returns the decrypted credential and audits credential_revealed", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const expected = decryptCredentials(item.credentials);
+
+      const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { ok: boolean; credentials: string };
+      expect(body.credentials).toBe(expected);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "credential_revealed", targetId: item.id },
+        orderBy: { id: "desc" },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit!.adminId).toBe(seed.adminId);
+      expect(audit!.details ?? "").not.toContain(expected); // never the credential itself
+    });
+
+    it("audits every reveal, not just the first", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+
+      const audits = await prisma.auditLog.findMany({
+        where: { action: "credential_revealed", targetId: item.id },
+      });
+      expect(audits.length).toBe(2);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await post(`/api/stock/item/999999/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await post(`/api/stock/item/${item.id}/reveal`, null, { csrf_token: "x" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: "bad-token" });
+      expect(res.statusCode).toBe(403);
+    });
+
+    // Final whole-branch review finding: a missing/malformed
+    // CREDENTIAL_ENCRYPTION_KEY used to surface as server.ts's generic
+    // text/html 500 page, which broke the admin client's apiPost (it expects
+    // JSON and gets an HTML parse error instead of a readable message). The
+    // route now catches CredentialKeyConfigError specifically and returns a
+    // clear JSON error. CREDENTIAL_ENCRYPTION_KEY is read straight from
+    // process.env at call time (see credentialCrypto.ts's own comment on
+    // why), so mutating it here takes effect immediately — same technique
+    // credentialCrypto.test.ts uses to test the unconfigured/malformed cases.
+    it("a malformed CREDENTIAL_ENCRYPTION_KEY surfaces as a JSON 500, not an HTML error page", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+      process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+      try {
+        const res = await post(`/api/stock/item/${item.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+        expect(res.statusCode).toBe(500);
+        expect(res.headers["content-type"]).toContain("application/json");
+        const body = JSON.parse(res.body) as { error: string };
+        expect(body.error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+      } finally {
+        if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+        else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+      }
+    });
   });
 });
 
@@ -3116,6 +3800,48 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
     });
   });
 
+  describe("POST /api/stock/item/:stockId/delete", () => {
+    it("happy path deletes a single item and audits without leaking credentials", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeTruthy();
+      expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await postJson(`/api/stock/item/999999/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("refuses to delete a SOLD (delivered) item — 409, row unchanged, no audit row", async () => {
+      const item = await prisma.stockItem.update({
+        where: { id: (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(409);
+      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).not.toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
+      expect(audit).toBeNull();
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("POST /api/stock/item/:stockId/note", () => {
     it("happy path updates the note and audits", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
@@ -3153,7 +3879,10 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers["content-type"]).toContain("text/plain");
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.headers["content-disposition"]).toContain(".txt");
-      for (const it of avail) expect(res.body).toContain(it.credentials);
+      // Credentials are encrypted at rest — the download body is the
+      // decrypted plaintext, so compare against the decrypted DB value, not
+      // the raw (encrypted) column.
+      for (const it of avail) expect(res.body).toContain(decryptCredentials(it.credentials));
 
       const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
       expect(audit.length).toBeGreaterThanOrEqual(1);
@@ -3181,9 +3910,27 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.headers["content-disposition"]).toContain("stock.csv");
       expect(res.body.split("\r\n")[0]).toBe(
-        "Denomination,Product,Category,Available,Reserved,Sold,Waiting,Status",
+        "Denomination,Product,Category,Catalog Price (IDR),Catalog Price (USD),Available,Reserved,Sold,Waiting,Status",
       );
       expect(res.body).toContain(denom!.name);
+    });
+
+    it("includes the catalog price in rupiah and dollars when a rate is set", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      const denom = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: `PricedDenom${Math.random()}`,
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "40000",
+        description: "x",
+      });
+      const res = await get("/api/stock/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const row = res.body.split("\r\n").find((l: string) => l.startsWith(`${denom.name},`));
+      expect(row).toBeDefined();
+      expect(res.body).toContain(formatIdr("40000")); // "Rp40.000"
+      expect(res.body).toContain(formatUsdt(usdtFromIdr("40000", "16000"))); // "2.5 USDT"
     });
 
     it("rejects missing auth (anon -> 303 /login)", async () => {
@@ -3684,6 +4431,32 @@ describe("support", () => {
     expect(data.ticket.resolvedAtDisplay).toBeNull();
   });
 
+  it("ticket detail (Task 3): includes ticketNumber, assignedAtDisplay, and surfaces internal notes in the messages array", async () => {
+    const tid = await makeTicket();
+    // A minted ticketNumber (Task 1's createTicket) should already be present.
+    let res = await get(`/api/support/${tid}`, seed.cookie);
+    let data = JSON.parse(res.body) as {
+      ticket: { ticketNumber: string | null; assignedAtDisplay: string | null };
+      messages: { content: string; internal: boolean }[];
+    };
+    expect(data.ticket.ticketNumber).toMatch(/^TCK-\d{8}-\d{5}$/);
+    expect(data.ticket.assignedAtDisplay).toBeNull();
+
+    // This is the route-level proof that Task 1's includeInternal opt-in is
+    // actually wired here — packages/db/src/crud/support.ts's own tests
+    // cover the crud function directly, but this admin-facing route is what
+    // makes an internal note reachable in the UI at all.
+    await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "Internal-only note.",
+      internal: true,
+    });
+    res = await get(`/api/support/${tid}`, seed.cookie);
+    data = JSON.parse(res.body) as typeof data;
+    const note = data.messages.find((m) => m.content === "Internal-only note.");
+    expect(note).toBeTruthy();
+    expect(note?.internal).toBe(true);
+  });
+
   it("ticket detail: subject is truncated to the last full word past ~60 chars, with an ellipsis", async () => {
     const longMessage =
       "This is a very long support message that definitely exceeds sixty characters in total length easily";
@@ -3765,6 +4538,56 @@ describe("support", () => {
     expect(adminMsgs.some((m) => m.content === "Looking into it.")).toBe(true);
   });
 
+  it("internal note (Task 3): stored with internal: true, excluded from the default message list, audited as ticket_internal_note (not ticket_reply), and does not flip ticket status", async () => {
+    const tid = await makeTicket();
+    const res = await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "Checking with the courier before replying.",
+      internal: true,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const customerSafeMsgs = await listTicketMessages(prisma, tid, 10);
+    expect(customerSafeMsgs.some((m) => m.content === "Checking with the courier before replying.")).toBe(false);
+
+    const allMsgs = await listTicketMessages(prisma, tid, 10, { includeInternal: true });
+    const note = allMsgs.find((m) => m.content === "Checking with the courier before replying.");
+    expect(note).toBeTruthy();
+    expect(note?.internal).toBe(true);
+    expect(note?.senderType).toBe("ADMIN");
+
+    // Doesn't flip the ticket's customer-visible status (still OPEN, not
+    // WAITING_CUSTOMER) — an internal note isn't a reply the customer sees.
+    expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("OPEN");
+
+    const internalAudit = await prisma.auditLog.findFirst({
+      where: { action: "ticket_internal_note", targetId: tid },
+    });
+    expect(internalAudit).toBeTruthy();
+    expect(internalAudit?.details).toBe(`Added an internal note to ticket #${tid} (not visible to the customer).`);
+    // The route must not ALSO log a "ticket_reply" row for an internal note —
+    // that would double-audit the same action under a misleading sentence.
+    const replyAudit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply", targetId: tid } });
+    expect(replyAudit).toBeNull();
+  });
+
+  it("a normal (non-internal) reply is unaffected by the internal-note field: audited as ticket_reply, visible in the default message list", async () => {
+    const tid = await makeTicket();
+    const res = await postJson(`/api/support/${tid}/reply`, seed.cookie, seed.csrf, {
+      content: "We're checking your order.",
+    });
+    expect(res.statusCode).toBe(200);
+
+    const msgs = await listTicketMessages(prisma, tid, 10);
+    expect(msgs.some((m) => m.content === "We're checking your order." && m.internal === false)).toBe(true);
+
+    const replyAudit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply", targetId: tid } });
+    expect(replyAudit).toBeTruthy();
+    const internalAudit = await prisma.auditLog.findFirst({
+      where: { action: "ticket_internal_note", targetId: tid },
+    });
+    expect(internalAudit).toBeNull();
+  });
+
   it("close ticket", async () => {
     const tid = await makeTicket();
     const res = await post(`/api/support/${tid}/close`, seed.cookie, { csrf_token: seed.csrf });
@@ -3803,35 +4626,48 @@ describe("support", () => {
       return upsertUser(prisma, { telegramId: 1000, username: "second", fullName: "Second Admin" });
     }
 
-    it("happy path: assigns a ticket to an admin and audits", async () => {
+    it("happy path: assigns a ticket to an admin, audits, and stamps assignedAt/assignedBy (Task 3)", async () => {
       const tid = await makeTicket();
       const second = await makeSecondAdmin();
       const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true });
-      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBe(second.id);
+      const row = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(row!.adminId).toBe(second.id);
+      // Task 3: this route now calls assignTicketWithAudit (packages/db/src/
+      // crud/support.ts), migrated from the old un-audited assignTicket — the
+      // whole point of the admin panel's new assignment picker is that these
+      // two columns actually get populated, not just adminId.
+      expect(row!.assignedBy).toBe(seed.adminId);
+      expect(row!.assignedAt).toBeInstanceOf(Date);
 
       const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_assign", targetId: tid } });
       expect(audit).toBeTruthy();
       expect(audit?.targetType).toBe("ticket");
       expect(audit?.adminId).toBe(seed.adminId);
+      // Task 3 review fix: assignTicketWithAudit now accepts the caller's
+      // already-resolved display name, so this keeps the same friendly
+      // wording the old route-local logAdminAction call used.
       expect(audit?.details).toBe(`Assigned ticket #${tid} to "Second Admin".`);
     });
 
-    it("unassign (adminId: null) clears the assignment and audits", async () => {
+    it("unassign (adminId: null) clears the assignment (incl. assignedAt/assignedBy) and audits", async () => {
       const tid = await makeTicket();
       const second = await makeSecondAdmin();
       await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
 
       const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: null });
       expect(res.statusCode).toBe(200);
-      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBeNull();
+      const row = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(row!.adminId).toBeNull();
+      expect(row!.assignedBy).toBeNull();
+      expect(row!.assignedAt).toBeNull();
 
       const audit = await prisma.auditLog.findFirst({
         where: { action: "ticket_assign", targetId: tid },
         orderBy: { id: "desc" },
       });
-      expect(audit?.details).toBe(`Unassigned ticket #${tid}.`);
+      expect(audit?.details).toBe(`Assigned ticket #${tid} to nobody (unassigned).`);
     });
 
     it("rejects a non-existent ticket id with 404", async () => {
@@ -4343,8 +5179,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_secret", value: "BINSECRETVALUE",
     });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
-    expect(await getSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawKey = await getSetting(prisma, "binance_api_key");
+    expect(rawKey).not.toBe("BINKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawKey!)).toBe(true);
+    const rawSecret = await getSetting(prisma, "binance_api_secret");
+    expect(rawSecret).not.toBe("BINSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -4352,7 +5196,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -4382,7 +5226,12 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_apikey", value: "PDAPIKEYSECRET",
     });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "paydisini_apikey");
+    expect(rawApiKey).not.toBe("PDAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -4390,7 +5239,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
 
     // The stored secret is never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -4447,8 +5296,16 @@ describe("settings", () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_ipn_secret", value: "NOWIPNSECRETVALUE",
     });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
-    expect(await getSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+
+    // Task 13: the rows are encrypted at rest, not stored as the plaintext.
+    const rawApiKey = await getSetting(prisma, "nowpayments_api_key");
+    expect(rawApiKey).not.toBe("NOWAPIKEYSECRET");
+    expect(isEncryptedCredentialEnvelope(rawApiKey!)).toBe(true);
+    const rawIpnSecret = await getSetting(prisma, "nowpayments_ipn_secret");
+    expect(rawIpnSecret).not.toBe("NOWIPNSECRETVALUE");
+    expect(isEncryptedCredentialEnvelope(rawIpnSecret!)).toBe(true);
 
     // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
     const blank = await post("/api/settings/edit", seed.cookie, {
@@ -4456,7 +5313,7 @@ describe("settings", () => {
     });
     expect(blank.statusCode).toBe(200);
     expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
-    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getDecryptedSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
 
     // The stored secrets are never echoed into the settings API response.
     const page = await get("/api/settings", seed.cookie);
@@ -4547,7 +5404,12 @@ describe("settings", () => {
       csrf_token: seed.csrf, key: "bscscan_api_key", value: "SUPERSECRETBSCSCANKEY",
     });
     expect(res.statusCode).toBe(200);
-    expect(await getSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+    expect(await getDecryptedSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+
+    // Task 13: the row is encrypted at rest, not stored as the plaintext.
+    const raw = await getSetting(prisma, "bscscan_api_key");
+    expect(raw).not.toBe("SUPERSECRETBSCSCANKEY");
+    expect(isEncryptedCredentialEnvelope(raw!)).toBe(true);
 
     const page = await get("/api/settings", seed.cookie);
     expect(page.body).not.toContain("SUPERSECRETBSCSCANKEY");
@@ -5017,6 +5879,25 @@ describe("payments", () => {
     const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss", details: "tx=ATOMTX1" } });
     expect(audit.length).toBe(0);
   });
+
+  it("dismiss trips 429 after PAYMENTS_MUTATION_RATE_LIMIT_MAX calls in one window and recovers after a reset", async () => {
+    for (let i = 0; i < PAYMENTS_MUTATION_RATE_LIMIT_MAX; i++) {
+      await recordUnmatchedTx(prisma, { binanceTxId: `RLTX${i}`, amount: "1.00" });
+      const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: `RLTX${i}` });
+      expect(res.statusCode).toBe(200);
+    }
+    // The (max+1)th call in the same window is rejected before it ever
+    // touches the ledger row — dismissUnmatchedTx never runs.
+    await recordUnmatchedTx(prisma, { binanceTxId: "RLTX-OVER", amount: "1.00" });
+    const limited = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(limited.statusCode).toBe(429);
+    expect(JSON.parse(limited.body)).toEqual({ error: "error.rate_limited" });
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "RLTX-OVER" } }))!.outcome).toBe("unmatched");
+
+    resetPaymentsMutationRateLimit(seed.adminId);
+    const recovered = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "RLTX-OVER" });
+    expect(recovered.statusCode).toBe(200);
+  });
 });
 
 // ---- H-4 (backend audit 2026-07-31): the Users/Orders/Payments JSON APIs
@@ -5412,6 +6293,8 @@ describe("rbac", () => {
     expect(canMutate("support", "/api/reviews/1/hide")).toBe(true);
     expect(canMutate("support", "/api/catalog/category")).toBe(false);
     expect(canMutate("support", "/api/settings/edit")).toBe(false);
+    expect(canMutate("support", "/api/admin-tasks/1/assign")).toBe(true);
+    expect(canMutate("readonly", "/api/admin-tasks/1/assign")).toBe(false);
   });
 
   // Admin-4 (security audit, 2026-06-23): canMutate now strips the query
@@ -5502,6 +6385,145 @@ describe("rbac", () => {
 
     await setRole(ADMIN_TG, "support");
     expect((await get("/api/admins", seed.cookie)).statusCode).toBe(403); // non-super blocked
+  });
+});
+
+// ---- Read-side role gate on credential/export routes (C-1, backend audit
+// 2026-08-21) — `roleGate`/`canMutate` above only ever ran on mutations;
+// these five GET routes returned account credentials or full CSV/JSON
+// exports to every authenticated admin, including `readonly` (the default
+// role for every newly-created admin). Fix: `blockReadonlyReads` in
+// src/plugins/auth.ts, applied only to these five routes. -----------------
+
+describe("read-side role gate — credential/export routes (C-1)", () => {
+  const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
+
+  // Minor 6 (final whole-branch review, 2026-08-21): this block's last test
+  // ("GET /api/stock/export stays open to readonly") leaves ADMIN_TG's role
+  // set to "readonly" and never resets it, so a later describe block would
+  // implicitly run under that leftover role instead of whatever was in
+  // effect before this block ran (here, "support" — the role the preceding
+  // "admin management" describe block's last test left it as). Currently
+  // harmless because this file's global `beforeEach` (resetDb) wipes the
+  // Setting table before every single test, but that makes this block's own
+  // cleanup accidentally load-bearing on an implementation detail of a hook
+  // it doesn't own — reset explicitly instead of relying on that.
+  afterAll(async () => {
+    await setRole(ADMIN_TG, "support");
+  });
+
+  it("GET /api/stock/:productId (credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("items");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("items");
+  });
+
+  it("GET /api/stock/:productId/download (plaintext credentials): readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/plain");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/plain");
+  });
+
+  it("GET /api/orders/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/orders/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/orders/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toContain("text/csv");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/orders/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toContain("text/csv");
+  });
+
+  // Important #3 (final whole-branch review, 2026-08-21): readonly could
+  // still read one delivered order's credentials at a time via this route —
+  // it wasn't one of the five routes gated when C-1 first shipped.
+  it("GET /api/orders/:orderId (delivered order credentials): readonly is blocked, support and super keep read access", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const orderId = await makePendingOrder();
+    await setRole(ADMIN_TG, "support");
+    const approveRes = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approveRes.statusCode).toBe(200);
+
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("order");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("order");
+    resetBotIdentity();
+  });
+
+  it("GET /api/users/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/users/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/users/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(asSupport.headers["content-type"]).toBe("text/csv; charset=utf-8");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/users/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(asSuper.headers["content-type"]).toBe("text/csv; charset=utf-8");
+  });
+
+  it("GET /api/settings/export: readonly is blocked, support and super keep read access", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const denied = await get("/api/settings/export", seed.cookie);
+    expect(denied.statusCode).toBe(403);
+
+    await setRole(ADMIN_TG, "support");
+    const asSupport = await get("/api/settings/export", seed.cookie);
+    expect(asSupport.statusCode).toBe(200);
+    expect(JSON.parse(asSupport.body)).toHaveProperty("fields");
+
+    await setRole(ADMIN_TG, "super");
+    const asSuper = await get("/api/settings/export", seed.cookie);
+    expect(asSuper.statusCode).toBe(200);
+    expect(JSON.parse(asSuper.body)).toHaveProperty("fields");
+  });
+
+  // Explicitly out of scope (brief, C-1): the aggregate stock-health CSV
+  // carries no credentials and must stay open to readonly.
+  it("GET /api/stock/export stays open to readonly (out of scope for C-1)", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const res = await get("/api/stock/export", seed.cookie);
+    expect(res.statusCode).toBe(200);
   });
 });
 

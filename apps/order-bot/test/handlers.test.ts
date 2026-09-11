@@ -14,21 +14,53 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
+// Same shape as the TokoPay mock above — buyNowPaydisini's own audit-wiring
+// test (Phase H) needs to get past its external gateway call without a real
+// HTTP request.
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/pd-qr.png",
+    checkoutUrl: null,
+    totalBayar: "100",
+  }),
+}));
+
+// Same reason as the PayDisini mock above — buyNowNowpayments's audit-wiring test.
+vi.mock("@app/core/payments/nowpayments", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
+  createInvoice: vi.fn().mockResolvedValue({
+    invoiceId: "NP-TEST",
+    invoiceUrl: "https://nowpayments.test/invoice/NP-TEST",
+  }),
+}));
+
 // claimGatewaySlot is wrapped (delegating to the real implementation by
 // default) so the M-6 race tests below can override it once to simulate a
 // concurrent claimant — see "doesn't create a second TokoPay transaction
 // when it loses the gateway claim to a concurrent request".
+// getOrder is wrapped the same way, for the changePaymentRail guard test:
+// that handler's status/ownership checks necessarily read the order before
+// its write transaction opens, so overriding this read once is how a test
+// hands it the stale "still awaiting payment" view a real concurrent payment
+// confirmation would leave it holding.
 vi.mock("@app/db", async (orig) => {
   const actual = await orig<typeof import("@app/db")>();
-  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
+  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot), getOrder: vi.fn(actual.getOrder) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
+import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
+import { createInvoice as mockedCreateNowpaymentsInvoice } from "@app/core/payments/nowpayments";
+import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -42,7 +74,7 @@ import {
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb, gameVariantPickerKb, gameRegionPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -51,6 +83,7 @@ import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
 import { logger } from "@app/core/logger";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -450,7 +483,10 @@ describe("customer handlers", () => {
 
     const { ctx, sink } = customerCtx();
     await customer.viewOrder(ctx, order!.id);
-    expect(sentIncludes(sink, sold!.credentials)).toBe(true);
+    // `sold` is fetched directly (not via getOrder, which decrypts) — the raw
+    // column value is the encrypted envelope, so decrypt before comparing
+    // against what the buyer's DM actually contains.
+    expect(sentIncludes(sink, decryptCredentials(sold!.credentials))).toBe(true);
   });
 
   // Task 4: a WALLET_TOPUP order isn't a "My Orders" purchase (it's already
@@ -822,6 +858,134 @@ describe("Home screen (persistent keyboard)", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
+  it("router wires v1:browse:grps to browseGroups", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:grps",
+      session: { ...userSession(), scratch: { categoryId: 1, group: "X", productId: 2 } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; productId?: number };
+    expect(scratch.categoryId).toBeUndefined();
+    expect(scratch.group).toBeUndefined();
+    expect(scratch.productId).toBeUndefined();
+  });
+
+  it(`router wires v1:browse:grp:${CategoryGroup.GAME_TOPUP} to browseCategoriesInGroup`, async () => {
+    // Two categories on purpose: with only one, browseCategoriesInGroup
+    // auto-skips straight to browseCategoryEntry (see the dedicated
+    // "auto-skip" tests below) and this router-wiring assertion would be
+    // exercising that skip path instead of the picker it names.
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:grp:${CategoryGroup.GAME_TOPUP}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("router degrades an unrecognized v1:browse:grp:<token> to the stale-screen toast instead of misrouting", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:grp:NOT_A_REAL_GROUP" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("router wires v1:browse:cat:<id> to browseCategoryEntry", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "FF Diamonds")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("router wires v1:browse:gvars:<id> to browseCategoryEntry — the region picker's Back target re-renders the variant picker", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:gvars:${cat.id}` });
+    await routeCallback(ctx);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((btn) => btn.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`)).length).toBe(2);
+  });
+
+  it("router wires v1:browse:gvar:<id>:<idx> to pickGameVariant", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx); // renders the variant picker and stashes gameVariantEntries in scratch
+
+    ctx.callbackQuery!.data = `v1:browse:gvar:${cat.id}:0`;
+    await routeCallback(ctx);
+
+    // Index 0 resolves to "Global" (products.findMany orders by name asc, and
+    // "FF Diamonds A" sorts before "FF Diamonds B") — a single product matches
+    // that variant with no region set, so it collapses straight to browseProduct.
+    expect(sentIncludes(sink, "FF Diamonds A")).toBe(true);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null };
+    expect(scratch.resolvedGameVariant).toBe("Global");
+  });
+
+  it("router wires v1:browse:greg:<id>:<idx> to pickGameRegion", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:cat:${cat.id}` });
+    await routeCallback(ctx); // 1 variant (auto-skipped) + 2 regions -> region picker rendered, stashes gameRegionEntries
+
+    ctx.callbackQuery!.data = `v1:browse:greg:${cat.id}:0`;
+    await routeCallback(ctx);
+
+    // Index 0 resolves to "Asia" (same name-asc ordering as above) — a single
+    // product matches that region, so it collapses straight to browseProduct.
+    expect(sentIncludes(sink, "Genesis Crystals A")).toBe(true);
+    const scratch = ctx.session.scratch as { resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameRegion).toBe("Asia");
+  });
+
+  it("router wires v1:browse:prods to browseResume — falls back to the group picker when no category is scoped, not straight to the flat cross-category list", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:prods" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("router wires v1:browse:prods to browseResume — resumes the category-scoped list when one was active", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "ML 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:prods",
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "ML Diamonds")).toBe(true);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
   it("startCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
     await customer.startCommand(start.ctx);
@@ -909,6 +1073,7 @@ describe("denomination picker", () => {
         { id: 2, name: "B", durationLabel: "1 Month" },
       ],
       99,
+      "Test Product",
       "en",
     );
     const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
@@ -932,11 +1097,46 @@ describe("denomination picker", () => {
         { id: 3, name: "C", durationLabel: "3 Months" },
       ],
       99,
+      "Test Product",
       "en",
     );
     const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
     expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2"]);
     expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:3"]);
+  });
+
+  it("denominationPickerKb formats labels through formatDenominationLabel (no-op on plain plan names)", () => {
+    const kb = denominationPickerKb(
+      [
+        { id: 1, name: "A", durationLabel: "7 day" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
+      ],
+      99,
+      "Test Product",
+      "en",
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
+    expect(member1.text).toBe("7 day");
+    expect(member2.text).toBe("1 Month");
+  });
+
+  it("denominationPickerKb prefers buttonLabel over formatDenominationLabel when present", () => {
+    const kb = denominationPickerKb(
+      [
+        { id: 1, name: "A", durationLabel: "7 day", buttonLabel: "1.58K Bonds — Rp79K" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
+      ],
+      99,
+      "Test Product",
+      "en",
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
+    expect(member1.text).toBe("1.58K Bonds — Rp79K"); // buttonLabel wins, no formatDenominationLabel call
+    expect(member2.text).toBe("1 Month"); // no buttonLabel → falls back to existing behavior
   });
 
   it("browseProduct surfaces the denomination picker for a multi-denomination Product", async () => {
@@ -994,6 +1194,944 @@ describe("denomination picker", () => {
     await customer.browseProduct(ctx, product.id);
     const updated = await getCatalogProduct(prisma, product.id);
     expect(updated?.imageFileId).toBe("CACHED456");
+  });
+});
+
+// ===========================================================================
+// groupPickerKb / categoryPickerKb (Products entry flow: group -> category)
+// ===========================================================================
+
+describe("group and category pickers", () => {
+  it("groupPickerKb renders exactly the two group buttons plus a menu row", () => {
+    const kb = groupPickerKb("en");
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual([
+      `v1:browse:grp:${CategoryGroup.GAME_TOPUP}`,
+      `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}`,
+    ]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:menu:main"]);
+  });
+
+  it("categoryPickerKb lays categories out two per row plus a back/menu row", () => {
+    const kb = categoryPickerKb(
+      [
+        { id: 1, name: "Mobile Legends", emoji: "🎮" },
+        { id: 2, name: "Free Fire", emoji: null },
+        { id: 3, name: "PUBG Mobile", emoji: "🎯" },
+      ],
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of categories + trailing back/menu row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:1", "v1:browse:cat:2"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:3"]);
+    expect(rows[0]![0]!.text).toBe("🎮 Mobile Legends");
+    expect(rows[0]![1]!.text).toBe("Free Fire");
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+
+  it("categoryPickerKb with a single category renders one row plus the trailing row", () => {
+    const kb = categoryPickerKb([{ id: 1, name: "Solo Category", emoji: null }], "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:cat:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+
+  it("categoryPickerKb with an empty array still renders the trailing back/menu row, never a dead end", () => {
+    const kb = categoryPickerKb([], "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:grps", "v1:menu:main"]);
+  });
+});
+
+// ===========================================================================
+// gameVariantPickerKb / gameRegionPickerKb (Game Top Up variant/region picker
+// screens — Task 11; a LATER task wires these into actual handlers).
+// ===========================================================================
+
+describe("game variant and region pickers", () => {
+  // backTarget is now an explicit, caller-computed callback_data string
+  // (Finding 3/I2 of the final-review) rather than something the keyboard
+  // builder hardcodes itself — these tests pass an arbitrary value and assert
+  // it round-trips verbatim into the Back row, proving the parameter is
+  // genuinely threaded through (not silently ignored/hardcoded internally).
+  const VARIANT_BACK = "v1:browse:grp:GAME_TOPUP";
+
+  it("gameVariantPickerKb lays out 3 entries as two rows plus a back row, honoring the caller-supplied backTarget", () => {
+    const kb = gameVariantPickerKb(
+      [
+        { label: "Mobile Legends", emoji: "🎮" },
+        { label: "Free Fire", emoji: null },
+        { label: "PUBG Mobile", emoji: "🎯" },
+      ],
+      5,
+      VARIANT_BACK,
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of variants + trailing back row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0", "v1:browse:gvar:5:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:2"]);
+    expect(rows[0]![0]!.text).toBe("🎮 Mobile Legends");
+    expect(rows[0]![1]!.text).toBe("Free Fire");
+    // Back goes to the CATEGORY picker, not `v1:browse:cat:5` (which would
+    // just re-render this same variant picker — the Finding 3/I2 bug).
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual([VARIANT_BACK]);
+  });
+
+  it("gameVariantPickerKb with a single entry renders one row plus the trailing back row", () => {
+    const kb = gameVariantPickerKb([{ label: "Solo Variant", emoji: null }], 5, VARIANT_BACK, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual([VARIANT_BACK]);
+  });
+
+  it("gameVariantPickerKb with 2 entries renders exactly one variant row plus the back row", () => {
+    const kb = gameVariantPickerKb(
+      [
+        { label: "A", emoji: null },
+        { label: "B", emoji: null },
+      ],
+      5,
+      VARIANT_BACK,
+      "en",
+    );
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:gvar:5:0", "v1:browse:gvar:5:1"]);
+  });
+
+  it("gameRegionPickerKb lays out 3 entries as two rows plus a back row, button text is the raw region string, honoring the caller-supplied backTarget", () => {
+    const backTarget = "v1:browse:gvars:5"; // variant picker WAS shown for this navigation
+    const kb = gameRegionPickerKb(["Asia", "Europe", "America"], 5, backTarget, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ text: string; callback_data?: string }>>;
+    expect(rows.length).toBe(3); // two rows of regions + trailing back row
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:2"]);
+    expect(rows[0]![0]!.text).toBe("Asia");
+    expect(rows[0]![1]!.text).toBe("Europe");
+    expect(rows[2]!.map((b) => b.callback_data)).toEqual([backTarget]);
+  });
+
+  it("gameRegionPickerKb's Back target is the CATEGORY picker when the variant step was skipped (not a re-render of itself)", () => {
+    const backTarget = "v1:browse:grp:GAME_TOPUP"; // variant step was auto-skipped for this navigation
+    const kb = gameRegionPickerKb(["Solo Region"], 5, backTarget, "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual([backTarget]);
+  });
+
+  it("gameRegionPickerKb with 2 entries renders exactly one region row plus the back row", () => {
+    const kb = gameRegionPickerKb(["A", "B"], 5, "v1:browse:gvars:5", "en");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:greg:5:0", "v1:browse:greg:5:1"]);
+  });
+});
+
+// ===========================================================================
+// browseGroups / browseCategoriesInGroup / browseCategoryEntry (Task 5 — the bot
+// navigation glue that fixes the long-standing "Products" flat-cross-category
+// list bug by inserting a group -> category picker in front of it).
+// ===========================================================================
+
+describe("group/category browsing handlers", () => {
+  it("browseGroups renders the group picker and clears category/group/product scratch", async () => {
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { categoryId: 1, group: "X", productId: 2 } },
+    });
+    await customer.browseGroups(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; productId?: number };
+    expect(scratch.categoryId).toBeUndefined();
+    expect(scratch.group).toBeUndefined();
+    expect(scratch.productId).toBeUndefined();
+  });
+
+  it("browseCategoriesInGroup lists active categories in that group and records the group in scratch", async () => {
+    // Two categories on purpose — see the auto-skip tests below for the
+    // single-category case, which this picker-rendering test must not
+    // accidentally exercise.
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("browseCategoriesInGroup auto-skips the picker and goes straight to the sole category's entry point when the group has exactly one active category", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+
+    // No "Choose one" category picker rendered — straight to the product.
+    expect(sentIncludes(sink, t(ctx, "browse.category_picker_title", { group: t(ctx, "browse.group_game_topup") }))).toBe(false);
+    expect(sentIncludes(sink, "ML Diamonds")).toBe(true);
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.GAME_TOPUP);
+  });
+
+  it("browseCategoriesInGroup renders the empty state without dead-ending when the group has no categories", async () => {
+    // GAME_TOPUP, not PREMIUM_APPS: since Finding 1 (final-review C1-fix), a
+    // null-group category displays as PREMIUM_APPS (the sample fixture's own
+    // "Streaming" category has no group set), so PREMIUM_APPS is never
+    // genuinely empty here. GAME_TOPUP has no such fallback — it's the one
+    // group this suite's fixtures never populate by default — so it's the
+    // one that actually exercises the empty-state render path.
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP);
+    expect(sentIncludes(sink, "No categories in this section yet")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("browseCategoryEntry sets categoryId/group in scratch and scopes the product list to that category", async () => {
+    // A Premium Apps category on purpose (not Game Top Up): this test is
+    // about category scoping in general (Task 5), not the variant/region
+    // navigation this task (12) adds on top for Game Top Up categories,
+    // which intentionally collapses a single-product category straight to
+    // browseProduct instead of rendering the flat list — see the dedicated
+    // "single distinct variant"/"single matching product" tests below.
+    const cat = await createCategory(prisma, { name: "Streaming Category", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "FF 100", type: "SHARED", durationLabel: "100", price: "10000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const scratch = ctx.session.scratch as { categoryId?: number; group?: string; browseEntries?: number[] };
+    expect(scratch.categoryId).toBe(cat.id);
+    expect(scratch.group).toBe(CategoryGroup.PREMIUM_APPS);
+    expect(scratch.browseEntries).toEqual([p.id]);
+    expect(sentIncludes(sink, "FF Diamonds")).toBe(true);
+  });
+
+  it("browseCategoryEntry falls back to browseGroups for a missing category", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, 999999);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("browseCategoryEntry falls back to browseGroups for an inactive category", async () => {
+    const cat = await createCategory(prisma, { name: "Inactive Cat", group: CategoryGroup.GAME_TOPUP });
+    await prisma.category.update({ where: { id: cat.id }, data: { isActive: false } });
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  // Key regression test: the flat "🛍 Products" list used to show every
+  // category's products mixed together. Two categories sharing a group name
+  // prefix (a realistic admin mistake) must never bleed one another's
+  // products into the scoped list.
+  it("browseCategoryEntry scopes the product list strictly to the tapped category — a sibling category's product never bleeds in", async () => {
+    // Premium Apps on purpose — see the comment on the previous test.
+    const catA = await createCategory(prisma, { name: "Arena Breakout", group: CategoryGroup.PREMIUM_APPS });
+    const catB = await createCategory(prisma, { name: "Arena Breakout: Infinite", group: CategoryGroup.PREMIUM_APPS });
+    const prodA = await createCatalogProduct(prisma, { categoryId: catA.id, name: "AB Product" });
+    await createDenomination(prisma, { productId: prodA.id, name: "AB Plan", type: "SHARED", durationLabel: "1", price: "1000" });
+    const prodB = await createCatalogProduct(prisma, { categoryId: catB.id, name: "ABI Product" });
+    await createDenomination(prisma, { productId: prodB.id, name: "ABI Plan", type: "SHARED", durationLabel: "1", price: "1000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, catA.id);
+    const scratch = ctx.session.scratch as { browseEntries?: number[] };
+    expect(scratch.browseEntries).toEqual([prodA.id]);
+    expect(scratch.browseEntries).not.toContain(prodB.id);
+  });
+
+  it("the 'Products' persistent-keyboard label opens the group picker, not the flat cross-category list", async () => {
+    const { ctx, sink } = customerCtx({ text: persistentLabel("browse", "en") });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("listprodukCommand opens the group picker", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.listprodukCommand(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("Back from a category-scoped product list returns to that category's group's category picker, not Home", async () => {
+    // Two categories in the group on purpose: the group's category picker
+    // genuinely renders in this path (unlike the single-category auto-skip
+    // case covered by the next test), so Back must still land there.
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Wild Rift", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, cat.name)).toBe(true);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(false);
+  });
+
+  it("Back from a category-scoped list reached via the 1-category auto-skip goes to the group picker, not the (skipped) category picker", async () => {
+    // Only one active category in the group — browseCategoriesInGroup would
+    // have auto-skipped its picker to reach this product list, so Back must
+    // recompute that same condition and land on browseGroups, not re-render
+    // a category picker that was never shown.
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: cat.id, group: CategoryGroup.GAME_TOPUP } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+
+  it("Back from a category-scoped list with no recorded group falls back to the group picker (never Home)", async () => {
+    const { ctx, sink } = customerCtx({
+      text: persistentLabel("back", "en"),
+      session: { ...userSession(), scratch: { categoryId: sample.parentProduct.categoryId } },
+    });
+    await customer.handleProductNumber(ctx);
+    expect(sentIncludes(sink, "What are you shopping for")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// browseCategoryEntry's Game Top Up variant/region navigation (Task 12) +
+// the AUTO stock-display fix. Every test in this block also doubles as a
+// Premium-Apps zero-behavior-change check where noted — the hard bar for
+// this task is that a non-GAME_TOPUP category's flow is byte-for-byte
+// unchanged from Task 5/6's original shape.
+// ===========================================================================
+
+describe("browseCategoryEntry — Game Top Up variant/region navigation + AUTO stock-display fix", () => {
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: a non-GAME_TOPUP category skips straight to the product list — no variant/region picker ever shown", async () => {
+    const cat = await createCategory(prisma, { name: "Streaming Apps", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Netflix" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, "Netflix")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null; resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("a GAME_TOPUP category with exactly 1 distinct variant skips the variant picker and resolves it directly", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Regular", gameVariantEmoji: "🎮" } });
+    await createDenomination(prisma, { productId: p.id, name: "86 Diamonds", type: "SHARED", durationLabel: "86 Diamonds", price: "20000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameVariant?: string | null; gameVariantEmoji?: string | null };
+    expect(scratch.resolvedGameVariant).toBe("Regular");
+    expect(scratch.gameVariantEmoji).toBe("🎮");
+  });
+
+  it("a GAME_TOPUP category with 2 distinct variants renders the variant picker with 2 buttons", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global", gameVariantEmoji: "🌍" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max", gameVariantEmoji: "🔥" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((b) => b.callback_data?.startsWith(`v1:browse:gvar:${cat.id}:`)).length).toBe(2);
+    const scratch = ctx.session.scratch as { gameVariantEntries?: unknown[] };
+    expect(scratch.gameVariantEntries?.length).toBe(2);
+  });
+
+  it("region step mirrors the skip logic: a single resolved variant with exactly 1 distinct region skips the region picker too", async () => {
+    const cat = await createCategory(prisma, { name: "PUBG Mobile", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameRegion: "Global" } });
+    await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(false);
+    const scratch = ctx.session.scratch as { resolvedGameRegion?: string | null };
+    expect(scratch.resolvedGameRegion).toBe("Global");
+  });
+
+  it("region step mirrors the show logic: a single resolved variant with 2 distinct regions renders the region picker", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Impact", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis Crystals B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.filter((b) => b.callback_data?.startsWith(`v1:browse:greg:${cat.id}:`)).length).toBe(2);
+  });
+
+  it("pickGameVariant with an out-of-range index shows the stale-screen toast without crashing", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:gvar:1:0", session: { ...userSession(), scratch: {} } });
+    await customer.pickGameVariant(ctx, 1, 0);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("pickGameRegion with an out-of-range index shows the stale-screen toast without crashing", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:greg:1:0", session: { ...userSession(), scratch: {} } });
+    await customer.pickGameRegion(ctx, 1, 0);
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+  });
+
+  it("resolving a variant+region combination with exactly one matching product jumps straight into browseProduct", async () => {
+    const cat = await createCategory(prisma, { name: "Valorant", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Points A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "VP Points B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 1 variant (skipped) + 2 regions -> region picker shown
+    await customer.pickGameRegion(ctx, cat.id, 0); // tap "Asia" (index 0, as listed)
+
+    expect(sentIncludes(sink, "VP Points A")).toBe(true);
+    expect(sentIncludes(sink, "VP Points B")).toBe(false);
+  });
+
+  it("browseProduct shows the Automated stock indicator (not a raw number) for an AUTO denomination inside a GAME_TOPUP category", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends Diamonds", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Diamonds Stock Test" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d1.id, ["code1", "code2"]);
+    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.AUTO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, "(Stock 2)")).toBe(false);
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct keeps the raw AUTO stock number for a Premium Apps category", async () => {
+    const cat = await createCategory(prisma, { name: "Streaming Stock Test", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Disney Plus" });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "20000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d1.id, ["code1", "code2", "code3"]);
+    await createDenomination(prisma, { productId: p.id, name: "3 Months", type: "SHARED", durationLabel: "3 Months", price: "50000", deliveryType: DeliveryType.AUTO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock 3)")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+  });
+
+  it("browseProduct keeps the em-dash stock placeholder for a MANUAL_WITH_INFO denomination regardless of category group", async () => {
+    const cat = await createCategory(prisma, { name: "Mobile Legends Manual", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "ML Manual Diamonds" });
+    await createDenomination(prisma, { productId: p.id, name: "86", type: "SHARED", durationLabel: "86 Diamonds", price: "20000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    await createDenomination(prisma, { productId: p.id, name: "172", type: "SHARED", durationLabel: "172 Diamonds", price: "40000", deliveryType: DeliveryType.MANUAL_WITH_INFO });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    expect(sentIncludes(sink, "(Stock —)")).toBe(true);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+  });
+
+  it("browseDenomination shows the Automated stock indicator for an AUTO denomination inside a GAME_TOPUP category", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire Detail Test", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF Diamonds Detail" });
+    const d = await createDenomination(prisma, { productId: p.id, name: "100", type: "SHARED", durationLabel: "100 Diamonds", price: "15000", deliveryType: DeliveryType.AUTO });
+    await bulkAddStock(prisma, d.id, ["a", "b", "c", "d"]);
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, d.id);
+
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(true);
+    expect(sentIncludes(sink, "<b>4</b>")).toBe(false);
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseDenomination keeps the raw AUTO stock number for a Premium Apps (ungrouped) category", async () => {
+    // sample.product is AUTO, in a category with no `group` set (the sample
+    // fixture never assigns one) — exercises the exact pre-Task-12 code path.
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, sample.product.id);
+    expect(sentIncludes(sink, t(ctx, "browse.stock_auto_value"))).toBe(false);
+    expect(sentIncludes(sink, "<b>5</b>")).toBe(true); // the sample fixture seeds 5 stock items
+  });
+
+  it("browseCategoryEntry cascades into browseProduct's compact buttonLabel for a Game Top Up denomination with qtyValue/qtyUnit backfilled", async () => {
+    const cat = await createCategory(prisma, { name: "PUBG Mobile UC", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG UC" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameVariantEmoji: "🔫" } });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+    await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 60, qtyUnit: "UC" } });
+    await createDenomination(prisma, { productId: p.id, name: "325 UC", type: "SHARED", durationLabel: "325 UC", price: "75000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toContain("🔫");
+    expect(button.text).toContain("UC");
+    expect(button.text).toContain("Rp15K");
+  });
+
+  it("PREMIUM APPS ZERO-BEHAVIOR-CHANGE REGRESSION: browseProduct's denomination-picker labels still go through formatDenominationLabel when no qtyValue/qtyUnit is set", async () => {
+    const cat = await createCategory(prisma, { name: "Spotify Category", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify Premium" });
+    // durationLabel embeds the product name around the digit ("Spotify Premium
+    // 1 Bulan") so the two candidate code paths genuinely diverge:
+    //   - formatDenominationLabel("Spotify Premium", "Spotify Premium 1 Bulan")
+    //     pulls "1" to the front, strips the redundant "Spotify Premium" prefix
+    //     out of the leading descriptor text, and keeps the genuine trailing
+    //     distinguisher ("Bulan") intact -> "1 Bulan" (Finding 2/I1+I6 of the
+    //     final-review fixed a bug where this used to collapse the WHOLE
+    //     descriptor down to the bare product name, discarding "Bulan" and
+    //     making this indistinguishable from a hypothetical "...1 Tahun" SKU).
+    //   - the raw gameTopUpDenomLabel fallback (d.durationLabel || d.name),
+    //     which is what would leak through as an unconditional buttonLabel if
+    //     the qtyValue/qtyUnit gate were ever removed, stays verbatim:
+    //     "Spotify Premium 1 Bulan".
+    // These strings differ, so this test fails if the gating regresses.
+    const d1 = await createDenomination(prisma, {
+      productId: p.id,
+      name: "Spotify Premium 1 Bulan",
+      type: "SHARED",
+      durationLabel: "Spotify Premium 1 Bulan",
+      price: "10000",
+    });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "30000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseProduct(ctx, p.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toBe("1 Bulan"); // formatDenominationLabel output — buttonLabel stays undefined
+  });
+});
+
+// ===========================================================================
+// Final-review fixes (Findings 3-6): Back-button targets for the variant/
+// region pickers, scratch-clearing for the Game Top Up navigation fields,
+// trusting a fresh Category.group read, and keeping sc(ctx).categoryId in
+// sync across the variant/region resolution chain.
+// ===========================================================================
+
+describe("Finding 3 (I2): variant/region picker Back-button targets", () => {
+  it("the variant picker's Back button targets the CATEGORY picker, not a re-render of itself", async () => {
+    const cat = await createCategory(prisma, { name: "Free Fire Back Test", group: CategoryGroup.GAME_TOPUP });
+    // Sibling category so the group's category picker is genuinely reachable
+    // (Task 3 fix: browseCategoryEntry's default backTarget now recomputes
+    // listActiveCategoriesByGroup fresh — with only 1 category in the group
+    // it would (correctly) default to the GROUP picker instead, since the
+    // category picker itself would never have been shown).
+    await createCategory(prisma, { name: "Free Fire Back Test Sibling", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "FF B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2 variants -> variant picker rendered
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    // Never the old no-op-loop target.
+    expect(backRow.callback_data).not.toBe(`v1:browse:cat:${cat.id}`);
+  });
+
+  it("the region picker's Back button targets the VARIANT picker when one was actually shown", async () => {
+    const cat = await createCategory(prisma, { name: "Genshin Back Test", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    // A second variant so browseCategoryEntry renders the variant picker
+    // (this navigation genuinely shows it) before the customer taps it.
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Genesis C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2 variants -> variant picker shown
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((b) => b.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0); // "Standard" (alphabetically first) is index 0
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions)
+
+    const regionMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (regionMarkup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:gvars:${cat.id}`);
+  });
+
+  it("the region picker's Back button targets the CATEGORY picker when the variant step was auto-skipped", async () => {
+    // Exactly 1 distinct variant -> browseCategoryEntry skips the variant
+    // picker entirely, so the region picker's Back must NOT point at
+    // `gvars:<id>` (that would re-render a variant picker that never existed
+    // for this navigation) — it must skip straight to the category picker.
+    const cat = await createCategory(prisma, { name: "PUBG Back Test", group: CategoryGroup.GAME_TOPUP });
+    // Sibling category so the group's category picker is genuinely reachable
+    // (Task 3 fix: browseCategoryEntry's default backTarget now recomputes
+    // listActiveCategoriesByGroup fresh — with only 1 category in the group
+    // it would (correctly) default to the GROUP picker instead, since the
+    // category picker itself would never have been shown).
+    await createCategory(prisma, { name: "PUBG Back Test Sibling", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "PUBG B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // variant auto-skipped, region picker (2 regions) shown directly
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_region"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe(`v1:browse:gvars:${cat.id}`);
+  });
+
+  it("the variant picker's Back button targets the GROUP picker (not the skipped category picker) when reached via browseCategoriesInGroup's 1-category auto-skip", async () => {
+    // Only one active category in the group, so browseCategoriesInGroup
+    // never shows its own picker — the category itself has 2+ variants, so
+    // ITS picker does render, and that picker's Back must skip past the
+    // never-shown category picker straight to the group picker.
+    const cat = await createCategory(prisma, { name: "Solo Category Two Variants", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Global" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Max" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP); // 1 category -> auto-skip -> 2 variants -> variant picker
+
+    expect(sentIncludes(sink, t(ctx, "browse.choose_variant"))).toBe(true);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe("v1:browse:grps");
+    expect(backRow.callback_data).not.toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe(`v1:browse:cat:${cat.id}`);
+  });
+});
+
+// Task 3 fix (post-merge review finding): the "gvars" callback route
+// (callbacks.ts:87, the region picker's own Back target) re-enters
+// browseCategoryEntry with NO backTarget — same as the "cat" route. Before
+// this fix, the omitted-backTarget default unconditionally pointed at the
+// category picker (`grp:<group>`), even when the category was originally
+// reached via browseCategoriesInGroup's 1-category auto-skip (where the
+// category picker was never shown). The fix recomputes
+// listActiveCategoriesByGroup fresh (mirroring handleBackButton's own
+// Task-3 fix) so the default is `grps` when the group has <=1 active
+// category, matching whatever entry path actually applies today.
+describe("Task 3 fix: 'gvars' reentry recomputes the group's category-picker skip state", () => {
+  it("the region picker's Back tap ('gvars' route, no backTarget) re-renders the variant picker targeting the GROUP picker when the category was reached via the 1-category auto-skip", async () => {
+    // Sole active category in its group -> browseCategoriesInGroup auto-skips
+    // the category picker entirely (Task 3). 2 distinct variants so the
+    // variant picker itself renders; the "Standard" variant has 2 distinct
+    // regions so tapping it renders the region picker, whose Back button
+    // re-enters browseCategoryEntry via the "gvars" route with NO backTarget.
+    const cat = await createCategory(prisma, { name: "Solo Regioned Category", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Solo C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.GAME_TOPUP); // 1 category -> auto-skip -> 2 variants -> variant picker (Back correctly targets grps)
+
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((btn) => btn.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0); // "Standard" (alphabetically first) is index 0
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions), Back targets gvars:<id>
+
+    // Simulate the region picker's Back tap: the "gvars" callback route calls
+    // browseCategoryEntry with NO backTarget (callbacks.ts:87).
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe("v1:browse:grps");
+    // Pre-fix bug: this unconditionally re-pointed at the (never-shown)
+    // category picker.
+    expect(backRow.callback_data).not.toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+  });
+
+  it("regression guard: the same 'gvars' reentry still targets the CATEGORY picker when the group has 2+ active categories", async () => {
+    const cat = await createCategory(prisma, { name: "Multi Cat Regioned Category", group: CategoryGroup.GAME_TOPUP });
+    await createCategory(prisma, { name: "Sibling Category", group: CategoryGroup.GAME_TOPUP });
+    const a = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi A" });
+    await prisma.product.update({ where: { id: a.id }, data: { gameVariant: "Standard", gameRegion: "Asia" } });
+    await createDenomination(prisma, { productId: a.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const b = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi B" });
+    await prisma.product.update({ where: { id: b.id }, data: { gameVariant: "Standard", gameRegion: "Europe" } });
+    await createDenomination(prisma, { productId: b.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const c = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Multi C" });
+    await prisma.product.update({ where: { id: c.id }, data: { gameVariant: "Deluxe" } });
+    await createDenomination(prisma, { productId: c.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // 2+ categories in group -> "cat" route (no auto-skip) -> 2 variants -> variant picker
+
+    const variantMarkup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const variantIdx = (variantMarkup?.inline_keyboard ?? []).flat().findIndex((btn) => btn.callback_data === `v1:browse:gvar:${cat.id}:0`);
+    expect(variantIdx).toBeGreaterThanOrEqual(0);
+
+    await customer.pickGameVariant(ctx, cat.id, 0); // tap "Standard" -> region picker (2 regions)
+
+    // Simulate the region picker's Back tap via the "gvars" route again.
+    await customer.browseCategoryEntry(ctx, cat.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const backRow = flat[flat.length - 1]!;
+    expect(backRow.callback_data).toBe(`v1:browse:grp:${CategoryGroup.GAME_TOPUP}`);
+    expect(backRow.callback_data).not.toBe("v1:browse:grps");
+  });
+});
+
+describe("Finding 4 (I3): Game Top Up scratch-field clearing + emoji precedence", () => {
+  it("browseGroups clears every Game Top Up navigation field from scratch", async () => {
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseGroups(ctx);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("browseCategoriesInGroup clears every Game Top Up navigation field from scratch", async () => {
+    // Final-review re-check: the other half of the I5 desync. browseGroups
+    // (the top of the Products flow) already clears these five fields, but
+    // browseCategoriesInGroup — one level below it, reachable via a stale
+    // group-picker bubble while a DIFFERENT category's variant/region entries
+    // are still sitting in scratch — did not. Without this, a customer could
+    // land on category A's variant picker, tap an old group bubble into
+    // Premium Apps (which only synced `group`, leaving the entries behind),
+    // then tap A's variant button: enterGameRegion would resolve against the
+    // survived entries but fall through to browseProductsFlat with
+    // `group !== GAME_TOPUP`, silently dropping the variant/region filter and
+    // rendering every product in category A.
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("entering a non-GAME_TOPUP category clears all five Game Top Up navigation fields, not just the two 'resolved' ones", async () => {
+    const cat = await createCategory(prisma, { name: "Plain Premium Cat", group: CategoryGroup.PREMIUM_APPS });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Plain Product" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: {
+          gameVariantEmoji: "🔫",
+          gameVariantEntries: [{ label: "Standard", emoji: "🔫" }],
+          gameRegionEntries: ["Asia"],
+          resolvedGameVariant: "Standard",
+          resolvedGameRegion: "Asia",
+        },
+      },
+    });
+    await customer.browseCategoryEntry(ctx, cat.id);
+    const scratch = ctx.session.scratch as Record<string, unknown>;
+    expect(scratch.gameVariantEmoji).toBeUndefined();
+    expect(scratch.gameVariantEntries).toBeUndefined();
+    expect(scratch.gameRegionEntries).toBeUndefined();
+    expect(scratch.resolvedGameVariant).toBeUndefined();
+    expect(scratch.resolvedGameRegion).toBeUndefined();
+  });
+
+  it("browseProduct's buttonLabel prefers the PRODUCT's own gameVariantEmoji over a stale, different session-scratch emoji", async () => {
+    const cat = await createCategory(prisma, { name: "Emoji Precedence Cat", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Emoji Precedence Product" });
+    await prisma.product.update({ where: { id: p.id }, data: { gameVariant: "Standard", gameVariantEmoji: "🆕" } });
+    const d1 = await createDenomination(prisma, { productId: p.id, name: "60 UC", type: "SHARED", durationLabel: "60 UC", price: "15000" });
+    await prisma.denomination.update({ where: { id: d1.id }, data: { qtyValue: 60, qtyUnit: "UC" } });
+    await createDenomination(prisma, { productId: p.id, name: "325 UC", type: "SHARED", durationLabel: "325 UC", price: "75000" });
+
+    // Simulate a leftover emoji from a DIFFERENT, previously-browsed category
+    // (e.g. via Popular/search, which never sets/clears these fields at all).
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), scratch: { gameVariantEmoji: "🕹️" } } });
+    await customer.browseProduct(ctx, p.id);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ text: string; callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    const button = flat.find((b) => b.callback_data === `v1:browse:denom:${d1.id}`)!;
+    expect(button.text).toContain("🆕"); // the product's own emoji wins
+    expect(button.text).not.toContain("🕹️"); // the stale session one never leaks in
+  });
+});
+
+describe("Finding 5 (I4): browseCategoryEntry trusts the fresh Category.group read", () => {
+  it("re-entering the same category after an admin cleared its group updates scratch to the fresh value, not the stale one", async () => {
+    const cat = await createCategory(prisma, { name: "Reclassified Cat", group: CategoryGroup.GAME_TOPUP });
+    const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Reclassified Product" });
+    await createDenomination(prisma, { productId: p.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const { ctx } = customerCtx();
+    await customer.browseCategoryEntry(ctx, cat.id); // scratch.group = GAME_TOPUP
+    expect((ctx.session.scratch as { group?: string }).group).toBe(CategoryGroup.GAME_TOPUP);
+
+    // Admin reclassifies the category to no group at all.
+    await prisma.category.update({ where: { id: cat.id }, data: { group: null } });
+
+    // Customer taps the same (stale) category button again.
+    await customer.browseCategoryEntry(ctx, cat.id);
+    const scratch = ctx.session.scratch as { group?: string };
+    expect(scratch.group).toBeUndefined(); // fresh value, not the stale "GAME_TOPUP" fallback
+  });
+});
+
+describe("Finding 6 (I5): sc(ctx).categoryId stays in sync through the variant/region resolution chain", () => {
+  it("tapping a variant/region picker button for category A, with sc(ctx).categoryId stale at category B, resolves against category A", async () => {
+    const catA = await createCategory(prisma, { name: "Sync Category A", group: CategoryGroup.GAME_TOPUP });
+    const aVariant1 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Variant One" });
+    await prisma.product.update({ where: { id: aVariant1.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const aVariant2 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Variant Two" });
+    await prisma.product.update({ where: { id: aVariant2.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant2.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const catB = await createCategory(prisma, { name: "Sync Category B", group: CategoryGroup.GAME_TOPUP });
+    const bProduct = await createCatalogProduct(prisma, { categoryId: catB.id, name: "B Product" });
+    await createDenomination(prisma, { productId: bProduct.id, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    // Simulate the exact staleness scenario: the customer holds an old
+    // gvar:<catA> button, but sc(ctx).categoryId currently reads catB (set by
+    // some unrelated, more recent interaction) and gameVariantEntries
+    // legitimately corresponds to catA (the entries snapshot this very tap
+    // was rendered against).
+    const { ctx, sink } = customerCtx({
+      session: {
+        ...userSession(),
+        scratch: { categoryId: catB.id, gameVariantEntries: [{ label: "Standard", emoji: null }] },
+      },
+    });
+
+    await customer.pickGameVariant(ctx, catA.id, 0);
+
+    const scratch = ctx.session.scratch as { categoryId?: number };
+    expect(scratch.categoryId).toBe(catA.id); // synced to the tapped category, not left at B
+    expect(sentIncludes(sink, "A Variant One")).toBe(true);
+    expect(sentIncludes(sink, "A Variant Two")).toBe(true);
+    expect(sentIncludes(sink, "B Product")).toBe(false); // never shows category B's products
+  });
+});
+
+describe("Final-review re-check: browseCategoriesInGroup no longer lets a stale variant/region picker survive a group-tap", () => {
+  it("a stale tap through browseCategoriesInGroup degrades a later variant tap to the stale-screen toast instead of resolving an unfiltered list", async () => {
+    // Reproduces the finding's exact repro: Products -> Game Top Up ->
+    // category A (variant picker rendered, entries = A's) -> tap an OLDER
+    // group-picker bubble -> Premium Apps (only `group` used to get synced,
+    // leaving A's entries behind) -> tap A's variant button. Before the fix,
+    // pickGameVariant would resolve the stale entries against category A
+    // while sc(ctx).group now read PREMIUM_APPS, so browseProductsFlat's
+    // `group === GAME_TOPUP` gate would drop the variant/region filter and
+    // render every product in category A — the tapped variant silently
+    // ignored. After the fix, browseCategoriesInGroup clears the entries, so
+    // the same tap is correctly recognized as stale.
+    const catA = await createCategory(prisma, { name: "Stale Repro Category A", group: CategoryGroup.GAME_TOPUP });
+    const aVariant1 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Repro Variant One" });
+    await prisma.product.update({ where: { id: aVariant1.id }, data: { gameVariant: "Standard" } });
+    await createDenomination(prisma, { productId: aVariant1.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+    const aVariant2 = await createCatalogProduct(prisma, { categoryId: catA.id, name: "A Repro Variant Two" });
+    await prisma.product.update({ where: { id: aVariant2.id }, data: { gameVariant: "Premium" } });
+    await createDenomination(prisma, { productId: aVariant2.id, name: "100", type: "SHARED", durationLabel: "100", price: "15000" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseCategoryEntry(ctx, catA.id); // variant picker rendered, gameVariantEntries = A's
+
+    // Customer taps an older group-picker bubble into Premium Apps.
+    await customer.browseCategoriesInGroup(ctx, CategoryGroup.PREMIUM_APPS);
+
+    // Customer now taps category A's (now stale) variant button.
+    await customer.pickGameVariant(ctx, catA.id, 0);
+
+    expect(sentIncludes(sink, t(ctx, "error.stale_screen"))).toBe(true);
+    // Never falls through to an unfiltered flat list of category A's products.
+    expect(sentIncludes(sink, "A Repro Variant One")).toBe(false);
+    expect(sentIncludes(sink, "A Repro Variant Two")).toBe(false);
   });
 });
 
@@ -1061,7 +2199,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb emits an active dec5/inc5 stepper row for a mid-range qty", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       10,
@@ -1076,7 +2214,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops dec/dec5 at qty=1", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       1,
@@ -1093,7 +2231,7 @@ describe("qty stepper", () => {
 
   it("denominationDetailKb no-ops inc/inc5 at qty=stock", () => {
     const kb = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       5,
       "en",
       5,
@@ -1136,7 +2274,7 @@ describe("product detail: sold count + refresh", () => {
 
   it("denominationDetailKb includes a Refresh button above Back for in-stock and out-of-stock cases", () => {
     const inStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       20,
       "en",
       1,
@@ -1145,7 +2283,7 @@ describe("product detail: sold count + refresh", () => {
     expect(inStockFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
 
     const outOfStock = denominationDetailKb(
-      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00", deliveryType: DeliveryType.AUTO },
       0,
       "en",
       1,
@@ -1154,11 +2292,82 @@ describe("product detail: sold count + refresh", () => {
     expect(outFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
   });
 
+  it("denominationDetailKb shows Buy Now (never Restock) for a non-AUTO SKU with zero stock rows", () => {
+    // Manual/manual_with_info SKUs (every Digiflazz-imported denomination
+    // included) never have StockItem rows by design — availableStock is
+    // always 0 for them, but that must never gate purchasability.
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      0,
+      "en",
+      1,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:buy:${sample.product.id}:1`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:restock:sub:${sample.product.id}`)).toBe(false);
+  });
+
+  it("denominationDetailKb caps the qty stepper at MAX_CART_ORDER_UNITS (not availableStock=0) for a non-AUTO SKU", () => {
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Manual Denom", price: "5.00", deliveryType: DeliveryType.MANUAL_WITH_INFO },
+      0,
+      "en",
+      MAX_CART_ORDER_UNITS,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    // At qty === MAX_CART_ORDER_UNITS, +/+5 must no-op (capped), not because
+    // availableStock (0) was mistakenly used as the ceiling.
+    const inc = flat.find((b) => b.text === "+")!;
+    const inc5 = flat.find((b) => b.text === "+5")!;
+    expect(inc.callback_data).toBe("v1:noop");
+    expect(inc5.callback_data).toBe("v1:noop");
+    expect(flat.some((b) => b.callback_data === `v1:buy:${sample.product.id}:${MAX_CART_ORDER_UNITS}`)).toBe(true);
+  });
+
   it("routes v1:browse:refresh through routeCallback and re-renders the detail bubble", async () => {
     const { ctx, sink } = customerCtx({ callbackData: `v1:browse:refresh:${sample.product.id}:1` });
     await routeCallback(ctx);
     expect(sentIncludes(sink, sample.product.name)).toBe(true);
     expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+  });
+});
+
+// ===========================================================================
+// Audit fix (Task 8, Critical): every manual/Digiflazz SKU was unbuyable —
+// denominationDetailKb gated "Buy Now" on availableStock > 0, and manual/
+// manual_with_info SKUs (which include every Digiflazz-imported denomination)
+// never have StockItem rows by design, so the customer only ever saw "Notify
+// me when back in stock". A browse-path test is required here (not one that
+// calls showOrderConfirmation directly, like the pre-existing regression test
+// in customer-info.test.ts) because the buyer could never actually reach
+// showOrderConfirmation through the keyboard — this drives the real
+// browseDenomination handler that renders the keyboard the buyer taps.
+// ===========================================================================
+
+describe("browseDenomination — manual/manual_with_info SKUs are buyable (Task 8 audit fix)", () => {
+  async function makeManualWithInfoDenom() {
+    const category = await createCategory(prisma, `manual-info-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Info ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual Info Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+    });
+    await updateDenomination(prisma, denom.id, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+    return denom;
+  }
+
+  it("browseDenomination renders a v1:buy: button for a MANUAL_WITH_INFO denomination with zero stock rows", async () => {
+    const denom = await makeManualWithInfoDenom();
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(0);
+
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, denom.id);
+
+    expect(sentIncludes(sink, `v1:buy:${denom.id}:1`)).toBe(true);
+    expect(sentIncludes(sink, `v1:restock:sub:${denom.id}`)).toBe(false);
   });
 });
 
@@ -1250,8 +2459,39 @@ describe("checkout handlers", () => {
     const cached = JSON.parse(order.paymentRef!) as { gateway?: string; trxId?: string };
     expect(cached.gateway).toBe("tokopay");
     expect(cached.trxId).toBe("TP-TEST");
+
+    // Phase H customer-audit trail: a CUSTOMER-actor row for this exact order.
+    // actorType is filtered in the where-clause (M-6, final whole-branch
+    // review) rather than asserted after the fact — settlePaidOrder and other
+    // paths can also write an ADMIN-actor row against the same target, so an
+    // unfiltered findFirst only passes today by coincidence of ordering.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order.id } });
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.telegramUserId).toBe(42n);
+    expect(audit?.channel).toBe("BOT");
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("TokoPay");
+    // I-2 (final whole-branch review): correlationId is the one field
+    // logCheckoutAudit threads specifically so this row can be joined back to
+    // the exact Telegram update that created it — assert equality against
+    // this test's own ctx, not just truthiness.
+    expect(audit?.correlationId).toBe(String(ctx.update.update_id));
+
+    // Trustance Phase A Task A2b: a PENDING Payment ledger row now exists for
+    // this attempt, with the gateway's own clean trxId as its reference (not
+    // the JSON-cached blob Order.paymentRef holds).
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order.id } });
+    expect(payment.method).toBe("TOKOPAY");
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe("TP-TEST");
+    expect(payment.amount.toString()).toBe(new Decimal(order.totalAmount).toString());
+    expect(payment.currency).toBe("IDR");
   });
 
+  // Phase H regression guard: a checkout attempt that ends in
+  // gateway_create_failed never succeeded from the buyer's point of view (no
+  // usable order was ever shown to them), so no customer-audit row should
+  // exist for it — logCheckoutAudit only runs after the full success tail.
   it("buyNowTokopay cancels the order shell when the gateway create call fails (Checkout-3 fix)", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -1264,6 +2504,7 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
     expect(orders[0]!.status).toBe("CANCELLED");
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER" } })).toBe(0);
   });
 
   // M-6 fix, backend audit 2026-07-31: the order this creates is visible to
@@ -1399,6 +2640,231 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
+  // A1: the atomic checkoutIntentId constraint is the correctness guarantee
+  // behind refuseDuplicateCheckout's best-effort pre-check — this proves the
+  // atomic path ALSO degrades gracefully into the same buyer-facing UX, not a
+  // raw/unhandled error, on the cases the pre-check's per-product+window scope
+  // can't catch (e.g. a different product, or outside DUPLICATE_CHECKOUT_
+  // WINDOW_MS). The colliding order below is created for a DIFFERENT product
+  // than the one this call buys, so refuseDuplicateCheckout's own
+  // `items: { some: { productId } }` filter can't be what refuses this call —
+  // only createOrderDirect's DuplicateCheckoutIntentError catch in
+  // buyNowTokopay can be.
+  it("buyNowTokopay converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent@x.com:pw"]);
+    const checkoutIntentId = "11111111-1111-1111-1111-111111111111";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payq:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // No second order — the collision was refused, not raced through.
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // Same alert copy refuseDuplicateCheckout uses (checkout.duplicate_pending),
+    // not error.generic or a thrown/unhandled exception.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  // Task 1 fix (review finding): Binance Internal, Bybit, and Bybit BSC are
+  // thin createOrderDirect pass-through wrappers exactly like Tokopay above —
+  // they must degrade the same way on an atomic checkoutIntentId collision,
+  // not throw unhandled. Same shape as the buyNowTokopay test directly above:
+  // the colliding order is for a DIFFERENT product than the one this call
+  // buys, so only the DuplicateCheckoutIntentError catch in each buyNow*
+  // handler (not refuseDuplicateCheckout's pre-check) can be what refuses it.
+  it("buyNowInternal converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-internal@x.com:pw"]);
+    const checkoutIntentId = "22222222-2222-2222-2222-222222222222";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payx:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybit converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "UID456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybit@x.com:pw"]);
+    const checkoutIntentId = "33333333-3333-3333-3333-333333333333";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:payb:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  it("buyNowBybitBsc converts an atomic checkoutIntentId collision into the same friendly duplicate toast, not an unhandled error (A1)", async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, "0xDEADBEEF");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-bybitbsc@x.com:pw"]);
+    const checkoutIntentId = "44444444-4444-4444-4444-444444444444";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:paybc:1:1",
+      session: { ...userSession(), scratch: { checkoutIntentId } },
+    });
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
+  // Final whole-branch review (Important #1): completeOrderWithWallet is the
+  // SEVENTH order-creating path on this same confirm bubble, and the only one
+  // refuseDuplicateCheckout structurally cannot cover — it creates, settles AND
+  // delivers in one transaction, so its order is never PENDING_PAYMENT and that
+  // pre-check's `status: PENDING_PAYMENT` filter can never match. The buyer here
+  // holds 10.00 credit against a 5.00 product, i.e. enough for BOTH taps, so
+  // error.insufficient_wallet cannot be what refuses the second one either —
+  // only the atomic checkoutIntentId catch can be. Same shape as the buyNow*
+  // tests above: the colliding order is for a DIFFERENT product.
+  it("completeOrderWithWallet converts an atomic checkoutIntentId collision into the same friendly duplicate toast — no second order, debit, or delivery (A1)", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other-intent-wallet@x.com:pw"]);
+    const checkoutIntentId = "55555555-5555-5555-5555-555555555555";
+    await prisma.$transaction((tx) =>
+      createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: other.id,
+        quantity: 1,
+        checkoutIntentId,
+      }),
+    );
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    const balanceBefore = (await getUser(prisma, sample.user.id))!.walletBalance;
+
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true, checkoutIntentId } },
+    });
+    await checkout.completeOrderWithWallet(ctx, sample.product.id, 1);
+
+    // No second order…
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    // …no second wallet debit (the whole transaction rolled back, and the
+    // colliding INSERT happens before adjustWallet is ever reached)…
+    expect(Number((await getUser(prisma, sample.user.id))!.walletBalance)).toBeCloseTo(Number(balanceBefore));
+    // …and nothing was delivered: no credentials DM, and the only SOLD stock
+    // item in the DB is none at all (the pre-existing colliding order is still
+    // PENDING_PAYMENT, so its stock is RESERVED, not SOLD).
+    expect(calls(sink, "sendDocument")).toHaveLength(0);
+    expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(0);
+    // Same alert copy every other rail uses, not error.generic or a throw.
+    const alert = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    expect(sentIncludes(sink, t(ctx, "checkout.duplicate_pending"))).toBe(true);
+  });
+
   it("buyNowInternal's screen carries native copy-to-clipboard buttons for the Binance UID and unique payment code", async () => {
     // Pins the real call site (checkout.ts's buyNowInternal → proofCancelKb(..., copy)),
     // not just the keyboard builder in isolation — nothing else would catch
@@ -1421,6 +2887,51 @@ describe("checkout handlers", () => {
     const copies = (markup?.inline_keyboard ?? []).flat().map((b) => b.copy_text?.text);
     expect(copies).toContain("UID123");
     expect(copies).toContain(order!.paymentRef);
+
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) — see the TokoPay test above.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Binance Internal Transfer");
+  });
+
+  // Trustance Phase A Task A2b: buyNowInternal now also records a PENDING
+  // Payment ledger row once the order (and its paymentRef note) exists. Uses
+  // its own higher-priced product (not sample.product, whose IDR 5.00 price
+  // rounds to a 0 USDT total at this rate — createPaymentAttempt correctly
+  // rejects a zero amount, which would make this assertion flaky against the
+  // shared fixture instead of proving anything about the wiring itself).
+  it("buyNowInternal records a PENDING Payment ledger row with the order's own transfer-note reference (Task A2b)", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const category = await createCategory(prisma, `a2b-cat-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "A2b Ledger Product" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "A2b Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "160000.00",
+      warrantyDays: 30,
+    });
+    await bulkAddStock(prisma, denom.id, ["a2b-ledger-cred@example.com:pwd"]);
+
+    const { ctx } = customerCtx();
+    await checkout.buyNowInternal(ctx, denom.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(order?.paymentRef).toBeTruthy();
+    expect(new Decimal(order!.totalAmount).greaterThan(0)).toBe(true);
+
+    const payment = await prisma.payment.findUniqueOrThrow({ where: { pendingOrderId: order!.id } });
+    expect(payment.method).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(payment.status).toBe("PENDING");
+    expect(payment.reference).toBe(order!.paymentRef);
+    expect(payment.currency).toBe("USDT");
+    expect(payment.amount.toString()).toBe(new Decimal(order!.totalAmount).toString());
   });
 
   it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {
@@ -1435,6 +2946,13 @@ describe("checkout handlers", () => {
     // The order is cancelled (the unchanged cancelOrder transaction did its job).
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
+
+    // Phase H customer-audit trail — written inside the same transaction as
+    // cancelOrder (mirrors logAdminAction's convention for a self-contained
+    // mutation, e.g. conversations/reject.ts).
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id, action: "order_cancel" } });
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.details).toBe("Cancelled order via Telegram.");
 
     // The photo (QR) bubble itself is deleted — no QR left hanging.
     const deletes = calls(sink, "deleteMessage");
@@ -1469,6 +2987,184 @@ describe("checkout handlers", () => {
     const editedText = JSON.stringify(lastEdit.args);
     expect(editedText).toContain(sample.parentProduct.name);
     expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
+  });
+});
+
+// ===========================================================================
+// Phase H customer-audit trail — the remaining buyNow<Rail> call sites not
+// already covered above (buyNowTokopay/buyNowInternal/cancelPendingOrder).
+// Bybit/BybitBsc need no gateway mock (no external HTTP call — the rail
+// shows a static UID/address from Settings); NOWPayments/PayDisini reuse the
+// module-level vi.mock's near the top of this file, mirroring the existing
+// TokoPay mock.
+// ===========================================================================
+
+describe("Phase H customer-audit trail — remaining checkout rails", () => {
+  it("buyNowBybit logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "BYUID1");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowBybit(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT);
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Bybit UID transfer");
+  });
+
+  it("buyNowBybitBsc logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, "0xDEADBEEF");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
+    await setSetting(prisma, BYBIT_BSC_ENABLED_KEY, "true");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BYBIT_BSC);
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("Bybit BSC on-chain deposit");
+  });
+
+  it("buyNowNowpayments logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "ak");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx();
+    await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.NOWPAYMENTS);
+    expect(vi.mocked(mockedCreateNowpaymentsInvoice)).toHaveBeenCalled();
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("NOWPayments");
+  });
+
+  it("buyNowPaydisini logs a CUSTOMER order_create row", async () => {
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "uk");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "ak");
+    const { ctx } = customerCtx();
+    await checkout.buyNowPaydisini(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    expect(vi.mocked(mockedCreatePaydisiniTransaction)).toHaveBeenCalled();
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: order!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("PayDisini");
+  });
+});
+
+// ===========================================================================
+// changePaymentRail (Trustance Phase A Task A2a) — switching an order still
+// awaiting payment to a different rail without creating a second Order.
+//
+// Everything here is about the moment the write actually lands. The handler's
+// status/ownership checks run before its $transaction opens, so they can only
+// ever describe the order as it was; the write itself is guarded by
+// setOrderPaymentRail's compare-and-swap (packages/db/src/crud/orders.ts, with
+// its own crud-level race tests in orders.test.ts). These tests drive the whole
+// handler so the composition is covered end to end: that the guard is really
+// reached from here, and that the outgoing gateway reference survives the
+// switch on the retired ledger row.
+// ===========================================================================
+
+describe("changePaymentRail (Task A2a)", () => {
+  async function pendingTokopayOrder() {
+    const order = await makeOrder();
+    await prisma.order.update({
+      where: { id: order!.id },
+      data: { paymentMethod: PaymentMethod.TOKOPAY, paymentRef: "TP-OLD-REF" },
+    });
+    return order!;
+  }
+
+  it("retires the old attempt with the outgoing paymentRef, opens a new one, and clears paymentRef on the Order", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    // Cleared so the new rail's own claimGatewaySlot starts from null...
+    expect(after!.paymentRef).toBeNull();
+
+    // ...but not lost: the reference the old rail was quoting — the key
+    // binanceInternal.ts/amountMatching.ts/nowpaymentsReconcile.ts match
+    // incoming payments against — is now on the retired ledger row, so a
+    // payment landing on the old rail after the switch is still traceable.
+    const retired = await prisma.payment.findUniqueOrThrow({ where: { id: oldAttempt.id } });
+    expect(retired.status).toBe(PaymentStatus.EXPIRED);
+    expect(retired.expiryReason).toBe(PaymentExpiryReason.RAIL_CHANGED);
+    expect(retired.reference).toBe("TP-OLD-REF");
+
+    const live = await prisma.payment.findMany({ where: { orderId: order.id, status: PaymentStatus.PENDING } });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.method).toBe(PaymentMethod.PAYDISINI);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("Payment method updated for this order.");
+  });
+
+  it("leaves an order that got PAID between its pre-check and its write completely untouched (the crud guard, not the pre-check, is what stops it)", async () => {
+    const order = await pendingTokopayOrder();
+    const oldAttempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    // Reproduce the TOCTOU window deterministically: hand the handler's
+    // status/ownership pre-check the still-PENDING_PAYMENT view it would
+    // genuinely read, then land the payment confirmation before its write
+    // transaction opens. The pre-check therefore waves the switch through on
+    // a stale read — exactly what the old unguarded `tx.order.update` acted
+    // on — leaving setOrderPaymentRail's compare-and-swap as the only thing
+    // between that and a PAID order being restamped with a rail the buyer
+    // never paid on. (Overriding one crud call once to stand in for a
+    // concurrent writer is the same technique the M-6 claimGatewaySlot test
+    // above uses. Real overlapping Postgres transactions prove the guard
+    // itself in packages/db/src/crud/orders.test.ts's setOrderPaymentRail
+    // block; what this adds is that the HANDLER is actually gated by it.)
+    vi.mocked(getOrder).mockImplementationOnce(async (db, id) => {
+      const staleSnapshot = await getOrder(db, id); // the once-impl is spent — this is the real read
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAID } });
+      return staleSnapshot;
+    });
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:rail:${order.id}` });
+    // The handler doesn't throw — it catches the crud layer's ValidationError
+    // and tells the buyer, same as its own pre-check would have.
+    await checkout.changePaymentRail(ctx, order.id, PaymentMethod.PAYDISINI);
+
+    const after = await getOrder(prisma, order.id);
+    expect(after!.status).toBe(OrderStatus.PAID);
+    expect(after!.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(after!.paymentRef).toBe("TP-OLD-REF");
+
+    // The whole $transaction rolled back with the guard: the old attempt is
+    // still the live one and no PAYDISINI attempt was ever opened.
+    const attempts = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.id).toBe(oldAttempt.id);
+    expect(attempts[0]!.status).toBe(PaymentStatus.PENDING);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("This order can no longer be paid.");
   });
 });
 
@@ -1588,6 +3284,18 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(docs).toHaveLength(1);
     expect(docs[0]!.args[0]).toBe(42); // buyer's Telegram chat, not the channel
     expect((docs[0]!.args[1] as { filename?: string }).filename).toBe(`${orders[0]!.orderCode}.txt`);
+
+    // Phase H customer-audit trail — written inside the same $transaction as
+    // completeOrderWithWalletCredit (no external gateway call follows it, so
+    // this transaction IS the complete unit of "order created and paid").
+    // Filtered on actorType too: settlePaidOrder's own pre-existing
+    // Checkout-6 fix (packages/db/src/crud/orders.ts) ALSO writes an
+    // ADMIN-actor "order.auto_deliver" row for this same order id (adminId: 0
+    // = the auto-confirm path, not a human) — a second, unrelated row this
+    // assertion must not accidentally match.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "order", targetId: orders[0]!.id } });
+    expect(audit?.action).toBe("order_create");
+    expect(audit?.details).toContain("wallet credit");
   });
 
   it("v1:walletpay with useWalletUsdt set and enough USDT credit: delivers the order, IDR balance untouched", async () => {
@@ -2483,18 +4191,23 @@ describe("admin handlers", () => {
     expect(audit!.details).toContain(String(ticket.id));
   });
 
-  it("a double-tap ticket close never sends a second buyer DM (Bot-3 fix)", async () => {
+  it("a double-tap ticket close never enqueues a second buyer DM (Bot-3 fix)", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "help" } });
-    const { ctx: ctx1, sink: sink1 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    const { ctx: ctx1 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx1, `v1:adm:ticket:close:${ticket.id}`.split(":"));
-    const { ctx: ctx2, sink: sink2 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    const { ctx: ctx2 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx2, `v1:adm:ticket:close:${ticket.id}`.split(":"));
 
-    // sample.user has a telegramId, so the first close DMs them; the second
-    // (already-closed) close must NOT — closeTicket's atomic guard returns
-    // null, so handleAdminCallback's customerTgId check skips the DM.
-    expect(calls(sink1, "sendMessage").length).toBe(1);
-    expect(calls(sink2, "sendMessage").length).toBe(0);
+    // sample.user has a telegramId, so the first close enqueues a
+    // TICKET_CLOSED_DM notification_outbox row; the second (already-closed)
+    // close must NOT — closeTicket's atomic guard returns null, so
+    // handleAdminCallback's customerTgId check skips the enqueue. Task 2
+    // (Phase C) routed this through the outbox instead of a direct
+    // ctx.api.sendMessage() — asserted here on the outbox row count instead
+    // of the sink's captured sendMessage calls.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_CLOSED_DM } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticket.id);
+    expect(matching).toHaveLength(1);
   });
 
   it("mark stock dead flips the status and writes an audit row (Bot-4 fix)", async () => {

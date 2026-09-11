@@ -16,6 +16,8 @@
  */
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { Decimal } from "@app/core/money";
+import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 
 export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
@@ -53,6 +55,13 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REJECTED,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    // Legal in shape only — nothing reaches it yet. `recomputeOrderStatus`
+    // (orders.ts) is the sole writer, and it can only derive
+    // PARTIALLY_DELIVERED from an order whose items ended with a split
+    // outcome, which no current code path can produce. Listed so the future
+    // plan that does produce one is not blocked by this table. See
+    // OrderStatus.PARTIALLY_DELIVERED in @app/core/enums.
+    OrderStatus.PARTIALLY_DELIVERED,
   ],
   // Manual fulfilment queue: an admin either delivers the typed content
   // (fulfillManualOrder → DELIVERED) or rejects/cancels the order.
@@ -61,6 +70,8 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REJECTED,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,
+    // Same "shape-legal, unreachable today" note as above.
+    OrderStatus.PARTIALLY_DELIVERED,
   ],
   // Legacy/transitional value — kept for any historical or edge writer.
   [OrderStatus.PAID]: [OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.REFUNDED],
@@ -71,6 +82,11 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   ],
   // Terminal states — no outgoing transitions.
   [OrderStatus.DELIVERED]: [],
+  // Terminal for the same reason DELIVERED is: the order's lines have all
+  // reached an outcome, some good and some not. What a buyer is owed for the
+  // failed half is a Refund-domain question, and that domain is deferred —
+  // when it lands it will add the outgoing edge (REFUNDED) here.
+  [OrderStatus.PARTIALLY_DELIVERED]: [],
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.REJECTED]: [],
   [OrderStatus.REFUNDED]: [],
@@ -143,4 +159,69 @@ export async function tryTransitionOrderStatus(
     if (e instanceof ValidationError && e.key === "error.illegal_status_transition") return false;
     throw e;
   }
+}
+
+/**
+ * Flag a QRIS/IDR order UNDERPAID (idempotent) — the shared counterpart of
+ * the three crypto rails' own `markUnderpaid`/`markUnderpaidBybit`/
+ * `markUnderpaidBybitBsc` (packages/db/src/crud/binance_internal.ts and its
+ * Bybit siblings), used by tokopayReconcile.ts, paydisiniReconcile.ts, and
+ * nowpaymentsReconcile.ts.
+ *
+ * Unlike the crypto rails, which scan a blockchain and need a separate
+ * per-gateway ledger table (`processed_binance_tx` etc.) to dedupe deposits
+ * with no natural "already handled" marker, each of these three pollers
+ * re-checks the SAME `order.id` every cycle via its gateway's
+ * `checkTransaction`-equivalent — so the order's own status IS the natural
+ * idempotency guard, and this function needs no ledger table to dedupe with.
+ * The `tryTransitionOrderStatus` call below IS that guard: once the order has
+ * left PENDING_PAYMENT (this call already flagged it, or a webhook/another
+ * poller settled it first), it returns false and this function is a no-op —
+ * exactly how the crypto rails already treat their own idempotent-`false`
+ * case.
+ *
+ * It nevertheless writes one `QrisUnderpaidTx` row per applied flag, for a
+ * different reason than dedup: the amount that actually arrived has to be
+ * readable later. Every path that pays an underpaid buyer back what they sent
+ * (`refundUnderpaidOrder`, `creditUnderpaidTopupAnyway`) resolves it through
+ * `findUnderpaidReceived` (crud/orders.ts), which reads structured ledger
+ * rows — so while the received amount lived only in the `adminNote` free text
+ * below, a QRIS-flagged order read back as "received 0" and the buyer got
+ * nothing. The row is written only on the applied path, never on the
+ * idempotent no-op, so a poller re-checking the same order cannot append a
+ * second, conflicting record of what arrived.
+ *
+ * The transition, the `adminNote` write and the ledger row run as one
+ * `$transaction` so a crash or thrown error between them can never leave a
+ * torn state, mirroring `markUnderpaid`'s own transaction shape.
+ */
+export async function markOrderUnderpaid(
+  db: PrismaClient,
+  args: { orderId: number; gateway: string; receivedAmount: Decimal.Value; expectedAmount: Decimal.Value },
+): Promise<boolean> {
+  return db.$transaction(async (tx: Tx) => {
+    const applied = await tryTransitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.PENDING_PAYMENT,
+      to: OrderStatus.UNDERPAID,
+      meta: `gateway=${args.gateway}`,
+    });
+    if (!applied) return false;
+
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        adminNote: `[underpaid] received ${new Decimal(args.receivedAmount).toString()} via ${args.gateway}, expected ${new Decimal(args.expectedAmount).toString()}`,
+      },
+    });
+    await tx.qrisUnderpaidTx.create({
+      data: {
+        orderId: args.orderId,
+        gateway: args.gateway,
+        receivedAmount: new Decimal(args.receivedAmount),
+        expectedAmount: new Decimal(args.expectedAmount),
+      },
+    });
+    return true;
+  }, { timeout: 15000 });
 }

@@ -5,7 +5,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
 import { DataTable } from "../components/shared/DataTable";
-import { StatusBadge } from "../components/shared/StatusBadge";
+import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
 import { Send, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +16,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
 /** NotificationEvent values from packages/core/src/enums.ts, labeled
@@ -118,9 +118,7 @@ export function OutboxPage() {
       const p = new URLSearchParams();
       if (applied.status) p.set("status", applied.status);
       if (applied.page > 1) p.set("page", String(applied.page));
-      const res = await fetch(`/api/outbox?${p}`, { credentials: "include" });
-      if (!res.ok) throw new Error(`/api/outbox ${res.status}`);
-      return res.json() as Promise<OutboxResponse>;
+      return apiGet<OutboxResponse>(`/api/outbox?${p}`);
     },
   });
 
@@ -169,8 +167,8 @@ export function OutboxPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="_all_">All statuses</SelectItem>
-              {["PENDING", "SENT", "FAILED"].map((s) => (
-                <SelectItem key={s} value={s}>{s}</SelectItem>
+              {["PENDING", "SENDING", "SENT", "FAILED", "DEAD_LETTER"].map((s) => (
+                <SelectItem key={s} value={s}>{statusLabel(s)}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -193,7 +191,7 @@ export function OutboxPage() {
                 key: "actions",
                 header: "",
                 render: (row) =>
-                  row.status === "FAILED" ? (
+                  ["FAILED", "DEAD_LETTER"].includes(row.status) ? (
                     <Button
                       variant="outline"
                       size="sm"

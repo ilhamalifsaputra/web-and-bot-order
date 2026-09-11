@@ -26,6 +26,14 @@
  * genuinely differ between a product order (has a My-Orders detail page, a
  * cart to return to) and a top-up (neither exists — it settles onto the
  * account/wallet balance instead).
+ *
+ * Design-system migration + cancel-order confirmation (Task 14): composed
+ * layout (no page-templates.md reference — see deviations.md
+ * §14-pay-topup-track). Cancel now opens `<AlertDialog>` instead of firing
+ * `cancelMutation.mutate()` directly on click — the one logic addition this
+ * task makes (Global Constraints; Task 1 audit §F item 3); the mutation
+ * itself, and every fetch/poll/state-machine/countdown mechanism below, is
+ * byte-unchanged.
  */
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -52,40 +60,54 @@ import { formatIdr } from "../lib/format";
 import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
-import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
+import Card from "../components/ui/Card";
+import Button from "../components/ui/Button";
+import Alert from "../components/ui/Alert";
+import Badge from "../components/ui/Badge";
+import AlertDialog from "../components/ui/AlertDialog";
 
-/** TSX port of _pay_status.njk — the polled status chip. */
+/**
+ * TSX port of _pay_status.njk — the polled status chip. Design-system
+ * migration (Task 14): now `Badge`-driven. Tone-per-state is UNCHANGED from
+ * the pre-migration markup above — `waiting`→`pending` (amberx),
+ * `confirming`→`info` (pine, the one new Badge variant this task adds — an
+ * existing token, not an invented color), `delivered`→`success` (grass),
+ * `expired`→`failed` (rust), `closed`→`neutral` (sand). See
+ * deviations.md §14-pay-topup-track for a note on a divergence this
+ * surfaced against business-adaptation.md's order-level Entity States
+ * table, deliberately NOT corrected here (out of scope for a re-skin).
+ */
 function StatusStrip({ state }: { state: PayState }) {
   if (state === "waiting") {
     return (
-      <div className="chip bg-amberx-tint text-amberx">
-        <Clock className="w-3.5 h-3.5" /> {t("web.status_waiting")}
-      </div>
+      <Badge variant="pending" icon={<Clock className="w-3.5 h-3.5" />}>
+        {t("web.status_waiting")}
+      </Badge>
     );
   }
   if (state === "confirming") {
     return (
-      <div className="chip bg-pine-tint text-pine-dark">
-        <Loader className="w-3.5 h-3.5 animate-spin" /> {t("web.status_confirming")}
-      </div>
+      <Badge variant="info" icon={<Loader className="w-3.5 h-3.5 animate-spin" />}>
+        {t("web.status_confirming")}
+      </Badge>
     );
   }
   if (state === "delivered") {
     return (
-      <div className="chip bg-grass-tint text-grass-dark">
-        <BadgeCheck className="w-3.5 h-3.5" /> {t("web.status_paid")}
-      </div>
+      <Badge variant="success" icon={<BadgeCheck className="w-3.5 h-3.5" />}>
+        {t("web.status_paid")}
+      </Badge>
     );
   }
   if (state === "expired") {
     return (
-      <div className="chip bg-rust-tint text-rust-dark">
-        <TimerOff className="w-3.5 h-3.5" /> {t("web.status_expired")}
-      </div>
+      <Badge variant="failed" icon={<TimerOff className="w-3.5 h-3.5" />}>
+        {t("web.status_expired")}
+      </Badge>
     );
   }
-  return <div className="chip bg-sand text-ink-soft">{t("web.status_closed")}</div>;
+  return <Badge variant="neutral">{t("web.status_closed")}</Badge>;
 }
 
 /** Contact fallback shown when a gateway is down — shared by the TokoPay/
@@ -110,15 +132,11 @@ function GatewayDownFallback({
   botUsername: string;
 }) {
   return (
-    <div className="mt-4 rounded-xl border border-amberx/30 bg-amberx-tint/60 p-4">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-amberx shrink-0 mt-0.5" />
-        <div className="text-sm">
-          <p className="font-semibold text-ink">{t(titleKey)}</p>
-          <p className="text-ink-soft mt-0.5 leading-relaxed">{t(bodyKey)}</p>
-        </div>
-      </div>
-      <div className="flex flex-wrap gap-2 mt-4">
+    <div className="mt-4">
+      <Alert variant="banner" tone="warning" title={t(titleKey)}>
+        {t(bodyKey)}
+      </Alert>
+      <div className="flex flex-wrap gap-2">
         <a href={payPath} className="btn btn-soft btn-sm">
           <RefreshCw className="w-3.5 h-3.5" /> {t("web.pay_retry")}
         </a>
@@ -216,6 +234,12 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
     onSuccess: () => navigate(retryHref),
   });
 
+  // The one logic addition Task 14 makes: the cancel button no longer fires
+  // cancelMutation directly (Global Constraints / Task 1 audit §F item 3) —
+  // it opens this dialog first. onConfirm below calls the exact same
+  // mutate() call the old onClick did.
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 
   // "We emailed this code to <address>" — the guest order-code mail
@@ -271,7 +295,7 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
 
       {state === "waiting" && (
         <>
-          <div className="card card-pad">
+          <Card>
             {data.is_binance ? (
               <>
                 <h2 className="section-title mb-3">{t("web.pay_usdt_title")}</h2>
@@ -469,58 +493,74 @@ export default function PayPage({ variant = "order" }: { variant?: "order" | "to
                 </span>
               </div>
             )}
+          </Card>
+
+          <div className="mt-4 text-center">
+            <Button
+              variant="ghost"
+              className="text-rust"
+              disabled={cancelMutation.isPending}
+              onClick={() => setCancelDialogOpen(true)}
+            >
+              {t("web.cancel_order")}
+            </Button>
           </div>
 
-          <form onSubmit={(e) => e.preventDefault()} className="mt-4 text-center">
-            <button
-              type="button"
-              className="btn btn-ghost text-rust"
-              disabled={cancelMutation.isPending}
-              onClick={() => cancelMutation.mutate()}
-            >
-              {cancelMutation.isPending && <Spinner />}
-              {t("web.cancel_order")}
-            </button>
-          </form>
+          {/* The required behavior change (Task 14): open a confirmation
+              instead of firing cancelMutation.mutate() straight from the
+              trigger's onClick. onConfirm below is the EXACT SAME call the
+              old direct-execute onClick made — see the diff self-check note
+              in deviations.md §14-pay-topup-track. */}
+          <AlertDialog
+            open={cancelDialogOpen}
+            onCancel={() => setCancelDialogOpen(false)}
+            onConfirm={() => cancelMutation.mutate()}
+            title={t("web.cancel_order_confirm_title")}
+            description={t("web.cancel_order_confirm_body", { code: order.code })}
+            confirmLabel={t("web.cancel_order_confirm_yes")}
+            cancelLabel={t("web.cancel_order_confirm_no")}
+            tone="danger"
+            confirmPending={cancelMutation.isPending}
+          />
         </>
       )}
 
       {state === "delivered" && (
-        <div className="card card-pad text-center py-10">
+        <Card className="text-center py-10">
           <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
           <h2 className="section-title">{t("web.pay_done_title")}</h2>
           <p className="text-sm text-ink-soft mt-1">{t("web.pay_done_sub")}</p>
           <Link to={deliveredHref} className="btn btn-primary mt-5">
             {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
           </Link>
-        </div>
+        </Card>
       )}
 
       {state === "confirming" && (
-        <div className="card card-pad text-center py-10">
+        <Card className="text-center py-10">
           <Loader className="w-10 h-10 text-pine mx-auto mb-3 animate-spin" />
           <p className="text-sm font-medium text-ink">{t("web.pay_confirming")}</p>
           <p className="text-xs text-ink-soft mt-2">{t("web.pay_confirming_sub")}</p>
-        </div>
+        </Card>
       )}
 
       {state === "expired" && (
-        <div className="card card-pad text-center py-10">
+        <Card className="text-center py-10">
           <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
           <p className="text-sm text-ink-soft">{t("web.pay_expired")}</p>
           <Link to={retryHref} className="btn btn-primary mt-4">
             {t(retryLabelKey)}
           </Link>
-        </div>
+        </Card>
       )}
 
       {state === "closed" && (
-        <div className="card card-pad text-center py-10">
+        <Card className="text-center py-10">
           <p className="text-sm text-ink-soft">{t("web.pay_closed")}</p>
           <Link to={closedHref} className="btn btn-soft mt-4">
             {t(closedLabelKey)}
           </Link>
-        </div>
+        </Card>
       )}
       </div>
     </>

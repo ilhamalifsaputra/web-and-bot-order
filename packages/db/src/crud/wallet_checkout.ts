@@ -15,7 +15,7 @@
  * nothing to wait for, the credit already fully paid for the order.
  */
 import { Decimal } from "@app/core/money";
-import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import {
@@ -28,7 +28,8 @@ import {
 } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { transitionOrderStatus } from "./orderStatus";
-import { getCart } from "./cart";
+import { getCart, cartCompositionLineOfCartItem } from "./cart";
+import { cartCompositionError } from "@app/core/cartComposition";
 
 export type WalletCheckoutResult = SettleResult;
 
@@ -55,6 +56,17 @@ export async function completeOrderWithWalletCredit(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
     customerData?: string | null;
+    /** Client-minted checkout attempt id (A1) — forwarded verbatim to
+     * createOrderDirect below; see {@link DuplicateCheckoutIntentError} in
+     * orders.ts for the collision contract this enforces. It matters more here
+     * than on any gateway rail: this function creates, settles AND delivers in
+     * one transaction, so the resulting order is never left PENDING_PAYMENT and
+     * the bot's best-effort `refuseDuplicateCheckout` pre-check (which filters
+     * on that status) structurally cannot see a double-tap on this rail. The
+     * unique index is the only guard. The throw happens on the createOrderDirect
+     * INSERT below — before any wallet credit is spent or stock claimed — so the
+     * loser's whole transaction rolls back with nothing debited or delivered. */
+    checkoutIntentId?: string | null;
   },
 ): Promise<WalletCheckoutResult> {
   const created = await createOrderDirect(db, {
@@ -62,6 +74,7 @@ export async function completeOrderWithWalletCredit(
     productId: args.productId,
     quantity: args.quantity,
     voucherCode: args.voucherCode,
+    checkoutIntentId: args.checkoutIntentId,
     // Only the IDR track spends IDR credit during creation — the USDT track
     // leaves this order's walletAmount unset and applies USDT credit below,
     // exactly like createInternalOrder does for a partial USDT credit today.
@@ -138,8 +151,13 @@ export async function completeCartOrderWithWalletCredit(
 ): Promise<WalletCheckoutResult> {
   const cartLines = await getCart(db, args.user.id);
   const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
-  if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
-    throw new ValidationError("error.cart_mixed_delivery");
+  // The same shared `cart_kind` rule performCheckout applies — literally the
+  // same function now, rather than a copy of its two-line check that had to be
+  // kept in step by hand (Trustance Phase 1 Task 3). Rule and error keys
+  // unchanged.
+  const compositionError = cartCompositionError(activeCartLines.map(cartCompositionLineOfCartItem));
+  if (compositionError) {
+    throw new ValidationError(compositionError);
   }
 
   const created = await createOrderFromCart(db, {

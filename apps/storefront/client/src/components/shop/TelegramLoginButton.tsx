@@ -1,6 +1,16 @@
+/**
+ * Task 15: the button element itself is now `<Button variant="soft"
+ * fullWidth>` (`components/ui/Button.tsx`) instead of a hand-rolled
+ * `<button className="btn btn-soft w-full">` — Button composes those exact
+ * three classes (`cn("btn", "btn-soft", fullWidth && "w-full")`), so the
+ * rendered class list, and every existing test assertion against it, is
+ * unchanged. `disabled`/`onClick`/children content and the bfcache
+ * `pageshow` reset are all untouched — this is a container swap only.
+ */
 import { useEffect, useState } from "react";
 import { t } from "../../lib/i18n";
 import { buildTelegramOAuthUrl } from "../../lib/telegramOAuth";
+import Button from "../ui/Button";
 import Spinner from "./Spinner";
 import TelegramIcon from "./TelegramIcon";
 
@@ -39,7 +49,7 @@ export default function TelegramLoginButton({ botId, authUrl }: TelegramLoginBut
   }
 
   return (
-    <button type="button" className="btn btn-soft w-full" onClick={handleClick} disabled={connecting}>
+    <Button variant="soft" fullWidth onClick={handleClick} disabled={connecting}>
       {connecting ? (
         <>
           <Spinner />
@@ -51,6 +61,6 @@ export default function TelegramLoginButton({ botId, authUrl }: TelegramLoginBut
           {t("web.login_telegram")}
         </>
       )}
-    </button>
+    </Button>
   );
 }

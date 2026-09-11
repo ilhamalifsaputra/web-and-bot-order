@@ -66,12 +66,29 @@ export async function resetDb(prisma: PrismaClient) {
   // which would otherwise leave getSetting's in-memory cache serving stale
   // values against a now-empty table.
   __clearSettingsCacheForTests(prisma);
+  await prisma.idempotencyRecord.deleteMany();
   await prisma.notificationOutbox.deleteMany();
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();
   await prisma.review.deleteMany();
   await prisma.referral.deleteMany();
   await prisma.restockSubscription.deleteMany();
+  // AdminTask.order/orderItem/refund are all onDelete:Restrict (Task 9a —
+  // same operational-audit-record policy as Refund/RefundItem) — must be
+  // cleared before RefundItem/Refund/OrderItem/Order, or a leftover
+  // AdminTask row blocks any of those deletes below.
+  await prisma.adminTask.deleteMany();
+  // RefundItem.orderItem and Refund.order are both onDelete:Restrict
+  // (Refund domain, Task 8a — same financial-audit-record policy as
+  // OrderItem/OrderStatusHistory) — must be cleared before OrderItem/Order,
+  // or a leftover Refund/RefundItem row blocks the delete below.
+  await prisma.refundItem.deleteMany();
+  await prisma.refund.deleteMany();
+  // Payment.order is onDelete:Restrict (Trustance Phase A Task A2a — same
+  // financial-audit-record policy as Refund/RefundItem/OrderStatusHistory) —
+  // must be cleared before Order, or a leftover Payment row blocks the
+  // delete below.
+  await prisma.payment.deleteMany();
   await prisma.orderItem.deleteMany();
   // OrderStatusHistory.order is onDelete:Restrict (audit trail, same policy as
   // OrderItem/Review) — must be cleared before Order, or a row left over from
@@ -87,6 +104,13 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.voucher.deleteMany();
   await prisma.auditLog.deleteMany();
   await prisma.broadcast.deleteMany();
+  // Detection Engine knowledge/index tables. No FKs among them, and
+  // DetectionOverride.createdBy → User is a plain nullable column (no
+  // relation/cascade), so ordering vs. user.deleteMany() below is flexible.
+  await prisma.detectionIssue.deleteMany();
+  await prisma.detectionOverride.deleteMany();
+  await prisma.detectionAlias.deleteMany();
+  await prisma.detectionToken.deleteMany();
   await prisma.setting.deleteMany();
   // WalletTransaction.user is onDelete:Restrict (Infra-5 fix, security audit
   // 2026-06-23 — it's an append-only ledger, never auto-erased alongside its

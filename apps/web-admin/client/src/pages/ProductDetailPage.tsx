@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -12,8 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical } from "lucide-react";
+import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical, Check } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -31,7 +32,9 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
+import { useGames } from "../api/games";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface DenominationRow {
   id: number;
@@ -41,6 +44,9 @@ interface DenominationRow {
   isActive: boolean;
   type: string;
   durationLabel: string;
+  /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
+  qtyValue: number | null;
+  qtyUnit: string | null;
 }
 
 interface ProductDetail {
@@ -53,8 +59,25 @@ interface ProductDetail {
   warrantyNote: string | null;
   isActive: boolean;
   webImageUrl: string | null;
-  category: { id: number; name: string } | null;
+  category: { id: number; name: string; group: string | null } | null;
   denominations: DenominationRow[];
+  /** Catalog-presentation classification (Fase 12 task 22) — the default
+   * placeholder art style (thumbnailKind) and the currency-icon chip shown
+   * on this product's denomination cards (currencyIconKind) on the
+   * storefront. Both null until an admin sets them; both hidden entirely
+   * from the edit form for a product in a PREMIUM_APPS-group category. */
+  thumbnailKind: string | null;
+  currencyIconKind: string | null;
+  /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+   * catalog navigation and denomination labeling (Tasks 11-13) key off
+   * these three, null until an admin sets them. */
+  gameVariant: string | null;
+  gameVariantEmoji: string | null;
+  gameRegion: string | null;
+  /** Structural link (Task 10/12) to the canonical Game catalog model that
+   * drives the multi-provider nickname check — distinct from the three
+   * free-text fields above. Null until an admin links a Game. */
+  gameId: number | null;
 }
 
 interface DenomStat {
@@ -70,6 +93,28 @@ interface ProductDetailData {
   statsByDenom: Record<string, DenomStat>;
 }
 
+// Sentinel for "automatic/none" on the thumbnailKind/currencyIconKind
+// selects below — shadcn's Select rejects an empty-string item value, same
+// reasoning as CategoryDialog.tsx's NO_GROUP.
+const AUTO_KIND = "auto";
+
+const THUMBNAIL_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "game", label: "Game" },
+  { value: "voucher", label: "Voucher" },
+  { value: "steam", label: "Steam" },
+  { value: "entertainment", label: "Hiburan" },
+  { value: "app", label: "Aplikasi" },
+  { value: "generic", label: "Umum" },
+];
+
+const CURRENCY_ICON_KIND_OPTIONS: { value: string; label: string }[] = [
+  { value: "diamond", label: "Diamond" },
+  { value: "coin", label: "Koin" },
+  { value: "key", label: "Key" },
+  { value: "card", label: "Kartu" },
+  { value: "voucher", label: "Voucher" },
+];
+
 function useProductDetail(productId: string) {
   return useQuery<ProductDetailData>({
     queryKey: ["catalog", productId],
@@ -83,21 +128,48 @@ export function ProductDetailPage() {
   const navigate = useNavigate();
   const { data, isError, refetch } = useProductDetail(productId ?? "");
   const { data: catalog } = useCatalog();
+  const { data: games } = useGames();
   const queryClient = useQueryClient();
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const [togglingDenom, setTogglingDenom] = useState<Set<number>>(new Set());
   const [editingProduct, setEditingProduct] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [descriptionDraft, setDescriptionDraft] = useState("");
+  // Game-navigation classification (Task 8/14) — bot navigation and
+  // denomination labeling (Tasks 11-13) key off these three. Independent of
+  // each other and of every other field on this form.
+  const [gameVariantDraft, setGameVariantDraft] = useState("");
+  const [gameVariantEmojiDraft, setGameVariantEmojiDraft] = useState("");
+  const [gameRegionDraft, setGameRegionDraft] = useState("");
+  // Linked Game (Task 10/12) — structural FK to the new Game catalog model,
+  // independent of the three cosmetic fields above. "" means no game linked
+  // (null); a Select item's value can't itself be an empty string (Radix),
+  // so this stores the numeric id as a string and maps "" <-> null at the
+  // save-payload boundary.
+  const [gameIdDraft, setGameIdDraft] = useState("");
   // Storefront detail blocks — each renders as its own titled section on the
   // product page, and stays hidden there while it's blank.
   const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
   const [termsDraft, setTermsDraft] = useState("");
   const [warrantyNoteDraft, setWarrantyNoteDraft] = useState("");
   const [categoryDraft, setCategoryDraft] = useState<string>("");
+  // Catalog-presentation classification (Fase 12 task 22) — AUTO_KIND means
+  // "no override set" (null), mapped at the save-payload boundary below.
+  const [thumbnailKindDraft, setThumbnailKindDraft] = useState<string>(AUTO_KIND);
+  const [currencyIconKindDraft, setCurrencyIconKindDraft] = useState<string>(AUTO_KIND);
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
   const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
+  const [selectedDenoms, setSelectedDenoms] = useState<Set<number>>(new Set());
+  const [bulkActing, setBulkActing] = useState(false);
+
+  // Clear the selection when navigating to a different product's detail
+  // page — a stale selection surviving a productId change would let a bulk
+  // action apply to another product's denominations, matching CatalogPage's
+  // own filter-change clear.
+  useEffect(() => {
+    setSelectedDenoms(new Set());
+  }, [productId]);
 
   async function saveProduct() {
     setSavingProduct(true);
@@ -106,9 +178,15 @@ export function ProductDetailPage() {
       await apiPatch(`/api/catalog/products/${productId}`, {
         name: nameDraft.trim(),
         description: descriptionDraft.trim(),
+        gameVariant: gameVariantDraft.trim(),
+        gameVariantEmoji: gameVariantEmojiDraft.trim(),
+        gameRegion: gameRegionDraft.trim(),
+        gameId: gameIdDraft ? Number(gameIdDraft) : null,
         whatYouGet: whatYouGetDraft.trim(),
         terms: termsDraft.trim(),
         warrantyNote: warrantyNoteDraft.trim(),
+        thumbnailKind: thumbnailKindDraft === AUTO_KIND ? null : thumbnailKindDraft,
+        currencyIconKind: currencyIconKindDraft === AUTO_KIND ? null : currencyIconKindDraft,
         ...(categoryDraft ? { categoryId: Number(categoryDraft) } : {}),
       });
       setEditingProduct(false);
@@ -161,6 +239,32 @@ export function ProductDetailPage() {
     }
   }
 
+  function toggleDenomSelected(id: number) {
+    setSelectedDenoms((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+
+  // Takes an explicit `ids` argument rather than reading the derived selection
+  // from closure, matching CatalogPage's own bulk handlers — the derived
+  // binding is declared past this point, below the early returns.
+  async function bulkSetDenomActive(active: boolean, ids: number[]) {
+    const count = ids.length;
+    setBulkActing(true);
+    try {
+      await apiPost("/api/catalog/denominations/bulk-active", { ids, active });
+      setSelectedDenoms(new Set());
+      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+      toast.success(`${count} denomination(s) ${active ? "activated" : "deactivated"}.`);
+    } catch (e) {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to update denominations."));
+    } finally {
+      setBulkActing(false);
+    }
+  }
+
   if (isError) {
     return (
       <PageLayout title="Product Detail">
@@ -185,6 +289,21 @@ export function ProductDetailPage() {
   }
 
   const { product, statsByDenom } = data;
+
+  // No client-side filtering of this list, so select-all always spans every
+  // denomination on screen — same reasoning as CatalogPage's own comment on
+  // its unpaginated list.
+  const allDenomsSelected =
+    product.denominations.length > 0 && product.denominations.every((d) => selectedDenoms.has(d.id));
+  const visibleSelectedDenoms = visibleSelection(selectedDenoms, product.denominations, (d) => d.id);
+  function toggleSelectAllDenoms() {
+    setSelectedDenoms((prev) => {
+      if (allDenomsSelected) return new Set();
+      const next = new Set(prev);
+      product.denominations.forEach((d) => next.add(d.id));
+      return next;
+    });
+  }
 
   return (
     <PageLayout title={product.name}>
@@ -225,10 +344,16 @@ export function ProductDetailPage() {
               onClick={() => {
                 setNameDraft(product.name);
                 setDescriptionDraft(product.description ?? "");
+                setGameVariantDraft(product.gameVariant ?? "");
+                setGameVariantEmojiDraft(product.gameVariantEmoji ?? "");
+                setGameRegionDraft(product.gameRegion ?? "");
+                setGameIdDraft(product.gameId != null ? String(product.gameId) : "");
                 setWhatYouGetDraft(product.whatYouGet ?? "");
                 setTermsDraft(product.terms ?? "");
                 setWarrantyNoteDraft(product.warrantyNote ?? "");
                 setCategoryDraft(product.category ? String(product.category.id) : "");
+                setThumbnailKindDraft(product.thumbnailKind ?? AUTO_KIND);
+                setCurrencyIconKindDraft(product.currencyIconKind ?? AUTO_KIND);
                 setEditingProduct(true);
               }}
             >
@@ -266,6 +391,115 @@ export function ProductDetailPage() {
             <div>
               <label className="text-sm font-medium text-ink">Description</label>
               <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
+            </div>
+            {/* Catalog-presentation classification (Fase 12 task 22) —
+                optional; hidden entirely (not disabled) for a product whose
+                category is in the PREMIUM_APPS group, which uses its own
+                presentation instead. */}
+            {product.category?.group !== "PREMIUM_APPS" && (
+              <>
+                <div>
+                  <label className="text-sm font-medium text-ink" id="product-thumbnail-kind-label">
+                    Gaya thumbnail default
+                  </label>
+                  <Select value={thumbnailKindDraft} onValueChange={setThumbnailKindDraft}>
+                    <SelectTrigger className="mt-1" aria-labelledby="product-thumbnail-kind-label">
+                      <SelectValue placeholder="Otomatis" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={AUTO_KIND}>Otomatis</SelectItem>
+                      {THUMBNAIL_KIND_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-ink" id="product-currency-icon-kind-label">
+                    Ikon currency
+                  </label>
+                  <Select value={currencyIconKindDraft} onValueChange={setCurrencyIconKindDraft}>
+                    <SelectTrigger className="mt-1" aria-labelledby="product-currency-icon-kind-label">
+                      <SelectValue placeholder="Otomatis" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={AUTO_KIND}>Otomatis</SelectItem>
+                      {CURRENCY_ICON_KIND_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+            {/* Game-navigation classification (Task 8/14) — optional, powers
+                the bot's catalog navigation and denomination labeling for
+                game top-up products (e.g. Mobile Legends' Diamonds variant). */}
+            <div>
+              <label className="text-sm font-medium text-ink">Game Variant</label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. Diamonds"
+                value={gameVariantDraft}
+                onChange={(e) => setGameVariantDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Game Variant Emoji</label>
+              <Input
+                className="mt-1 w-24"
+                placeholder="e.g. 💎"
+                value={gameVariantEmojiDraft}
+                onChange={(e) => setGameVariantEmojiDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Game Region</label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. Global"
+                value={gameRegionDraft}
+                onChange={(e) => setGameRegionDraft(e.target.value)}
+              />
+            </div>
+            {/* Linked Game (Task 10/12) — a structural link to the new Game
+                catalog model powering the multi-provider nickname check.
+                Distinct from the three fields above: those are free-text
+                cosmetic labels for bot navigation, this is a nullable FK
+                (Game.id) validated server-side against active Games. */}
+            <div>
+              <label className="text-sm font-medium text-ink" id="product-linked-game-label">Linked Game</label>
+              <Select
+                value={gameIdDraft || "none"}
+                onValueChange={(v) => setGameIdDraft(v === "none" ? "" : v)}
+              >
+                <SelectTrigger className="mt-1" aria-labelledby="product-linked-game-label">
+                  <SelectValue placeholder="No linked game" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No linked game</SelectItem>
+                  {/* Final-review fix, Finding 4: only offer active games —
+                      EXCEPT the currently-linked one, kept visible even if
+                      it's since been deactivated, so editing an
+                      already-linked product doesn't make the current
+                      selection vanish from the list. */}
+                  {(games?.games ?? [])
+                    .filter((g) => g.isActive || String(g.id) === gameIdDraft)
+                    .map((g) => (
+                      <SelectItem key={g.id} value={String(g.id)}>
+                        {g.name}
+                        {g.isActive ? "" : " (inactive)"}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-ink-soft">
+                Links this product to a Game for the new multi-provider nickname check.
+              </p>
             </div>
             <div>
               <label className="text-sm font-medium text-ink">What the buyer gets</label>
@@ -336,8 +570,56 @@ export function ProductDetailPage() {
           Add Denomination
         </Button>
       </div>
+
+      {visibleSelectedDenoms.size > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
+          <span className="text-ink-soft">{visibleSelectedDenoms.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkActing}
+            onClick={() => void bulkSetDenomActive(true, Array.from(visibleSelectedDenoms))}
+          >
+            <Check className="h-4 w-4" />
+            Activate
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkActing}
+            onClick={() => void bulkSetDenomActive(false, Array.from(visibleSelectedDenoms))}
+          >
+            <X className="h-4 w-4" />
+            Deactivate
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelectedDenoms(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
+
       <DataTable
         columns={[
+          {
+            key: "select",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allDenomsSelected}
+                onCheckedChange={toggleSelectAllDenoms}
+                disabled={product.denominations.length === 0}
+                aria-label="Select all denominations"
+              />
+            ),
+            render: d => (
+              <Checkbox
+                checked={selectedDenoms.has(d.id)}
+                onCheckedChange={() => toggleDenomSelected(d.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${d.name}`}
+              />
+            ),
+          },
           {
             key: "name",
             header: "Name",

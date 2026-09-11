@@ -165,6 +165,24 @@ describe("POST /api/settings/edit", () => {
     expect(await getSetting(prisma, "smtp_pass")).toBe("existing-secret");
   });
 
+  it("melostore_api_key and melostore_secret_key are secrets — they round-trip masked in GET /api/settings, and an empty resubmission is a no-op", async () => {
+    await setSetting(prisma, "melostore_api_key", "existing-key");
+    await setSetting(prisma, "melostore_secret_key", "existing-secret");
+
+    const res = await getJson("/api/settings", cookie);
+    expect(res.statusCode).toBe(200);
+    const data = res.json() as { fields: Array<{ key: string; secret: boolean; value: string; hasValue: boolean }> };
+    const apiKeyField = data.fields.find((f) => f.key === "melostore_api_key");
+    const secretKeyField = data.fields.find((f) => f.key === "melostore_secret_key");
+    expect(apiKeyField).toMatchObject({ secret: true, value: "", hasValue: true });
+    expect(secretKeyField).toMatchObject({ secret: true, value: "", hasValue: true });
+
+    const editRes = await postJson("/api/settings/edit", cookie, csrf, { key: "melostore_api_key", value: "" });
+    expect(editRes.statusCode).toBe(200);
+    expect(editRes.json()).toEqual({ ok: true, unchanged: true });
+    expect(await getSetting(prisma, "melostore_api_key")).toBe("existing-key");
+  });
+
   it("requires auth (anon → 303 /login)", async () => {
     const res = await postJson("/api/settings/edit", null, csrf, { key: "shop_name", value: "x" });
     expect(res.statusCode).toBe(303);
@@ -571,6 +589,60 @@ describe("POST /api/settings/payments/:method/test", () => {
 
   it("rejects bad CSRF (403)", async () => {
     const res = await postJson("/api/settings/payments/tokopay/test", cookie, "bad");
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/settings/payments/melostore/test", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("reports missing credentials without calling the gateway", async () => {
+    const res = await postJson("/api/settings/payments/melostore/test", cookie, csrf);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: false, detail: "MeloStore API key and secret key are not both set." });
+  });
+
+  it("reports a well-formed not-found response as ok:true (connection works) and audits", async () => {
+    await setSetting(prisma, "melostore_api_key", "melo-key");
+    await setSetting(prisma, "melostore_secret_key", "melo-secret");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ code: 4001, message: "Account not found" }),
+      }),
+    );
+    const res = await postJson("/api/settings/payments/melostore/test", cookie, csrf);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { ok: boolean; detail: string };
+    expect(body.ok).toBe(true);
+    expect(body.detail).toContain("wasn't found, as expected");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "payment_method_test" } });
+    expect(audit?.details).toBe("Tested the melostore connection — succeeded.");
+  });
+
+  it("reports an unreachable gateway as ok:false", async () => {
+    await setSetting(prisma, "melostore_api_key", "melo-key");
+    await setSetting(prisma, "melostore_secret_key", "melo-secret");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 502, json: async () => ({}) }));
+    const res = await postJson("/api/settings/payments/melostore/test", cookie, csrf);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { ok: boolean; detail: string };
+    expect(body.ok).toBe(false);
+    expect(body.detail).toContain("HTTP 502");
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await postJson("/api/settings/payments/melostore/test", null, csrf);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const res = await postJson("/api/settings/payments/melostore/test", cookie, "bad");
     expect(res.statusCode).toBe(403);
   });
 });

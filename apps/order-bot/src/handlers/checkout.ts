@@ -8,6 +8,7 @@
  * instructions. Every rail auto-confirms and delivers on its own; the legacy
  * manual Binance-Pay proof/verification path is retired.
  */
+import { randomUUID } from "node:crypto";
 import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
@@ -15,13 +16,24 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import {
+  DeliveryType,
+  NotificationEvent,
+  OrderCurrency,
+  OrderStatus,
+  PaymentExpiryReason,
+  PaymentMethod,
+  UserRole,
+} from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
   prisma,
   getOrder,
   getDenomination,
+  getDenominationWithProduct,
+  buildNicknameProviderEntries,
+  resolveNicknameGate,
   countAvailableStock,
   getBulkPricingForDenomination,
   getVoucherByCode,
@@ -31,6 +43,7 @@ import {
   getUser,
   countUserPendingOrders,
   createOrderDirect,
+  DuplicateCheckoutIntentError,
   createInternalOrder,
   createBybitOrder,
   createBybitBscOrder,
@@ -48,6 +61,12 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  logCustomerAction,
+  setOrderPaymentRail,
+  createPaymentAttempt,
+  expirePaymentAttempt,
+  getPendingPaymentAttempt,
+  type Db,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -100,6 +119,34 @@ function requireUser(ctx: MyContext) {
   return u;
 }
 
+/**
+ * Records a customer-audit trail row (Phase H) for a checkout action that has
+ * already fully succeeded — every call site below only reaches this after the
+ * order is genuinely created/cancelled from the buyer's point of view (never
+ * on a gateway-create-failure cleanup, which isn't a customer-visible
+ * success). `db` may be `prisma` (call sites that only know success after an
+ * external gateway call) or the enclosing `tx` (call sites whose success is
+ * fully decided inside one `$transaction`, mirroring the existing
+ * `logAdminAction` convention for those — see e.g. conversations/reject.ts).
+ * See docs/LOGGING.md for the `details` sentence convention.
+ */
+async function logCheckoutAudit(
+  db: Db,
+  ctx: MyContext,
+  args: { action: string; customerId: number; targetId: number; details: string },
+): Promise<void> {
+  await logCustomerAction(db, {
+    customerId: args.customerId,
+    telegramUserId: ctx.from ? BigInt(ctx.from.id) : null,
+    channel: "BOT",
+    correlationId: String(ctx.update.update_id),
+    action: args.action,
+    targetType: "order",
+    targetId: args.targetId,
+    details: args.details,
+  });
+}
+
 // Double-tap / grammY-retry window: a second tap on the same payment button
 // within this many ms must not create a second ghost order for the same
 // product+rail (Checkout-1 fix, security audit 2026-06-23).
@@ -114,6 +161,23 @@ const DUPLICATE_CHECKOUT_WINDOW_MS = 30_000;
  * screen itself and returns true when a duplicate is found; the caller must
  * stop. Returns false when it's safe to create a new order.
  */
+/**
+ * Toast + edit-to-backToMain shown whenever a checkout attempt is refused as
+ * a duplicate — whether caught by {@link refuseDuplicateCheckout}'s
+ * best-effort pre-check or by a caller catching a
+ * `DuplicateCheckoutIntentError` from the atomic `checkoutIntentId`
+ * constraint (createOrderDirect/createOrderFromCart,
+ * packages/db/src/crud/orders.ts). Same copy either way — the buyer can't
+ * tell which guard caught it, and shouldn't need to.
+ */
+async function notifyDuplicateCheckout(ctx: MyContext): Promise<void> {
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+  } else {
+    await smartEdit(ctx, t(ctx, "checkout.duplicate_pending"), ckb.backToMain(ctx.session.lang));
+  }
+}
+
 async function refuseDuplicateCheckout(
   ctx: MyContext,
   userId: number,
@@ -130,11 +194,7 @@ async function refuseDuplicateCheckout(
     },
   });
   if (!dupe) return false;
-  if (ctx.callbackQuery) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
-  } else {
-    await smartEdit(ctx, t(ctx, "checkout.duplicate_pending"), ckb.backToMain(ctx.session.lang));
-  }
+  await notifyDuplicateCheckout(ctx);
   return true;
 }
 
@@ -368,9 +428,56 @@ export async function showOrderConfirmation(
     return;
   }
 
+  // Game Top-Up nickname-check gate — parallel to the manual_with_info gate
+  // above: for an AUTO SKU whose linked Game supports nickname checks
+  // (Game.nicknameSupported) AND resolves to at least one credentialed
+  // provider mapping (buildNicknameProviderEntries, Trustance reconciliation
+  // Phase B Task 1), the buyer's target account must be verified BEFORE
+  // payment. Same re-entry guard (scratch.customerData unset) and the same
+  // one-shot semantics as the manual_with_info gate: nicknameCheck.ts
+  // stashes its result into scratch.customerData and re-enters here via
+  // renderOrderConfirmation, so this branch doesn't fire again for the same
+  // checkout attempt.
+  //
+  // Deliberately scoped to AUTO only — MANUAL_WITH_INFO has its own gate
+  // above and is mutually exclusive by deliveryType. The vast majority of
+  // AUTO products have neither a linked Game nor nicknameCheckGameCode, so
+  // the extra getDenominationWithProduct join below is the ONLY added cost
+  // for them, and buildNicknameProviderEntries is never even called (see the
+  // `if (gameId || legacyGameCode)` short-circuit): zero behavior change,
+  // by construction, for every unconfigured product.
+  if (product.deliveryType === DeliveryType.AUTO && !ctx.session.scratch.customerData) {
+    const withGame = await getDenominationWithProduct(prisma, productId);
+    // Same rule as the storefront's own gate (apiTopup.ts POST
+    // /topup/check-account, final-review Finding 3) — shared via
+    // resolveNicknameGate (Phase B final-review Important #4) so this gate
+    // can never drift from the storefront's or nicknameCheck.ts's own copy.
+    const { gameId, legacyGameCode } = resolveNicknameGate(withGame);
+    if (gameId || legacyGameCode) {
+      const entries = await buildNicknameProviderEntries(prisma, { gameId, legacyGameCode });
+      if (entries.length > 0) {
+        ctx.session.scratch.pendingNicknameProductId = productId;
+        ctx.session.scratch.pendingNicknameQuantity = quantity;
+        await ctx.conversation.enter("nicknameCheck");
+        return;
+      }
+    }
+  }
+
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
+
+  // Mint the checkoutIntentId for this attempt the first time the "Confirm &
+  // Pay" bubble actually renders (not on the diversion/early-return branches
+  // above, which never show it) — reused as-is across every re-render of this
+  // SAME attempt (voucher entry, wallet toggle, the USDT submenu) so a single
+  // attempt always maps to one id, and cleared by every buyNow*/
+  // completeOrderWithWallet handler once an order is actually created (A1 —
+  // see DuplicateCheckoutIntentError in packages/db/src/crud/orders.ts).
+  if (typeof ctx.session.scratch.checkoutIntentId !== "string") {
+    ctx.session.scratch.checkoutIntentId = randomUUID();
+  }
 
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
@@ -624,6 +731,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -635,9 +744,14 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -648,6 +762,23 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+  // now that the order (and its paymentRef note) has actually been created.
+  // Best-effort and never blocking — the Order row (paymentRef/paymentMethod)
+  // is still the source of truth every rail's own poller reads; a ledger
+  // hiccup here must never stop the buyer from seeing their payment
+  // instructions.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BINANCE_INTERNAL,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: order.paymentRef,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Binance Internal attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+  }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
   // for a retry.
@@ -655,6 +786,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -682,6 +814,12 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   internalImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Binance Internal Transfer).",
+  });
 }
 
 /**
@@ -715,6 +853,8 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -726,9 +866,14 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -739,6 +884,21 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger.
+  // No paymentRef on this rail (Internal Transfer carries no memo — matching
+  // is by unique amount only), so `reference` stays null. Best-effort and
+  // never blocking, same reasoning as buyNowInternal's identical call above.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Bybit Internal Transfer attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+  }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
   // for a retry.
@@ -746,6 +906,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -768,6 +929,12 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   // Latency optimization: an extra poll right now, on top of the regular
   // timer, so this fresh order's first check doesn't wait for the next tick.
   bybitImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Bybit UID transfer).",
+  });
 }
 
 /**
@@ -803,6 +970,8 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createBybitBscOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
@@ -814,9 +983,14 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
         customerData,
+        checkoutIntentId,
       }),
     );
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -827,6 +1001,22 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Trustance Phase A Task A2b: record this attempt in the Payment ledger.
+  // No paymentRef on this rail either (BEP20 on-chain transfers carry no
+  // memo — matching is by unique amount only), so `reference` stays null.
+  // Best-effort and never blocking, same reasoning as buyNowInternal's
+  // identical call above.
+  try {
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT_BSC,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+  } catch (err) {
+    logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s Bybit BSC deposit attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+  }
   // Consume the voucher, wallet toggle, and collected info now that an order
   // actually exists — a failed attempt above (out of stock, etc.) leaves them
   // for a retry.
@@ -834,6 +1024,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -859,6 +1050,12 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   // The real floor here is the on-chain confirmation Bybit itself requires —
   // this only removes the poll-interval delay layered on top of that floor.
   bybitBscImmediatePoll(ctx.api);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (Bybit BSC on-chain deposit).",
+  });
 }
 
 /** Public origin used for the NOWPayments IPN callback URL (storefront route). */
@@ -901,10 +1098,12 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
 
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData });
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData, checkoutIntentId });
       if (!created) return created;
       const finalized = await finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
@@ -915,6 +1114,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
       return useWalletUsdt ? getOrder(tx, created.id) : finalized;
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -932,6 +1135,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -971,6 +1175,22 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     if (!committed) {
       logger.warn(`Created a NOWPayments invoice for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
     }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the hosted invoice was actually created — `gateway.invoiceId`
+    // is NOWPayments' own clean reference, matching what the cache above
+    // just committed to Order.paymentRef. Best-effort and never blocking,
+    // same reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.NOWPAYMENTS,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.invoiceId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s NOWPayments attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
+    }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
@@ -1008,6 +1228,12 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // buyNowInternal/buyNowBybit (no countdown ticking here; that's only for
   // the manual Binance Pay screen).
   await anchorPaymentMessage(ctx, order.id, ctx.chat!.id);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (NOWPayments USDT invoice).",
+  });
 }
 
 /**
@@ -1040,6 +1266,8 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
 
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
@@ -1050,11 +1278,16 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
+        checkoutIntentId,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -1072,6 +1305,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Based on order.totalAmount (what's actually sent to the gateway as
   // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
@@ -1107,6 +1341,22 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
     if (!committed) {
       logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the gateway transaction was actually created — `gateway.trxId`
+    // is TokoPay's own clean reference, matching what the cache above just
+    // committed to Order.paymentRef. Best-effort and never blocking, same
+    // reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.TOKOPAY,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.trxId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s TokoPay attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
@@ -1161,6 +1411,12 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (QRIS via TokoPay).",
+  });
 }
 
 /**
@@ -1196,6 +1452,8 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
 
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
@@ -1206,11 +1464,16 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
         customerData,
+        checkoutIntentId,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
     });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
@@ -1228,6 +1491,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   //
@@ -1258,6 +1522,22 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "paydisini", ...gateway });
     if (!committed) {
       logger.warn(`Created a PayDisini transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
+    // Trustance Phase A Task A2b: record this attempt in the Payment ledger,
+    // now that the gateway transaction was actually created — `gateway.trxId`
+    // is PayDisini's own clean reference, matching what the cache above just
+    // committed to Order.paymentRef. Best-effort and never blocking, same
+    // reasoning as buyNowInternal's identical call.
+    try {
+      await createPaymentAttempt(prisma, {
+        orderId: order.id,
+        method: PaymentMethod.PAYDISINI,
+        amount: order.totalAmount,
+        currency: order.currency,
+        reference: gateway.trxId,
+      });
+    } catch (err) {
+      logger.warn({ err }, `Could not record a Payment ledger row for order ${order.orderCode}'s PayDisini attempt — the order itself is unaffected, this only leaves the new ledger table without a row for it`);
     }
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
@@ -1310,6 +1590,12 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
   // the reconcile poller's success-flip sweep can edit it once delivered.
   await anchorPaymentMessage(ctx, order.id, chatId);
+  await logCheckoutAudit(prisma, ctx, {
+    action: "order_create",
+    customerId: user.id,
+    targetId: order.id,
+    details: "Created order via Telegram checkout (QRIS via PayDisini).",
+  });
 }
 
 /**
@@ -1346,11 +1632,18 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
   const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
+  // This rail needs the atomic guard more than the six gateway rails do: it
+  // creates, settles and delivers in one transaction, so its order is never
+  // left PENDING_PAYMENT and refuseDuplicateCheckout's pre-check above can
+  // never match a double-tap here. The unique index is the only thing standing
+  // between a double-tap and two wallet debits with two delivered items.
+  const checkoutIntentId =
+    typeof ctx.session.scratch.checkoutIntentId === "string" ? ctx.session.scratch.checkoutIntentId : undefined;
 
   let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
   try {
-    result = await prisma.$transaction((tx) =>
-      completeOrderWithWalletCredit(tx, {
+    result = await prisma.$transaction(async (tx) => {
+      const r = await completeOrderWithWalletCredit(tx, {
         user: {
           id: user.id,
           role: user.role,
@@ -1363,13 +1656,41 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
         currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
         rate: rate ?? undefined,
         customerData,
-      }),
-    );
+        checkoutIntentId,
+      });
+      // No external gateway call follows (unlike the buyNow<Rail> functions) —
+      // this transaction IS the complete unit of "order created and paid", so
+      // the audit row is written alongside it, mirroring logAdminAction's own
+      // convention for a self-contained mutation (e.g. conversations/reject.ts).
+      await logCheckoutAudit(tx, ctx, {
+        action: "order_create",
+        customerId: user.id,
+        targetId: r.order.id,
+        details: "Created order via Telegram checkout, paid in full with wallet credit.",
+      });
+      return r;
+    });
   } catch (e) {
+    if (e instanceof DuplicateCheckoutIntentError) {
+      await notifyDuplicateCheckout(ctx);
+      return;
+    }
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
       return;
     }
+    // A genuine double-tap here can also surface as a Prisma P2028 (write-
+    // conflict wait timeout, packages/db/src/client.ts's transactionOptions:
+    // maxWait 5s / timeout 10s) instead of DuplicateCheckoutIntentError, since
+    // this transaction is unusually long (create + settle + deliver all
+    // before commit) and the loser can block on the checkoutIntentId unique
+    // index past that window. Money-safe either way — the loser's INSERT is
+    // the transaction's first write, so nothing has been reserved/spent yet
+    // and it rolls back cleanly — but the buyer sees a generic error instead
+    // of the friendly duplicate-checkout toast. bot.catch (main.ts) handles
+    // the rethrow, and checkoutIntentId survives in session (not cleared on
+    // this path), so their next tap collides against the now-committed order
+    // and gets the friendly toast instead.
     throw e;
   }
 
@@ -1379,6 +1700,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
+  delete ctx.session.scratch.checkoutIntentId;
 
   if (result.kind === "delivered") {
     // Deliver the account file directly (the order is already DELIVERED and
@@ -1459,7 +1781,18 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
     return;
   }
   try {
-    await prisma.$transaction((tx) => cancelOrder(tx, orderId, "user_cancelled"));
+    await prisma.$transaction(async (tx) => {
+      await cancelOrder(tx, orderId, "user_cancelled");
+      // Mirrors logAdminAction's convention for a self-contained mutation
+      // (e.g. conversations/reject.ts) — cancelOrder + the audit row commit
+      // atomically, since there's no external gateway call to wait on here.
+      await logCheckoutAudit(tx, ctx, {
+        action: "order_cancel",
+        customerId: info.id,
+        targetId: orderId,
+        details: "Cancelled order via Telegram.",
+      });
+    });
   } catch (e) {
     if (e instanceof ValidationError) {
       if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });
@@ -1509,6 +1842,155 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   await customer.browseDenomination(ctx, denominationId, 1, {
     noticePrefix: t(ctx, "checkout.cancelled_prefix"),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Change payment rail (Trustance Phase A Task A2a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Switch an order still awaiting payment to a DIFFERENT payment rail, without
+ * creating a whole new Order the way every buyNow<Rail> function above does
+ * for a brand-new checkout attempt. Retires whatever Payment attempt is
+ * currently PENDING for this order (`expirePaymentAttempt`, reason
+ * `RAIL_CHANGED`) — if any; today, before Task 3 wires the six existing
+ * payment-rail handlers to also write to the Payment ledger, most orders will
+ * have none yet, which is fine, there's simply nothing to retire — opens a
+ * new PENDING Payment attempt for `newMethod` (`createPaymentAttempt`), and
+ * updates `Order.paymentMethod`/`paymentRef` to match via
+ * `setOrderPaymentRail` (packages/db/src/crud/orders.ts). All three crud
+ * calls run in one `$transaction` so a crash between them can never leave the
+ * ledger and the Order's own cache fields disagreeing about which rail is
+ * current.
+ *
+ * The status/ownership checks below necessarily run BEFORE that transaction
+ * opens, so they can only ever be advisory: a reconciler confirming payment
+ * in the window between them and the write would leave this function stamping
+ * a rail the buyer never paid onto an order that just settled. What actually
+ * prevents that is `setOrderPaymentRail`'s compare-and-swap on `status` and
+ * `paymentRef` — the pre-checks exist to give the buyer a clean, specific
+ * toast in the common case, not to make the write safe. A lost race surfaces
+ * as a `ValidationError` from the crud layer and lands in the same catch
+ * below, so the buyer sees the same "this order can no longer be paid"
+ * message either way.
+ *
+ * `Order.paymentMethod`/`paymentRef` deliberately stay the "current/latest
+ * attempt" cache after this call — the six existing payment-rail webhook/
+ * poller handlers (binance_internal.ts, bybit_deposit.ts,
+ * bybit_bsc_deposit.ts, nowpaymentsReconcile.ts, tokopayReconcile.ts,
+ * paydisiniReconcile.ts) read those fields directly and are NOT touched by
+ * this task (that wiring is Task 3). `paymentRef` is reset to `null` (not
+ * left holding the OLD rail's reference/gateway-claim sentinel) so a
+ * subsequent `claimGatewaySlot` call for the NEW rail's own gateway-artifact
+ * creation starts from the same null precondition a brand-new order would —
+ * see `claimGatewaySlot`'s doc comment (packages/db/src/crud/orders.ts). The
+ * outgoing value is not simply dropped, though: it is the matching key the
+ * rails reconcile against, so it rides along into the retiring ledger row's
+ * `reference` and stays answerable after the switch.
+ *
+ * Deliberately scoped to a same-currency rail change only (e.g. TOKOPAY <->
+ * PAYDISINI, or BINANCE_INTERNAL <-> BYBIT) — it reuses the order's existing
+ * `currency`/`totalAmount` as-is rather than re-deriving them the way
+ * `finalizeOrderPayment` (packages/db/src/crud/pricing.ts) does per-rail at
+ * order-creation time. A cross-currency switch (IDR <-> USDT) would need that
+ * same re-derivation (fxRate, uniqueCents, a fresh totalAmount) repeated
+ * here, which is out of scope for this minimal entry point; attempting one
+ * anyway is safely rejected by `createPaymentAttempt`'s own currency-mismatch
+ * check rather than silently mis-billing the buyer.
+ *
+ * This function does NOT create a new gateway artifact (QR code, deposit
+ * address, hosted invoice) for the new rail — that per-rail work is exactly
+ * what each buyNow<Rail> function above already does for a brand-new order,
+ * and is deliberately not duplicated here. Wiring an actual "pick a new
+ * rail" UI button to this function (and rendering the new rail's own
+ * instructions afterward) is left to the follow-up task that also wires the
+ * six webhook/poller handlers to this ledger — this function is the crud-
+ * level plumbing that follow-up work will call.
+ */
+export async function changePaymentRail(
+  ctx: MyContext,
+  orderId: number,
+  newMethod: PaymentMethod,
+): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+
+  const order = await getOrder(prisma, orderId);
+  if (!order || order.userId !== info.id) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  if (order.status !== OrderStatus.PENDING_PAYMENT) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_pending"), show_alert: true });
+    return;
+  }
+  if (order.paymentMethod === newMethod) {
+    // Already on this rail — nothing to change. Answer and stop rather than
+    // expiring+recreating a Payment attempt for no reason.
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.rail_changed_toast") });
+    return;
+  }
+
+  // Set inside the transaction, reported after it commits — a rollback must
+  // not leave a warning behind about a switch that never happened.
+  let droppedOldGatewayReference = false;
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Guarded Order write FIRST, for two reasons: it fails fast if the
+      // pre-checks above have gone stale (before any ledger row is touched),
+      // and it hands back the reference the outgoing rail was quoting so the
+      // retiring attempt below can keep it.
+      const { previousPaymentRef } = await setOrderPaymentRail(tx, {
+        orderId,
+        method: newMethod,
+        expectedStatus: OrderStatus.PENDING_PAYMENT,
+      });
+
+      const currentPending = await getPendingPaymentAttempt(tx, orderId);
+      if (currentPending) {
+        await expirePaymentAttempt(tx, {
+          paymentId: currentPending.id,
+          reason: PaymentExpiryReason.RAIL_CHANGED,
+          reference: previousPaymentRef,
+        });
+      } else if (previousPaymentRef !== null) {
+        // The old rail had a live gateway reference but no ledger row to
+        // retire it onto, so it has nowhere to survive. Expected until Task 3
+        // wires the six webhook/poller handlers to open a Payment row for
+        // every attempt they start — flagged for the warning below so the gap
+        // is visible in ops rather than silent.
+        droppedOldGatewayReference = true;
+      }
+
+      await createPaymentAttempt(tx, {
+        orderId,
+        method: newMethod,
+        amount: order.totalAmount,
+        currency: order.currency,
+      });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, e.key, e.formatArgs), show_alert: true });
+      return;
+    }
+    throw e;
+  }
+
+  if (droppedOldGatewayReference) {
+    // Never the reference itself — it is a payment credential of the same
+    // class as a proof file_id (CLAUDE.md: never log secrets).
+    logger.warn(
+      { orderId, fromMethod: order.paymentMethod, toMethod: newMethod },
+      "Changed an order's payment rail while the previous rail still held a gateway reference, but the order had no pending payment ledger row to carry that reference onto, so it was discarded. A payment landing on the old rail after this point cannot be matched back to the order.",
+    );
+  }
+
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.rail_changed_toast") });
+  } else {
+    await smartEdit(ctx, t(ctx, "checkout.rail_changed_toast"), ckb.backToMain(lang));
+  }
 }
 
 // ---------------------------------------------------------------------------

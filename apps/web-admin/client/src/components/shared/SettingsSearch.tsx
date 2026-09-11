@@ -26,6 +26,12 @@ export function SettingsSearch({ value, onChange }: SettingsSearchProps): JSX.El
         placeholder="Search settings…"
         aria-label="Search settings"
         className="pl-8"
+        // Defense in depth for the same bug FieldRow's autoComplete fix
+        // addresses: this is the nearest preceding text input to every
+        // secret field on the page, which is exactly what a browser's
+        // native password manager looks for when it guesses a "username"
+        // partner for a password-shaped field it wants to autofill.
+        autoComplete="off"
       />
     </div>
   );

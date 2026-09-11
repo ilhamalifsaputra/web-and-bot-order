@@ -10,7 +10,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import {
-  AlertTriangle,
   Bell,
   Package,
   ScrollText,
@@ -31,10 +30,14 @@ import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import StockBadge from "../components/shop/StockBadge";
+import DefaultThumb from "../components/shop/DefaultThumb";
 import DenominationCard from "../components/shop/DenominationCard";
+import StickyPurchaseBar from "../components/shop/StickyPurchaseBar";
+import Alert from "../components/ui/Alert";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
+import InstantBuyPage from "./InstantBuyPage";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
@@ -228,6 +231,14 @@ export default function ProductPage() {
   const { product, denominations, reviews, related_products, low_threshold } = data;
   const fx = ctx?.fx;
 
+  // Task 6 (Digiflazz instant-buy pilot): a category flagged checkoutFlow
+  // "instant" renders the single-page buy flow instead of this page's usual
+  // image/plan-picker + Cart→Checkout hop. InstantBuyPage re-fetches this
+  // same product payload itself (same query key, so it hits the cache this
+  // fetch just populated) rather than threading two dozen props through —
+  // everything below this line is the unchanged catalog-flow path.
+  if (product.checkout_flow === "instant") return <InstantBuyPage />;
+
   // Preselect the first in-stock plan, else the first plan — same order as
   // the script's `firstEnabled || radios[0]`.
   const fallback = denominations.find((d) => d.in_stock) ?? denominations[0];
@@ -253,58 +264,78 @@ export default function ProductPage() {
       />
 
       <div className="grid md:grid-cols-2 gap-6 lg:gap-10">
-        {/* Image */}
-        <div className="card overflow-hidden self-start">
-          <div className="aspect-[4/3] bg-sand">
-            {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
-                the intrinsic size is declared even under object-cover, and why
-                <picture> needs to be block. */}
-            <picture className="block w-full h-full">
-              {product.image_srcset && (
-                // Full width on phones, roughly half the grid on desktop.
-                <source
-                  type="image/webp"
-                  srcSet={product.image_srcset}
-                  sizes="(max-width: 768px) 100vw, 600px"
-                />
+        {/* The product name spans both columns so it stays the first thing
+            read on mobile (where the grid collapses to image → description →
+            picker beneath it) while still heading the whole block on
+            desktop. */}
+        <h1 className="page-title md:col-span-2">{product.name}</h1>
+
+        {/* Image + short description. `self-start` on this wrapper (not the
+            image card) so the column doesn't stretch to the taller right
+            column: a photo-less product (every Digiflazz import) would
+            otherwise leave a tall empty DefaultThumb well with dead space
+            below it. The description sits here, under the banner, moved from
+            its old spot beneath the <h1>. */}
+        <div className="self-start">
+          <div className="card overflow-hidden">
+            <div className="aspect-[4/3] bg-sand">
+              {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
+                  the intrinsic size is declared even under object-cover, and why
+                  <picture> needs to be block. */}
+              {product.image ? (
+                <picture className="block w-full h-full">
+                  {product.image_srcset && (
+                    // Full width on phones, roughly half the grid on desktop.
+                    <source
+                      type="image/webp"
+                      srcSet={product.image_srcset}
+                      sizes="(max-width: 768px) 100vw, 600px"
+                    />
+                  )}
+                  {/* Eager on purpose: this is the page's LCP element and the only
+                      image above the fold on a phone, so deferring it would trade a
+                      measurable delay for nothing. Everything below (the
+                      related-products shelf) lazy-loads via ProductCard. The
+                      width/height pair is what stops the text below from jumping
+                      while it decodes — object-cover ignores the numbers for
+                      painting, but the browser still uses their ratio to reserve
+                      the box. */}
+                  <img
+                    src={product.image}
+                    alt={product.name}
+                    loading="eager"
+                    decoding="async"
+                    width={800}
+                    height={600}
+                    className="w-full h-full object-cover"
+                  />
+                </picture>
+              ) : (
+                <DefaultThumb kind={product.image_kind ?? "generic"} name={product.name} />
               )}
-              {/* Eager on purpose: this is the page's LCP element and the only
-                  image above the fold on a phone, so deferring it would trade a
-                  measurable delay for nothing. Everything below (the
-                  related-products shelf) lazy-loads via ProductCard. The
-                  width/height pair is what stops the text below from jumping
-                  while it decodes — object-cover ignores the numbers for
-                  painting, but the browser still uses their ratio to reserve
-                  the box. */}
-              <img
-                src={product.image}
-                alt={product.name}
-                loading="eager"
-                decoding="async"
-                width={800}
-                height={600}
-                className="w-full h-full object-cover"
-              />
-            </picture>
+            </div>
           </div>
+
+          {/* Optional lead paragraph, directly under the banner. Stays behind
+              the `product.description &&` guard — Digiflazz products have
+              `description: null` and must render nothing extra here. `mt-4`
+              spaces it from the image card. No heading: it's a plain lead
+              paragraph, same as it was under the <h1>. */}
+          {product.description && (
+            <div className="mt-4 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+              {product.description}
+            </div>
+          )}
         </div>
 
         {/* Facts + denomination picker + actions */}
         <div id="product-detail">
-          <h1 className="page-title text-2xl! sm:text-3xl!">{product.name}</h1>
-
-          {product.description && (
-            <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
-              {product.description}
-            </div>
-          )}
-
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
               active denomination is preselected; selecting another updates the
               live price / stock / warranty and the checkout payload below. */}
           <div className="mt-6">
             <h2 className="section-title mb-3">{t("web.choose_plan")}</h2>
-            <div id="denom-list" className="grid gap-2.5">
+            <div id="denom-list" className="grid gap-3">
               {denominations.map((d) => (
                 <DenominationCard
                   key={d.id}
@@ -313,6 +344,7 @@ export default function ProductPage() {
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
                   onChange={() => selectDenomination(d.id, d.available, d.delivery_type === "auto")}
+                  iconKind={product.icon_kind}
                 />
               ))}
             </div>
@@ -353,9 +385,9 @@ export default function ProductPage() {
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
             {cartErrorKey && (
-              <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-3 flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" /> {t(cartErrorKey)}
-              </div>
+              <Alert variant="banner" tone="error" className="mt-3 mb-0">
+                {t(cartErrorKey)}
+              </Alert>
             )}
 
             {purchasable(selected) ? (
@@ -533,57 +565,37 @@ export default function ProductPage() {
           before this, deciding meant scrolling all the way back up to act on
           it. It reuses the same mutations and the same `selected` plan as the
           in-page controls, so there is exactly one purchase path, and it only
-          appears once those controls have left the viewport. Desktop keeps the
-          buy card in view beside the image, so it needs none of this. */}
+          appears once those controls have left the viewport (the `#buy-summary`
+          IntersectionObserver sentinel above). Desktop keeps the buy card in
+          view beside the image, so it needs none of this. Shared component
+          (components.md "Sticky purchase bar") — Add to Cart stays in the
+          in-page form only, so just `primaryAction` is passed. */}
       {!isDesktop && !buyAreaVisible && (
-        <div
-          role="region"
-          // Names the landmark for what it is. "Buy now" stood in here before
-          // the key existed, which announced the region as if it were the
-          // button inside it.
-          aria-label={t("web.purchase_bar")}
-          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 py-3 backdrop-blur-sm"
-          // The home-indicator strip on a modern phone would otherwise eat the
-          // bottom of the button.
-          style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
-        >
-          <div className="mx-auto flex max-w-6xl items-center gap-3">
-            {/* min-w-0 + truncate: a long plan name has to give way to the
-                button, not push it off a 320px screen. */}
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs text-ink-soft">{selected.duration_label || selected.name}</div>
-              {/* Same `selected.price` the summary shows — already discounted
-                  by the server, never recomputed here. */}
-              <div className="font-display text-lg font-semibold leading-tight text-pine">
-                {formatIdr(selected.price)}
-              </div>
-            </div>
-            {purchasable(selected) ? (
-              <button
-                type="button"
-                className="btn btn-primary shrink-0"
-                disabled={buying}
-                onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
-              >
-                {buyMutation.isPending && <Spinner />}
-                <Zap className="w-4 h-4" /> {t("web.buy_now")}
-              </button>
-            ) : (
-              // Nothing to buy, but the bar still carries the one action that
-              // does exist — an empty or disabled bar would just be a strip of
-              // wasted screen on the shortest viewport we have.
-              <button
-                type="button"
-                className="btn btn-soft shrink-0"
-                disabled={restockMutation.isPending}
-                onClick={() => restockMutation.mutate(selected.id)}
-              >
-                {restockMutation.isPending && <Spinner />}
-                <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-              </button>
-            )}
-          </div>
-        </div>
+        <StickyPurchaseBar
+          ariaLabel={t("web.purchase_bar")}
+          priceLabel={selected.duration_label || selected.name}
+          price={formatIdr(selected.price)}
+          primaryAction={
+            purchasable(selected)
+              ? {
+                  label: t("web.buy_now"),
+                  icon: <Zap className="w-4 h-4" />,
+                  onClick: () => buyMutation.mutate({ denomination_id: selected.id, qty }),
+                  pending: buyMutation.isPending,
+                  disabled: buying,
+                }
+              : {
+                  // Nothing to buy, but the bar still carries the one action
+                  // that does exist — an empty bar is wasted screen on 320px.
+                  label: t("web.notify_restock"),
+                  icon: <Bell className="w-4 h-4" />,
+                  onClick: () => restockMutation.mutate(selected.id),
+                  pending: restockMutation.isPending,
+                  disabled: restockMutation.isPending,
+                  variant: "soft",
+                }
+          }
+        />
       )}
     </>
   );

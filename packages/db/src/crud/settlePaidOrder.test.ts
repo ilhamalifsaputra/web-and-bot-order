@@ -20,6 +20,7 @@ import {
   updateOrderCustomerData,
 } from "./orders";
 import { createWalletTopupOrder } from "./wallet_topup";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { LEGAL_TRANSITIONS, transitionOrderStatus } from "./orderStatus";
 import { DeliveryType, OrderStatus, NotificationEvent, StockStatus } from "@app/core/enums";
@@ -119,7 +120,9 @@ describe("settlePaidOrder", () => {
     expect(items).toHaveLength(1);
     expect(items[0]!.stockItem).not.toBeNull();
     expect(items[0]!.stockItem!.status).toBe(StockStatus.SOLD);
-    expect(result.credentials[0]).toBe(items[0]!.stockItem!.credentials);
+    // `items` is fetched directly (not via getOrder, which decrypts) — the
+    // raw column value is the encrypted envelope, so decrypt before comparing.
+    expect(result.credentials[0]).toBe(decryptCredentials(items[0]!.stockItem!.credentials));
   });
 
   // M-5 (backend audit 2026-07-31): settlePaidOrder used to read the LIVE

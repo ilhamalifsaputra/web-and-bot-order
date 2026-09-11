@@ -209,6 +209,43 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
   });
 
+  it("renders ADMIN_DIGIFLAZZ_RESYNC_ABORTED as a bilingual admin DM with the sharp-change and considered-row counts for kind sharp_change", () => {
+    const out = render("ADMIN_DIGIFLAZZ_RESYNC_ABORTED", {
+      kind: "sharp_change",
+      sharp_changes: 7,
+      considered_rows: 10,
+    });
+    expect(out).toContain("7");
+    expect(out).toContain("10");
+    expect(out).toMatch(/aborted/i);
+    expect(out).toMatch(/dibatalkan/i); // Indonesian line
+    expect(out).toMatch(/moved by more than 50%/i);
+  });
+
+  it("HTML-escapes ADMIN_DIGIFLAZZ_RESYNC_ABORTED interpolated values", () => {
+    const out = render("ADMIN_DIGIFLAZZ_RESYNC_ABORTED", {
+      kind: "sharp_change",
+      sharp_changes: "<script>alert(1)</script>",
+      considered_rows: "<b>10</b>",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>10</b>");
+    expect(out).toContain("&lt;b&gt;10&lt;/b&gt;");
+  });
+
+  it("renders a distinct bilingual sentence for ADMIN_DIGIFLAZZ_RESYNC_ABORTED kind no_usable_rows instead of the sharp-change wording", () => {
+    const out = render("ADMIN_DIGIFLAZZ_RESYNC_ABORTED", {
+      kind: "no_usable_rows",
+    });
+    expect(out).toMatch(/aborted/i);
+    expect(out).toMatch(/dibatalkan/i); // Indonesian header
+    // Must not fall back to the misleading "0 of 0 prices" sharp-change sentence.
+    expect(out).not.toMatch(/moved by more than 50%/i);
+    expect(out).not.toContain("0 of 0");
+    expect(out).toMatch(/no usable price data/i);
+    expect(out).toMatch(/tidak mengembalikan data harga/i);
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match
@@ -435,5 +472,31 @@ describe("notifier templates.render", () => {
     });
     expect(out).not.toContain("<x>");
     expect(out).toContain("A &amp; B &lt;x&gt;");
+  });
+
+  // Task 2 (Phase C): TICKET_CLOSED_DM is the one of the three new ticket
+  // events rendered through this file's render() — ADMIN_NEW_TICKET and
+  // TICKET_REPLY_DM need a reply_markup keyboard (and, for ADMIN_NEW_TICKET,
+  // a photo media-group send) render() has no way to carry, so
+  // dispatcher.ts builds and sends their text itself (see dispatcher.test.ts
+  // for those two).
+  it("renders TICKET_CLOSED_DM in English by default", () => {
+    const out = render("TICKET_CLOSED_DM", {});
+    expect(out).toBe("Your ticket has been closed. Open a new one if you need further help.");
+  });
+
+  it("renders TICKET_CLOSED_DM in English when buyer_language is 'en'", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "en" });
+    expect(out).toBe("Your ticket has been closed. Open a new one if you need further help.");
+  });
+
+  it("renders TICKET_CLOSED_DM in Indonesian when buyer_language is 'id'", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "id" });
+    expect(out).toBe("Tiket ditutup. Buka tiket baru jika masih butuh bantuan.");
+  });
+
+  it("falls back to English for an unrecognized TICKET_CLOSED_DM buyer_language", () => {
+    const out = render("TICKET_CLOSED_DM", { buyer_language: "fr" });
+    expect(out).toContain("Your ticket has been closed");
   });
 });

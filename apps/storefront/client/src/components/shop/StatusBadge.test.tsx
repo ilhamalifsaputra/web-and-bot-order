@@ -36,6 +36,25 @@ describe("StatusBadge", () => {
     expect(screen.queryByText("Menunggu Dukungan")).not.toBeInTheDocument();
   });
 
+  // Whole-branch review fix: before this, a ticket that had already gone
+  // through Task 1's automatic WAITING_ADMIN/WAITING_CUSTOMER transition
+  // (i.e. most real tickets by the time a buyer checks their support list)
+  // fell through to the raw-value fallback below, showing "Waiting Admin" in
+  // untranslated English and dropping out of the AMBER tone into neutral.
+  it("buckets waiting_admin under the open label and AMBER tone", () => {
+    document.documentElement.lang = "en";
+    const { container } = render(<StatusBadge value="waiting_admin" />);
+    expect(screen.getByText("Open")).toBeInTheDocument();
+    expect(container.querySelector(".chip")).toHaveClass("bg-amberx-tint", "text-amberx");
+  });
+
+  it("buckets waiting_customer under the replied label and AMBER tone", () => {
+    document.documentElement.lang = "en";
+    const { container } = render(<StatusBadge value="WAITING_CUSTOMER" />);
+    expect(screen.getByText("Replied")).toBeInTheDocument();
+    expect(container.querySelector(".chip")).toHaveClass("bg-amberx-tint", "text-amberx");
+  });
+
   it("is case-insensitive on the value prop", () => {
     document.documentElement.lang = "en";
     render(<StatusBadge value="Available" />);

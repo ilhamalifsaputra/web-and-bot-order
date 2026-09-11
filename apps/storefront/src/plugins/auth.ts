@@ -15,6 +15,7 @@ import {
   constantTimeEqual,
   type CustomerSession,
 } from "../auth";
+import { originOk } from "../routes/cart";
 
 /** req.customer: the cookie payload + the freshly loaded user row (including
  * `passwordHash`/`email` — this is the customer's OWN row, needed by the
@@ -54,7 +55,12 @@ export const currentCustomer: preHandlerHookHandler = async (req, reply) => {
 const csrfCheck: preHandlerHookHandler = async (req, reply) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
-  if (typeof token !== "string" || !req.customer || !constantTimeEqual(token, req.customer.csrf)) {
+  if (
+    typeof token !== "string" ||
+    !req.customer ||
+    !constantTimeEqual(token, req.customer.csrf) ||
+    !originOk(req)
+  ) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
 };

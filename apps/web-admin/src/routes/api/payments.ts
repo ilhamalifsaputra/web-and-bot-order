@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OrderStatus, OrderKind } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
@@ -12,6 +13,7 @@ import {
   TX_OUTCOMES,
   deliverUnderpaidOrder,
   refundUnderpaidOrder,
+  creditUnderpaidTopupAnyway,
   manualMatchTx,
   dismissUnmatchedTx,
   creditOrderToBalance,
@@ -21,8 +23,14 @@ import {
   cancelOrder,
   logAdminAction,
   listCombinedLedger,
+  findIdempotentResponse,
+  saveIdempotentResponse,
+  hashIdempotentRequest,
+  IdempotencyKeyReuseError,
+  type IdempotentReplay,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { paymentsMutationRateLimited } from "../../auth";
 import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
@@ -34,6 +42,27 @@ const PAGE_SIZE = 50;
 const ORDER_KINDS = [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP] as const;
 
 class NotFoundError extends Error {}
+
+/** Stable name for the underpaid-order refund route's idempotency ledger row
+ * (packages/db/src/crud/idempotency.ts) — not the literal URL, so it stays
+ * correct if the route is ever remounted. */
+const REFUND_IDEMPOTENCY_ENDPOINT = "web-admin.payments.refundUnderpaid";
+const DELIVER_IDEMPOTENCY_ENDPOINT = "web-admin.payments.deliverUnderpaid";
+const CANCEL_IDEMPOTENCY_ENDPOINT = "web-admin.payments.cancelUnderpaid";
+const CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT = "web-admin.payments.creditUnderpaidTopupAnyway";
+const MATCH_IDEMPOTENCY_ENDPOINT = "web-admin.payments.manualMatch";
+const CREDIT_IDEMPOTENCY_ENDPOINT = "web-admin.payments.creditBalance";
+const DISMISS_IDEMPOTENCY_ENDPOINT = "web-admin.payments.dismissTx";
+
+/** An `Idempotency-Key` header, trimmed and length-capped — a repeat header
+ * takes the first value. Empty/oversized values are treated as "no key"
+ * (opt out) rather than rejected, since this is additive and must never turn
+ * a missing/malformed header into a hard failure. */
+function normalizeIdempotencyKey(header: string | string[] | undefined): string | null {
+  const raw = (Array.isArray(header) ? header[0] : header) ?? "";
+  const trimmed = raw.trim();
+  return trimmed.length > 0 && trimmed.length <= 255 ? trimmed : null;
+}
 
 export default async function paymentsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/payments", { preHandler: currentAdmin }, async (req, reply) => {
@@ -100,7 +129,47 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   });
 
   app.post("/api/payments/order/:orderId/deliver", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DELIVER_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     try {
       const { order } = await deliverUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
@@ -111,33 +180,204 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         details: `Delivered underpaid order ${order.orderCode} anyway.`,
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
     logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
-    return reply.send({ ok: true });
+    return respond(200, { ok: true });
   });
 
   app.post("/api/payments/order/:orderId/refund", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    // Idempotency (Task 1): a double-clicked "Refund" button (or a retried
+    // request after the admin's browser never saw the first response) would
+    // otherwise hit refundUnderpaidOrder's own state guard on the SECOND
+    // click and show the admin a confusing "order not underpaid" 422, even
+    // though the first click already succeeded. An `Idempotency-Key` header
+    // lets that retry replay the exact first response instead. Opt-in — a
+    // request with no header behaves exactly as before.
+    // `idem` bundles the key with its request hash into one nullable value
+    // so every use below narrows together — no `!` assertions needed.
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: REFUND_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
+    let result: { refunded: Decimal; refundId: number | null; currency: string };
     try {
-      const { refunded } = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
+      result = await refundUnderpaidOrder(prisma, { orderId, adminId: req.admin!.userId });
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "underpaid_refund",
         targetType: "order",
         targetId: orderId,
-        details: `Refunded ${refunded.toString()} to the buyer's wallet for an underpaid order.`,
+        // Two shapes, same reasoning as the credit-anyway route below:
+        // "refunded 0" is not a smaller version of the success case — it means
+        // the order was marked REFUNDED and the buyer got nothing back, the one
+        // outcome a shop admin has to act on by hand. The currency is spelled
+        // out because the refund lands in the order's own currency (it used to
+        // always default to IDR), so a bare number here would leave the shop
+        // admin guessing whether "18500" means rupiah or USDT.
+        details: result.refunded.greaterThan(0)
+          ? `Refunded ${result.refunded.toString()} ${result.currency} to the buyer's wallet for an underpaid order.`
+          : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return reply.send({ ok: true });
+    // `refunded`/`currency` go back to the browser so the admin panel can tell
+    // the admin whether money actually moved, instead of showing the same green
+    // "refunded" toast for an order that was marked REFUNDED with no payout.
+    return respond(200, { ok: true, refunded: result.refunded.toString(), currency: result.currency });
+  });
+
+  app.post("/api/payments/order/:orderId/credit-anyway", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
+    const orderId = Number((req.params as { orderId: string }).orderId);
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_ANYWAY_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
+    let result: { credited: Decimal; currency: string };
+    try {
+      result = await creditUnderpaidTopupAnyway(prisma, { orderId, adminId: req.admin!.userId });
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "underpaid_topup_credit_anyway",
+        targetType: "order",
+        targetId: orderId,
+        // Two shapes, because "credited 0" is not a smaller version of the
+        // success case — it means the order was cancelled and the buyer got
+        // nothing, which is the one outcome a shop admin has to act on by
+        // hand. The currency is named for the same reason as the refund
+        // route above: a top-up can be underpaid on an IDR or a USDT rail.
+        details: result.credited.greaterThan(0)
+          ? `Cancelled underpaid top-up order and credited ${result.credited.toString()} ${result.currency} to the buyer's wallet.`
+          : "Cancelled underpaid top-up order, but credited nothing to the buyer's wallet because no payment record shows how much they actually sent. Credit them by hand if they really did pay.",
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      throw e;
+    }
+    // `credited`/`currency` go back to the browser so the admin panel can tell
+    // the admin whether money actually moved, instead of showing the same
+    // green "credited" toast for a cancellation that credited nothing.
+    return respond(200, { ok: true, credited: result.credited.toString(), currency: result.currency });
   });
 
   app.post("/api/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const orderId = Number((req.params as { orderId: string }).orderId);
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ orderId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CANCEL_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     try {
       await prisma.$transaction(async (tx) => {
         const order = await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
@@ -150,22 +390,64 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
-    return reply.send({ ok: true });
+    return respond(200, { ok: true });
   });
 
   app.post("/api/payments/match", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode }) }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: MATCH_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     if (!binanceTxId || !orderCode) {
-      return reply.code(400).send({ error: "Both a transfer id and an order code are required." });
+      return respond(400, { error: "Both a transfer id and an order code are required." });
     }
     try {
       const target = await getOrderByCode(prisma, orderCode);
-      if (!target) return reply.code(404).send({ error: `Order ${orderCode} not found.` });
+      if (!target) return respond(404, { error: `Order ${orderCode} not found.` });
       const result = await manualMatchTx(prisma, {
         binanceTxId,
         orderId: target.id,
@@ -182,19 +464,61 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
             : `Matched transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
       });
       logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });
 
   app.post("/api/payments/credit", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const body = req.body as Record<string, string>;
     const binanceTxId = (body.binance_tx_id ?? "").trim();
     const orderCode = (body.order_code ?? "").trim();
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader
+      ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId, orderCode }) }
+      : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: CREDIT_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
     if (!binanceTxId || !orderCode) {
-      return reply.code(400).send({ error: "Both a transfer id and an order code are required." });
+      return respond(400, { error: "Both a transfer id and an order code are required." });
     }
     try {
       await prisma.$transaction(async (tx) => {
@@ -217,17 +541,57 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
       logger.info(`Admin ${req.admin!.userId} credited Binance transfer ${binanceTxId} to order ${orderCode}'s buyer balance via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof NotFoundError) return reply.code(404).send({ error: e.message });
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof NotFoundError) return respond(404, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });
 
   app.post("/api/payments/dismiss", { preHandler: csrfProtect }, async (req, reply) => {
+    if (paymentsMutationRateLimited(req.admin!.userId)) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
-    if (!binanceTxId) return reply.code(400).send({ error: "A payment reference is required." });
+
+    const idempotencyKeyHeader = normalizeIdempotencyKey(req.headers["idempotency-key"]);
+    const idem = idempotencyKeyHeader ? { key: idempotencyKeyHeader, requestHash: hashIdempotentRequest({ binanceTxId }) } : null;
+
+    if (idem) {
+      let replay: IdempotentReplay | null;
+      try {
+        replay = await findIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+        });
+      } catch (e) {
+        if (e instanceof IdempotencyKeyReuseError) {
+          return reply.code(409).send({ error: "idempotency_key_reused" });
+        }
+        throw e;
+      }
+      if (replay) {
+        return reply.code(replay.statusCode).send(JSON.parse(replay.responseBody));
+      }
+    }
+
+    const respond = async (statusCode: number, body: unknown) => {
+      if (idem) {
+        await saveIdempotentResponse(prisma, {
+          key: idem.key,
+          endpoint: DISMISS_IDEMPOTENCY_ENDPOINT,
+          requestHash: idem.requestHash,
+          statusCode,
+          responseBody: JSON.stringify(body),
+        });
+      }
+      return reply.code(statusCode).send(body);
+    };
+
+    if (!binanceTxId) return respond(400, { error: "A payment reference is required." });
     try {
       await prisma.$transaction(async (tx) => {
         await dismissUnmatchedTx(tx, binanceTxId);
@@ -239,9 +603,9 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
       logger.info(`Admin ${req.admin!.userId} dismissed unmatched Binance transfer ${binanceTxId} via the web panel`);
-      return reply.send({ ok: true });
+      return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return respond(422, { error: e.message });
       throw e;
     }
   });

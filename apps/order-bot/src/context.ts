@@ -34,6 +34,8 @@ export enum BotState {
   HISTORY,
   HELP,
   BALANCE,
+  /** The category picker within a group (Products entry flow's second step). */
+  CATEGORY_LIST,
 }
 
 export interface SessionData {

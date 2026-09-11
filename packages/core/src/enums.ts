@@ -109,9 +109,106 @@ export const OrderStatus = {
    * throw post-payment-confirmation) — needs admin attention. Distinct from
    * CANCELLED/REJECTED, which stay customer/admin-initiated only. */
   FAILED: "FAILED",
+  /** Some of the order's items were delivered and the rest ended FAILED or
+   * CANCELLED, with nothing still in flight — derived by
+   * `recomputeOrderStatus` (packages/db/src/crud/orders.ts) from the set of
+   * `OrderItem.status` values.
+   *
+   * NOTHING PRODUCES THIS TODAY, on purpose. Trustance Phase 1 Task 3 added
+   * the per-item status machinery as a provable no-op shadow of the existing
+   * order-level outcome: every order the current code paths can create is
+   * homogeneous (the cart composition rule in @app/core/cartComposition
+   * forbids mixing), so every item in an order always shares one status and
+   * `recomputeOrderStatus` always derives the status the order already has.
+   * `orderItemStatus.test.ts` asserts that unreachability directly.
+   *
+   * It exists because a later plan will loosen cart mixing so a MANUAL_ACCOUNT
+   * line and an INSTANT line can resolve independently — at which point a
+   * genuinely split order becomes representable. That plan also owns the
+   * Refund/IN_DOUBT work a paid-but-failed line needs; do not start producing
+   * this value before that resolution path exists, or a buyer ends up with a
+   * partially-delivered order and nowhere to take the difference. */
+  PARTIALLY_DELIVERED: "PARTIALLY_DELIVERED",
 } as const;
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
+
+/**
+ * Per-line fulfilment state — stored on `order_items.status` (Trustance
+ * Phase 1, Task 3). String enum, uppercase member names, matching every other
+ * legacy-shaped enum in this file rather than DeliveryType's lowercase values:
+ * this mirrors `Order.status`, which it shadows, so the two read alike in the
+ * DB and in a log line.
+ *
+ * ## It is a SHADOW today, not a source of truth
+ *
+ * Nothing branches on this column. `settlePaidOrder` still computes one
+ * order-wide `isManual` boolean and takes the same whole-order branch it always
+ * did; the item statuses are written alongside that branch's own order-level
+ * status write, in the same transaction, so they always agree with it and with
+ * each other. Every order the current code paths can create is homogeneous, so
+ * a split set of item statuses is not reachable — `orderItemStatus.test.ts`
+ * proves that for every order shape (all-AUTO multi-item, single manual, and
+ * top-up). Loosening that is a later plan's job.
+ *
+ * ## Deliberately absent
+ *
+ * `IN_DOUBT` and `REFUNDED` are NOT here. They belong to the Refund domain,
+ * which this plan defers — adding the names without the resolution path behind
+ * them would invite a call site to move an item into a state nothing can move
+ * it out of.
+ *
+ * ## Null means "row predates this column"
+ *
+ * The column is nullable with NO default, for the same reason
+ * `OrderItem.deliveryTypeSnapshot` is (see its comment in schema.prisma): this
+ * repo deploys schema with `prisma db push`, which adds the column but never
+ * backfills it. A `NOT NULL DEFAULT 'PENDING'` would silently relabel every
+ * historical DELIVERED order's items as PENDING at the deploy boundary.
+ * Consumers must treat null as "unknown, derive nothing" — which is exactly
+ * what `deriveOrderStatusFromItems` does.
+ */
+export const OrderItemStatus = {
+  /** Created, not yet paid for. The state every new OrderItem starts in. */
+  PENDING: "PENDING",
+  /** Reserved for the future per-item info flow: this line needs buyer input
+   * before it can be fulfilled. Not written by any current code path — today
+   * `manual_with_info` answers are collected order-wide BEFORE payment, into
+   * `Order.customerData`. */
+  WAITING_FOR_INFO: "WAITING_FOR_INFO",
+  /** Reserved, pairs with WAITING_FOR_INFO. Not written today. */
+  INFO_SUBMITTED: "INFO_SUBMITTED",
+  /** Paid, and waiting on an admin to hand-fulfil it. The MANUAL branch of
+   * `settlePaidOrder` sets this — the item-level shadow of the order reaching
+   * `OrderStatus.PROCESSING`. */
+  QUEUED: "QUEUED",
+  /** Reserved: fulfilment is actively under way for this line (e.g. a supplier
+   * dispatch is in flight). Not written today — the Digiflazz rail tracks its
+   * own progress on the Order, not per item. */
+  PROCESSING: "PROCESSING",
+  /** Fulfilled. Set by `approveOrder`'s atomic claim (the AUTO path) and by
+   * `fulfillManualOrder` (the hand-fulfilment path). */
+  DELIVERED: "DELIVERED",
+  /** Fulfilment failed for this line. Reserved — no current path writes it,
+   * because a whole-order failure is recorded on the Order today. */
+  FAILED: "FAILED",
+  /** This line was cancelled before fulfilment. Reserved, same reason. */
+  CANCELLED: "CANCELLED",
+} as const;
+export type OrderItemStatus = (typeof OrderItemStatus)[keyof typeof OrderItemStatus];
+export const zOrderItemStatus = z.nativeEnum(OrderItemStatus);
+
+/** Item states that mean "this line has not reached an outcome yet". An order
+ * with any of these still keeps whatever in-flight status it already has —
+ * `deriveOrderStatusFromItems` refuses to derive a terminal status while one
+ * is present. */
+export const IN_FLIGHT_ORDER_ITEM_STATUSES: readonly OrderItemStatus[] = [
+  OrderItemStatus.PENDING,
+  OrderItemStatus.WAITING_FOR_INFO,
+  OrderItemStatus.INFO_SUBMITTED,
+  OrderItemStatus.QUEUED,
+  OrderItemStatus.PROCESSING,
+];
 
 /** Customer-facing label (an i18n key, not literal text) for a stored
  * OrderStatus. Several internal/automated states fold into the same coarse
@@ -135,6 +232,12 @@ export function customerStatusLabel(status: string): string {
       return "status.label.processing";
     case OrderStatus.DELIVERED:
       return "status.label.delivered";
+    // Gets its own label rather than folding into "Delivered": the whole point
+    // of the state is that part of the order did NOT arrive, and a buyer told
+    // "Delivered" would have no reason to open a ticket. Unreachable today —
+    // see OrderStatus.PARTIALLY_DELIVERED.
+    case OrderStatus.PARTIALLY_DELIVERED:
+      return "status.label.partially_delivered";
     case OrderStatus.CANCELLED:
     case OrderStatus.REJECTED:
     case OrderStatus.FAILED:
@@ -209,9 +312,64 @@ export const VoucherScope = {
 export type VoucherScope = (typeof VoucherScope)[keyof typeof VoucherScope];
 export const zVoucherScope = z.nativeEnum(VoucherScope);
 
+/**
+ * SupportTicket.status. Trustance Phase C Task 1 expanded this from
+ * `OPEN|REPLIED|RESOLVED|CLOSED` to also carry `WAITING_ADMIN`/
+ * `WAITING_CUSTOMER` — a more explicit vocabulary for "whose turn it is to
+ * respond" than the original OPEN/REPLIED pair (which conflated "brand new,
+ * nobody has looked at it" and "customer replied, waiting on admin again"
+ * into the same OPEN value).
+ *
+ * ## Task 1 FIX (post-review): wired and resolved
+ *
+ * The original Task 1 commit shipped `WAITING_ADMIN`/`WAITING_CUSTOMER`
+ * unreachable by any real code path, with target lists in
+ * `TICKET_LEGAL_TRANSITIONS` byte-for-byte identical to `OPEN`'s/`REPLIED`'s
+ * — two exactly-synonymous pairs (task-scoped review Findings 1 and 2). A
+ * follow-up fix wired `addTicketMessage` (packages/db/src/crud/support.ts —
+ * the single choke point for every real reply in bot/web-admin/storefront)
+ * to actually produce them, and resolved the redundancy:
+ *
+ *  - `OPEN` is KEPT — narrowed to mean "genuinely new, zero real messages
+ *    yet" (written only by `createTicket` and the reopen functions). A
+ *    customer's first follow-up now moves the ticket to `WAITING_ADMIN`
+ *    instead of re-asserting `OPEN`.
+ *  - `REPLIED` is KEPT in the enum/schema (existing `String` column, never
+ *    rewrites historical rows — see this file's header comment) but RETIRED
+ *    as a normal write target: `addTicketMessage`'s ADMIN branch and
+ *    `replyToTicket` now write `WAITING_CUSTOMER` instead, since the review
+ *    confirmed the two meant exactly the same thing. Every read-side
+ *    consumer that used to check `REPLIED` alone (`listStaleRepliedTickets`,
+ *    `getTicketStats`, `isTicketOverdue`/`buildTicketConditions`'s overdue
+ *    predicate, bot keyboards/handlers, web-admin badges/filters/
+ *    resolve-reopen visibility) was updated to match `WAITING_CUSTOMER`
+ *    ALONGSIDE `REPLIED`, not instead of it.
+ *  - `WAITING_ADMIN`/`WAITING_CUSTOMER` are now genuinely differentiated
+ *    from `OPEN`/`REPLIED` (Finding 2), not just renamed: see
+ *    `TICKET_LEGAL_TRANSITIONS`'s doc comment (support.ts) for the exact
+ *    transition-table shape and why each new edge exists.
+ *
+ * This mirrors an established pattern already in this file — see
+ * `OrderStatus.PARTIALLY_DELIVERED` and `OrderItemStatus`'s own "shadow, not
+ * yet a source of truth" doc comments below, except this pair has since
+ * graduated from shadow to live.
+ */
 export const TicketStatus = {
   OPEN: "OPEN",
+  /** Retired as a normal write target (see this const's doc comment) —
+   * `WAITING_CUSTOMER` is now written instead. Kept for historical rows and
+   * one deliberate carve-out (`addTicketMessage`'s ADMIN branch replying to
+   * an already-RESOLVED/CLOSED ticket — see that function's own comment). */
   REPLIED: "REPLIED",
+  /** Ticket needs admin attention — a customer reply (after the ticket's
+   * first-ever message) moves it here via `addTicketMessage` ->
+   * `transitionTicketStatus`. See this const's doc comment. */
+  WAITING_ADMIN: "WAITING_ADMIN",
+  /** An admin has responded and the ticket is waiting on the customer's next
+   * message — the live replacement for `REPLIED`, written by
+   * `addTicketMessage`'s ADMIN branch and `replyToTicket`. See this const's
+   * doc comment. */
+  WAITING_CUSTOMER: "WAITING_CUSTOMER",
   RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",
 } as const;
@@ -227,15 +385,42 @@ export const TicketPriority = {
 export type TicketPriority = (typeof TicketPriority)[keyof typeof TicketPriority];
 export const zTicketPriority = z.nativeEnum(TicketPriority);
 
+/** SupportTicket.category — admin-set triage field, null until classified
+ * (`classifyTicket`). Trustance Phase C Task 1 added `DELIVERY`/
+ * `GAME_TOPUP`/`REFUND`/`TECHNICAL` alongside the original 5 values for
+ * finer-grained triage; existing rows keep whatever category (or null) they
+ * already had — this is a plain `String` column, not a native Postgres enum
+ * (see this file's header comment), so widening this const object needs no
+ * migration and cannot itself invalidate a stored value. */
 export const TicketCategory = {
   ORDER: "ORDER",
   PAYMENT: "PAYMENT",
   ACCOUNT: "ACCOUNT",
   PRODUCT: "PRODUCT",
   OTHER: "OTHER",
+  /** Order paid but the item didn't arrive / arrived wrong. */
+  DELIVERY: "DELIVERY",
+  /** Game top-up specific issue (wrong game id/server, top-up didn't land in
+   * the game account) — narrower than the general `PRODUCT`/`ORDER`. */
+  GAME_TOPUP: "GAME_TOPUP",
+  /** Ticket is about a refund request/status, distinct from a general
+   * `PAYMENT` question. */
+  REFUND: "REFUND",
+  /** Bot/site bug reports, login issues, etc. — not about a specific order. */
+  TECHNICAL: "TECHNICAL",
 } as const;
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 export const zTicketCategory = z.nativeEnum(TicketCategory);
+
+/** Customer-facing top-level grouping on Category.group — admin-set, null
+ * until classified. Drives the bot's "🛍 Products" entry point: exactly two
+ * buckets shown before any category/product. */
+export const CategoryGroup = {
+  GAME_TOPUP: "GAME_TOPUP",
+  PREMIUM_APPS: "PREMIUM_APPS",
+} as const;
+export type CategoryGroup = (typeof CategoryGroup)[keyof typeof CategoryGroup];
+export const zCategoryGroup = z.nativeEnum(CategoryGroup);
 
 /** Review reply-workflow state — orthogonal to `hidden` (visibility) on
  * reviews.status. PENDING_REPLY | REPLIED | CLOSED (spec §11). */
@@ -442,6 +627,48 @@ export const NotificationEvent = {
   // an inbox forever, and the payload itself is visible in the admin /outbox
   // panel. The buyer reads what they bought on the order page.
   BUYER_EMAIL_ORDER_READY: "BUYER_EMAIL_ORDER_READY",
+  // Admin DM (not a channel post): the hourly Digiflazz catalog resync
+  // (resyncDigiflazzCatalog) tripped its own blast-radius circuit breaker
+  // and wrote nothing — more than 20% of the denominations it would have
+  // repriced (out of at least 5 considered) would have moved by more than
+  // 50% in one direction. That usually means the supplier's price-list
+  // response is malformed (a field rename, a partial outage, the wrong
+  // endpoint) rather than a genuine market-wide price swing (Task 10,
+  // backend audit 2026-08-21 C-1, second half — closes the blast-radius gap
+  // left after Task 9's per-row rejection). Nothing else catches this: the
+  // next hourly tick would otherwise silently retry the same malformed data.
+  // payload carries `chat_id` (the admin's telegram id) plus
+  // sharp_changes/considered_rows (plain counts only, never a SKU/price
+  // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
+  ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin/support-group DM (fan-out — one row per resolved target, same
+  // per-recipient shape as ADMIN_MANUAL_ORDER_QUEUED/ADMIN_STALE_PAYMENT):
+  // forwards a newly-opened support ticket for triage. Enqueued from the
+  // bot's own ticket-creation flow (conversations/support.ts) — the
+  // storefront's ticket-creation path has no Telegram equivalent, it only
+  // triggers OWNER_EMAIL_NEW_TICKET. Targets are `config.SUPPORT_GROUP_ID`
+  // when set, else every resolved admin id (`resolveAdminIds`) — the same
+  // fallback the pre-outbox direct send used. payload carries `chat_id` plus
+  // ticket_id/from_user_id/from_username/message/photo_file_ids (Telegram
+  // file ids only, never binary — the dispatcher re-sends them via
+  // sendMediaGroup right after the text). NOT order-scoped (orderId: null)
+  // — tickets have no order.
+  ADMIN_NEW_TICKET: "ADMIN_NEW_TICKET",
+  // Buyer DM (not a channel post): an admin replied to the buyer's support
+  // ticket (conversations/admin.ts's ticketReplyConversation). Always
+  // rendered in English — mirrors the pre-outbox direct send, which
+  // hardcoded language "en" rather than the buyer's own stored language
+  // (unlike TICKET_CLOSED_DM below, which does use it); preserved exactly
+  // as-is, not a bug this event fixes. payload carries `chat_id` plus
+  // ticket_id and the admin's reply text, NOT order-scoped (orderId: null).
+  TICKET_REPLY_DM: "TICKET_REPLY_DM",
+  // Buyer DM (not a channel post): an admin closed the buyer's support
+  // ticket from the bot's admin panel (handlers/admin.ts's
+  // closeTicketAdmin). Rendered in the buyer's own stored language
+  // (payload.buyer_language), unlike TICKET_REPLY_DM above. payload carries
+  // `chat_id` plus ticket_id and buyer_language, NOT order-scoped
+  // (orderId: null).
+  TICKET_CLOSED_DM: "TICKET_CLOSED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];
@@ -466,7 +693,18 @@ export const NotificationStatus = {
   // crash-window double-send guard (Infra-2 fix). Reclaimable once stale.
   SENDING: "SENDING",
   SENT: "SENT",
+  // Terminal, never retried: a permanently invalid row (malformed payload,
+  // missing template, missing chat_id, etc.) that failed on its one and only
+  // eligible attempt (markNotificationFailed's maxAttempts <= 1 call sites).
+  // Retrying would never fix these — they're a data/config problem, not a
+  // transient delivery problem.
   FAILED: "FAILED",
+  // Terminal: a row that WAS genuinely retried with exponential backoff
+  // (markNotificationFailed's maxAttempts > 1 call sites, real
+  // NOTIF_MAX_ATTEMPTS) and still exhausted every attempt. Distinct from
+  // FAILED so operators can page on "retried to the ceiling, still failing"
+  // without the metric being drowned out by one-shot invalid-data failures.
+  DEAD_LETTER: "DEAD_LETTER",
 } as const;
 export type NotificationStatus =
   (typeof NotificationStatus)[keyof typeof NotificationStatus];
@@ -491,3 +729,141 @@ export const BroadcastStatus = {
 export type BroadcastStatus =
   (typeof BroadcastStatus)[keyof typeof BroadcastStatus];
 export const zBroadcastStatus = z.nativeEnum(BroadcastStatus);
+
+/**
+ * Refund.status (Trustance Master Architecture Task 8a/8b). String, not a
+ * native Prisma enum — matching every other lifecycle-status column in this
+ * schema (Order.status, OrderItem.status, Denomination.deliveryType).
+ *
+ * The legal transition shape is PENDING -> PROCESSING -> COMPLETED | FAILED,
+ * with CANCELLED reachable from PENDING or PROCESSING only — see
+ * `REFUND_LEGAL_TRANSITIONS` (packages/db/src/crud/refunds.ts), which mirrors
+ * `LEGAL_TRANSITIONS` in orderStatus.ts. COMPLETED/FAILED/CANCELLED are all
+ * terminal: no code path transitions a Refund back out of any of them.
+ */
+export const RefundStatus = {
+  PENDING: "PENDING",
+  PROCESSING: "PROCESSING",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+  CANCELLED: "CANCELLED",
+} as const;
+export type RefundStatus = (typeof RefundStatus)[keyof typeof RefundStatus];
+export const zRefundStatus = z.nativeEnum(RefundStatus);
+
+/**
+ * Payment.status (Trustance Phase A Task A2a) — a multi-attempt payment
+ * ledger that coexists with (does not replace) the payment fields directly on
+ * `Order` (`paymentMethod`, `paymentRef`, `binanceTxid`, `bybitTxid`, ...),
+ * which stay the "current/latest attempt" cache the six existing payment-rail
+ * webhook/poller handlers read directly. String, not a native Prisma enum,
+ * matching every other lifecycle-status column in this schema (`Order.status`,
+ * `Refund.status`, `OrderItem.status`).
+ *
+ * The legal transition shape is PENDING -> CONFIRMED | EXPIRED | FAILED, all
+ * three terminal — see `PAYMENT_LEGAL_TRANSITIONS`
+ * (packages/db/src/crud/payments.ts). Only PENDING -> EXPIRED
+ * (`expirePaymentAttempt`) and PENDING -> CONFIRMED (`confirmPaymentAttempt`)
+ * have a crud function today; PENDING -> FAILED is reserved in the shape for
+ * a future caller (e.g. Task 3's webhook wiring reporting a declined/failed
+ * gateway attempt) without needing to touch the transition table again.
+ */
+export const PaymentStatus = {
+  PENDING: "PENDING",
+  CONFIRMED: "CONFIRMED",
+  EXPIRED: "EXPIRED",
+  FAILED: "FAILED",
+} as const;
+export type PaymentStatus = (typeof PaymentStatus)[keyof typeof PaymentStatus];
+export const zPaymentStatus = z.nativeEnum(PaymentStatus);
+
+/**
+ * Payment.expiryReason (Trustance Phase A Task A2a) — free-text-shaped but
+ * constrained in practice to these three machine codes, set only when
+ * `Payment.status` reaches EXPIRED (`expirePaymentAttempt`,
+ * packages/db/src/crud/payments.ts). "RAIL_CHANGED" is written by the new
+ * "change payment rail" entry point (apps/order-bot/src/handlers/
+ * checkout.ts) when a buyer switches gateways on the SAME order instead of
+ * abandoning it; "TIMEOUT" and "CANCELLED" are reserved for a future poller/
+ * cancel-order caller to use the same column instead of inventing another.
+ */
+export const PaymentExpiryReason = {
+  RAIL_CHANGED: "RAIL_CHANGED",
+  TIMEOUT: "TIMEOUT",
+  CANCELLED: "CANCELLED",
+} as const;
+export type PaymentExpiryReason = (typeof PaymentExpiryReason)[keyof typeof PaymentExpiryReason];
+
+/**
+ * AdminTask.type (Trustance Master Architecture Task 9a, §38) — the five
+ * manual-operation task kinds the admin task queue can hold. String, not a
+ * native Prisma enum, matching every other lifecycle-status-adjacent column
+ * in this schema.
+ */
+export const AdminTaskType = {
+  /** A `manual_with_info`-adjacent flow needs the buyer to supply more
+   * detail before the task can proceed. */
+  REQUEST_CUSTOMER_INFO: "REQUEST_CUSTOMER_INFO",
+  /** A paid order routed to hand-fulfilment (Denomination.deliveryType
+   * manual/manual_with_info) needs an admin to type and send the content. */
+  MANUAL_DELIVERY: "MANUAL_DELIVERY",
+  /** A specific manual account needs to be picked/assigned to an order. */
+  MANUAL_ACCOUNT_ASSIGNMENT: "MANUAL_ACCOUNT_ASSIGNMENT",
+  /** A Digiflazz-routed top-up came back failed/ambiguous and needs admin
+   * review (see OrderStatus.FAILED / the Digiflazz resync circuit breaker). */
+  FAILED_TOPUP_REVIEW: "FAILED_TOPUP_REVIEW",
+  /** A Refund record needs admin review/decision — see AdminTask.refundId. */
+  REFUND_REVIEW: "REFUND_REVIEW",
+} as const;
+export type AdminTaskType = (typeof AdminTaskType)[keyof typeof AdminTaskType];
+export const zAdminTaskType = z.nativeEnum(AdminTaskType);
+
+/**
+ * AdminTask.priority — same LOW/MEDIUM/HIGH/URGENT vocabulary as
+ * `TicketPriority` (this schema's existing precedent for an admin-set
+ * triage field), kept as its own named enum rather than re-exporting
+ * TicketPriority so the AdminTask domain stays self-contained, matching how
+ * OrderStatus/RefundStatus are separate enums despite overlapping shape.
+ */
+export const AdminTaskPriority = {
+  LOW: "LOW",
+  MEDIUM: "MEDIUM",
+  HIGH: "HIGH",
+  URGENT: "URGENT",
+} as const;
+export type AdminTaskPriority = (typeof AdminTaskPriority)[keyof typeof AdminTaskPriority];
+export const zAdminTaskPriority = z.nativeEnum(AdminTaskPriority);
+
+/**
+ * AdminTask.status — the state machine driven by the four admin actions
+ * §38 names (Assign / Start / Complete / Escalate):
+ *
+ *   PENDING --assign--> ASSIGNED --start--> IN_PROGRESS --complete--> COMPLETED
+ *      |                    |                    |
+ *      +---escalate---> ESCALATED <---escalate---+
+ *                          | (assign)   | (start)   | (complete)
+ *                          +-------------------------------------> ASSIGNED / IN_PROGRESS / COMPLETED
+ *
+ * PENDING is the only status with no assignee. ASSIGNED/IN_PROGRESS/
+ * ESCALATED all carry a non-null `assignedTo` in practice (set by the
+ * `assign` action) — not enforced at the schema level (see AdminTask.
+ * assignedTo's own doc comment), the same "app-layer invariant, not a CHECK
+ * constraint" pattern this schema already uses for RefundItem's sum
+ * invariant. ESCALATED is deliberately NOT terminal: escalating hands a
+ * task to a different/more senior admin, who can still re-assign, resume,
+ * or complete it — see `ADMIN_TASK_LEGAL_TRANSITIONS`
+ * (packages/db/src/crud/adminTasks.ts) for the exact edges. COMPLETED is
+ * the only terminal status; there is no "cancelled"/"rejected" status for
+ * an AdminTask today (unlike Refund/Order) because nothing in §38 or the
+ * task description asked for one — closing that gap is future work if an
+ * admin needs to explicitly drop a task rather than complete it.
+ */
+export const AdminTaskStatus = {
+  PENDING: "PENDING",
+  ASSIGNED: "ASSIGNED",
+  IN_PROGRESS: "IN_PROGRESS",
+  ESCALATED: "ESCALATED",
+  COMPLETED: "COMPLETED",
+} as const;
+export type AdminTaskStatus = (typeof AdminTaskStatus)[keyof typeof AdminTaskStatus];
+export const zAdminTaskStatus = z.nativeEnum(AdminTaskStatus);

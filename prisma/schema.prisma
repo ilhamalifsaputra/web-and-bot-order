@@ -14,7 +14,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL_PRISMA")
 }
 
@@ -61,6 +61,7 @@ model User {
   reviews               Review[]
   restockSubscriptions  RestockSubscription[]
   auditLogs             AuditLog[]
+  auditLogsAsCustomer   AuditLog[]            @relation("AuditLogCustomer")
   ticketMessages        TicketMessage[]
   walletTransactions    WalletTransaction[]
   passwordResetTokens   PasswordResetToken[]
@@ -68,8 +69,10 @@ model User {
   referralsAsReferrer   Referral[]            @relation("ReferralReferrer")
   ticketsAsUser         SupportTicket[]       @relation("TicketUser")
   ticketsAsAdmin        SupportTicket[]       @relation("TicketAdmin")
+  ticketsAssignedBy     SupportTicket[]       @relation("TicketAssignedBy")
   voucherRedemptions    VoucherRedemption[]
   reviewsRepliedAsAdmin Review[]              @relation("ReviewRepliedByAdmin")
+  adminTasksAssigned    AdminTask[]           @relation("AdminTaskAssignee")
 
   @@index([role, createdAt], map: "ix_users_role_created_at")
   @@index([lastSeenAt], map: "ix_users_last_seen_at")
@@ -159,10 +162,75 @@ model Category {
   image       String?
   sortOrder   Int     @default(0) @map("sort_order")
   isActive    Boolean @default(true) @map("is_active")
+  /// Top-level bucket for the bot's "🛍 Products" entry point — GAME_TOPUP |
+  /// PREMIUM_APPS (packages/core/src/enums.ts CategoryGroup). Admin-set, null
+  /// until classified. A category with no group is unreachable from the
+  /// customer group→category picker until an admin assigns one — it stays
+  /// reachable via search, Popular, and /start deep links, which are
+  /// intentionally group-agnostic.
+  group       String?
+  /// How checkout behaves for every product/denomination under this category:
+  /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
+  /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
+  /// at checkout and the order auto-dispatches to the supplier on payment).
+  checkoutFlow String @default("catalog") @map("checkout_flow")
 
   products Product[]
 
   @@map("categories")
+}
+
+/// Top-level catalog entity for nickname-checkable games (e.g. Mobile Legends,
+/// COD, PUBG). One Game may be sold through multiple providers, each with a
+/// different provider-specific code — that mapping lives in ProviderGameMapping.
+/// Task 2 will add Product.gameId to tie catalog products to a game.
+model Game {
+  id                Int      @id @default(autoincrement())
+  slug              String   @unique(map: "ix_games_slug")
+  name              String
+  /// Optional category/classification within the game system (e.g. "multiplayer", "battle_royale").
+  category          String?
+  /// Whether this game supports buyer nickname checks (third-party API lookups).
+  nicknameSupported Boolean  @default(true) @map("nickname_supported")
+  /// Whether this game requires a zone/region code from the buyer at checkout.
+  requiresZone      Boolean  @default(false) @map("requires_zone")
+  /// Whether this game requires a server/realm code from the buyer at checkout.
+  requiresServer    Boolean  @default(false) @map("requires_server")
+  /// Soft-enabled toggle; false removes the game from storefront/admin catalogs.
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  providerMappings ProviderGameMapping[]
+  products         Product[]
+
+  @@map("games")
+}
+
+/// Maps a Game to a provider's game code, supporting multi-provider catalog
+/// routing. Each row pairs a game with a provider (kokinpay, vipreseller, melostore)
+/// and the provider's internal game code; enabled + priority govern which providers
+/// are tried and in what order.
+model ProviderGameMapping {
+  id               Int      @id @default(autoincrement())
+  gameId           Int      @map("game_id")
+  /// Provider identifier: "kokinpay" | "vipreseller" | "melostore".
+  provider         String
+  /// Provider's internal code for this game (used in API calls to that provider).
+  providerGameCode String   @map("provider_game_code")
+  /// false temporarily disables this provider for a game (soft-disable without deleting).
+  enabled          Boolean  @default(true)
+  /// Ascending priority order; 0 = highest priority, tried first. Used to rank
+  /// which provider's API is queried for nickname checks and order fulfillment.
+  priority         Int      @default(0)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([gameId, provider], map: "ix_provider_game_mappings_game_provider")
+  @@index([gameId, enabled, priority], map: "ix_provider_game_mappings_game_priority")
+  @@map("provider_game_mappings")
 }
 
 /// Mid-tier of the catalog (Category → **Product** → Denomination). The
@@ -187,10 +255,48 @@ model Product {
   /// Warranty detail for this product, overriding the generic warranty copy.
   warrantyNote String? @map("warranty_note")
   /// Web-facing product photo URL (admin-set, storefront only). Telegram
-  /// imageFileId can't be used as an <img src>; when this is null the
-  /// storefront falls back to its curated Unsplash map (plan.md §8).
+  /// imageFileId can't be used as an <img src>. When null the storefront
+  /// renders a generated DefaultThumb placeholder (a lucide icon in a tinted
+  /// well), keyed by `thumbnailKind` / category `group` / a category-name
+  /// heuristic — see `thumbnailKind` below and `defaultThumbKind` in
+  /// apps/storefront/src/images.ts.
   webImageUrl String?  @map("web_image_url")
   imageFileId String?  @map("image_file_id")
+  /// Default placeholder art style shown when no `webImageUrl` is set —
+  /// admin-set, null = auto-resolve from category. One of "game" | "voucher"
+  /// | "steam" | "entertainment" | "app" | "generic".
+  thumbnailKind     String? @map("thumbnail_kind")
+  /// Currency-icon style shown on this product's DenominationCard chips —
+  /// admin-set, null = auto-resolve (or always null for PREMIUM_APPS
+  /// category). One of "diamond" | "coin" | "key" | "card" | "voucher".
+  currencyIconKind  String? @map("currency_icon_kind")
+  /// The exact Digiflazz `brand` string this Product was imported from (Import
+  /// Wizard). Null for hand-created products. Re-sync matching key — chosen
+  /// over matching by name so the admin can rename the display name freely
+  /// without breaking future syncs.
+  digiflazzBrand String? @map("digiflazz_brand")
+  /// Game Top Up display grouping only (Category.group === "GAME_TOPUP");
+  /// Premium Apps products leave this null and render exactly as today.
+  /// Free-text edition label an admin sets when one Category (a "Game")
+  /// sells more than one purchasable edition, e.g. "Infinite" vs "Regular"
+  /// for Arena Breakout. Null = no variant distinction; the bot nav skips
+  /// the variant-picker screen entirely for this category. Deliberately
+  /// independent of (never synced from) the existing Digiflazz Product-name
+  /// "(Region)" suffix convention (packages/core/src/suppliers/digiflazz.ts) —
+  /// that's a supplier re-sync mechanism, unrelated to this display field.
+  gameVariant      String? @map("game_variant")
+  /// Admin-set emoji shown on the variant-picker button (prefixed to
+  /// gameVariant's label) and reused as a prefix on denomination buttons
+  /// under this product. Kept separate from gameVariant so the bot never
+  /// has to parse an emoji back out of admin-authored text.
+  gameVariantEmoji String? @map("game_variant_emoji")
+  /// Admin-set free-text region/country label (e.g. "🇮🇩 Indonesia") — any
+  /// flag glyph is part of this string, unlike gameVariantEmoji, since a
+  /// region label is only ever rendered once, at the region picker.
+  /// Independent of Denomination.expectedRegionCode (machine ISO-ish code
+  /// checked against a live supplier API) and of the Digiflazz Product-name
+  /// "(Region)" suffix — neither backfills this field.
+  gameRegion       String? @map("game_region")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
@@ -199,12 +305,39 @@ model Product {
   /// Delete, which is refused once it has denominations.
   isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at")
+  /// Nullable FK to Game — links this Product to the canonical Game record
+  /// that drives the multi-provider nickname-check (NicknameService). Null =
+  /// not yet migrated; the storefront falls back entirely to the legacy
+  /// per-Denomination nicknameCheckGameCode/expectedRegionCode fields, which
+  /// keep working completely unchanged.
+  gameId      Int?     @map("game_id")
+  /// Detection Engine (packages/core/src/detection) output, cached on the
+  /// Product row so read paths never call detect() inline. Null = never run
+  /// / not yet classified. All five fields are written together by the
+  /// detection sync job (a later task) — never partially.
+  detectionBaseProductKey String?  @map("detection_base_product_key")
+  /// The full product key (base key + defining-token suffix) this Product
+  /// was resolved to — see packages/core/src/detection/keys.ts.
+  detectionProductKey     String?  @map("detection_product_key")
+  /// detect()'s DetectionResult.status ("resolved" | "ambiguous" | "unknown")
+  /// for this Product's most recent classification run.
+  detectionStatus         String?  @map("detection_status")
+  /// detect()'s confidence score [0,1] for the most recent classification.
+  detectionConfidence     Decimal? @map("detection_confidence")
+  /// Opaque cache-invalidation stamp (knowledge revision + catalog stamp) the
+  /// classification was produced with — a mismatch against the current live
+  /// stamp means this row's detection fields are stale and due a re-run.
+  detectionStamp          String?  @map("detection_stamp")
 
   category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  game            Game?          @relation(fields: [gameId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
+  supportTickets  SupportTicket[]
 
   @@index([categoryId], map: "ix_products_category_id")
+  @@index([gameId], map: "ix_products_game_id")
+  @@index([detectionProductKey], map: "ix_products_detection_product_key")
   @@map("products")
 }
 
@@ -231,6 +364,53 @@ model Denomination {
   resellerPrice        Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
   autoDeliverySource   String?   @map("auto_delivery_source")
+  /// The Digiflazz `buyer_sku_code` this denomination maps to (e.g. "ML86").
+  /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
+  /// points at the Digiflazz supplier.
+  supplierSku          String?   @map("supplier_sku")
+  /// KokinPay's game_code for this denomination's title (e.g. "mobile-legends"),
+  /// used to offer a live nickname lookup on the buyer's account field before
+  /// they pay. Null = no live check for this product — the field still works
+  /// as plain text, never blocks the buyer. Admin copies this value from
+  /// KokinPay's own game-code list (api.kokinpay.com/docs/kode-game).
+  /// Independent of autoDeliverySource/supplierSku — this is a storefront UX
+  /// enhancement, not a fulfilment link, so it applies to any manual_with_info
+  /// product regardless of who (if anyone) auto-fulfils it.
+  nicknameCheckGameCode String?  @map("nickname_check_game_code")
+  /// Admin-authored short warning shown near the account field on the
+  /// storefront's instant-buy page (e.g. "Hanya untuk akun region
+  /// Indonesia") — a manual mitigation for the wrong-region-variant problem
+  /// (this SKU/Product may be a region-specific split of a game that has
+  /// multiple Digiflazz SKUs per region, and nothing else in the catalog
+  /// enforces which one a buyer picks). Independent of every other field on
+  /// this model — works even with no live nickname/region check configured.
+  regionWarning String? @map("region_warning")
+  /// The region this SKU is FOR, as an ISO-3166-alpha2-ish code (e.g. "ID"
+  /// for Indonesia) — compared against VIP-Reseller's live region-check
+  /// result (packages/core/src/suppliers/vipreseller.ts, only returns
+  /// country data for some games, e.g. Mobile Legends) to flag a mismatch on
+  /// the storefront. Null = no automatic region check for this SKU (the
+  /// live check is skipped silently, same graceful-degrade discipline as
+  /// nicknameCheckGameCode). Admin sets this to match whichever Digiflazz
+  /// SKU/region this particular Product/Denomination represents.
+  expectedRegionCode String? @map("expected_region_code")
+  /// True once an admin has manually edited this SKU's price after import.
+  /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
+  /// resyncDigiflazzCatalog) skips price recomputation for any row where this
+  /// is true, so a deliberate manual price change is never silently
+  /// overwritten by the next sync tick.
+  priceOverridden      Boolean   @default(false) @map("price_overridden")
+  /// Game Top Up compact-label display only. The pure numeric top-up amount
+  /// (e.g. 2500), decoupled from name/durationLabel's free text — which for
+  /// Digiflazz-imported rows already repeats the game name (e.g. "Mobile
+  /// Legends 86 Diamonds") and can't be reliably re-parsed. Null = this SKU
+  /// has no compact quantity set; the bot falls back unchanged to
+  /// durationLabel||name.
+  qtyValue Int?    @map("qty_value")
+  /// The short unit word paired with qtyValue on the compact button, e.g.
+  /// "Diamonds", "UC", "Bonds". Set together with qtyValue by the admin,
+  /// never derived/parsed from name/durationLabel.
+  qtyUnit  String? @map("qty_unit")
   warrantyDays         Int       @default(30) @map("warranty_days")
   sortOrder            Int       @default(0) @map("sort_order")
   isActive             Boolean   @default(true) @map("is_active")
@@ -301,6 +481,13 @@ model Denomination {
   /// announce job can't fan it out twice. Reset to null whenever the schedule
   /// is rewritten or cleared, which is what lets the same SKU be flashed again.
   flashAnnouncedAt     DateTime? @map("flash_announced_at")
+  /// Detection Engine (packages/core/src/detection) SKU-level key this
+  /// Denomination was resolved to (denomination category, e.g. which
+  /// diamond-pack tier). Null = never classified. Companion to
+  /// Product.detectionProductKey, not a duplicate of it.
+  detectionSkuKey      String?   @map("detection_sku_key")
+  /// Same cache-invalidation stamp convention as Product.detectionStamp.
+  detectionStamp       String?   @map("detection_stamp")
 
   product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
@@ -309,12 +496,72 @@ model Denomination {
   reviews              Review[]
   restockSubscriptions RestockSubscription[]
   bulkPricing          BulkPricing?
+  providerMappings     ProductProviderMapping[]
 
   @@index([productId], map: "ix_denominations_product_id")
   // The announce job scans for flash sales that have started but not yet been
   // broadcast; both it and the catalog reads filter on the window's end.
   @@index([flashEndsAt], map: "ix_denominations_flash_ends_at")
+  @@index([detectionSkuKey], map: "ix_denominations_detection_sku_key")
   @@map("denominations")
+}
+
+/// Maps a Denomination (SKU) to a transaction-fulfilment provider's own SKU
+/// code, supporting multi-provider dispatch routing — the transaction-side
+/// analogue of ProviderGameMapping above (which does this for nickname-check
+/// lookups). Digiflazz is the only real transaction provider today; this
+/// model exists to remove the STRUCTURAL blocker — a SKU hard-bound to
+/// Digiflazz in the schema via Denomination.autoDeliverySource/supplierSku
+/// alone — so a second provider can be added later without a schema
+/// migration. No second adapter or fallback-on-failure routing is built here
+/// (see .superpowers/sdd/task-4-brief.md); the per-order Digiflazz dispatch
+/// path (packages/db/src/crud/digiflazz.ts) keeps reading
+/// Denomination.autoDeliverySource/supplierSku directly and unchanged — this
+/// model's resolver (packages/db/src/crud/productProviderMappings.ts) is what
+/// keeps those two cache fields in sync with the current top-priority enabled
+/// mapping, so the read-heavy dispatch path stays a single-table read.
+///
+/// `productId` is named to match every other FK to Denomination already in
+/// this schema (OrderItem.productId, CartItem.productId, StockItem.productId)
+/// — Denomination was physically the old `products` table (see its own doc
+/// comment above), so `product_id` is this repo's established column name
+/// for "the SKU this row is about", not a reference to the mid-tier Product
+/// model.
+model ProductProviderMapping {
+  id           Int       @id @default(autoincrement())
+  /// Holds a Denomination id — see this model's doc comment for why the
+  /// column is named product_id.
+  productId    Int       @map("product_id")
+  /// Provider identifier: "digiflazz" today; free-text (like
+  /// ProviderGameMapping.provider) so a second transaction provider can be
+  /// added later without a schema change.
+  provider     String
+  /// The provider's own SKU/product code for this Denomination (Digiflazz's
+  /// buyer_sku_code, e.g. "ML86").
+  providerSku  String    @map("provider_sku")
+  /// The provider's last-known cost for this SKU, for margin reporting —
+  /// populated by a future price-sync job (explicitly deferred, see
+  /// task-4-brief.md's "provider price/balance sync workers (D4)"); null
+  /// until then. Decimal, never float (CLAUDE.md money rule).
+  providerCost Decimal?  @map("provider_cost")
+  /// When providerCost was last refreshed from the provider. Null until a
+  /// future sync job sets it.
+  costSyncedAt DateTime? @map("cost_synced_at")
+  /// false temporarily disables this provider for this SKU (soft-disable
+  /// without deleting) — the resolver skips a disabled row when recomputing
+  /// the Denomination's cached autoDeliverySource/supplierSku.
+  enabled      Boolean   @default(true)
+  /// Ascending priority order; 0 = highest priority, tried first by the
+  /// resolver when more than one enabled provider row exists for this SKU.
+  priority     Int       @default(0)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([productId, provider], map: "ix_product_provider_mappings_product_provider")
+  @@index([productId, enabled, priority], map: "ix_product_provider_mappings_product_priority")
+  @@map("product_provider_mappings")
 }
 
 model StockItem {
@@ -411,6 +658,47 @@ model Order {
   /// can still auto-deliver it. Cleared back to null the next time an
   /// explorer lookup succeeds.
   trackingStaleAt       DateTime? @map("tracking_stale_at")
+  /// Idempotency guard for the Digiflazz dispatch poller (later task): set
+  /// atomically via an `updateMany`-with-status-guard claim (mirrors
+  /// `fulfillManualOrder`'s pattern, packages/db/src/crud/orders.ts:1657-1661)
+  /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
+  /// can never place the same top-up order twice. Null = not yet dispatched.
+  digiflazzDispatchedAt DateTime? @map("digiflazz_dispatched_at")
+  /// Digiflazz supplier-dispatch sub-status — separate from Order.status
+  /// (which stays PROCESSING for every one of these until DELIVERED) because
+  /// Order.status already carries broader lifecycle meaning (PROCESSING/
+  /// DELIVERED/CANCELLED/...) consumed by many other status-driven code paths
+  /// — conflating "how the supplier call is going" into it risks breaking
+  /// those. Null = not yet dispatched (mirrors digiflazzDispatchedAt: null).
+  /// One of: "pending_at_supplier" (dispatched, awaiting Sukses/Gagal —
+  /// covers both a fresh dispatch and a later backoff recheck), "failed"
+  /// (terminal — either an explicit Gagal, or the recheck backoff window was
+  /// exhausted still Pending/erroring; requires manual admin fulfilment,
+  /// same remedy as today). No "delivered" value here — that's
+  /// Order.status=DELIVERED.
+  digiflazzStatus        String?   @map("digiflazz_status")
+  /// Recheck/retry attempt counter for the backoff schedule (0 at first
+  /// dispatch, incremented on each recheck attempt whether it's a re-poll of
+  /// a Pending order or a retry of a transient HTTP/network failure).
+  digiflazzAttempts      Int       @default(0) @map("digiflazz_attempts")
+  /// When this order is next due for a recheck — drives
+  /// dispatchPendingDigiflazzOrders's claim query for the "already dispatched,
+  /// due for a recheck" branch. Null once terminal (delivered or failed) or
+  /// before the first dispatch.
+  digiflazzNextRecheckAt DateTime? @map("digiflazz_next_recheck_at")
+  /// Internal-only diagnostic for admins (AuditLog/admin UI) — the raw
+  /// Digiflazz message or exception text from the last failed attempt. NEVER
+  /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
+  /// text, not this field.
+  digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
+  /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
+  /// bubble is first rendered for a given checkout attempt and passed through
+  /// to createOrderDirect/createOrderFromCart. The unique constraint is the
+  /// atomic, DB-enforced guard against two near-simultaneous "Buy Now" taps
+  /// both creating an order — see packages/db/src/crud/orders.ts's
+  /// DuplicateCheckoutIntentError. Nullable: existing rows and any
+  /// non-bot-originated order creation path never set it.
+  checkoutIntentId       String?   @unique(map: "ix_orders_checkout_intent_id") @map("checkout_intent_id")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)
@@ -422,6 +710,9 @@ model Order {
   notificationOutbox NotificationOutbox[]
   voucherRedemptions VoucherRedemption[]
   statusHistory      OrderStatusHistory[]
+  refunds            Refund[]
+  adminTasks         AdminTask[]
+  payments           Payment[]
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -430,6 +721,7 @@ model Order {
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@index([status, deliveredAt], map: "ix_orders_status_delivered")
   @@index([kind], map: "ix_orders_kind")
+  @@index([digiflazzStatus, digiflazzNextRecheckAt], map: "ix_orders_digiflazz_recheck")
   @@map("orders")
 }
 
@@ -482,19 +774,398 @@ model OrderItem {
   /// settlePaidOrder falls back to the live denomination row for those, i.e.
   /// exactly the pre-Task-15 behavior — zero regression risk either way.
   deliveryTypeSnapshot String? @map("delivery_type_snapshot")
+  /// Per-line fulfilment state — OrderItemStatus (@app/core/enums): PENDING,
+  /// WAITING_FOR_INFO, INFO_SUBMITTED, QUEUED, PROCESSING, DELIVERED, FAILED,
+  /// CANCELLED. String, not a native enum, matching every other enum column in
+  /// this schema.
+  ///
+  /// A SHADOW of Order.status, not a source of truth. Nothing branches on it:
+  /// settlePaidOrder still takes one whole-order auto-vs-manual branch and
+  /// writes every item's status to match that branch's outcome, in the same
+  /// transaction as the order-level status write. Since the cart composition
+  /// rule (@app/core/cartComposition) keeps every order homogeneous, the items
+  /// of an order always share one status. Added by Trustance Phase 1 Task 3 as
+  /// the foundation a later plan needs to let lines resolve independently.
+  ///
+  /// Nullable, no default — the SAME deploy-boundary reasoning as
+  /// deliveryTypeSnapshot directly above, and for once that is not a copied
+  /// caveat but the load-bearing choice: `prisma db push` adds the column
+  /// without running any backfill, so `NOT NULL DEFAULT 'PENDING'` would stamp
+  /// PENDING onto the items of every order ever delivered. Null means "row
+  /// predates this column"; deriveOrderStatusFromItems reads it as "unknown"
+  /// and declines to derive anything, which is exactly the pre-Task-3
+  /// behavior for those rows.
+  status               String? @map("status")
 
   // Restrict, not Cascade (Infra-5 fix, security audit 2026-06-23): line items
   // are the order's financial detail — deleting an Order must never silently
   // erase them. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order     Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
-  product   Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
-  stockItem StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  product     Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  stockItem   StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  refundItems RefundItem[]
+  adminTasks  AdminTask[]
 
   @@index([orderId], map: "ix_order_items_order_id")
   @@index([productId], map: "ix_order_items_product_id")
   @@map("order_items")
+}
+
+model Refund {
+  id                Int       @id @default(autoincrement())
+  orderId           Int       @map("order_id")
+  /// Total refund amount for this Refund row, in `currency` below. For a
+  /// partial/per-item refund this should equal the sum of its RefundItem
+  /// rows' amounts. Enforced by `createRefundItem` (packages/db/src/crud/
+  /// refunds.ts): any RefundItem insert that would push the running
+  /// per-refund sum over this Refund.amount is rejected. See RefundItem's
+  /// doc comment for the (separate, already-enforced) cross-refund
+  /// per-OrderItem budget invariant, which is unrelated to this one.
+  amount            Decimal
+  /// Snapshot of the currency the ORIGINAL payment was made in (IDR or
+  /// USDT), copied at Refund-creation time from `Order.currency` — not
+  /// derived by joining back to Order on read. Mirrors this schema's
+  /// existing convention for order-adjacent financial snapshots: e.g.
+  /// `Order.fxRate` freezes the IDR/USDT rate "so later rate edits never
+  /// change what historical orders were charged", and `OrderItem.unitPrice`
+  /// freezes the price paid independent of later catalog price edits. A
+  /// refund must stay pinned to its original payment's currency for the
+  /// same reason — if a future admin edits how currency conversion works,
+  /// every already-decided refund amount must stay exactly what was
+  /// approved.
+  currency          String
+  /// Free-text admin-typed explanation ("dead account, buyer confirmed",
+  /// "goodwill refund - late delivery"), matching this schema's existing
+  /// precedent for "why did this happen" fields on Order
+  /// (`rejectionReason`, `adminNote`) — both free String?, not a
+  /// constrained enum, because refund reasons are as varied as support
+  /// tickets and a fixed value set would just grow an "OTHER" bucket anyway.
+  reason            String?
+  /// PENDING | PROCESSING | COMPLETED | FAILED | CANCELLED. String, not a
+  /// native Prisma enum — matching every other lifecycle-status column in
+  /// this schema (`Order.status`, `OrderItem.status`,
+  /// `Denomination.deliveryType`). The state machine that governs these
+  /// transitions lives in `REFUND_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/refunds.ts), validated by
+  /// `transitionRefundStatus`. Reaching COMPLETED via `transitionRefundStatus`
+  /// is record-keeping only — it does NOT call `adjustWallet` or trigger any
+  /// payout; see that file's module comment. This is enforced, not just
+  /// documented: `transitionRefundStatus` requires a caller to pass
+  /// `acknowledgeNoPayout: true` to reach COMPLETED at all, and its audit log
+  /// entry for that transition states "Record-keeping only — no payout was
+  /// triggered by this transition." The only payout path wired up today is
+  /// `refundUnderpaidOrder` (packages/db/src/crud/binance_internal.ts), and
+  /// it writes its Refund row directly (bypassing `transitionRefundStatus`)
+  /// at the same time it performs its own wallet credit, rather than driving
+  /// this state machine.
+  status            String    @default("PENDING")
+  /// The refund's OWN external reference at whatever rail actually pays it
+  /// out (e.g. a payment gateway's refund-transaction id, or a manual note
+  /// an admin types when reconciling a bank-transfer refund) — distinct
+  /// from the ORIGINAL payment's reference, which is deliberately NOT
+  /// duplicated here. This repo has no single `Payment` table to point a
+  /// typed `paymentId` FK at (6 different payment rails, tracked
+  /// differently — some directly on `Order` via
+  /// `paymentRef`/`binanceTxid`/`bybitTxid`, others via dedicated
+  /// `Processed*Tx` ledger tables), and every one of those original-payment
+  /// identifiers is already reachable through `orderId` -> `Order`, so a
+  /// second column holding the same reference again would be pure
+  /// duplication with a staleness risk if the Order row it copied from were
+  /// ever corrected. Nullable: not every refund path will have an external
+  /// reference (e.g. a pure wallet-credit refund settled entirely inside
+  /// this DB).
+  externalReference String?   @map("external_reference")
+  /// Set when this Refund reaches a terminal state (COMPLETED, FAILED, or
+  /// CANCELLED) — mirrors `Order.paidAt`/`Order.deliveredAt`'s pattern of a
+  /// nullable timestamp that means "not yet reached this milestone", not
+  /// "when the row was created" (that's `createdAt` below).
+  processedAt       DateTime? @map("processed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  // Restrict, not Cascade (matches WalletTransaction/OrderStatusHistory/
+  // Referral/Review's existing policy for Order-adjacent financial-audit
+  // rows, Infra-5 fix, security audit 2026-06-23): a Refund is itself a
+  // financial-audit record — deleting the Order it refunds must never
+  // silently erase it. No code path hard-deletes an Order today; this is a
+  // schema-level guardrail against ever adding one.
+  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  items      RefundItem[]
+  adminTasks AdminTask[]
+
+  @@index([orderId], map: "ix_refunds_order_id")
+  @@index([status], map: "ix_refunds_status")
+  @@map("refunds")
+}
+
+/// Per-item breakdown of a Refund, for partial refunds (qty>1 premium items,
+/// or multi-item premium carts) where only some units/lines of an order are
+/// being refunded — e.g. buy 3 Netflix accounts, one turns out dead.
+///
+/// INVARIANT (enforced at the APPLICATION layer, NOT here): the sum of
+/// `amount` across every RefundItem row for a given `orderItemId` must never
+/// exceed that OrderItem's own subtotal (`unitPrice * quantity`, in the same
+/// currency as the original payment). SQLite's CHECK constraints can't
+/// express a cross-row aggregate like "sum of sibling rows", so this schema
+/// only provides the pieces the application-layer check needs — the
+/// `orderItemId` FK to group by, and the `amount` column to sum. The actual
+/// enforcement (reading existing RefundItem rows for that orderItemId before
+/// inserting a new one, excluding rows whose parent Refund is CANCELLED or
+/// FAILED since those never consumed the budget) is `createRefundItem`
+/// (packages/db/src/crud/refunds.ts). Do not assume this invariant holds
+/// just because the schema exists — go read that function if you need to
+/// verify current behavior.
+model RefundItem {
+  id          Int      @id @default(autoincrement())
+  refundId    Int      @map("refund_id")
+  orderItemId Int      @map("order_item_id")
+  amount      Decimal
+  /// Same snapshot-at-creation-time reasoning as `Refund.currency` above —
+  /// copied from the parent Refund's currency (and transitively from
+  /// Order.currency), not derived by joining back on read.
+  currency    String
+  /// Free-text, same precedent as `Refund.reason` — lets a per-item refund
+  /// carry its own explanation distinct from the parent Refund's overall
+  /// reason (e.g. parent reason "partial refund - 1 of 3 dead", this row's
+  /// reason "account banned within 24h, screenshot on ticket #482").
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Restrict, not Cascade, for two independent reasons layered on the same
+  // policy (Infra-5, security audit 2026-06-23):
+  //  - orderItem: never let the OrderItem this refund is FOR be silently
+  //    erased out from under an existing refund record — same guardrail as
+  //    every other Order-adjacent financial-audit row in this schema.
+  //  - refund: RefundItem is itself financial-audit-significant (it's the
+  //    per-line detail of a Refund, same category as Refund itself), and no
+  //    code path deletes a Refund either — so it gets the same conservative
+  //    policy as its parent, not the looser Cascade some non-financial
+  //    detail tables use elsewhere (e.g. TicketMessage -> SupportTicket).
+  refund    Refund    @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([refundId], map: "ix_refund_items_refund_id")
+  @@index([orderItemId], map: "ix_refund_items_order_item_id")
+  @@map("refund_items")
+}
+
+/// Multi-attempt payment ledger (Trustance Phase A Task A2a) — one row per
+/// payment ATTEMPT for an Order, coexisting with (not replacing) the payment
+/// fields directly on Order (paymentMethod, paymentRef, binanceTxid,
+/// bybitTxid, ...). Those Order fields stay the "current/latest attempt"
+/// cache the six existing payment-rail webhook/poller handlers
+/// (binance_internal.ts, bybit_deposit.ts, bybit_bsc_deposit.ts,
+/// nowpaymentsReconcile.ts, tokopayReconcile.ts, paydisiniReconcile.ts) read
+/// directly and unchanged — wiring those six handlers to also write to THIS
+/// table is a separate follow-up task, out of scope for the model/crud/entry-
+/// point this migration adds. Before this model, this repo had no single
+/// Payment table to point a typed FK at (see Refund.externalReference's own
+/// doc comment); this is that table, purpose-built for one thing the Order
+/// fields alone can't express — a buyer switching payment rails on the SAME
+/// order without abandoning it and creating a whole new Order (see
+/// "change payment rail", apps/order-bot/src/handlers/checkout.ts).
+///
+/// INVARIANT: an Order may have at most one PENDING Payment row at a time.
+///
+/// A first design pass tried enforcing this with a Postgres PARTIAL unique
+/// index (`CREATE UNIQUE INDEX ... ON "payments"("order_id") WHERE "status" =
+/// 'PENDING'`) hand-appended to this feature's migration SQL, since Prisma's
+/// schema DSL has no syntax for a partial/conditional unique index at all
+/// (verified: `@@unique` always constrains every row, no WHERE clause
+/// available). That approach was ABANDONED after verifying it against this
+/// repo's actual deploy mechanism (docs/MIGRATIONS.md: "`db push`, bukan
+/// `migrate deploy`" — `db push` diffs schema.prisma -> DB directly and is
+/// the ONLY thing every dev/CI/staging/prod environment here actually runs;
+/// `prisma/migrations/*` is audit-trail documentation, not an applied
+/// history). Hand-written SQL that exists ONLY in a migration file is dead
+/// documentation under that mechanism — `tests/helpers/testdb.ts` proved this
+/// empirically: it provisions each test's schema via `db push`, so a partial
+/// index invisible to schema.prisma silently never existed in ANY test run,
+/// and a true-concurrency test written against it caught 5-for-5 inserts
+/// succeeding instead of 1 (see payments.test.ts's git history / task
+/// report). The exact same gap would exist in dev/staging/prod.
+///
+/// A single-row `updateMany`-with-guard claim (this schema's other
+/// concurrency-safety precedent, `claimGatewaySlot` in
+/// packages/db/src/crud/orders.ts) doesn't fit either: that pattern
+/// atomically compare-and-swaps a value on ONE already-existing row, whereas
+/// this invariant is over INSERTING a new sibling row conditioned on the
+/// absence of another — under Postgres' default READ COMMITTED isolation, a
+/// plain read-then-insert check (no matter how it's phrased, including a
+/// single `INSERT ... WHERE NOT EXISTS (...)` statement) lets two concurrent
+/// transactions each see "no PENDING row yet" and both insert.
+///
+/// The mechanism actually used: `pendingOrderId` below is a nullable column
+/// that mirrors `orderId` while (and only while) `status` is PENDING, and is
+/// cleared back to `null` the instant a row leaves PENDING (EXPIRED/
+/// CONFIRMED/FAILED). A plain, FULL `@unique` index on it — ordinary Prisma
+/// DSL, created automatically by `db push` in every environment, no hand SQL
+/// anywhere — then enforces the invariant: Postgres unique indexes treat
+/// every NULL as distinct from every other NULL (default `NULLS DISTINCT`
+/// behavior, unchanged since this repo targets it), so any number of
+/// non-PENDING rows (`pendingOrderId: null`) coexist freely, while a second
+/// row trying to set `pendingOrderId` to an order id that's already claimed
+/// raises a genuine unique-constraint violation (Postgres 23505, surfaced by
+/// Prisma as P2002). This is the SAME nullable+unique claim-column shape this
+/// schema already uses twice on `Order` itself (`paymentRef`,
+/// `checkoutIntentId`) — not a new pattern, just applied to a new table.
+/// `createPaymentAttempt` (packages/db/src/crud/payments.ts) sets
+/// `pendingOrderId: orderId` on insert and translates the resulting P2002
+/// into a clean `ValidationError`; `expirePaymentAttempt`/
+/// `confirmPaymentAttempt` clear it to `null` in the same atomic
+/// `updateMany`-with-guard call that moves `status` off PENDING.
+model Payment {
+  id      Int    @id @default(autoincrement())
+  orderId Int    @map("order_id")
+  /// PaymentMethod value (@app/core/enums) — free String, not a native Prisma
+  /// enum, matching Order.paymentMethod's own column and every other
+  /// lifecycle-status-adjacent column in this schema.
+  method  String
+  /// PENDING | CONFIRMED | EXPIRED | FAILED (PaymentStatus, @app/core/enums).
+  /// See this model's own doc comment for the transition shape and the
+  /// at-most-one-PENDING-per-order invariant.
+  status  String @default("PENDING")
+  /// This attempt's own external reference at whatever rail it's for (e.g. a
+  /// gateway transaction id, a Binance Internal Transfer note) — same
+  /// "external reference" role as Refund.externalReference, just for the
+  /// payment side. Independent of Order.paymentRef (which is only ever the
+  /// CURRENT attempt's reference) — an EXPIRED attempt here keeps its OWN
+  /// reference even after a rail change moves Order.paymentRef on.
+  reference String?
+  /// This attempt's own quoted amount, snapshotted at creation time — same
+  /// snapshot-at-creation-time reasoning as Refund.amount/RefundItem.amount
+  /// (their own doc comments) — later Order edits must never retroactively
+  /// change what a past attempt quoted. Decimal, never Float (CLAUDE.md money
+  /// rule; matches every other money column in this schema, e.g.
+  /// Refund.amount, Order.totalAmount).
+  amount    Decimal
+  /// Snapshot of the currency this attempt was quoted in — same
+  /// snapshot-at-creation-time reasoning as `amount` above and
+  /// Refund.currency's own doc comment.
+  currency    String
+  createdAt   DateTime  @default(now()) @map("created_at")
+  /// Set together with `expiryReason` the moment this attempt reaches
+  /// EXPIRED — mirrors Refund.processedAt's nullable-until-terminal pattern.
+  expiredAt   DateTime? @map("expired_at")
+  /// Set the moment this attempt reaches CONFIRMED.
+  confirmedAt DateTime? @map("confirmed_at")
+  /// Set only when `status` reaches EXPIRED — "RAIL_CHANGED" | "TIMEOUT" |
+  /// "CANCELLED" (PaymentExpiryReason, @app/core/enums). Null for every
+  /// PENDING/CONFIRMED/FAILED row.
+  expiryReason String? @map("expiry_reason")
+  /// Mirrors `orderId` while (and only while) `status` is PENDING; `null`
+  /// for every non-PENDING row. See this model's own doc comment — the
+  /// `@unique` index below on this column, not a partial index on `orderId`,
+  /// is what enforces "at most one PENDING Payment per order".
+  pendingOrderId Int? @unique(map: "ix_payments_pending_order_id") @map("pending_order_id")
+
+  // Restrict, not Cascade — matches every other Order-adjacent
+  // financial-audit row in this schema (WalletTransaction/
+  // OrderStatusHistory/Refund/RefundItem, Infra-5 fix, security audit
+  // 2026-06-23): no code path hard-deletes an Order today; this is a
+  // schema-level guardrail against ever adding one that would silently erase
+  // payment-attempt history.
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orderId], map: "ix_payments_order_id")
+  @@index([status], map: "ix_payments_status")
+  @@map("payments")
+}
+
+/// Manual-operation task queue (Trustance Master Architecture Task 9a, §38):
+/// "manual operation must become a task" — a persisted, assignable,
+/// admin-worked queue item, distinct from the read-only, live-derived
+/// counters `GET /api/dashboard/operations` computes directly from
+/// Order/Payment-adjacent tables (apps/web-admin/src/routes/api/dashboard.ts,
+/// OperationCenter.tsx). That endpoint answers "how many X are pending right
+/// now"; AdminTask answers "who is working this specific one, and what
+/// state is it in" — the two are not merged, and OperationCenter does not
+/// read this table (a later task may wire it to link into an AdminTask queue
+/// UI, out of scope here).
+///
+/// `type` — REQUEST_CUSTOMER_INFO | MANUAL_DELIVERY |
+/// MANUAL_ACCOUNT_ASSIGNMENT | FAILED_TOPUP_REVIEW | REFUND_REVIEW
+/// (AdminTaskType, @app/core/enums). String, not a native Prisma enum —
+/// matches every other lifecycle-status-adjacent column in this schema
+/// (Order.status, OrderItem.status, Refund.status).
+model AdminTask {
+  id Int @id @default(autoincrement())
+
+  type String
+
+  /// Both independently nullable, mirroring SupportTicket's identical
+  /// orderId?/nothing-else-required shape: a task can be about a whole order
+  /// (e.g. MANUAL_DELIVERY for a whole-order manual product) or a specific
+  /// line within it (e.g. FAILED_TOPUP_REVIEW for one Digiflazz-routed item
+  /// in a multi-item cart). Neither is required — a task type that needs no
+  /// order context is representable, same as a general SupportTicket.
+  orderId     Int? @map("order_id")
+  orderItemId Int? @map("order_item_id")
+  /// Optional link to the specific Refund a REFUND_REVIEW task is about.
+  /// Not in the master-architecture field list verbatim, but added because
+  /// an Order can carry more than one Refund (partial/multiple refund
+  /// requests over time — see RefundItem's cross-refund budget invariant) —
+  /// without this, a REFUND_REVIEW task pointed only at `orderId` would
+  /// leave an admin to guess which of the order's Refund rows is under
+  /// review. Optional/nullable like every other reference field here; every
+  /// other task `type` is expected to leave this null.
+  refundId Int? @map("refund_id")
+
+  /// Acting admin this task is currently assigned to — same "which admin did
+  /// this" convention as SupportTicket.adminId/AuditLog.adminId: a plain
+  /// nullable FK to User (this repo's admins are User rows with
+  /// role=ADMIN, not a separate Admin table), NoAction on delete (matches
+  /// SupportTicket.admin/AuditLog.admin, not the Restrict policy used for
+  /// order/orderItem/refund below — those are the audit-significant parent
+  /// rows this task is ABOUT, whereas assignedTo is only "who is currently
+  /// working it" and losing that pointer if the admin row were ever removed
+  /// is not the same category of data loss).
+  assignedTo Int? @map("assigned_to")
+
+  /// LOW | MEDIUM | HIGH | URGENT (AdminTaskPriority, @app/core/enums) —
+  /// same vocabulary as SupportTicket.priority, defaults MEDIUM.
+  priority String @default("MEDIUM")
+
+  /// PENDING | ASSIGNED | IN_PROGRESS | ESCALATED | COMPLETED
+  /// (AdminTaskStatus, @app/core/enums). The state machine that governs
+  /// these transitions — driven by the four admin actions in §38 (Assign /
+  /// Start / Complete / Escalate) — lives in `ADMIN_TASK_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/adminTasks.ts), validated by
+  /// `transitionAdminTaskStatus`.
+  status String @default("PENDING")
+
+  dueAt DateTime? @map("due_at")
+  /// Set once, when this task reaches COMPLETED — mirrors
+  /// Refund.processedAt's "not yet reached this milestone" pattern.
+  completedAt DateTime? @map("completed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // orderId/orderItemId/refundId: Restrict, not Cascade — matches
+  // Refund/RefundItem's existing conservative FK policy for every other
+  // Order-adjacent financial/operational-audit row (Infra-5 fix, security
+  // audit 2026-06-23). An AdminTask is itself an operational-audit record;
+  // no code path hard-deletes an Order/OrderItem/Refund today, and this is a
+  // schema-level guardrail against ever adding one that would silently
+  // orphan a task record.
+  order     Order?     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  refund    Refund?    @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  // assignedTo: NoAction, matching SupportTicket.admin/AuditLog.admin's
+  // existing "acting admin" FK policy (not Restrict) — see the field's own
+  // doc comment above for why this one FK is deliberately not Restrict.
+  assignee User? @relation("AdminTaskAssignee", fields: [assignedTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([status], map: "ix_admin_tasks_status")
+  @@index([type], map: "ix_admin_tasks_type")
+  @@index([assignedTo], map: "ix_admin_tasks_assigned_to")
+  @@index([orderId], map: "ix_admin_tasks_order_id")
+  @@index([orderItemId], map: "ix_admin_tasks_order_item_id")
+  @@index([refundId], map: "ix_admin_tasks_refund_id")
+  @@map("admin_tasks")
 }
 
 model Voucher {
@@ -630,10 +1301,35 @@ model SupportTicket {
   status         String    @default("OPEN")
   /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
   priority       String    @default("MEDIUM") @map("priority")
-  /// ORDER | PAYMENT | ACCOUNT | PRODUCT | OTHER — admin-set triage field, null until classified.
+  /// Ticket triage category. Customer-set at creation on the /help create
+  /// form; may also be set/changed later by an admin via classifyTicket.
+  /// Null for legacy rows created before either path existed.
   category       String?   @map("category")
+  /// Short customer-authored ticket title (≤100 chars), set on the /help
+  /// create form. Nullable: historical rows created before this column
+  /// existed have none — the storefront falls back to the first line of
+  /// `message` for display.
+  subject   String?   @map("subject")
   adminReply     String?   @map("admin_reply")
   adminId        Int?      @map("admin_id")
+  /// TCK-YYYYMMDD-NNNNN, minted once at creation (createTicket/
+  /// uniqueTicketNumberCandidate) — nullable because `db push` never
+  /// backfills historical rows created before this column existed (same
+  /// reasoning as OrderItem.deliveryTypeSnapshot / this model's own
+  /// lastStatusChangeAt above). Admin UI must fall back to `#id` for rows
+  /// where this is null.
+  ticketNumber   String?   @unique @map("ticket_number")
+  /// Set together with `assignedBy` by the assignment-with-audit-trail path
+  /// (see `assignedBy`'s own comment) — when this ticket's `adminId` (the
+  /// admin CURRENTLY working it) was last explicitly assigned.
+  assignedAt     DateTime? @map("assigned_at")
+  /// The admin who PERFORMED an assignment action — distinct from `adminId`
+  /// (who the ticket is assigned TO / is currently working it). E.g. a lead
+  /// admin assigns a ticket to a junior admin: `adminId` becomes the junior
+  /// admin's id, `assignedBy` stays the lead admin's id. Nullable: most
+  /// existing tickets were never assigned through this audited path (the
+  /// plain `adminId`-only assign predates it).
+  assignedBy     Int?      @map("assigned_by")
   createdAt      DateTime  @default(now()) @map("created_at")
   repliedAt      DateTime? @map("replied_at")
   /// Set once, the first time an admin message lands on the ticket — true
@@ -646,6 +1342,11 @@ model SupportTicket {
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
   /// Product Summary sidebar and warranty/credential context.
   orderId        Int?      @map("order_id")
+  /// Optional link to the catalog Product this ticket is about — customer-
+  /// picked on the /help create form. Distinct from `orderId` (a specific
+  /// past purchase); this is "which product", set even for pre-purchase
+  /// questions. Null for general tickets.
+  productId Int?      @map("product_id")
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
@@ -689,14 +1390,22 @@ model SupportTicket {
   /// lastStatusChangeAt + the FK.
   closedAt       DateTime? @map("closed_at")
 
-  user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  order    Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
-  messages TicketMessage[]
+  user            User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  admin           User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // Same "who acted, not who this row is about" reasoning as TicketAdmin
+  // above (and AdminTask.assignee / Review.repliedByAdmin) — NoAction on
+  // delete, not Restrict: losing the assigner pointer if that admin's User
+  // row were ever removed is not the same category of data loss as losing
+  // the order/customer this ticket is about.
+  assignedByAdmin User?           @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  order           Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  product         Product?        @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  messages        TicketMessage[]
 
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@index([orderId], map: "ix_support_tickets_order_id")
+  @@index([productId], map: "ix_support_tickets_product_id")
   @@index([status], map: "ix_support_tickets_status")
   @@index([priority], map: "ix_support_tickets_priority")
   @@map("support_tickets")
@@ -710,6 +1419,13 @@ model TicketMessage {
   content        String
   photoFileIds   String?  @map("photo_file_ids")
   attachmentUrls String?  @map("attachment_urls")
+  /// Admin-only note — never rendered to the customer and never triggers a
+  /// customer-visible ticket-status/notification side effect (see
+  /// `addTicketMessage`'s `internal` parameter in packages/db/src/crud/
+  /// support.ts). Defaults false so every existing message (and every
+  /// caller that hasn't been updated to pass `internal` explicitly) keeps
+  /// today's customer-visible behavior unchanged.
+  internal       Boolean  @default(false)
   createdAt      DateTime @default(now()) @map("created_at")
 
   ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -782,11 +1498,23 @@ model AuditLog {
   targetId   Int?     @map("target_id")
   details    String?
   createdAt  DateTime @default(now()) @map("created_at")
+  /// "ADMIN" | "CUSTOMER" — who initiated this entry. Defaults to "ADMIN" so
+  /// every existing row and every existing logAdminAction call site keeps
+  /// working untouched (Phase H, customer-action audit trail).
+  actorType      String   @default("ADMIN") @map("actor_type")
+  /// "BOT" | "WEB" | null — surface the actor acted from; null for
+  /// admin-side entries that predate this field or don't track it.
+  channel        String?  @map("channel")
+  customerId     Int?     @map("customer_id")
+  telegramUserId BigInt?  @map("telegram_user_id")
+  correlationId  String?  @map("correlation_id")
 
-  admin User? @relation(fields: [adminId], references: [id], onUpdate: NoAction)
+  admin    User? @relation(fields: [adminId], references: [id], onUpdate: NoAction)
+  customer User? @relation("AuditLogCustomer", fields: [customerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([createdAt], map: "ix_audit_logs_created_at")
   @@index([targetType, targetId], map: "ix_audit_logs_target")
+  @@index([customerId], map: "ix_audit_logs_customer_id")
   @@map("audit_logs")
 }
 
@@ -944,4 +1672,204 @@ model ProcessedNowpaymentsTx {
 
   @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
   @@map("processed_nowpayments_tx")
+}
+
+/// Records the amount actually received for a QRIS/IDR order (TokoPay,
+/// PayDisini, NOWPayments) flagged UNDERPAID by markOrderUnderpaid
+/// (packages/db/src/crud/orderStatus.ts). Unlike the crypto rails'
+/// Processed*Tx ledgers, this is not a delivery-dedup table — these three
+/// gateways dedupe via the order's own status (see markOrderUnderpaid's
+/// doc comment) — it exists solely so findUnderpaidReceived (orders.ts)
+/// can read back a structured amount instead of the adminNote free-text
+/// note that was the only record before this table existed.
+model QrisUnderpaidTx {
+  id             Int      @id @default(autoincrement())
+  orderId        Int      @unique @map("order_id")
+  gateway        String
+  receivedAmount Decimal  @map("received_amount")
+  expectedAmount Decimal  @map("expected_amount")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("qris_underpaid_tx")
+}
+
+/// Idempotency ledger for Telegram update_id redelivery — same insert-first-
+/// on-unique pattern as the Processed*Tx ledgers above, but for a different
+/// kind of duplicate: Telegram's long-polling `getUpdates` offset only
+/// advances once a batch is fully acknowledged, so a crash mid-processing
+/// (before the next poll) — or a flaky connection — redelivers the same
+/// update_id on restart/retry. `bindUpdateId` (apps/order-bot/src/middleware.ts)
+/// claims a row here before running the rest of the update's middleware
+/// chain, so a redelivered update short-circuits instead of re-running a
+/// side effect (charging a wallet, sending a duplicate DM, ...) a second
+/// time. Short-lived by design — unlike the payment ledgers above (which
+/// storageMaintenance.ts deliberately leaves alone), a row here is only ever
+/// useful for as long as Telegram might still redeliver the same update_id
+/// (minutes, not months) — see pruneProcessedTelegramUpdates
+/// (packages/db/src/crud/telegramUpdates.ts) and its daily cron
+/// (jobs/index.ts) for the retention sweep that keeps this table small.
+model ProcessedTelegramUpdate {
+  id          Int      @id @default(autoincrement())
+  updateId    BigInt   @unique(map: "ix_processed_telegram_update_update_id") @map("update_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+
+  @@map("processed_telegram_updates")
+}
+
+/// Client-side idempotency ledger for checkout/refund-style mutations — a
+/// DIFFERENT mechanism from the Processed*Tx ledgers above (those dedupe an
+/// inbound payment-gateway webhook callback; this dedupes a double-tapped or
+/// retried request from a browser/admin client). The caller sends an
+/// `Idempotency-Key` header; (key, endpoint) is claimed exactly once via the
+/// unique index below. A retry with the same key AND the same requestHash
+/// replays responseBody/statusCode verbatim instead of re-running the
+/// mutation; the same key with a DIFFERENT hash means the key was reused for
+/// a distinct request (a client bug) and is rejected with 409 rather than
+/// silently replaying the wrong response or overwriting the original.
+model IdempotencyRecord {
+  id           Int      @id @default(autoincrement())
+  key          String
+  endpoint     String
+  requestHash  String   @map("request_hash")
+  responseBody String   @map("response_body")
+  statusCode   Int      @map("status_code")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([key, endpoint], map: "ix_idempotency_record_key_endpoint")
+  @@map("idempotency_records")
+}
+
+/// grammY session storage — replaces the old in-memory `boundedSessionStorage`
+/// (an LRU `Map`, lost on every restart) with a real StorageAdapter<SessionData>
+/// backed by this table (`apps/order-bot/src/util/prismaSessionStorage.ts`).
+/// `key` is grammY's session key — this bot uses the default `getSessionKey`,
+/// one row per chat id. `data` is `ctx.session` JSON.stringify'd; every value
+/// that reaches this column MUST already be a plain JSON-serializable object —
+/// see prismaSessionStorage.ts's header comment for the Phase B landmine
+/// (a `conversation.external()` result carrying a function/closure survived
+/// only because the old storage was an in-memory `Map`; a real serialization
+/// boundary like this table would silently corrupt it) this migration's
+/// conversation.external() audit exists to guard against.
+///
+/// `kind` ("nav" | "checkout") implements the plan's TTL split — a session
+/// mid-checkout (payment anchor set, a voucher applied, info-collection in
+/// progress, ...) expires after the longest configured payment window across
+/// every rail plus a 5-minute margin (35 minutes at default config, clamped
+/// to never exceed it), instead of the 24h a "just browsing" session gets —
+/// so an abandoned checkout's stale state (e.g. a payment-message anchor
+/// pointing at a bubble the buyer walked away from) doesn't linger a full
+/// day, while never expiring under a payment that's still legitimately
+/// pending. See prismaSessionStorage.ts's
+/// `classifySessionKind` for the exact rule. `expiresAt` is recomputed and
+/// re-stamped on every write (a still-active session keeps sliding its own
+/// expiry forward); the index below backs the daily prune sweep
+/// (`cleanupExpiredBotSessionsJob`, jobs/index.ts) — grammY's own read/write
+/// only ever queries by `key`.
+model BotSession {
+  key       String   @id
+  data      String
+  kind      String
+  expiresAt DateTime @map("expires_at")
+
+  @@index([expiresAt], map: "ix_bot_session_expires_at")
+  @@map("bot_sessions")
+}
+
+/// Detection Engine (packages/core/src/detection) vocabulary row: a single
+/// normalized word/phrase classified into a TokenCategory (platform,
+/// distribution, region, edition, denomination, noise) with a canonical
+/// spelling and whether it's product-defining (splits the base product into
+/// distinct product keys) or just descriptive. Seeded from
+/// DEFAULT_KNOWLEDGE_BASE by scripts/seed-detection-knowledge.ts on first
+/// run; admin-editable afterwards via the (future) detection-review UI.
+model DetectionToken {
+  id                Int     @id @default(autoincrement())
+  category          String
+  token             String
+  canonical         String
+  /// Whether this token splits the base product into a distinct product key
+  /// (e.g. "pc" vs "mobile") rather than being purely descriptive.
+  isProductDefining Boolean @map("is_product_defining")
+  /// Soft-disable without deleting — a disabled token is still loaded into
+  /// the KnowledgeBase (loadKnowledgeBase maps every row, enabled or not),
+  /// but is excluded from feature extraction: the classifier in
+  /// packages/core/src/detection/features.ts skips tokens where
+  /// `enabled` is false. The row (and its edit history) is kept intact.
+  enabled           Boolean @default(true)
+
+  @@unique([category, token], map: "ix_detection_tokens_category_token")
+  @@map("detection_tokens")
+}
+
+/// Maps a normalized alias phrase to the canonical normalized phrase it
+/// should expand to before tokenization (e.g. a common misspelling or
+/// supplier-specific shorthand) — see packages/core/src/detection/tokenize.ts.
+model DetectionAlias {
+  id        Int     @id @default(autoincrement())
+  alias     String  @unique(map: "ix_detection_aliases_alias")
+  expandsTo String  @map("expands_to")
+  /// Free-text note on why this alias exists (e.g. "Digiflazz typo seen in
+  /// prod"). Null = no note recorded.
+  reason    String?
+
+  @@map("detection_aliases")
+}
+
+/// Manual admin override for a single catalog input that the automatic
+/// detector gets wrong (or can't resolve) — matched by either the
+/// normalized product name or the supplier external id (`matchKind`) before
+/// the automatic scoring path runs at all. `reason` is required (unlike
+/// DetectionAlias.reason) so every override is self-documenting in the
+/// review UI.
+model DetectionOverride {
+  id             Int      @id @default(autoincrement())
+  matchKind      String   @map("match_kind")
+  matchValue     String   @map("match_value")
+  productKey     String   @map("product_key")
+  baseProductKey String   @map("base_product_key")
+  reason         String
+  /// User.id of the admin who created this override. Null for a
+  /// pre-attribution row or a CLI/break-glass write.
+  createdBy      Int?     @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  /// Incremented each time detect() actually applies this override — lets
+  /// the review UI show which overrides are still load-bearing vs. dead.
+  hitCount       Int      @default(0) @map("hit_count")
+
+  @@unique([matchKind, matchValue], map: "ix_detection_overrides_match")
+  @@map("detection_overrides")
+}
+
+/// A DetectionInput the engine could not confidently resolve ("ambiguous" or
+/// "unknown" DetectionResult), queued for admin review. `inputFingerprint` is
+/// a hash of the normalized input so the same recurring unresolved input
+/// (e.g. every sync tick for the same supplier product) accumulates into one
+/// row (`occurrences`/`lastSeenAt`) instead of spamming the review queue.
+model DetectionIssue {
+  id               Int      @id @default(autoincrement())
+  /// DetectionResult.status for the most recent run that produced this issue
+  /// ("ambiguous" | "unknown").
+  status           String
+  /// Admin review workflow state, independent of `status` above. One of
+  /// "OPEN" | "RESOLVED" | "IGNORED" (enforced at the application layer, not
+  /// the DB, matching this schema's existing free-text status-field
+  /// convention — see Order.status / AdminTask.status).
+  reviewStatus     String   @default("OPEN") @map("review_status")
+  inputFingerprint String   @unique(map: "ix_detection_issues_fingerprint") @map("input_fingerprint")
+  /// JSON-encoded DetectionInput that produced this issue, for the review UI
+  /// to re-display without re-deriving it from the live catalog row.
+  rawInput         String   @map("raw_input")
+  reason           String
+  /// JSON-encoded Candidate[] when status is "ambiguous"; null for "unknown".
+  candidates       String?
+  /// The detection-stamp (knowledge revision + catalog stamp) this issue was
+  /// last produced under — a re-run under a newer stamp that still fails
+  /// bumps `occurrences`/`lastSeenAt` rather than creating a duplicate row.
+  detectorStamp    String   @map("detector_stamp")
+  occurrences      Int      @default(1)
+  firstSeenAt      DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt       DateTime @updatedAt @map("last_seen_at")
+
+  @@index([reviewStatus, lastSeenAt], map: "ix_detection_issues_status_seen")
+  @@map("detection_issues")
 }

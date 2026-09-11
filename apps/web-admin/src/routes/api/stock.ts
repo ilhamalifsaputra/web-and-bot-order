@@ -1,7 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import {
   prisma,
+  getUsdIdrRate,
   listAllDenominations,
   stockStatusCounts,
   getDenominationWithProduct,
@@ -11,6 +14,7 @@ import {
   bulkAddStock,
   bulkMarkStockDead,
   bulkDeleteStock,
+  deleteStockItem,
   listAvailableCredentials,
   getStockItem,
   markStockDead,
@@ -19,8 +23,9 @@ import {
   logAdminAction,
   enqueueRestockBroadcast,
   updateDenomination,
+  revealStockCredentials,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
 /** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
@@ -37,6 +42,26 @@ function csvField(value: string): string {
 function csvRow(fields: string[]): string {
   return fields.map(csvField).join(",") + "\r\n";
 }
+
+/** Constant placeholder shown for every credential in the list/detail
+ * payload — StockItem.credentials is encrypted at rest (Task 2) and this
+ * route never decrypts a whole page of rows just to display them. A real
+ * value is only ever returned by the explicit, audited
+ * POST /api/stock/item/:stockId/reveal below. Deliberately NOT derived from
+ * the stored value's length or a decrypted prefix — either would leak
+ * partial plaintext (or its length) to a page load nobody asked to reveal
+ * anything on. */
+const MASKED_CREDENTIAL = "••••••••";
+
+/** Operator-facing message for `CredentialKeyConfigError` — the bulk-add and
+ * reveal routes below (the ones that call into encryptCredentials/
+ * decryptCredentials) catch that specific error (never a bare `catch` — a
+ * real bug in the handler should still hit the generic HTML 500 in
+ * server.ts) and return this as JSON instead, so a missing/malformed
+ * `CREDENTIAL_ENCRYPTION_KEY` surfaces as a readable admin error instead of
+ * `apiPost` failing to parse an HTML error page. */
+const CREDENTIAL_KEY_ERROR_MESSAGE =
+  "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
  * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
@@ -58,16 +83,30 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   });
 
   // Full, unfiltered inventory export — mirrors GET /api/stock's own data
-  // source exactly, formatted as CSV. Read-only, so currentAdmin (not
-  // csrfProtect), same as /download below.
+  // source exactly, formatted as CSV. Read-only, so no CSRF check. Carries no
+  // credentials (aggregate counts only), so it stays open to every
+  // authenticated admin including readonly — explicitly out of scope for the
+  // C-1 fix that gates /:productId and /:productId/download below.
   app.get("/api/stock/export", { preHandler: currentAdmin }, async (req, reply) => {
-    const [denominations, counts, waiting] = await Promise.all([
+    const [denominations, counts, waiting, usdRate] = await Promise.all([
       listAllDenominations(prisma),
       stockStatusCounts(prisma),
       restockSubscriberCounts(prisma),
+      getUsdIdrRate(prisma),
     ]);
 
-    const header = ["Denomination", "Product", "Category", "Available", "Reserved", "Sold", "Waiting", "Status"];
+    const header = [
+      "Denomination",
+      "Product",
+      "Category",
+      "Catalog Price (IDR)",
+      "Catalog Price (USD)",
+      "Available",
+      "Reserved",
+      "Sold",
+      "Waiting",
+      "Status",
+    ];
     let csv = csvRow(header);
     for (const d of denominations) {
       const cnt = counts[d.id];
@@ -76,6 +115,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         d.name,
         d.product?.name ?? "",
         d.product?.category?.name ?? "",
+        formatIdr(d.price),
+        usdRate ? formatUsdt(usdtFromIdr(d.price, usdRate)) : "",
         String(available),
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),
@@ -90,7 +131,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send(csv);
   });
 
-  app.get("/api/stock/:productId", { preHandler: currentAdmin }, async (req, reply) => {
+  app.get("/api/stock/:productId", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
@@ -110,7 +151,9 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       id: i.id,
       status: i.status,
       note: i.note,
-      credentials: i.credentials,
+      // Masked by default — see MASKED_CREDENTIAL's own comment. The real
+      // value is fetched per-row, on demand, via the reveal route below.
+      credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
     return reply.send({ product, items: itemsWithDisplay, available, waiting });
@@ -130,7 +173,16 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const { added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds));
+    let added: number, skipped: number;
+    try {
+      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_upload",
@@ -256,6 +308,35 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true });
   });
 
+  // Hard-delete ONE stock item — the single-item sibling of bulk-delete above,
+  // filling a gap where only bulk selection could delete a row. Same guard as
+  // bulkDeleteStock: refuses a SOLD row or one tied to an order item. Uses 409
+  // (not 422) to match `.../dead` just above and this file's other
+  // delete-blocked-by-existing-state routes elsewhere in the repo (e.g.
+  // catalog.ts's "Cannot delete a denomination with order history.",
+  // vouchers.ts's "Cannot delete: this code has already been used.") — the
+  // rejection here is a conflict with the row's current state/references, the
+  // same framing as those, not a request-shape validation failure (422's use
+  // elsewhere in this file, e.g. bulk-add's missing-credentials case).
+  app.post("/api/stock/item/:stockId/delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const item = await getStockItem(prisma, stockId);
+    if (!item) return reply.code(404).send({ error: "Stock item not found." });
+
+    const deleted = await deleteStockItem(prisma, stockId);
+    if (!deleted) {
+      return reply.code(409).send({ error: "This item has been sold or is linked to an order and cannot be deleted." });
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_item_delete",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Deleted stock item.`, // never the credentials
+    });
+    return reply.send({ ok: true });
+  });
+
   app.post("/api/stock/item/:stockId/note", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -274,10 +355,48 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true });
   });
 
+  // Explicit, audited reveal of ONE stock item's real credential — the only
+  // route that ever returns a decrypted value from this file. csrfProtect
+  // (not currentAdmin) even though it's read-only in effect: revealing a
+  // secret is a privileged action same as the mutations above, and gating it
+  // on the CSRF token keeps it out of reach of a bare cross-site GET/image
+  // tag. Every call is audited as credential_revealed (lowercase snake_case,
+  // like every other action in this file — see docs/LOGGING.md and
+  // AuditPage.tsx's humanizeActionCode, which title-cases this convention;
+  // an all-caps action would render as shouting-case next to every other
+  // row) — including repeat reveals of the same item, so the trail shows
+  // every time an admin actually looked, not just the first. One query
+  // (revealStockCredentials) covers both the existence check and the read —
+  // its null return doubles as "no such stock item".
+  app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    let credentials: string | null;
+    try {
+      credentials = await revealStockCredentials(prisma, stockId);
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Credential reveal failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
+    if (credentials === null) return reply.code(404).send({ error: "Stock item not found." });
+
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "credential_revealed",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves
+    });
+    return reply.send({ ok: true, credentials });
+  });
+
   // Download remaining (AVAILABLE) credentials as a plain-text file, one login
-  // per line. Read-only, so currentAdmin (not csrfProtect); still audited by
-  // count. The credentials themselves are never logged.
-  app.get("/api/stock/:productId/download", { preHandler: currentAdmin }, async (req, reply) => {
+  // per line. Read-only, so no CSRF check; still audited by count. The
+  // credentials themselves are never logged. Gated to non-readonly roles
+  // (C-1, security audit 2026-08-21) since this dumps plaintext credentials.
+  app.get("/api/stock/:productId/download", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });

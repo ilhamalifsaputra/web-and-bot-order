@@ -171,14 +171,48 @@ describe("PayPage", () => {
     expect(document.getElementById("countdown")).toHaveTextContent("0:00");
   });
 
-  it("cancel posts and navigates to /cart", async () => {
-    const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
-    renderPay(respondFor(pay));
-    await screen.findByRole("heading", { name: "Payment" });
-    (apiPost as Mock).mockResolvedValue({ ok: true });
-    fireEvent.click(screen.getByRole("button", { name: "Cancel this order" }));
-    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/orders/ORD1/cancel", {}));
-    expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+  // Task 14: the cancel button no longer fires cancelMutation directly — it
+  // opens a confirmation AlertDialog first (Global Constraints / Task 1
+  // audit §F item 3). These three tests replace the old "cancel posts and
+  // navigates to /cart" single-click test.
+  describe("cancel confirmation dialog", () => {
+    it("clicking Cancel this order opens the dialog and does NOT call the mutation", async () => {
+      const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
+      renderPay(respondFor(pay));
+      await screen.findByRole("heading", { name: "Payment" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel this order" }));
+
+      expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+      expect(apiPost).not.toHaveBeenCalled();
+    });
+
+    it("confirming in the dialog calls the same cancel mutation and navigates to /cart", async () => {
+      const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
+      renderPay(respondFor(pay));
+      await screen.findByRole("heading", { name: "Payment" });
+      (apiPost as Mock).mockResolvedValue({ ok: true });
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel this order" }));
+      await screen.findByRole("alertdialog");
+      fireEvent.click(screen.getByRole("button", { name: "Yes, cancel" }));
+
+      await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/orders/ORD1/cancel", {}));
+      expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+    });
+
+    it("cancelling the dialog closes it without calling the mutation", async () => {
+      const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
+      renderPay(respondFor(pay));
+      await screen.findByRole("heading", { name: "Payment" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel this order" }));
+      await screen.findByRole("alertdialog");
+      fireEvent.click(screen.getByRole("button", { name: "No, go back" }));
+
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+      expect(apiPost).not.toHaveBeenCalled();
+    });
   });
 
   it("renders ErrorPage on a 404", async () => {

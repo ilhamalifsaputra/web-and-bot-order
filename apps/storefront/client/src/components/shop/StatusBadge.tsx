@@ -18,6 +18,12 @@ import { t } from "../../lib/i18n";
  */
 const STATUS_LABEL_KEY: Record<string, string> = {
   delivered: "status.label.delivered",
+  // Unreachable today (see OrderStatus.PARTIALLY_DELIVERED in @app/core/enums),
+  // but mapped anyway: without a key the fallback title-cases the raw value,
+  // which would render untranslated English to an Indonesian buyer. Toned
+  // AMBER rather than GRASS — part of the order did not arrive, so it must not
+  // look like a clean success.
+  partially_delivered: "status.label.partially_delivered",
   paid: "status.label.paid",
   available: "web.status_chip_available",
   active: "web.status_chip_active",
@@ -28,7 +34,14 @@ const STATUS_LABEL_KEY: Record<string, string> = {
   reserved: "web.status_chip_reserved",
   processing: "web.order_processing_title",
   open: "web.status_chip_open",
+  // Phase C whole-branch review fix: the real live values a ticket takes
+  // after its first reply (Task 1's automatic WAITING_ADMIN/WAITING_CUSTOMER
+  // transition) — without these, the fallback title-cases the raw enum
+  // ("Waiting Admin") in untranslated English and drops out of the AMBER
+  // tone set below into neutral sand.
+  waiting_admin: "web.status_chip_open",
   replied: "web.status_chip_replied",
+  waiting_customer: "web.status_chip_replied",
   pending: "web.status_chip_pending",
   pending_payment: "web.status_chip_pending_payment",
   underpaid: "web.status_chip_underpaid",
@@ -42,7 +55,18 @@ const STATUS_LABEL_KEY: Record<string, string> = {
 };
 
 const GRASS = new Set(["delivered", "paid", "available", "active", "closed", "sent", "matched", "credited_to_balance"]);
-const AMBER = new Set(["pending_verification", "reserved", "open", "replied", "pending", "underpaid", "processing"]);
+const AMBER = new Set([
+  "pending_verification",
+  "reserved",
+  "open",
+  "waiting_admin",
+  "replied",
+  "waiting_customer",
+  "pending",
+  "underpaid",
+  "processing",
+  "partially_delivered",
+]);
 const PINE = new Set(["pending_payment"]);
 const RUST = new Set(["cancelled", "rejected", "refunded", "dead", "failed", "unmatched"]);
 
@@ -51,6 +75,18 @@ function titleCase(value: string): string {
     .split(" ")
     .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
     .join(" ");
+}
+
+/**
+ * The buyer-facing label for a status value, resolved the same way the chip
+ * resolves it (keyed `t()` where a key exists, else a title-cased fallback).
+ * Exported so a status <select> filter (OrdersPage, Task 16) shows exactly the
+ * words the chips do, without duplicating the key map.
+ */
+export function statusLabel(value: string): string {
+  const v = String(value).toLowerCase();
+  const key = STATUS_LABEL_KEY[v];
+  return key ? t(key) : titleCase(v.replace(/_/g, " "));
 }
 
 export interface StatusBadgeProps {
@@ -68,7 +104,5 @@ export default function StatusBadge({ value }: StatusBadgeProps) {
         : RUST.has(v)
           ? "bg-rust-tint text-rust-dark"
           : "bg-sand text-ink-soft";
-  const key = STATUS_LABEL_KEY[v];
-  const label = key ? t(key) : titleCase(v.replace(/_/g, " "));
-  return <span className={`chip ${toneClass}`}>{label}</span>;
+  return <span className={`chip ${toneClass}`}>{statusLabel(value)}</span>;
 }

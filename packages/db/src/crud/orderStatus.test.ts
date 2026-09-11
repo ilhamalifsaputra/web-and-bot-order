@@ -8,8 +8,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderFromCart, addToCart, transitionOrderStatus, tryTransitionOrderStatus, LEGAL_TRANSITIONS } from "@app/db";
+import {
+  createOrderFromCart,
+  addToCart,
+  transitionOrderStatus,
+  tryTransitionOrderStatus,
+  markOrderUnderpaid,
+  LEGAL_TRANSITIONS,
+} from "@app/db";
 import { OrderStatus } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -205,5 +213,67 @@ describe("tryTransitionOrderStatus", () => {
     expect(applied).toBe(false);
     expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.CONFIRMING);
     expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
+  });
+});
+
+describe("markOrderUnderpaid", () => {
+  it("flags the order UNDERPAID and writes an adminNote once (idempotent)", async () => {
+    const first = await markOrderUnderpaid(prisma, {
+      orderId,
+      gateway: "TokoPay",
+      receivedAmount: "9000",
+      expectedAmount: "10000",
+    });
+    expect(first).toBe(true);
+
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.status).toBe(OrderStatus.UNDERPAID);
+    expect(order.adminNote).toBe("[underpaid] received 9000 via TokoPay, expected 10000");
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.UNDERPAID } })).toBe(1);
+
+    // Second call (e.g. the poller's next cycle before a human resolves it)
+    // must be a no-op: no throw, no second history row, no adminNote overwrite.
+    const second = await markOrderUnderpaid(prisma, {
+      orderId,
+      gateway: "TokoPay",
+      receivedAmount: "9000",
+      expectedAmount: "10000",
+    });
+    expect(second).toBe(false);
+    expect(await prisma.orderStatusHistory.count({ where: { orderId, status: OrderStatus.UNDERPAID } })).toBe(1);
+  });
+
+  // Before the QrisUnderpaidTx table existed, the amount actually received on
+  // one of these three gateways survived only as the `adminNote` free text
+  // above — which `findUnderpaidReceived` (crud/orders.ts) cannot parse. Every
+  // resolution path that pays the buyer back what they sent
+  // (`refundUnderpaidOrder`, `creditUnderpaidTopupAnyway`) therefore read
+  // "received 0" for a QRIS-flagged order and moved no money at all.
+  it("records the received and expected amounts in the QrisUnderpaidTx ledger", async () => {
+    await markOrderUnderpaid(prisma, {
+      orderId,
+      gateway: "PayDisini",
+      receivedAmount: "7500",
+      expectedAmount: "10000",
+    });
+
+    const rows = await prisma.qrisUnderpaidTx.findMany({ where: { orderId } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.gateway).toBe("PayDisini");
+    expect(new Decimal(rows[0]!.receivedAmount).toString()).toBe("7500");
+    expect(new Decimal(rows[0]!.expectedAmount).toString()).toBe("10000");
+  });
+
+  // The idempotent no-op path (the poller's next cycle, before a human
+  // resolves the order) must not append a second ledger row — one underpaid
+  // flag, one row, however many times the poller re-checks the order.
+  it("writes no second ledger row when the order is already UNDERPAID", async () => {
+    const args = { orderId, gateway: "TokoPay", receivedAmount: "9000", expectedAmount: "10000" };
+    expect(await markOrderUnderpaid(prisma, args)).toBe(true);
+    expect(await markOrderUnderpaid(prisma, args)).toBe(false);
+
+    const rows = await prisma.qrisUnderpaidTx.findMany({ where: { orderId } });
+    expect(rows).toHaveLength(1);
+    expect(new Decimal(rows[0]!.receivedAmount).toString()).toBe("9000");
   });
 });

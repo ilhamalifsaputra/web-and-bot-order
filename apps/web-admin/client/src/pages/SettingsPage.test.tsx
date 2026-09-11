@@ -207,6 +207,35 @@ describe("SettingsPage", () => {
     expect(within(tokopayHeader).getByText("Configured")).toBeInTheDocument();
   });
 
+  // Reported bug: filling in a secret setting (e.g. Digiflazz API key) was
+  // landing in the page's own "Search settings…" box instead — Chrome's
+  // native password manager was pairing the password-type field with the
+  // nearest preceding text input (the search box) as a guessed "username"
+  // and offering to autofill this admin's saved /login credentials into
+  // both. The fix: `autoComplete="new-password"` on every secret FieldRow
+  // input (which stops Chrome from treating it as a saved-login target) and
+  // `autoComplete="off"` on the search box itself (defense in depth).
+  it("a secret field's edit input has autoComplete=new-password and the search box has autoComplete=off", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    expect(screen.getByLabelText("Search settings")).toHaveAttribute("autoComplete", "off");
+
+    const user = userEvent.setup();
+    // "Order Bot token" (bot_token, secret: true) is the second Edit button
+    // in the fixture — the first belongs to the non-secret "Shop name" row.
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[1]);
+    const secretInput = screen.getByLabelText("Order Bot token");
+    expect(secretInput).toHaveAttribute("type", "password");
+    expect(secretInput).toHaveAttribute("autoComplete", "new-password");
+  });
+
   it("field Save opens a confirmation dialog and shows a checkmark on success", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
@@ -549,6 +578,41 @@ describe("SettingsPage", () => {
 
     expect(screen.getByText("Cycles are completing normally; last run 2 minute(s) ago.")).toBeInTheDocument();
     expect(screen.getByText("The poller has never completed a cycle.")).toBeInTheDocument();
+  });
+
+  it("renders the MeloStore (Nickname Check) card with both fields masked/secret, and wires its own Test Connection button", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "melostore_api_key", label: "MeloStore API key", secret: true, hasValue: true, value: "", needsRestart: false },
+            { key: "melostore_secret_key", label: "MeloStore secret key", secret: true, hasValue: true, value: "", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const melostoreCard = document.getElementById("settings-melostore") as HTMLElement;
+    expect(melostoreCard).not.toBeNull();
+    expect(within(melostoreCard).getByText("MeloStore API key")).toBeInTheDocument();
+    expect(within(melostoreCard).getByText("MeloStore secret key")).toBeInTheDocument();
+
+    // Both fields are secret — their Edit inputs render as password fields,
+    // same masking as the KokinPay/VIP-Reseller cards' credential rows.
+    const user = userEvent.setup();
+    await user.click(within(melostoreCard).getAllByRole("button", { name: "Edit" })[0]!);
+    expect(screen.getByLabelText("MeloStore API key")).toHaveAttribute("type", "password");
+
+    const testButton = within(melostoreCard).getByRole("button", { name: "Test Connection" });
+    expect(testButton).toBeEnabled();
+    await user.click(testButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Test the MeloStore connection?")).toBeInTheDocument();
   });
 
   it("Export Configuration downloads the exported fields", async () => {

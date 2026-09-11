@@ -1,7 +1,8 @@
 /**
  * Prisma client singleton — replacement for Python `database/session.py`.
- * Sets the same PRAGMAs the SQLAlchemy engine used (FK on, WAL, synchronous
- * NORMAL) plus a busy_timeout to avoid SQLITE_BUSY under concurrent writers.
+ * Runs against Postgres, which enforces foreign keys and durable commits by
+ * default and needs no per-connection setup statements the way the earlier
+ * SQLite deployment did.
  */
 import { PrismaClient } from "@prisma/client";
 
@@ -17,22 +18,27 @@ import { PrismaClient } from "@prisma/client";
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 export const prisma: PrismaClient =
-  globalForPrisma.prisma ?? new PrismaClient();
+  globalForPrisma.prisma ??
+  new PrismaClient({
+    transactionOptions: { maxWait: 5000, timeout: 10000 },
+  });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 
-let initialized = false;
-
-/** Apply SQLite PRAGMAs once. Idempotent. */
+/**
+ * No-op, kept only so the ~30 existing call sites across apps/scripts/tests
+ * that `await initDb()` during boot/setup don't all need touching. It used
+ * to apply four SQLite PRAGMAs (foreign_keys, journal_mode=WAL,
+ * synchronous=FULL, busy_timeout) once per process, working around SQLite's
+ * per-connection PRAGMA scoping (see the removed `withConnectionLimit`
+ * doc comment in git history). Postgres has no equivalent session-level
+ * setup an app needs to perform — foreign keys are always enforced, and
+ * durability/concurrency are handled by the server, not per-connection
+ * pragmas. Left as an async function (rather than deleted) purely for
+ * caller-compatibility; safe to keep calling from every boot path.
+ */
 export async function initDb(): Promise<void> {
-  if (initialized) return;
-  // Use queryRawUnsafe: some PRAGMAs (journal_mode, busy_timeout) return a row,
-  // which $executeRawUnsafe rejects on SQLite.
-  await prisma.$queryRawUnsafe("PRAGMA foreign_keys = ON");
-  await prisma.$queryRawUnsafe("PRAGMA journal_mode = WAL");
-  await prisma.$queryRawUnsafe("PRAGMA synchronous = NORMAL");
-  await prisma.$queryRawUnsafe("PRAGMA busy_timeout = 5000");
-  initialized = true;
+  // Intentionally empty — see doc comment above.
 }
 
 export type { PrismaClient } from "@prisma/client";

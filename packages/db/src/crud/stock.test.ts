@@ -19,6 +19,7 @@ import {
   countStockItemsForStatuses,
   searchStockCredentials,
 } from "./stock";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
 
@@ -56,14 +57,16 @@ describe("bulkAddStock dedup", () => {
       where: { productId: product.id, status: StockStatus.AVAILABLE },
     });
 
-    const { added, skipped } = await bulkAddStock(prisma, product.id, [existing!.credentials, "newone@x.com:pw"]);
+    // `existing.credentials` is the stored (encrypted) column value — decrypt
+    // it to get the actual plaintext account string a re-upload would submit.
+    const existingPlain = decryptCredentials(existing!.credentials);
+    const { added, skipped } = await bulkAddStock(prisma, product.id, [existingPlain, "newone@x.com:pw"]);
 
     expect(added).toBe(1);
     expect(skipped).toBe(1);
-    // Still only ONE row with that credential string for this product.
-    expect(
-      await prisma.stockItem.count({ where: { productId: product.id, credentials: existing!.credentials } }),
-    ).toBe(1);
+    // Still only ONE row decrypting to that credential string for this product.
+    const rows = await prisma.stockItem.findMany({ where: { productId: product.id } });
+    expect(rows.filter((r) => decryptCredentials(r.credentials) === existingPlain).length).toBe(1);
   });
 
   it("skips a credential that's RESERVED or SOLD (not just AVAILABLE)", async () => {
@@ -73,8 +76,8 @@ describe("bulkAddStock dedup", () => {
     await prisma.stockItem.update({ where: { id: rows[1]!.id }, data: { status: StockStatus.SOLD, soldAt: new Date() } });
 
     const { added, skipped } = await bulkAddStock(prisma, product.id, [
-      rows[0]!.credentials,
-      rows[1]!.credentials,
+      decryptCredentials(rows[0]!.credentials),
+      decryptCredentials(rows[1]!.credentials),
       "brandnew@x.com:pw",
     ]);
 
@@ -87,7 +90,7 @@ describe("bulkAddStock dedup", () => {
     const rows = await prisma.stockItem.findMany({ where: { productId: product.id }, take: 1 });
     await prisma.stockItem.update({ where: { id: rows[0]!.id }, data: { status: StockStatus.DEAD } });
 
-    const { added, skipped } = await bulkAddStock(prisma, product.id, [rows[0]!.credentials]);
+    const { added, skipped } = await bulkAddStock(prisma, product.id, [decryptCredentials(rows[0]!.credentials)]);
 
     expect(added).toBe(1);
     expect(skipped).toBe(0);
@@ -103,9 +106,11 @@ describe("bulkAddStock dedup", () => {
 
     expect(added).toBe(2); // repeat@... once + unique@... once
     expect(skipped).toBe(1); // the second repeat@... in the same batch
-    expect(
-      await prisma.stockItem.count({ where: { productId: product.id, credentials: "repeat@x.com:pw" } }),
-    ).toBe(1);
+    // Credentials are encrypted at rest with a fresh IV per row, so the
+    // literal plaintext never appears in the column — decrypt to check.
+    const rows = await prisma.stockItem.findMany({ where: { productId: product.id } });
+    const matching = rows.filter((r) => decryptCredentials(r.credentials) === "repeat@x.com:pw");
+    expect(matching.length).toBe(1);
   });
 
   it("the SAME credential is allowed for a DIFFERENT product (dedup is per-product)", async () => {
@@ -121,7 +126,7 @@ describe("bulkAddStock dedup", () => {
       price: "5.00",
     });
 
-    const { added, skipped } = await bulkAddStock(prisma, otherDenom.id, [existing!.credentials]);
+    const { added, skipped } = await bulkAddStock(prisma, otherDenom.id, [decryptCredentials(existing!.credentials)]);
 
     expect(added).toBe(1);
     expect(skipped).toBe(0);
@@ -133,7 +138,7 @@ describe("bulkAddStock dedup", () => {
       where: { productId: product.id, status: StockStatus.AVAILABLE },
     });
 
-    const { added, skipped } = await bulkAddStock(prisma, product.id, [existing!.credentials]);
+    const { added, skipped } = await bulkAddStock(prisma, product.id, [decryptCredentials(existing!.credentials)]);
 
     expect(added).toBe(0);
     expect(skipped).toBe(1);
@@ -222,6 +227,24 @@ describe("markStockDead", () => {
 
     expect(singleCount).toBe(0);
     expect(bulkCount).toBe(1);
+  });
+});
+
+describe("bulkAddStock encrypts credentials at rest", () => {
+  it("never stores the plaintext credential in the column", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["encrypt-me@x.com:pw"]);
+
+    const row = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, credentials: { contains: "encrypt-me" } },
+    }))!;
+    expect(row).toBeNull(); // the literal plaintext is not a substring of the stored value
+
+    const all = await prisma.stockItem.findMany({ where: { productId: product.id } });
+    const stored = all.find((r) => decryptCredentials(r.credentials) === "encrypt-me@x.com:pw");
+    expect(stored).toBeDefined();
+    expect(stored!.credentials).not.toBe("encrypt-me@x.com:pw");
+    expect(() => JSON.parse(stored!.credentials)).not.toThrow();
   });
 });
 

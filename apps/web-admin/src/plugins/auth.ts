@@ -50,7 +50,12 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 }
 
 // ---- RBAC: which roles may MUTATE which areas ------------------------------
-// Reads (GET) are open to every authenticated admin; only mutations are gated.
+// Reads (GET) are open to every authenticated admin by default; only
+// mutations are gated by `canMutate` below. `blockReadonlyReads` (further
+// down this file) is the documented exception: a small, explicitly-listed
+// set of GET routes that return credentials or full CSV/JSON exports (order
+// detail, stock credentials, orders/users/settings exports) is gated even
+// for reads, refusing the `readonly` role specifically.
 
 // Structural / money / account / high-impact routes — super only. All
 // mutations now arrive at the JSON /api/* surface (the legacy form routes
@@ -59,8 +64,15 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // must track the live paths or every non-super role silently loses its RBAC
 // grants (a real regression caught by the /api/* test-trio work).
 const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast"];
-// Operational routes — super + support.
-const OPS_PREFIXES = ["/api/orders", "/api/support", "/api/outbox", "/api/payments", "/api/reviews"];
+// Operational routes — super + support. `/api/admin-tasks` (the Task 9b
+// queue: assign/start/complete/escalate on manual-ops tasks) sits here, not
+// in CONFIG_PREFIXES — it's an operational queue like Support/Orders, not a
+// structural/config surface, even though one task type (REFUND_REVIEW) is
+// money-adjacent; the state machine itself only ever changes AdminTask.status/
+// assignedTo, never moves money directly (that stays gated behind the
+// existing Refund/wallet routes), so support-tier access is consistent with
+// this repo's existing RBAC tiering rather than inventing a new one.
+const OPS_PREFIXES = ["/api/orders", "/api/support", "/api/outbox", "/api/payments", "/api/reviews", "/api/admin-tasks"];
 
 const underAny = (path: string, prefixes: string[]) =>
   prefixes.some((p) => path === p || path.startsWith(p + "/"));
@@ -93,11 +105,43 @@ export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
   req.admin = data;
 };
 
+/** Origin/Referer check — defense-in-depth ALONGSIDE csrfCheck's token check,
+ * not a replacement. Compares the Origin header's hostname (or Referer's,
+ * when Origin is absent) against the app's own configured public origin
+ * (`ADMIN_PUBLIC_URL`) when one is set — mirroring the storefront's
+ * originOk (routes/cart.ts) / publicBase (shop.ts) fallback shape. Only when
+ * unconfigured does this fall back to this request's own hostname (Fastify's
+ * req.hostname, which already respects TRUST_PROXY the same way req.ip
+ * does — see storefront's rateLimit.ts's clientIp doc comment). Preferring
+ * the configured origin avoids a deploy-time availability trap: a reverse
+ * proxy that doesn't forward the `Host` header correctly would otherwise
+ * make req.hostname disagree with the real public origin and 403 every
+ * mutation. No Origin AND no Referer passes (many legitimate same-site
+ * requests omit both); a header that IS present but names a different host
+ * fails. */
+function originOk(req: FastifyRequest): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const raw = typeof origin === "string" ? origin : typeof referer === "string" ? referer : null;
+  if (raw === null) return true;
+  const expectedHostname = config.ADMIN_PUBLIC_URL ? new URL(config.ADMIN_PUBLIC_URL).hostname : req.hostname;
+  try {
+    return new URL(raw).hostname === expectedHostname;
+  } catch {
+    return false; // an unparseable Origin/Referer is suspicious, not trusted
+  }
+}
+
 const csrfCheck: preHandlerHookHandler = async (req, reply) => {
   const bodyToken = (req.body as Record<string, unknown> | undefined)?.csrf_token;
   const headerToken = req.headers["x-csrf-token"];
   const token = bodyToken ?? (typeof headerToken === "string" ? headerToken : undefined);
-  if (typeof token !== "string" || !req.admin || !constantTimeEqual(token, req.admin.csrf)) {
+  if (
+    typeof token !== "string" ||
+    !req.admin ||
+    !constantTimeEqual(token, req.admin.csrf) ||
+    !originOk(req)
+  ) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
 };
@@ -119,6 +163,23 @@ export const requireSuper: preHandlerHookHandler[] = [
   async (req, reply) => {
     if (req.admin?.role !== "super") {
       return reply.code(403).type("text/plain").send("Super-admin only.");
+    }
+  },
+];
+
+/**
+ * Guard a read route that exposes account credentials or a bulk export:
+ * `readonly` is refused, `support` and `super` keep today's full access.
+ * Reads were previously open to every authenticated admin (see the RBAC
+ * note above `canMutate`); this narrows exactly the five credential/export
+ * routes named in the C-1 finding (security audit 2026-08-21), rather than
+ * changing what any read route or role can do more broadly.
+ */
+export const blockReadonlyReads: preHandlerHookHandler[] = [
+  currentAdmin,
+  async (req, reply) => {
+    if (req.admin?.role === "readonly") {
+      return reply.code(403).type("text/plain").send("This view isn't available to your role.");
     }
   },
 ];

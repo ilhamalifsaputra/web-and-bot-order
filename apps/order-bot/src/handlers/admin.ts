@@ -14,6 +14,7 @@ import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
   prisma,
   listPendingVerifications,
@@ -35,6 +36,7 @@ import {
   deleteBulkPricing,
   listOpenTickets,
   closeTicket,
+  enqueueTicketClosedDm,
   logAdminAction,
   listRestockSubscribers,
   deleteRestockSubscription,
@@ -475,7 +477,21 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   };
   const lines = items.map((it) => {
     const icon = statusIcons[it.status] ?? "⚪";
-    const creds = it.credentials ?? "";
+    // listStockItemsForProduct returns the raw encrypted envelope (it's also
+    // used for the web-admin masked list) — decrypt just for this preview.
+    // Never let a decrypt failure (e.g. unconfigured key) crash the whole
+    // admin stock browser or leak the raw ciphertext envelope as if it were
+    // the account itself.
+    let creds: string;
+    try {
+      creds = decryptCredentials(it.credentials ?? "");
+    } catch (err) {
+      logger.warn(
+        { err, stockItemId: it.id },
+        "Failed to decrypt a stock item's credentials for the admin preview — check CREDENTIAL_ENCRYPTION_KEY",
+      );
+      creds = "[unavailable]";
+    }
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");
     return `${icon} #${it.id} — ${preview}`;
   });
@@ -600,15 +616,14 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
   });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.ticket_closed") });
 
+  // Task 2 (Phase C): routed through notification_outbox instead of a direct
+  // ctx.api.sendMessage() — the dispatcher's TICKET_CLOSED_DM branch renders
+  // the exact same coreT("support.ticket_closed", buyerLang) text, in the
+  // buyer's own language.
   if (customerTgId) {
-    try {
-      // DM the buyer in THEIR language, not a hardcoded "en".
-      const buyer = await getUserByTelegramId(prisma, customerTgId);
-      const buyerLang = buyer ? langCode(buyer.language) : "en";
-      await ctx.api.sendMessage(Number(customerTgId), coreT("support.ticket_closed", buyerLang), { parse_mode: "HTML" });
-    } catch (err) {
-      logger.error({ err }, `Failed to notify customer ${customerTgId} that their support ticket ${ticketId} was closed — ticket is closed in the DB, but they won't see a DM about it`);
-    }
+    const buyer = await getUserByTelegramId(prisma, customerTgId);
+    const buyerLang = buyer ? langCode(buyer.language) : "en";
+    await enqueueTicketClosedDm(prisma, { ticketId, chatId: Number(customerTgId), buyerLanguage: buyerLang });
   }
   await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
 }

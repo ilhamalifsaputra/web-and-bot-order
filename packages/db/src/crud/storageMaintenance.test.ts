@@ -24,7 +24,6 @@ import {
   clearBroadcastImage,
   listTicketsForAttachmentCleanup,
   clearTicketAttachments,
-  checkpointWal,
   runStorageCleanup,
 } from "./storageMaintenance";
 import { TicketStatus, SenderType } from "@app/core/enums";
@@ -63,20 +62,21 @@ beforeEach(async () => {
 });
 
 describe("pruneSentOutbox", () => {
-  it("deletes terminal (SENT/FAILED) rows older than cutoff, keeps everything else", async () => {
+  it("deletes terminal (SENT/FAILED/DEAD_LETTER) rows older than cutoff, keeps everything else", async () => {
     const cutoff = daysAgo(30);
     await prisma.notificationOutbox.createMany({
       data: [
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SENT", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "SENT", createdAt: daysAgo(5) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "FAILED", createdAt: daysAgo(40) },
+        { event: "ORDER_DELIVERED", payloadJson: "{}", status: "DEAD_LETTER", createdAt: daysAgo(40) },
         { event: "ORDER_DELIVERED", payloadJson: "{}", status: "PENDING", createdAt: daysAgo(40) },
       ],
     });
 
     const count = await pruneSentOutbox(prisma, cutoff);
 
-    expect(count).toBe(2);
+    expect(count).toBe(3);
     const remaining = await prisma.notificationOutbox.findMany({ orderBy: { id: "asc" } });
     expect(remaining).toHaveLength(2);
     expect(remaining.map((r) => r.status).sort()).toEqual(["PENDING", "SENT"]);
@@ -193,12 +193,6 @@ describe("listTicketsForAttachmentCleanup / clearTicketAttachments", () => {
     const freshMessages = await prisma.ticketMessage.findMany({ where: { ticketId: oldClosed.id } });
     expect(freshTicket!.attachmentUrls).toBeNull();
     expect(freshMessages.every((m) => m.attachmentUrls === null)).toBe(true);
-  });
-});
-
-describe("checkpointWal", () => {
-  it("runs without throwing", async () => {
-    await expect(checkpointWal(prisma)).resolves.not.toThrow();
   });
 });
 

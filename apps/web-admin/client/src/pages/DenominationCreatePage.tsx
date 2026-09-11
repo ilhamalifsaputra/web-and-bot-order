@@ -36,25 +36,37 @@ function isValidPrice(value: string): boolean {
  * in a session — no extra request in the common "detail → new denomination"
  * navigation path. */
 interface ProductForBreadcrumb {
-  product: { id: number; name: string };
+  product: {
+    id: number;
+    name: string;
+    /** Task 10/12: the parent Product's Linked Game (null until an admin
+     * links one) — drives DeliveryTypeSection's legacy-field note below. */
+    gameId?: number | null;
+  };
 }
 
-function useProductName(productId: string | undefined): string {
+/** Reads the same `["catalog", productId]` query the breadcrumb name has
+ * always used (see the doc comment above) and additionally surfaces the
+ * parent Product's Linked Game — no extra request. */
+function useParentProduct(productId: string | undefined) {
   const { data } = useQuery<ProductForBreadcrumb>({
     queryKey: ["catalog", productId],
     queryFn: async () => apiGet<ProductForBreadcrumb>(`/api/catalog/${productId}`),
     enabled: !!productId,
   });
-  // Fallback while loading (or if the fetch hasn't resolved yet): the
-  // product id, not a hardcoded generic "Product" label.
-  return data?.product.name ?? `Product #${productId ?? "?"}`;
+  return {
+    // Fallback while loading (or if the fetch hasn't resolved yet): the
+    // product id, not a hardcoded generic "Product" label.
+    name: data?.product.name ?? `Product #${productId ?? "?"}`,
+    gameId: data?.product.gameId ?? null,
+  };
 }
 
 export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const productName = useProductName(productId);
+  const { name: productName, gameId: parentProductGameId } = useParentProduct(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -63,8 +75,17 @@ export function DenominationCreatePage() {
   const [resellerPrice, setResellerPrice] = useState("");
   const [warrantyDays, setWarrantyDays] = useState("");
   const [description, setDescription] = useState("");
+  // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
+  // every other field on this form.
+  const [qtyValue, setQtyValue] = useState("");
+  const [qtyUnit, setQtyUnit] = useState("");
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
+  const [supplierSku, setSupplierSku] = useState("");
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [regionWarning, setRegionWarning] = useState("");
+  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -84,6 +105,14 @@ export function DenominationCreatePage() {
           ...(deliveryType === "manual_with_info"
             ? { additionalFields: draftsToFields(additionalFields) }
             : {}),
+          ...(deliveryType === "manual_with_info" && autoDeliverySource
+            ? { autoDeliverySource, supplierSku: supplierSku.trim() }
+            : {}),
+          ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
+          ...(regionWarning.trim() ? { regionWarning: regionWarning.trim() } : {}),
+          ...(expectedRegionCode.trim() ? { expectedRegionCode: expectedRegionCode.trim() } : {}),
+          ...(qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
+          ...(qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -99,7 +128,8 @@ export function DenominationCreatePage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   return (
     <PageLayout title="New Denomination">
@@ -136,6 +166,32 @@ export function DenominationCreatePage() {
           />
         </div>
 
+        {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
+            "86 Diamonds"-style compact denomination button label. */}
+        <div className="flex gap-3">
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Value</label>
+            <Input
+              className="mt-1 w-32"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="e.g. 86"
+              value={qtyValue}
+              onChange={(e) => setQtyValue(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Unit</label>
+            <Input
+              className="mt-1"
+              placeholder="e.g. Diamonds"
+              value={qtyUnit}
+              onChange={(e) => setQtyUnit(e.target.value)}
+            />
+          </div>
+        </div>
+
         <div>
           <label className="text-sm font-medium text-ink">
             Account Type <span className="text-rust">*</span>
@@ -163,6 +219,17 @@ export function DenominationCreatePage() {
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}
           onAdditionalFieldsChange={setAdditionalFields}
+          autoDeliverySource={autoDeliverySource}
+          onAutoDeliverySourceChange={setAutoDeliverySource}
+          supplierSku={supplierSku}
+          onSupplierSkuChange={setSupplierSku}
+          nicknameCheckGameCode={nicknameCheckGameCode}
+          onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
+          regionWarning={regionWarning}
+          onRegionWarningChange={setRegionWarning}
+          expectedRegionCode={expectedRegionCode}
+          onExpectedRegionCodeChange={setExpectedRegionCode}
+          productHasLinkedGame={Boolean(parentProductGameId)}
         />
 
         <div>

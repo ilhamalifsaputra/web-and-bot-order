@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SupportPage from "./SupportPage";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -22,9 +22,26 @@ const supportData: SupportData = {
       created_at_display: "2026-07-01 09:00",
       admin_reply: null,
       attachments: [],
+      subject: null,
+      order_code: null,
+      product_name: null,
+      updated_at_iso: "2026-07-01T09:00:00.000Z",
     },
   ],
 };
+
+// Stands in for TicketDetailPage — renders enough of the router state a
+// redirect carries so tests can assert the "your draft wasn't saved" notice
+// actually reached the destination, without pulling in the real page.
+function TicketDetailStub() {
+  const location = useLocation() as { state?: { notice?: string } | null };
+  return (
+    <div>
+      ticket-detail-stub
+      {location.state?.notice && <span>{location.state.notice}</span>}
+    </div>
+  );
+}
 
 function renderSupport(respond: () => unknown = () => supportData, ordersRespond: () => unknown = () => ({ orders: [] })) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
@@ -37,7 +54,7 @@ function renderSupport(respond: () => unknown = () => supportData, ordersRespond
       <MemoryRouter initialEntries={["/account/support"]}>
         <Routes>
           <Route path="/account/support" element={<SupportPage />} />
-          <Route path="/account/support/:id" element={<div>ticket-detail-stub</div>} />
+          <Route path="/account/support/:id" element={<TicketDetailStub />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -62,7 +79,7 @@ describe("SupportPage", () => {
   it("creates a new ticket and refetches", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
@@ -80,7 +97,7 @@ describe("SupportPage", () => {
     }));
     await screen.findByRole("link", { name: "#1" });
     fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "help with this order" } });
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), { target: { value: "help with this order" } });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 42 });
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
     await waitFor(() =>
@@ -96,13 +113,34 @@ describe("SupportPage", () => {
   it("shows a 'Ticket #N created' toast on successful submission", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
     expect(await screen.findByText("Ticket #2 created")).toBeInTheDocument();
     expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
+  it("navigates to the existing ticket with a 'wasn't saved' notice when the server reports a duplicate", async () => {
+    renderSupport(() => supportData, () => ({
+      orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
+    }));
+    await screen.findByRole("link", { name: "#1" });
+    fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
+      target: { value: "New issue" },
+    });
+    (apiPost as Mock).mockResolvedValue({ ok: false, duplicate: true, ticket_id: 1 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    // SupportPage unmounts on navigate, so a toast set on it would never
+    // paint — the notice must ride router state to the destination instead.
+    // TicketDetailStub renders location.state.notice if the redirect carried it.
+    await screen.findByText("ticket-detail-stub");
+    expect(screen.getByText("You already have an open ticket for this order. What you typed wasn't saved — redirecting you to that existing ticket.")).toBeInTheDocument();
+    // Nothing was created, so the form shouldn't reset and the ticket list shouldn't refetch.
+    // 2 = initial support fetch + initial account-orders fetch (order picker) only.
+    expect(apiGet).toHaveBeenCalledTimes(2);
   });
 
   it("renders the empty state when there are no tickets", async () => {
@@ -130,17 +168,31 @@ describe("SupportPage", () => {
     expect(screen.queryByText("No support tickets yet.")).not.toBeInTheDocument();
   });
 
-  it("pre-fills the new-ticket textarea with a template skeleton", async () => {
+  // Regression: order selection used to be asked twice — a literal "Order
+  // number:" line the customer typed over in the textarea, plus this
+  // dropdown. The dropdown is now the only place order selection happens.
+  it("starts the new-ticket textarea empty, with no order-number line to type over", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    const textarea = screen.getByPlaceholderText("Tell us what's wrong…") as HTMLTextAreaElement;
-    expect(textarea.value).toContain("Order number:");
+    const textarea = screen.getByPlaceholderText(/Tell us what's wrong/) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+    expect(textarea.placeholder).not.toContain("Order number:");
+  });
+
+  it("clears the textarea back to empty (not a re-filled template) after a successful submission", async () => {
+    renderSupport();
+    await screen.findByRole("link", { name: "#1" });
+    const textarea = screen.getByPlaceholderText(/Tell us what's wrong/) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "New issue" } });
+    (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => expect(textarea.value).toBe(""));
   });
 
   it("attaches a file and submits via apiPostFormWithProgress instead of apiPost", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     const file = new File(["fake image bytes"], "evidence.png", { type: "image/png" });
@@ -158,7 +210,7 @@ describe("SupportPage", () => {
   it("shows a progress bar reflecting upload progress while an attachment is uploading", async () => {
     renderSupport();
     await screen.findByRole("link", { name: "#1" });
-    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+    fireEvent.change(screen.getByPlaceholderText(/Tell us what's wrong/), {
       target: { value: "New issue" },
     });
     const file = new File(["fake image bytes"], "evidence.png", { type: "image/png" });

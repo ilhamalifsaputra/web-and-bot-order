@@ -18,6 +18,7 @@ import {
   WALLET_TOPUP_MIN_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
 } from "@app/db";
+import { config } from "@app/core/config";
 import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 
@@ -150,6 +151,63 @@ describe("POST /api/v1/wallet/topup — validation matrix", () => {
     });
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: "csrf_failed" });
+  });
+
+  // Task 12 fix-review: apiWalletTopup.ts's csrfHeaderOk (shared by both
+  // mutating wallet-topup routes) was missing the Origin/Referer
+  // defense-in-depth check that api.ts's inline checks already had — same
+  // 403 shape as a bad token, same "no Origin/Referer passes" allowance.
+  it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/wallet/topup",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+      payload: { currency: "IDR", amount: "50000", method: "qris" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "csrf_failed" });
+  });
+
+  it("201s with a valid token and no Origin/Referer header at all", async () => {
+    const res = await post({ currency: "IDR", amount: "50000", method: "qris" });
+    expect(res.statusCode).toBe(201);
+  });
+
+  // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+  // configured, originOk falls back to comparing against req.hostname —
+  // this test's own suite (setup-env.ts) sets SHOP_PUBLIC_URL by default, so
+  // it's cleared for this one case to exercise the fallback path.
+  it("201s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+    const originalShop = config.SHOP_PUBLIC_URL;
+    const originalPublic = config.PUBLIC_URL;
+    config.SHOP_PUBLIC_URL = undefined;
+    config.PUBLIC_URL = undefined;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/wallet/topup",
+        headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+        payload: { currency: "IDR", amount: "50000", method: "qris" },
+      });
+      expect(res.statusCode).toBe(201);
+    } finally {
+      config.SHOP_PUBLIC_URL = originalShop;
+      config.PUBLIC_URL = originalPublic;
+    }
+  });
+
+  // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+  // this test suite — see setup-env.ts), the Origin check must prefer it
+  // over req.hostname.
+  it("201s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+    expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/wallet/topup",
+      headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+      payload: { currency: "IDR", amount: "50000", method: "qris" },
+    });
+    expect(res.statusCode).toBe(201);
   });
 
   it("rejects an unknown/disabled method with a clean 400, not a 500", async () => {

@@ -23,7 +23,7 @@ import {
 } from "@app/db";
 import { buildApp } from "../src/server";
 import { verifyTelegramLoginResult } from "../src/auth";
-import { resetLoginAttempts } from "../src/rateLimit";
+import { resetLoginAttempts, LINK_TELEGRAM_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 /** Seed a mid-tier Product with N denominations (the 3-tier shape). */
 async function seedProduct(
@@ -1009,6 +1009,16 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(res.headers.location).toBe("/account/settings?linked=1");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n);
+
+    // Phase H customer-audit trail (order-bot side channel this route feeds).
+    // actorType filtered in the where-clause (M-6, final whole-branch
+    // review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "user", targetId: row.id } });
+    expect(audit?.customerId).toBe(row.id);
+    expect(audit?.telegramUserId).toBe(636363n);
+    expect(audit?.channel).toBe("WEB");
+    expect(audit?.action).toBe("account_link_telegram");
+    expect(audit?.details).toBe("Linked the account to Telegram (@linkedtg).");
   });
 
   it("refuses linking a telegramId owned by another account", async () => {
@@ -1035,6 +1045,63 @@ describe("account settings — link-telegram (survives the cutover)", () => {
     expect(res.headers.location).toBe("/account/settings?err=tg_taken");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n); // unchanged
+    // Phase H regression guard: the link attempt failed (telegramId already
+    // taken), so no NEW customer-audit row exists for the telegramId this
+    // attempt tried to link (737373n) — this describe block's tests share one
+    // DB via beforeAll, so the row from the earlier successful-link test
+    // (636363n) is deliberately excluded rather than asserting a global zero.
+    expect(await prisma.auditLog.count({ where: { actorType: "CUSTOMER", action: "account_link_telegram", telegramUserId: 737373n } })).toBe(0);
+  });
+
+  // Task 5: linkTelegramRateLimited(customerId) — a fresh customer, so this
+  // test's quota never interacts with the two tests above's hits against
+  // "settingsuser".
+  it("429s (as ?err=tg_invalid) after LINK_TELEGRAM_RATE_LIMIT_MAX valid-signature attempts from one customer", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "linkratecust",
+        email: "linkrate@u.test",
+        passwordHash: hashPassword("linkrate-pw-1"),
+        referralCode: "LNKRAT",
+      },
+    });
+    const rateCookie = await loginAs("linkratecust", "linkrate-pw-1");
+
+    const { createHash, createHmac } = await import("node:crypto");
+    function sign(telegramId: number): URLSearchParams {
+      const fields: Record<string, string> = {
+        id: String(telegramId),
+        auth_date: String(Math.floor(Date.now() / 1000)),
+      };
+      const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+      const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+      const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+      return new URLSearchParams({ ...fields, hash });
+    }
+
+    for (let i = 0; i < LINK_TELEGRAM_RATE_LIMIT_MAX; i++) {
+      // A distinct telegramId per attempt: linkTelegram happily re-links the
+      // same customer to a new id, so every one of these succeeds and each
+      // still counts a hit against the rate limit.
+      const res = await app.inject({
+        method: "GET",
+        url: `/account/settings/link-telegram?${sign(900_000 + i)}`,
+        headers: { cookie: rateCookie },
+      });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/account/settings?linked=1");
+    }
+
+    const capped = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${sign(999_999)}`,
+      headers: { cookie: rateCookie },
+    });
+    expect(capped.statusCode).toBe(303);
+    expect(capped.headers.location).toBe("/account/settings?err=tg_invalid");
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "linkratecust" } }))!;
+    expect(row.telegramId).toBe(900_000n + BigInt(LINK_TELEGRAM_RATE_LIMIT_MAX - 1)); // last successful link, not the capped attempt
   });
 });
 

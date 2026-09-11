@@ -354,6 +354,10 @@ describe("SPA shell wildcard", () => {
     ["/account/support", "Help &amp; support"], // esc()'d — the raw title has an ampersand
     ["/account/support/123", "Help &amp; support"],
     ["/account/settings", "Account settings"],
+    // Task 18: /help — the new consolidated ticket page nav/footer/CTAs now
+    // point at, auth-gated (noindex) like the rest of this table rather than
+    // a STATIC_PAGES entry.
+    ["/help", "Help &amp; Support"],
   ])("200s GET %s with the %s title", async (path, title) => {
     const res = await app.inject({ method: "GET", url: path });
     expect(res.statusCode).toBe(200);
@@ -739,6 +743,237 @@ describe("/api/v1/auth", () => {
     expect(cart.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
   });
 
+  // Final-review Batch 1 review finding: the guest cart cookie has no
+  // signature, so a caller can present a crafted `shop_cart_v2` cookie
+  // directly (bypassing POST /cart's own Digiflazz single-unit guard
+  // entirely) and have it merged into the account on login. Confirms
+  // routes/auth.ts's establishSession clamps a Digiflazz-routed line to
+  // qty 1 regardless of what the forged cookie claims, and skips the merge
+  // entirely (rather than incrementing) when the account already holds one.
+  it("login clamps a forged Digiflazz cart line to qty 1 instead of merging it as-is", async () => {
+    const cat = await prisma.category.create({ data: { name: "DigiflazzMergeCat", slug: `digiflazz-merge-cat-${Date.now()}`, sortOrder: 8 } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Digiflazz Merge Game" });
+    const digiDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "16500",
+    });
+    await updateDenomination(prisma, digiDenom.id, { autoDeliverySource: "digiflazz" });
+
+    await makeUser("digimergeuser", "digi-merge-pw-1", "DIGIREF");
+    const forgedCookie = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: digiDenom.id, q: 7 }] }));
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+
+    // A second login (e.g. a subsequent session) with the same forged qty:7
+    // cookie must not push the held line above 1 either — addToCart would
+    // otherwise increment an existing line.
+    const login2 = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: forgedCookie },
+      payload: { identifier: "digimergeuser", password: "digi-merge-pw-1" },
+    });
+    expect(login2.statusCode).toBe(200);
+    const sessionCookie2 = (Array.isArray(login2.headers["set-cookie"]) ? login2.headers["set-cookie"] : [String(login2.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart2 = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie2 } });
+    expect(cart2.json().items[0]).toMatchObject({ denomination_id: digiDenom.id, qty: 1 });
+  });
+
+  // Trustance Phase 1 Task 3 — the guest-cart-merge fix.
+  //
+  // The merge on login is the one path that reaches CartItem without passing
+  // POST /cart's composition guard, and it used to upsert every guest line
+  // blind. A forged (or merely stale) cookie could therefore hand a buyer a
+  // cart that BOTH checkout choke points then refuse, with no way forward
+  // except guessing which line to delete. It now merges greedily and skips the
+  // lines that would conflict, so the result is always a cart POST /cart would
+  // have let the buyer build by hand.
+  //
+  // These assert the ONE deliberate behavior change in Task 3 — everything else
+  // in that task is a no-op shadow of behavior that already existed.
+  async function loginWithCookie(username: string, password: string, cookie: string): Promise<string> {
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie },
+      payload: { identifier: username, password },
+    });
+    expect(login.statusCode).toBe(200);
+    return (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+  }
+
+  const guestCookieFor = (items: { p: number; q: number }[]): string =>
+    "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items }));
+
+  it("login merge skips a guest line that would conflict, keeping the ones that fit", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeConflictCat", slug: `merge-conflict-cat-${Date.now()}`, sortOrder: 9 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Conflict Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "20000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    await makeUser("mergeskipuser", "merge-skip-pw-1", "MSKIPREF");
+    // A cookie POST /cart would never have produced: a manual line AND an auto
+    // line together.
+    const cookie = guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 2 }]);
+    const sessionCookie = await loginWithCookie("mergeskipuser", "merge-skip-pw-1", cookie);
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    // Cookie order decides: the manual line arrived first and is kept; the auto
+    // line would have made the cart un-checkout-able, so it was dropped.
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id, qty: 1 });
+  });
+
+  it("login merge never overrides the account's own cart — a conflicting guest line is the one dropped", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeAccountWinsCat", slug: `merge-acct-cat-${Date.now()}`, sortOrder: 10 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Account Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Account Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "30000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+
+    const userId = await makeUser("mergeacctuser", "merge-acct-pw-1", "MACCTREF");
+    // The buyer already holds a manual line in the cart they can SEE.
+    await addToCart(prisma, userId, manualDenom.id, 1);
+
+    const sessionCookie = await loginWithCookie(
+      "mergeacctuser",
+      "merge-acct-pw-1",
+      guestCookieFor([{ p: denomId, q: 3 }]),
+    );
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id, qty: 1 });
+  });
+
+  it("login merge is unchanged for a cart with no conflict — every auto line still merges", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeCleanCat", slug: `merge-clean-cat-${Date.now()}`, sortOrder: 11 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Clean Auto" });
+    const secondAuto = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Second Auto Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "12000",
+    });
+
+    await makeUser("mergecleanuser", "merge-clean-pw-1", "MCLEANREF");
+    const sessionCookie = await loginWithCookie(
+      "mergecleanuser",
+      "merge-clean-pw-1",
+      guestCookieFor([{ p: denomId, q: 2 }, { p: secondAuto.id, q: 1 }]),
+    );
+
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    const ids = cart.json().items.map((i: { denomination_id: number }) => i.denomination_id).sort();
+    expect(ids).toEqual([denomId, secondAuto.id].sort());
+  });
+
+  it("a merged cart always passes the checkout composition guard it used to be able to fail", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeCheckoutCat", slug: `merge-checkout-cat-${Date.now()}`, sortOrder: 12 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Checkout Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Checkout Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "25000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    await makeUser("mergechkuser", "merge-chk-pw-1", "MCHKREF");
+    const sessionCookie = await loginWithCookie(
+      "mergechkuser",
+      "merge-chk-pw-1",
+      guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 1 }]),
+    );
+
+    // The point of the fix: whatever the checkout does next (it may still fail
+    // for unrelated reasons like a disabled gateway), it is NOT rejected for
+    // cart composition, because the merge could not build a bad cart.
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    const csrf = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: sessionCookie } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: sessionCookie, "x-csrf-token": String(csrf.json().csrf_token ?? "") },
+      payload: { method: "qris" },
+    });
+    expect(res.json().error).not.toBe("error.cart_mixed_delivery");
+  });
+
+  it("register merges the guest cart under the same composition rule as login", async () => {
+    const cat = await prisma.category.create({
+      data: { name: "MergeRegisterCat", slug: `merge-register-cat-${Date.now()}`, sortOrder: 13 },
+    });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Merge Register Manual" });
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Register Manual Line",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "22000",
+    });
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+
+    const reg = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      headers: { cookie: guestCookieFor([{ p: manualDenom.id, q: 1 }, { p: denomId, q: 1 }]) },
+      payload: {
+        username: "mergereguser",
+        email: "mergereguser@u.test",
+        password: "merge-reg-pw-1",
+        password2: "merge-reg-pw-1",
+        fullName: "Merge Reg",
+      },
+    });
+    expect(reg.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(reg.headers["set-cookie"]) ? reg.headers["set-cookie"] : [String(reg.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items).toHaveLength(1);
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: manualDenom.id });
+  });
+
   it("register: validation errors return i18n keys; success signs in", async () => {
     const bad = await app.inject({
       method: "POST",
@@ -958,6 +1193,106 @@ describe("/api/v1/cart twins", () => {
     });
     expect(badToken.statusCode).toBe(403);
     expect(badToken.json()).toEqual({ error: "csrf_failed" });
+  });
+});
+
+// Final-review N1 fix: POST /cart/update must enforce the same Digiflazz
+// single-unit invariant as POST /cart (api.ts) — otherwise a buyer could add
+// a Digiflazz-routed line at qty 1 (passing the api.ts guard) and then raise
+// it here, bypassing the front door entirely.
+describe("/api/v1/cart/update — Digiflazz single-unit guard", () => {
+  let digiflazzDenomId: number;
+
+  beforeAll(async () => {
+    const cat = await prisma.category.findUniqueOrThrow({ where: { slug: categorySlug } });
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Digiflazz Update Game ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "100 Diamonds",
+      type: "SHARED",
+      durationLabel: "",
+      price: "16500",
+    });
+    digiflazzDenomId = denom.id;
+    await updateDenomination(prisma, digiflazzDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "ml100",
+    });
+  });
+
+  it("guest: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    expect(add.statusCode).toBe(200);
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 3 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    // The line itself must be untouched by the rejected request.
+    const check = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie } });
+    expect(check.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("guest: qty=0 (remove) on a Digiflazz line still works", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: digiflazzDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: digiflazzDenomId, qty: 0 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items).toHaveLength(0);
+  });
+
+  it("signed-in: rejects raising an existing Digiflazz line's quantity above 1", async () => {
+    const uid = await makeUser("digiflazzupduser", "digiflazzupd-pw-99", "DFUPDREF");
+    const { cookie, csrf } = await loginAs("digiflazzupduser", "digiflazzupd-pw-99");
+    await addToCart(prisma, uid, digiflazzDenomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 2 },
+    });
+    expect(upd.statusCode).toBe(400);
+    expect(upd.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    const refreshed = await prisma.cartItem.findUnique({ where: { id: key } });
+    expect(refreshed!.quantity).toBe(1);
+  });
+
+  it("signed-in: updating a non-Digiflazz line's quantity is unaffected", async () => {
+    const uid = await makeUser("plainupduser", "plainupd-pw-99", "PLAINUPDR");
+    const { cookie, csrf } = await loginAs("plainupduser", "plainupd-pw-99");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 4 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items[0]).toMatchObject({ qty: 4 });
   });
 });
 
@@ -1898,6 +2233,50 @@ describe("/api/v1/account twins", () => {
       expect(body.order.items[0].warranty_active).toBe(true);
     });
 
+    it("support ticket: a second create against an order that already has an open ticket is rejected as a duplicate", async () => {
+      const stock = await prisma.stockItem.create({
+        data: { productId: denomId, credentials: "tick-dup@mail.com:pw", status: "SOLD" },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-TICKDUP-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+          paidAt: new Date(),
+          deliveredAt: new Date(),
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "first message about this order", order_code: order.orderCode },
+      });
+      expect(first.statusCode).toBe(200);
+      const firstBody = first.json();
+      expect(firstBody.ok).toBe(true);
+      const firstTicketId = firstBody.ticket_id as number;
+      expect(firstTicketId).toBeTypeOf("number");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "a different message, same order", order_code: order.orderCode },
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toEqual({ ok: false, duplicate: true, ticket_id: firstTicketId });
+
+      const ticketCount = await prisma.supportTicket.count({ where: { orderId: order.id } });
+      expect(ticketCount).toBe(1);
+    });
+
     it("support ticket: create with an order_code belonging to someone else is rejected", async () => {
       await makeUser("ticketorderthief", "thief-pw-1234", "TICKTHIEF");
       const other = await loginAs("ticketorderthief", "thief-pw-1234");
@@ -2101,6 +2480,42 @@ describe("/api/v1/account twins", () => {
       expect(probe.statusCode).toBe(404);
     });
 
+    // Final whole-branch review I-2 fix: the base GET must include the
+    // buyer-safe digiflazz_status directly, not rely on the SSE stream as
+    // the only source for it — otherwise the storefront's 5s poll wipes the
+    // SSE-merged value back to undefined on every tick until the status
+    // genuinely changes again (which can be many minutes away). Mirrors
+    // Task 11's own apiOrderDigiflazzStream.test.ts assertions: the mapped
+    // buyer-safe value, and the raw internal string never appearing in the
+    // response body at all.
+    it("GET /account/orders/:code includes a buyer-safe digiflazz_status mapped from the internal value", async () => {
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-DGZ-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "15000",
+          totalAmount: "15000",
+          status: OrderStatus.PROCESSING,
+          digiflazzStatus: "pending_at_supplier",
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, unitPrice: "15000", warrantyDaysSnapshot: 30 },
+      });
+
+      const pending = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json().order.digiflazz_status).toBe("pending");
+      expect(JSON.stringify(pending.json())).not.toContain("pending_at_supplier");
+
+      await prisma.order.update({ where: { id: order.id }, data: { digiflazzStatus: "failed" } });
+      const failed = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(failed.json().order.digiflazz_status).toBe("reviewing");
+      // The raw internal "failed" string must never appear anywhere in the
+      // response body — a buyer must never see the word "failed".
+      expect(JSON.stringify(failed.json())).not.toContain("failed");
+    });
+
     // Task 4: a WALLET_TOPUP order (zero OrderItem rows) isn't a "My Orders"
     // purchase — it's already visible via the wallet ledger — so even its
     // own owner gets 404 (never a crash on the empty items array) when
@@ -2248,6 +2663,68 @@ describe("/api/v1/account twins", () => {
       expect(okEmail.statusCode).toBe(200);
       const rowAfterEmail = await prisma.user.findUnique({ where: { id: buyerId } });
       expect(rowAfterEmail!.email).toBe("accspa-new@u.test");
+    });
+
+    // Task 12 fix-review: apiAccount.ts's csrfHeaderOk (shared by all 8
+    // mutating /account/* routes) was missing the Origin/Referer
+    // defense-in-depth check that api.ts's inline checks already had — same
+    // 403 shape as a bad token, same "no Origin/Referer passes" allowance.
+    it("settings credentials: 403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    it("settings credentials: 200s with a valid token and no Origin/Referer header at all", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+    // configured, originOk falls back to comparing against req.hostname —
+    // this test's own suite (setup-env.ts) sets SHOP_PUBLIC_URL by default,
+    // so it's cleared for this one case to exercise the fallback path.
+    it("settings credentials: 200s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+      const originalShop = config.SHOP_PUBLIC_URL;
+      const originalPublic = config.PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/account/settings/credentials",
+          headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+          payload: {},
+        });
+        expect(res.statusCode).toBe(200);
+      } finally {
+        config.SHOP_PUBLIC_URL = originalShop;
+        config.PUBLIC_URL = originalPublic;
+      }
+    });
+
+    // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+    // this test suite — see setup-env.ts), the Origin check must prefer it
+    // over req.hostname.
+    it("settings credentials: 200s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+      expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(200);
     });
 
     it("settings credentials: wrong current_password 400s; correct one saves, reports password_changed, and rotates the session (Storefront-2 fix)", async () => {

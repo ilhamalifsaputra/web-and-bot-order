@@ -41,18 +41,25 @@
  * chat that anchored a message in this session, re-rendering that exact
  * message, is allowed to reach the database at all.
  *
- * What that gate costs when it leaks: sessions are in-memory with LRU
- * eviction (`boundedSessionStorage`, main.ts), so a process restart — every
- * deploy — or an evicted entry drops `paymentAnchorMsgId` while the database
- * anchor lives on. Case (b) then stops being detected for that chat and the
- * stale anchor survives until something takes the bubble over, which for an
- * order parked awaiting admin approval can be days. This is accepted because
- * of what is and isn't at risk: case (a) — the only one that can destroy
- * money, by pointing two orders at one bubble — is enforced entirely in the
- * database inside `setOrderPaymentMessage` and does not consult the session
- * at all. A leaked (b) can only let a poller or the settled-bubble sweeper
- * overwrite a menu screen the buyer navigated to. Annoying, re-renderable on
- * the next tap, and never a wrong payment address.
+ * What that gate costs when it leaks: session storage is Prisma-backed
+ * (`prismaSessionStorage`, util/prismaSessionStorage.ts) with TTL-based
+ * expiry rather than the old in-memory LRU `Map`, so `paymentAnchorMsgId`
+ * now survives a process restart — a deploy no longer reopens this gap by
+ * itself. It still expires on its own: `paymentAnchorMsgId` being set is one
+ * of the signals `prismaSessionStorage.ts`'s `classifySessionKind` uses to
+ * put a session in the "checkout" TTL bucket (see that file) — the longest
+ * configured payment window across every rail plus a 5-minute margin (35
+ * minutes at default config, deliberately never shorter than a payment that
+ * could still be legitimately pending), so a genuinely abandoned session
+ * still drops the stamp and reopens case (b) for it — just bounded to that
+ * window instead of "until the next restart or LRU eviction, which could be
+ * days." This is accepted because of what is and isn't at
+ * risk: case (a) — the only one that can destroy money, by pointing two
+ * orders at one bubble — is enforced entirely in the database inside
+ * `setOrderPaymentMessage` and does not consult the session at all. A leaked
+ * (b) can only let a poller or the settled-bubble sweeper overwrite a menu
+ * screen the buyer navigated to. Annoying, re-renderable on the next tap,
+ * and never a wrong payment address.
  */
 import { prisma, setOrderPaymentMessage, clearPaymentMessageAnchorsAt } from "@app/db";
 import { logger } from "@app/core/logger";

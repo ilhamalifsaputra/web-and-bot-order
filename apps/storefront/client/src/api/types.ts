@@ -3,6 +3,17 @@
 import type { ProductCardData } from "../components/shop/ProductCard";
 import type { FlashInfo } from "../components/shop/FlashBadge";
 
+/** Mirrors the server's ThumbnailKind union (apps/storefront/src/images.ts)
+ * verbatim — kept as a local alias rather than a cross-import since this
+ * file mirrors server-side shapes elsewhere too (see api/types.ts's own
+ * conventions) rather than taking server code as a client dependency. */
+export type ThumbnailKind = "game" | "voucher" | "steam" | "entertainment" | "app" | "generic";
+
+/** Mirrors the server's DenomIconKind union (apps/storefront/src/denomIcon.ts)
+ * verbatim — same local-alias convention as ThumbnailKind above. Drives the
+ * small currency chip DenominationCard renders, resolved once per product. */
+export type DenomIconKind = "diamond" | "coin" | "key" | "card" | "voucher";
+
 /** Signed-in customer as exposed to the client (display fields only — the
  * CSRF token travels via the shell's meta tag, never in JSON). */
 export interface CustomerInfo {
@@ -24,12 +35,11 @@ export interface Category {
   isActive: boolean;
 }
 
-/** Homepage category tile — a Category with `image` replaced by the resolved
- * display image (apps/storefront/src/pageData.ts homePageData()); home.njk
- * itself only reads emoji/slug/name, image is unused there. */
-export interface HomeCategory extends Omit<Category, "image"> {
-  image: string;
-}
+/** Homepage category tile — the raw Category shape (apps/storefront/src/
+ * pageData.ts homePageData()/categoriesPageData() no longer resolve any
+ * display image for it, Fase 12; the client never reads `image` here
+ * anyway — only emoji/slug/name/description). */
+export type HomeCategory = Category;
 
 /** Honest home-page figures (apps/storefront/src/pageData.ts) — currently
  * unused by home.njk's markup (the stats band was replaced by the static
@@ -133,6 +143,10 @@ export interface ProductDenomination {
   delivery_type: string;
   /** Parsed manual_with_info field spec — [] for auto/manual. */
   additional_fields: AdditionalField[];
+  /** Region-check Task C: admin-authored precautionary copy (Region-check
+   * Task B's `regionWarning` field), null when the admin hasn't set one.
+   * Rendered as an always-shown info Callout on InstantBuyPage.tsx. */
+  region_warning?: string | null;
 }
 
 /** A masked-author review on the product detail page — `created_at_display`
@@ -160,10 +174,23 @@ export interface ProductPageData {
     warranty_note: string | null;
     category_name: string;
     category_slug: string;
-    image: string;
+    /** The admin's real photo, or null (Fase 12: no more stock-photo
+     * fallback) — a null renders the DefaultThumb design-system placeholder,
+     * keyed by `image_kind`. */
+    image: string | null;
     /** WebP `srcset` for `image`, or null when no derivatives exist — see
      *  webpSrcset() in apps/storefront/src/images.ts. */
     image_srcset?: string | null;
+    /** Which DefaultThumb icon to show when `image` is null — mirrors the
+     * server-side ThumbnailKind union (apps/storefront/src/images.ts). Never
+     * absent, but typed nullable to tolerate an older/mocked payload. */
+    image_kind?: ThumbnailKind | null;
+    /** Which currency-chip icon DenominationCard should render for every
+     * plan of this product (resolved ONCE per product, not per-SKU — see
+     * apps/storefront/src/denomIcon.ts's `resolveDenomIconKind`), or null
+     * when no chip should render at all. Optional so an older/mocked payload
+     * still type-checks (same convention as `image_kind` above). */
+    icon_kind?: DenomIconKind | null;
     /** Aggregate rating across every denomination of this product — the same
      * weighted-average calculation ProductCard's `rating`/`rating_count`
      * come from (apps/storefront/src/cards.ts's `aggregateRating`), so this
@@ -172,6 +199,10 @@ export interface ProductPageData {
      * `reviews` below (which is limited to 10). */
     rating: number | null;
     rating_count: number;
+    /** Category.checkoutFlow (Task 6, Digiflazz instant-buy pilot): "instant"
+     * renders InstantBuyPage.tsx instead of this page's usual plan picker +
+     * Cart→Checkout hop. */
+    checkout_flow: "catalog" | "instant";
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;
@@ -396,6 +427,11 @@ export interface ShopContext {
   favicon_url: string;
   logo_url: string;
   bot_username: string;
+  /** WhatsApp number for the footer's contact link (`support_whatsapp`
+   * Setting), or null/empty when the shop hasn't set one — the footer hides
+   * the WhatsApp link entirely rather than show a dead one, same as
+   * HomePage's own contact section treats an absent number. */
+  wa_number: string | null;
   tzname: string;
   /** True only when `web_analytics_id` is set, i.e. this shop actually loads
    * Google Analytics. The privacy page reads it so it never claims tracking a
@@ -476,6 +512,24 @@ export interface OrderDetailData {
      * `credentials` instead). */
     delivered_content: string | null;
     items: OrderDetailItem[];
+    /** Buyer-safe Digiflazz dispatch sub-status. Final whole-branch review
+     * I-2 fix: the base GET now returns this directly (mapped, buyer-safe,
+     * from apiAccount.ts's own copy of the toBuyerStatus mapping), so it's
+     * populated from the very first fetch, not just once the digiflazz/
+     * stream SSE endpoint (Task 11) delivers its first push. The SSE push
+     * is a pure latency optimization layered on top of an already-complete
+     * value — same pattern the plan intended everywhere else — not the only
+     * source for it. "pending" = still being processed with the supplier;
+     * "reviewing" = the automated attempt didn't resolve and our team is
+     * following up (the calm, never-alarming buyer-facing framing for
+     * what's internally a terminal dispatch failure — see
+     * web.digiflazz_failed_* in packages/core/locales). Never the raw
+     * internal digiflazzStatus value or any diagnostic text — both
+     * apiAccount.ts and apiOrderDigiflazzStream.ts already enforce that
+     * mapping server-side, this field's type is just documenting that
+     * guarantee on the client side too. Still optional in the type
+     * (harmless) so an older/mocked payload without it still type-checks. */
+    digiflazz_status?: "pending" | "reviewing" | null;
   };
   delivered: boolean;
   pending_payment: boolean;
@@ -529,10 +583,43 @@ export interface SupportTicketSummary {
   admin_reply: string | null;
   /** Evidence uploaded with the ticket — `/uploads/tickets/...` URLs. */
   attachments: string[];
+  /** New (Task 11): the ticket's subject/title — null for legacy rows created
+   * before this field existed. */
+  subject: string | null;
+  /** New (Task 11): the linked order's code, when this row came from the paged
+   * /account/support?… query (listUserTicketsPaged). Always null on rows from
+   * the plain (no-query-param) GET /account/support call. */
+  order_code: string | null;
+  /** New (Task 11): same paged-only availability as order_code. */
+  product_name: string | null;
+  /** New (Task 11): ISO timestamp of the ticket's most recent activity. */
+  updated_at_iso: string;
+}
+
+export interface SupportTicketStats {
+  all: number;
+  waiting_for_you: number;
+  waiting_for_support: number;
+  in_progress: number;
+  resolved: number;
+  closed: number;
 }
 
 export interface SupportData {
   tickets: SupportTicketSummary[];
+  /** Present only when GET /account/support was called with any list-control
+   * query param. */
+  total?: number;
+  page?: number;
+  page_size?: number;
+  stats?: SupportTicketStats;
+}
+
+/** GET /api/v1/account/support/new — form-bootstrap for the /help create
+ * form's Product dropdown. The create POST (/account/support/new) answers
+ * `{ ok: boolean; ticket_id: number | null; duplicate?: boolean }`. */
+export interface SupportFormOptions {
+  products: { id: number; name: string }[];
 }
 
 /** A single message on the ticket thread (either side). */

@@ -8,11 +8,13 @@ import { config } from "@app/core/config";
 import {
   OrderKind,
   OrderStatus,
+  OrderItemStatus,
   StockStatus,
   UserRole,
   DeliveryType,
   langCode,
 } from "@app/core/enums";
+import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -28,6 +30,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -54,7 +57,53 @@ import {
   enqueueBuyerOrderReadyEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
-import { transitionOrderStatus } from "./orderStatus";
+import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+
+/**
+ * Thrown by `createOrderDirect`/`createOrderFromCart` when the caller-supplied
+ * `checkoutIntentId` collides with one already stamped on another `Order` row
+ * — the atomic, DB-enforced counterpart to the bot's best-effort
+ * `refuseDuplicateCheckout` check (apps/order-bot/src/handlers/checkout.ts):
+ * two near-simultaneous "Buy Now" taps for the same checkout attempt race to
+ * insert an `Order` with the same `checkoutIntentId`; the `orders.checkout_
+ * intent_id` unique index lets exactly one INSERT win, and the loser's
+ * `db.order.create` rejects with a Postgres unique-violation (P2002) instead
+ * of silently creating a second order.
+ *
+ * Deliberately thrown rather than caught-and-recovered inside this function
+ * (contrast `idempotency.ts`'s `saveIdempotentResponse`, which swallows its
+ * own collision): every existing caller wraps `createOrderDirect`/
+ * `createOrderFromCart` in an outer `prisma.$transaction(async (tx) => ...)`
+ * that keeps using `tx` afterward (e.g. `finalizeOrderPayment`). Once one
+ * query on a Postgres transaction fails, the WHOLE transaction is aborted —
+ * any further query on that same `tx`, even a harmless read, fails with
+ * "current transaction is aborted" — so recovering inside this function would
+ * only trade one error for a more confusing one the instant the caller's
+ * `$transaction` callback does anything else with `tx`. Throwing instead lets
+ * Prisma roll the doomed transaction back cleanly; the caller catches this
+ * error class OUTSIDE the failed `$transaction` call and decides the UX from
+ * there (checkout.ts's buyNow* handlers show the same "duplicate pending"
+ * toast `refuseDuplicateCheckout` already uses — see its doc comment).
+ */
+export class DuplicateCheckoutIntentError extends Error {
+  constructor(public readonly checkoutIntentId: string) {
+    super(`checkoutIntentId "${checkoutIntentId}" already has an order — refusing to create a second one`);
+    this.name = "DuplicateCheckoutIntentError";
+  }
+}
+
+/**
+ * Look up the order a given `checkoutIntentId` already created — for a
+ * `DuplicateCheckoutIntentError` catch site that wants to know more about the
+ * existing order than "it exists" (today's bot UX doesn't need this; it's
+ * exported for future consumers, e.g. Task 2/3's payment-rail wiring). Pass
+ * the top-level `prisma` client, not the `tx` whose transaction just failed —
+ * see `DuplicateCheckoutIntentError`'s doc comment for why that transaction
+ * can no longer run any query.
+ */
+export function getOrderByCheckoutIntentId(db: Db, checkoutIntentId: string) {
+  return db.order.findUnique({ where: { checkoutIntentId } });
+}
 
 const ZERO = new Decimal(0);
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -246,6 +295,82 @@ export async function releaseGatewaySlot(db: Db, orderId: number, sentinel: stri
   });
 }
 
+/**
+ * Atomically switch which payment rail an Order is currently quoting: sets
+ * `paymentMethod` to the new rail and clears `paymentRef` (so the new rail's
+ * own `claimGatewaySlot` starts from the same null precondition a brand-new
+ * order would). The crud-layer entry point `changePaymentRail`
+ * (apps/order-bot/src/handlers/checkout.ts) calls instead of writing to
+ * `Order` directly.
+ *
+ * The write is a compare-and-swap, the same idiom `claimGatewaySlot` above
+ * uses, because the caller's status/ownership checks necessarily read the
+ * order BEFORE opening the transaction that switches it — and a payment
+ * confirmation can land in that window. The `updateMany`'s `where` therefore
+ * pins two things at once:
+ *
+ *  - `status` to `expectedStatus` — the caller's belief about where the order
+ *    was. A reconciler/webhook that moved it to PAID (or an expiry sweep that
+ *    cancelled it) in the meantime makes this no longer match, so the switch
+ *    is rejected rather than stamping a rail the buyer never paid onto an
+ *    order that just settled.
+ *  - `paymentRef` to the exact value this call itself just read. A lazy
+ *    gateway-invoice claim (`claimGatewaySlot`) or commit
+ *    (`commitGatewayResult`) landing mid-switch changes that column, and
+ *    nulling it out from under an in-flight gateway call would orphan the
+ *    invoice the gateway is about to return.
+ *
+ * Postgres row-locking is what makes this actually airtight rather than
+ * merely narrow: a concurrent writer holding the row makes this UPDATE wait,
+ * and Postgres then re-evaluates the WHERE against the row as that writer
+ * left it — so `count` comes back 0 instead of clobbering the winner's work.
+ *
+ * Throws `error.order_not_pending` when the guard doesn't hold — the same key
+ * `changePaymentRail`'s own pre-check already surfaces to the buyer, since a
+ * guard failure is the same "this order moved on you" situation, just caught
+ * atomically instead of via a stale read.
+ *
+ * Note this guards the ORDER row only. Two rail changes racing on an order
+ * whose `paymentRef` is already null can both satisfy the guard (neither
+ * changes a pinned column's value); what keeps that pair from opening two
+ * live payment attempts is `Payment.pendingOrderId`'s unique claim in the
+ * caller's same transaction (packages/db/src/crud/payments.ts), which lets
+ * exactly one `createPaymentAttempt` win and rolls the loser's Order write
+ * back with it.
+ *
+ * Returns the order's `paymentRef` exactly as it stood immediately before
+ * this call cleared it. That string is the reconciliation matching key every
+ * rail's webhook/poller reads (binanceInternal.ts's `byRef` map,
+ * amountMatching.ts's transfer-note match, nowpaymentsReconcile.ts's invoice
+ * id), so the caller must not simply drop it: hand it to
+ * `expirePaymentAttempt`'s `reference` argument, and the retiring ledger row
+ * keeps a record of what the old rail quoted.
+ */
+export async function setOrderPaymentRail(
+  db: Db,
+  args: { orderId: number; method: string; expectedStatus: string },
+): Promise<{ previousPaymentRef: string | null }> {
+  const current = await db.order.findUnique({
+    where: { id: args.orderId },
+    select: { paymentRef: true },
+  });
+  if (!current) throw new ValidationError("error.order_not_found");
+
+  const claimed = await db.order.updateMany({
+    where: { id: args.orderId, status: args.expectedStatus, paymentRef: current.paymentRef },
+    data: { paymentMethod: args.method, paymentRef: null },
+  });
+  if (claimed.count !== 1) {
+    // The order was deleted, its status moved off `expectedStatus`, or its
+    // paymentRef changed under us — one error for all three, because each
+    // means the same thing to the caller: the order this switch was decided
+    // against no longer exists in that shape, so re-read it and decide again.
+    throw new ValidationError("error.order_not_pending");
+  }
+
+  return { previousPaymentRef: current.paymentRef };
+}
+
 /** Fields of the linked buyer surfaced through Order's `user` relation.
  * web-admin's Orders and Payments pages spread the whole order object
  * straight into JSON (list/detail/CSV export, and the underpaid/pending-
@@ -354,8 +479,39 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
   throw new Error("Could not generate a unique order code");
 }
 
-export function getOrder(db: Db, orderId: number) {
-  return db.order.findUnique({ where: { id: orderId }, include: fullInclude });
+/**
+ * Decrypts `item.stockItem.credentials` in place on an order fetched with
+ * `fullInclude` — `StockItem.credentials` is encrypted at rest (Task 2, see
+ * @app/core/credentialCrypto). This is the single choke point: every caller
+ * of getOrder/getOrderByCodeFull/listUserDeliveredOrders (buyer-facing order
+ * detail in the bot and storefront, the account-file DM builders, the
+ * web-admin order detail page) reads `stockItem.credentials` expecting
+ * plaintext, and all of them ultimately source the row from one of these
+ * three functions. Returns `order` unchanged if it's null (not-found) or has
+ * no items with stock attached — cheap no-op for every non-manual-account
+ * order kind.
+ */
+function withDecryptedStockCredentials<T extends { items: Array<{ stockItem: { credentials: string } | null }> }>(
+  order: T,
+): T {
+  // Cast at the end, not the object literal itself: TypeScript can't verify
+  // a spread literal satisfies an unconstrained generic T even when it's
+  // structurally identical apart from one string field's value — the shape
+  // (item/stockItem fields, array length) is unchanged, only
+  // stockItem.credentials's runtime value is.
+  return {
+    ...order,
+    items: order.items.map((item) =>
+      item.stockItem
+        ? { ...item, stockItem: { ...item.stockItem, credentials: decryptCredentials(item.stockItem.credentials) } }
+        : item,
+    ),
+  } as T;
+}
+
+export async function getOrder(db: Db, orderId: number) {
+  const order = await db.order.findUnique({ where: { id: orderId }, include: fullInclude });
+  return order ? withDecryptedStockCredentials(order) : order;
 }
 
 export function getOrderByCode(db: Db, orderCode: string) {
@@ -367,12 +523,35 @@ export function getOrderByCode(db: Db, orderCode: string) {
 
 /** By code with the full include (items+stockItem+product, user, voucher) —
  * storefront order detail needs stockItem.credentials for DELIVERED orders. */
-export function getOrderByCodeFull(db: Db, orderCode: string) {
-  return db.order.findUnique({ where: { orderCode }, include: fullInclude });
+export async function getOrderByCodeFull(db: Db, orderCode: string) {
+  const order = await db.order.findUnique({ where: { orderCode }, include: fullInclude });
+  return order ? withDecryptedStockCredentials(order) : order;
 }
 
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
 type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
+
+/** The amount actually received for an UNDERPAID order, regardless of which
+ *  amount-matching rail flagged it. Binance Internal writes its ledger row to
+ *  `processedBinanceTx`; Bybit AND Bybit BSC share `processedBybitTx` (one
+ *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment);
+ *  the three QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share
+ *  `qrisUnderpaidTx`, written by `markOrderUnderpaid` (crud/orderStatus.ts).
+ *  Checks all three; at most one will ever have a matching row for a given
+ *  order. Each candidate is tested on its own nullable amount column rather
+ *  than falling through on the row as a whole, so a row that exists but
+ *  records no amount cannot mask a later table that does record one. */
+export async function findUnderpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
+  const [binance, bybit, qris] = await Promise.all([
+    db.processedBinanceTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
+    db.processedBybitTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
+    db.qrisUnderpaidTx.findFirst({ where: { orderId } }),
+  ]);
+  if (binance?.amount != null) return new Decimal(binance.amount);
+  if (bybit?.amount != null) return new Decimal(bybit.amount);
+  if (qris?.receivedAmount != null) return new Decimal(qris.receivedAmount);
+  return null;
+}
 
 export async function createOrderFromCart(
   db: Db,
@@ -383,6 +562,13 @@ export async function createOrderFromCart(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
     customerData?: string | null;
+    /** Client-minted UUID identifying one checkout attempt (Task A1) — stamped
+     * on the created Order under a DB-enforced unique constraint, so two
+     * concurrent calls with the SAME value can never both create an order.
+     * Omit for callers that don't need this guard (existing behavior,
+     * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
+     * contract. */
+    checkoutIntentId?: string | null;
   },
 ) {
   // Only lines whose product is still active are eligible to become an order
@@ -513,22 +699,35 @@ export async function createOrderFromCart(
   }
 
   // 6. Persist order shell (need id for unique cents)
-  const order = await db.order.create({
-    data: {
-      orderCode,
-      userId: args.user.id,
-      subtotalAmount: q4(subtotal),
-      bulkDiscountAmount: q4(bulkDiscount),
-      discountAmount: q4(discount),
-      walletUsed,
-      uniqueCents: ZERO,
-      totalAmount: ZERO,
-      voucherId: voucher ? voucher.id : null,
-      status: OrderStatus.PENDING_PAYMENT,
-      customerData: customerDataToStore,
-      expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
-    },
-  });
+  let order;
+  try {
+    order = await db.order.create({
+      data: {
+        orderCode,
+        userId: args.user.id,
+        subtotalAmount: q4(subtotal),
+        bulkDiscountAmount: q4(bulkDiscount),
+        discountAmount: q4(discount),
+        walletUsed,
+        uniqueCents: ZERO,
+        totalAmount: ZERO,
+        voucherId: voucher ? voucher.id : null,
+        status: OrderStatus.PENDING_PAYMENT,
+        customerData: customerDataToStore,
+        expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
+        checkoutIntentId: args.checkoutIntentId ?? null,
+      },
+    });
+  } catch (e) {
+    // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
+    // genuine checkoutIntentId collision (nothing else this INSERT can violate
+    // is caller-suppliable at this point — orderCode was just freshly minted
+    // as unique above), and only when the caller opted into the guard.
+    if (args.checkoutIntentId && isUniqueViolation(e)) {
+      throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
+    }
+    throw e;
+  }
 
   // 7. Pre-check every AUTO line's availability before reserving anything, so
   // the common "you asked for more than we have" case fails before any row is
@@ -587,6 +786,11 @@ export async function createOrderFromCart(
         unitPrice: unit,
         warrantyDaysSnapshot: warrantyDays,
         deliveryTypeSnapshot: ci.product.deliveryType,
+        // Every new line starts PENDING (unpaid). Written explicitly rather
+        // than left to a column default so that null keeps meaning exactly one
+        // thing — "row predates this column" — see OrderItem.status in
+        // schema.prisma.
+        status: OrderItemStatus.PENDING,
       });
     }
   }
@@ -639,6 +843,13 @@ export async function createOrderDirect(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
     customerData?: string | null;
+    /** Client-minted UUID identifying one checkout attempt (Task A1) — stamped
+     * on the created Order under a DB-enforced unique constraint, so two
+     * concurrent calls with the SAME value can never both create an order.
+     * Omit for callers that don't need this guard (existing behavior,
+     * unchanged); see {@link DuplicateCheckoutIntentError} for the collision
+     * contract. */
+    checkoutIntentId?: string | null;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -731,22 +942,35 @@ export async function createOrderDirect(
     customerDataToStore = JSON.stringify(validateCustomerData(fields, parsedAnswers, args.quantity));
   }
 
-  const order = await db.order.create({
-    data: {
-      orderCode,
-      userId: args.user.id,
-      subtotalAmount: subtotal,
-      bulkDiscountAmount: bulkDiscount,
-      discountAmount: voucherDiscount,
-      voucherId: voucher ? voucher.id : null,
-      walletUsed: ZERO,
-      uniqueCents: ZERO,
-      totalAmount: ZERO,
-      status: OrderStatus.PENDING_PAYMENT,
-      customerData: customerDataToStore,
-      expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
-    },
-  });
+  let order;
+  try {
+    order = await db.order.create({
+      data: {
+        orderCode,
+        userId: args.user.id,
+        subtotalAmount: subtotal,
+        bulkDiscountAmount: bulkDiscount,
+        discountAmount: voucherDiscount,
+        voucherId: voucher ? voucher.id : null,
+        walletUsed: ZERO,
+        uniqueCents: ZERO,
+        totalAmount: ZERO,
+        status: OrderStatus.PENDING_PAYMENT,
+        customerData: customerDataToStore,
+        expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
+        checkoutIntentId: args.checkoutIntentId ?? null,
+      },
+    });
+  } catch (e) {
+    // See DuplicateCheckoutIntentError's doc comment: only ever raised for a
+    // genuine checkoutIntentId collision (nothing else this INSERT can violate
+    // is caller-suppliable at this point — orderCode was just freshly minted
+    // as unique above), and only when the caller opted into the guard.
+    if (args.checkoutIntentId && isUniqueViolation(e)) {
+      throw new DuplicateCheckoutIntentError(args.checkoutIntentId);
+    }
+    throw e;
+  }
 
   // Reserve stock atomically per unit for AUTO (Checkout-2/Stock-1 fix — see
   // createOrderFromCart's matching loop for the full rationale); MANUAL creates
@@ -769,6 +993,9 @@ export async function createOrderDirect(
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
         deliveryTypeSnapshot: product.deliveryType,
+        // Same as createOrderFromCart's loop — explicit PENDING, never a
+        // column default.
+        status: OrderItemStatus.PENDING,
       },
     });
   }
@@ -902,13 +1129,14 @@ export function countUserPendingOrders(db: Db, userId: number) {
   });
 }
 
-export function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
-  return db.order.findMany({
+export async function listUserDeliveredOrders(db: Db, userId: number, limit = 50) {
+  const orders = await db.order.findMany({
     where: { userId, status: OrderStatus.DELIVERED },
     orderBy: { createdAt: "desc" },
     take: limit,
     include: { items: { include: { product: true, stockItem: true } } },
   });
+  return orders.map(withDecryptedStockCredentials);
 }
 
 export async function attachPaymentProof(
@@ -1325,6 +1553,22 @@ export async function approveOrder(
     data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
   });
 
+  // Per-item shadow of the claim above (Trustance Phase 1, Task 3). Placed
+  // HERE, immediately behind the atomic claim, rather than in settlePaidOrder's
+  // AUTO branch, for two reasons: it lands inside the same transaction as the
+  // order-level DELIVERED write (so the two can never diverge, and a throw
+  // below — e.g. out of stock — rolls both back together), and it covers the
+  // callers that reach approveOrder without going through settlePaidOrder.
+  //
+  // Every item, one value: this function delivers the order as a whole, so a
+  // split outcome is not representable here. Making items resolve
+  // independently is a later plan's job — see OrderItem.status in
+  // schema.prisma.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.DELIVERED },
+  });
+
   const credentials: string[] = [];
 
   for (const item of order.items) {
@@ -1346,7 +1590,14 @@ export async function approveOrder(
       where: { id: stock.id },
       data: { status: StockStatus.SOLD, soldAt: now },
     });
-    credentials.push(stock.credentials);
+    // `stock` may already be plaintext here (when it came from `order.items`,
+    // which getOrder above already decrypted) or still be the raw encrypted
+    // envelope (the `replacement` branch just above, fetched straight off
+    // Prisma via allocateOneAvailableStock, bypassing getOrder). decryptCredentials
+    // is safe either way: a plaintext account string never happens to parse
+    // as our envelope JSON, so decrypting an already-plaintext value is a
+    // documented no-op (see its own doc comment).
+    credentials.push(decryptCredentials(stock.credentials));
   }
 
   await db.order.update({
@@ -1646,7 +1897,7 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
  * in both callers, so a lost race can't reach it twice (referral is itself
  * gated on "referee's first delivered order").
  */
-async function finalizeDeliverySideEffects(
+export async function finalizeDeliverySideEffects(
   db: Db,
   order: OrderWithIncludes,
   now: Date,
@@ -1740,6 +1991,81 @@ async function maybeEnqueueBulkPurchaseBroadcast(db: Db, order: OrderWithInclude
 }
 
 /**
+ * Bring `Order.status` into agreement with the statuses of its `OrderItem`
+ * rows (Trustance Phase 1, Task 3).
+ *
+ * ## Today this provably does nothing
+ *
+ * Call it and it returns `null` — every time, for every order this codebase can
+ * create. That is not an accident, it is the acceptance criterion for the task
+ * that added it. The cart composition rule (@app/core/cartComposition) keeps
+ * every order homogeneous; `settlePaidOrder`, `approveOrder` and
+ * `fulfillManualOrder` each write one status to every item of an order in the
+ * same transaction as the order-level status write; so the derived status is
+ * always the status the order already has, which
+ * `deriveOrderStatusFromItems` reports as "nothing to change".
+ * `orderItemStatus.test.ts` (packages/db/src/crud) asserts exactly this for
+ * every order shape, including that PARTIALLY_DELIVERED never comes out.
+ *
+ * It is wired into `settlePaidOrder` and `fulfillManualOrder` anyway, at the
+ * points where those functions have just written a status, so the no-op is
+ * continuously exercised rather than merely asserted once — if a future change
+ * ever makes items disagree with their order, that shows up here immediately
+ * instead of at the next audit.
+ *
+ * ## When it does start doing something
+ *
+ * A later plan loosens cart mixing so lines resolve independently; at that
+ * point a genuinely split order becomes representable and this is what folds
+ * the per-line outcomes back into one order-level status, including
+ * PARTIALLY_DELIVERED.
+ *
+ * ## Deliberate safety properties
+ *
+ * - It goes through `transitionOrderStatus`, so it inherits the legality table
+ *   and the atomic claim; it can never overwrite an order that moved on
+ *   underneath it, and it can never invent a structurally impossible move.
+ * - A derivation it is not sure about is not a derivation: a legacy null item
+ *   status, an item still in flight, or an order with no items all yield
+ *   `null`. See `deriveOrderStatusFromItems`.
+ * - A lost race is benign (another writer got there first), so this uses the
+ *   `try` variant and reports the outcome rather than throwing into a caller
+ *   whose real work already succeeded.
+ *
+ * @returns the status it wrote, or `null` when it left the order alone.
+ */
+export async function recomputeOrderStatus(db: Db, orderId: number): Promise<string | null> {
+  const order = await db.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, orderCode: true, status: true, items: { select: { status: true } } },
+  });
+  if (!order) return null;
+
+  const derived = deriveOrderStatusFromItems(
+    order.items.map((it) => it.status),
+    order.status,
+  );
+  if (derived === null) return null;
+
+  // Reaching here today means an item's status disagrees with its order's,
+  // which the invariants above say cannot happen — so say so loudly rather
+  // than silently repairing it and losing the evidence.
+  logger.warn(
+    `Order ${order.orderCode} had a status (${order.status}) that disagreed with the outcomes recorded on its own line items, ` +
+      `which is not supposed to be reachable yet — recomputing it to ${derived}. ` +
+      `Something wrote OrderItem.status without writing the matching Order.status in the same transaction; ` +
+      `check the most recent change to settlePaidOrder/approveOrder/fulfillManualOrder.`,
+  );
+  const applied = await tryTransitionOrderStatus(db, {
+    orderId,
+    from: order.status,
+    to: derived,
+    meta: "recomputed from line-item outcomes",
+  });
+  return applied ? derived : null;
+}
+
+/**
  * Payment-confirmation entry point — the single place the auto-vs-manual
  * delivery branch lives. Every payment rail (and the human-admin approve
  * actions) call this instead of approveOrder directly, and send credentials
@@ -1752,6 +2078,11 @@ async function maybeEnqueueBulkPurchaseBroadcast(db: Db, order: OrderWithInclude
  *
  * The order must already be at PENDING_VERIFICATION (callers do the
  * PENDING_PAYMENT → PENDING_VERIFICATION transition first, exactly as before).
+ *
+ * Trustance Phase 1 Task 3 added per-item `OrderItem.status` writes inside each
+ * branch. It did NOT change which branch runs: the order-wide `isManual`
+ * boolean below is untouched, and the item statuses are a shadow of whichever
+ * branch it selects, never an input to it.
  */
 export type SettleResult =
   | { kind: "delivered"; order: OrderWithIncludes; credentials: string[] }
@@ -1843,6 +2174,13 @@ export async function settlePaidOrder(
     // order is ready" is true here; the MANUAL branch below is NOT ready yet
     // and must not send it (fulfillManualOrder does, when it really is).
     await enqueueBuyerOrderReadyEmailIfGuest(db, order);
+    // Consistency check, not a state change: approveOrder just wrote DELIVERED
+    // to the order AND to every one of its items, so this derives DELIVERED,
+    // sees the order already has it, and returns null without touching
+    // anything. Kept in the hot path so that stays continuously true rather
+    // than true-as-of-the-last-review. `result.order` is deliberately NOT
+    // re-fetched afterwards — there is nothing to re-fetch.
+    await recomputeOrderStatus(db, orderId);
     return { kind: "delivered", order: result.order, credentials: result.credentials };
   }
 
@@ -1853,6 +2191,16 @@ export async function settlePaidOrder(
     from: OrderStatus.PENDING_VERIFICATION,
     to: OrderStatus.PROCESSING,
     meta: `awaiting manual fulfilment (admin_id=${args.adminId})`,
+  });
+  // Per-item shadow of the PROCESSING transition above (Trustance Phase 1,
+  // Task 3): the order is paid and now sitting in the hand-fulfilment queue, so
+  // every line is QUEUED. Same transaction as the order-level write, and — as
+  // in the AUTO branch — one value for every item, because this branch decided
+  // the outcome for the whole order. Note the branch itself is UNCHANGED: the
+  // `isManual` split above still reads order-wide, exactly as before.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.QUEUED },
   });
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
@@ -1884,6 +2232,10 @@ export async function settlePaidOrder(
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
   );
+  // Same consistency check as the AUTO branch. Every item is QUEUED, which is
+  // an in-flight state, so the derivation declines and the order keeps the
+  // PROCESSING it was just given.
+  await recomputeOrderStatus(db, orderId);
   const refreshed = await getOrder(db, orderId);
   return { kind: "processing", order: refreshed!, credentials: [] };
 }
@@ -1917,6 +2269,14 @@ export async function fulfillManualOrder(
   await db.orderStatusHistory.create({
     data: { orderId, status: OrderStatus.DELIVERED, meta: `manual_fulfill by admin_id=${args.adminId}` },
   });
+  // Per-item shadow of the claim above (Trustance Phase 1, Task 3): the admin
+  // hand-delivered the order, so every line moves QUEUED -> DELIVERED. Behind
+  // the atomic claim, so a lost double-tap race (claim.count !== 1 throws
+  // above) never reaches it.
+  await db.orderItem.updateMany({
+    where: { orderId },
+    data: { status: OrderItemStatus.DELIVERED },
+  });
 
   await finalizeDeliverySideEffects(db, order, now);
 
@@ -1945,6 +2305,10 @@ export async function fulfillManualOrder(
   });
 
   logger.info(`Manually fulfilled order ${order.orderCode} by admin ${args.adminId}`);
+  // Same consistency check as settlePaidOrder's two branches: the claim above
+  // wrote DELIVERED to the order and to every item, so this derives DELIVERED,
+  // finds it already set, and changes nothing.
+  await recomputeOrderStatus(db, orderId);
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed! };
 }
@@ -2042,7 +2406,7 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
   }
   if (f.userId != null) where.userId = f.userId;
-  if (f.orderCode) where.orderCode = { contains: f.orderCode.trim() };
+  if (f.orderCode) where.orderCode = { contains: f.orderCode.trim(), mode: "insensitive" };
   if (f.paymentMethod) where.paymentMethod = f.paymentMethod;
   if (f.voucherId != null) where.voucherId = f.voucherId;
   if (f.ids != null) where.id = { in: f.ids };
@@ -2055,21 +2419,22 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     const term = f.q.trim();
     const cleanTerm = term.replace(/^#/, "").trim();
     const or: Prisma.OrderWhereInput[] = [
-      { orderCode: { contains: term } },
-      { user: { username: { contains: term } } },
-      { user: { fullName: { contains: term } } },
-      { user: { loginUsername: { contains: term } } },
-      { user: { email: { contains: term } } },
+      { orderCode: { contains: term, mode: "insensitive" } },
+      { user: { username: { contains: term, mode: "insensitive" } } },
+      { user: { fullName: { contains: term, mode: "insensitive" } } },
+      { user: { loginUsername: { contains: term, mode: "insensitive" } } },
+      { user: { email: { contains: term, mode: "insensitive" } } },
       // Guest buyers have no username/fullName/loginUsername/email — only
       // guestEmail — and Task 7 now shows that address in the Customer
       // column, so pasting it back into this search box has to find the
-      // order. Same `contains` shape as the other identity fields above, so
-      // it inherits the same (SQLite-default) case-insensitivity.
-      { user: { guestEmail: { contains: term } } },
-      { items: { some: { product: { name: { contains: term } } } } },
+      // order. Same `contains` shape as the other identity fields above,
+      // explicit `mode: "insensitive"` for Postgres (SQLite's `contains`
+      // was case-insensitive by default; Postgres needs it spelled out).
+      { user: { guestEmail: { contains: term, mode: "insensitive" } } },
+      { items: { some: { product: { name: { contains: term, mode: "insensitive" } } } } },
     ];
     if (cleanTerm !== term) {
-      or.push({ orderCode: { contains: cleanTerm } });
+      or.push({ orderCode: { contains: cleanTerm, mode: "insensitive" } });
     }
     if (/^\d+$/.test(cleanTerm)) {
       const num = Number(cleanTerm);

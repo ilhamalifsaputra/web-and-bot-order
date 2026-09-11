@@ -73,7 +73,12 @@ describe("SearchPage", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(300);
-    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=budi")));
+    await vi.waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("q=budi"),
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
     vi.useRealTimers();
   });
 

@@ -19,6 +19,7 @@ export {
   formatUsdtAmount,
   usdtFromIdr,
 } from "@app/core/formatters";
+export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
 
 /**
  * Catalog price display (plan.md §15.6): the central Rupiah price with the

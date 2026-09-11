@@ -151,9 +151,50 @@ describe("DenominationEditPage", () => {
         description: "Shared profile",
         sortOrder: 5,
         deliveryType: "auto",
+        // Task 7: nicknameCheckGameCode is always sent on an edit (unlike
+        // create) — see DenominationEditPage.tsx's submit payload — so an
+        // admin can clear a previously-set value by blanking the field, not
+        // just set one. This fixture never touched the field, so it's null.
+        nicknameCheckGameCode: null,
+        // Region-check Task B: regionWarning/expectedRegionCode follow the
+        // same always-sent-on-edit convention as nicknameCheckGameCode above.
+        regionWarning: null,
+        expectedRegionCode: null,
+        // Task 14: qtyValue/qtyUnit follow the same always-sent-on-edit
+        // convention — this fixture never touched them, so both are null.
+        qtyValue: null,
+        qtyUnit: null,
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
+  });
+
+  // Task 14: qtyValue/qtyUnit round-trip through prefill and submit.
+  it("prefills qtyValue/qtyUnit from the loaded denomination and submits them", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        name: "Netflix Premium",
+        denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], qtyValue: 86, qtyUnit: "Diamonds" }],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("86")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Diamonds")).toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(apiPatch).toHaveBeenCalledWith(
+        "/api/catalog/denominations/10",
+        expect.objectContaining({ qtyValue: 86, qtyUnit: "Diamonds" }),
+      ),
+    );
   });
 
   it("submits a manual_with_info edit with the prefilled additionalFields as a raw array (not a JSON string)", async () => {
@@ -185,6 +226,53 @@ describe("DenominationEditPage", () => {
     );
   });
 
+  it("switching Delivery Type away from 'Manual + buyer info required' drops autoDeliverySource/supplierSku from the submitted payload", async () => {
+    // Regression coverage for the client half of the fix in 024fec6: the
+    // backend routes independently re-derive/strip autoDeliverySource and
+    // supplierSku when deliveryType isn't manual_with_info, so this isn't a
+    // live data-integrity bug — but DeliveryTypeSection's selectMethod
+    // handler is what's supposed to reset this state on the client, and
+    // nothing exercised it before this test.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        name: "Netflix Premium",
+        denominations: [
+          {
+            ...PRODUCT_DETAIL.product.denominations[0],
+            deliveryType: "manual_with_info",
+            additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS),
+            autoDeliverySource: "digiflazz",
+            supplierSku: "mlbb86",
+          },
+        ],
+      },
+    });
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    // Sanity check the fixture actually prefilled Step 4 with Digiflazz.
+    expect(screen.getByRole("radio", { name: /^digiflazz/i })).toBeChecked();
+    expect(screen.getByDisplayValue("mlbb86")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: /^automatic delivery/i }));
+    // Step 4 (and Steps 2/3) are gone now that deliveryType is back to "auto".
+    expect(screen.queryByRole("radio", { name: /^digiflazz/i })).not.toBeInTheDocument();
+
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledTimes(1));
+    const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
+    expect(sentBody).not.toHaveProperty("autoDeliverySource");
+    expect(sentBody).not.toHaveProperty("supplierSku");
+    expect(sentBody).not.toHaveProperty("additionalFields");
+    expect(sentBody.deliveryType).toBe("auto");
+  });
+
   it("changing Delivery Type to Manual -> Require buyer information requires at least one field before saving", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
@@ -199,6 +287,34 @@ describe("DenominationEditPage", () => {
 
     await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
     expect(btn).toBeDisabled();
+  });
+
+  // Task 12: DeliveryTypeSection's legacy-field note, driven by the parent
+  // Product's Linked Game (Task 10's Product.gameId) — a UI hint only, shown
+  // near the nicknameCheckGameCode/expectedRegionCode fields, which only
+  // render once deliveryType is manual_with_info (same requiresInfo gate the
+  // fields themselves use).
+  const NOTE_TEXT = /this product uses the new game-based nickname check/i;
+
+  it("shows the Game-based nickname check note when the parent product has a Linked Game", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: { ...MANUAL_WITH_INFO_PRODUCT_DETAIL.product, gameId: 5 },
+    });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    // Rendered twice — once near nicknameCheckGameCode, once near expectedRegionCode.
+    expect(screen.getAllByText(NOTE_TEXT)).toHaveLength(2);
+  });
+
+  it("does not show the Game-based nickname check note when the parent product has no Linked Game", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: { ...MANUAL_WITH_INFO_PRODUCT_DETAIL.product, gameId: null },
+    });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.queryByText(NOTE_TEXT)).not.toBeInTheDocument();
   });
 
   it("shows an error message when saving fails", async () => {

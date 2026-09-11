@@ -37,6 +37,14 @@ interface EditableDenomination {
   sortOrder: number;
   deliveryType: string;
   additionalFields: string | null;
+  autoDeliverySource: string | null;
+  supplierSku: string | null;
+  nicknameCheckGameCode: string | null;
+  regionWarning: string | null;
+  expectedRegionCode: string | null;
+  /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
+  qtyValue: number | null;
+  qtyUnit: string | null;
 }
 
 /** Parses a denomination's stored additionalFields JSON into editable
@@ -66,6 +74,9 @@ interface ProductDetailForEdit {
     name: string;
     category: { id: number; name: string } | null;
     denominations: EditableDenomination[];
+    /** Task 10/12: the parent Product's Linked Game (null until an admin
+     * links one) — drives DeliveryTypeSection's legacy-field note below. */
+    gameId?: number | null;
   };
   statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
 }
@@ -118,6 +129,15 @@ export function DenominationEditPage() {
   const [moveToProductId, setMoveToProductId] = useState<string | null>(null);
   const [deliveryType, setDeliveryType] = useState("auto");
   const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
+  const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
+  const [supplierSku, setSupplierSku] = useState("");
+  const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
+  const [regionWarning, setRegionWarning] = useState("");
+  const [expectedRegionCode, setExpectedRegionCode] = useState("");
+  // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
+  // every other field on this form.
+  const [qtyValue, setQtyValue] = useState("");
+  const [qtyUnit, setQtyUnit] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -139,6 +159,13 @@ export function DenominationEditPage() {
     setMoveToProductId(productId ?? null);
     setDeliveryType(denomination.deliveryType || "auto");
     setAdditionalFields(parseStoredAdditionalFields(denomination.additionalFields));
+    setAutoDeliverySource(denomination.autoDeliverySource ?? null);
+    setSupplierSku(denomination.supplierSku ?? "");
+    setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
+    setRegionWarning(denomination.regionWarning ?? "");
+    setExpectedRegionCode(denomination.expectedRegionCode ?? "");
+    setQtyValue(denomination.qtyValue != null ? String(denomination.qtyValue) : "");
+    setQtyUnit(denomination.qtyUnit ?? "");
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -163,6 +190,14 @@ export function DenominationEditPage() {
         ...(deliveryType === "manual_with_info"
           ? { additionalFields: draftsToFields(additionalFields) }
           : {}),
+        ...(deliveryType === "manual_with_info" && autoDeliverySource
+          ? { autoDeliverySource, supplierSku: supplierSku.trim() }
+          : {}),
+        nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
+        regionWarning: regionWarning.trim() || null,
+        expectedRegionCode: expectedRegionCode.trim() || null,
+        qtyValue: qtyValue.trim() ? Number(qtyValue.trim()) : null,
+        qtyUnit: qtyUnit.trim() || null,
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -206,7 +241,8 @@ export function DenominationEditPage() {
     type !== null &&
     durationLabel.trim().length > 0 &&
     isValidPrice(price) &&
-    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields)) &&
+    (autoDeliverySource !== "digiflazz" || supplierSku.trim().length > 0);
 
   if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
   if (!loaded) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
@@ -239,6 +275,32 @@ export function DenominationEditPage() {
           <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
         </div>
 
+        {/* Compact-button quantity (Task 8/14) — optional, powers the bot's
+            "86 Diamonds"-style compact denomination button label. */}
+        <div className="flex gap-3">
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Value</label>
+            <Input
+              className="mt-1 w-32"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="e.g. 86"
+              value={qtyValue}
+              onChange={(e) => setQtyValue(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-ink">Quantity Unit</label>
+            <Input
+              className="mt-1"
+              placeholder="e.g. Diamonds"
+              value={qtyUnit}
+              onChange={(e) => setQtyUnit(e.target.value)}
+            />
+          </div>
+        </div>
+
         <div>
           <label className="text-sm font-medium text-ink">
             Account Type <span className="text-rust">*</span>
@@ -264,6 +326,17 @@ export function DenominationEditPage() {
           onDeliveryTypeChange={setDeliveryType}
           additionalFields={additionalFields}
           onAdditionalFieldsChange={setAdditionalFields}
+          autoDeliverySource={autoDeliverySource}
+          onAutoDeliverySourceChange={setAutoDeliverySource}
+          supplierSku={supplierSku}
+          onSupplierSkuChange={setSupplierSku}
+          nicknameCheckGameCode={nicknameCheckGameCode}
+          onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
+          regionWarning={regionWarning}
+          onRegionWarningChange={setRegionWarning}
+          expectedRegionCode={expectedRegionCode}
+          onExpectedRegionCodeChange={setExpectedRegionCode}
+          productHasLinkedGame={Boolean(data?.product.gameId)}
         />
 
         <div>

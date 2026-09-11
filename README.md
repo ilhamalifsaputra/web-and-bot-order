@@ -11,7 +11,7 @@ Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
 tanpa cek manual.
 
 Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
-toko web berbagi **satu database SQLite** — tanpa server database terpisah.
+toko web berbagi **satu database PostgreSQL**.
 
 > 📌 Panduan ini ramah pemula: ikuti dari atas ke bawah. Alur cepat:
 > **Sebelum Mulai → pilih satu Jalur Instalasi → Buat Admin Pertama**.
@@ -35,7 +35,7 @@ toko web berbagi **satu database SQLite** — tanpa server database terpisah.
 ## 1. Sebelum Mulai
 
 **Yang perlu disiapkan:** VPS dengan akses SSH (mis. Hostinger, DigitalOcean).
-Node.js ≥ 20 + pnpm 9 hanya untuk jalur non-Docker (`npm install -g pnpm@9`).
+Node.js ≥ 22.13 + pnpm 9 hanya untuk jalur non-Docker (`npm install -g pnpm@9`).
 
 **Tiga hal wajib:**
 
@@ -61,7 +61,10 @@ cp .env.example .env
 ```
 
 ```ini
-DATABASE_URL_PRISMA=file:./data/bot.db        # biarkan default kalau pakai Docker
+POSTGRES_DB=bot_order
+POSTGRES_USER=bot_order
+POSTGRES_PASSWORD=ganti-dengan-password-acak-yang-kuat   # ganti nilainya, lalu samakan persis di baris di bawah
+DATABASE_URL_PRISMA=postgresql://bot_order:ganti-dengan-password-acak-yang-kuat@postgres:5432/bot_order
 ADMIN_IDS=12345678                            # ID Telegram-mu; pisah koma kalau >1
 WEB_COOKIE_SECRET=hasil_openssl_rand_hex_32   # kunci login panel admin
 TIMEZONE=Asia/Jakarta
@@ -98,18 +101,20 @@ cd web-and-bot-order
 cp .env.example .env   # lalu isi sesuai bagian 2
 ```
 
-**3. Bangun image & siapkan database:**
+**3. Bangun image & siapkan database** (Postgres jalan lewat overlay
+`docker-compose.postgres.prod.yml` — `docker-compose.yml` sendirian tidak
+cukup lagi karena skemanya sekarang `postgresql`-only):
 
 ```bash
-docker compose build
-docker compose run --rm server pnpm exec prisma db push
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push
 ```
 
 **4. Nyalakan layanan** (satu proses gabungan: panel admin + toko web + bot +
-pengiriman notifikasi + poller pembayaran):
+pengiriman notifikasi + poller pembayaran, plus container `postgres`):
 
 ```bash
-docker compose up -d               # panel admin (8000) + toko web (8100) + bot
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d   # panel admin (8000) + toko web (8100) + bot + Postgres
 ```
 
 > 🛍️ Toko web (port 8100) ikut jalan dalam proses yang sama — tak perlu nyalakan
@@ -119,8 +124,8 @@ docker compose up -d               # panel admin (8000) + toko web (8100) + bot
 **5. Cek:**
 
 ```bash
-docker compose ps                  # "running"/"healthy"
-docker compose logs -f server      # log gabungan (Ctrl+C keluar)
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps                  # "running"/"healthy"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server       # log gabungan (Ctrl+C keluar)
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
@@ -133,20 +138,20 @@ docker compose logs -f server      # log gabungan (Ctrl+C keluar)
 > set `WEB_COOKIE_SECURE=true`. Toko web biasanya pakai domain sendiri via
 > `SHOP_PUBLIC_URL`.
 
-**Perintah harian:** `docker compose logs -f server` (log) ·
-`docker compose restart server` (restart, mis. setelah ganti token) ·
-`docker compose down` / `up -d` (matikan / nyalakan).
+**Perintah harian:** `docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server` (log) ·
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml restart server` (restart, mis. setelah ganti token) ·
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml down` / `up -d` (matikan / nyalakan).
 
 ---
 
 ## 4. Jalur B — tanpa Docker
 
-Butuh **Node.js ≥ 20** + **pnpm 9** di VPS.
+Butuh **Node.js ≥ 22.13** + **pnpm 9** di VPS.
 
 ```bash
 # Install Node & pnpm
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-nvm install 20 && npm install -g pnpm@9
+nvm install 22 && npm install -g pnpm@9
 
 # Ambil kode & dependensi
 git clone https://github.com/ilhamalifsaputra/web-and-bot-order.git
@@ -206,7 +211,7 @@ Setelah aplikasi jalan dan panel admin bisa dibuka:
 > Lupa password? Jalankan pemulihan di server, lalu buka `/bootstrap` untuk set
 > password baru:
 > ```bash
-> docker compose run --rm server pnpm reset-admin-password <ID-telegram>      # Docker
+> docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm reset-admin-password <ID-telegram>      # Docker
 > pnpm reset-admin-password <ID-telegram>                                     # non-Docker
 > ```
 
@@ -247,9 +252,9 @@ di [`DOCS.md`](DOCS.md).
 git pull
 
 # Docker:
-docker compose build
-docker compose run --rm server pnpm exec prisma db push      # jika skema berubah
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push      # jika skema berubah
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d
 
 # Non-Docker:
 pnpm install && pnpm prisma:generate && pnpm exec prisma db push
@@ -270,20 +275,27 @@ pm2 restart bot-order
 > ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
 > ini.
 
-**Backup database** (rutin — semua data di satu file SQLite):
+**Backup database** (rutin — jalur SQLite/Postgres terdeteksi otomatis sesuai status cutover toko ini):
 
-> ⚠️ Database memakai mode **WAL**, jadi transaksi terbaru bisa masih ada di
-> `bot.db-wal` yang belum di-checkpoint. **Jangan `cp data/bot.db`** saat layanan
-> jalan — bisa kehilangan data. Pakai online backup `sqlite3 .backup` yang
-> mengambil snapshot konsisten (sudah disediakan skripnya):
+> `deploy/backup/backup.sh`/`restore.sh` (dan cron 6-jamannya) **engine-aware**:
+> satu skrip yang sama menangani SQLite maupun PostgreSQL, jalurnya dideteksi
+> otomatis — `backup.sh` dari prefix `DATABASE_URL_PRISMA`, `restore.sh` dari
+> ekstensi file backup. Jadi setelah engine-swap tidak ada skrip atau entri
+> cron yang perlu diganti; yang berubah hanya env var di depan pemanggilannya.
+> Sumber kebenaran untuk backup/restore: **[`deploy/backup/README.md`](deploy/backup/README.md)**.
+> Langkah memindahkan entri cron produksi dari varian SQLite ke varian Postgres
+> setelah cutover ada di **bagian 8a**
+> [`docs/POSTGRES_MIGRATION.md`](docs/POSTGRES_MIGRATION.md).
 
 ```bash
+# Jalur Postgres (deployment yang sudah cutover):
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # pg_dump -Fc + verifikasi + retensi
+deploy/backup/restore.sh data/backups/pg-<stamp>.dump
+
+# Jalur SQLite (checkout pra-migrasi):
 deploy/backup/backup.sh        # .backup + integrity_check + gzip + retensi
-# restore (rollback): stop writer → swap → integrity → restart → smoke /healthz
 deploy/backup/restore.sh data/backups/bot-<stamp>.db
 ```
-
-Detail (cron tiap 6 jam, RTO/RPO, off-box, uji restore): **`deploy/backup/README.md`**.
 
 **Kelola stok** (panel admin → Stock → pilih produk): tambah stok (satu baris per
 akun, `email:password`), lihat status item, download sisa stok `.txt`, hapus /
@@ -343,6 +355,19 @@ pnpm test           # seluruh tes (Vitest)
 
 `pnpm typecheck` dan `pnpm test` harus selalu hijau sebelum commit.
 
+> **Perlu Postgres yang jalan.** Skema sekarang `postgresql`-only, jadi
+> `pnpm test` (dan `pretest`-nya, cek drift migrasi) butuh `DATABASE_URL_PRISMA`
+> menunjuk ke Postgres yang benar-benar reachable — setiap test membuat
+> schema-nya sendiri di dalamnya (`tests/helpers/pgTestSchema.ts`). Nyalakan
+> dulu container dev-nya:
+>
+> ```bash
+> docker compose -f docker-compose.postgres.yml up -d
+> ```
+>
+> lalu pastikan `.env` punya `DATABASE_URL_PRISMA=postgresql://...` yang cocok
+> (lihat `.env.example`), baru jalankan `pnpm test`.
+
 **Skrip diagnostik & pemeliharaan:**
 
 | Skrip | Kegunaan |
@@ -369,8 +394,8 @@ packages/
   db/               Prisma client + CRUD per-domain (+ tes Vitest)
   outbox-dispatcher/ Pengirim notifikasi (drain notification_outbox → Telegram)
   web-ui/           Tema & template bersama
-prisma/schema.prisma   Skema database (SQLite, WAL)
-data/bot.db            Database (di-gitignore)
+prisma/schema.prisma   Skema database (PostgreSQL)
+data/                  Log & snapshot backup lokal (di-gitignore)
 ```
 
 **Dokumen lain:** [`DOCS.md`](DOCS.md) (arsitektur, fitur, env lengkap) ·

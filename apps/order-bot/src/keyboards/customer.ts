@@ -8,9 +8,11 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
+import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
+import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
+import { formatDenominationLabel } from "../util/denominationLabel";
 
 export const CB_PREFIX = "v1";
 
@@ -49,6 +51,13 @@ interface ProductLike {
   id: number;
   name: string;
   price: Decimal.Value;
+  /** Gates purchasability in denominationDetailKb — only AUTO SKUs ever carry
+   * StockItem rows, so non-AUTO SKUs must never be gated on stock count.
+   * Typed as `string` (not the `DeliveryType` union) because it's populated
+   * straight from Prisma's generated Denomination row, which types the
+   * `delivery_type` column as a plain string — same as OrderLike.status
+   * above and how checkout.ts's `product.deliveryType` is typed. */
+  deliveryType: string;
 }
 interface OrderLike {
   id: number;
@@ -250,8 +259,18 @@ export function denominationDetailKb(
   parentProductId: number | null = null,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
-  if (availableStock > 0) {
-    qty = Math.max(1, Math.min(qty, availableStock));
+  // Stock rows only ever exist for AUTO SKUs (manual/manual_with_info skip
+  // reservation entirely) — gating purchasability on availableStock for a
+  // non-AUTO SKU would always see 0 and permanently show "Notify me when back
+  // in stock" instead of "Buy Now", including for the entire Digiflazz
+  // catalog (every imported SKU is manual_with_info).
+  const purchasable = denom.deliveryType !== DeliveryType.AUTO || availableStock > 0;
+  if (purchasable) {
+    // Non-AUTO SKUs never have stock rows, so the qty-stepper bounds can't use
+    // availableStock (always 0) — cap against MAX_CART_ORDER_UNITS instead,
+    // the same limit the storefront's cart checkout applies to manual items.
+    const maxQty = denom.deliveryType === DeliveryType.AUTO ? availableStock : MAX_CART_ORDER_UNITS;
+    qty = Math.max(1, Math.min(qty, maxQty));
     const dec5: Btn =
       qty > 1
         ? { text: "−5", data: cb("qty", denom.id, qty, "dec5") }
@@ -261,11 +280,11 @@ export function denominationDetailKb(
         ? { text: "−", data: cb("qty", denom.id, qty, "dec") }
         : { text: "−", data: cb("noop") };
     const inc: Btn =
-      qty < availableStock
+      qty < maxQty
         ? { text: "+", data: cb("qty", denom.id, qty, "inc") }
         : { text: "+", data: cb("noop") };
     const inc5: Btn =
-      qty < availableStock
+      qty < maxQty
         ? { text: "+5", data: cb("qty", denom.id, qty, "inc5") }
         : { text: "+5", data: cb("noop") };
     rows.push([dec5, dec, { text: String(qty), data: cb("noop") }, inc, inc5]);
@@ -295,6 +314,9 @@ interface DenominationLike {
   id: number;
   name: string;
   durationLabel: string;
+  /** Precomputed compact Game Top Up label (gameTopUpDenomLabel); falls back
+   * to durationLabel||name when absent. Computed by the caller, not here. */
+  buttonLabel?: string;
 }
 
 /**
@@ -309,19 +331,136 @@ interface DenominationLike {
 export function denominationPickerKb(
   denominations: DenominationLike[],
   productId: number,
+  productName: string,
   lang: string,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   for (let i = 0; i < denominations.length; i += 2) {
     rows.push(
       denominations.slice(i, i + 2).map((d) => ({
-        text: d.durationLabel || d.name,
+        text: truncLabel(d.buttonLabel ?? formatDenominationLabel(productName, d.durationLabel || d.name)),
         data: cb("browse", "denom", d.id),
       })),
     );
   }
   rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  return ik(rows);
+}
+
+// ---------------------------------------------------------------------------
+// Products entry flow: group picker -> category picker
+// ---------------------------------------------------------------------------
+
+/**
+ * First step of the "🛍 Products" entry point — exactly two buckets
+ * (Category.group is admin-set and drives this split; see CategoryGroup).
+ * Tapping a group opens `categoryPickerKb` scoped to that group.
+ */
+export function groupPickerKb(lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("browse.group_game_topup", lang), data: cb("browse", "grp", CategoryGroup.GAME_TOPUP) },
+      { text: coreT("browse.group_premium_apps", lang), data: cb("browse", "grp", CategoryGroup.PREMIUM_APPS) },
+    ],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
+interface CategoryLike {
+  id: number;
+  name: string;
+  emoji: string | null;
+}
+
+/**
+ * Second step of the Products entry flow — one button per active Category
+ * within the group picked by `groupPickerKb`, laid out 2 per row. Always
+ * renders the trailing Back/Menu row, even for an empty `categories` array,
+ * so an empty group never leaves the customer on a dead-end screen (the
+ * message body carries the "no categories yet" copy in that case).
+ */
+export function categoryPickerKb(categories: CategoryLike[], lang: string): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < categories.length; i += 2) {
+    rows.push(
+      categories.slice(i, i + 2).map((c) => ({
+        text: truncLabel(`${c.emoji ? c.emoji + " " : ""}${c.name}`, 30),
+        data: cb("browse", "cat", c.id),
+      })),
+    );
+  }
+  rows.push([
+    { text: coreT("menu.back", lang), data: cb("browse", "grps") },
+    { text: coreT("menu.main", lang), data: cb("menu", "main") },
+  ]);
+  return ik(rows);
+}
+
+/**
+ * Game Top Up variant picker (e.g. weapon/character skin lines within a
+ * Category) — one button per variant, laid out 2 per row, index-addressed via
+ * `browse:gvar:<categoryId>:<index>` (the variant list itself is resolved by
+ * the handler, not carried in callback_data). Button text is not HTML-parsed
+ * by Telegram (unlike message bodies), so no `esc()` is needed here.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — the caller (browseCategoryEntry) computes it, since only it knows the
+ * category's group; it must NOT be `cb("browse", "cat", categoryId)` (that
+ * would re-enter this SAME variant picker — a no-op loop, Finding I2/3 of the
+ * final-review). The one level up from a variant picker is the category
+ * picker (`cb("browse", "grp", group)`).
+ */
+export function gameVariantPickerKb(
+  variants: Array<{ label: string; emoji: string | null }>,
+  categoryId: number,
+  backTarget: string,
+  lang: string,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < variants.length; i += 2) {
+    rows.push(
+      variants.slice(i, i + 2).map((v, j) => ({
+        text: v.emoji ? `${v.emoji} ${v.label}` : v.label,
+        data: cb("browse", "gvar", categoryId, i + j),
+      })),
+    );
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
+  return ik(rows);
+}
+
+/**
+ * Game Top Up region picker, shown after a variant is chosen — one button per
+ * region string, laid out 2 per row, index-addressed the same way as
+ * `gameVariantPickerKb`. Button text is not HTML-parsed by Telegram, so no
+ * `esc()` is needed here either.
+ *
+ * `backTarget` is the fully-built callback_data the Back button should carry
+ * — computed by the caller (enterGameVariant), since only it knows whether a
+ * real variant picker was actually shown for this navigation. When one was
+ * shown, Back re-opens it (`cb("browse", "gvars", categoryId)`); when the
+ * variant step was auto-skipped (0/1 distinct variant), that picker was never
+ * rendered, so Back must skip straight to the category picker
+ * (`cb("browse", "grp", group)`) instead of re-rendering THIS SAME region
+ * picker (Finding I2/3 of the final-review).
+ */
+export function gameRegionPickerKb(
+  regions: string[],
+  categoryId: number,
+  backTarget: string,
+  lang: string,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  for (let i = 0; i < regions.length; i += 2) {
+    rows.push(
+      regions.slice(i, i + 2).map((r, j) => ({
+        text: r,
+        data: cb("browse", "greg", categoryId, i + j),
+      })),
+    );
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: backTarget }]);
   return ik(rows);
 }
 
@@ -578,6 +717,35 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
   ]);
 }
 
+/** Shown after nicknameCheck.ts's lookup finds an account: 'Yes, that's me'
+ * locks in the buyer's typed target + confirmed nickname (the conversation
+ * writes scratch.customerData and re-renders confirmation); 'Try Again'
+ * resets the wizard back to the target-id prompt (a typo fix); 'Cancel'
+ * abandons exactly like voucherCancelKb (routes to v1:buy, same re-entry
+ * contract as every other checkout wizard). */
+export function nicknameConfirmKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.nickname_confirm_btn", lang), data: cb("nick", "confirm") }],
+    [{ text: coreT("checkout.nickname_retry_btn", lang), data: cb("nick", "retry") }],
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
+/** Shown alongside nicknameCheck.ts's re-prompt after a DEFINITIVE
+ * "account not found" answer (final-review Important #2). The buyer can
+ * either just type a new target (unchanged typo-fix path — the prompt bubble
+ * still waits for text) or tap 'Continue anyway' to proceed to
+ * confirm/pay with their last-typed target stored unverified, matching the
+ * storefront's own non-blocking degrade posture instead of hard-stopping the
+ * checkout on a possibly-misconfigured product. 'Cancel' abandons exactly
+ * like voucherCancelKb/nicknameConfirmKb. */
+export function nicknameNotFoundKb(productId: number, qty: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.nickname_continue_btn", lang), data: cb("nick", "continue") }],
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("buy", productId, qty) }],
+  ]);
+}
+
 /**
  * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves
@@ -710,9 +878,14 @@ export function ticketResolvedKb(ticketId: number, lang = "en"): InlineKeyboard 
   return ik([[{ text: coreT("support.btn_resolve", lang), data: cb("ticket", "close", ticketId) }]]);
 }
 
+// Task 1 fix: WAITING_ADMIN/WAITING_CUSTOMER are now live values (see
+// TicketStatus's own doc comment, @app/core/enums) — same icon as their
+// OPEN/REPLIED counterpart.
 const TICKET_ICONS: Record<string, string> = {
   [TicketStatus.OPEN]: "🔴",
+  [TicketStatus.WAITING_ADMIN]: "🔴",
   [TicketStatus.REPLIED]: "🟡",
+  [TicketStatus.WAITING_CUSTOMER]: "🟡",
   [TicketStatus.RESOLVED]: "🟢",
   [TicketStatus.CLOSED]: "⚫",
 };
@@ -765,6 +938,16 @@ export function orderPickerKb(orders: OrderPickerLike[], lang: string): InlineKe
   });
   rows.push([{ text: coreT("support.order_picker_skip", lang), data: cb("support", "order", "skip") }]);
   return ik(rows);
+}
+
+/** Shown when a customer tries to link a new ticket to an order that
+ * already has one open — "view the existing ticket" instead of filing a
+ * duplicate. */
+export function ticketDuplicateKb(ticketId: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("support.duplicate_open_ticket_view_btn", lang), data: cb("ticket", "view", ticketId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
 }
 
 /** Shown while user is in AWAITING_PHOTOS state. */

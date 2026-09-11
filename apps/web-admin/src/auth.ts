@@ -352,3 +352,37 @@ export function recordAccountFailure(telegramId: number): void {
 export function resetAccountFailures(telegramId: number): void {
   accountFailures.delete(telegramId);
 }
+
+// ---------------------------------------------------------------------------
+// Payments-mutation rate limit (per admin, in-process). The 6 payments
+// mutation routes (deliver/refund/cancel/match/credit/dismiss) had no
+// throttle at all. Keyed by admin id, not IP: these routes are only
+// reachable through an authenticated admin session (csrfProtect's
+// currentAdmin already ran), and multiple admins can share an
+// office/VPN IP — identity is the correct dimension here, same reasoning
+// as accountFailures above. One shared quota across all 6 routes so an
+// admin can't reset the budget by switching which mutation they spam.
+// ---------------------------------------------------------------------------
+
+const paymentsMutationHits = new Map<string, number[]>();
+export const PAYMENTS_MUTATION_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const PAYMENTS_MUTATION_RATE_LIMIT_MAX = 20;
+
+export function paymentsMutationRateLimited(adminId: number): boolean {
+  const now = Date.now() / 1000;
+  const key = String(adminId);
+  const dq = paymentsMutationHits.get(key) ?? [];
+  while (dq.length && now - dq[0]! > PAYMENTS_MUTATION_RATE_LIMIT_WINDOW_SECONDS) dq.shift();
+  if (dq.length >= PAYMENTS_MUTATION_RATE_LIMIT_MAX) {
+    paymentsMutationHits.set(key, dq);
+    return true;
+  }
+  dq.push(now);
+  paymentsMutationHits.set(key, dq);
+  return false;
+}
+
+/** Test-only reset, mirrors resetLoginAttempts/resetAccountFailures above. */
+export function resetPaymentsMutationRateLimit(adminId: number): void {
+  paymentsMutationHits.delete(String(adminId));
+}

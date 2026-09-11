@@ -28,9 +28,12 @@ import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
+import { cartCompositionError } from "@app/core/cartComposition";
 import {
   prisma,
   getCart,
+  cartCompositionLineOfCartItem,
+  getDenomination,
   getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
@@ -39,6 +42,8 @@ import {
   computeBulkDiscountForCart,
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
+  completeOrderWithWalletCredit,
+  createOrderDirect,
   finalizeOrderPayment,
   getUsdIdrRate,
   getOrderByCode,
@@ -61,6 +66,11 @@ import {
   commitGatewayResult,
   releaseGatewaySlot,
   MAX_CART_ORDER_UNITS,
+  getDigiflazzCreds,
+  fulfillDigiflazzOrder,
+  recordDigiflazzOutcome,
+  resolveSingleDigiflazzItem,
+  buildDigiflazzCustomerNo,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -83,13 +93,23 @@ import {
   verifyIpn,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
+import {
+  verifyCallback as verifyDigiflazzCallback,
+  createTransaction as createDigiflazzTransaction,
+  type DigiflazzTransactionResult,
+} from "@app/core/suppliers/digiflazz";
 import { gatewayLedgerTrxId } from "@app/core/payments/ledgerKey";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { flashViewFor, loadGuestCartItems } from "./cart";
 import { resolveBotUsername } from "../shop";
 
-const MAX_PENDING_ORDERS = 10;
+/** Per-buyer cap on simultaneously unpaid orders. Exported so every
+ * order-creating storefront rail enforces the SAME number (the cart-based
+ * performCheckout/performWalletCheckout below and the single-denomination
+ * instant-buy rails beside them) instead of each keeping a copy that can
+ * drift. */
+export const MAX_PENDING_ORDERS = 10;
 
 type OrderRow = NonNullable<Awaited<ReturnType<typeof getOrderByCode>>>;
 
@@ -120,14 +140,59 @@ type CartLine = {
   };
 };
 
+/**
+ * One denomination + quantity to price INSTEAD of reading the buyer's cart.
+ *
+ * The instant-buy flow (apps/storefront/client/src/pages/InstantBuyPage.tsx,
+ * the Digiflazz top-up pilot) is a DIRECT purchase: the buyer picks one
+ * denomination and pays, and that selection must never enter the cart table —
+ * it used to be written there purely so `computeTotals` below could see it,
+ * which silently destroyed whatever the visitor already had in their cart
+ * (final-review finding N2). Passing the selection here instead means the
+ * preview and the order both price the same ad-hoc line with the SAME math
+ * the cart path uses, with no cart read and no cart write anywhere.
+ */
+export type AdHocLine = { denominationId: number; quantity: number };
+
+/**
+ * The ad-hoc line resolved into exactly the `CartLine` shape the rest of
+ * computeTotals already consumes — a Denomination row structurally satisfies
+ * `CartLine["product"]` (same row `getCart`/`loadGuestCartItems` join as
+ * `ci.product`), so nothing downstream can tell the difference. An unknown id
+ * yields no lines at all, which computeTotals reports as `empty: true` exactly
+ * like an empty cart; an INACTIVE one is filtered by the same
+ * `ci.product.isActive` filter every cart line goes through.
+ */
+async function loadAdHocLine(line: AdHocLine): Promise<CartLine[]> {
+  const denom = await getDenomination(prisma, line.denominationId);
+  if (!denom) return [];
+  return [{ productId: denom.id, quantity: line.quantity, product: denom }];
+}
+
 /** Totals preview for the checkout page (mirrors createOrderFromCart math).
  * `customer` null means an anonymous visitor — their cart lines come from
  * the guest cookie (loadGuestCartItems) instead of a CartItem query, and
  * they're never a reseller (same assumption loadCartLines' guest branch
  * already makes). Every other step of the math is identical for guests and
- * signed-in buyers — one implementation, per CLAUDE.md. */
-async function computeTotals(req: FastifyRequest, customer: Customer | null, voucherCode: string | null) {
-  const cart: CartLine[] = customer ? await getCart(prisma, customer.userId) : await loadGuestCartItems(req);
+ * signed-in buyers — one implementation, per CLAUDE.md.
+ *
+ * `adHocLine` (optional, and omitted by every cart-based caller) replaces the
+ * cart read with one synthetic line — see AdHocLine above. It changes NOTHING
+ * else: bulk discount, voucher scope/eligibility, the cap against the
+ * bulk-discounted subtotal and the QRIS fee all run on `lines` regardless of
+ * where those lines came from, which is what guarantees an instant-buy preview
+ * quotes byte-identical numbers to what checkout actually charges. */
+async function computeTotals(
+  req: FastifyRequest,
+  customer: Customer | null,
+  voucherCode: string | null,
+  adHocLine?: AdHocLine | null,
+) {
+  const cart: CartLine[] = adHocLine
+    ? await loadAdHocLine(adHocLine)
+    : customer
+      ? await getCart(prisma, customer.userId)
+      : await loadGuestCartItems(req);
   const isReseller = customer ? customer.user.role === "RESELLER" : false;
   // Price the whole preview against one instant, mirroring createOrderFromCart
   // — otherwise a flash sale ending mid-request could discount some lines but
@@ -238,15 +303,23 @@ async function computeTotals(req: FastifyRequest, customer: Customer | null, vou
  * false so the UI never offers a balance payment method with nothing behind
  * it), and `is_guest: true` tells the SPA to collect an email at checkout
  * (a later task). The auth gate on every route calling this stays unchanged
- * — this only makes the view layer *able* to serve a guest. */
+ * — this only makes the view layer *able* to serve a guest.
+ *
+ * `adHocLine` (optional) is threaded straight through to computeTotals: pass
+ * it and this whole response — gateway availability, fx rate, wallet balances,
+ * `is_guest`, the per-item delivery/field spec, every total — describes one
+ * ad-hoc denomination instead of the buyer's cart, with no cart read at all.
+ * That is what makes `POST /api/v1/topup/preview` (routes/apiTopup.ts) a
+ * parameter on this one implementation rather than a second, drifting one. */
 export async function checkoutView(
   req: FastifyRequest,
   customer: Customer | null,
   voucherCode: string | null,
   errorKey: string | null,
+  adHocLine?: AdHocLine | null,
 ) {
   const [totals, fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
-    computeTotals(req, customer, voucherCode),
+    computeTotals(req, customer, voucherCode, adHocLine),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
@@ -405,6 +478,71 @@ export function payState(order: OrderRow) {
 }
 
 /**
+ * The gateway payment choice for one method token, or a thrown
+ * `web.pay_method_unavailable`.
+ *
+ * Map the chosen method token → (currency, paymentMethod), each gated.
+ * Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
+ *
+ * Extracted out of performCheckout (which is its original and still its main
+ * caller) so the instant-buy rail below routes a method token through the
+ * EXACT same gate list — an option switched off in Settings must be
+ * unavailable on both rails, and a new gateway must only ever be added here
+ * once. The wallet-credit tokens (`wallet_idr`/`wallet_usdt`) are deliberately
+ * NOT in this list: they settle without a gateway and are handled by their own
+ * rail (performWalletCheckout / performDirectWalletCheckout).
+ */
+type GatewayPaymentChoice =
+  | {
+      currency: typeof OrderCurrency.USDT;
+      rate: NonNullable<Awaited<ReturnType<typeof getUsdIdrRate>>>;
+      method:
+        | typeof PaymentMethod.BINANCE_INTERNAL
+        | typeof PaymentMethod.BYBIT
+        | typeof PaymentMethod.BYBIT_BSC
+        | typeof PaymentMethod.NOWPAYMENTS;
+    }
+  | { currency: typeof OrderCurrency.IDR; method?: typeof PaymentMethod.PAYDISINI };
+
+async function resolveGatewayPaymentChoice(method: string): Promise<GatewayPaymentChoice> {
+  const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
+    getUsdIdrRate(prisma),
+    getTokopayCreds(prisma),
+    resolveBybitConfig(prisma),
+    resolveBybitBscConfig(prisma),
+    resolveBinanceInternalConfig(prisma),
+    getPaydisiniCreds(prisma),
+    getNowpaymentsCreds(prisma),
+  ]);
+
+  if (method === "binance") {
+    if (!fxRate || !binance.enabled) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
+  }
+  if (method === "bybit") {
+    if (!fxRate || !bybit.enabled) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+  }
+  if (method === "bybit_bsc") {
+    if (!fxRate || !bybitBsc.enabled) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT_BSC };
+  }
+  if (method === "nowpayments") {
+    if (!fxRate || !nowpayments) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.NOWPAYMENTS };
+  }
+  if (method === "qris") {
+    if (!tokopay) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.IDR };
+  }
+  if (method === "paydisini") {
+    if (!paydisini) throw new ValidationError("web.pay_method_unavailable");
+    return { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI };
+  }
+  throw new ValidationError("web.pay_method_unavailable");
+}
+
+/**
  * Validate the chosen payment method, then run the order-creation transaction
  * (countUserPendingOrders → createOrderFromCart → finalizeOrderPayment) — the
  * one implementation of checkout's business rules the JSON API's POST
@@ -418,51 +556,7 @@ export async function performCheckout(
   voucherCode: string | null,
   customerData?: unknown,
 ): Promise<{ orderCode: string }> {
-  const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
-    getUsdIdrRate(prisma),
-    getTokopayCreds(prisma),
-    resolveBybitConfig(prisma),
-    resolveBybitBscConfig(prisma),
-    resolveBinanceInternalConfig(prisma),
-    getPaydisiniCreds(prisma),
-    getNowpaymentsCreds(prisma),
-  ]);
-
-  // Map the chosen method token → (currency, paymentMethod), each gated.
-  // Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
-  type Choice =
-    | {
-        currency: typeof OrderCurrency.USDT;
-        rate: NonNullable<typeof fxRate>;
-        method:
-          | typeof PaymentMethod.BINANCE_INTERNAL
-          | typeof PaymentMethod.BYBIT
-          | typeof PaymentMethod.BYBIT_BSC
-          | typeof PaymentMethod.NOWPAYMENTS;
-      }
-    | { currency: typeof OrderCurrency.IDR; method?: typeof PaymentMethod.PAYDISINI };
-  let choice: Choice;
-  if (method === "binance") {
-    if (!fxRate || !binance.enabled) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
-  } else if (method === "bybit") {
-    if (!fxRate || !bybit.enabled) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
-  } else if (method === "bybit_bsc") {
-    if (!fxRate || !bybitBsc.enabled) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT_BSC };
-  } else if (method === "nowpayments") {
-    if (!fxRate || !nowpayments) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.NOWPAYMENTS };
-  } else if (method === "qris") {
-    if (!tokopay) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.IDR };
-  } else if (method === "paydisini") {
-    if (!paydisini) throw new ValidationError("web.pay_method_unavailable");
-    choice = { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI };
-  } else {
-    throw new ValidationError("web.pay_method_unavailable");
-  }
+  const choice = await resolveGatewayPaymentChoice(method);
 
   // Fail fast on an over-cap cart BEFORE even opening the write transaction
   // below (M-7 fix, backend audit 2026-07-31) — createOrderFromCart does
@@ -501,8 +595,13 @@ export async function performCheckout(
     // an "auto" order) if that assumption is ever violated.
     const cartLines = await getCart(tx, customer.userId);
     const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
-    if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
-      throw new ValidationError("error.cart_mixed_delivery");
+    // Now the shared, named `cart_kind` rule (@app/core/cartComposition)
+    // rather than an inline copy of the add-to-cart check — same rule, same
+    // error key for every cart a buyer can actually build, just no longer
+    // duplicated across three files. Trustance Phase 1 Task 3.
+    const compositionError = cartCompositionError(activeCartLines.map(cartCompositionLineOfCartItem));
+    if (compositionError) {
+      throw new ValidationError(compositionError);
     }
 
     // Server-side revalidation of the buyer-submitted manual_with_info
@@ -566,6 +665,132 @@ export async function performWalletCheckout(
       currency,
       rate: rate ?? undefined,
       customerData,
+    });
+  });
+  return { orderCode: result.order.orderCode };
+}
+
+/**
+ * Server-side validation of a DIRECT purchase's manual_with_info answers,
+ * stringified for `Order.customerData`.
+ *
+ * Exactly what performCheckout does for its cart's single non-auto line, just
+ * keyed off the one denomination being bought instead of a cart read — the
+ * client's own validation (InstantBuyPage.tsx) is a UX convenience only, never
+ * trusted. auto/manual SKUs carry no field spec and store null.
+ * `createOrderDirect` re-validates this again from scratch once inside the
+ * transaction (it does that for every caller, including the bot's); running it
+ * here too means a bad answer set is rejected before any row is written, and
+ * re-validating already-valid data is a safe no-op.
+ */
+function directCustomerDataJson(
+  denom: { deliveryType: string; additionalFields: string | null },
+  quantity: number,
+  customerData: unknown,
+): string | null {
+  if (denom.deliveryType !== DeliveryType.MANUAL_WITH_INFO) return null;
+  const fields = parseAdditionalFields(denom.additionalFields);
+  return JSON.stringify(validateCustomerData(fields, customerData, quantity));
+}
+
+/**
+ * Gateway sibling of performCheckout for a DIRECT (cart-free) purchase of one
+ * denomination — the rail behind `POST /api/v1/topup/order` (routes/apiTopup.ts).
+ *
+ * Same method gate (resolveGatewayPaymentChoice), same per-buyer
+ * MAX_PENDING_ORDERS cap, same finalizeOrderPayment hand-off; the only
+ * difference is `createOrderDirect` instead of `createOrderFromCart`, which is
+ * the single-denomination twin the Telegram bot has used in production since
+ * before the storefront existed (apps/order-bot/src/handlers/checkout.ts). The
+ * cart-only guards performCheckout carries are deliberately absent because
+ * there is no cart to guard: no MAX_CART_ORDER_UNITS precheck (one line,
+ * quantity validated by createOrderDirect's own assertValidQuantity) and no
+ * mixed-delivery re-check (a single line cannot be mixed).
+ *
+ * `walletAmount` is deliberately not passed: a partial "wallet credit + pay the
+ * rest by gateway" combination is a performCheckout feature that this pilot's
+ * UI never offers — PaymentMethodSelector exposes wallet credit only as an
+ * all-or-nothing method of its own, which lands on
+ * performDirectWalletCheckout below. Half-supporting it here would spend the
+ * buyer's balance on an order the page never told them would touch it.
+ */
+export async function performDirectCheckout(
+  customer: Customer,
+  line: AdHocLine,
+  method: string,
+  voucherCode: string | null,
+  customerData?: unknown,
+): Promise<{ orderCode: string }> {
+  const choice = await resolveGatewayPaymentChoice(method);
+
+  const order = await prisma.$transaction(async (tx) => {
+    if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+      throw new ValidationError("error.too_many_pending");
+    }
+    // Re-read the denomination INSIDE the transaction rather than trusting the
+    // route's own pre-check: it could have been deactivated in between, and
+    // createOrderDirect itself does not check `isActive`.
+    const denom = await getDenomination(tx, line.denominationId);
+    if (!denom || !denom.isActive) throw new ValidationError("error.generic");
+
+    const created = await createOrderDirect(tx, {
+      user: { id: customer.userId, role: customer.user.role },
+      productId: line.denominationId,
+      quantity: line.quantity,
+      voucherCode,
+      customerData: directCustomerDataJson(denom, line.quantity, customerData),
+    });
+    if (!created) throw new ValidationError("error.generic");
+    return finalizeOrderPayment(tx, created.id, choice);
+  });
+  return { orderCode: order!.orderCode };
+}
+
+/**
+ * Wallet-credit sibling of performWalletCheckout for a DIRECT (cart-free)
+ * purchase of one denomination — the `wallet_idr`/`wallet_usdt` branch of
+ * `POST /api/v1/topup/order`. Settles synchronously, no gateway involved.
+ *
+ * `completeOrderWithWalletCredit` is the single-denomination twin of
+ * `completeCartOrderWithWalletCredit` performWalletCheckout uses; like it, it
+ * re-derives the price from scratch and throws `error.insufficient_wallet` if
+ * the balance doesn't fully cover the order, so no sufficiency check is
+ * duplicated here. Only a signed-in buyer can ever reach this — a guest has no
+ * wallet, and both guest-minting helpers reject the wallet method tokens.
+ */
+export async function performDirectWalletCheckout(
+  customer: Customer,
+  line: AdHocLine,
+  currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT,
+  voucherCode: string | null,
+  customerData?: unknown,
+): Promise<{ orderCode: string }> {
+  const rate = currency === OrderCurrency.USDT ? await getUsdIdrRate(prisma) : null;
+  if (currency === OrderCurrency.USDT && !rate) throw new ValidationError("web.pay_method_unavailable");
+
+  const result = await prisma.$transaction(async (tx) => {
+    if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+      throw new ValidationError("error.too_many_pending");
+    }
+    const denom = await getDenomination(tx, line.denominationId);
+    if (!denom || !denom.isActive) throw new ValidationError("error.generic");
+
+    return completeOrderWithWalletCredit(tx, {
+      user: {
+        id: customer.userId,
+        role: customer.user.role,
+        walletBalance: customer.user.walletBalance,
+        walletBalanceUsdt: customer.user.walletBalanceUsdt,
+      },
+      productId: line.denominationId,
+      quantity: line.quantity,
+      voucherCode,
+      currency,
+      rate: rate ?? undefined,
+      // completeOrderWithWalletCredit takes this pre-stringified (unlike its
+      // cart twin, which stringifies raw input itself), so validation happens
+      // here — same call performDirectCheckout makes above.
+      customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
   });
   return { orderCode: result.order.orderCode };
@@ -979,71 +1204,259 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- NOWPayments IPN webhook (public; signature is the auth) — DIFFERS
   // from TokoPay/PayDisini above: the signature arrives via the HTTP header
-  // `x-nowpayments-sig`, not a body field, and is HMAC-SHA512 over the
-  // recursively-key-sorted body (verifyIpn handles both). `orderId` in the
-  // verified result is `order.orderCode` (NOWPayments' `order_id`, set to
-  // orderCode when the invoice was created above), so lookup is via
-  // getOrderByCode exactly like the other two gateways. Same response
-  // contract: 403 disabled, 403 bad signature, 200 for every other outcome
-  // (ignored/unmatched/amount mismatch/delivered/delivery-failed) so
-  // NOWPayments stops retrying regardless of outcome. ----
-  app.post("/pay/nowpayments/callback", async (req, reply) => {
-    // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
-    if (webhookRateLimited("nowpayments", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+  // `x-nowpayments-sig`, not a body field, and is HMAC-SHA512 over the RAW
+  // request body bytes (Task 2a fix — see nowpayments.ts's top doc comment
+  // for why: re-serializing the parsed JSON with `JSON.stringify` risks a
+  // byte-level mismatch, e.g. `1.50` vs `1.5`, that would silently break
+  // every IPN's signature). `orderId` in the verified result is
+  // `order.orderCode` (NOWPayments' `order_id`, set to orderCode when the
+  // invoice was created above), so lookup is via getOrderByCode exactly like
+  // the other two gateways. Same response contract: 403 disabled, 403 bad
+  // signature, 200 for every other outcome (ignored/unmatched/amount
+  // mismatch/delivered/delivery-failed) so NOWPayments stops retrying
+  // regardless of outcome. ----
+  //
+  // Registered inside its own nested `app.register` so the raw-body-capturing
+  // `addContentTypeParser` below is scoped ONLY to this one route (Fastify
+  // encapsulates content-type parsers to the plugin context they're declared
+  // in — docs/Reference/ContentTypeParser.md) and never touches the
+  // TokoPay/PayDisini/Digiflazz webhooks that share this file's outer
+  // registration, none of which need the raw body (their signature schemes
+  // hash specific fields, not the whole body — see tokopay.ts/paydisini.ts).
+  await app.register(async (scoped) => {
+    scoped.addContentTypeParser("application/json", { parseAs: "string" }, (req, rawBody: string, done) => {
+      (req as FastifyRequest & { rawBody?: string }).rawBody = rawBody;
+      if (rawBody === "") {
+        // Mirrors Fastify's own default-parser rejection of an empty JSON body.
+        const err = new Error("Body cannot be empty when content-type is set to 'application/json'") as Error & {
+          statusCode?: number;
+        };
+        err.statusCode = 400;
+        done(err, undefined);
+        return;
+      }
+      try {
+        done(null, JSON.parse(rawBody));
+      } catch (err) {
+        done(err as Error, undefined);
+      }
+    });
 
-    const creds = await getNowpaymentsCreds(prisma);
+    scoped.post("/pay/nowpayments/callback", async (req, reply) => {
+      // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
+      if (webhookRateLimited("nowpayments", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
+      const creds = await getNowpaymentsCreds(prisma);
+      if (!creds) return reply.code(403).send({ status: "disabled" });
+
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const rawBody = (req as FastifyRequest & { rawBody?: string }).rawBody ?? "";
+      const sigHeader = req.headers["x-nowpayments-sig"];
+      const cb = verifyIpn(rawBody, body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
+      if (!cb) return reply.code(403).send({ status: "bad signature" });
+      // Only an EXACT "finished" status is a delivery — every other status
+      // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
+      // expired) is "not ready yet" and ignored, never an error.
+      if (!cb.paid) return reply.send({ status: "ignored" });
+
+      const order = await getOrderByCode(prisma, cb.orderId);
+      // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
+      if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        return reply.send({ status: "unmatched" });
+      }
+      // Amount sanity: never deliver on a short/partial payment.
+      if (cb.amount.lessThan(order.totalAmount)) {
+        logger.warn(
+          `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        );
+        await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        return reply.send({ status: "amount mismatch" });
+      }
+
+      try {
+        const r = await deliverPaidNowpaymentsOrder(prisma, {
+          orderId: order.id,
+          trxId: cb.trxId,
+          amount: cb.amount,
+          shopUrl: shopPublicUrl(),
+        });
+        if (r.status === "delivered") nudgeOutboxDispatcher();
+        if (r.status === "stale") {
+          logger.warn(
+            `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+          );
+          await enqueueAdminStalePayment(prisma, {
+            orderId: order.id,
+            orderCode: order.orderCode,
+            gateway: "NOWPayments",
+            trxId: cb.trxId,
+          });
+        }
+        return reply.send({ status: r.status });
+      } catch (err) {
+        logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
+        // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
+        // and an admin resolves it from the orders panel.
+        return reply.send({ status: "delivery failed" });
+      }
+    });
+  });
+
+  // ---- Digiflazz webhook (public; signature is the auth) ----
+  //
+  // Task 12 fix (backend audit 2026-08-21, I-1/I-4): verifyDigiflazzCallback's
+  // signature (@app/core/suppliers/digiflazz) does NOT bind `status` —
+  // md5(refId + ":" + secretKey) is a function of refId alone — so a captured
+  // callback (logging proxy, TLS-inspecting appliance, leaked access log) is
+  // a forgeable, non-expiring token: replaying it with status: "Sukses" and
+  // any sn would previously have auto-delivered the order. `cb` is now used
+  // ONLY to authenticate that some signed request named this refId and to
+  // look up the order — never again to decide what to actually do. What
+  // actually happens is decided by a FRESH createTransaction(refId) call:
+  // this client's own createTransaction is documented as idempotent by refId
+  // (a repeat call with the same refId returns the existing transaction
+  // rather than creating a new one — packages/core/src/suppliers/digiflazz.ts),
+  // so calling it again here IS a live status re-check, built entirely from a
+  // function this codebase already calls elsewhere (dispatchPendingDigiflazzOrders)
+  // for exactly this SKU/order — no new supplier API surface.
+  //
+  // Idempotency against a duplicate/replayed live-Sukses report still comes
+  // from fulfillDigiflazzOrder's own atomic PROCESSING -> DELIVERED claim
+  // (packages/db/src/crud/digiflazz.ts): a replayed callback for an order the
+  // dispatch poller (or an earlier callback) already delivered throws there,
+  // caught below as an expected race rather than a real failure.
+  app.post("/pay/digiflazz/callback", async (req, reply) => {
+    // Payment-3-style hardening — see the TokoPay callback above.
+    if (webhookRateLimited("digiflazz", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
+    const creds = await getDigiflazzCreds(prisma);
     if (!creds) return reply.code(403).send({ status: "disabled" });
 
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const sigHeader = req.headers["x-nowpayments-sig"];
-    const cb = verifyIpn(body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
+    // DigiflazzCreds carries only { username, apiKey } (no separate webhook
+    // secret field exists yet) — apiKey doubles as the signing secret here,
+    // matching verifyCallback's own doc comment in @app/core/suppliers/digiflazz.
+    const cb = verifyDigiflazzCallback(creds.apiKey, body);
     if (!cb) return reply.code(403).send({ status: "bad signature" });
-    // Only an EXACT "finished" status is a delivery — every other status
-    // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
-    // expired) is "not ready yet" and ignored, never an error.
-    if (!cb.paid) return reply.send({ status: "ignored" });
 
-    const order = await getOrderByCode(prisma, cb.orderId);
-    // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
-    if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
-      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+    const order = await getOrderByCode(prisma, cb.refId);
+    if (!order) {
+      logger.warn(`Digiflazz callback for unknown order ref ${cb.refId} — ignoring`);
       return reply.send({ status: "unmatched" });
     }
-    // Amount sanity: never deliver on a short/partial payment.
-    if (cb.amount.lessThan(order.totalAmount)) {
+
+    // Review fix (Important, post-Task-12): only an order still PROCESSING
+    // can legitimately need a live re-check — a legitimate callback for an
+    // in-flight order always finds it PROCESSING (fulfillDigiflazzOrder's own
+    // atomic claim downstream requires exactly that). Refusing here for any
+    // other status (DELIVERED, CANCELLED, REFUNDED, ...) is a pure narrowing
+    // with no behavior change for the legitimate path, and closes off an
+    // otherwise-valid replayed callback from turning into a real
+    // POST /transaction to Digiflazz for an order that's already settled —
+    // defense-in-depth on top of createTransaction's documented (but
+    // unverified — see its ⚠ ASSUMPTION note, @app/core/suppliers/digiflazz)
+    // refId-dedup behavior, not a replacement for it.
+    if (order.status !== OrderStatus.PROCESSING) {
       logger.warn(
-        `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        `Digiflazz callback for order ${order.orderCode} but it is no longer PROCESSING (status: ${order.status}) — ignoring without a live re-check`,
       );
-      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
-      return reply.send({ status: "amount mismatch" });
+      return reply.send({ status: "unmatched" });
     }
 
-    try {
-      const r = await deliverPaidNowpaymentsOrder(prisma, {
-        orderId: order.id,
-        trxId: cb.trxId,
-        amount: cb.amount,
-        shopUrl: shopPublicUrl(),
-      });
-      if (r.status === "delivered") nudgeOutboxDispatcher();
-      if (r.status === "stale") {
-        logger.warn(
-          `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
-        );
-        await enqueueAdminStalePayment(prisma, {
-          orderId: order.id,
-          orderCode: order.orderCode,
-          gateway: "NOWPayments",
-          trxId: cb.trxId,
-        });
-      }
-      return reply.send({ status: r.status });
-    } catch (err) {
-      logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
-      // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
-      // and an admin resolves it from the orders panel.
-      return reply.send({ status: "delivery failed" });
+    // I-4: confirm this order is actually a single-item Digiflazz-routed
+    // order before doing anything else — a callback naming a manually-
+    // fulfilled (or otherwise non-Digiflazz) order that happens to be
+    // PROCESSING must never reach fulfillDigiflazzOrder. This branch means
+    // the callback itself is suspect/mismatched, not that a legitimate
+    // dispatch failed, so no alert is raised here.
+    const resolution = resolveSingleDigiflazzItem(order);
+    if (!resolution.ok) {
+      logger.warn(
+        `Digiflazz callback for order ${order.orderCode} but it isn't a single-item Digiflazz order (${resolution.reason}) — ignoring`,
+      );
+      return reply.send({ status: "unmatched" });
     }
+
+    const customerNo = buildDigiflazzCustomerNo(resolution.product, order.customerData);
+
+    // By the time a genuine Digiflazz webhook can exist for this refId,
+    // this shop must already have called createTransaction for it at least
+    // once (either the dispatch poller or an earlier webhook call) — so
+    // digiflazzDispatchedAt should always be set here. The `?? new Date()`
+    // fallback is defensive only (should never actually trigger) — see
+    // dispatchPendingDigiflazzOrders' own identical pattern for a fresh
+    // dispatch, which this mirrors.
+    const dispatchedAt = order.digiflazzDispatchedAt ?? new Date();
+
+    let result: DigiflazzTransactionResult;
+    try {
+      result = await createDigiflazzTransaction(creds, {
+        refId: cb.refId,
+        buyerSkuCode: resolution.supplierSku,
+        customerNo,
+      });
+    } catch (err) {
+      // The live re-check's HTTP call itself failed (network error, timeout,
+      // malformed response — same failure modes dispatchPendingDigiflazzOrders's
+      // own try/catch already handles). err's message is already
+      // credential-free (fetchDigiflazzJson's own guarantee) — never log err
+      // itself. Take no delivery action; leave the order PROCESSING for a
+      // future callback or the next poller tick, matching this client's
+      // "unrecognised status treated as Pending" philosophy elsewhere.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(`Digiflazz live re-check failed for order ${order.orderCode} (${message}) — leaving it PROCESSING`);
+      try {
+        await recordDigiflazzOutcome(prisma, order, { kind: "transient_error", message }, dispatchedAt);
+      } catch (recordErr) {
+        // Same guarantee as the Gagal/Pending branches below: a failure
+        // writing this outcome (e.g. the DB update itself) must not surface
+        // as an HTTP 500, or Digiflazz will retry-storm this endpoint.
+        logger.warn({ err: recordErr }, `Digiflazz callback failed to record a transient re-check failure for order ${order.orderCode} — the live re-check's own failure was still logged above`);
+      }
+      return reply.send({ status: "ok" });
+    }
+
+    // Branch on the FRESH result.status from the live re-check — NOT
+    // cb.status — this is the actual trust-model fix.
+    if (result.status === "Sukses") {
+      try {
+        await fulfillDigiflazzOrder(prisma, order.id, { sn: result.sn ?? "" });
+        nudgeOutboxDispatcher(); // same as the other gateways — buyer DM was just enqueued
+      } catch (err) {
+        // fulfillDigiflazzOrder throws if the order isn't PROCESSING anymore
+        // (already delivered by the dispatch poller, or otherwise moved on)
+        // — an expected race, not a real failure; log and 200 either way so
+        // Digiflazz stops retrying.
+        logger.warn({ err }, `Digiflazz callback fulfil race for order ${order.orderCode} — likely already delivered`);
+      }
+    } else if (result.status === "Gagal") {
+      try {
+        await recordDigiflazzOutcome(
+          prisma,
+          order,
+          { kind: "terminal", reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}` },
+          dispatchedAt,
+        );
+      } catch (err) {
+        // Same guarantee as the Sukses branch above: a transient failure
+        // here (e.g. the admin-alert/audit-log write inside
+        // recordDigiflazzOutcome) must not surface as an HTTP 500, or
+        // Digiflazz will retry-storm this endpoint.
+        logger.warn({ err }, `Digiflazz callback failed to record Gagal for order ${order.orderCode} — Gagal status was still reported by the supplier`);
+      }
+    } else if (result.status === "Pending") {
+      // Unlike before this task, a webhook-reported Pending now advances
+      // the same backoff schedule the poller uses (recordDigiflazzOutcome),
+      // instead of being invisible to the realtime status feature.
+      try {
+        await recordDigiflazzOutcome(prisma, order, { kind: "pending" }, dispatchedAt);
+      } catch (err) {
+        logger.warn({ err }, `Digiflazz callback failed to record Pending for order ${order.orderCode} — supplier still reports Pending`);
+      }
+    }
+
+    return reply.send({ status: "ok" });
   });
 };
 

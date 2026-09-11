@@ -50,6 +50,12 @@ import {
   runStorageCleanup,
   listSettledOrdersAwaitingBubbleEdit,
   clearOrderPaymentMessage,
+  resyncDigiflazzCatalog,
+  dispatchPendingDigiflazzOrders,
+  bumpCatalogRevision,
+  runDetectionForCatalog,
+  pruneProcessedTelegramUpdates,
+  pruneExpiredBotSessions,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -678,6 +684,8 @@ const BYBIT_BSC_POLL_ALERT_KEY = "bybit_bsc_poll_alert_sent";
 const TOKOPAY_POLL_ALERT_KEY = "tokopay_poll_alert_sent";
 const PAYDISINI_POLL_ALERT_KEY = "paydisini_poll_alert_sent";
 const NOWPAYMENTS_POLL_ALERT_KEY = "nowpayments_poll_alert_sent";
+// Task 15 (I-3, fresh backend audit 2026-08-21) — see outboxDispatcherPollWatchdog below.
+const OUTBOX_WATCHDOG_ALERT_KEY = "outbox_watchdog_alerted";
 
 // QRIS/IDR rails' own staleness thresholds (Task 12) — TOKOPAY_POLL_STALE_MS,
 // PAYDISINI_POLL_STALE_MS, and NOWPAYMENTS_POLL_STALE_MS now live in
@@ -940,6 +948,48 @@ export function nowpaymentsPollWatchdog(api: Api): Promise<void> {
     readHealth: () => getPollHealth(prisma, "nowpayments"),
     staleMs: NOWPAYMENTS_POLL_STALE_MS,
     impact: QRIS_POLLER_IMPACT,
+  });
+}
+
+/** Impact sentence for the outbox dispatcher watchdog (Task 15 / I-3) —
+ * deliberately more severe than DEFAULT_POLLER_IMPACT/QRIS_POLLER_IMPACT
+ * above: the outbox dispatcher (packages/outbox-dispatcher/src/dispatcher.ts's
+ * `runDispatcher`) is the sole delivery path for every buyer credential DM
+ * AND every admin alert this whole codebase enqueues — not just one payment
+ * rail's auto-confirm. When it's down, no other channel picks up the slack,
+ * including this very watchdog DM (see the isEnabled comment below for why
+ * that's still worth sending anyway). */
+const OUTBOX_DISPATCHER_IMPACT =
+  "This is the sole delivery path for EVERY buyer credential DM and EVERY admin alert this shop sends — right now none of them are getting delivered. " +
+  "This is more severe than any single payment rail failing: check the notifier/outbox dispatcher (a bad notifier bot token, or an unhandled exception in its loop) immediately.";
+
+/**
+ * Alert admins if the outbox dispatcher (Task 15 / I-3) looks unhealthy — see
+ * `pollWatchdog` above for the actual stale/failing/recover logic. Seventh
+ * rail wrapper around the shared `pollWatchdog`, alongside the six payment
+ * pollers above, reading the heartbeat `runDispatcher` now records
+ * (packages/outbox-dispatcher/src/dispatcher.ts) via `recordPollHealth(...,
+ * "outbox", ...)`.
+ *
+ * `isEnabled` is `async () => true` — always armed, unlike every rail above.
+ * The six payment rails each gate on "are this rail's credentials
+ * configured", because an unconfigured rail's poller correctly never runs at
+ * all. There is no equivalent "is the outbox dispatcher turned on" setting to
+ * check here: whether a notifier token is configured (and therefore whether
+ * `startNotifier`/`runDispatcher` actually run) is a decision made in
+ * apps/server/src/index.ts, not in this module — this file must not import
+ * from apps/server, and duplicating that check here would drift the moment
+ * either side changed. Scoping this cron's SCHEDULING (not this function's
+ * logic) to only the process where the dispatcher can possibly be running is
+ * how that gap is closed instead — see scheduleOutboxDispatcherWatchdog's own
+ * doc-comment below for the full reasoning. */
+export function outboxDispatcherPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "Outbox dispatcher",
+    alertKey: OUTBOX_WATCHDOG_ALERT_KEY,
+    isEnabled: async () => true,
+    readHealth: () => getPollHealth(prisma, "outbox"),
+    impact: OUTBOX_DISPATCHER_IMPACT,
   });
 }
 
@@ -1351,6 +1401,44 @@ export async function storageCleanupJob(): Promise<void> {
   );
 }
 
+/** Retention window for the update_id dedup ledger (`bindUpdateId`,
+ * middleware.ts) — generous relative to how long Telegram could plausibly
+ * still redeliver the same update_id (minutes, not days), but small enough
+ * that keeping it doesn't cost anything. */
+const PROCESSED_TELEGRAM_UPDATE_RETENTION_MS = 3 * 24 * 3_600_000; // 3 days
+
+/**
+ * Daily retention sweep for the update_id dedup ledger
+ * (ProcessedTelegramUpdate, claimed by `bindUpdateId` in middleware.ts) —
+ * deletes rows past their retention window so the table stays small. Unlike
+ * the payment Processed*Tx ledgers (crud/storageMaintenance.ts deliberately
+ * leaves those alone — see its own module doc comment), a row here carries
+ * no double-payment risk if pruned early: Telegram's own redelivery window
+ * is on the order of minutes, nowhere near this job's 3-day cutoff.
+ */
+export async function cleanupProcessedTelegramUpdatesJob(): Promise<void> {
+  const cutoff = new Date(Date.now() - PROCESSED_TELEGRAM_UPDATE_RETENTION_MS);
+  const removed = await pruneProcessedTelegramUpdates(prisma, cutoff);
+  logger.info(`Update-id dedup ledger cleanup finished — pruned ${removed} row(s) older than ${PROCESSED_TELEGRAM_UPDATE_RETENTION_MS / 3_600_000}h.`);
+}
+
+/**
+ * Daily retention sweep for the `BotSession` table
+ * (`util/prismaSessionStorage.ts`, wired into `session()` in main.ts). Each
+ * row already carries its own `expiresAt` (24h nav / 15min checkout, per
+ * `classifySessionKind`) and `prismaSessionStorage.ts`'s `read()` lazily
+ * deletes an expired row the next time that key is looked up — this sweep
+ * only exists to reclaim rows for chats that never come back and so are
+ * never looked up again. Unlike the update-id ledger above (insert-only, one
+ * row per Telegram update), `bot_sessions` is upserted in place (one row per
+ * active chat), so it does not grow unbounded the way that ledger would
+ * without pruning — this job is hygiene, not a leak fix.
+ */
+export async function cleanupExpiredBotSessionsJob(): Promise<void> {
+  const removed = await pruneExpiredBotSessions(prisma, new Date());
+  logger.info(`Session storage cleanup finished — pruned ${removed} expired BotSession row(s).`);
+}
+
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
 /**
  * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
@@ -1367,6 +1455,115 @@ export function scheduleFxRefresh(): Cron {
       .catch((err) => logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate"));
   void run();
   return new Cron("5 * * * *", { protect: true }, run);
+}
+
+/**
+ * One hourly Digiflazz catalog re-sync tick — refreshes costPrice/price/
+ * isActive on every already-imported denomination (never creates/renames
+ * anything; new SKUs only ever enter the catalog via the admin's Import
+ * Wizard), then (Task 10, shadow mode) invalidates the Detection Engine's
+ * catalog index and re-runs detection over the whole catalog so its review
+ * queue and run-status blob (packages/db/src/crud/detectionRun.ts) reflect
+ * this tick's writes. No `Api` needed, so this runs even on a web-only boot,
+ * same as scheduleFxRefresh.
+ *
+ * Exported so the tick can be exercised directly in tests without a live
+ * cron. The detection pass is best-effort and fully isolated: a failure in
+ * it is logged and swallowed, so a successful resync is never undone by a
+ * detection-pass error, and it is skipped entirely when the resync itself
+ * failed.
+ */
+export async function runDigiflazzCatalogSyncTick(): Promise<void> {
+  try {
+    const r = await resyncDigiflazzCatalog(prisma);
+    if (r.updated || r.deactivated) {
+      logger.info(`Digiflazz catalog re-sync: ${r.updated} price update(s), ${r.deactivated} deactivated.`);
+    }
+  } catch (err) {
+    logger.error({ err }, "Digiflazz catalog re-sync failed — will retry on the next hourly tick");
+    return;
+  }
+
+  try {
+    await bumpCatalogRevision(prisma);
+    await runDetectionForCatalog(prisma);
+  } catch (err) {
+    logger.warn(
+      { err },
+      "The shadow-mode detection pass after the Digiflazz catalog resync failed; the catalog resync itself succeeded and its results stand, and the detection pass will be retried on the next hourly tick.",
+    );
+  }
+}
+
+export function scheduleDigiflazzCatalogSync(): Cron {
+  return new Cron("15 * * * *", { protect: true }, () => runDigiflazzCatalogSyncTick());
+}
+
+/**
+ * Digiflazz dispatch poller (Task 3, original pilot plan) — finds PROCESSING
+ * orders routed to Digiflazz and not yet dispatched, claims each atomically,
+ * and places the top-up order with the supplier (packages/db/src/crud/digiflazz.ts
+ * dispatchPendingDigiflazzOrders). No `Api` needed, so this runs even on a
+ * web-only boot, same as scheduleFxRefresh/scheduleDigiflazzCatalogSync above.
+ * Every 2 minutes — same cadence as binancePollWatchdog's own independent job
+ * instance below; several jobs already share this cron expression without
+ * colliding with each other.
+ */
+export function scheduleDigiflazzDispatch(): Cron {
+  const run = () =>
+    dispatchPendingDigiflazzOrders(prisma)
+      .then((r) => {
+        if (r.claimed) {
+          logger.info(`Digiflazz dispatch: claimed ${r.claimed}, delivered ${r.delivered}, pending ${r.pending}, failed ${r.failed}.`);
+        }
+      })
+      .catch((err) => logger.error({ err }, "Digiflazz dispatch poller failed — will retry on the next tick"));
+  return new Cron("*/2 * * * *", { protect: true }, run);
+}
+
+/**
+ * Cron wrapper for outboxDispatcherPollWatchdog (Task 15 / I-3, fresh backend
+ * audit 2026-08-21). Deliberately NOT registered inside scheduleJobs below,
+ * unlike the six payment-rail watchdogs — read this carefully before "fixing"
+ * that:
+ *
+ * scheduleJobs is called from BOTH apps/server/src/index.ts (the combined
+ * web+bot process, where the outbox dispatcher's runDispatcher actually runs,
+ * via that file's own startNotifier) AND apps/order-bot/src/main.ts (the
+ * standalone bot-only binary) — and the standalone binary NEVER calls
+ * runDispatcher/startNotifier at all. If this watchdog's Cron lived inside
+ * scheduleJobs, the standalone binary would page admins forever with "the
+ * outbox dispatcher has never completed a cycle" — a permanent false alarm in
+ * a topology where the dispatcher isn't supposed to run in the first place.
+ *
+ * Exported separately instead, so apps/server/src/index.ts's start() can call
+ * it directly — inside the exact same `if (bot)` block that already calls
+ * scheduleJobs(bot.api), appending this Cron to the same `jobs` array so it
+ * gets `.stop()`ed on shutdown like every other job. That block's condition
+ * (`bot` resolved from a configured main bot token) is a SUBSET of — narrower
+ * than — startNotifier's own enablement check (`dedicated || mainBot`: a
+ * dedicated notifier token OR a main bot token), not identical to it: in the
+ * specific topology "dedicated notifier token configured, no main bot token",
+ * runDispatcher still runs but this watchdog never gets scheduled (`bot` is
+ * falsy). That's safe — no false alarm — but it does mean that topology gets
+ * no watchdog coverage; there is no bot token to page an admin from in it
+ * anyway, so scheduling this watchdog only inside `if (bot)` still guarantees
+ * it is never armed in a process/branch where it couldn't deliver a page even
+ * if it fired.
+ *
+ * Every 2 minutes on second :21 — its own offset, clear of the six existing
+ * watchdogs' seconds (implicit 0 for the crypto three; :15/:17/:19 for the
+ * QRIS three below) so none of them contend for SQLite's single write-lock in
+ * the same instant (see the QRIS three's own comment in scheduleJobs for the
+ * P1008/P2028 production history behind this rule), and `{ protect: true }`
+ * like every other watchdog cron per this file's own M-26 comment.
+ */
+export function scheduleOutboxDispatcherWatchdog(api: Api): Cron {
+  const run = () =>
+    outboxDispatcherPollWatchdog(api).catch((err) =>
+      logger.error({ err }, 'Scheduled job "outboxDispatcherPollWatchdog" threw an uncaught error — this run was skipped, will retry on its next tick'),
+    );
+  return new Cron("21 */2 * * * *", { protect: true }, run);
 }
 
 export function scheduleJobs(api: Api): Cron[] {
@@ -1423,6 +1620,17 @@ export function scheduleJobs(api: Api): Cron[] {
     // minutely/hourly ticks, and unlike those it's a single sweep rather
     // than something that needs to run often.
     new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
+    // Same daily off-peak slot, one minute later — second 10, not 15/17/19/25
+    // (already used above by the QRIS watchdogs / sweepPaidOrderBubbles) and
+    // not 30 (storageCleanupJob itself), so it never shares a firing second
+    // with any other registered job.
+    new Cron("10 16 3 * * *", { protect: true }, wrap("cleanupProcessedTelegramUpdatesJob", cleanupProcessedTelegramUpdatesJob)),
+    // Same daily off-peak slot, on second 45 — NOT second 20 (drainBroadcasts
+    // already fires every minute at :20, including 03:16:20, so that second
+    // is a genuine, not just test-flagged, collision risk). 45 is clear of
+    // every other registered job's second (0, 5/20/35/50, 10, 15/17/19, 25,
+    // 30, 40).
+    new Cron("45 16 3 * * *", { protect: true }, wrap("cleanupExpiredBotSessionsJob", cleanupExpiredBotSessionsJob)),
     // Second 25, NOT "*/1 * * * *" (which would fire on second 0): this sweep
     // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing updates back to back
     // every tick — precisely the profile behind the P1008/P2028 write-lock

@@ -14,7 +14,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { CategoryGroup, DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
@@ -55,6 +55,27 @@ export function listActiveCategories(db: Db) {
   });
 }
 
+/**
+ * Active categories in `group` — with one deliberate carve-out: `Category.group`
+ * shipped nullable with no backfill, so every pre-existing category (all of
+ * them, at first) reads `group: null` and would otherwise be invisible from
+ * the group→category picker. Rather than a data migration, a `null` group is
+ * treated as PREMIUM_APPS at display time (the shop's only category type
+ * before this feature) — a request for GAME_TOPUP (the new, opt-in bucket)
+ * stays an exact match; a null-group category never appears there.
+ */
+export function listActiveCategoriesByGroup(db: Db, group: string) {
+  // Prisma/SQLite rejects `null` inside a String field's `in` filter, so the
+  // PREMIUM_APPS fallback is expressed as an OR of two exact matches instead.
+  return db.category.findMany({
+    where:
+      group === CategoryGroup.PREMIUM_APPS
+        ? { isActive: true, OR: [{ group: CategoryGroup.PREMIUM_APPS }, { group: null }] }
+        : { isActive: true, group },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
 export function listAllCategories(db: Db) {
   return db.category.findMany({
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -70,7 +91,9 @@ export async function createCategory(
         emoji?: string | null;
         description?: string | null;
         image?: string | null;
+        group?: string | null;
         sortOrder?: number;
+        checkoutFlow?: string;
       },
   emojiLegacy: string | null = null,
   sortOrderLegacy = 0,
@@ -87,7 +110,9 @@ export async function createCategory(
       emoji: a.emoji ?? null,
       description: ("description" in a ? a.description : null) ?? null,
       image: ("image" in a ? a.image : null) ?? null,
+      group: ("group" in a ? a.group : null) ?? null,
       sortOrder: a.sortOrder ?? 0,
+      checkoutFlow: ("checkoutFlow" in a ? a.checkoutFlow : null) ?? "catalog",
     },
   });
 }
@@ -167,9 +192,40 @@ export async function createCatalogProduct(
     imageFileId?: string | null;
     sortOrder?: number;
     isActive?: boolean;
+    /** Set when this Product was created by the Digiflazz import wizard —
+     * the exact `brand` string Digiflazz reports, used to match a re-import
+     * of the same brand back to this Product instead of duplicating it. */
+    digiflazzBrand?: string | null;
+    /** Admin-authored game-navigation classification (Task 8/14) — the bot's
+     * catalog navigation and denomination labeling (Tasks 11-13) key off
+     * these three, e.g. grouping "Mobile Legends" skins by variant/region.
+     * All independent of each other and of every other field above. */
+    gameVariant?: string | null;
+    gameVariantEmoji?: string | null;
+    gameRegion?: string | null;
+    /** Admin-set default placeholder art style (Fase 12) shown when no
+     * `webImageUrl` is set — null = auto-resolve from category. See
+     * prisma/schema.prisma Product.thumbnailKind for the allowed values. */
+    thumbnailKind?: string | null;
+    /** Admin-set currency-icon style (Fase 12) shown on this product's
+     * DenominationCard chips — null = auto-resolve. See
+     * prisma/schema.prisma Product.currencyIconKind for the allowed values. */
+    currencyIconKind?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "product", args.name);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — this function
+  // is called in loops (CSV bulk-import's resolveOrCreateProduct per row;
+  // splitMixedDigiflazzProducts), both inside their own $transactions. A
+  // per-call bump would serialize a setting.upsert on one row across a long
+  // batch transaction and risks two concurrent upsert(create)s P2002-aborting
+  // each other. The catalog-index revision is bumped only at batch-operation
+  // boundaries instead — importDigiflazzBrand post-commit, and the hourly job
+  // before runDetectionForCatalog — so single admin creates rely on
+  // getCatalogIndex's 30s TTL for eventual invalidation, acceptable while
+  // detection is shadow-mode-only (no production consumer of the index yet).
+  // Revisit at the Task 12/13 cutover, when immediate invalidation on every
+  // catalog edit matters.
   return db.product.create({
     data: {
       categoryId: args.categoryId,
@@ -184,6 +240,12 @@ export async function createCatalogProduct(
       imageFileId: args.imageFileId ?? null,
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
+      digiflazzBrand: args.digiflazzBrand ?? null,
+      gameVariant: args.gameVariant ?? null,
+      gameVariantEmoji: args.gameVariantEmoji ?? null,
+      gameRegion: args.gameRegion ?? null,
+      thumbnailKind: args.thumbnailKind ?? null,
+      currencyIconKind: args.currencyIconKind ?? null,
     },
   });
 }
@@ -191,6 +253,13 @@ export async function createCatalogProduct(
 export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the
+  // rationale on createCatalogProduct above (called in loops such as
+  // splitMixedDigiflazzProducts, each inside its own $transaction; a
+  // per-call bump risks serializing/aborting concurrent batch writes for no
+  // benefit while detection is shadow-mode-only). The catalog-index revision
+  // is bumped only at batch-operation boundaries instead — importDigiflazzBrand
+  // post-commit, and the hourly job before runDetectionForCatalog.
 }
 
 export function getCatalogProduct(db: Db, productId: number) {
@@ -318,9 +387,42 @@ export async function createDenomination(
     isActive?: boolean;
     deliveryType?: string;
     additionalFields?: string | null;
+    /** The supplier's `buyerSkuCode` for a Digiflazz-imported denomination —
+     * lets dispatchPendingDigiflazzOrders / resyncDigiflazzCatalog match this
+     * row back to a Digiflazz price-list entry. */
+    supplierSku?: string | null;
+    /** KokinPay's game_code for this denomination's title (Task 7) — offers
+     * the storefront's live nickname-check UX. Independent of supplierSku/
+     * autoDeliverySource above. */
+    nicknameCheckGameCode?: string | null;
+    /** Admin-authored short warning shown near the account field on the
+     * storefront's instant-buy page (Region-check Task B). Independent of
+     * every other field on this row. */
+    regionWarning?: string | null;
+    /** The region this SKU is FOR, compared against VIP-Reseller's live
+     * region-check result (Region-check Task B). Independent of
+     * regionWarning and of nicknameCheckGameCode/supplierSku/
+     * autoDeliverySource above. */
+    expectedRegionCode?: string | null;
+    /** True when `price` was set by a human rather than the Digiflazz markup
+     * suggestion (C2 fix) — protects it from being silently overwritten by
+     * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
+     * the caller server-side; never trust a client-submitted boolean here). */
+    priceOverridden?: boolean;
+    /** The compact-button quantity (Task 8/14), e.g. `86` for an 86-diamond
+     * top-up — paired with qtyUnit and formatted by formatDenominationLabel.
+     * Set together by the admin; independent of every other field above. */
+    qtyValue?: number | null;
+    /** The short unit word paired with qtyValue on the compact button, e.g.
+     * "Diamonds", "UC", "Bonds" (Task 8/14). */
+    qtyUnit?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
+  // Task 10: deliberately does NOT call bumpCatalogRevision — see the note on
+  // updateDenomination below. The Detection Engine's catalog index
+  // (crud/detectionIndex.ts) is built from Product.name only, so no
+  // denomination mutation can stale it.
   return db.denomination.create({
     data: {
       productId: args.productId,
@@ -340,6 +442,13 @@ export async function createDenomination(
       isActive: args.isActive ?? true,
       ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
+      supplierSku: args.supplierSku ?? null,
+      nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
+      regionWarning: args.regionWarning ?? null,
+      expectedRegionCode: args.expectedRegionCode ?? null,
+      priceOverridden: args.priceOverridden ?? false,
+      qtyValue: args.qtyValue ?? null,
+      qtyUnit: args.qtyUnit ?? null,
     },
   });
 }
@@ -347,6 +456,10 @@ export async function createDenomination(
 export async function updateDenomination(db: Db, denominationId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.denomination.update({ where: { id: denominationId }, data: fields });
+  // Task 10: deliberately does NOT call bumpCatalogRevision. The Detection
+  // Engine's catalog index (crud/detectionIndex.ts) is built from Product.name
+  // only — no denomination field feeds it — so a denomination mutation cannot
+  // stale it. Revisit if the index ever indexes denomination-level data.
 }
 
 export function getDenomination(db: Db, denominationId: number) {
@@ -361,7 +474,14 @@ export function getDenominationBySlug(db: Db, slug: string) {
 export function getDenominationWithProduct(db: Db, denominationId: number) {
   return db.denomination.findUnique({
     where: { id: denominationId },
-    include: { product: { include: { category: true } } },
+    // `game` (final-review fix, Finding 3): the storefront's gameId
+    // nickname-check branch (apiTopup.ts) needs `product.game.isActive` /
+    // `.nicknameSupported` to enforce those flags, which it can't see
+    // through `product.gameId` alone. Purely additive — every other caller
+    // (apps/web-admin's stock routes, apps/storefront's cart/apiAccount,
+    // the order-bot's product-detail render) only reads fields already on
+    // this shape, so widening the include doesn't change what they get.
+    include: { product: { include: { category: true, game: true } } },
   });
 }
 
@@ -383,7 +503,10 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
   const q = query.trim();
   if (!q) return Promise.resolve([]);
   return db.denomination.findMany({
-    where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+    where: {
+      isActive: true,
+      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
+    },
     include: { product: true },
     take: limit,
   });
@@ -454,13 +577,27 @@ export type CatalogProduct = Product & {
  * Active products (with ≥1 active denomination) in a category — or the whole
  * catalog when categoryId is omitted. Each carries its active denominations
  * price-asc so a card can show the starting price. Ordered by sortOrder, name.
+ *
+ * `filter` is optional and additive: an EXISTING caller passing only
+ * `(db, categoryId)` sees no behavior change. When passed, key PRESENCE (not
+ * truthiness) decides whether that dimension is filtered — `"gameVariant" in
+ * filter` lets a caller filter on an explicit `null` (products with no
+ * variant set) as distinct from omitting the key entirely (don't filter on
+ * that dimension at all). This backs the bot's Game Top Up variant/region
+ * navigation layer once a variant+region has been resolved.
  */
-export function listCatalogProducts(db: Db, categoryId?: number): Promise<CatalogProduct[]> {
+export function listCatalogProducts(
+  db: Db,
+  categoryId?: number,
+  filter?: { gameVariant?: string | null; gameRegion?: string | null },
+): Promise<CatalogProduct[]> {
   return db.product.findMany({
     where: {
       isActive: true,
       isArchived: false,
       ...(categoryId != null ? { categoryId } : {}),
+      ...(filter && "gameVariant" in filter ? { gameVariant: filter.gameVariant } : {}),
+      ...(filter && "gameRegion" in filter ? { gameRegion: filter.gameRegion } : {}),
       denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
@@ -469,6 +606,70 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
+}
+
+export interface GameVariantOption {
+  label: string;
+  emoji: string | null;
+}
+
+/**
+ * Distinct (gameVariant, gameVariantEmoji) pairs among a category's
+ * catalog-eligible products (active, not archived, ≥1 active denomination).
+ * 0 or 1 result means "no variant picker needed for this category" — callers
+ * use `.length` to decide whether to show the Game Top Up variant step.
+ */
+export async function listCategoryGameVariants(db: Db, categoryId: number): Promise<GameVariantOption[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      isActive: true,
+      isArchived: false,
+      gameVariant: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameVariant: true, gameVariantEmoji: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Map<string, GameVariantOption>();
+  for (const p of products) {
+    if (!seen.has(p.gameVariant!)) seen.set(p.gameVariant!, { label: p.gameVariant!, emoji: p.gameVariantEmoji });
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Distinct gameRegion values among a category's catalog-eligible products,
+ * scoped to one gameVariant (pass `null` for "no variant dimension" — e.g. a
+ * category with no variant picker but still a region picker). Same
+ * 0-or-1-means-skip contract as `listCategoryGameVariants`.
+ */
+export async function listCategoryGameRegions(
+  db: Db,
+  categoryId: number,
+  gameVariant: string | null,
+): Promise<string[]> {
+  const products = await db.product.findMany({
+    where: {
+      categoryId,
+      gameVariant,
+      isActive: true,
+      isArchived: false,
+      gameRegion: { not: null },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
+    },
+    select: { gameRegion: true },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of products) {
+    if (!seen.has(p.gameRegion!)) {
+      seen.add(p.gameRegion!);
+      out.push(p.gameRegion!);
+    }
+  }
+  return out;
 }
 
 /** Newest active products (by newest active denomination) for the home grid. */
@@ -498,7 +699,7 @@ export function searchCatalog(db: Db, query: string, limit = 24): Promise<Catalo
       isActive: true,
       isArchived: false,
       denominations: { some: { isActive: true, price: { gt: 0 } } },
-      OR: [{ name: { contains: q } }, { description: { contains: q } }],
+      OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
     },
     include: {
       category: true,

@@ -1,17 +1,7 @@
 /**
- * base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself).
- *
- * One definition, lifted out of the fourteen byte-identical copies that had
- * accumulated across the pages — a shared indicator has to look the same
- * everywhere, and fourteen copies is fourteen chances for it not to.
+ * Moved to `components/ui/Spinner.tsx` in Fase 6 (business-agnostic
+ * primitive). This re-export keeps the ~20 existing
+ * `components/shop/Spinner` importers working; new code should import from
+ * `components/ui/Spinner`.
  */
-export default function Spinner() {
-  return (
-    <span
-      aria-hidden="true"
-      className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin"
-    />
-  );
-}
+export { default } from "../ui/Spinner";

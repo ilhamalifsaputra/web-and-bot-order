@@ -12,6 +12,7 @@ import {
   createTicket,
   addTicketMessage,
   getTicketWithOrder,
+  getOpenTicketForOrder,
   closeTicketByUser,
   reopenTicket,
   reopenTicketAdmin,
@@ -25,8 +26,18 @@ import {
   bulkAssignTickets,
   bulkSetTicketPriority,
   bulkCloseTickets,
+  uniqueTicketNumberCandidate,
+  listTicketMessages,
+  assignTicket,
+  assignTicketWithAudit,
+  TICKET_LEGAL_TRANSITIONS,
+  transitionTicketStatus,
+  listStaleRepliedTickets,
+  listUserTicketsPaged,
+  getUserTicketStats,
 } from "./support";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
+import { ValidationError } from "@app/core/errors";
 import { addMinutes, addDays } from "@app/core/datetime";
 import { setSetting, deleteSetting } from "./settings";
 
@@ -68,6 +79,34 @@ async function makeUser(
 async function makeAdmin() {
   return prisma.user.create({
     data: { referralCode: `a${Math.random()}`, role: "ADMIN" },
+  });
+}
+
+async function makeOrder(userId: number) {
+  const category = await prisma.category.create({
+    data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+  });
+  const product = await prisma.product.create({
+    data: { categoryId: category.id, name: "Test Product", slug: `prod-${Math.random()}` },
+  });
+  const denom = await prisma.denomination.create({
+    data: {
+      productId: product.id,
+      name: "Test Denomination",
+      slug: `denom-${Math.random()}`,
+      type: "auto",
+      durationLabel: "test",
+      price: "10000",
+    },
+  });
+  return prisma.order.create({
+    data: {
+      orderCode: `ORD-${Math.random()}`,
+      userId,
+      subtotalAmount: "10000",
+      totalAmount: "10000",
+      status: "DELIVERED",
+    },
   });
 }
 
@@ -211,6 +250,250 @@ describe("createTicket + getTicketWithOrder — order linkage", () => {
   });
 });
 
+// Task 10: createTicket's new 7th opts param (subject/category/productId).
+describe("createTicket — subject/category/productId opts (Task 10)", () => {
+  it("persists subject, category, and productId when passed via opts", async () => {
+    const user = await makeUser(3001n);
+    const category = await prisma.category.create({
+      data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+    });
+    const product = await prisma.product.create({
+      data: { categoryId: category.id, name: "Opts Product", slug: `prod-${Math.random()}` },
+    });
+
+    const ticket = await createTicket(prisma, user.id, "my subscription lapsed", null, null, null, {
+      subject: "Subscription issue",
+      category: TicketCategory.ACCOUNT,
+      productId: product.id,
+    });
+
+    expect(ticket.subject).toBe("Subscription issue");
+    expect(ticket.category).toBe(TicketCategory.ACCOUNT);
+    expect(ticket.productId).toBe(product.id);
+  });
+
+  it("omitting opts leaves subject, category, and productId all null (regression: existing call shapes unaffected)", async () => {
+    const user = await makeUser(3002n);
+    const bare = await createTicket(prisma, user.id, "plain ticket");
+    expect(bare.subject).toBeNull();
+    expect(bare.category).toBeNull();
+    expect(bare.productId).toBeNull();
+
+    // Also the 6-positional-arg shape (photoFileIds/attachmentUrls/orderId, no opts) used elsewhere in this file.
+    const order = await makeOrder(user.id);
+    const withOrder = await createTicket(prisma, user.id, "order ticket", null, null, order.id);
+    expect(withOrder.subject).toBeNull();
+    expect(withOrder.category).toBeNull();
+    expect(withOrder.productId).toBeNull();
+  });
+
+  it("passes opts.category through to enqueueOwnerNewTicketEmail's payload instead of the hardcoded null", async () => {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, "owner_email_on_new_ticket", "true");
+
+    const user = await makeUser(3003n);
+    const ticket = await createTicket(prisma, user.id, "payment problem", null, null, null, {
+      category: TicketCategory.PAYMENT,
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.category).toBe(TicketCategory.PAYMENT);
+    expect(payload.ticket_id).toBe(ticket.id);
+
+    await deleteSetting(prisma, "owner_email_enabled");
+    await deleteSetting(prisma, "owner_email");
+    await deleteSetting(prisma, "owner_email_on_new_ticket");
+  });
+});
+
+describe("listUserTicketsPaged (Task 10)", () => {
+  it("returns only the given user's tickets, total matches count", async () => {
+    const user = await makeUser(3101n);
+    const other = await makeUser(3102n);
+    const t1 = await createTicket(prisma, user.id, "mine 1");
+    const t2 = await createTicket(prisma, user.id, "mine 2");
+    await createTicket(prisma, other.id, "not mine");
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id);
+
+    expect(total).toBe(2);
+    expect(new Set(rows.map((r) => r.id))).toEqual(new Set([t1.id, t2.id]));
+  });
+
+  it("status: waiting_for_you returns only WAITING_CUSTOMER tickets", async () => {
+    const user = await makeUser(3103n);
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+    const replied = await createTicket(prisma, user.id, "replied");
+    await prisma.supportTicket.update({ where: { id: replied.id }, data: { status: TicketStatus.REPLIED } });
+    const resolved = await createTicket(prisma, user.id, "resolved");
+    await prisma.supportTicket.update({ where: { id: resolved.id }, data: { status: TicketStatus.RESOLVED } });
+    const closed = await createTicket(prisma, user.id, "closed");
+    await closeTicket(prisma, closed.id);
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id, { status: "waiting_for_you" });
+    expect(rows.map((r) => r.id)).toEqual([waitingCustomer.id]);
+    expect(total).toBe(1);
+    void open;
+  });
+
+  it("status: waiting_for_support returns both OPEN and WAITING_ADMIN", async () => {
+    const user = await makeUser(3104n);
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+
+    const { rows, total } = await listUserTicketsPaged(prisma, user.id, { status: "waiting_for_support" });
+    expect(new Set(rows.map((r) => r.id))).toEqual(new Set([open.id, waitingAdmin.id]));
+    expect(total).toBe(2);
+  });
+
+  it("q matches on subject, message, and ticketNumber independently, case-insensitively", async () => {
+    const user = await makeUser(3105n);
+    const bySubject = await createTicket(prisma, user.id, "irrelevant body", null, null, null, {
+      subject: "Refund needed ASAP",
+    });
+    const byMessage = await createTicket(prisma, user.id, "my Wallet balance is wrong");
+    const byNumber = await createTicket(prisma, user.id, "another ticket");
+
+    const foundBySubject = await listUserTicketsPaged(prisma, user.id, { q: "refund" });
+    expect(foundBySubject.rows.map((r) => r.id)).toEqual([bySubject.id]);
+
+    const foundByMessage = await listUserTicketsPaged(prisma, user.id, { q: "wallet" });
+    expect(foundByMessage.rows.map((r) => r.id)).toEqual([byMessage.id]);
+
+    const foundByNumber = await listUserTicketsPaged(prisma, user.id, {
+      q: byNumber.ticketNumber!.toLowerCase(),
+    });
+    expect(foundByNumber.rows.map((r) => r.id)).toEqual([byNumber.id]);
+  });
+
+  it("sort: created_asc vs default (latest_update) change row order", async () => {
+    const user = await makeUser(3106n);
+    const t1 = await createTicket(prisma, user.id, "first");
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = await createTicket(prisma, user.id, "second");
+    await new Promise((r) => setTimeout(r, 5));
+    const t3 = await createTicket(prisma, user.id, "third");
+
+    // Bump t1's lastStatusChangeAt to the newest, so latest_update reorders it first.
+    await prisma.supportTicket.update({
+      where: { id: t1.id },
+      data: { lastStatusChangeAt: new Date(Date.now() + 10_000) },
+    });
+
+    const byLatestUpdate = await listUserTicketsPaged(prisma, user.id, { sort: "latest_update" });
+    expect(byLatestUpdate.rows.map((r) => r.id)).toEqual([t1.id, t3.id, t2.id]);
+
+    const byCreatedAsc = await listUserTicketsPaged(prisma, user.id, { sort: "created_asc" });
+    expect(byCreatedAsc.rows.map((r) => r.id)).toEqual([t1.id, t2.id, t3.id]);
+  });
+
+  it("paginates: pageSize 2 page 1 returns 2 rows + total 3, page 2 returns 1 row", async () => {
+    const user = await makeUser(3107n);
+    await createTicket(prisma, user.id, "a");
+    await new Promise((r) => setTimeout(r, 5));
+    await createTicket(prisma, user.id, "b");
+    await new Promise((r) => setTimeout(r, 5));
+    await createTicket(prisma, user.id, "c");
+
+    const page1 = await listUserTicketsPaged(prisma, user.id, { pageSize: 2, page: 1 });
+    expect(page1.rows).toHaveLength(2);
+    expect(page1.total).toBe(3);
+
+    const page2 = await listUserTicketsPaged(prisma, user.id, { pageSize: 2, page: 2 });
+    expect(page2.rows).toHaveLength(1);
+    expect(page2.total).toBe(3);
+  });
+
+  it("includes order/product/messages[0] when linked", async () => {
+    const user = await makeUser(3108n);
+    const order = await makeOrder(user.id);
+    const category = await prisma.category.create({
+      data: { name: `Cat${Math.random()}`, slug: `cat-${Math.random()}` },
+    });
+    const product = await prisma.product.create({
+      data: { categoryId: category.id, name: "Linked Product", slug: `prod-${Math.random()}` },
+    });
+
+    const ticket = await createTicket(prisma, user.id, "issue", null, null, order.id, {
+      productId: product.id,
+    });
+    await prisma.ticketMessage.create({
+      data: { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "first message" },
+    });
+
+    const { rows } = await listUserTicketsPaged(prisma, user.id);
+    const row = rows.find((r) => r.id === ticket.id)!;
+    expect(row.order?.orderCode).toBe(order.orderCode);
+    expect(row.product?.name).toBe("Linked Product");
+    expect(row.messages).toHaveLength(1);
+    expect(row.messages[0]!.createdAt).toBeInstanceOf(Date);
+  });
+});
+
+describe("getUserTicketStats (Task 10)", () => {
+  it("counts each status bucket, scoped to the given user", async () => {
+    const user = await makeUser(3201n);
+    const other = await makeUser(3202n);
+
+    const open = await createTicket(prisma, user.id, "open");
+    const waitingAdmin = await createTicket(prisma, user.id, "waiting admin");
+    await prisma.supportTicket.update({
+      where: { id: waitingAdmin.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+    const waitingCustomer = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomer.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER },
+    });
+    const replied = await createTicket(prisma, user.id, "in progress");
+    await prisma.supportTicket.update({ where: { id: replied.id }, data: { status: TicketStatus.REPLIED } });
+    const resolved = await createTicket(prisma, user.id, "resolved");
+    await prisma.supportTicket.update({ where: { id: resolved.id }, data: { status: TicketStatus.RESOLVED } });
+    const closed = await createTicket(prisma, user.id, "closed");
+    await closeTicket(prisma, closed.id);
+
+    // Different user's ticket must not leak into the counts.
+    await createTicket(prisma, other.id, "someone else's ticket");
+
+    const stats = await getUserTicketStats(prisma, user.id);
+    expect(stats).toEqual({
+      all: 6,
+      waiting_for_you: 1, // waitingCustomer
+      waiting_for_support: 2, // open + waitingAdmin
+      in_progress: 1, // replied
+      resolved: 1,
+      closed: 1,
+    });
+    void open;
+  });
+});
+
 describe("closeTicketByUser", () => {
   it("closes an OPEN ticket and returns true", async () => {
     const user = await makeUser(910n);
@@ -288,7 +571,9 @@ describe("replyToTicket", () => {
 
     expect(tgId).toBe(930n);
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix: writes WAITING_CUSTOMER now, not the retired REPLIED — see
+    // TICKET_LEGAL_TRANSITIONS' doc comment.
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(fresh!.repliedAt).not.toBeNull();
     expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(ticket.lastStatusChangeAt.getTime());
     expect(fresh!.firstResponseAt).not.toBeNull();
@@ -405,7 +690,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     void fresh;
   });
 
-  it("M-31: a customer follow-up on an already-answered ticket (status flips back to OPEN, repliedAt NOT cleared) becomes overdue once its wait-clock passes the cutoff — invisible under the old repliedAt-IS-NULL predicate", async () => {
+  it("M-31: a customer follow-up on an already-answered ticket (status flips to WAITING_ADMIN, repliedAt NOT cleared) becomes overdue once its wait-clock passes the cutoff — invisible under the old repliedAt-IS-NULL predicate", async () => {
     const user = await makeUser(1051n);
     const admin = await makeAdmin();
 
@@ -413,12 +698,14 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     const ticket = await createTicket(prisma, user.id, "still broken?");
     await replyToTicket(prisma, { ticketId: ticket.id, reply: "try again", adminDbId: admin.id });
     const afterReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(afterReply!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix: writes WAITING_CUSTOMER now, not the retired REPLIED — see
+    // TICKET_LEGAL_TRANSITIONS' doc comment.
+    expect(afterReply!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(afterReply!.repliedAt).not.toBeNull();
 
-    // Customer follows up ("still not fixed") — addTicketMessage flips status
-    // back to OPEN and resets lastStatusChangeAt (Task 38), but deliberately
-    // does NOT clear repliedAt.
+    // Customer follows up ("still not fixed") — addTicketMessage now moves
+    // status to WAITING_ADMIN (Task 1 fix — was OPEN pre-fix) and resets
+    // lastStatusChangeAt (Task 38), but deliberately does NOT clear repliedAt.
     await addTicketMessage(prisma, {
       ticketId: ticket.id,
       senderType: SenderType.USER,
@@ -426,7 +713,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
       content: "still not fixed",
     });
     const afterFollowUp = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(afterFollowUp!.status).toBe(TicketStatus.OPEN);
+    expect(afterFollowUp!.status).toBe(TicketStatus.WAITING_ADMIN);
     expect(afterFollowUp!.repliedAt).not.toBeNull(); // NOT cleared — this is the bug's precondition
 
     // Age it past the overdue cutoff relative to lastStatusChangeAt (the
@@ -446,9 +733,10 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     expect(viaRawSql.map((t) => t.id)).toEqual([ticket.id]);
 
     // Companion case: a ticket that's genuinely still just "answered, no
-    // follow-up yet" (REPLIED, repliedAt old) must stay excluded — replying
-    // resets the wait-clock, so it's not overdue even though repliedAt itself
-    // is old. Proves the fix isn't simply "always OPEN-or-REPLIED".
+    // follow-up yet" (WAITING_CUSTOMER, repliedAt old) must stay excluded —
+    // replying resets the wait-clock, so it's not overdue even though
+    // repliedAt itself is old. Proves the fix isn't simply "always
+    // OPEN/WAITING_ADMIN-or-REPLIED/WAITING_CUSTOMER".
     const answeredNoFollowUp = await createTicket(prisma, user.id, "answered, no reply from customer yet");
     await replyToTicket(prisma, { ticketId: answeredNoFollowUp.id, reply: "here's the fix", adminDbId: admin.id });
     await prisma.supportTicket.update({
@@ -456,7 +744,7 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
       data: { repliedAt: addMinutes(new Date(), -300), lastStatusChangeAt: addMinutes(new Date(), -300) },
     });
     const stillExcluded = await prisma.supportTicket.findUnique({ where: { id: answeredNoFollowUp.id } });
-    expect(stillExcluded!.status).toBe(TicketStatus.REPLIED); // not OPEN → excluded regardless of age
+    expect(stillExcluded!.status).toBe(TicketStatus.WAITING_CUSTOMER); // not OPEN/WAITING_ADMIN → excluded regardless of age
 
     const finalOverdue = await listTicketsPaged(prisma, { overdue: true });
     expect(finalOverdue.map((t) => t.id)).toEqual([ticket.id]);
@@ -565,11 +853,23 @@ describe("getTicketStats", () => {
       data: { lastStatusChangeAt: addMinutes(now, -300) },
     });
 
-    // waiting on customer (REPLIED), assigned
+    // waiting on customer (REPLIED — legacy value, still counted), assigned
     const repliedTicket = await createTicket(prisma, user.id, "replied");
     await prisma.supportTicket.update({
       where: { id: repliedTicket.id },
       data: { status: TicketStatus.REPLIED, repliedAt: now, adminId: admin.id },
+    });
+
+    // waiting on customer (WAITING_CUSTOMER — Task 1 fix's live value)
+    const waitingCustomerTicket = await createTicket(prisma, user.id, "waiting customer");
+    await prisma.supportTicket.update({
+      where: { id: waitingCustomerTicket.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: now },
+    });
+
+    // open, unassigned, not overdue (WAITING_ADMIN — Task 1 fix's live value)
+    await prisma.supportTicket.create({
+      data: { userId: user.id, message: "waiting admin", status: TicketStatus.WAITING_ADMIN },
     });
 
     // closed today
@@ -585,10 +885,16 @@ describe("getTicketStats", () => {
     });
 
     const stats = await getTicketStats(prisma, now);
-    expect(stats.open).toBe(2); // fresh open + stale open
-    expect(stats.waitingCustomer).toBe(1); // repliedTicket
+    // Task 1 fix: `open`/`waitingCustomer` each match BOTH halves of their
+    // pair (OPEN+WAITING_ADMIN, REPLIED+WAITING_CUSTOMER) — see
+    // getTicketStats' own doc comment.
+    expect(stats.open).toBe(3); // fresh open + stale open + the WAITING_ADMIN ticket
+    expect(stats.waitingCustomer).toBe(2); // repliedTicket + waitingCustomerTicket
     expect(stats.overdue).toBe(1); // stale open only
-    expect(stats.unassigned).toBe(2); // fresh open + stale open (repliedTicket is assigned, closed ones excluded)
+    // unassigned counts ANY non-CLOSED status with adminId null: fresh open +
+    // stale open + waitingCustomerTicket + the WAITING_ADMIN ticket
+    // (repliedTicket is assigned, closed ones excluded).
+    expect(stats.unassigned).toBe(4);
     expect(stats.resolvedToday).toBe(1); // closedToday only
   });
 
@@ -918,6 +1224,123 @@ describe("listTicketsPaged / countTickets — unified predicate (M-36)", () => {
   });
 });
 
+describe("getOpenTicketForOrder", () => {
+  it("returns a ticket with status: OPEN linked to the order", async () => {
+    const user = await makeUser(1400n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    expect(ticket.status).toBe(TicketStatus.OPEN);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+  });
+
+  it("returns a ticket with status: REPLIED linked to the order", async () => {
+    const user = await makeUser(1401n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.REPLIED);
+  });
+
+  it("returns a ticket with status: WAITING_ADMIN linked to the order", async () => {
+    const user = await makeUser(1406n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.WAITING_ADMIN },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.WAITING_ADMIN);
+  });
+
+  it("returns a ticket with status: WAITING_CUSTOMER linked to the order", async () => {
+    const user = await makeUser(1407n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(ticket.id);
+    expect(found!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+  });
+
+  it("returns null for a ticket with status: RESOLVED linked to the order", async () => {
+    const user = await makeUser(1402n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.RESOLVED, resolvedAt: new Date() },
+    });
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns null for a ticket with status: CLOSED linked to the order", async () => {
+    const user = await makeUser(1403n);
+    const order = await makeOrder(user.id);
+    const ticket = await createTicket(prisma, user.id, "issue with order", null, null, order.id);
+    await closeTicket(prisma, ticket.id);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns null when no ticket is linked to the order", async () => {
+    // Create an order but don't link any tickets to it
+    const user = await makeUser(1405n);
+    const order = await makeOrder(user.id);
+
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).toBeNull();
+  });
+
+  it("returns the most recent open ticket when multiple tickets exist with mixed statuses", async () => {
+    const user = await makeUser(1404n);
+    const order = await makeOrder(user.id);
+
+    // Create three tickets linked to the same order
+    const t1 = await createTicket(prisma, user.id, "first ticket", null, null, order.id);
+
+    // Wait a tiny bit to ensure different createdAt timestamps
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = await createTicket(prisma, user.id, "second ticket", null, null, order.id);
+    // Mark t2 as CLOSED
+    await closeTicket(prisma, t2.id);
+
+    await new Promise((r) => setTimeout(r, 5));
+    const t3 = await createTicket(prisma, user.id, "third ticket", null, null, order.id);
+    // Mark t3 as REPLIED
+    await prisma.supportTicket.update({
+      where: { id: t3.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date() },
+    });
+
+    // Should return t3 (most recent open/replied ticket), not t1 or t2
+    const found = await getOpenTicketForOrder(prisma, order.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(t3.id);
+  });
+});
+
 // Task 4: createTicket / addTicketMessage now enqueue the owner-email
 // notifications added in Task 3 (packages/db/src/crud/notifications.ts).
 // notificationOutbox/Setting rows are NOT wiped by this file's beforeEach
@@ -1038,10 +1461,11 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(before);
-    // The ticket's status transition (OPEN/REPLIED) is untouched by this
-    // gate — confirm the ADMIN branch still flips the ticket to REPLIED.
+    // The ticket's status transition (WAITING_ADMIN/WAITING_CUSTOMER) is
+    // untouched by this gate — confirm the ADMIN branch still flips the
+    // ticket to WAITING_CUSTOMER (Task 1 fix — was REPLIED pre-fix).
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
   });
 
   it("addTicketMessage with senderType USER enqueues nothing when owner-email is not configured", async () => {
@@ -1079,6 +1503,11 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(before);
+    // Task 1 fix: the opening-message mirror must NOT trigger a status
+    // transition either — the ticket stays exactly where createTicket left
+    // it (OPEN), not WAITING_ADMIN.
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.OPEN);
   });
 
   it("addTicketMessage with notifyOwner: true (explicit) behaves the same as omitting it — still enqueues one row", async () => {
@@ -1098,5 +1527,557 @@ describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => 
     expect(
       await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
     ).toBe(before + 1);
+  });
+});
+
+describe("ticketNumber generation (Task 1)", () => {
+  it("createTicket sets a ticketNumber in TCK-YYYYMMDD-NNNNN format", async () => {
+    const user = await makeUser(9001n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    expect(ticket.ticketNumber).toMatch(/^TCK-\d{8}-\d{5}$/);
+  });
+
+  it("sequential numbers increment within the same day, sharing the same date prefix", async () => {
+    const user = await makeUser(9002n);
+    const t1 = await createTicket(prisma, user.id, "first");
+    const t2 = await createTicket(prisma, user.id, "second");
+    const t3 = await createTicket(prisma, user.id, "third");
+
+    const prefix = t1.ticketNumber!.slice(0, 13); // "TCK-YYYYMMDD-"
+    expect(t2.ticketNumber!.slice(0, 13)).toBe(prefix);
+    expect(t3.ticketNumber!.slice(0, 13)).toBe(prefix);
+
+    const seq = (n: string) => Number(n.slice(-5));
+    expect(seq(t2.ticketNumber!)).toBeGreaterThan(seq(t1.ticketNumber!));
+    expect(seq(t3.ticketNumber!)).toBeGreaterThan(seq(t2.ticketNumber!));
+  });
+
+  it("uniqueTicketNumberCandidate mints the next sequence number based on today's existing count", async () => {
+    const user = await makeUser(9003n);
+    const now = new Date();
+
+    const before = await uniqueTicketNumberCandidate(prisma, now);
+    expect(before.endsWith("00001")).toBe(true);
+
+    await createTicket(prisma, user.id, "first");
+
+    const after = await uniqueTicketNumberCandidate(prisma, now);
+    expect(after.endsWith("00002")).toBe(true);
+  });
+
+  it("every ticket gets a UNIQUE ticketNumber even when many are created concurrently (Promise.all)", async () => {
+    const user = await makeUser(9004n);
+    const CONCURRENCY = 20;
+
+    const tickets = await Promise.all(
+      Array.from({ length: CONCURRENCY }, (_, i) => createTicket(prisma, user.id, `concurrent message ${i}`)),
+    );
+
+    const numbers = tickets.map((t) => t.ticketNumber);
+    for (const n of numbers) expect(n).toMatch(/^TCK-\d{8}-\d{5}$/);
+    // The real assertion: no two concurrent creates collided on the same
+    // candidate — proves createTicket's retry-on-unique-constraint-violation
+    // loop (not just the pre-check) is what actually enforces uniqueness.
+    expect(new Set(numbers).size).toBe(CONCURRENCY);
+
+    // Also confirms every ticket actually persisted (a bug that silently
+    // dropped a losing racer instead of retrying would still pass the
+    // uniqueness check above with fewer rows).
+    const stored = await prisma.supportTicket.count({ where: { userId: user.id } });
+    expect(stored).toBe(CONCURRENCY);
+  });
+});
+
+describe("addTicketMessage — internal notes (Task 1)", () => {
+  it("stores internal:true on the TicketMessage row; defaults to false", async () => {
+    const user = await makeUser(9101n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    const publicMsg = await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "a normal reply",
+    });
+    expect(publicMsg.internal).toBe(false);
+
+    const noteMsg = await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "an internal note",
+      internal: true,
+    });
+    expect(noteMsg.internal).toBe(true);
+  });
+
+  it("listTicketMessages EXCLUDES internal messages by default — the customer-facing view's safety net", async () => {
+    const user = await makeUser(9102n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "visible reply",
+    });
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "secret internal note",
+      internal: true,
+    });
+
+    const customerView = await listTicketMessages(prisma, ticket.id, 10);
+
+    expect(customerView.map((m) => m.content)).not.toContain("secret internal note");
+    expect(customerView.some((m) => m.content === "visible reply")).toBe(true);
+  });
+
+  it("listTicketMessages includes internal messages when includeInternal: true — the admin-facing view opts in", async () => {
+    const user = await makeUser(9103n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "secret internal note",
+      internal: true,
+    });
+
+    const adminView = await listTicketMessages(prisma, ticket.id, 10, { includeInternal: true });
+
+    expect(adminView.some((m) => m.content === "secret internal note")).toBe(true);
+  });
+
+  it("an internal admin reply does NOT flip the ticket to REPLIED / advance repliedAt or firstResponseAt", async () => {
+    const user = await makeUser(9104n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    expect(ticket.status).toBe(TicketStatus.OPEN);
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "internal only",
+      internal: true,
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.OPEN);
+    expect(fresh!.repliedAt).toBeNull();
+    expect(fresh!.firstResponseAt).toBeNull();
+  });
+
+  it("a NON-internal admin reply still flips the ticket to WAITING_CUSTOMER (Task 1 fix — was REPLIED pre-fix; regression: internal support doesn't change existing behavior)", async () => {
+    const user = await makeUser(9105n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "a real reply",
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+    expect(fresh!.repliedAt).toBeInstanceOf(Date);
+    expect(fresh!.firstResponseAt).toBeInstanceOf(Date);
+  });
+
+  it("audits an internal note with the acting admin id and a detail explaining it's not customer-visible", async () => {
+    const user = await makeUser(9106n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "internal only",
+      internal: true,
+    });
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_internal_note", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.adminId).toBe(admin.id);
+    expect(rows[0]!.details).toContain(`#${ticket.id}`);
+    expect(rows[0]!.details).toContain("not visible to the customer");
+  });
+
+  it("a NON-internal admin reply does NOT write a ticket_internal_note audit row", async () => {
+    const user = await makeUser(9107n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "a real reply",
+    });
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_internal_note", targetId: ticket.id } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("a USER message is unaffected by `internal` (defaults false, no special handling) and stays customer-visible", async () => {
+    const user = await makeUser(9108n);
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "a follow-up from the customer",
+    });
+
+    const customerView = await listTicketMessages(prisma, ticket.id, 10);
+    expect(customerView.some((m) => m.content === "a follow-up from the customer")).toBe(true);
+  });
+});
+
+describe("assignTicket (legacy) vs assignTicketWithAudit (Task 1)", () => {
+  it("assignTicket (legacy, unchanged) sets adminId only — does not touch assignedAt/assignedBy", async () => {
+    const user = await makeUser(9201n);
+    const assignee = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await assignTicket(prisma, ticket.id, assignee.id);
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.adminId).toBe(assignee.id);
+    expect(fresh!.assignedAt).toBeNull();
+    expect(fresh!.assignedBy).toBeNull();
+  });
+
+  it("assignTicketWithAudit sets adminId, assignedAt, and assignedBy, and audits the action under the ASSIGNER's id", async () => {
+    const user = await makeUser(9202n);
+    const lead = await makeAdmin();
+    const junior = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    const result = await assignTicketWithAudit(prisma, ticket.id, junior.id, lead.id);
+
+    expect(result.adminId).toBe(junior.id);
+    expect(result.assignedBy).toBe(lead.id);
+    expect(result.assignedAt).toBeInstanceOf(Date);
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_assign", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+    // The audited actor is the ASSIGNER (lead), never the assignee (junior) —
+    // do not conflate "who assigned" with "who was assigned to".
+    expect(rows[0]!.adminId).toBe(lead.id);
+    expect(rows[0]!.details).toContain(`#${ticket.id}`);
+  });
+
+  it("assignTicketWithAudit with adminId: null unassigns AND clears assignedAt/assignedBy back to null", async () => {
+    const user = await makeUser(9203n);
+    const lead = await makeAdmin();
+    const junior = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await assignTicketWithAudit(prisma, ticket.id, junior.id, lead.id);
+
+    const result = await assignTicketWithAudit(prisma, ticket.id, null, lead.id);
+
+    expect(result.adminId).toBeNull();
+    expect(result.assignedAt).toBeNull();
+    expect(result.assignedBy).toBeNull();
+
+    const rows = await prisma.auditLog.findMany({
+      where: { action: "ticket_assign", targetId: ticket.id },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    expect(rows[0]!.details).toContain("nobody (unassigned)");
+  });
+});
+
+// Task 1 FIX (review Finding 1) — the load-bearing test for the whole fix:
+// proves a REAL reply through addTicketMessage (the single choke point every
+// bot/web-admin/storefront reply path calls) genuinely persists the new
+// WAITING_ADMIN/WAITING_CUSTOMER statuses to the SupportTicket.status column
+// — not just that the call doesn't throw. Complements the individual
+// assertions already sprinkled through this file (e.g. the M-31 test, "a
+// NON-internal admin reply..." above) with one focused, easy-to-find test
+// covering both directions and the audit trail they now produce.
+describe("addTicketMessage — automatic WAITING_ADMIN/WAITING_CUSTOMER transitions (Task 1 fix)", () => {
+  it("a genuine customer reply transitions OPEN -> WAITING_ADMIN, audited with a null (system) actor", async () => {
+    const user = await makeUser(9401n);
+    const ticket = await createTicket(prisma, user.id, "help, my order is missing");
+    expect(ticket.status).toBe(TicketStatus.OPEN);
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "still no update?",
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_ADMIN);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { action: "ticket_status_change", targetId: ticket.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.adminId).toBeNull(); // customer-driven — no acting admin
+    expect(rows[0]!.details).toContain("OPEN");
+    expect(rows[0]!.details).toContain("WAITING_ADMIN");
+  });
+
+  it("a genuine admin reply transitions OPEN -> WAITING_CUSTOMER, audited with the replying admin's id", async () => {
+    const user = await makeUser(9402n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help, my order is missing");
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "checking on it now",
+    });
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { action: "ticket_status_change", targetId: ticket.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.adminId).toBe(admin.id);
+    expect(rows[0]!.details).toContain("OPEN");
+    expect(rows[0]!.details).toContain("WAITING_CUSTOMER");
+  });
+
+  it("a second customer message before any admin responds (already WAITING_ADMIN) refreshes the wait-clock without a redundant audit row", async () => {
+    const user = await makeUser(9403n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "msg 1" });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterFirst!.status).toBe(TicketStatus.WAITING_ADMIN);
+
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "msg 2, still waiting" });
+
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterSecond!.status).toBe(TicketStatus.WAITING_ADMIN); // unchanged, not an error
+    expect(afterSecond!.lastStatusChangeAt.getTime()).toBeGreaterThanOrEqual(afterFirst!.lastStatusChangeAt.getTime());
+
+    // Exactly ONE ticket_status_change row — the second (self) reply is a
+    // plain field refresh, not a second audited transition.
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("a second admin reply before the customer responds (already WAITING_CUSTOMER) refreshes repliedAt without a redundant audit row", async () => {
+    const user = await makeUser(9404n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reply 1" });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterFirst!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reply 2, following up" });
+
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterSecond!.status).toBe(TicketStatus.WAITING_CUSTOMER); // unchanged, not an error
+    expect(afterSecond!.repliedAt!.getTime()).toBeGreaterThan(afterFirst!.repliedAt!.getTime());
+    expect(afterSecond!.firstResponseAt!.getTime()).toBe(afterFirst!.firstResponseAt!.getTime()); // still set once
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("RESOLVED/CLOSED handling is unaffected: a reply to an already-RESOLVED ticket still silently reopens it via the old OPEN/REPLIED literals, no throw", async () => {
+    const user = await makeUser(9405n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await resolveTicket(prisma, ticket.id);
+    const resolved = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(resolved!.status).toBe(TicketStatus.RESOLVED);
+
+    // Customer reply on a RESOLVED ticket -> OPEN (byte-for-byte pre-fix behavior).
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.USER, senderId: user.id, content: "actually still broken" });
+    const afterCustomerReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterCustomerReply!.status).toBe(TicketStatus.OPEN);
+
+    // Re-resolve, then admin reply on a RESOLVED ticket -> REPLIED (byte-for-byte pre-fix behavior).
+    await resolveTicket(prisma, ticket.id);
+    await addTicketMessage(prisma, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "reopening for you" });
+    const afterAdminReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterAdminReply!.status).toBe(TicketStatus.REPLIED);
+
+    // Neither carve-out goes through transitionTicketStatus, so neither audits.
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("the real bot admin-reply flow (replyToTicket + addTicketMessage in one transaction) lands on WAITING_CUSTOMER without throwing", async () => {
+    // Mirrors apps/order-bot/src/conversations/admin.ts's ticketReplyConversation
+    // exactly: both functions called in the same $transaction, replyToTicket
+    // first. This is the scenario that made the "already there" self-case
+    // necessary — see addTicketMessage's own doc comment.
+    const user = await makeUser(9406n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    const customerTgId = await prisma.$transaction(async (tx) => {
+      const tgId = await replyToTicket(tx, { ticketId: ticket.id, reply: "here's the fix", adminDbId: admin.id });
+      await addTicketMessage(tx, { ticketId: ticket.id, senderType: SenderType.ADMIN, senderId: admin.id, content: "here's the fix" });
+      return tgId;
+    });
+
+    expect(customerTgId).toBe(9406n);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.WAITING_CUSTOMER);
+  });
+});
+
+describe("listStaleRepliedTickets (Task 1 fix: matches REPLIED and WAITING_CUSTOMER)", () => {
+  it("returns tickets at REPLIED (legacy) and WAITING_CUSTOMER (live) alike, past the cutoff", async () => {
+    const user = await makeUser(9410n);
+    const cutoff = addMinutes(new Date(), -48 * 60);
+
+    const legacyStale = await createTicket(prisma, user.id, "legacy stale");
+    await prisma.supportTicket.update({
+      where: { id: legacyStale.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: addMinutes(new Date(), -49 * 60) },
+    });
+
+    const modernStale = await createTicket(prisma, user.id, "modern stale");
+    await prisma.supportTicket.update({
+      where: { id: modernStale.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: addMinutes(new Date(), -50 * 60) },
+    });
+
+    const notStale = await createTicket(prisma, user.id, "just replied");
+    await prisma.supportTicket.update({
+      where: { id: notStale.id },
+      data: { status: TicketStatus.WAITING_CUSTOMER, repliedAt: new Date() },
+    });
+
+    const stale = await listStaleRepliedTickets(prisma, cutoff);
+    expect(new Set(stale.map((t) => t.id))).toEqual(new Set([legacyStale.id, modernStale.id]));
+  });
+});
+
+describe("TICKET_LEGAL_TRANSITIONS / transitionTicketStatus — state machine (Task 1)", () => {
+  it("TICKET_LEGAL_TRANSITIONS encodes exactly the documented shape", () => {
+    // Task 1 fix (review Findings 1 & 2): OPEN's/REPLIED's target lists are
+    // no longer byte-identical to WAITING_ADMIN's/WAITING_CUSTOMER's — each
+    // carries one extra "modernization" edge into its own live-vocabulary
+    // counterpart (OPEN -> WAITING_ADMIN, REPLIED -> WAITING_CUSTOMER). See
+    // TICKET_LEGAL_TRANSITIONS' own doc comment for why.
+    const adminReplyTargets = [TicketStatus.REPLIED, TicketStatus.WAITING_CUSTOMER, TicketStatus.RESOLVED, TicketStatus.CLOSED];
+    const customerReplyTargets = [TicketStatus.OPEN, TicketStatus.WAITING_ADMIN, TicketStatus.RESOLVED, TicketStatus.CLOSED];
+
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.OPEN]!.slice().sort()).toEqual(
+      [...adminReplyTargets, TicketStatus.WAITING_ADMIN].sort(),
+    );
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_ADMIN]!.slice().sort()).toEqual(adminReplyTargets.slice().sort());
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.REPLIED]!.slice().sort()).toEqual(
+      [...customerReplyTargets, TicketStatus.WAITING_CUSTOMER].sort(),
+    );
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_CUSTOMER]!.slice().sort()).toEqual(customerReplyTargets.slice().sort());
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.RESOLVED]).toEqual([TicketStatus.CLOSED]);
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.CLOSED]).toEqual([TicketStatus.OPEN]);
+
+    // OPEN's and WAITING_ADMIN's (and REPLIED's and WAITING_CUSTOMER's)
+    // target lists must NOT be identical — the exact redundancy Finding 2
+    // flagged. This is the direct regression guard for that finding.
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.OPEN]!.slice().sort()).not.toEqual(
+      TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_ADMIN]!.slice().sort(),
+    );
+    expect(TICKET_LEGAL_TRANSITIONS[TicketStatus.REPLIED]!.slice().sort()).not.toEqual(
+      TICKET_LEGAL_TRANSITIONS[TicketStatus.WAITING_CUSTOMER]!.slice().sort(),
+    );
+  });
+
+  // Exhaustive matrix over every ordered pair of the 6 states — derived
+  // programmatically from TICKET_LEGAL_TRANSITIONS itself (not hand-copied)
+  // so this test verifies transitionTicketStatus enforces EXACTLY what the
+  // table says for every one of the 30 possible (from, to) pairs, not just a
+  // hand-picked sample. The table's own shape is separately pinned by the
+  // "encodes exactly the documented shape" test above, so together these two
+  // tests catch both "the table drifted from spec" and "the function drifted
+  // from the table".
+  const ALL_TICKET_STATUSES: string[] = [
+    TicketStatus.OPEN,
+    TicketStatus.REPLIED,
+    TicketStatus.WAITING_ADMIN,
+    TicketStatus.WAITING_CUSTOMER,
+    TicketStatus.RESOLVED,
+    TicketStatus.CLOSED,
+  ];
+  const legalCases: Array<[string, string]> = [];
+  const illegalCases: Array<[string, string]> = [];
+  for (const from of ALL_TICKET_STATUSES) {
+    for (const to of ALL_TICKET_STATUSES) {
+      if (from === to) continue;
+      (TICKET_LEGAL_TRANSITIONS[from]?.includes(to) ? legalCases : illegalCases).push([from, to]);
+    }
+  }
+
+  it("the generated matrix actually covers both legal and illegal cases (sanity check on the generation above)", () => {
+    expect(legalCases.length).toBe(20);
+    expect(illegalCases.length).toBe(10);
+    expect(legalCases.length + illegalCases.length).toBe(ALL_TICKET_STATUSES.length * (ALL_TICKET_STATUSES.length - 1));
+  });
+
+  it.each(legalCases)("allows %s -> %s, audits it, and stamps resolvedAt/closedAt where relevant", async (from, to) => {
+    const user = await makeUser(910000n + BigInt(legalCases.findIndex(([f, t]) => f === from && t === to)));
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await prisma.supportTicket.update({ where: { id: ticket.id }, data: { status: from } });
+
+    const result = await transitionTicketStatus(prisma, { ticketId: ticket.id, from, to, adminId: admin.id });
+
+    expect(result.status).toBe(to);
+    if (to === TicketStatus.RESOLVED) expect(result.resolvedAt).toBeInstanceOf(Date);
+    if (to === TicketStatus.CLOSED) expect(result.closedAt).toBeInstanceOf(Date);
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toContain(from);
+    expect(rows[0]!.details).toContain(to);
+  });
+
+  it.each(illegalCases)("rejects %s -> %s as illegal, and writes no audit row", async (from, to) => {
+    const user = await makeUser(920000n + BigInt(illegalCases.findIndex(([f, t]) => f === from && t === to)));
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await prisma.supportTicket.update({ where: { id: ticket.id }, data: { status: from } });
+
+    await expect(
+      transitionTicketStatus(prisma, { ticketId: ticket.id, from, to, adminId: admin.id }),
+    ).rejects.toThrow(ValidationError);
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "ticket_status_change", targetId: ticket.id } });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects a transition whose `from` no longer matches the row's actual status (stale claim)", async () => {
+    const user = await makeUser(9301n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    await transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.OPEN, to: TicketStatus.RESOLVED, adminId: admin.id });
+
+    // Row is now RESOLVED; claiming OPEN -> RESOLVED again must fail.
+    await expect(
+      transitionTicketStatus(prisma, { ticketId: ticket.id, from: TicketStatus.OPEN, to: TicketStatus.RESOLVED, adminId: admin.id }),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("rejects transitioning a non-existent ticket", async () => {
+    const admin = await makeAdmin();
+    await expect(
+      transitionTicketStatus(prisma, { ticketId: 999_999_999, from: TicketStatus.OPEN, to: TicketStatus.RESOLVED, adminId: admin.id }),
+    ).rejects.toThrow(ValidationError);
   });
 });

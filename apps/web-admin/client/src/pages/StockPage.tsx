@@ -19,6 +19,7 @@ import { Boxes, Eye, Download, MoreVertical } from "lucide-react";
 import { SearchBar } from "../components/shared/SearchBar";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { apiGet } from "../api/client";
 
 interface DenominationRow {
   id: number;
@@ -69,11 +70,7 @@ function compareRows(
 function useStock() {
   return useQuery<StockData>({
     queryKey: ["stock"],
-    queryFn: async () => {
-      const res = await fetch("/api/stock");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<StockData>;
-    },
+    queryFn: () => apiGet<StockData>("/api/stock"),
   });
 }
 

@@ -13,9 +13,11 @@
  * The guest cookie is merged into CartItem at login (routes/auth.ts).
  */
 import type { FastifyRequest } from "fastify";
+import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { UserRole } from "@app/core/enums";
+import type { CartCompositionLine } from "@app/core/cartComposition";
 import {
   prisma,
   getCartWithDenominationProduct,
@@ -44,7 +46,34 @@ export function csrfOk(req: FastifyRequest, customer: Customer | null): boolean 
   if (!customer) return true;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
-  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf) && originOk(req);
+}
+
+/** Origin/Referer check — defense-in-depth ALONGSIDE csrfOk's token check,
+ * not a replacement. Compares the Origin header's hostname (or Referer's,
+ * when Origin is absent) against the app's own configured public origin
+ * (`SHOP_PUBLIC_URL`, falling back to `PUBLIC_URL`) when one is set, exactly
+ * like `publicBase(req)` (../shop.ts) already falls back for building links.
+ * Only when NEITHER is configured does this fall back to this request's own
+ * hostname (Fastify's req.hostname, which already respects TRUST_PROXY the
+ * same way req.ip does — see rateLimit.ts's clientIp). Preferring the
+ * configured origin avoids a deploy-time availability trap: a reverse proxy
+ * that doesn't forward the `Host` header correctly would otherwise make
+ * req.hostname disagree with the real public origin and 403 every mutation.
+ * No Origin AND no Referer passes (many legitimate same-site requests omit
+ * both); a header that IS present but names a different host fails. */
+export function originOk(req: FastifyRequest): boolean {
+  const origin = req.headers.origin;
+  const referer = req.headers.referer;
+  const raw = typeof origin === "string" ? origin : typeof referer === "string" ? referer : null;
+  if (raw === null) return true;
+  const configuredBase = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL;
+  const expectedHostname = configuredBase ? new URL(configuredBase).hostname : req.hostname;
+  try {
+    return new URL(raw).hostname === expectedHostname;
+  } catch {
+    return false; // an unparseable Origin/Referer is suspicious, not trusted
+  }
 }
 
 export interface CartLineView {
@@ -64,10 +93,31 @@ export interface CartLineView {
    * single-SKU-per-non-auto-cart guard (POST /cart) and the checkout
    * info-collection step (checkoutView's items array). */
   delivery_type: string;
+  /** `Denomination.autoDeliverySource` — "digiflazz" for a supplier-routed
+   * game top-up, null otherwise. The cart_kind half of the composition guard
+   * (POST /cart) needs it, because deliveryType alone cannot tell a top-up
+   * apart from a premium SKU that collects buyer info: the Digiflazz catalog
+   * sync creates both as `manual_with_info`. See @app/core/cartComposition. */
+  auto_delivery_source: string | null;
   /** Live flash sale on this SKU, or null. `unit_price` above ALREADY carries
    * the discount; this is only what the line needs to strike through the old
    * price and count down to the end of the sale. */
   flash: FlashLineView | null;
+}
+
+/**
+ * Adapt a rendered cart line to the shape the shared composition rule
+ * (@app/core/cartComposition) reads. One mapper rather than an inline object
+ * literal at each call site, so a future field the rule needs is added in one
+ * place — and so the rule keeps knowing nothing about the storefront's
+ * snake_case view types.
+ */
+export function cartCompositionLineOf(line: CartLineView): CartCompositionLine {
+  return {
+    denominationId: line.denomination_id,
+    deliveryType: line.delivery_type,
+    autoDeliverySource: line.auto_delivery_source,
+  };
 }
 
 /** Flash-sale badge data shared by the cart line and the checkout summary. */
@@ -146,12 +196,19 @@ export async function loadCartLines(
             denomination_id: r.productId,
             product_slug: parent.slug,
             name: cartLineLabel(parent.name, denom.name),
-            image: denom.webImageUrl ?? productImage(parent, parent.category.name),
+            // No stock-photo fallback here either (Fase 12). CartLineView.image
+            // stays `string` (never null) for contract stability; when neither
+            // the denomination nor its parent product has a real photo it
+            // coalesces to "", which is falsy — CartPage.tsx renders a Package
+            // fallback icon for that line (mirrors SearchOverlay's ResultThumb),
+            // never an <img> with an empty src (guarded since commit 8143a7ce).
+            image: denom.webImageUrl ?? productImage(parent) ?? "",
             unit_price: unit.toString(),
             qty: r.quantity,
             line_total: unit.times(r.quantity).toString(),
             available: await countAvailableStock(prisma, r.productId),
             delivery_type: denom.deliveryType,
+            auto_delivery_source: denom.autoDeliverySource,
             flash: flashViewFor(denom, unit),
           };
         }),
@@ -173,12 +230,18 @@ export async function loadCartLines(
         denomination_id: l.p,
         product_slug: parent.slug,
         name: cartLineLabel(parent.name, denom.name),
-        image: denom.webImageUrl ?? productImage(parent, parent.category.name),
+        // No stock-photo fallback here either (Fase 12) — CartLineView.image
+        // stays a non-nullable string for CartPage.tsx's unconditional <img>
+        // (out of scope for this task's DefaultThumb work), so an absent
+        // real photo on both the denomination and its parent product renders
+        // an empty src rather than a hotlinked placeholder.
+        image: denom.webImageUrl ?? productImage(parent) ?? "",
         unit_price: unit.toString(),
         qty: l.q,
         line_total: unit.times(l.q).toString(),
         available,
         delivery_type: denom.deliveryType,
+        auto_delivery_source: denom.autoDeliverySource,
         flash: flashViewFor(denom, unit),
       } satisfies CartLineView;
     }),

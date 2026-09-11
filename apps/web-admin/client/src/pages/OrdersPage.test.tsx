@@ -238,7 +238,7 @@ describe("OrdersPage", () => {
       </WrapperAt>,
     );
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=PROCESSING"),
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=PROCESSING", expect.objectContaining({ credentials: "include" })),
     );
   });
 
@@ -250,7 +250,7 @@ describe("OrdersPage", () => {
       </WrapperAt>,
     );
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?q=someusername"),
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?q=someusername", expect.objectContaining({ credentials: "include" })),
     );
   });
 
@@ -266,13 +266,13 @@ describe("OrdersPage", () => {
     const processingTab = screen.getByRole("button", { name: /^Processing/ });
     await user.click(processingTab);
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=CONFIRMED%2CPAID"),
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=CONFIRMED%2CPAID", expect.objectContaining({ credentials: "include" })),
     );
     expect(processingTab).toHaveAttribute("aria-pressed", "true");
     expect(allTab).toHaveAttribute("aria-pressed", "false");
 
     await user.click(allTab);
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?", expect.objectContaining({ credentials: "include" })));
     expect(allTab).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -286,6 +286,7 @@ describe("OrdersPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/orders?status=PENDING_PAYMENT%2CPAYMENT_DETECTED%2CCONFIRMING%2CPENDING_VERIFICATION%2CUNDERPAID%2CPROCESSING",
+        expect.objectContaining({ credentials: "include" }),
       ),
     );
   });
@@ -306,7 +307,7 @@ describe("OrdersPage", () => {
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?paymentMethod=TOKOPAY&q=andi"),
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?paymentMethod=TOKOPAY&q=andi", expect.objectContaining({ credentials: "include" })),
     );
   });
 
@@ -442,12 +443,12 @@ describe("OrdersPage", () => {
 
     // Go to page 2 first so the reset-to-1 behavior is actually observable.
     await user.click(screen.getByRole("button", { name: "Go to page 2" }));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?page=2"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?page=2", expect.objectContaining({ credentials: "include" })));
 
     await user.click(screen.getByRole("combobox", { name: /rows per page/i }));
     await user.click(await screen.findByText("50 / page"));
 
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?pageSize=50"));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?pageSize=50", expect.objectContaining({ credentials: "include" })));
   });
 });
 

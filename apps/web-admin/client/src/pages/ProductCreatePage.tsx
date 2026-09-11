@@ -29,6 +29,12 @@ export function ProductCreatePage() {
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [emoji, setEmoji] = useState("");
   const [description, setDescription] = useState("");
+  // Game-navigation classification (Task 8/14) — bot navigation and
+  // denomination labeling (Tasks 11-13) key off these three. Independent of
+  // each other and of every other field on this form.
+  const [gameVariant, setGameVariant] = useState("");
+  const [gameVariantEmoji, setGameVariantEmoji] = useState("");
+  const [gameRegion, setGameRegion] = useState("");
   const [whatYouGet, setWhatYouGet] = useState("");
   const [terms, setTerms] = useState("");
   const [warrantyNote, setWarrantyNote] = useState("");
@@ -62,6 +68,9 @@ export function ProductCreatePage() {
         categoryId: categoryId!,
         ...(emoji.trim() ? { emoji: emoji.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(gameVariant.trim() ? { gameVariant: gameVariant.trim() } : {}),
+        ...(gameVariantEmoji.trim() ? { gameVariantEmoji: gameVariantEmoji.trim() } : {}),
+        ...(gameRegion.trim() ? { gameRegion: gameRegion.trim() } : {}),
         ...(whatYouGet.trim() ? { whatYouGet: whatYouGet.trim() } : {}),
         ...(terms.trim() ? { terms: terms.trim() } : {}),
         ...(warrantyNote.trim() ? { warrantyNote: warrantyNote.trim() } : {}),
@@ -180,6 +189,39 @@ export function ProductCreatePage() {
             placeholder="e.g. 🎬"
             value={emoji}
             onChange={(e) => setEmoji(e.target.value)}
+          />
+        </div>
+
+        {/* Game-navigation classification (Task 8/14) — optional, powers the
+            bot's catalog navigation and denomination labeling for game
+            top-up products (e.g. Mobile Legends' Diamonds variant). */}
+        <div>
+          <label className="block text-sm font-medium text-ink">Game Variant</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. Diamonds"
+            value={gameVariant}
+            onChange={(e) => setGameVariant(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-ink">Game Variant Emoji</label>
+          <Input
+            className="mt-1 w-24"
+            placeholder="e.g. 💎"
+            value={gameVariantEmoji}
+            onChange={(e) => setGameVariantEmoji(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium text-ink">Game Region</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. Global"
+            value={gameRegion}
+            onChange={(e) => setGameRegion(e.target.value)}
           />
         </div>
 

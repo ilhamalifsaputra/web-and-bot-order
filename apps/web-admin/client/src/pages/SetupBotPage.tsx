@@ -38,7 +38,7 @@ export function SetupBotPage() {
           <h1 className="mt-1 font-display text-2xl font-semibold tracking-tight text-ink">Connect your bot</h1>
           <p className="mt-2 text-sm text-ink-soft">
             Paste the token you received from{" "}
-            <a href="https://t.me/BotFather" className="text-accent underline" target="_blank" rel="noreferrer">
+            <a href="https://t.me/BotFather" className="text-pine underline" target="_blank" rel="noreferrer">
               @BotFather
             </a>
             . You can configure this later in Settings.
@@ -49,7 +49,7 @@ export function SetupBotPage() {
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
         )}
 
-        <div className="mb-6">
+        <div className="mb-6 flex flex-col gap-1.5">
           <Label htmlFor="bot_token">Bot token</Label>
           <Input
             id="bot_token"

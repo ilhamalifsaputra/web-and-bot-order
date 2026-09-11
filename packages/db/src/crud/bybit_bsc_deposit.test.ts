@@ -46,6 +46,7 @@ import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import type { Db } from "./_types";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 /** Mutable in-memory Setting store backing both `findUnique` and `upsert`,
  * needed by recordBybitBscPollHealth (writes) + getBybitBscPollHealth (reads). */
@@ -143,6 +144,20 @@ describe("resolveBybitBscConfig — minAmount", () => {
   });
 });
 
+describe("resolveBybitBscConfig — encrypted secrets (Task 13)", () => {
+  it("decrypts bybit_api_key and bybit_api_secret when stored as encrypted envelopes", async () => {
+    const cfg = await resolveBybitBscConfig(
+      stubDb({
+        bybit_bsc_deposit_address: "db-deposit-address",
+        bybit_api_key: encryptCredentials("real-bybit-apikey"),
+        bybit_api_secret: encryptCredentials("real-bybit-apisecret"),
+      }),
+    );
+    expect(cfg.apiKey).toBe("real-bybit-apikey");
+    expect(cfg.apiSecret).toBe("real-bybit-apisecret");
+  });
+});
+
 describe("resolveBybitBscTrackerConfig", () => {
   it("falls back to the env BscScan key and the default required-confirmations when no Setting is configured", async () => {
     const cfg = await resolveBybitBscTrackerConfig(stubDb({}));
@@ -163,6 +178,11 @@ describe("resolveBybitBscTrackerConfig", () => {
     expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "not-a-number" }))).requiredConfirmations).toBe(15);
     expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "0" }))).requiredConfirmations).toBe(15);
     expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "-3" }))).requiredConfirmations).toBe(15);
+  });
+
+  it("decrypts bscscan_api_key when stored as an encrypted envelope (Task 13)", async () => {
+    const cfg = await resolveBybitBscTrackerConfig(stubDb({ bscscan_api_key: encryptCredentials("real-bscscan-key") }));
+    expect(cfg.apiKey).toBe("real-bscscan-key");
   });
 });
 

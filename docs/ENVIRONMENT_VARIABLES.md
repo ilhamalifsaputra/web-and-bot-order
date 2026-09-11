@@ -57,7 +57,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `DATABASE_URL_PRISMA` | `file:../data/bot.db` | URL Prisma (SQLite). Docker: path **absolut** (`file:/app/data/bot.db`). |
+| `DATABASE_URL_PRISMA` | **wajib, tidak ada default** | Connection string Postgres (`postgresql://user:password@host:port/db`). Dua lapis validasi yang berbeda: **schema Zod** (`packages/core/src/config.ts`, `z.string()`) hanya memastikan variabelnya **ada** — proses gagal start saat boot kalau tidak diset sama sekali, tapi Zod tidak memeriksa bentuk/skema URL-nya. Yang menolak nilai selain `postgresql://` adalah **Prisma**, saat mencoba konek (bukan saat config di-parse), karena `schema.prisma` sudah Postgres-only. Docker: host **wajib** nama service `postgres` (jaringan internal Compose), bukan `localhost`/`127.0.0.1`. Lihat [`../.env.example`](../.env.example) dan [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md). |
 
 ## Behaviour / Tuning
 
@@ -112,7 +112,7 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 | `NOTIF_BOT_TOKEN` | opsional | Bot terpisah untuk posting channel testimoni. Kosong = pakai bot utama (harus jadi admin channel). |
 | `PUBLIC_CHANNEL_ID` | opsional, number | ID channel testimoni publik. Setting `public_channel_id` menang. |
 | `NOTIF_POLL_INTERVAL_SECONDS` | `10` | Interval polling `notification_outbox`. |
-| `NOTIF_MAX_ATTEMPTS` | `5` | Percobaan kirim maksimum sebelum baris `FAILED` permanen. |
+| `NOTIF_MAX_ATTEMPTS` | `10` | Percobaan kirim maksimum sebelum baris jadi `DEAD_LETTER` permanen (baris yang benar-benar sudah di-retry sampai limit — beda dari `FAILED`, yang khusus kegagalan permanen sejak percobaan pertama, lihat komentar `markNotificationFailed` di `packages/db/src/crud/notifications.ts`). |
 
 ## SMTP (forgot-password storefront)
 

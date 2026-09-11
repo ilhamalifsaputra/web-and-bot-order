@@ -153,6 +153,7 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
   [/^\/account\/reviews$/, "web.account_reviews"],
   [/^\/account\/support(\/\d+)?$/, "web.account_support"],
   [/^\/account\/settings$/, "web.settings_title"],
+  [/^\/help$/, "web.help_title"],
 ];
 
 /** Paths the SPA route table knows — anything else is a 404 shell. Keep in
@@ -162,7 +163,7 @@ const KNOWN_PATHS = new RegExp(
     "|/reset/[^/]+|/checkout/[^/]+/pay|/track" +
     "|/wallet/topup|/wallet/topup/[^/]+/pay" +
     "|/account|/account/orders|/account/orders/[^/]+|/account/referral" +
-    "|/account/reviews|/account/support|/account/support/\\d+|/account/settings" +
+    "|/account/reviews|/account/support|/account/support/\\d+|/account/settings|/help" +
     "|/about|/how-to-order|/terms|/privacy|/refund)$",
 );
 

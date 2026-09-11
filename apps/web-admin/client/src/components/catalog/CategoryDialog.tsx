@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Dialog,
   DialogContent,
@@ -16,8 +17,20 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { apiPatch, apiPost } from "../../api/client";
 import type { CategoryRow } from "../../api/catalog";
+
+// Sentinel for "no group set" — shadcn's Select rejects an empty-string item
+// value, so a real value stands in for it, matching TicketDetailPage.tsx's
+// UNCATEGORIZED convention for its own nullable category Select.
+const NO_GROUP = "_none_";
 
 export function CategoryDialog({
   category,
@@ -33,6 +46,10 @@ export function CategoryDialog({
   const [name, setName] = useState(category?.name ?? "");
   const [emoji, setEmoji] = useState(category?.emoji ?? "");
   const [description, setDescription] = useState(category?.description ?? "");
+  const [checkoutFlow, setCheckoutFlow] = useState<"catalog" | "instant">(
+    category?.checkoutFlow ?? "catalog",
+  );
+  const [group, setGroup] = useState<string>(category?.group ?? NO_GROUP);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +60,8 @@ export function CategoryDialog({
       name: name.trim(),
       emoji: emoji.trim() || null,
       description: description.trim() || null,
+      checkoutFlow,
+      group: group === NO_GROUP ? null : group,
     };
     try {
       if (editing) {
@@ -70,7 +89,7 @@ export function CategoryDialog({
           <DialogTitle>{editing ? "Edit category" : "New category"}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-name">Name</Label>
             <Input
               id="cat-name"
@@ -79,7 +98,7 @@ export function CategoryDialog({
               autoFocus
             />
           </div>
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-emoji">Emoji</Label>
             <Input
               id="cat-emoji"
@@ -88,7 +107,7 @@ export function CategoryDialog({
               className="max-w-[100px]"
             />
           </div>
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="cat-desc">Description</Label>
             <Textarea
               id="cat-desc"
@@ -96,6 +115,52 @@ export function CategoryDialog({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
+          </div>
+          <div>
+            <Label>Checkout flow</Label>
+            <RadioGroup
+              className="mt-2"
+              value={checkoutFlow}
+              onValueChange={(v) => setCheckoutFlow(v as "catalog" | "instant")}
+            >
+              <label
+                htmlFor="cat-checkout-flow-catalog"
+                className="flex items-start gap-3 rounded-lg border border-line p-3 cursor-pointer transition-colors hover:border-pine/50 has-[[data-state=checked]]:border-pine has-[[data-state=checked]]:bg-pine-tint"
+              >
+                <RadioGroupItem id="cat-checkout-flow-catalog" value="catalog" className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-ink">Catalog</span>
+                  <span className="block text-xs text-ink-soft">
+                    Standard multi-page shop flow (browse → cart → checkout).
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cat-checkout-flow-instant"
+                className="flex items-start gap-3 rounded-lg border border-line p-3 cursor-pointer transition-colors hover:border-pine/50 has-[[data-state=checked]]:border-pine has-[[data-state=checked]]:bg-pine-tint"
+              >
+                <RadioGroupItem id="cat-checkout-flow-instant" value="instant" className="mt-0.5" />
+                <span>
+                  <span className="block text-sm font-medium text-ink">Instant</span>
+                  <span className="block text-xs text-ink-soft">
+                    Single-page instant-buy flow for Digiflazz-backed top-up categories.
+                  </span>
+                </span>
+              </label>
+            </RadioGroup>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="cat-group">Group</Label>
+            <Select value={group} onValueChange={setGroup}>
+              <SelectTrigger id="cat-group" aria-label="Group">
+                <SelectValue placeholder="Not set" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_GROUP}>Not set</SelectItem>
+                <SelectItem value="GAME_TOPUP">🎮 Game Top Up</SelectItem>
+                <SelectItem value="PREMIUM_APPS">💎 Premium Apps</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           {editing && (
             <p className="text-sm text-ink-soft">

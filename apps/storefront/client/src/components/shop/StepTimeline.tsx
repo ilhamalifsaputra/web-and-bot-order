@@ -37,7 +37,7 @@ function StepBadge({ icon: Icon, n }: { icon: LucideIcon; n: number }) {
       className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-pine text-white"
     >
       <Icon className="h-5 w-5" />
-      <span className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-card text-[11px] font-bold text-pine ring-2 ring-pine">
+      <span className="absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-card text-2xs font-bold text-pine ring-2 ring-pine">
         {n}
       </span>
     </span>
@@ -76,7 +76,7 @@ function StackedTimeline({ steps }: { steps: StepItem[] }) {
           )}
           <StepBadge icon={step.icon} n={idx + 1} />
           <div className="min-w-0 flex-1 pt-1.5">
-            {step.title && <h3 className="font-display text-xl font-bold text-ink">{step.title}</h3>}
+            {step.title && <h3 className="font-display text-xl font-semibold text-ink">{step.title}</h3>}
             {step.description && <div className={step.title ? "mt-2" : undefined}>{step.description}</div>}
           </div>
         </li>

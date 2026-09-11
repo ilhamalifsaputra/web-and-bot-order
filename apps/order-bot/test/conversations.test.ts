@@ -13,6 +13,9 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
+  updateDenomination,
+  DIGIFLAZZ_MARKUP_TYPE_KEY,
+  DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
 import { NotificationEvent, OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
@@ -163,16 +166,41 @@ describe("support + reject conversations", () => {
   it("support: description + submit creates a ticket, a message, and forwards to admins", async () => {
     const sink: SentCall[] = [];
     const entry = entryCust(sink, "v1:support:open");
+    // Captured by name (not inlined into the queue) so the assertion below
+    // can check correlationId against the exact update logCustomerAction
+    // threaded — support.ts's own logCustomerAction call uses `lastCtx`,
+    // the freshest waited update, which is this one (the photos:done tap is
+    // the last wait before the ticket is created).
+    const photosDone = msg(sink, { callbackData: "v1:support:photos:done" });
     const conv = new FakeConversation([
       msg(sink, { text: "My account stopped working yesterday" }),
-      msg(sink, { callbackData: "v1:support:photos:done" }),
+      photosDone,
     ]);
     await supportConversation(conv.asMyConversation(), entry);
 
     const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
     expect(ticket).toBeTruthy();
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
+    // Task 2 (Phase C): the admin forward is now enqueued as an
+    // ADMIN_NEW_TICKET notification_outbox row (setup-db.ts sets
+    // ADMIN_IDS=999,1000, so both resolve as targets) rather than a direct
+    // ctx.api.sendMessage() — asserted on the outbox row instead of the
+    // sink's captured sendMessage calls.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 999)).toBe(true); // forwarded
+
+    // Phase H customer-audit trail. actorType filtered in the where-clause
+    // (M-6, final whole-branch review) rather than asserted after the fact.
+    const audit = await prisma.auditLog.findFirst({ where: { actorType: "CUSTOMER", targetType: "ticket", targetId: ticket!.id } });
+    expect(audit?.customerId).toBe(sample.user.id);
+    expect(audit?.telegramUserId).toBe(42n);
+    expect(audit?.channel).toBe("BOT");
+    expect(audit?.action).toBe("ticket_create");
+    expect(audit?.details).toBe("Created a support ticket via Telegram.");
+    // I-2 (final whole-branch review): correlationId is the one field that
+    // lets this row be joined back to the exact update that created the
+    // ticket — assert equality, not just truthiness.
+    expect(audit?.correlationId).toBe(String(photosDone.update.update_id));
   });
 
   it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {
@@ -896,6 +924,64 @@ describe("admin conversations", () => {
     expect(await prisma.auditLog.count({ where: { action: "product_rename" } })).toBe(1);
   });
 
+  // Final-review C2 fix, closed on this third write path too (besides the
+  // web admin PATCH route and the Digiflazz import wizard): editing a
+  // Digiflazz-routed denomination's price from the bot must also mark
+  // priceOverridden, or the next hourly resync would silently undo this
+  // exact edit within the hour.
+  it("productEdit: a Digiflazz price edit that disagrees with the markup suggestion sets priceOverridden", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: "20000", // suggested price would be 22000
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "25000" })]); // hand-edited, above the suggestion
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.price.toString()).toBe("25000");
+    expect(p!.priceOverridden).toBe(true);
+  });
+
+  it("productEdit: a Digiflazz price edit matching the markup suggestion leaves priceOverridden false", async () => {
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_TYPE_KEY, "percent");
+    await setSetting(prisma, DIGIFLAZZ_MARKUP_VALUE_KEY, "10");
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: "20000",
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "22000" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(false);
+  });
+
+  it("productEdit: a Digiflazz price edit with no cost on record is treated as overridden", async () => {
+    await updateDenomination(prisma, sample.product.id, {
+      autoDeliverySource: "digiflazz",
+      costPrice: null,
+    });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "12345" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(true);
+  });
+
+  it("productEdit: a plain (non-Digiflazz) price edit leaves priceOverridden false", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:prod:price:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "99999" })]);
+    await productEditConversation(conv.asMyConversation(), entry);
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(p!.priceOverridden).toBe(false);
+  });
+
   it("bulkPricing: 2 steps upsert a rule + audit", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, `v1:adm:bulk:new:${sample.product.id}`);
@@ -915,8 +1001,17 @@ describe("admin conversations", () => {
     await ticketReplyConversation(conv.asMyConversation(), entry);
 
     const after = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
-    expect(after!.status).toBe(TicketStatus.REPLIED);
+    // Task 1 fix (packages/db/src/crud/support.ts): the real flow calls
+    // replyToTicket then addTicketMessage in one transaction, landing on
+    // WAITING_CUSTOMER (was REPLIED pre-fix) — see TICKET_LEGAL_TRANSITIONS'
+    // doc comment.
+    expect(after!.status).toBe(TicketStatus.WAITING_CUSTOMER);
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id, senderType: SenderType.ADMIN } })).toBe(1);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // customer DM
+    // Task 2 (Phase C): the customer DM is now enqueued as a TICKET_REPLY_DM
+    // notification_outbox row rather than a direct ctx.api.sendMessage() —
+    // asserted on the outbox row instead of the sink's captured sendMessage
+    // calls. sample.user's telegramId is 42.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.TICKET_REPLY_DM } });
+    expect(rows.some((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 42)).toBe(true); // customer DM queued
   });
 });

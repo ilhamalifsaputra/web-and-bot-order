@@ -14,6 +14,28 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # engine-swap: schema.prisma is Postgres-only now, and every test
+    # bootstrap file (tests/helpers/pgTestSchema.ts) provisions its own
+    # schema inside whatever DATABASE_URL_PRISMA points at via `prisma db
+    # push` — so the job needs a real reachable Postgres, not just a env var.
+    # `pretest`'s migration-drift check (scripts/check-migration-drift.ts)
+    # also needs one, for its `--shadow-database-url`.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: bot_order
+          POSTGRES_USER: bot_order
+          POSTGRES_PASSWORD: bot_order_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bot_order -d bot_order"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL_PRISMA: postgresql://bot_order:bot_order_ci@localhost:5432/bot_order
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,10 +45,10 @@ jobs:
         with:
           version: 9.15.9
 
-      - name: Setup Node 20
+      - name: Setup Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -34,6 +56,9 @@ jobs:
 
       - name: Prisma generate
         run: pnpm exec prisma generate
+
+      - name: Push schema to CI Postgres
+        run: pnpm exec prisma db push --schema prisma/schema.prisma --skip-generate
 
       - name: Migration drift check
         run: pnpm run check-migration-drift

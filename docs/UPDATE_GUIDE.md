@@ -7,8 +7,10 @@ jalan (produksi atau staging). Untuk konsep versi/rilis, lihat
 ## Mengapa urutannya kaku
 
 Aplikasi ini **satu proses** (`apps/server`) yang memegang **satu** koneksi
-SQLite. Tidak ada rolling-update multi-instance, tidak ada load balancer di
-depan beberapa replica — jadi "zero-downtime" di sini berarti **downtime
+database — SQLite atau PostgreSQL tergantung status cutover toko (lihat
+[DATABASE.md](DATABASE.md) dan [POSTGRES_MIGRATION.md](POSTGRES_MIGRATION.md)).
+Tidak ada rolling-update multi-instance, tidak ada load balancer di depan
+beberapa replica — jadi "zero-downtime" di sini berarti **downtime
 seminimal mungkin** (~detik, bukan nol mutlak) lewat urutan yang benar, bukan
 blue-green deployment sungguhan.
 
@@ -20,6 +22,9 @@ belum ada di DB live.
 
 ```bash
 # 1. Backup database — TITIK ROLLBACK. Jangan skip.
+#    Skrip ini engine-aware: mendeteksi otomatis SQLite (pre-cutover) atau
+#    Postgres (pasca-cutover) lewat DATABASE_URL_PRISMA — sama untuk kedua
+#    jalur, tidak perlu dipilih manual. Detail: deploy/backup/README.md.
 deploy/backup/backup.sh
 
 # 2. Tarik kode terbaru

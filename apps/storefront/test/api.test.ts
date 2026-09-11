@@ -1,8 +1,9 @@
 // Storefront JSON API (/api/v1) tests — drives the Fastify app with
 // app.inject() against an isolated temp DB (pattern: storefront.test.ts).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -16,6 +17,7 @@ import {
 } from "@app/db";
 import { DeliveryType } from "@app/core/enums";
 import { buildApp } from "../src/server";
+import { CHECKOUT_SUBMIT_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 async function seedProduct(
   categoryId: number,
@@ -44,6 +46,14 @@ let categorySlug: string;
 let productSlug: string;
 let denomId: number;
 let emptyProductSlug: string;
+
+/** A distinct simulated client IP per test, so one test's checkout-submit
+ * quota can never spill into another's (the limiter is process-wide). */
+let ipCounter = 0;
+function freshIp(): string {
+  ipCounter += 1;
+  return `192.0.2.${ipCounter}`;
+}
 
 beforeAll(async () => {
   await initDb();
@@ -167,7 +177,10 @@ describe("GET /api/v1/products/:slug", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.product.slug).toBe(productSlug);
-    expect(body.product.image).toBeTruthy(); // category-fallback image, never null here
+    // Fase 12: no more category-fallback stock photo — a product with no
+    // admin-set webImageUrl now reports a null image (client renders the
+    // DefaultThumb design-system placeholder instead).
+    expect(body.product.image).toBeNull();
     expect(body.product.denominations).toHaveLength(1);
   });
 
@@ -301,6 +314,73 @@ describe("POST /api/v1/cart", () => {
       expect(body.items[0]).toMatchObject({ denomination_id: denomId, qty: 3 });
       expect(body.subtotal).toBe("120000");
     });
+
+    // Task 12: Origin/Referer defense-in-depth, additive alongside the token
+    // check above — same failure shape either way (an attacker can't tell
+    // "bad token" from "bad origin" apart from the response).
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: { denomination_id: denomId, qty: 1 },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
+    it("200s with a valid token and no Origin/Referer header at all (most legitimate requests omit both)", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    // Whole-branch review finding I-3: with no SHOP_PUBLIC_URL/PUBLIC_URL
+    // configured, originOk falls back to comparing against req.hostname —
+    // this is that fallback path, exercised by temporarily unsetting both
+    // (this test suite's setup-env.ts sets SHOP_PUBLIC_URL by default, so it
+    // must be cleared for this one case).
+    it("200s with a valid token and an Origin header matching this request's own host (no SHOP_PUBLIC_URL/PUBLIC_URL configured — fallback path)", async () => {
+      const originalShop = config.SHOP_PUBLIC_URL;
+      const originalPublic = config.PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      config.PUBLIC_URL = undefined;
+      try {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/cart",
+          headers: { cookie, "x-csrf-token": csrf, origin: "http://localhost" },
+          payload: { denomination_id: denomId, qty: 2 },
+        });
+        expect(res.statusCode).toBe(200);
+      } finally {
+        config.SHOP_PUBLIC_URL = originalShop;
+        config.PUBLIC_URL = originalPublic;
+      }
+    });
+
+    // I-3's actual fix: when SHOP_PUBLIC_URL IS configured (the default in
+    // this test suite — see setup-env.ts), the Origin check must prefer it
+    // over req.hostname — so an Origin matching the configured public origin
+    // passes even though it does NOT match this injected request's own
+    // apparent host ("localhost"). This is the deploy-time availability gap
+    // the fix closes: a proxy that mangles the Host header must not 403
+    // every mutation as long as the buyer's browser really is on the
+    // configured public origin.
+    it("200s with a valid token and an Origin header matching the configured SHOP_PUBLIC_URL, even though it does not match req.hostname", async () => {
+      expect(config.SHOP_PUBLIC_URL).toBe("https://shop.test.invalid");
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/cart",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://shop.test.invalid" },
+        payload: { denomination_id: denomId, qty: 2 },
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });
 
@@ -431,6 +511,236 @@ describe("POST /api/v1/cart — cart guard (single-SKU-per-non-auto-cart)", () =
   });
 });
 
+// Final-review N1 fix: a Digiflazz-routed denomination (autoDeliverySource
+// "digiflazz") may only ever be added/held at quantity 1 — the supplier
+// dispatch poller (packages/db/src/crud/digiflazz.ts) places exactly one
+// top-up per order and marks the whole order DELIVERED, so a qty>1 line for
+// one would leave the buyer paid for N and delivered 1.
+describe("POST /api/v1/cart — Digiflazz single-unit guard", () => {
+  let digiflazzDenomId: number;
+  let manualWithInfoDenomId: number;
+
+  beforeAll(async () => {
+    const { members } = await seedProduct(categoryId, "Digiflazz Game", [{ name: "100 Diamonds", price: "16500" }]);
+    digiflazzDenomId = members[0]!.id;
+    await updateDenomination(prisma, digiflazzDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "ml100",
+    });
+
+    // A non-Digiflazz manual_with_info denomination — same delivery type,
+    // no autoDeliverySource — to prove the new guard is keyed on
+    // autoDeliverySource specifically, not deliveryType.
+    const { members: members2 } = await seedProduct(categoryId, "Ordinary Manual Game", [
+      { name: "Info Denom", price: "12000" },
+    ]);
+    manualWithInfoDenomId = members2[0]!.id;
+    await updateDenomination(prisma, manualWithInfoDenomId, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+  });
+
+  it("rejects qty=2 for a Digiflazz-routed denomination", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+  });
+
+  it("accepts qty=1 for the same Digiflazz-routed denomination", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("leaves qty=2 for a non-Digiflazz manual_with_info denomination unaffected", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: manualWithInfoDenomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: manualWithInfoDenomId, qty: 2 });
+  });
+
+  it("leaves qty=2 for a plain auto denomination unaffected", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: denomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
+  });
+
+  // addToCart (signed-in) / the guest merge branch both INCREMENT an
+  // existing line rather than setting it absolutely — re-POSTing qty:1 for a
+  // Digiflazz denomination that's ALREADY in the cart would otherwise land at
+  // qty:2 even though this one request looks like "qty 1" in isolation.
+  it("rejects re-adding a Digiflazz-routed denomination that's already in the cart, even at qty=1", async () => {
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(first.statusCode).toBe(200);
+    const cookie = (Array.isArray(first.headers["set-cookie"]) ? first.headers["set-cookie"] : [String(first.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+
+    const check = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie } });
+    expect(check.json().items[0]).toMatchObject({ denomination_id: digiflazzDenomId, qty: 1 });
+  });
+
+  it("signed-in: rejects re-adding a Digiflazz-routed denomination that's already in the cart, even at qty=1", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "digiflazzreadduser",
+        email: "digiflazzreadd@u.test",
+        passwordHash: hashPassword("digiflazzreadd-pw-99"),
+        referralCode: "DFREADD",
+      },
+    });
+    const session = await loginAs("digiflazzreadduser", "digiflazzreadd-pw-99");
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: digiflazzDenomId, qty: 1 },
+    });
+    expect(second.statusCode).toBe(400);
+    expect(second.json()).toEqual({ error: "error.digiflazz_single_unit_only" });
+  });
+});
+
+// Trustance Phase 1 Task 3 — top-ups at the route boundary.
+//
+// The suite above ("cart guard (single-SKU-per-non-auto-cart)") is the
+// characterization half: it passes UNCHANGED, which is the evidence that naming
+// and centralizing the rule did not alter it. This suite adds the top-up
+// dimension that suite never covered, and pins that the rule stayed exactly as
+// permissive as it was — including for the one shape a reverted `cart_kind`
+// check would have started rejecting.
+describe("POST /api/v1/cart — top-up lines under the composition rule", () => {
+  let topupDenomId: number;
+  let autoTypedTopupId: number;
+
+  beforeAll(async () => {
+    // A top-up EXACTLY as packages/db/src/crud/digiflazz.ts creates one.
+    const { members } = await seedProduct(categoryId, "Kind Topup Game", [{ name: "86 Diamonds", price: "20000" }]);
+    topupDenomId = members[0]!.id;
+    await updateDenomination(prisma, topupDenomId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      supplierSku: "kind86",
+    });
+
+    // A shape the catalog sync never produces on its own, but an admin can:
+    // Digiflazz-sourced, hand-edited to auto delivery (e.g. a SKU migrated off
+    // the supplier rail onto local stock). It is the only top-up shape the
+    // homogeneity rule does NOT catch, and it must stay allowed.
+    const { members: members2 } = await seedProduct(categoryId, "Kind Misconfigured Game", [
+      { name: "Misconfigured", price: "21000" },
+    ]);
+    autoTypedTopupId = members2[0]!.id;
+    await updateDenomination(prisma, autoTypedTopupId, {
+      autoDeliverySource: "digiflazz",
+      deliveryType: DeliveryType.AUTO,
+      supplierSku: "kindauto",
+    });
+  });
+
+  const cookieOf = (res: { headers: Record<string, unknown> }): string =>
+    (Array.isArray(res.headers["set-cookie"]) ? res.headers["set-cookie"] : [String(res.headers["set-cookie"])])
+      .map((c) => String(c).split(";")[0])
+      .join("; ");
+
+  // THE no-op proof at the route level: a real top-up mixing with a premium
+  // line is still refused under the OLD error key. A buyer sees exactly the
+  // message they saw before this task.
+  it("a real top-up joining a premium cart is still rejected as error.cart_mixed_delivery", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: topupDenomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  it("a premium line joining a real top-up cart is still rejected as error.cart_mixed_delivery", async () => {
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: topupDenomId, qty: 1 },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: denomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  // REGRESSION PIN. An earlier revision of Task 3 rejected this add with a new
+  // `error.cart_kind_conflict`, believing the resulting order would reach
+  // dispatchPendingDigiflazzOrders and have one supplier top-up delivered for
+  // two paid lines. That was wrong (Task 3 review): the poller selects only
+  // `status: PROCESSING` orders, and an all-AUTO order goes
+  // PENDING_VERIFICATION -> DELIVERED through approveOrder without ever being
+  // PROCESSING. Rejecting it broke a working admin configuration for no gain,
+  // so the check was reverted. This test exists so it is not reintroduced.
+  it("an AUTO-typed Digiflazz SKU may join an all-AUTO cart, exactly as before Task 3", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: cookieOf(add) },
+      payload: { denomination_id: autoTypedTopupId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(2);
+  });
+
+  it("an AUTO-typed top-up is also fine as the cart's only line", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: autoTypedTopupId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: autoTypedTopupId, qty: 1 });
+  });
+});
+
 describe("POST /api/v1/checkout", () => {
   // Guest checkout (Task 4) replaced the blanket 401 with a validated guest
   // branch: no session is required, but a contact email is, and it is checked
@@ -488,6 +798,19 @@ describe("POST /api/v1/checkout", () => {
       expect(res.json()).toEqual({ error: "csrf_failed" });
     });
 
+    // Task 12: this handler's CSRF check is its own inline copy (not
+    // csrfOk), so it needs its own Origin-mismatch coverage.
+    it("403s (same shape as bad token) when Origin is present but mismatched, even with a valid token", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, origin: "https://evil.example" },
+        payload: { method: "qris" },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual({ error: "csrf_failed" });
+    });
+
     it("400s an unavailable payment method (no tokopay creds configured)", async () => {
       const res = await app.inject({
         method: "POST",
@@ -526,6 +849,153 @@ describe("POST /api/v1/checkout", () => {
         await deleteSetting(prisma, "bybit_api_secret");
         await deleteSetting(prisma, "usd_idr_rate");
       }
+    });
+  });
+
+  // Task 1: Idempotency-Key protects the order-creating mutation from a
+  // double-tapped "Pay" button or a network retry. Own buyer + own cart
+  // reset per test so these are independent of execution order and of the
+  // "signed-in customer" block above.
+  describe("Idempotency-Key (Task 1)", () => {
+    let buyerId: number;
+    let cookie: string;
+    let csrf: string;
+
+    beforeAll(async () => {
+      const { hashPassword } = await import("@app/core/password");
+      const u = await prisma.user.create({
+        data: {
+          loginUsername: "idempotencyuser",
+          email: "idempotency@u.test",
+          passwordHash: hashPassword("idempotency-pw-99"),
+          referralCode: "IDEMPKT",
+          walletBalance: "1000000",
+        },
+      });
+      buyerId = u.id;
+      const session = await loginAs("idempotencyuser", "idempotency-pw-99");
+      cookie = session.cookie;
+      csrf = session.csrf;
+    });
+
+    beforeEach(async () => {
+      const { addToCart } = await import("@app/db");
+      await prisma.cartItem.deleteMany({ where: { userId: buyerId } });
+      await addToCart(prisma, buyerId, denomId, 1);
+    });
+
+    it("replays the exact response for a repeated 400 (validation failure) instead of re-running it", async () => {
+      const key = "idem-400-repeat";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(first.statusCode).toBe(400);
+      expect(first.json()).toEqual({ error: "web.pay_method_unavailable" });
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(second.statusCode).toBe(400);
+      expect(second.json()).toEqual({ error: "web.pay_method_unavailable" });
+    });
+
+    it("409s when the same key is reused with a DIFFERENT request body", async () => {
+      const key = "idem-conflict";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "qris" },
+      });
+      expect(first.statusCode).toBe(400);
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "bybit" }, // different method => different request hash
+      });
+      expect(second.statusCode).toBe(409);
+      expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+    });
+
+    it("a repeated wallet checkout with the same key creates exactly ONE order and replays the order_code", async () => {
+      const key = "idem-wallet-success";
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "wallet_idr" },
+      });
+      expect(first.statusCode).toBe(201);
+      const firstBody = first.json();
+      expect(typeof firstBody.order_code).toBe("string");
+
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf, "idempotency-key": key },
+        payload: { method: "wallet_idr" },
+      });
+      expect(second.statusCode).toBe(201);
+      expect(second.json()).toEqual(firstBody);
+
+      const orders = await prisma.order.findMany({ where: { userId: buyerId, orderCode: firstBody.order_code } });
+      expect(orders).toHaveLength(1);
+    });
+
+    it("with no Idempotency-Key header, behaves exactly as before (opt-in feature)", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { method: "qris" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+    });
+  });
+
+  // Task 5: checkoutSubmitRateLimited(ip) — the order-creating mutation
+  // itself had no throttle at all before this. Checked as the very first
+  // statement, so a 400 (guest email missing) below still counts as a hit.
+  describe("rate limiting (Task 5)", () => {
+    it("429s after CHECKOUT_SUBMIT_RATE_LIMIT_MAX submits from one IP, without affecting a different IP", async () => {
+      const ip = freshIp();
+      for (let i = 0; i < CHECKOUT_SUBMIT_RATE_LIMIT_MAX; i++) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/checkout",
+          headers: { "x-forwarded-for": ip },
+          payload: { method: "qris" },
+        });
+        expect(res.statusCode).toBe(400); // still under the cap (missing guest email)
+      }
+      const limited = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": ip },
+        payload: { method: "qris" },
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toEqual({ error: "error.rate_limited" });
+
+      // A different IP has its own, unexhausted quota.
+      const otherIp = freshIp();
+      const unaffected = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { "x-forwarded-for": otherIp },
+        payload: { method: "qris" },
+      });
+      expect(unaffected.statusCode).toBe(400);
+      expect(unaffected.json()).toEqual({ error: "web.guest_email_invalid" });
     });
   });
 });

@@ -18,7 +18,7 @@
  * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, RefundStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
@@ -34,17 +34,19 @@ import {
   approveOrder,
   settlePaidOrder,
   applyUsdtWalletToOrder,
+  findUnderpaidReceived,
   ORDER_USER_SELECT,
   type SettleResult,
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
+import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -94,8 +96,8 @@ function pick(dbVal: string | null, envVal?: string): string {
 export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
   const [uid, key, secret, flag, minAmountSetting] = await Promise.all([
     getSetting(db, BINANCE_UID_KEY),
-    getSetting(db, BINANCE_API_KEY_KEY),
-    getSetting(db, BINANCE_API_SECRET_KEY),
+    getDecryptedSetting(db, BINANCE_API_KEY_KEY),
+    getDecryptedSetting(db, BINANCE_API_SECRET_KEY),
     getSetting(db, BINANCE_INTERNAL_ENABLED_KEY),
     getSetting(db, BINANCE_INTERNAL_MIN_AMOUNT_KEY),
   ]);
@@ -137,6 +139,11 @@ export async function createInternalOrder(
     /** Stringified JSON of the buyer's manual_with_info answers (validated by
      * the caller). Forwarded verbatim to createOrderDirect; null otherwise. */
     customerData?: string | null;
+    /** Client-minted checkout attempt id (A1) — forwarded verbatim to
+     * createOrderDirect via the `...baseArgs` spread below; see
+     * {@link DuplicateCheckoutIntentError} in orders.ts for the collision
+     * contract this enforces. */
+    checkoutIntentId?: string | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;
@@ -503,8 +510,30 @@ export async function deliverPaidInternalOrder(
         );
         return { status: "stale" as const };
       }
+      // Trustance Phase A Task A2b: look up this order's own PENDING Payment
+      // ledger row (if any) BEFORE settling, so both branches below can
+      // confirm it once delivery actually succeeds. May legitimately be null
+      // — orders created before this ledger was wired up, or a rail change
+      // that left no PENDING row — and that is never treated as an error.
+      const pendingPayment = await getPendingPaymentAttempt(tx, args.orderId).catch((err) => {
+        logger.warn({ err }, `Could not look up the Payment ledger row for order ${args.orderId} — this only keeps a benign miss from stopping the settlement; a genuine database error here still aborts this whole transaction, exactly as it would without this lookup`);
+        return null;
+      });
       if (order.kind === OrderKind.WALLET_TOPUP) {
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        if (pendingPayment) {
+          // Best-effort: swallows the benign race where a concurrent
+          // poller/webhook already confirmed this same Payment row
+          // (ValidationError, count!==1) — expected and harmless. A genuine
+          // database error here still aborts this whole transaction
+          // regardless of this .catch, since Postgres poisons an
+          // interactive transaction on any failed statement; this call
+          // cannot rescue the settlement from that, it only prevents the
+          // benign race from doing so.
+          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+          );
+        }
         // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
         // enqueued the buyer's WALLET_TOPUP_CREDITED_DM outbox row, one frame
         // deeper on the line above, behind its own atomic claim — that single
@@ -537,6 +566,12 @@ export async function deliverPaidInternalOrder(
         meta: `binanceTxId=${args.binanceTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (pendingPayment) {
+        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
+        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+        );
+      }
       // Overpayment: the buyer sent more USDT than the order total. Still
       // deliver (handled above) but flag the ledger row and alert admins so
       // the excess can be refunded/credited manually — never auto-refunded.
@@ -784,7 +819,7 @@ export async function listProcessedBinanceTx(
 ) {
   const where: Record<string, unknown> = {};
   if (opts.outcome) where.outcome = opts.outcome;
-  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim(), mode: "insensitive" };
   const rows = await db.processedBinanceTx.findMany({
     where,
     orderBy: { createdAt: "desc" },
@@ -805,7 +840,7 @@ export async function listProcessedBinanceTx(
 export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null; q?: string | null } = {}) {
   const where: Record<string, unknown> = {};
   if (opts.outcome) where.outcome = opts.outcome;
-  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim(), mode: "insensitive" };
   return db.processedBinanceTx.count({ where });
 }
 
@@ -822,15 +857,6 @@ export async function processedTxOutcomeCounts(db: Db): Promise<Record<string, n
  *  of ledger pagination, unlike counting rows on the current page. */
 export function countProcessedBinanceTxToday(db: Db, now: Date = new Date()): Promise<number> {
   return db.processedBinanceTx.count({ where: { createdAt: { gte: startOfDayUtc(now) } } });
-}
-
-/** The amount actually received for an UNDERPAID order, from its ledger row. */
-async function underpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const row = await db.processedBinanceTx.findFirst({
-    where: { orderId, outcome: "underpaid" },
-    orderBy: { createdAt: "desc" },
-  });
-  return row?.amount != null ? new Decimal(row.amount) : null;
 }
 
 /**
@@ -874,23 +900,62 @@ export async function deliverUnderpaidOrder(
 }
 
 /**
- * Resolve UNDERPAID by refunding the received USDT to the buyer's wallet and
- * marking the order REFUNDED. Rolls back voucher usage so reconciliation stays
- * clean. (UNDERPAID orders never reserved stock, so there is nothing to release.)
+ * Resolve UNDERPAID by refunding what the buyer actually sent to their wallet
+ * and marking the order REFUNDED. Rolls back voucher usage so reconciliation
+ * stays clean. (UNDERPAID orders never reserved stock, so nothing to release.)
+ *
+ * The credit goes to the balance matching the ORDER's own currency, so a USDT
+ * order returns USDT and a rupiah order returns rupiah — `adjustWallet`
+ * silently defaults to IDR when no currency is passed, which would otherwise
+ * pay a crypto buyer back in the wrong money entirely.
+ *
+ * Also writes a `Refund` record (Trustance Master Architecture Task 8b) so
+ * this concrete, already-idempotency-protected payout path shows up in the
+ * new Refund domain's history instead of being invisible to it. That Refund
+ * row is created directly here with `status: COMPLETED` and `processedAt`
+ * already stamped — NOT via `createRefund`/`transitionRefundStatus`
+ * (packages/db/src/crud/refunds.ts) — because by the time this function
+ * writes it, the wallet credit a few lines above has already happened
+ * atomically in this same transaction. Running it through the general
+ * PENDING->PROCESSING->COMPLETED workflow would fabricate intermediate
+ * states ("awaiting review", "processing") that never actually occurred for
+ * this specific path, and would double the audit trail: the route that
+ * calls this function (apps/web-admin/src/routes/api/payments.ts) already
+ * writes one `logAdminAction` "underpaid_refund" entry for the human-facing
+ * audit log, so this Refund row is pure structured record-keeping, not a
+ * second audit line.
+ *
+ * No `RefundItem` rows: an UNDERPAID order never reserved stock or resolved
+ * any specific OrderItem, and the refunded amount is the shortfall the buyer
+ * actually sent — a quantity with no relationship to any OrderItem's
+ * subtotal. Attaching RefundItem rows here would misrepresent this as a
+ * per-item partial refund, which it structurally isn't. A whole-order Refund
+ * with no item children is the correct shape for this call site.
+ *
+ * The Refund row (and the wallet credit above it) are both gated on
+ * `received.greaterThan(0)`: an UNDERPAID order with a zero received amount
+ * (e.g. the shortfall ledger row itself recorded 0) must not leave a
+ * misleading COMPLETED Refund of 0.00 in refund history implying a payout
+ * that never happened — `refundId` is `null` in that case.
  */
 export async function refundUnderpaidOrder(
   db: PrismaClient,
   args: { orderId: number; adminId: number },
-): Promise<{ refunded: Decimal }> {
+): Promise<{ refunded: Decimal; refundId: number | null; currency: string }> {
   return db.$transaction(async (tx: Tx) => {
     const order = await getOrder(tx, args.orderId);
     if (!order) throw new ValidationError("error.order_not_found");
     if (order.status !== OrderStatus.UNDERPAID) {
       throw new ValidationError("error.order_not_underpaid");
     }
-    const received = (await underpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+    const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
     if (received.greaterThan(0)) {
-      await adjustWallet(tx, order.userId, received, { reason: "underpaid_refund", orderId: order.id, adminId: args.adminId });
+      await adjustWallet(tx, order.userId, received, {
+        reason: "underpaid_refund",
+        currency: order.currency as "IDR" | "USDT",
+        orderId: order.id,
+        adminId: args.adminId,
+      });
     }
     if (order.voucherId) {
       const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
@@ -901,17 +966,38 @@ export async function refundUnderpaidOrder(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
+        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} ${order.currency} to wallet by admin_id=${args.adminId}`,
       },
     });
+    // Only write a Refund record when money actually moved (`received > 0`,
+    // guarding the wallet credit above too) — an UNDERPAID order with a zero
+    // received amount would otherwise leave a misleading COMPLETED Refund of
+    // 0.00 in refund history, implying a payout that never happened.
+    const refund = received.greaterThan(0)
+      ? await tx.refund.create({
+          data: {
+            orderId: order.id,
+            amount: received,
+            currency: order.currency,
+            reason: `Underpaid order refunded to buyer's wallet balance by admin_id=${args.adminId}.`,
+            status: RefundStatus.COMPLETED,
+            processedAt: new Date(),
+          },
+        })
+      : null;
     await transitionOrderStatus(tx, {
       orderId: args.orderId,
       from: OrderStatus.UNDERPAID,
       to: OrderStatus.REFUNDED,
       meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
-    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
-    return { refunded: received };
+    logger.info(
+      `Refunded underpaid order ${order.orderCode} (${received.toString()} ${order.currency}) to wallet by admin ${args.adminId}`,
+    );
+    // `currency` travels back with the amount so the caller's audit line can
+    // say which money was returned — a bare amount is ambiguous now that the
+    // refund lands in the order's own currency rather than always IDR.
+    return { refunded: received, refundId: refund?.id ?? null, currency: order.currency };
   });
 }
 

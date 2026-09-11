@@ -14,7 +14,11 @@ import {
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
+  enqueueAdminDigiflazzResyncAborted,
   enqueueAdminPasswordReset,
+  enqueueAdminNewTicketDm,
+  enqueueTicketReplyDm,
+  enqueueTicketClosedDm,
   enqueueWalletTopupCreditedDm,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
@@ -33,6 +37,8 @@ import {
   markNotificationFailed,
   retryNotification,
   getNotification,
+  outboxStatusCounts,
+  oldestUnsentNotificationAge,
   STALE_CLAIM_MS,
   notificationBackoffMs,
   NOTIF_RETRY_BASE_MS,
@@ -43,6 +49,7 @@ import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
 import { setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { logger } from "@app/core/logger";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -70,6 +77,118 @@ async function seedOrder(): Promise<number> {
   return order.id;
 }
 
+// This describe block MUST run first in the file (Vitest executes tests
+// within a file sequentially, top-to-bottom, by default — no
+// test.concurrent/shuffle is configured here): the "empty outbox" case needs
+// a genuinely empty notification_outbox, and every other describe block
+// below enqueues rows into the same shared schema-per-file `prisma` without
+// cleaning up afterward (see the "fetchPendingNotifications priority"
+// block's comment further down for the same shared-DB caveat). Each
+// subsequent case here deliberately inserts a row OLDER than anything
+// already in the table so its assertion holds regardless of run order among
+// ITS OWN cases.
+//
+// Unlike every other describe block in this file, the rows created here are
+// explicitly deleted in this block's own `afterAll` (below) rather than left
+// for the rest of the file to accumulate: several later tests (e.g. "outbox
+// CRUD > enqueue → stored PENDING with JSON payload" and "nextRetryAt
+// backoff > a backed-off row is excluded ... until its window passes")
+// assert an EXACT claimable-row count from fetchPendingNotifications, which
+// would be thrown off by a genuinely-PENDING (or stale-SENDING, which
+// fetchPendingNotifications treats as equally claimable) row left behind by
+// this block — a real regression caught by running the full file, not just
+// this block's own cases, before considering this task done.
+describe("oldestUnsentNotificationAge", () => {
+  const createdIds: number[] = [];
+
+  afterAll(async () => {
+    await prisma.notificationOutbox.deleteMany({ where: { id: { in: createdIds } } });
+  });
+
+  it("returns null on an empty outbox", async () => {
+    expect(await oldestUnsentNotificationAge(prisma)).toBeNull();
+  });
+
+  it("returns the age of a single PENDING row", async () => {
+    const orderId = await seedOrder();
+    const createdAt = new Date(Date.now() - 120_000); // 120s old
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "PENDING",
+        createdAt,
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(120);
+    expect(age!).toBeLessThanOrEqual(135); // generous tolerance for test runtime
+  });
+
+  it("ignores a fresh (non-stale) SENDING row even if its createdAt is much older", async () => {
+    const orderId = await seedOrder();
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: new Date(), // fresh claim — actively being sent right now
+        createdAt: new Date(Date.now() - 3_600_000), // 1h old, but must be excluded
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    // Still reflects the ~120s PENDING row from the previous case, NOT the
+    // 1h-old fresh-SENDING row — proves a fresh claim is excluded.
+    expect(age!).toBeLessThan(300);
+  });
+
+  it("counts a SENDING row whose claim is older than STALE_CLAIM_MS, like a PENDING row", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 10_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 400_000), // 400s old — older than any prior row
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(400);
+    expect(age!).toBeLessThanOrEqual(415);
+  });
+
+  it("returns the OLDEST qualifying row's age across a mix of PENDING and stale SENDING rows", async () => {
+    const orderId = await seedOrder();
+    const staleClaimedAt = new Date(Date.now() - STALE_CLAIM_MS - 20_000);
+    const row = await prisma.notificationOutbox.create({
+      data: {
+        event: "ORDER_DELIVERED",
+        payloadJson: "{}",
+        orderId,
+        status: "SENDING",
+        claimedAt: staleClaimedAt,
+        createdAt: new Date(Date.now() - 500_000), // 500s old — older than the 400s row above
+      },
+    });
+    createdIds.push(row.id);
+    const age = await oldestUnsentNotificationAge(prisma);
+    expect(age).not.toBeNull();
+    expect(age!).toBeGreaterThanOrEqual(500);
+    expect(age!).toBeLessThanOrEqual(515);
+  });
+});
+
 describe("outbox CRUD", () => {
   it("enqueue → stored PENDING with JSON payload", async () => {
     const orderId = await seedOrder();
@@ -93,7 +212,7 @@ describe("outbox CRUD", () => {
     expect(await fetchPendingNotifications(prisma, 50)).toHaveLength(0);
   });
 
-  it("markFailed stays PENDING until attempts >= maxAttempts", async () => {
+  it("markFailed stays PENDING until attempts >= maxAttempts, then goes DEAD_LETTER (genuinely retried, exhausted)", async () => {
     const orderId = await seedOrder();
     await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
     const [row] = await fetchPendingNotifications(prisma, 1);
@@ -109,10 +228,10 @@ describe("outbox CRUD", () => {
     await markNotificationFailed(prisma, id, "boom3", 3);
     r = await prisma.notificationOutbox.findUnique({ where: { id } });
     expect(r!.attempts).toBe(3);
-    expect(r!.status).toBe("FAILED");
+    expect(r!.status).toBe("DEAD_LETTER");
   });
 
-  it("markFailed with maxAttempts=1 fails immediately", async () => {
+  it("markFailed with maxAttempts=1 fails immediately as FAILED, not DEAD_LETTER (never actually retried)", async () => {
     const orderId = await seedOrder();
     await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
     const [row] = await fetchPendingNotifications(prisma, 1);
@@ -177,6 +296,17 @@ describe("outbox CRUD", () => {
       expect(r!.nextRetryAt).toBeNull();
     });
 
+    it("a row that reaches DEAD_LETTER also has nextRetryAt cleared (terminal — no backoff to track)", async () => {
+      const orderId = await seedOrder();
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+      const [row] = await fetchPendingNotifications(prisma, 1);
+      await markNotificationFailed(prisma, row!.id, "attempt 1", 2);
+      await markNotificationFailed(prisma, row!.id, "attempt 2", 2);
+      const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("DEAD_LETTER");
+      expect(r!.nextRetryAt).toBeNull();
+    });
+
     it("retryNotification clears nextRetryAt — an admin retry isn't blocked by a leftover backoff window", async () => {
       const orderId = await seedOrder();
       await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
@@ -190,6 +320,23 @@ describe("outbox CRUD", () => {
       expect(r!.nextRetryAt).toBeNull();
       // Immediately claimable, even "now" (no backoff wait needed).
       expect((await fetchPendingNotifications(prisma, 50, now)).some((x) => x.id === row!.id)).toBe(true);
+    });
+
+    it("retryNotification resets a DEAD_LETTER row to PENDING/attempts:0, same as it already does for FAILED", async () => {
+      const orderId = await seedOrder();
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+      const [row] = await fetchPendingNotifications(prisma, 1);
+      await markNotificationFailed(prisma, row!.id, "attempt 1", 2);
+      await markNotificationFailed(prisma, row!.id, "attempt 2", 2);
+      let r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("DEAD_LETTER");
+
+      const ok = await retryNotification(prisma, row!.id);
+      expect(ok).toBe(true);
+      r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+      expect(r!.status).toBe("PENDING");
+      expect(r!.attempts).toBe(0);
+      expect(r!.nextRetryAt).toBeNull();
     });
 
     it("a backed-off row never starves a VALID row enqueued after it, once the batch is limit-constrained", async () => {
@@ -224,6 +371,39 @@ describe("getNotification", () => {
 
   it("returns null for a notification that doesn't exist", async () => {
     expect(await getNotification(prisma, 999999)).toBeNull();
+  });
+});
+
+describe("outboxStatusCounts", () => {
+  it("buckets DEAD_LETTER separately from FAILED", async () => {
+    const deadLetterOrder = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, deadLetterOrder, {});
+    const [deadLetterRow] = await fetchPendingNotifications(prisma, 1);
+    await markNotificationFailed(prisma, deadLetterRow!.id, "attempt 1", 2);
+    await markNotificationFailed(prisma, deadLetterRow!.id, "attempt 2", 2);
+
+    const failedOrder = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, failedOrder, {});
+    const [failedRow] = await fetchPendingNotifications(prisma, 1);
+    await markNotificationFailed(prisma, failedRow!.id, "no template", 1);
+
+    const [deadLetterAfter, failedAfter] = await Promise.all([
+      prisma.notificationOutbox.findUnique({ where: { id: deadLetterRow!.id } }),
+      prisma.notificationOutbox.findUnique({ where: { id: failedRow!.id } }),
+    ]);
+    expect(deadLetterAfter!.status).toBe("DEAD_LETTER");
+    expect(failedAfter!.status).toBe("FAILED");
+
+    const counts = await outboxStatusCounts(prisma);
+    expect(counts.DEAD_LETTER).toBeGreaterThanOrEqual(1);
+    expect(counts.FAILED).toBeGreaterThanOrEqual(1);
+    // Same-cause rows landed in different buckets — proves DEAD_LETTER and
+    // FAILED are counted separately, not collapsed into one status.
+    const grouped = await prisma.notificationOutbox.groupBy({ by: ["status"], _count: { _all: true } });
+    const dl = grouped.find((g) => g.status === "DEAD_LETTER")!;
+    const fl = grouped.find((g) => g.status === "FAILED")!;
+    expect(counts.DEAD_LETTER).toBe(dl._count._all);
+    expect(counts.FAILED).toBe(fl._count._all);
   });
 });
 
@@ -462,6 +642,139 @@ describe("enqueueAdminStalePayment", () => {
   });
 });
 
+// Task 10: enqueueAdminDigiflazzResyncAborted shares enqueueAdminStalePayment's
+// exact per-admin fan-out shape, just orderId: null (catalog-wide, not
+// order-scoped) — this block only asserts this function's own event/payload
+// shape. Runs after the earlier blocks, so 4001/4002/4501/4502 are already
+// persisted in the shared `admin_ids` Setting.
+describe("enqueueAdminDigiflazzResyncAborted", () => {
+  it("enqueues one ADMIN_DIGIFLAZZ_RESYNC_ABORTED DM per resolved admin, with orderId null and chat_id/kind/sharp_changes/considered_rows for the sharp_change kind", async () => {
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "sharp_change", sharpChanges: 7, consideredRows: 10 });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.orderId === null)).toBe(true);
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as { kind: string; sharp_changes: number; considered_rows: number };
+    expect(payload.kind).toBe("sharp_change");
+    expect(payload.sharp_changes).toBe(7);
+    expect(payload.considered_rows).toBe(10);
+  });
+
+  it("enqueues a no_usable_rows payload without sharp_changes/considered_rows", async () => {
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "no_usable_rows" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED },
+      // Postgres doesn't guarantee row order without ORDER BY (unlike SQLite's
+      // old single-writer setup, which happened to preserve insertion order) —
+      // without this, .slice(-4) below can pick up the sharp_change test's
+      // rows instead of this test's own.
+      orderBy: { id: "asc" },
+    });
+    const newestRows = rows.slice(-4); // this test's own fan-out, appended after the sharp_change test's rows
+    expect(newestRows.length).toBeGreaterThan(0);
+    for (const row of newestRows) {
+      expect(row.orderId).toBeNull();
+      const payload = JSON.parse(row.payloadJson) as { kind: string; sharp_changes?: number; considered_rows?: number };
+      expect(payload.kind).toBe("no_usable_rows");
+      expect(payload.sharp_changes).toBeUndefined();
+      expect(payload.considered_rows).toBeUndefined();
+    }
+  });
+});
+
+// Task 2 (Phase C): the three ticket-notification events that used to call
+// ctx.api.sendMessage() directly from apps/order-bot (conversations/
+// support.ts, conversations/admin.ts, handlers/admin.ts) — these tests assert
+// the exact payload shape each enqueue* helper writes; dispatcher.test.ts
+// (packages/outbox-dispatcher) covers the render/keyboard/send side end to
+// end. Runs after enqueueAdminDigiflazzResyncAborted's block, so
+// 4001/4002/4501/4502 are already persisted in the shared `admin_ids`
+// Setting — enqueueAdminNewTicketDm fans out to that full resolved set, same
+// as every other admin fan-out helper tested above.
+describe("enqueueAdminNewTicketDm", () => {
+  it("enqueues one ADMIN_NEW_TICKET DM per resolved admin, with orderId null and chat_id/ticket_id/from_user_id/from_username/message/photo_file_ids", async () => {
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: 9001,
+      fromUserId: 555_000_001,
+      fromUsername: "buyer1",
+      message: "I need help",
+      photoFileIds: ["file_a", "file_b"],
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === 9001);
+    expect(matching.length).toBeGreaterThan(0);
+    expect(matching.every((r) => r.orderId === null)).toBe(true);
+    const chatIds = matching.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(matching[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.from_user_id).toBe(555_000_001);
+    expect(payload.from_username).toBe("buyer1");
+    expect(payload.message).toBe("I need help");
+    expect(payload.photo_file_ids).toEqual(["file_a", "file_b"]);
+  });
+
+  it("carries photo_file_ids as an empty array (not omitted) and from_username as null when the ticket has neither", async () => {
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: 9002,
+      fromUserId: 555_000_002,
+      fromUsername: null,
+      message: "No photos here",
+      photoFileIds: [],
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_NEW_TICKET } });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === 9002);
+    expect(matching.length).toBeGreaterThan(0);
+    const payload = JSON.parse(matching[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.from_username).toBeNull();
+    expect(payload.photo_file_ids).toEqual([]);
+  });
+});
+
+describe("enqueueTicketReplyDm", () => {
+  it("writes one TICKET_REPLY_DM row with orderId null and exactly chat_id/ticket_id/message", async () => {
+    await enqueueTicketReplyDm(prisma, { ticketId: 9101, chatId: 620_001, message: "We refunded your order." });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_REPLY_DM, payloadJson: { contains: '"ticket_id":9101,' } },
+    });
+    expect(row).toBeDefined();
+    expect(row!.orderId).toBeNull();
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({ chat_id: 620_001, ticket_id: 9101, message: "We refunded your order." });
+  });
+});
+
+describe("enqueueTicketClosedDm", () => {
+  it("writes one TICKET_CLOSED_DM row with orderId null and exactly chat_id/ticket_id/buyer_language normalized via langCode", async () => {
+    await enqueueTicketClosedDm(prisma, { ticketId: 9201, chatId: 620_002, buyerLanguage: "id" });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: '"ticket_id":9201,' } },
+    });
+    expect(row).toBeDefined();
+    expect(row!.orderId).toBeNull();
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({ chat_id: 620_002, ticket_id: 9201, buyer_language: "id" });
+  });
+
+  it("normalizes a null buyerLanguage to 'en' via langCode", async () => {
+    await enqueueTicketClosedDm(prisma, { ticketId: 9202, chatId: 620_003, buyerLanguage: null });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: '"ticket_id":9202,' } },
+    });
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.buyer_language).toBe("en");
+  });
+});
+
 describe("enqueueWalletTopupCreditedDm", () => {
   it("writes one WALLET_TOPUP_CREDITED_DM row with orderId/order_code set and money stringified via Decimal.toString()", async () => {
     const orderId = await seedOrder();
@@ -591,6 +904,74 @@ describe("enqueueNotification dedupeKey", () => {
     await expect(
       enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, 999_999, { chat_id: 1 }, "k:missing-order"),
     ).rejects.toThrow();
+  });
+
+  // PG-migration landmine (see enqueueNotification's doc comment): under
+  // SQLite, a caught UNIQUE violation mid-transaction didn't poison the rest
+  // of the transaction, so catch-and-continue was safe even when the caller
+  // passed `tx`. Under Postgres, ANY constraint violation aborts the whole
+  // transaction (25P02) — every later statement on that `tx` fails, even one
+  // that has nothing to do with the collision. This is reachable on the real
+  // settlement path: enqueueWalletTopupCreditedDm is called from
+  // settleWalletTopup inside prisma.$transaction(...) in all six top-up
+  // rails, so a dedupe-key collision there must not take down the settlement
+  // that triggered it.
+  it("a dedupe-key collision inside an open $transaction does not poison later writes on the same tx", async () => {
+    const orderId = await seedOrder();
+
+    await prisma.$transaction(async (tx) => {
+      await enqueueNotification(tx, NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId, { attempt: "first" }, "dupe-key");
+      // Second call collides on the same dedupeKey — must be swallowed
+      // without leaving the transaction aborted.
+      await enqueueNotification(tx, NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId, { attempt: "second" }, "dupe-key");
+
+      // A later, unrelated write on the SAME tx must still succeed — proves
+      // the transaction was not poisoned by the collision above.
+      await tx.notificationOutbox.create({
+        data: {
+          event: NotificationEvent.WALLET_TOPUP_CREDITED_DM,
+          orderId,
+          payloadJson: JSON.stringify({ attempt: "unrelated-followup" }),
+          dedupeKey: "dupe-key-followup",
+        },
+      });
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId, event: NotificationEvent.WALLET_TOPUP_CREDITED_DM },
+      orderBy: { id: "asc" },
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.dedupeKey).toBe("dupe-key");
+    expect(JSON.parse(rows[0]!.payloadJson).attempt).toBe("first");
+    expect(rows[1]!.dedupeKey).toBe("dupe-key-followup");
+  });
+
+  it("logs NOTIFICATION_CREATED exactly once on a same-payload collision, not once per call", async () => {
+    // The realistic collision case for the two real dedupeKey call sites
+    // (enqueueWalletTopupCreditedDm, enqueueAdminUnconfirmablePayment): a
+    // retry of the same underlying order/admin state produces a
+    // byte-identical payload, not a different one. A payload-equality
+    // heuristic can't distinguish "this call inserted the row" from "this
+    // call collided with an identical payload" — only a precise
+    // insert/no-insert signal can. Pins that the second call does NOT log
+    // NOTIFICATION_CREATED even though its payload matches the first row's.
+    const orderId = await seedOrder();
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+    try {
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "same" }, "k:same-payload");
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, orderId, { attempt: "same" }, "k:same-payload");
+
+      const rows = await prisma.notificationOutbox.findMany({ where: { dedupeKey: "k:same-payload" } });
+      expect(rows).toHaveLength(1);
+
+      const createdCalls = infoSpy.mock.calls.filter(
+        ([meta]) => (meta as { event?: string })?.event === "NOTIFICATION_CREATED",
+      );
+      expect(createdCalls).toHaveLength(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 });
 

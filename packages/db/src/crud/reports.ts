@@ -3,7 +3,7 @@
  * sections of crud.py. reconcile_finances detects drift WITHOUT mutating rows.
  * Revenue/profit/analytics-by-day computations live in ./revenue.ts.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
@@ -26,7 +26,7 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
 
   // 1. Order total integrity (non-cancelled orders).
   const orders = await db.order.findMany({
-    where: { status: { not: OrderStatus.CANCELLED } },
+    where: { status: { not: OrderStatus.CANCELLED }, kind: OrderKind.PRODUCT },
   });
 
   // Which currency each order's wallet leg was actually paid in, read from the
@@ -334,19 +334,19 @@ export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}
 
   const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
     db.processedBinanceTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedBybitTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedTokopayTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedPaydisiniTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
     db.processedNowpaymentsTx.findMany({
-      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q, mode: "insensitive" } } : {}) },
     }),
   ]);
 

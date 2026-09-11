@@ -31,12 +31,14 @@ import {
   bulkAddStock,
   cancelOrder,
   finalizeOrderPayment,
+  createPaymentAttempt,
 } from "@app/db";
 import { OrderCurrency } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -272,6 +274,53 @@ describe("deliverPaidTokopayOrder", () => {
   });
 });
 
+// Trustance Phase A Task A2b: deliverPaidTokopayOrder now also confirms this
+// order's own PENDING Payment ledger row (if any) in the same transaction as
+// delivery — see this file's crud/tokopay.ts for the hook point. TokoPay's
+// own gateway trxId is the clean `reference` checkout.ts's buyNowTokopay
+// records at creation; this test uses the same shape.
+describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", () => {
+  it("confirms the order's PENDING Payment attempt on delivery", async () => {
+    const order = await makePendingTokopayOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "TOKOPAY-TRX-LEDGER-1",
+    });
+    expect(attempt.reference).toBe("TOKOPAY-TRX-LEDGER-1");
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-ledger-confirm-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.confirmedAt).not.toBeNull();
+    expect(confirmed.pendingOrderId).toBeNull();
+    // The attempt keeps its OWN reference — independent of Order.paymentRef.
+    expect(confirmed.reference).toBe("TOKOPAY-TRX-LEDGER-1");
+  });
+
+  it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {
+    const order = await makePendingTokopayOrder();
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-no-ledger-row-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    const rows = await prisma.payment.findMany({ where: { orderId: order.id } });
+    expect(rows.length).toBe(0);
+  });
+});
+
 describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
   async function makeReferredUser() {
     const referrer = await upsertUser(prisma, { telegramId: 9001, username: "topup-referrer-tp", fullName: "Referrer" });
@@ -437,6 +486,73 @@ describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
   });
 });
 
+// Postgres migration verification (Task 4): true-concurrency regression for
+// the trxId idempotency claim above (`db.processedTokopayTx.create`, gated by
+// the `trx_id` UNIQUE constraint). Every "duplicate trx" test elsewhere in
+// this file — and in payment-idempotency-matrix.test.ts's "10 refreshes + 5
+// webhook retries..." acceptance suite — calls deliverPaidTokopayOrder
+// sequentially, one `await` at a time. SQLite's single-writer serialization
+// made that indistinguishable from "the claim is race-safe" — there was never
+// more than one writer to actually race. This fires 3 concurrent calls with
+// the IDENTICAL trxId/amount/orderId via Promise.allSettled against the real
+// dev Postgres and asserts the guard still allows exactly one winner. A
+// WALLET_TOPUP order is used because it is the one kind that flows through
+// settleWalletTopup's own `prisma.$transaction(...)` — the exact code path
+// Task 2 fixed a dedupe-key landmine in.
+describe("deliverPaidTokopayOrder — true concurrency (Postgres regression, Task 4)", () => {
+  it("3 concurrent calls with the same trxId: none throw, exactly one ledger row, wallet credited exactly once, exactly one DM", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    const trxId = "trx-concurrent-topup-1";
+
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(before.walletBalance).equals(0)).toBe(true);
+
+    const results = await Promise.allSettled([
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId, amount: order.totalAmount }),
+    ]);
+
+    // The guard is DESIGNED to return {status: "already_processed"} for the
+    // losers, never throw — assert every call actually resolved, don't just
+    // filter for the ones that did.
+    const rejectedReasons = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
+    expect(rejectedReasons).toEqual([]);
+
+    const statuses = (
+      results as PromiseFulfilledResult<Awaited<ReturnType<typeof deliverPaidTokopayOrder>>>[]
+    ).map((r) => r.value.status);
+    expect(statuses.filter((s) => s === "delivered").length).toBe(1);
+    expect(statuses.filter((s) => s === "already_processed").length).toBe(2);
+
+    const ledgerRows = await prisma.processedTokopayTx.findMany({ where: { trxId } });
+    expect(ledgerRows.length).toBe(1);
+    expect(ledgerRows[0]!.outcome).toBe("matched");
+    expect(ledgerRows[0]!.orderId).toBe(order.id);
+
+    // Exactly one order's worth credited — not 2x or 3x.
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(after.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    // adjustWallet's ledger effect happened exactly once, not once per winner attempt.
+    const credits = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(credits.length).toBe(1);
+
+    // Exactly one buyer DM — settleWalletTopup's own enqueue guard, exercised
+    // under real concurrent callers rather than sequential retries.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows.length).toBe(1);
+
+    // Settled exactly once — not re-processed into an inconsistent state.
+    const finalOrder = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(finalOrder.status).toBe(OrderStatus.DELIVERED);
+  });
+});
+
 describe("recordUnmatchedTokopayTx", () => {
   it("first insert returns true", async () => {
     const ok = await recordUnmatchedTokopayTx(prisma, { trxId: "trx-unmatched-1", amount: new Decimal("10000") });
@@ -599,6 +715,14 @@ describe("getTokopayCreds — minAmount", () => {
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
     await setSetting(prisma, "tokopay_min_amount", "-1");
     expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
+  });
+});
+
+describe("getTokopayCreds — encrypted secret (Task 13)", () => {
+  it("decrypts a tokopay_secret row stored as an encrypted envelope", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M");
+    await setSetting(prisma, "tokopay_secret", encryptCredentials("real-tokopay-secret"));
+    expect((await getTokopayCreds(prisma))!.secret).toBe("real-tokopay-secret");
   });
 });
 

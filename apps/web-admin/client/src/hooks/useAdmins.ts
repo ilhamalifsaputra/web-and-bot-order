@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { apiGet } from "../api/client";
 
 export interface AdminRow {
   /** Internal `User.id` — null when this admin has never messaged the bot
@@ -35,10 +36,6 @@ export interface AdminsResponse {
 export function useAdmins() {
   return useQuery<AdminsResponse>({
     queryKey: ["admins"],
-    queryFn: async () => {
-      const res = await fetch("/api/admins");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<AdminsResponse>;
-    },
+    queryFn: () => apiGet<AdminsResponse>("/api/admins"),
   });
 }

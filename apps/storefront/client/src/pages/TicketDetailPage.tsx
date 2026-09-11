@@ -7,7 +7,7 @@
  * different mobile markup, just a narrower column).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useLocation } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
@@ -16,6 +16,8 @@ import { t } from "../lib/i18n";
 import { useShopContext } from "../components/Layout";
 import { buildTicketTimeline } from "../lib/ticketTimeline";
 import { loadTicketDraft, clearTicketDraft } from "../lib/ticketDraft";
+import Button from "../components/ui/Button";
+import Card from "../components/ui/Card";
 import TicketStatusBadge from "../components/shop/TicketStatusBadge";
 import TicketMessageThread from "../components/shop/TicketMessageThread";
 import TicketComposer from "../components/shop/TicketComposer";
@@ -36,10 +38,17 @@ export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const ticketId = Number(id);
   const { data: ctx } = useShopContext();
+  const location = useLocation();
   const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // Carried over from SupportPage's redirect-to-existing-ticket flow (router
+  // state, not a query param — it's transient, one-shot, and shouldn't
+  // survive a reload or show up in the URL).
+  const [noticeText, setNoticeText] = useState<string | null>(
+    (location.state as { notice?: string } | null)?.notice ?? null,
+  );
 
   const { data, error, refetch } = useQuery({
     queryKey: ["account-ticket", id],
@@ -133,7 +142,11 @@ export default function TicketDetailPage() {
 
   return (
     <>
-      <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
+      <Toast
+        text={noticeText ?? errorText}
+        onDismiss={() => (noticeText ? setNoticeText(null) : setErrorText(null))}
+        kind={noticeText ? "info" : "error"}
+      />
 
       <div className="mb-6">
         <div className="text-xs text-ink-faint mb-1">
@@ -164,50 +177,50 @@ export default function TicketDetailPage() {
 
       <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
         <div>
-          <div className="card card-pad mb-4">
+          <Card className="mb-4">
             <TicketMessageThread entries={timeline} />
             {!hasSupportReplied && (
               <div className="mt-4">
                 <EmptyState icon={Clock} title={t("web.ticket_waiting_title")} description={t("web.ticket_waiting_desc")} />
               </div>
             )}
-          </div>
+          </Card>
 
           {ticket.closed ? (
-            <div className="card card-pad flex items-center justify-between gap-3 flex-wrap bg-sand">
+            <Card className="flex items-center justify-between gap-3 flex-wrap bg-sand">
               <div className="flex items-center gap-2 text-sm text-ink-soft">
                 <CheckCircle2 className="w-4 h-4 text-grass" />
                 {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}
               </div>
               {ticket.reopenable && (
-                <button
-                  type="button"
-                  className="btn btn-soft btn-sm"
+                <Button
+                  variant="soft"
+                  size="sm"
                   disabled={reopenMutation.isPending}
                   onClick={() => reopenMutation.mutate()}
                 >
                   {reopenMutation.isPending && <Spinner />}
                   <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
-                </button>
+                </Button>
               )}
-            </div>
+            </Card>
           ) : (
             <>
               <div className="mt-4 flex flex-wrap gap-2">
                 {hasSupportReplied && (
-                  <button
-                    type="button"
-                    className="btn btn-soft btn-sm"
+                  <Button
+                    variant="soft"
+                    size="sm"
                     disabled={closeMutation.isPending}
                     onClick={() => closeMutation.mutate()}
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
-                  </button>
+                  </Button>
                 )}
                 {QUICK_REPLY_TEMPLATES.map((qr) => (
-                  <button key={qr.key} type="button" className="btn btn-soft btn-sm" onClick={() => applyTemplate(qr.templateKey)}>
+                  <Button key={qr.key} variant="soft" size="sm" onClick={() => applyTemplate(qr.templateKey)}>
                     {t(qr.labelKey)}
-                  </button>
+                  </Button>
                 ))}
               </div>
               <TicketComposer

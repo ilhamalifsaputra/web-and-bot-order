@@ -159,15 +159,39 @@ describe("reconcileOrder (PayDisini poller safety net)", () => {
     expect(stillPending).toBeDefined();
   });
 
-  it("never delivers on an underpayment", async () => {
-    await makePaydisiniOrder();
+  it("never delivers on an underpayment, flags the order UNDERPAID, and alerts admins", async () => {
+    const created = await makePaydisiniOrder();
     const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
     stubStatus({ status: "success", unique_code: "TRX-SHORT", amount: pending!.totalAmount.minus(1).toString() });
+    const api = fakeApi();
 
-    await reconcileOrder(fakeApi(), CREDS, pending!);
+    await reconcileOrder(api, CREDS, pending!);
 
-    const [stillPending] = await listPendingPaydisiniOrders(prisma, new Date());
-    expect(stillPending).toBeDefined();
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.status).toBe(OrderStatus.UNDERPAID);
+    // ADMIN_IDS = "999,1000" in test setup — one alert per admin.
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const [, text] = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(String(text)).toMatch(/[Uu]nderpaid/);
+    expect(String(text)).toContain(created!.orderCode);
+    expect(String(text)).toContain("PayDisini");
+  });
+
+  // The poller re-checks the same order.id every cycle — the order's own
+  // status IS the idempotency guard (no separate ledger table needed, unlike
+  // the crypto rails). A second cycle before a human resolves the order must
+  // be a silent no-op: no double alert, no throw.
+  it("does not alert a second time when an already-UNDERPAID order is reconciled again", async () => {
+    await makePaydisiniOrder();
+    const [pending] = await listPendingPaydisiniOrders(prisma, new Date());
+    stubStatus({ status: "success", unique_code: "TRX-SHORT-2", amount: pending!.totalAmount.minus(1).toString() });
+    const api = fakeApi();
+
+    await reconcileOrder(api, CREDS, pending!);
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+
+    await expect(reconcileOrder(api, CREDS, pending!)).resolves.toBe("ok");
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // no additional alert on the second cycle
   });
 
   /** Deliver the one pending order with its bubble anchored at (555, 777), and

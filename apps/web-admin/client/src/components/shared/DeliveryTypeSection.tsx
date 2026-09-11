@@ -1,13 +1,25 @@
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Input } from "@/components/ui/input";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
 import type { AdditionalFieldDraft } from "../../api/types";
-import { Zap, Hand, FileText, type LucideIcon } from "lucide-react";
+import { Zap, Hand, FileText, Ban, PlugZap, type LucideIcon } from "lucide-react";
 
 type DeliveryMethod = "auto" | "manual";
+type AutoDeliverySourceOption = "none" | "digiflazz";
 
 function methodOf(deliveryType: string): DeliveryMethod {
   return deliveryType === "auto" ? "auto" : "manual";
 }
+
+/** Pre-fill applied the first time an admin picks Digiflazz as the auto
+ * delivery source, matching what Digiflazz-delivered games (Mobile Legends,
+ * Free Fire, etc) actually need from the buyer. Only applied when
+ * `additionalFields` is still empty — see `selectAutoDeliverySource` below —
+ * so it never clobbers fields an admin already customized. */
+const AUTO_DELIVERY_FIELDS_TEMPLATE: AdditionalFieldDraft[] = [
+  { key: "user_id", labelId: "Game ID", labelEn: "Game ID", type: "text", required: true, optionsText: "", placeholder: "" },
+  { key: "server_id", labelId: "Server / Zone", labelEn: "Server / Zone", type: "text", required: false, optionsText: "", placeholder: "" },
+];
 
 function RadioOptionCard({
   id,
@@ -61,22 +73,100 @@ export function DeliveryTypeSection({
   onDeliveryTypeChange,
   additionalFields,
   onAdditionalFieldsChange,
+  autoDeliverySource,
+  onAutoDeliverySourceChange,
+  supplierSku,
+  onSupplierSkuChange,
+  nicknameCheckGameCode,
+  onNicknameCheckGameCodeChange,
+  regionWarning,
+  onRegionWarningChange,
+  expectedRegionCode,
+  onExpectedRegionCodeChange,
+  productHasLinkedGame,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
   additionalFields: AdditionalFieldDraft[];
   onAdditionalFieldsChange: (next: AdditionalFieldDraft[]) => void;
+  autoDeliverySource: string | null;
+  onAutoDeliverySourceChange: (next: string | null) => void;
+  supplierSku: string;
+  onSupplierSkuChange: (next: string) => void;
+  /** KokinPay's game_code for this denomination's title (Task 7) — an
+   * independent, optional field: it offers the storefront's live
+   * nickname-check UX for ANY manual_with_info product, not just ones with a
+   * Digiflazz auto-delivery link. Blank = no live check for this product. */
+  nicknameCheckGameCode: string;
+  onNicknameCheckGameCodeChange: (next: string) => void;
+  /** Admin-authored short warning shown near the account field on the
+   * storefront's instant-buy page (Region-check Task B) — a manual mitigation
+   * for the wrong-region-variant problem. Independent of every other field,
+   * including expectedRegionCode below: works with no live check configured. */
+  regionWarning: string;
+  onRegionWarningChange: (next: string) => void;
+  /** The region this SKU is FOR (Region-check Task B), compared against a
+   * live VIP-Reseller region lookup. Independent of regionWarning above and
+   * of nicknameCheckGameCode/autoDeliverySource/supplierSku — blank = no
+   * automatic region check for this product. */
+  expectedRegionCode: string;
+  onExpectedRegionCodeChange: (next: string) => void;
+  /** Task 12: true when the parent Product has a Linked Game (a Task 10
+   * `Product.gameId`) set. Purely a UI hint — renders a note near the two
+   * legacy nickname/region-check fields below pointing out that the new
+   * Game-based nickname check has taken over for products that opted in;
+   * never changes those fields' own behavior or validation. */
+  productHasLinkedGame?: boolean;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
+
+  // Selecting Digiflazz pre-fills the buyer-info fields with the template
+  // ONLY when the admin hasn't already added any — never overwrite fields
+  // they've customized. Picking "None" just clears the source; any
+  // already-typed Supplier SKU is left alone (it stops being submitted
+  // once autoDeliverySource is cleared — see the parent pages' payload).
+  function selectAutoDeliverySource(next: AutoDeliverySourceOption) {
+    if (next === "digiflazz") {
+      onAutoDeliverySourceChange("digiflazz");
+      if (additionalFields.length === 0) {
+        onAdditionalFieldsChange(AUTO_DELIVERY_FIELDS_TEMPLATE);
+      }
+    } else {
+      onAutoDeliverySourceChange(null);
+    }
+  }
 
   // No hidden memory across delivery methods, by design (UX principle: avoid
   // unnecessary state) — picking Manual always starts at Step 2's "No buyer
   // information required" default, same as a fresh row. `deliveryType` is
   // the single source of truth; there's nothing to restore once it's been
-  // overwritten to "auto".
+  // overwritten to "auto". Leaving Manual + buyer info required this way
+  // also hides Step 4 and the nickname-check field, so their state is reset
+  // too — otherwise a value like "digiflazz" or a stale game code would sit
+  // unseen in the parent's state and could resurface silently if the admin
+  // flips back to buyer info required later.
   function selectMethod(next: DeliveryMethod) {
     onDeliveryTypeChange(next === "auto" ? "auto" : "manual");
+    onAutoDeliverySourceChange(null);
+    onSupplierSkuChange("");
+    onNicknameCheckGameCodeChange("");
+    onRegionWarningChange("");
+    onExpectedRegionCodeChange("");
+  }
+
+  // Same "no hidden memory" reset as selectMethod above, for the other path
+  // that can turn requiresInfo from true back to false: un-checking "Require
+  // buyer information" in Step 2 without changing the Step 1 method.
+  function selectBuyerInfo(next: "required" | "none") {
+    onDeliveryTypeChange(next === "required" ? "manual_with_info" : "manual");
+    if (next === "none") {
+      onAutoDeliverySourceChange(null);
+      onSupplierSkuChange("");
+      onNicknameCheckGameCodeChange("");
+      onRegionWarningChange("");
+      onExpectedRegionCodeChange("");
+    }
   }
 
   return (
@@ -113,7 +203,7 @@ export function DeliveryTypeSection({
           <RadioGroup
             className="mt-2"
             value={requiresInfo ? "required" : "none"}
-            onValueChange={(v) => onDeliveryTypeChange(v === "required" ? "manual_with_info" : "manual")}
+            onValueChange={(v) => selectBuyerInfo(v as "required" | "none")}
           >
             <RadioOptionCard
               id="buyer-info-none"
@@ -141,6 +231,134 @@ export function DeliveryTypeSection({
             The buyer fills these in before paying. At least one field is required.
           </p>
           <AdditionalFieldsEditor value={additionalFields} onChange={onAdditionalFieldsChange} />
+        </div>
+      )}
+
+      {/* Step 4 — an optional supplier hookup, only relevant once buyer info
+          is required (a supplier needs the Game ID / Server-Zone the buyer
+          submits in Step 3 to fulfill automatically). */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Auto Delivery Source</label>
+          <p className="mt-1 mb-2 text-xs text-ink-soft">
+            Set this only if a supplier fulfills this denomination automatically after payment.
+          </p>
+          <RadioGroup
+            className="mt-2"
+            value={autoDeliverySource === "digiflazz" ? "digiflazz" : "none"}
+            onValueChange={(v) => selectAutoDeliverySource(v as AutoDeliverySourceOption)}
+          >
+            <RadioOptionCard
+              id="auto-delivery-source-none"
+              value="none"
+              title="None"
+              description="No supplier is linked — delivery stays fully manual."
+              icon={Ban}
+            />
+            <RadioOptionCard
+              id="auto-delivery-source-digiflazz"
+              value="digiflazz"
+              title="Digiflazz"
+              description="Matches this denomination to a Digiflazz price-list SKU."
+              icon={PlugZap}
+            />
+          </RadioGroup>
+
+          {autoDeliverySource === "digiflazz" && (
+            <div className="mt-3">
+              <label className="text-sm font-medium text-ink">
+                Supplier SKU <span className="text-rust">*</span>
+              </label>
+              <Input
+                className="mt-1"
+                placeholder="e.g. mlbb86"
+                value={supplierSku}
+                onChange={(e) => onSupplierSkuChange(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-ink-soft">
+                The Digiflazz buyer SKU code this denomination maps to.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Nickname check (Task 7) — an independent storefront UX enhancement,
+          NOT gated on autoDeliverySource above: a manual_with_info product
+          with no Digiflazz link can still offer a live nickname lookup on the
+          buyer's account field before they pay. Shown under the same
+          requiresInfo condition as Step 3, since the check needs a buyer
+          account field to run against. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Nickname check game code (optional)</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. mobile-legends"
+            value={nicknameCheckGameCode}
+            onChange={(e) => onNicknameCheckGameCodeChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
+            the live nickname check for this product.
+          </p>
+          {productHasLinkedGame && (
+            <p className="mt-1 text-xs text-ink-soft">
+              This product uses the new Game-based nickname check — this field only affects the
+              legacy region-check, if separately configured.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Region warning (Region-check Task B) — an independent, plain-text
+          mitigation for the wrong-region-variant problem: works for ANY
+          manual_with_info product, no live API dependency, always available.
+          Shown under the same requiresInfo condition as the fields above
+          since it renders near the buyer account field they collect. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Region warning (optional)</label>
+          <Input
+            className="mt-1"
+            placeholder="e.g. Hanya untuk akun region Indonesia"
+            value={regionWarning}
+            onChange={(e) => onRegionWarningChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            Shown near the account field on the buy page — e.g. &quot;Only for Indonesia-region
+            accounts&quot;. Leave blank to skip.
+          </p>
+        </div>
+      )}
+
+      {/* Expected region code (Region-check Task B) — an independent,
+          automatic-check opt-in: only works for games where a mapped
+          game_code + this expected region exist, degrades silently
+          otherwise (same "never block the buyer" discipline as the
+          nickname check above). NOT gated on nicknameCheckGameCode or
+          autoDeliverySource — a product can have either, both, or neither. */}
+      {requiresInfo && (
+        <div>
+          <label className="text-sm font-medium text-ink">Expected region code (optional)</label>
+          <Input
+            className="mt-1 w-32"
+            maxLength={5}
+            placeholder="e.g. ID"
+            value={expectedRegionCode}
+            onChange={(e) => onExpectedRegionCodeChange(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">
+            e.g. &quot;ID&quot; for Indonesia — compared against a live account lookup via
+            VIP-Reseller (only available for some games, e.g. Mobile Legends). Leave blank to skip
+            the automatic check.
+          </p>
+          {productHasLinkedGame && (
+            <p className="mt-1 text-xs text-ink-soft">
+              This product uses the new Game-based nickname check — this field only affects the
+              legacy region-check, if separately configured.
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { t } from "../../lib/i18n";
 import { formatIdr } from "../../lib/format";
 import type { TicketOrderSummary } from "../../api/types";
+import Button from "../ui/Button";
 import StatusBadge from "./StatusBadge";
 
 export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSummary }) {
@@ -73,9 +74,9 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
           <ExternalLink className="w-3.5 h-3.5" />
           {order.delivered ? t("web.ticket_download_credentials") : t("web.ticket_view_order")}
         </Link>
-        <button type="button" className="btn btn-soft btn-sm" onClick={() => navigator.clipboard.writeText(order.code)}>
+        <Button variant="soft" size="sm" onClick={() => navigator.clipboard.writeText(order.code)}>
           <Copy className="w-3.5 h-3.5" /> {t("web.ticket_copy_order_code")}
-        </button>
+        </Button>
       </div>
     </details>
   );

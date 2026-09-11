@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet } from "../api/client";
 import type { HealthEntry } from "../api/types";
 
 export interface SettingsField {
@@ -44,11 +45,7 @@ export function useSettings() {
   const qc = useQueryClient();
   const query = useQuery<SettingsData>({
     queryKey: ["settings"],
-    queryFn: async () => {
-      const res = await fetch("/api/settings");
-      if (!res.ok) throw new Error(`Failed to load settings (${res.status})`);
-      return res.json() as Promise<SettingsData>;
-    },
+    queryFn: () => apiGet<SettingsData>("/api/settings"),
   });
 
   const invalidate = useCallback(() => {

@@ -1,18 +1,25 @@
 /* Storefront SPA styles — pixel parity with the Nunjucks pages.
  *
- * Three layers, in order:
+ * Four layers, in order:
  *   1. Tailwind v4 + self-hosted fonts (replaces the Google Fonts + Tailwind
  *      CDN pair loaded by packages/web-ui/views/_theme.njk).
- *   2. ../../static/app.css imported VERBATIM — the `:root` design tokens and
- *      the .card/.btn/.field/.chip component classes stay single-sourced.
- *   3. An @theme block transcribing _theme.njk's inline tailwind.config
- *      byte-for-byte, plus a v3-compat base layer (the templates were written
- *      against the Tailwind v3 CDN; v4 changed a few preflight defaults).
+ *   2. ./styles/tokens.css — the single source for every design-token VALUE
+ *      (`--gg-*` set + legacy short-name aliases like `--pine` / `--r-lg`).
+ *   3. ../../static/app.css imported VERBATIM — the .card/.btn/.field/.chip
+ *      component classes. Its old `:root` token block moved to tokens.css; the
+ *      classes now read the legacy aliases from there via `var()`.
+ *   4. An @theme block giving Tailwind the token NAMES (bg-pine, font-display,
+ *      shadow-soft, …). It stays a LITERAL mirror of tokens.css — see the note
+ *      on the block below for why `var()` forwards don't work here — plus a
+ *      v3-compat base layer (the templates were written against the Tailwind
+ *      v3 CDN; v4 changed a few preflight defaults).
  *
- * If a token changes in packages/web-ui/views/_theme.njk, mirror it in the
- * @theme block below — and vice versa.
+ * To change a token value: edit ./styles/tokens.css, then mirror it into the
+ * @theme block below and into gogogo-frontend/design-system/tokens.css.
  */
 @import "tailwindcss";
+@import "./styles/tokens.css";
+@import "./styles/tokens.extensions.css"; /* §26.2 reviewed exceptions — see docs/implementation/extensions.md */
 
 /* Latin subset only. The unscoped `@fontsource/<font>/<weight>.css` entrypoints
    declare every subset the family ships — cyrillic, greek, vietnamese and
@@ -50,8 +57,19 @@
 
 @import "../../static/app.css";
 
-/* Tokens from packages/web-ui/views/_theme.njk (tailwind.config, byte-for-byte).
-   `static` so Tailwind v4 emits every token even when unreferenced. */
+/* The Tailwind v4 token layer for the SPA. These map _theme.njk's token NAMES
+   (bg-pine, font-display, shadow-soft, …) to the "Clean Modern" values.
+ *
+ * NOTE: values are kept LITERAL here rather than `var(--gg-*)` forwards to
+ * src/styles/tokens.css. Tailwind v4 (4.3.1) only pre-resolves a token when it
+ * can read its literal value at build time: with a `var()` it (a) drops the
+ * alpha for every opacity-modified colour utility (`bg-card/90`, `bg-ink/5`,
+ * `border-rust/30`, … would render fully opaque) and (b) collapses the
+ * `--tw-shadow-color` recolour channel on `shadow-soft`/`shadow-lift`. Both are
+ * real changes to the built CSS, so this block stays a literal mirror.
+ * Values mirror src/styles/tokens.css — keep in sync. See
+ * docs/implementation/deviations.md (A1). `static` so Tailwind v4 emits every
+ * token even when unreferenced. */
 @theme static {
   --color-paper: #f6f8fb;
   --color-card: #ffffff;
@@ -65,18 +83,35 @@
   --color-pine-tint: #e6effe;
   --color-grass: #16a34a;
   --color-grass-dark: #15803d;
+  --color-grass-dark-aa: #157e3b; /* §26.2 extension — StockBadge pill only; mirrors styles/tokens.extensions.css */
+  --text-2xs: 0.625rem; /* §26.2 extension — Badge discount/savings label (10px) only; mirrors styles/tokens.extensions.css */
   --color-grass-tint: #e7f6ec;
   --color-amberx: #b45c0a;
   --color-amberx-tint: #fdedcf;
   --color-rust: #dc2626;
   --color-rust-dark: #b91c1c;
   --color-rust-tint: #fde7e7;
+  --color-plum: #6d28d9;
+  --color-plum-tint: #f1ebfe;
   --font-display: Outfit, system-ui, sans-serif;
   --font-sans: Manrope, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
   --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -14px rgba(16, 24, 40, 0.12);
   --shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.06), 0 16px 36px -18px rgba(16, 24, 40, 0.18);
   --radius-xl2: 1.25rem;
+  --radius-3xl: 1.5rem; /* §26.2 extension — full-bleed marketing bands (hero, "Our Promise", AuthBrandPanel) only; pins Tailwind core's coincidentally-equal default. Mirrors styles/tokens.extensions.css --gg-radius-xl. */
+  /* Literal mirror of --gg-bottom-nav-height (styles/tokens.css §7 LAYOUT).
+     Enables h-bottom-nav / pb-bottom-nav for the fixed mobile tab bar
+     (src/components/layout/MobileTabBar.tsx). */
+  --spacing-bottom-nav: 3.5rem;
+  --container-wide: 90rem; /* §26.2 extension — the /help full-bleed breakout container (max-w-wide) only; mirrors styles/tokens.extensions.css --gg-container-wide. */
+  /* Literal mirror of --gg-ease (styles/tokens.css §8 MOTION) — this project's
+     signature ease-out. NOT an extension: the token already exists in the spec,
+     it simply had no Tailwind utility name, so `transition-*` utilities were
+     falling back to the framework's own cubic-bezier(.4,0,.2,1). `ease-gg`
+     lets a transition authored in TSX use the same curve the CSS component
+     layer in static/app.css already writes out by hand. */
+  --ease-gg: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 /* v3 CDN applied hover: styles unconditionally; v4 gates them behind
@@ -85,12 +120,43 @@
 
 @layer base {
   /* base.njk put these classes on <body>; the SPA's <body> only holds #root,
-     so the flex column moves here (header / main flex-1 / footer). */
+     so the flex column moves here (header / main flex-1 / footer).
+     `overflow-x: clip` also lives here, not on `body` — see the long comment
+     below for why body/html-level clipping doesn't actually work here. */
   #root {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow-x: clip;
   }
+
+  /* /help's full-bleed breakout (HelpPage.tsx's `mx-[calc(50%_-_50vw)]`
+     wrapper) produces a box whose used width is exactly 100vw, which
+     includes the OS scrollbar's width wherever one renders inline — that
+     overflows the real scrollport by half a scrollbar width. The
+     overflowing element can't clip its own margin box, so the clip has to
+     happen at an ancestor's actual overflow container instead.
+
+     That ancestor is `#root`, not `body`/`html`. `overflow-x: clip` (or
+     `hidden`) set on `body` alone was tried first and measured, in a real
+     browser, to do NOTHING: `window.scrollTo(99999, 0)` still moved the
+     viewport by a full scrollbar-width regardless of body's `overflow-x`
+     value. Root cause: the UA only propagates `body`'s overflow to become
+     the viewport's real scrolling behavior when BOTH `overflow-x` AND
+     `overflow-y` are non-`visible` at once — set `overflow-x` alone (leaving
+     `overflow-y` at its default `visible`) and neither axis gets clipped
+     anywhere. Forcing `overflow-y` non-`visible` too isn't an option — that
+     would kill the page's normal vertical scrolling.
+
+     `#root` sidesteps all of that: it's an ordinary block box already sized
+     to the page's true content width (not `100vw`), sitting between `body`
+     and the breakout div, so its own `overflow-x: clip` clips the
+     overflowing child directly — no viewport-propagation algorithm, no
+     x/y-pairing requirement, and vertical scrolling is completely
+     unaffected (verified: `window.scrollTo(0, 99999)` still scrolls
+     normally). `clip` (not `hidden`) still allows `position: sticky`
+     elsewhere in the app (Layout.tsx's header) since neither axis is
+     scrollable on this box. */
 
   /* Tailwind v4 preflight regressions vs the v3 CDN the templates assume:
      buttons became cursor:default, placeholders became 50% currentColor. */

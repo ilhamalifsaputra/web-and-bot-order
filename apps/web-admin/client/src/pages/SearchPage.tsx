@@ -8,6 +8,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { SearchBar } from "../components/shared/SearchBar";
+import { apiGet } from "../api/client";
 
 interface UserHit {
   id: number;
@@ -30,11 +31,7 @@ interface SearchResult {
 function useSearch(q: string) {
   return useQuery<SearchResult>({
     queryKey: ["search", q],
-    queryFn: async () => {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<SearchResult>;
-    },
+    queryFn: () => apiGet<SearchResult>(`/api/search?q=${encodeURIComponent(q)}`),
     enabled: q.length > 0,
   });
 }

@@ -175,7 +175,7 @@ export const Env = z.object({
   NOWPAYMENTS_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
 
   // ---- Database ----
-  DATABASE_URL_PRISMA: z.string().default("file:../data/bot.db"),
+  DATABASE_URL_PRISMA: z.string(),
 
   // ---- Behaviour ----
   DEFAULT_LANGUAGE: z
@@ -185,9 +185,6 @@ export const Env = z.object({
     .pipe(z.enum(["en", "id"])),
   RATE_LIMIT_MAX: z.coerce.number().default(5),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(3),
-  // Max distinct chats kept in the in-memory session Map (LRU-evicted beyond
-  // this) — bounds bot RAM growth on long-lived processes. Tune per VPS size.
-  SESSION_CACHE_MAX_ENTRIES: z.coerce.number().default(5000),
   REFERRAL_COMMISSION_PERCENT: z.coerce.number().default(10),
   DEFAULT_WARRANTY_DAYS: z.coerce.number().default(30),
   LOW_STOCK_THRESHOLD: z.coerce.number().default(3),
@@ -264,7 +261,7 @@ export const Env = z.object({
   NOTIF_BOT_TOKEN: z.string().optional(),
   PUBLIC_CHANNEL_ID: z.coerce.number().optional(),
   NOTIF_POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
-  NOTIF_MAX_ATTEMPTS: z.coerce.number().default(5),
+  NOTIF_MAX_ATTEMPTS: z.coerce.number().default(10),
 
   // ---- SMTP (storefront forgot-password email) ----
   // Env-fallback only — web-admin Settings (smtp_host/port/user/pass/from/

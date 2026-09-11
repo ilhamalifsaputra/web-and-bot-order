@@ -13,6 +13,7 @@ import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
 import { useShopContext } from "../components/Layout";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
+import Breadcrumb from "../components/shop/Breadcrumb";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
 
@@ -31,6 +32,7 @@ export default function CategoriesPage() {
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="h-4 w-40 mb-3" />
         <div className="mb-6">
           <Skeleton className="h-8 w-40" />
         </div>
@@ -47,6 +49,12 @@ export default function CategoriesPage() {
 
   return (
     <>
+      <Breadcrumb
+        items={[
+          { label: t("web.nav_home"), href: "/" },
+          { label: t("web.categories_page_title") },
+        ]}
+      />
       <div className="mb-6">
         <h1 className="page-title">{t("web.categories_page_title")}</h1>
       </div>
@@ -62,7 +70,7 @@ export default function CategoriesPage() {
             <motion.div key={c.slug} variants={staggerItem}>
               <Link
                 to={`/c/${c.slug}`}
-                className="group flex h-full items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:border-pine-tint hover:shadow"
+                className="group flex h-full items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-soft transition hover:border-pine-tint hover:shadow-lift"
               >
                 <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl transition-transform group-hover:scale-105">
                   {c.emoji ? c.emoji : <Box className="h-6 w-6 text-pine" />}

@@ -26,7 +26,7 @@ import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmo
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
 import { htmlDefaultsTransformer } from "@app/order-bot/util/apiDefaults";
-import { scheduleJobs, scheduleFxRefresh, flushSettledOrderBubble } from "@app/order-bot/jobs";
+import { scheduleJobs, scheduleFxRefresh, scheduleDigiflazzCatalogSync, scheduleDigiflazzDispatch, scheduleOutboxDispatcherWatchdog, flushSettledOrderBubble } from "@app/order-bot/jobs";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
@@ -204,7 +204,7 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 
 /** Side-effectful boot: DB, command menu, workers, transport, listen, shutdown. */
 export async function start(): Promise<void> {
-  await initDb(); // single PrismaClient, sets WAL + busy_timeout PRAGMAs
+  await initDb(); // no-op on Postgres; kept so this boot path matches every other caller
 
   // Fail-loud on a drifted live DB: a missing payment-ledger table makes that
   // gateway confirm-but-never-deliver (P2021 at the first ledger write), so the
@@ -282,6 +282,24 @@ export async function start(): Promise<void> {
     // In-process workers — exactly one instance each (single process). Each
     // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);
+    // Outbox dispatcher watchdog (Task 15 / I-3): registered HERE, not inside
+    // scheduleJobs, and deliberately appended to the same `jobs` array (so it
+    // gets `.stop()`ed on shutdown below like every other job) — see
+    // scheduleOutboxDispatcherWatchdog's own doc-comment
+    // (apps/order-bot/src/jobs/index.ts) for why. Short version: scheduleJobs
+    // is also called from the standalone bot-only binary
+    // (apps/order-bot/src/main.ts), which never runs the outbox dispatcher
+    // (startNotifier below) at all — registering this watchdog there would
+    // page admins forever with a false "dispatcher never ran" alarm on that
+    // binary. This `if (bot)` block's condition (a main bot token configured)
+    // is a SUBSET of — narrower than — startNotifier's own `dedicated ||
+    // mainBot` enablement check, not identical to it: with a dedicated
+    // notifier token but no main bot token, the dispatcher still runs but
+    // this watchdog is never scheduled. That's safe (no false alarm) and
+    // there's no bot token to page from in that topology anyway, so scoping
+    // it to `if (bot)` still keeps the watchdog confined to a process/branch
+    // where it could actually deliver a page.
+    jobs.push(scheduleOutboxDispatcherWatchdog(bot.api));
     startPolling(bot.api); // Binance Internal Transfer
     startBybitPolling(bot.api); // Bybit Internal Transfer (off-chain, UID-based)
     startBybitBscPolling(bot.api); // Bybit BSC on-chain (BEP20) USDT deposits
@@ -291,7 +309,7 @@ export async function start(): Promise<void> {
     startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
   }
   // Market-rate auto-update needs no bot — runs even on a web-only boot.
-  jobs = [...jobs, scheduleFxRefresh()];
+  jobs = [...jobs, scheduleFxRefresh(), scheduleDigiflazzCatalogSync(), scheduleDigiflazzDispatch()];
   const notifierAbort = new AbortController();
   const notifierDone = startNotifier(bot, notifierAbort.signal);
 

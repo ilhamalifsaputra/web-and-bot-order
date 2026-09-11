@@ -11,6 +11,40 @@ vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
 
+/**
+ * Lets a single test (Task 15 / I-3, the outbox dispatcher heartbeat) force
+ * `fetchPendingNotifications` to reject, so `runDispatcher`'s catch path can
+ * be exercised without any other test in this file losing the real DB
+ * behavior — mirrors the identical `dbMockState` pattern in
+ * apps/order-bot/test/jobs.test.ts (that file forces `updateBroadcastProgress`
+ * to fail the same way). `vi.hoisted` is needed because the `vi.mock` factory
+ * below runs before ordinary module-level `let`s are initialised.
+ *
+ * `recordPollHealthError` (final whole-branch review, Important #1): lets a
+ * test force `recordPollHealth` itself to reject, proving `runDispatcher`'s
+ * `.catch(() => undefined)` guard on both call sites keeps the loop alive
+ * even when the heartbeat write is the thing that fails — not just the tick
+ * it's recording the outcome of.
+ */
+const dbMockState = vi.hoisted(() => ({
+  fetchPendingError: null as Error | null,
+  recordPollHealthError: null as Error | null,
+}));
+vi.mock("@app/db", async () => {
+  const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+  return {
+    ...actual,
+    fetchPendingNotifications: async (...args: Parameters<typeof actual.fetchPendingNotifications>) => {
+      if (dbMockState.fetchPendingError) throw dbMockState.fetchPendingError;
+      return actual.fetchPendingNotifications(...args);
+    },
+    recordPollHealth: async (...args: Parameters<typeof actual.recordPollHealth>) => {
+      if (dbMockState.recordPollHealthError) throw dbMockState.recordPollHealthError;
+      return actual.recordPollHealth(...args);
+    },
+  };
+});
+
 // dispatcher.test-setup MUST be first — temp DB + push before any @app import.
 import { cleanupTestDb } from "./dispatcher.test-setup";
 
@@ -22,11 +56,12 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  * no real Telegram/HTTP is involved).
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import type { Bot } from "grammy";
+import type { Bot, InlineKeyboard } from "grammy";
 import {
   prisma,
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
+  enqueueAdminDigiflazzResyncAborted,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
@@ -48,6 +83,10 @@ import {
   SMTP_HOST_KEY,
   SMTP_FROM_KEY,
   createTicket,
+  getPollHealth,
+  enqueueAdminNewTicketDm,
+  enqueueTicketReplyDm,
+  enqueueTicketClosedDm,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { registerPaymentBubbleFlush } from "@app/core/nudge";
@@ -56,7 +95,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
-import { drainBatch } from "./dispatcher";
+import { drainBatch, runDispatcher } from "./dispatcher";
 
 afterAll(async () => {
   await prisma.$disconnect();
@@ -281,6 +320,41 @@ describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public p
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
     });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Task 10: ADMIN_DIGIFLAZZ_RESYNC_ABORTED must be routed as an admin DM
+ * (payload.chat_id), not a post to PUBLIC_CHANNEL_ID — same M-10-shaped risk
+ * as ADMIN_STALE_PAYMENT above (an event left out of ADMIN_DM_EVENTS either
+ * gets silently dropped forever with no channel configured, or leaks the
+ * catalog-resync alert to the public channel when one is configured). This
+ * event is not order-scoped (orderId: null), unlike ADMIN_STALE_PAYMENT.
+ */
+describe("drainBatch routes ADMIN_DIGIFLAZZ_RESYNC_ABORTED as an admin DM, never a public post (Task 10)", () => {
+  afterEach(() => resetBotIdentity());
+
+  it("sends to the admin's chat_id even when a public channel IS configured, with orderId null", async () => {
+    await addAdminIdToDb(prisma, 900_200_001);
+    setBotIdentity({ publicChannelId: -1009876543211 });
+    await enqueueAdminDigiflazzResyncAborted(prisma, { kind: "sharp_change", sharpChanges: 7, consideredRows: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 900_200_001);
+    expect(call).toBeDefined();
+    const [chatId, text] = call! as [number, string];
+    expect(chatId).not.toBe(-1009876543211); // never the public channel
+    expect(text).toContain("7");
+    expect(text).toContain("10");
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, orderId: null },
+    });
+    const row = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 900_200_001);
+    expect(row).toBeDefined();
     expect(row!.status).toBe("SENT");
   });
 });
@@ -772,6 +846,224 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
   });
 });
 
+/**
+ * Task 2 (Phase C): the three ticket-notification events that used to call
+ * ctx.api.sendMessage() directly from apps/order-bot (conversations/
+ * support.ts, conversations/admin.ts, handlers/admin.ts) — now routed
+ * through notification_outbox like every other buyer/admin DM. Each test
+ * goes through the real `enqueue*` crud helper (packages/db/src/crud/
+ * notifications.ts), then the real `drainBatch`, and asserts on both the
+ * rendered payload/text/keyboard AND the row's terminal SENT status — not
+ * just "doesn't throw".
+ */
+describe("ADMIN_NEW_TICKET, TICKET_REPLY_DM, TICKET_CLOSED_DM (Task 2, Phase C)", () => {
+  /** Fake Bot that also stubs sendMediaGroup — the call ADMIN_NEW_TICKET
+   *  makes when the buyer attached photos. */
+  function fakeMediaBot() {
+    const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+    const sendMediaGroup = vi.fn().mockResolvedValue([{ message_id: 2 }]);
+    const bot = { api: { sendMessage, sendMediaGroup, sendDocument: vi.fn() } } as unknown as Bot;
+    return { bot, sendMessage, sendMediaGroup };
+  }
+
+  it("ADMIN_NEW_TICKET fans out to every resolved admin with the Reply/Close keyboard, and forwards attached photos as a media group", async () => {
+    await addAdminIdToDb(prisma, 910_100_001);
+    await addAdminIdToDb(prisma, 910_100_002);
+    const user = await upsertUser(prisma, { telegramId: 610_001, username: "ticketuser1", fullName: "Ticket User 1" });
+    const ticket = await createTicket(prisma, user.id, "I need help with my order");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_001,
+      fromUsername: "ticketuser1",
+      message: "I need help with my order",
+      photoFileIds: ["photo_a", "photo_b"],
+    });
+
+    const { bot, sendMessage, sendMediaGroup } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call1 = sendMessage.mock.calls.find((c) => c[0] === 910_100_001);
+    const call2 = sendMessage.mock.calls.find((c) => c[0] === 910_100_002);
+    expect(call1).toBeDefined();
+    expect(call2).toBeDefined();
+    const [, text, opts] = call1! as [number, string, { reply_markup: InlineKeyboard; parse_mode: string }];
+    expect(text).toContain(`New support ticket #${ticket.id}`);
+    expect(text).toContain("610001");
+    expect(text).toContain("I need help with my order");
+    expect(text).toContain("2 photo(s) attached");
+    expect(opts.reply_markup.inline_keyboard[0]).toEqual([
+      { text: "💬 Reply", callback_data: `v1:adm:ticket:reply:${ticket.id}` },
+      { text: "🔒 Close", callback_data: `v1:adm:ticket:close:${ticket.id}` },
+    ]);
+
+    // resolveAdminIds is the UNION of every admin id ever added by an earlier
+    // test in this file (shared DB, no per-test reset — same caveat the
+    // ADMIN_STALE_PAYMENT/ADMIN_MANUAL_ORDER_QUEUED describe blocks document
+    // above), so this fan-out isn't necessarily exactly these two targets —
+    // isolate each assertion to OUR two admin ids among however many fired,
+    // the same technique those earlier blocks use.
+    const mediaCall1 = sendMediaGroup.mock.calls.find((c) => c[0] === 910_100_001);
+    const mediaCall2 = sendMediaGroup.mock.calls.find((c) => c[0] === 910_100_002);
+    expect(mediaCall1).toBeDefined();
+    expect(mediaCall2).toBeDefined();
+    expect(mediaCall1![1]).toHaveLength(2);
+    expect(mediaCall1![1][0]).toMatchObject({ type: "photo", media: "photo_a" });
+    expect(mediaCall1![1][1]).toMatchObject({ type: "photo", media: "photo_b" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_NEW_TICKET, orderId: null },
+    });
+    const matching = rows.filter((r) => (JSON.parse(r.payloadJson) as { ticket_id: number }).ticket_id === ticket.id);
+    const chatIds = matching.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id);
+    expect(chatIds).toContain(910_100_001);
+    expect(chatIds).toContain(910_100_002);
+    for (const r of matching) expect(r.status).toBe("SENT"); // every fanned-out row, not just ours
+  });
+
+  it("ADMIN_NEW_TICKET sends no media group and no photo note when the ticket has no photos", async () => {
+    await addAdminIdToDb(prisma, 910_100_003);
+    const user = await upsertUser(prisma, { telegramId: 610_002, username: null, fullName: "Ticket User 2" });
+    const ticket = await createTicket(prisma, user.id, "Second ticket, no photos");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_002,
+      fromUsername: null,
+      message: "Second ticket, no photos",
+      photoFileIds: [],
+    });
+
+    const { bot, sendMessage, sendMediaGroup } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 910_100_003);
+    expect(call).toBeDefined();
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("photo(s) attached");
+    expect(sendMediaGroup).not.toHaveBeenCalled();
+  });
+
+  it("HTML-escapes ADMIN_NEW_TICKET's message and username", async () => {
+    await addAdminIdToDb(prisma, 910_100_004);
+    const user = await upsertUser(prisma, { telegramId: 610_007, username: null, fullName: "Ticket User 7" });
+    const ticket = await createTicket(prisma, user.id, "<script>alert(1)</script>");
+    await enqueueAdminNewTicketDm(prisma, {
+      ticketId: ticket.id,
+      fromUserId: 610_007,
+      fromUsername: "<b>evil</b>",
+      message: "<script>alert(1)</script>",
+      photoFileIds: [],
+    });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 910_100_004);
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("<script>");
+    expect(text).not.toContain("<b>evil</b>");
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(text).toContain("&lt;b&gt;evil&lt;/b&gt;");
+  });
+
+  it("fails an ADMIN_NEW_TICKET row without sending when chat_id is missing", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_NEW_TICKET,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          ticket_id: 999_999,
+          from_user_id: 1,
+          from_username: null,
+          message: "x",
+          photo_file_ids: [],
+        }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.ADMIN_NEW_TICKET, payloadJson: { contains: "999999" } },
+    });
+    expect(row!.status).toBe("FAILED");
+    expect(row!.lastError).toContain("missing chat_id");
+  });
+
+  it("TICKET_REPLY_DM sends the admin's reply in English with a Mark-as-Resolved keyboard", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_003, username: "ticketuser3", fullName: "Ticket User 3" });
+    const ticket = await createTicket(prisma, user.id, "Reply test ticket");
+    await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_003, message: "We refunded your order." });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_003);
+    expect(call).toBeDefined();
+    const [, text, opts] = call! as [number, string, { reply_markup: InlineKeyboard }];
+    expect(text).toContain("Reply from support:");
+    expect(text).toContain("We refunded your order.");
+    expect(text).toContain("tap the button below to close this ticket");
+    expect(opts.reply_markup.inline_keyboard[0]).toEqual([
+      { text: "✅ Mark as Resolved", callback_data: `v1:ticket:close:${ticket.id}` },
+    ]);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_REPLY_DM, payloadJson: { contains: `"ticket_id":${ticket.id},` } },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("HTML-escapes TICKET_REPLY_DM's message", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_004, username: "ticketuser4", fullName: "Ticket User 4" });
+    const ticket = await createTicket(prisma, user.id, "Escape test ticket");
+    await enqueueTicketReplyDm(prisma, { ticketId: ticket.id, chatId: 610_004, message: "<script>alert(1)</script>" });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_004);
+    const [, text] = call! as [number, string];
+    expect(text).not.toContain("<script>");
+    expect(text).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("TICKET_CLOSED_DM sends the buyer's own-language closed message with no keyboard", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_005, username: "ticketuser5", fullName: "Ticket User 5" });
+    const ticket = await createTicket(prisma, user.id, "Closed test ticket");
+    await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_005, buyerLanguage: "id" });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_005);
+    expect(call).toBeDefined();
+    const [, text, opts] = call! as [number, string, { reply_markup?: unknown }];
+    expect(text).toBe("Tiket ditutup. Buka tiket baru jika masih butuh bantuan.");
+    expect(opts.reply_markup).toBeUndefined();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.TICKET_CLOSED_DM, payloadJson: { contains: `"ticket_id":${ticket.id},` } },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("TICKET_CLOSED_DM defaults to English when buyerLanguage is null", async () => {
+    const user = await upsertUser(prisma, { telegramId: 610_006, username: "ticketuser6", fullName: "Ticket User 6" });
+    const ticket = await createTicket(prisma, user.id, "Closed test ticket 2");
+    await enqueueTicketClosedDm(prisma, { ticketId: ticket.id, chatId: 610_006, buyerLanguage: null });
+
+    const { bot, sendMessage } = fakeMediaBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 610_006);
+    expect(call).toBeDefined();
+    const [, text] = call! as [number, string];
+    expect(text).toBe("Your ticket has been closed. Open a new one if you need further help.");
+  });
+});
+
 describe("PRODUCT_RESTOCKED_BROADCAST", () => {
   it("routes as a DM to the customer's chat_id (not a public-channel post) and marks the row SENT", async () => {
     const user = await upsertUser(prisma, { telegramId: 700_001, username: "restockfan", fullName: null });
@@ -965,7 +1257,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(row!.status).toBe("SENT");
   });
 
-  it("marks an EMAIL row FAILED once sendMail failures reach NOTIF_MAX_ATTEMPTS, backing off between each attempt like the Telegram generic-failure path", async () => {
+  it("marks an EMAIL row DEAD_LETTER once sendMail failures reach NOTIF_MAX_ATTEMPTS, backing off between each attempt like the Telegram generic-failure path", async () => {
     // SMTP is already configured by the previous test (persists — no
     // per-test DB reset in this file).
     vi.mocked(sendMail).mockRejectedValue(new Error("smtp connection refused"));
@@ -1002,7 +1294,10 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     }
 
     const final = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
-    expect(final!.status).toBe("FAILED");
+    // This call site passes config.NOTIF_MAX_ATTEMPTS (> 1), so the row was
+    // genuinely retried with backoff up to the ceiling — DEAD_LETTER, not
+    // FAILED (which is reserved for maxAttempts<=1 one-shot invalid rows).
+    expect(final!.status).toBe("DEAD_LETTER");
     expect(final!.attempts).toBe(config.NOTIF_MAX_ATTEMPTS);
     expect(final!.lastError).toContain("smtp connection refused");
   });
@@ -1100,7 +1395,11 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
     });
 
     const { bot, sendMessage } = fakeBot();
-    await expect(drainBatch(bot)).resolves.toBeUndefined(); // must not throw out of drainBatch
+    // Task 15 (I-3): drainBatch now returns the number of rows it saw this
+    // cycle (pending.length) instead of void — this row is the only one
+    // pending at this point in the shared-DB test run, so the count is 1.
+    // The assertion's real point (unchanged): must not throw out of drainBatch.
+    await expect(drainBatch(bot)).resolves.toBe(1);
 
     expect(sendMessage).not.toHaveBeenCalledWith(600_001, expect.anything(), expect.anything());
     const after = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
@@ -1135,5 +1434,79 @@ describe("drainBatch isolates a render() failure instead of aborting the batch (
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, payloadJson: { contains: "TOPUP-CORRUPT-2" } },
     });
     expect(badRow!.status).toBe("FAILED");
+  });
+});
+
+/**
+ * Task 15 (I-3, fresh backend audit 2026-08-21): the outbox dispatcher is the
+ * sole delivery path for every buyer credential DM and every admin alert this
+ * codebase enqueues, but unlike the six payment reconcile pollers it never
+ * wrote a heartbeat — a bad notifier token or an unhandled exception class
+ * silently stopped all Telegram delivery with nothing but one log line, no
+ * admin ever told. `runDispatcher` now records a `recordPollHealth(prisma,
+ * "outbox", ...)` heartbeat after every tick, success or failure, so
+ * `outboxDispatcherPollWatchdog` (apps/order-bot/src/jobs/index.ts) has
+ * something to read. These two tests drive `runDispatcher` for exactly one
+ * tick (abort the signal synchronously right after calling it, before the
+ * first `await` inside `drainBatch` resolves — the loop's own
+ * `if (signal?.aborted) break;` then stops it right after that one tick,
+ * without waiting out the real NOTIF_POLL_INTERVAL_SECONDS sleep).
+ */
+describe("runDispatcher records an outbox heartbeat (Task 15 / I-3)", () => {
+  afterEach(() => {
+    dbMockState.fetchPendingError = null;
+    dbMockState.recordPollHealthError = null;
+  });
+
+  it("records a successful heartbeat after a normal batch cycle", async () => {
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await done;
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastSuccessAt).toBe(health.lastRun);
+    expect(health.consecutiveFailures).toBe(0);
+  });
+
+  it("records a failed heartbeat (truncated error, loop does not crash) when a cycle throws", async () => {
+    dbMockState.fetchPendingError = new Error(`simulated DB failure ${"x".repeat(400)}`); // forces fetchPendingNotifications to reject
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
+
+    const health = await getPollHealth(prisma, "outbox");
+    expect(health.lastRun).not.toBeNull();
+    expect(health.lastError).toContain("simulated DB failure");
+    // Matches this repo's own documented 300-char truncation convention
+    // (packages/core/src/payments/pollHealth.ts's LAST_ERROR_DISPLAY_MAX
+    // comment) — the poller-side truncation the display logic already expects.
+    expect(health.lastError!.length).toBeLessThanOrEqual(300);
+  });
+
+  /**
+   * Final whole-branch review, Important #1: before this fix, both
+   * `recordPollHealth` calls in `runDispatcher` were unguarded — if the
+   * heartbeat write itself threw (e.g. the shared SQLite DB is busy/locked,
+   * plausibly correlated with why the tick just failed), the exception
+   * escaped `runDispatcher` entirely. `startNotifier`
+   * (apps/server/src/index.ts) treats that outer throw as fatal and stops
+   * restarting the loop, permanently killing all Telegram delivery until a
+   * manual process restart — from a single transient heartbeat-write error.
+   * This drives a normal (successful) tick but makes `recordPollHealth`
+   * itself reject, and asserts `runDispatcher` still resolves cleanly
+   * instead of propagating that rejection.
+   */
+  it("survives a recordPollHealth rejection on the success path without crashing the loop", async () => {
+    dbMockState.recordPollHealthError = new Error("simulated DB busy/locked error writing the heartbeat");
+    const { bot } = fakeBot();
+    const controller = new AbortController();
+    const done = runDispatcher(bot, controller.signal);
+    controller.abort();
+    await expect(done).resolves.toBeUndefined(); // the loop itself must not throw
   });
 });

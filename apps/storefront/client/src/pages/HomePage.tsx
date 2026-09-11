@@ -16,12 +16,10 @@ import {
   BadgeCheck,
   Box,
   CheckCircle,
-  ChevronDown,
   ChevronRight,
   Clock,
   Coins,
   CreditCard,
-  Gamepad2,
   Headphones,
   KeyRound,
   LifeBuoy,
@@ -49,7 +47,10 @@ import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
-import Callout from "../components/shop/Callout";
+import Accordion, { type AccordionItem } from "../components/ui/Accordion";
+import Alert from "../components/ui/Alert";
+import Card from "../components/ui/Card";
+import TrustBadgeRow from "../components/ui/TrustBadgeRow";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -178,6 +179,34 @@ export default function HomePage() {
   const contactCount = 1 + (wa_number ? 1 : 0) + (bot_username ? 1 : 0);
   const contactCols = contactCount === 3 ? "sm:grid-cols-3" : contactCount === 2 ? "sm:grid-cols-2" : "";
 
+  // FAQ — the <Accordion> primitive replaces the native <details> + faq-in
+  // animation. One topic icon per row (scanability); the 3 answers that read
+  // as a warning/cross-reference render inside an <Alert variant="panel">,
+  // everything else is plain text. First row open by default.
+  const faqItems: AccordionItem[] = FAQ_NUMBERS.map((n) => {
+    const Icon = FAQ_ICONS[n - 1]!;
+    const tone = FAQ_CALLOUTS[n];
+    const answer = t(`web.faq_a${n}`);
+    return {
+      value: `faq-${n}`,
+      trigger: (
+        <span className="flex items-center gap-3">
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sand text-ink-soft">
+            <Icon className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <span className="font-semibold text-ink">{t(`web.faq_q${n}`)}</span>
+        </span>
+      ),
+      content: tone ? (
+        <Alert variant="panel" tone={tone}>
+          {answer}
+        </Alert>
+      ) : (
+        answer
+      ),
+    };
+  });
+
   return (
     <>
       {/* 1. Hero (design.md §4.8, mockup perbaikan) */}
@@ -218,37 +247,32 @@ export default function HomePage() {
           </h1>
           <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
           <div className="mt-7 flex flex-wrap gap-3">
-            <motion.a
-              href="#products"
-              {...hoverLift}
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft hover:shadow-lift"
-            >
+            {/* Dark-surface exception (foundations.md §7): pine-fill primary
+                works on bg-ink; the outline CTA keeps a white border/hover
+                rather than .btn-ghost (ink-soft-on-sand is unreadable here).
+                Both keep the white .focus-on-dark ring. */}
+            <motion.a href="#products" {...hoverLift} className="btn btn-primary focus-on-dark">
               <ShoppingBag className="h-5 w-5" />
               {t("web.hero_cta")}
             </motion.a>
             <a
               href="#contact"
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/15 transition-colors"
+              className="btn border border-white/20 text-white hover:bg-white/15 focus-on-dark"
             >
               <MessageCircle className="h-5 w-5" />
               {t("web.hero_cta2")}
             </a>
           </div>
           {/* honest trust chips: capabilities/guarantees, no customer-count claims */}
-          <div className="mt-8 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/10 pt-5 text-sm text-ink-faint">
-            <span className="inline-flex items-center gap-1.5">
-              <Zap className="h-4 w-4 text-amber-400" /> {t("web.badge_instant")}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Shield className="h-4 w-4 text-grass" /> QRIS &amp; USDT
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <CheckCircle className="h-4 w-4 text-pine-tint" /> {t("web.feat_warranty")}
-            </span>
-            <span className="inline-flex items-center gap-1.5">
-              <Headphones className="h-4 w-4 text-violet-400" /> {t("web.badge_support")}
-            </span>
-          </div>
+          <TrustBadgeRow
+            className="mt-8 border-t border-white/10 pt-5 text-ink-faint"
+            items={[
+              { icon: <Zap className="h-4 w-4 text-grass" />, label: t("web.badge_instant") },
+              { icon: <Shield className="h-4 w-4 text-grass" />, label: "QRIS & USDT" },
+              { icon: <CheckCircle className="h-4 w-4 text-pine-tint" />, label: t("web.feat_warranty") },
+              { icon: <Headphones className="h-4 w-4 text-pine-tint" />, label: t("web.badge_support") },
+            ]}
+          />
         </div>
 
         {heroProducts.length > 0 && (
@@ -321,34 +345,36 @@ export default function HomePage() {
         <p className="mt-2 text-center text-ink-soft">{t("web.features_sub")}</p>
 
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-2xl border border-line bg-card p-6 shadow-xs">
+          <Card>
             <span className="grid h-11 w-11 place-items-center rounded-xl bg-pine-tint text-pine">
               <Zap className="h-5 w-5" />
             </span>
             <h3 className="mt-4 font-semibold text-ink">{t("web.feat_instant")}</h3>
             <p className="mt-1 text-sm text-ink-soft">{t("web.feat_instant_d")}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-card p-6 shadow-xs">
+          </Card>
+          <Card>
             <span className="grid h-11 w-11 place-items-center rounded-xl bg-grass-tint text-grass-dark">
               <ShieldCheck className="h-5 w-5" />
             </span>
             <h3 className="mt-4 font-semibold text-ink">{t("web.feat_secure")}</h3>
             <p className="mt-1 text-sm text-ink-soft">{t("web.feat_secure_d")}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-card p-6 shadow-xs">
+          </Card>
+          <Card>
             <span className="grid h-11 w-11 place-items-center rounded-xl bg-amberx-tint text-amberx">
               <CheckCircle className="h-5 w-5" />
             </span>
             <h3 className="mt-4 font-semibold text-ink">{t("web.feat_warranty")}</h3>
             <p className="mt-1 text-sm text-ink-soft">{t("web.feat_warranty_d")}</p>
-          </div>
-          <div className="rounded-2xl border border-line bg-card p-6 shadow-xs">
-            <span className="grid h-11 w-11 place-items-center rounded-xl bg-violet-50 text-violet-600">
+          </Card>
+          <Card>
+            {/* violet-600/violet-50 (reference brand) → pine family — no new hue.
+                See deviations.md §13-home-colour. */}
+            <span className="grid h-11 w-11 place-items-center rounded-xl bg-pine-tint text-pine">
               <Headphones className="h-5 w-5" />
             </span>
             <h3 className="mt-4 font-semibold text-ink">{t("web.feat_support")}</h3>
             <p className="mt-1 text-sm text-ink-soft">{t("web.feat_support_d")}</p>
-          </div>
+          </Card>
         </div>
       </section>
 
@@ -385,7 +411,7 @@ export default function HomePage() {
               <Link
                 key={c.slug}
                 to={`/c/${c.slug}`}
-                className="group flex items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
+                className="card card-pad group flex items-center gap-4 transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
               >
                 <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
                   {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
@@ -446,8 +472,12 @@ export default function HomePage() {
         <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.upcoming_title")}</h2>
         <p className="mt-2 text-ink-soft">{t("web.upcoming_sub")}</p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
+          {/* Hand-rolled, not <Card>: the dashed border marks the teaser
+              non-interactive (pinned by a test) and `.card` hardcodes
+              `border: 1px solid` at plain-class precedence, which
+              `border-dashed` can't override. violet → pine family (no new hue). */}
           <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600 opacity-70">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
               <Share2 className="h-6 w-6" />
             </span>
             <div className="min-w-0">
@@ -458,20 +488,6 @@ export default function HomePage() {
                 </span>
               </div>
               <p className="mt-1 text-sm text-ink-soft">{t("web.sosmed_desc")}</p>
-            </div>
-          </div>
-          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
-              <Gamepad2 className="h-6 w-6" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-semibold text-ink">{t("web.topup_title")}</h3>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amberx-tint px-2.5 py-1 text-xs font-medium text-amberx">
-                  <Clock className="h-3.5 w-3.5" /> {t("web.coming_soon")}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-ink-soft">{t("web.topup_desc")}</p>
             </div>
           </div>
         </div>
@@ -520,7 +536,9 @@ export default function HomePage() {
           as a checklist inside one card so it reads differently from the pine
           promise block directly above it. */}
       <section className="mt-16 reveal">
-        <div className="rounded-3xl border border-line bg-card p-6 shadow-xs sm:p-10">
+        {/* Content card (Card = .card, radius-lg 16px), not a full-bleed
+            marketing band — the 24px band radius was wrong for it. */}
+        <Card padded={false} className="p-6 sm:p-10">
           <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.trust_kicker")}</p>
           <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.trust_title")}</h2>
           <p className="mt-2 max-w-2xl text-ink-soft">{t("web.trust_sub")}</p>
@@ -535,14 +553,14 @@ export default function HomePage() {
               </li>
             ))}
           </ul>
-        </div>
+        </Card>
       </section>
 
       {/* 6. Testimoni — ulasan ASLI dari pesanan yang sudah terkirim (≥4★ dengan
           komentar). Section disembunyikan saat belum ada ulasan, supaya tidak
           ada testimoni karangan di halaman. */}
       {testimonials.length > 0 && (
-        <section className="mb-12 reveal">
+        <section className="mt-16 reveal">
           <div className="text-center mb-8">
             <p className="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{t("web.testi_kicker")}</p>
             <h2 className="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">
@@ -553,7 +571,7 @@ export default function HomePage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {testimonials.map((review, i) => (
-              <div key={i} className="card card-pad flex flex-col gap-3">
+              <Card key={i} className="flex flex-col gap-3">
                 <div className="flex items-start gap-3">
                   <div className="w-10 h-10 rounded-full bg-pine flex items-center justify-center text-white font-display font-bold text-sm shrink-0">
                     {review.initial}
@@ -571,7 +589,7 @@ export default function HomePage() {
                 <p className="text-sm text-ink-soft leading-relaxed border-t border-line pt-3 italic">
                   “{review.comment}”
                 </p>
-              </div>
+              </Card>
             ))}
           </div>
         </section>
@@ -582,33 +600,8 @@ export default function HomePage() {
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.faq_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.faq_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.faq_sub")}</p>
-        <div className="mx-auto mt-8 max-w-3xl space-y-4">
-          {FAQ_NUMBERS.map((n) => {
-            const Icon = FAQ_ICONS[n - 1]!;
-            const calloutVariant = FAQ_CALLOUTS[n];
-            return (
-              <details
-                key={n}
-                className="faq group rounded-2xl border border-line bg-card px-5 py-1"
-                open={n === 1}
-              >
-                <summary className="flex cursor-pointer items-center gap-3 p-6 font-semibold text-ink">
-                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sand text-ink-soft">
-                    <Icon className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                  <span className="flex-1">{t(`web.faq_q${n}`)}</span>
-                  <ChevronDown className="h-5 w-5 shrink-0 text-ink-faint transition-transform group-open:rotate-180" />
-                </summary>
-                <div className="px-6 pb-6">
-                  {calloutVariant ? (
-                    <Callout variant={calloutVariant}>{t(`web.faq_a${n}`)}</Callout>
-                  ) : (
-                    <p className="text-sm leading-relaxed text-ink-soft">{t(`web.faq_a${n}`)}</p>
-                  )}
-                </div>
-              </details>
-            );
-          })}
+        <div className="mx-auto mt-8 max-w-3xl">
+          <Accordion type="single" defaultValue={`faq-${FAQ_NUMBERS[0]}`} items={faqItems} />
         </div>
       </section>
 
@@ -624,7 +617,7 @@ export default function HomePage() {
               href={`https://wa.me/${wa_number}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
+              className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
             >
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-grass-tint">
                 <svg className="h-6 w-6 text-grass-dark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -643,10 +636,10 @@ export default function HomePage() {
               href={`https://t.me/${bot_username}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
+              className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
             >
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#eff6ff]">
-                <svg className="h-6 w-6 text-[#2563eb]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
+                <svg className="h-6 w-6 text-pine" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
                 </svg>
               </div>
@@ -659,7 +652,7 @@ export default function HomePage() {
 
           <Link
             to="/account/support"
-            className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
+            className="card card-pad group flex flex-col items-center gap-3 text-center transition hover:-translate-y-0.5 hover:shadow-lift"
           >
             <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
               <Ticket className="h-6 w-6 text-pine" />

@@ -8,6 +8,7 @@ import { motion } from "framer-motion";
 import { Tag, Zap } from "lucide-react";
 import { t } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
+import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
 import FlashBadge, { FlashWasPrice } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
@@ -23,11 +24,17 @@ export interface ProductCardData {
   category_name: string;
   from_price: string;
   variant_count: number;
-  image: string;
+  /** The admin's real photo, or null (Fase 12: no more stock-photo
+   * fallback) — a null renders DefaultThumb, keyed by `image_kind`. */
+  image: string | null;
   /** WebP `srcset` for `image` (apps/storefront/src/images.ts webpSrcset).
-   * Null/absent — an upload predating the derivatives, or a hotlinked
-   * placeholder — means render the plain <img>, never a broken <source>. */
+   * Null/absent — an upload predating the derivatives, or no real photo at
+   * all — means render the plain <img>, never a broken <source>. */
   image_srcset?: string | null;
+  /** Which DefaultThumb icon to show when `image` is null — see
+   *  defaultThumbKind() in apps/storefront/src/images.ts. Optional so an
+   *  older/mocked payload still type-checks (falls back to "generic"). */
+  image_kind?: ThumbnailKind | null;
   available: number;
   rating: number | null;
   rating_count: number;
@@ -62,7 +69,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
     <MotionLink
       to={`/p/${p.slug}`}
       {...pressable}
-      className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-xs transition hover:shadow-md hover:border-pine-tint flex flex-col"
+      className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-soft transition hover:shadow-lift hover:border-pine-tint flex flex-col"
     >
       <div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
         {p.image ? (
@@ -93,12 +100,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             />
           </picture>
         ) : (
-          <>
-            <div className="absolute inset-0 bg-linear-to-br from-ink to-ink-soft"></div>
-            <span className="relative z-10 text-2xl font-bold text-white/90 px-4 text-center line-clamp-2">
-              {p.name}
-            </span>
-          </>
+          <DefaultThumb kind={p.image_kind ?? "generic"} name={p.name} />
         )}
 
         {/* Flash badge above the bulk badge in one stacked column — they can
@@ -116,9 +118,20 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             )}
           </div>
         )}
-        <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300 backdrop-blur-sm">
-          <Zap className="w-3 h-3" /> {t("web.badge_instant")}
-        </span>
+        {/* "instant delivery" is a positive capability → an opaque grass chip:
+            solid bg-grass-dark + white text stays legible over BOTH a real
+            photo and the light DefaultThumb well Fase 12 introduced. The old
+            bg-black/40 + text-grass computed to ~2.3:1 over that pale
+            placeholder (fails WCAG AA); white on bg-grass-dark is ~5:1.
+            Still the grass family (positive capability), never off-palette
+            amber — same treatment as the sibling bulk-discount badge above.
+            Gated on !all_non_auto: when every denomination is manual delivery
+            nothing is delivered instantly, so the pill would mislead the buyer. */}
+        {!p.all_non_auto && (
+          <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
+            <Zap className="w-3 h-3" /> {t("web.badge_instant")}
+          </span>
+        )}
       </div>
       <div className="p-4 flex flex-col flex-1">
         <h3 className="font-semibold text-ink line-clamp-1">{p.name}</h3>
@@ -153,7 +166,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
         </div>
 
         {p.bulk_discount && p.bulk_min_qty && (
-          <div className="text-[0.7rem] text-grass-dark font-medium flex items-center gap-1 mt-2">
+          <div className="text-xs text-grass-dark font-medium flex items-center gap-1 mt-2">
             <Tag className="w-3 h-3" />
             {t("web.bulk_hint", { qty: p.bulk_min_qty, percent: bulkPercent ?? 0 })}
           </div>

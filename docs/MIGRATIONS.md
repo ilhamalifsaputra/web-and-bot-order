@@ -1,5 +1,106 @@
 # Migrasi Database
 
+## [BARU — 2026-08-27] Engine-swap ke PostgreSQL: `prisma/migrations/` di-baseline ulang
+
+> Bagian ini didokumentasikan begitu ditambahkan (task 4 dari rencana engine-swap
+> SQLite→PostgreSQL, `worktree-pg-engine-swap`) dan TIDAK menggantikan isi lama di
+> bawah — semua bagian selanjutnya tetap sejarah yang akurat untuk 46 folder
+> migrasi SQLite yang sekarang diarsipkan (lihat di bawah).
+
+Cabang ini mengganti `datasource.provider` di `schema.prisma` dari `sqlite` ke
+`postgresql` (task 2) dan menghapus kode aplikasi khusus SQLite dari
+`packages/db` (task 3). **`db push` tetap satu-satunya mekanisme deploy yang
+sungguhan dipakai** — semua yang dijelaskan di bagian "Mekanisme yang SEBENARNYA
+dipakai repo ini" tepat di bawah ini tetap berlaku persis sama, hanya
+providernya sekarang `postgresql`, bukan `sqlite`.
+
+**Kenapa folder migrasi di-baseline ulang, bukan diedit di tempat:** ke-46 folder
+SQLite-era di `prisma/migrations/` berisi SQL SQLite murni (`PRAGMA`, pola
+rebuild `INSERT INTO "new_x" (...) SELECT ... FROM "x"`, tipe kolom SQLite) yang
+ditulis terhadap `migration_lock.toml` ber-provider `sqlite`. Begitu provider
+schema berganti ke `postgresql`, `check-migration-drift`
+(`prisma migrate diff --from-migrations`) akan mencoba me-*replay* SQL SQLite
+itu di shadow database PostgreSQL dan gagal **keras** — bukan sekadar melaporkan
+diff, karena sintaks SQLite bukan SQL PostgreSQL yang valid. Panduan resmi
+Prisma sendiri untuk situasi pindah provider datasource adalah memulai migration
+history yang baru; SQL provider lama tidak valid untuk provider baru.
+
+**Yang dilakukan (task 4, 2026-08-27):**
+
+1. Ke-46 folder lama dipindah utuh — nama folder dan isi SQL tidak diubah sama
+   sekali — ke `prisma/migrations-sqlite-archive/`. **Tidak dihapus**: folder ini
+   murni dokumentasi/audit-trail sejarah SQLite, dan tidak pernah lagi dibaca
+   oleh Prisma CLI atau ketiga guard script (`check-migration-drift`,
+   `check-migration-timestamps`, `check-migration-rebuild-quoting`) — ketiganya
+   hanya men-scan `prisma/migrations/*`. Salinan `migration_lock.toml` ber-provider
+   `sqlite` (nilai file ini sebelum task 2 mengubahnya ke `postgresql`) disimpan
+   di `prisma/migrations-sqlite-archive/migration_lock.toml` supaya folder arsip
+   itu self-describing kalau dibaca lepas dari konteks commit ini.
+2. Satu migrasi baseline baru, `prisma/migrations/20260827050616_postgresql_baseline/migration.sql`,
+   dibuat via:
+   ```bash
+   prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script
+   ```
+   — **bukan** `prisma migrate dev --create-only` seperti draft awal task ini
+   menyarankan. `migrate diff --from-empty --to-schema-datamodel` dipilih setelah
+   dicek lewat context7/dokumentasi Prisma: command ini murni diffing
+   schema-ke-schema dan **tidak menyentuh database apa pun sama sekali** (beda
+   dari `migrate dev`, yang butuh shadow database dan bisa mendeteksi "drift"
+   antara riwayat migrasi kosong vs. `bot_order_pg` yang skemanya sudah live via
+   `db push` — berisiko menawarkan reset destruktif terhadap DB dev yang
+   sungguhan dipakai). Dokumentasi Prisma sendiri menandai pola
+   `--from-empty --to-schema` persis ini sebagai cara resmi untuk "baseline
+   database saat pindah dari `db push` ke migration history tanpa mengubah data
+   lokal yang sudah ada" — cocok persis dengan situasi repo ini.
+3. Migrasi baseline itu **tidak** ditandai `--applied` di `_prisma_migrations` —
+   konsisten dengan premis inti halaman ini: tabel tersebut tidak dipercaya
+   sebagai catatan skema yang diterapkan di repo ini, karena `db push` tidak
+   pernah menulisinya.
+4. `migration_lock.toml` di `prisma/migrations/` (yang aktif) **tidak berubah** —
+   sudah `postgresql` sejak task 2.
+
+**`check-migration-drift` butuh perubahan mekanisme, bukan cuma isi folder:**
+untuk PostgreSQL, `prisma migrate diff --from-migrations` menolak jalan tanpa
+flag `--shadow-database-url` eksplisit (`Error: You must pass the
+--shadow-database-url if you want to diff a migrations directory`, diverifikasi
+empiris) — beda dari SQLite, yang otomatis membuat file temporary sebagai shadow
+DB tanpa konfigurasi apa pun. `pnpm run check-migration-drift` sekarang
+memanggil `scripts/check-migration-drift.ts` (dulu satu baris `prisma migrate
+diff ...` langsung di `package.json`) yang membangun `--shadow-database-url`
+dari `DATABASE_URL_PRISMA` + `?schema=_migration_diff_shadow` — schema
+**terpisah di DALAM database dev yang sama**, bukan database fisik terpisah,
+supaya tidak ada environment variable baru yang perlu dikonfigurasi manual di
+tiap `.env`. Role `bot_order` (lihat `docker-compose.postgres.yml`) sudah
+superuser/`CREATEDB`, jadi Prisma bisa membuat & mengisi ulang schema tersebut
+sendiri di setiap run — diverifikasi dengan menjalankan check-nya dua kali
+berturut-turut (keduanya sukses, tanpa perlu cleanup manual di antaranya) dan
+dengan memaksa diff sungguhan lewat `--to-empty` untuk mengonfirmasi
+`--exit-code` tetap melaporkan kode 2 (bukan selalu 0 apa pun keadaannya)
+lewat jalur shadow-schema yang sama.
+
+**`check-migration-timestamps` dan `check-migration-rebuild-quoting` tidak
+butuh perubahan mekanisme** — keduanya cuma men-scan folder di
+`prisma/migrations/*`, jadi begitu 46 folder lama pindah keluar dari direktori
+itu, keduanya otomatis hanya melihat folder baseline baru (yang tidak punya
+duplikat timestamp maupun pola rebuild SQL sama sekali — baseline-nya murni
+`CREATE TABLE`, tidak ada `ALTER`/rebuild). Yang **diedit** di kedua script:
+entri `GRANDFATHERED` masing-masing (pasangan timestamp H-9 di
+`check-migration-timestamps.ts`; dua folder pre-H-9 di
+`check-migration-rebuild-quoting.ts`) dikosongkan, karena kedua folder yang
+mereka rujuk sudah tidak lagi ada di `prisma/migrations/` — tanpa perubahan itu
+keduanya gagal keras (`allowlisted folder not found`) di setiap run, bukan
+karena masalah baru, tapi karena allowlist-nya menunjuk ke folder yang sudah
+pindah. Penalaran H-9 di baliknya tidak berubah dan tetap terdokumentasi di
+komentar kedua script serta di bagian-bagian lama halaman ini.
+
+**Titik awal baru untuk `check-migration-drift`:** mulai sekarang, setiap
+perubahan `schema.prisma` di cabang ini perlu migrasi SQL baru di
+`prisma/migrations/` relatif terhadap
+`20260827050616_postgresql_baseline/` — persis pola yang sama seperti
+sebelumnya relatif terhadap 46 folder SQLite, hanya titik nolnya yang pindah.
+Mekanisme "Cara membuat migrasi" dan "Cara menerapkan migrasi" di bagian bawah
+halaman ini tidak berubah.
+
 ## Mekanisme yang SEBENARNYA dipakai repo ini: `db push`, bukan `migrate deploy`
 
 Repo ini punya folder `prisma/migrations/*` (SQL terurut, ada history),
@@ -439,14 +540,14 @@ reconcile gateway terkait. Detail diagnosis di
 
 `apps/server/src/index.ts` (sekitar baris 199-214) menjalankan `missingTables`
 (`packages/db/src/crud/integrity.ts`) saat boot, membandingkan
-`PAYMENT_LEDGER_TABLES` terhadap `sqlite_master` dan **fail-loud** (log error +
+`PAYMENT_LEDGER_TABLES` terhadap `information_schema.tables` dan **fail-loud** (log error +
 DM ke semua admin) kalau ada tabel ledger pembayaran yang hilang. Ini menutup
 skenario "tabel belum pernah dibuat" (mis. lupa `db push` setelah migrasi yang
 menambah tabel baru seperti `order_status_history`).
 
 **Yang TIDAK dicek:** kolom baru pada tabel yang SUDAH ada — `missingTables`
-hanya query `SELECT name FROM sqlite_master WHERE type='table'`, tidak pernah
-`PRAGMA table_info` per tabel. Jadi migrasi column-only (mis.
+hanya query `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = ANY($1)`, tidak pernah
+memeriksa kolom per tabel. Jadi migrasi column-only (mis.
 `orders.network`/`confirmations`/`required_confirmations`/`first_detected_at`/
 `confirmed_at` dari `20260624160712_add_order_status_history`, atau
 `broadcasts.web_image_url`/`image_file_id` dari `20260706120000_broadcast_image`)

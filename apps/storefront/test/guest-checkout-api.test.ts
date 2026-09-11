@@ -391,6 +391,76 @@ describe("POST /api/v1/checkout — guest responses carry the new CSRF token", (
   });
 });
 
+// Task 1 fix pass 2 (review finding): a guest retry that arrives with NO
+// session cookie in EITHER request (the case Idempotency-Key exists to
+// protect — a network retry after the client never saw the first response)
+// must not mint a second guest account or create a second order.
+describe("POST /api/v1/checkout — guest checkout Idempotency-Key (Task 1 fix pass 2)", () => {
+  it("a repeated request with no session cookie in either attempt creates exactly ONE guest User and ONE order, and replays the body", async () => {
+    const ip = freshIp();
+    const key = "guest-idem-retry-1";
+    const email = "idem.retry.guest@example.com";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { method: "bybit", guest_email: email },
+    });
+    expect(first.statusCode).toBe(201);
+    const firstBody = first.json();
+    expect(typeof firstBody.order_code).toBe("string");
+
+    // Second attempt: same key, same body, SAME lack of a session cookie —
+    // simulates the client never having received the first response at all.
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { method: "bybit", guest_email: email },
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json()).toEqual(firstBody);
+    // The replay short-circuits before establishGuestCustomer runs, so it
+    // carries no Set-Cookie of its own (see the doc comment in routes/api.ts).
+    expect(second.headers["set-cookie"]).toBeUndefined();
+
+    const guests = await prisma.user.findMany({ where: { guestEmail: email } });
+    expect(guests).toHaveLength(1);
+    const orders = await prisma.order.findMany({ where: { orderCode: firstBody.order_code } });
+    expect(orders).toHaveLength(1);
+    expect(orders[0]!.userId).toBe(guests[0]!.id);
+  });
+
+  it("409s when the same guest Idempotency-Key is reused for a DIFFERENT request, without minting an account", async () => {
+    const ip = freshIp();
+    const key = "guest-idem-conflict-1";
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { method: "bybit", guest_email: "idem.conflict.a@example.com" },
+    });
+    expect(first.statusCode).toBe(201);
+    const usersAfterFirst = await countUsers();
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip, "idempotency-key": key },
+      payload: { method: "bybit", guest_email: "idem.conflict.b@example.com" }, // different email => different hash
+    });
+    expect(second.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "error.idempotency_key_reused" });
+    // The conflict short-circuited before establishGuestCustomer ran for the
+    // second (different) email — no new user row was created for it.
+    expect(await countUsers()).toBe(usersAfterFirst);
+    const secondGuest = await prisma.user.findFirst({ where: { guestEmail: "idem.conflict.b@example.com" } });
+    expect(secondGuest).toBeNull();
+  });
+});
+
 // ------------------------------------- signed-in regressions stay untouched
 describe("POST /api/v1/checkout — signed-in path is unchanged (Task 4c)", () => {
   it("does not add csrf_token to a signed-in 201 — that client already has one", async () => {

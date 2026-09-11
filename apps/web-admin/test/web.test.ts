@@ -3680,6 +3680,85 @@ describe("stock", () => {
       }
     });
   });
+
+  it("statusCounts stays accurate past one page, and keeps climbing as stock is added (regression for the stuck-at-500 bug)", async () => {
+    // seed.productId already has 4 AVAILABLE rows from the global beforeEach.
+    await bulkAddStock(prisma, seed.productId, Array.from({ length: 60 }, (_, i) => `page${i}@e.com:p`));
+    // Now 64 AVAILABLE rows total.
+
+    const page1 = await get(`/api/stock/${seed.productId}?tab=available&page=1`, seed.cookie);
+    expect(page1.statusCode).toBe(200);
+    const page1Data = JSON.parse(page1.body) as {
+      items: unknown[];
+      statusCounts: { available: number };
+      total: number;
+    };
+    expect(page1Data.statusCounts.available).toBe(64);
+    expect(page1Data.total).toBe(64);
+    expect(page1Data.items.length).toBe(50); // PAGE_SIZE — must match apps/web-admin/src/routes/api/stock.ts's PAGE_SIZE
+
+    const page2 = await get(`/api/stock/${seed.productId}?tab=available&page=2`, seed.cookie);
+    const page2Data = JSON.parse(page2.body) as { items: unknown[]; statusCounts: { available: number } };
+    expect(page2Data.items.length).toBe(14); // the remaining 64 - 50
+    expect(page2Data.statusCounts.available).toBe(64); // same aggregate regardless of page
+
+    // The literal "stuck" case: add one more row and confirm the count actually moves.
+    await bulkAddStock(prisma, seed.productId, ["one-more@e.com:p"]);
+    const after = await get(`/api/stock/${seed.productId}?tab=available&page=1`, seed.cookie);
+    const afterData = JSON.parse(after.body) as { statusCounts: { available: number } };
+    expect(afterData.statusCounts.available).toBe(65);
+  });
+
+  it("search finds a stock item by credential substring, still masked in the response", async () => {
+    await bulkAddStock(prisma, seed.productId, ["findme-unique@example.com:Secret1"]);
+
+    const res = await get(`/api/stock/${seed.productId}?tab=available&q=findme-unique`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { items: { credentials: string }[]; total: number };
+    expect(data.total).toBeGreaterThan(0);
+    expect(data.items.length).toBeGreaterThan(0);
+    // Never the decrypted value in the list payload — same invariant as the
+    // existing masked-credentials test at web.test.ts:3597.
+    for (const item of data.items) {
+      expect(item.credentials).toBe("••••••••");
+    }
+  });
+
+  it("search finds nothing for a substring that doesn't match any credential or note", async () => {
+    const res = await get(`/api/stock/${seed.productId}?tab=available&q=definitely-not-present-xyz`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { items: unknown[]; total: number };
+    expect(data.items.length).toBe(0);
+    expect(data.total).toBe(0);
+  });
+
+  it("sold tab groups SOLD + RESERVED items together and statusCounts shows individual counts", async () => {
+    // Start with 4 AVAILABLE rows from beforeEach.
+    // Change 2 of them: mark one SOLD, one RESERVED.
+    const allItems = await prisma.stockItem.findMany({ where: { productId: seed.productId } });
+    if (allItems.length >= 2) {
+      await prisma.stockItem.update({
+        where: { id: allItems[0]!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      await prisma.stockItem.update({ where: { id: allItems[1]!.id }, data: { status: "RESERVED" } });
+    }
+
+    const res = await get(`/api/stock/${seed.productId}?tab=sold`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as {
+      items: { status: string }[];
+      statusCounts: { available: number; reserved: number; sold: number; dead: number };
+      total: number;
+    };
+    // The tab=sold endpoint returns both SOLD and RESERVED items combined.
+    expect(data.total).toBe(2);
+    expect(data.items.length).toBe(2);
+    // statusCounts shows individual counts for all statuses, not combined.
+    expect(data.statusCounts.sold).toBe(1);
+    expect(data.statusCounts.reserved).toBe(1);
+    expect(data.statusCounts.available).toBe(2); // the remaining 4 - 2
+  });
 });
 
 describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", () => {

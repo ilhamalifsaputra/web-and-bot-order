@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +25,7 @@ interface BrandGroup {
   brand: string;
   rawBrand: string;
   region: string | null;
+  gameVariant: string | null;
   existingProductId: number | null;
   skus: SkuRow[];
 }
@@ -341,6 +343,7 @@ export function DigiflazzSyncPage() {
     const brands = newGroups
       .map((g) => ({
         brand: g.brand,
+        gameVariant: g.gameVariant,
         rows: g.skus
           .filter((s) => checkedSkus.has(`${g.brand}::${s.buyerSkuCode}`))
           .map((s) => ({
@@ -469,7 +472,12 @@ export function DigiflazzSyncPage() {
                     aria-expanded={expanded.has(g.brand)}
                     onClick={() => toggleExpanded(g.brand)}
                   >
-                    {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}{" "}
+                    {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
+                    {g.gameVariant ? (
+                      <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
+                        {g.gameVariant}
+                      </Badge>
+                    ) : null}{" "}
                     <span className="text-sm text-ink-soft">— {g.skus.length} SKU(s), Baru</span>
                   </button>
                 </CardTitle>
@@ -520,7 +528,12 @@ export function DigiflazzSyncPage() {
                 <ul className="mt-2 text-sm">
                   {existingGroups.map((g) => (
                     <li key={g.brand}>
-                      {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null} — {g.skus.length} SKU(s)
+                      {g.rawBrand}{g.region ? <span className="text-ink-soft"> ({g.region})</span> : null}
+                      {g.gameVariant ? (
+                        <Badge variant="secondary" className="ml-1 bg-sand text-ink-soft">
+                          {g.gameVariant}
+                        </Badge>
+                      ) : null} — {g.skus.length} SKU(s)
                     </li>
                   ))}
                 </ul>

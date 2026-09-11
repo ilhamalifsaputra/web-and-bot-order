@@ -99,15 +99,41 @@ describe("POST /api/catalog/digiflazz/sync/preview", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.groups).toHaveLength(2);
-    const brands = body.groups.map((g: { brand: string; rawBrand: string; region: string | null }) => ({
+    const brands = body.groups.map((g: { brand: string; rawBrand: string; region: string | null; gameVariant: string | null }) => ({
       brand: g.brand,
       rawBrand: g.rawBrand,
       region: g.region,
+      gameVariant: g.gameVariant,
     }));
+    // Task 22: a region split alone (every row still type: "Umum") must not
+    // fabricate a gameVariant — both groups stay null.
     expect(brands).toEqual(
       expect.arrayContaining([
-        { brand: "Mobile Legends (Indonesia)", rawBrand: "Mobile Legends", region: "Indonesia" },
-        { brand: "Mobile Legends (Filipina)", rawBrand: "Mobile Legends", region: "Filipina" },
+        { brand: "Mobile Legends (Indonesia)", rawBrand: "Mobile Legends", region: "Indonesia", gameVariant: null },
+        { brand: "Mobile Legends (Filipina)", rawBrand: "Mobile Legends", region: "Filipina", gameVariant: null },
+      ]),
+    );
+  });
+
+  it("Task 22: forwards gameVariant per group when a brand is type-split", async () => {
+    await setSetting(prisma, "digiflazz_username", "u");
+    await setSetting(prisma, "digiflazz_api_key", "k");
+    digiflazzMock.getPriceList.mockResolvedValue([
+      { buyerSkuCode: "ab-umum-3200", productName: "Arena Breakout 3.200 Bonds", category: "Game", brand: "Arena Breakout", type: "Umum", price: new Decimal(15000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+      { buyerSkuCode: "ab-inf-1000", productName: "Arena Breakout Infinite 1.000 Bonds", category: "Game", brand: "Arena Breakout", type: "Infinite", price: new Decimal(20000), buyerProductStatus: true, sellerProductStatus: true, stock: null },
+    ]);
+    const res = await postJson("/api/catalog/digiflazz/sync/preview", {});
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.groups).toHaveLength(2);
+    const variants = body.groups.map((g: { brand: string; gameVariant: string | null }) => ({
+      brand: g.brand,
+      gameVariant: g.gameVariant,
+    }));
+    expect(variants).toEqual(
+      expect.arrayContaining([
+        { brand: "Arena Breakout", gameVariant: "Umum" },
+        { brand: "Arena Breakout Infinite", gameVariant: "Infinite" },
       ]),
     );
   });
@@ -209,5 +235,70 @@ describe("POST /api/catalog/digiflazz/sync/apply", () => {
     });
     const denomCount = await prisma.denomination.count();
     expect(denomCount).toBe(0);
+  });
+
+  it("Task 22: forwards gameVariant into the newly-created Product", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [
+        {
+          brand: "Arena Breakout Infinite",
+          gameVariant: "Infinite",
+          rows: [{ buyerSkuCode: "ab-inf-1000", productName: "Arena Breakout Infinite 1.000 Bonds", price: "20000", costPrice: "18000" }],
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    const product = await prisma.product.findFirst({ where: { digiflazzBrand: "Arena Breakout Infinite" } });
+    expect(product?.gameVariant).toBe("Infinite");
+  });
+
+  it("Task 22: omitting gameVariant creates a Product with gameVariant null", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [
+        {
+          brand: "Mobile Legends",
+          rows: [{ buyerSkuCode: "ml100", productName: "Mobile Legends 100 Diamond", price: "16500", costPrice: "15000" }],
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(200);
+    const product = await prisma.product.findFirst({ where: { digiflazzBrand: "Mobile Legends" } });
+    expect(product?.gameVariant).toBeNull();
+  });
+
+  it("Task 22: rejects a non-string gameVariant with 400", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [
+        {
+          brand: "Mobile Legends",
+          gameVariant: 123,
+          rows: [{ buyerSkuCode: "ml100", productName: "X", price: "16500", costPrice: "15000" }],
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'Invalid gameVariant for "Mobile Legends".' });
+  });
+
+  it("Task 22: rejects a gameVariant longer than 32 characters with 400", async () => {
+    const category = await createCategory(prisma, "Top Up Game");
+    const res = await postJson("/api/catalog/digiflazz/sync/apply", {
+      categoryId: category.id,
+      brands: [
+        {
+          brand: "Mobile Legends",
+          gameVariant: "x".repeat(33),
+          rows: [{ buyerSkuCode: "ml100", productName: "X", price: "16500", costPrice: "15000" }],
+        },
+      ],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'gameVariant is too long for "Mobile Legends".' });
   });
 });

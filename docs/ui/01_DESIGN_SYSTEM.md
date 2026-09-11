@@ -239,6 +239,42 @@ Two elevation tokens only — this is a flat system, not a multi-level shadow ra
 Never author a custom `box-shadow` value. If neither token is elevated enough for a
 new case, that's a design-system gap to raise, not a reason to freehand a shadow.
 
+### 7.1 Nested / recessed surfaces
+
+§7's tokens cover **interaction depth** only — a surface stepping `shadow-soft` →
+`shadow-lift` on hover/press. They say nothing about **containment depth**: a
+Card-shaped panel living *inside* another Card. Stacking a second `bg-card` white
+surface on a white surface is exactly the "nyaru" (blend-together) failure this
+system exists to prevent — two identical white fills separated only by a 1px
+`border-border` hairline that barely resolves.
+
+`Card` (`components/ui/card.tsx`) exposes `variant="nested"` for this case:
+
+| | `variant="default"` (raised) | `variant="nested"` (recessed) |
+|---|---|---|
+| Fill | `bg-card` (`#ffffff`) | `bg-sand` (`#eef1f6`) |
+| Radius | `rounded-xl` (16px) | `rounded-lg` (12px) — one step down; an inset must never carry a *larger* radius than its container |
+| Shadow | `shadow-soft` | `shadow-none` |
+| Border | `border-border` | `border-border` (unchanged) |
+
+Use `variant="nested"` on any Card-shaped panel that lives inside another Card.
+`DataTable`'s `nested` prop (`components/shared/DataTable.tsx`) is the concrete
+example already wired to it — when a table sits inside a page-level Card, its
+mobile card-stack rows render as `bg-sand` panels instead of a second stack of
+white cards.
+
+Nesting is capped at depth 2 — there is no `variant="nested-2"` and none is
+planned. A third level has nowhere sensible to go: back to white re-introduces
+the collision, and a darker fill starts reading as disabled rather than as
+depth.
+
+The same reasoning extends to floating content that opens over a Card: `Select`,
+`DropdownMenu`, and `Popover` panels use `bg-sand` instead of `bg-popover`/white,
+since they routinely float over a Card rather than only the plain page
+background. `Dialog` and `AlertDialog` are deliberately unaffected — as centered
+modals over a dimmed backdrop they are never stacked on another surface, so they
+keep the white `--popover` fill.
+
 ## 8. Motion, animation, transition
 
 Defined in `apps/web-admin/client/src/lib/motion.ts` and consumed via `framer-motion`:

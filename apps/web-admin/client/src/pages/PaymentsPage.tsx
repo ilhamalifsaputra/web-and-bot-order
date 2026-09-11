@@ -701,118 +701,121 @@ export function PaymentsPage() {
         </div>
       )}
 
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allEligibleSelected}
-                onCheckedChange={toggleSelectAllEligible}
-                disabled={eligibleRows.length === 0}
-                aria-label="Select all eligible transfers"
-              />
-            ),
-            render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
-              <Checkbox
-                checked={selected.has(tx.id)}
-                onCheckedChange={() => toggleSelected(tx.id)}
-                onClick={e => e.stopPropagation()}
-                aria-label={`Select transfer ${tx.reference}`}
-              />
-            ) : null,
-          },
-          {
-            key: "txid",
-            header: "Transfer ID",
-            render: tx => (
-              <span className="font-mono text-xs block max-w-[200px] truncate" title={tx.reference}>
-                {tx.reference}
-              </span>
-            ),
-          },
-          {
-            key: "gateway",
-            header: "Gateway",
-            render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
-          },
-          {
-            key: "order",
-            header: "Order",
-            render: tx => (
-              <span className="font-mono text-xs">{tx.orderCode ?? "—"}</span>
-            ),
-          },
-          {
-            key: "kind",
-            header: "Type",
-            // Reuses StatusBadge (the same pill vocabulary the Outcome column
-            // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
-            // are registered in its tone map.
-            render: tx => tx.orderKind ? <StatusBadge status={tx.orderKind} /> : <span className="text-xs text-ink-soft">—</span>,
-          },
-          {
-            key: "amount",
-            header: "Amount",
-            render: tx => (
-              <span className="font-mono text-sm">
-                {tx.amount && tx.currency
-                  ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
-                  : "—"}
-              </span>
-            ),
-          },
-          {
-            key: "outcome",
-            header: "Outcome",
-            render: tx => <StatusBadge status={tx.outcome.toUpperCase()} />,
-          },
-          {
-            key: "memo",
-            header: "Memo",
-            render: tx => (
-              <span className="text-xs text-ink-soft truncate max-w-[200px] block">{tx.memo ?? "—"}</span>
-            ),
-          },
-          {
-            key: "date",
-            header: "Date",
-            render: tx => (
-              <span className="text-xs text-ink-soft whitespace-nowrap">
-                {tx.processedAtDisplay ?? "—"}
-              </span>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            // Manual match/credit/dismiss are Binance-specific (the backend
-            // routes operate on processedBinanceTx directly) — other
-            // gateways never show this dropdown, even on an unmatched row.
-            render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.reference}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
-                      <Wallet className="h-4 w-4" />
-                      Add to buyer&apos;s credit balance
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
-                      <X className="h-4 w-4" />
-                      Dismiss
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ) : null,
-          },
-        ]}
+      <Card className="mb-6">
+        <CardContent>
+        <DataTable
+          nested
+          columns={[
+            {
+              key: "select",
+              kind: "selection",
+              header: (
+                <Checkbox
+                  checked={allEligibleSelected}
+                  onCheckedChange={toggleSelectAllEligible}
+                  disabled={eligibleRows.length === 0}
+                  aria-label="Select all eligible transfers"
+                />
+              ),
+              render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
+                <Checkbox
+                  checked={selected.has(tx.id)}
+                  onCheckedChange={() => toggleSelected(tx.id)}
+                  onClick={e => e.stopPropagation()}
+                  aria-label={`Select transfer ${tx.reference}`}
+                />
+              ) : null,
+            },
+            {
+              key: "txid",
+              header: "Transfer ID",
+              render: tx => (
+                <span className="font-mono text-xs block max-w-[200px] truncate" title={tx.reference}>
+                  {tx.reference}
+                </span>
+              ),
+            },
+            {
+              key: "gateway",
+              header: "Gateway",
+              render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
+            },
+            {
+              key: "order",
+              header: "Order",
+              render: tx => (
+                <span className="font-mono text-xs">{tx.orderCode ?? "—"}</span>
+              ),
+            },
+            {
+              key: "kind",
+              header: "Type",
+              // Reuses StatusBadge (the same pill vocabulary the Outcome column
+              // uses) rather than a second badge system — WALLET_TOPUP/PRODUCT
+              // are registered in its tone map.
+              render: tx => tx.orderKind ? <StatusBadge status={tx.orderKind} /> : <span className="text-xs text-ink-soft">—</span>,
+            },
+            {
+              key: "amount",
+              header: "Amount",
+              render: tx => (
+                <span className="font-mono text-sm">
+                  {tx.amount && tx.currency
+                    ? formatCurrencyDisplay(tx.amount, tx.currency as "IDR" | "USDT" | "USD")
+                    : "—"}
+                </span>
+              ),
+            },
+            {
+              key: "outcome",
+              header: "Outcome",
+              render: tx => <StatusBadge status={tx.outcome.toUpperCase()} />,
+            },
+            {
+              key: "memo",
+              header: "Memo",
+              render: tx => (
+                <span className="text-xs text-ink-soft truncate max-w-[200px] block">{tx.memo ?? "—"}</span>
+              ),
+            },
+            {
+              key: "date",
+              header: "Date",
+              render: tx => (
+                <span className="text-xs text-ink-soft whitespace-nowrap">
+                  {tx.processedAtDisplay ?? "—"}
+                </span>
+              ),
+            },
+            {
+              key: "actions",
+              header: "",
+              // Manual match/credit/dismiss are Binance-specific (the backend
+              // routes operate on processedBinanceTx directly) — other
+              // gateways never show this dropdown, even on an unmatched row.
+              render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.reference}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
+                        <Wallet className="h-4 w-4" />
+                        Add to buyer&apos;s credit balance
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
+                        <X className="h-4 w-4" />
+                        Dismiss
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ) : null,
+            },
+          ]}
         data={data?.ledger ?? []}
         isLoading={!data}
         keyExtractor={tx => tx.id}
@@ -824,7 +827,9 @@ export function PaymentsPage() {
             secondaryAction={outcome || kind ? { label: "Clear Filters", onClick: () => { setOutcome(""); setKind(""); setPage(1); } } : undefined}
           />
         }
-      />
+        />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

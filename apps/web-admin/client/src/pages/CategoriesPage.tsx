@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CategoryDialog } from "../components/catalog/CategoryDialog";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -148,119 +149,122 @@ export function CategoriesPage() {
         }
       />
 
-      <DataTable
-        columns={[
-          {
-            key: "order",
-            header: "Order",
-            className: "w-24",
-            render: (row: CategoryRow) => {
-              const index = categories.findIndex((c) => c.id === row.id);
-              return (
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`Move ${row.name} up`}
-                    disabled={reordering || index <= 0}
-                    onClick={() => void move(index, -1)}
-                  >
-                    <ChevronUp className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={`Move ${row.name} down`}
-                    disabled={reordering || index >= categories.length - 1}
-                    onClick={() => void move(index, 1)}
-                  >
-                    <ChevronDown className="h-4 w-4" />
-                  </Button>
-                </div>
-              );
-            },
-          },
-          {
-            key: "name",
-            header: "Name",
-            render: (row: CategoryRow) => (
-              <div className="min-w-0">
-                <div className="truncate text-ink">
-                  {row.emoji ? `${row.emoji} ` : ""}
-                  {row.name}
-                </div>
-                <div className="truncate font-mono text-xs text-ink-soft">/c/{row.slug}</div>
-              </div>
-            ),
-          },
-          {
-            key: "description",
-            header: "Description",
-            render: (row: CategoryRow) => (
-              <span className="line-clamp-2 text-ink-soft">{row.description || "—"}</span>
-            ),
-          },
-          {
-            key: "products",
-            header: "Products",
-            render: (row: CategoryRow) => {
-              const count = countProductsInCategory(products, row.id);
-              return (
-                <Button
-                  variant="link"
-                  size="sm"
-                  className="px-0"
-                  onClick={() => viewProducts(row.id)}
-                >
-                  {count} {count === 1 ? "product" : "products"}
-                </Button>
-              );
-            },
-          },
-          {
-            key: "active",
-            header: "Active",
-            render: (row: CategoryRow) => (
-              <Switch
-                aria-label={`${row.name} active`}
-                checked={row.isActive}
-                disabled={toggling.has(row.id)}
-                onCheckedChange={(checked) => void toggleActive(row.id, checked)}
-              />
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row: CategoryRow) => (
-              <div className="flex justify-end">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${row.name}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => setEditing(row)}>
-                      <SquarePen className="h-4 w-4" />
-                      Edit
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        setPendingDelete(row);
-                      }}
+      <Card>
+        <CardContent>
+        <DataTable
+          nested
+          columns={[
+            {
+              key: "order",
+              header: "Order",
+              className: "w-24",
+              render: (row: CategoryRow) => {
+                const index = categories.findIndex((c) => c.id === row.id);
+                return (
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`Move ${row.name} up`}
+                      disabled={reordering || index <= 0}
+                      onClick={() => void move(index, -1)}
                     >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
+                      <ChevronUp className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={`Move ${row.name} down`}
+                      disabled={reordering || index >= categories.length - 1}
+                      onClick={() => void move(index, 1)}
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </div>
+                );
+              },
+            },
+            {
+              key: "name",
+              header: "Name",
+              render: (row: CategoryRow) => (
+                <div className="min-w-0">
+                  <div className="truncate text-ink">
+                    {row.emoji ? `${row.emoji} ` : ""}
+                    {row.name}
+                  </div>
+                  <div className="truncate font-mono text-xs text-ink-soft">/c/{row.slug}</div>
+                </div>
+              ),
+            },
+            {
+              key: "description",
+              header: "Description",
+              render: (row: CategoryRow) => (
+                <span className="line-clamp-2 text-ink-soft">{row.description || "—"}</span>
+              ),
+            },
+            {
+              key: "products",
+              header: "Products",
+              render: (row: CategoryRow) => {
+                const count = countProductsInCategory(products, row.id);
+                return (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="px-0"
+                    onClick={() => viewProducts(row.id)}
+                  >
+                    {count} {count === 1 ? "product" : "products"}
+                  </Button>
+                );
+              },
+            },
+            {
+              key: "active",
+              header: "Active",
+              render: (row: CategoryRow) => (
+                <Switch
+                  aria-label={`${row.name} active`}
+                  checked={row.isActive}
+                  disabled={toggling.has(row.id)}
+                  onCheckedChange={(checked) => void toggleActive(row.id, checked)}
+                />
+              ),
+            },
+            {
+              key: "actions",
+              header: "",
+              render: (row: CategoryRow) => (
+                <div className="flex justify-end">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${row.name}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => setEditing(row)}>
+                        <SquarePen className="h-4 w-4" />
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          setPendingDelete(row);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ),
+            },
         ]}
         data={categories}
         isLoading={isLoading}
@@ -273,7 +277,9 @@ export function CategoriesPage() {
             action={{ label: "New category", onClick: () => setCreating(true) }}
           />
         }
-      />
+        />
+        </CardContent>
+      </Card>
 
       {creating && (
         <CategoryDialog

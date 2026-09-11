@@ -118,6 +118,7 @@ export function ReportsPage() {
                 <CardHeader><CardTitle>Top Products — Last {data.days} days</CardTitle></CardHeader>
                 <CardContent>
                   <DataTable
+                    nested
                     columns={[
                       { key: "product", header: "Product", render: (p) => <span className="block max-w-[240px] truncate text-ink" title={p.name}>{p.name}</span> },
                       { key: "sold", header: "Sold", render: (p) => <span className="text-ink-soft">{p.qty}</span> },
@@ -137,6 +138,7 @@ export function ReportsPage() {
                 <CardHeader><CardTitle>Voucher Usage</CardTitle></CardHeader>
                 <CardContent>
                   <DataTable
+                    nested
                     columns={[
                       { key: "code", header: "Code", render: (v) => <span className="font-mono text-xs text-ink">{v.code}</span> },
                       { key: "uses", header: "Uses", render: (v) => <span className="text-ink-soft">{v.usedCount}{v.usageLimit != null ? ` / ${v.usageLimit}` : ""}</span> },

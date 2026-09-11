@@ -187,6 +187,7 @@ export function UserDetailPage() {
         <CardHeader><CardTitle>Recent Orders ({data.orders.length})</CardTitle></CardHeader>
         <CardContent>
           <DataTable
+            nested
             columns={[
               { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
               { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
@@ -206,6 +207,7 @@ export function UserDetailPage() {
         <CardHeader><CardTitle>Wallet Ledger ({data.ledger.length})</CardTitle></CardHeader>
         <CardContent>
           <DataTable
+            nested
             columns={[
               { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
               { key: "currency", header: "Currency", render: l => <Badge variant="outline">{l.currency}</Badge> },
@@ -245,6 +247,7 @@ export function UserDetailPage() {
         <CardHeader><CardTitle>Support Tickets ({data.tickets.length})</CardTitle></CardHeader>
         <CardContent>
           <DataTable
+            nested
             columns={[
               {
                 key: "subject",

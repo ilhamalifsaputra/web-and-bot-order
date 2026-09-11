@@ -69,6 +69,12 @@ function getCards(container: HTMLElement): HTMLElement[] {
   );
 }
 
+function getNestedCards(container: HTMLElement): HTMLElement[] {
+  return Array.from(
+    container.querySelectorAll<HTMLElement>(".rounded-lg.border.border-line.bg-sand")
+  );
+}
+
 describe("DataTable mobile card stack", () => {
   beforeEach(() => mockMatchMedia(true));
   afterEach(() => {
@@ -189,6 +195,31 @@ describe("DataTable mobile card stack", () => {
     const valueNode = screen.getByText(longEmail);
     expect(valueNode).toHaveClass("break-words");
     expect(valueNode).toHaveClass("min-w-0");
+  });
+
+  it("renders bg-sand cards instead of bg-card when nested is true", () => {
+    const { container } = render(
+      <DataTable columns={COLUMNS} data={ROWS} keyExtractor={(r) => r.id} nested />
+    );
+    expect(getCards(container)).toHaveLength(0);
+    const nestedCards = getNestedCards(container);
+    expect(nestedCards).toHaveLength(2);
+  });
+
+  it("uses active:bg-border (not active:bg-sand) for click feedback on a clickable nested row", () => {
+    const { container } = render(
+      <DataTable
+        columns={COLUMNS}
+        data={ROWS}
+        keyExtractor={(r) => r.id}
+        nested
+        onRowClick={() => {}}
+      />
+    );
+    const [card] = getNestedCards(container);
+    expect(card).toHaveClass("cursor-pointer");
+    expect(card).toHaveClass("active:bg-border");
+    expect(card).not.toHaveClass("active:bg-sand");
   });
 
   it("desktop regression: with matchMedia absent, the selection header stays in thead and cell order is unchanged", () => {

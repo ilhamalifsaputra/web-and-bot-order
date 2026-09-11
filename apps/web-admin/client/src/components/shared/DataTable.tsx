@@ -83,6 +83,12 @@ interface DataTableProps<T> {
    *  to the desktop table branch — the mobile card-stack layout has no
    *  table header to stick. */
   stickyHeader?: boolean;
+  /** Swaps the mobile card-stack fill from `bg-card` to `bg-sand` for use
+   *  when this table sits inside a page-level `Card` — keeps the nested
+   *  card stack visually distinct from its parent's surface instead of
+   *  blending together. Default false so call sites not wrapped in a
+   *  `Card` are unaffected. */
+  nested?: boolean;
 }
 
 export function DataTable<T>({
@@ -94,6 +100,7 @@ export function DataTable<T>({
   keyExtractor,
   onRowClick,
   stickyHeader = false,
+  nested = false,
 }: DataTableProps<T>): JSX.Element {
   const isMobile = useIsMobile();
   const emptyNode = empty ?? <EmptyState title="No results found." />
@@ -118,7 +125,10 @@ export function DataTable<T>({
           Array.from({ length: skeletonRows }).map((_, i) => (
             <div
               key={i}
-              className="animate-pulse rounded-lg border border-line bg-card p-4 h-24"
+              className={cn(
+                "animate-pulse rounded-lg border border-line p-4 h-24",
+                nested ? "bg-sand" : "bg-card"
+              )}
             />
           ))
         ) : data.length === 0 ? (
@@ -138,8 +148,9 @@ export function DataTable<T>({
                   variants={staggerItem}
                   whileTap={onRowClick ? { scale: 0.98 } : undefined}
                   className={cn(
-                    "rounded-lg border border-line bg-card p-4 overflow-hidden",
-                    onRowClick && "cursor-pointer active:bg-sand"
+                    "rounded-lg border border-line p-4 overflow-hidden",
+                    nested ? "bg-sand" : "bg-card",
+                    onRowClick && (nested ? "cursor-pointer active:bg-border" : "cursor-pointer active:bg-sand")
                   )}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
                 >

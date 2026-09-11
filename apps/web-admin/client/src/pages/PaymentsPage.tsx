@@ -526,6 +526,7 @@ export function PaymentsPage() {
           </CardHeader>
           <CardContent>
           <DataTable
+            nested
             columns={[
               {
                 key: "order",
@@ -617,6 +618,7 @@ export function PaymentsPage() {
           </CardHeader>
           <CardContent>
           <DataTable
+            nested
             columns={[
               { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
               { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },

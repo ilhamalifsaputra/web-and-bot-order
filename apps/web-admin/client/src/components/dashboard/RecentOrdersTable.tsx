@@ -18,6 +18,7 @@ export function RecentOrdersTable() {
           <p className="text-sm text-rust">Couldn't load recent orders.</p>
         ) : (
           <DataTable
+            nested
             columns={[
               {
                 key: "order",

@@ -8,6 +8,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { FilterBar } from "../components/shared/FilterBar";
 import { SearchBar } from "../components/shared/SearchBar";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiGet } from "../api/client";
 
 interface UserHit {
@@ -87,72 +88,82 @@ export function SearchPage() {
           ) : (
             <>
               <section className="mb-6">
-                <h2 className="text-sm font-semibold text-ink mb-3">
-                  Customers ({data.users.length})
-                </h2>
-                <DataTable
-                  columns={[
-                    {
-                      key: "name",
-                      header: "Name",
-                      render: u => (
-                        <span className="block max-w-[240px] truncate" title={u.fullName ?? undefined}>
-                          {u.fullName ?? "—"}
-                        </span>
-                      ),
-                    },
-                    {
-                      key: "username",
-                      header: "Username",
-                      render: u => (
-                        <span className="block max-w-[200px] truncate" title={u.username ? `@${u.username}` : undefined}>
-                          {u.username ? `@${u.username}` : "—"}
-                        </span>
-                      ),
-                    },
-                    {
-                      key: "tid",
-                      header: "Telegram ID",
-                      render: u => <span className="font-mono text-xs">{u.telegramId}</span>,
-                    },
-                  ]}
-                  data={data.users}
-                  keyExtractor={u => u.id}
-                  onRowClick={u => navigate(`/users/${u.id}`)}
-                  empty={<EmptyState icon={Users} title="No matching customers." description="Try a different search term." />}
-                />
+                <Card>
+                  <CardHeader>
+                    <CardTitle as="h2">Customers ({data.users.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <DataTable
+                      nested
+                      columns={[
+                        {
+                          key: "name",
+                          header: "Name",
+                          render: u => (
+                            <span className="block max-w-[240px] truncate" title={u.fullName ?? undefined}>
+                              {u.fullName ?? "—"}
+                            </span>
+                          ),
+                        },
+                        {
+                          key: "username",
+                          header: "Username",
+                          render: u => (
+                            <span className="block max-w-[200px] truncate" title={u.username ? `@${u.username}` : undefined}>
+                              {u.username ? `@${u.username}` : "—"}
+                            </span>
+                          ),
+                        },
+                        {
+                          key: "tid",
+                          header: "Telegram ID",
+                          render: u => <span className="font-mono text-xs">{u.telegramId}</span>,
+                        },
+                      ]}
+                      data={data.users}
+                      keyExtractor={u => u.id}
+                      onRowClick={u => navigate(`/users/${u.id}`)}
+                      empty={<EmptyState icon={Users} title="No matching customers." description="Try a different search term." />}
+                    />
+                  </CardContent>
+                </Card>
               </section>
 
               <section>
-                <h2 className="text-sm font-semibold text-ink mb-3">
-                  Products ({data.products.length})
-                </h2>
-                <DataTable
-                  columns={[
-                    {
-                      key: "denom",
-                      header: "Denomination",
-                      render: p => (
-                        <span className="block max-w-[240px] truncate" title={p.name}>
-                          {p.name}
-                        </span>
-                      ),
-                    },
-                    {
-                      key: "product",
-                      header: "Product",
-                      render: p => (
-                        <span className="block max-w-[240px] truncate" title={p.product?.name ?? undefined}>
-                          {p.product?.name ?? "—"}
-                        </span>
-                      ),
-                    },
-                  ]}
-                  data={data.products}
-                  keyExtractor={p => p.id}
-                  onRowClick={p => navigate(`/catalog/${p.id}`)}
-                  empty={<EmptyState icon={PackageSearch} title="No matching products." description="Try a different search term." />}
-                />
+                <Card>
+                  <CardHeader>
+                    <CardTitle as="h2">Products ({data.products.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <DataTable
+                      nested
+                      columns={[
+                        {
+                          key: "denom",
+                          header: "Denomination",
+                          render: p => (
+                            <span className="block max-w-[240px] truncate" title={p.name}>
+                              {p.name}
+                            </span>
+                          ),
+                        },
+                        {
+                          key: "product",
+                          header: "Product",
+                          render: p => (
+                            <span className="block max-w-[240px] truncate" title={p.product?.name ?? undefined}>
+                              {p.product?.name ?? "—"}
+                            </span>
+                          ),
+                        },
+                      ]}
+                      data={data.products}
+                      keyExtractor={p => p.id}
+                      onRowClick={p => navigate(`/catalog/${p.id}`)}
+                      empty={<EmptyState icon={PackageSearch} title="No matching products." description="Try a different search term." />}
+                    />
+                  </CardContent>
+                </Card>
               </section>
             </>
           )}

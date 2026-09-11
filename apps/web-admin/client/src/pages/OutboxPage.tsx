@@ -5,6 +5,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
 import { DataTable } from "../components/shared/DataTable";
+import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
 import { Send, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -178,42 +179,47 @@ export function OutboxPage() {
         {isError && <p className="text-sm text-rust">Failed to load outbox.</p>}
 
         {data && (
-          <DataTable
-            columns={[
-              { key: "id", header: "ID", render: (row) => <span className="block max-w-[200px] truncate font-mono text-xs text-ink-soft" title={String(row.id)}>{row.id}</span> },
-              { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
-              { key: "channel", header: "Channel", render: (row) => <ChannelBadge channel={row.channel} /> },
-              { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
-              { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
-              { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },
-              { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.sentAtDisplay ?? "—"}</span> },
-              {
-                key: "actions",
-                header: "",
-                render: (row) =>
-                  ["FAILED", "DEAD_LETTER"].includes(row.status) ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={retrying.has(row.id)}
-                      onClick={() => retry(row.id)}
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                      Retry
-                    </Button>
-                  ) : null,
-              },
-            ]}
-            data={data.rows}
-            keyExtractor={(row) => row.id}
-            empty={
-              <EmptyState
-                icon={Send}
-                title="No notifications found."
-                description="Outbound notifications will appear here."
+          <Card>
+            <CardContent>
+              <DataTable
+                nested
+                columns={[
+                  { key: "id", header: "ID", render: (row) => <span className="block max-w-[200px] truncate font-mono text-xs text-ink-soft" title={String(row.id)}>{row.id}</span> },
+                  { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
+                  { key: "channel", header: "Channel", render: (row) => <ChannelBadge channel={row.channel} /> },
+                  { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+                  { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
+                  { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },
+                  { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.sentAtDisplay ?? "—"}</span> },
+                  {
+                    key: "actions",
+                    header: "",
+                    render: (row) =>
+                      ["FAILED", "DEAD_LETTER"].includes(row.status) ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={retrying.has(row.id)}
+                          onClick={() => retry(row.id)}
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                          Retry
+                        </Button>
+                      ) : null,
+                  },
+                ]}
+                data={data.rows}
+                keyExtractor={(row) => row.id}
+                empty={
+                  <EmptyState
+                    icon={Send}
+                    title="No notifications found."
+                    description="Outbound notifications will appear here."
+                  />
+                }
               />
-            }
-          />
+            </CardContent>
+          </Card>
         )}
 
         {data && (data.hasNext || page > 1) && (

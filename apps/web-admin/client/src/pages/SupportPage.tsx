@@ -16,6 +16,7 @@ import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectTrigger,
@@ -673,249 +674,254 @@ export function SupportPage() {
         </div>
       )}
 
-      <DataTable
-        stickyHeader
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allOnPageSelected}
-                onCheckedChange={toggleSelectAllOnPage}
-                disabled={items.length === 0}
-                aria-label="Select all tickets on this page"
-              />
-            ),
-            render: (row) => (
-              <Checkbox
-                checked={selected.has(row.id)}
-                onCheckedChange={() => toggleSelected(row.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select ticket #${row.id}`}
-              />
-            ),
-          },
-          {
-            key: "ticket",
-            header: "Ticket",
-            render: (row) => (
-              <Popover
-                open={hoveredMessageId === row.id}
-                onOpenChange={(open) => setHoveredMessageId(open ? row.id : null)}
-              >
-                <PopoverTrigger asChild>
-                  <div
-                    className="flex max-w-[240px] cursor-default flex-col gap-0.5"
-                    onMouseEnter={() => setHoveredMessageId(row.id)}
-                    onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            stickyHeader
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allOnPageSelected}
+                    onCheckedChange={toggleSelectAllOnPage}
+                    disabled={items.length === 0}
+                    aria-label="Select all tickets on this page"
+                  />
+                ),
+                render: (row) => (
+                  <Checkbox
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => toggleSelected(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select ticket #${row.id}`}
+                  />
+                ),
+              },
+              {
+                key: "ticket",
+                header: "Ticket",
+                render: (row) => (
+                  <Popover
+                    open={hoveredMessageId === row.id}
+                    onOpenChange={(open) => setHoveredMessageId(open ? row.id : null)}
                   >
-                    <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
-                    {/* `items-start` (no cross-axis stretch) would let this span grow to its
-                        unwrapped content width and overflow past 240px into neighboring
-                        columns — line-clamp can only truncate a width-CONSTRAINED box. */}
-                    <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
+                    <PopoverTrigger asChild>
+                      <div
+                        className="flex max-w-[240px] cursor-default flex-col gap-0.5"
+                        onMouseEnter={() => setHoveredMessageId(row.id)}
+                        onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
+                      >
+                        <span className="font-mono text-xs text-ink-soft">{ticketDisplayLabel(row)}</span>
+                        {/* `items-start` (no cross-axis stretch) would let this span grow to its
+                            unwrapped content width and overflow past 240px into neighboring
+                            columns — line-clamp can only truncate a width-CONSTRAINED box. */}
+                        <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
+                      </div>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      className="max-w-sm text-sm whitespace-pre-wrap"
+                      onOpenAutoFocus={(e) => e.preventDefault()}
+                    >
+                      {row.message}
+                    </PopoverContent>
+                  </Popover>
+                ),
+              },
+              {
+                key: "customer",
+                header: "Customer",
+                render: (row) => (
+                  <div className="max-w-[240px]">
+                    <div
+                      className="truncate text-sm text-ink"
+                      title={row.user?.fullName ?? row.user?.username ?? undefined}
+                    >
+                      {row.user?.fullName ?? row.user?.username ?? "—"}
+                    </div>
+                    {row.user?.username && row.user.fullName && (
+                      <div className="truncate text-xs text-ink-soft" title={`@${row.user.username}`}>
+                        @{row.user.username}
+                      </div>
+                    )}
                   </div>
-                </PopoverTrigger>
-                <PopoverContent
-                  className="max-w-sm text-sm whitespace-pre-wrap"
-                  onOpenAutoFocus={(e) => e.preventDefault()}
-                >
-                  {row.message}
-                </PopoverContent>
-              </Popover>
-            ),
-          },
-          {
-            key: "customer",
-            header: "Customer",
-            render: (row) => (
-              <div className="max-w-[240px]">
-                <div
-                  className="truncate text-sm text-ink"
-                  title={row.user?.fullName ?? row.user?.username ?? undefined}
-                >
-                  {row.user?.fullName ?? row.user?.username ?? "—"}
-                </div>
-                {row.user?.username && row.user.fullName && (
-                  <div className="truncate text-xs text-ink-soft" title={`@${row.user.username}`}>
-                    @{row.user.username}
+                ),
+              },
+              {
+                key: "priority",
+                header: "Priority",
+                render: (row) => <TicketPriorityBadge priority={row.priority} />,
+              },
+              {
+                key: "category",
+                header: "Category",
+                render: (row) => (
+                  <span className="text-sm text-ink-soft">{row.category ? categoryLabel(row.category) : "Uncategorized"}</span>
+                ),
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <TicketStatusBadge status={row.status} />
+                    {row.isOverdue && <Badge variant="destructive">Overdue</Badge>}
                   </div>
-                )}
-              </div>
-            ),
-          },
-          {
-            key: "priority",
-            header: "Priority",
-            render: (row) => <TicketPriorityBadge priority={row.priority} />,
-          },
-          {
-            key: "category",
-            header: "Category",
-            render: (row) => (
-              <span className="text-sm text-ink-soft">{row.category ? categoryLabel(row.category) : "Uncategorized"}</span>
-            ),
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) => (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <TicketStatusBadge status={row.status} />
-                {row.isOverdue && <Badge variant="destructive">Overdue</Badge>}
-              </div>
-            ),
-          },
-          {
-            key: "assigned",
-            header: "Assigned",
-            render: (row) => (
-              // Stop the click from bubbling to the row's onRowClick (which
-              // navigates to the ticket detail page) — covers both the
-              // trigger button and item picks inside the portaled dropdown.
-              <div onClick={(e) => e.stopPropagation()}>
-                <Select
-                  value={row.adminId !== null ? String(row.adminId) : UNASSIGNED}
-                  onValueChange={(v) =>
-                    assign.mutate({ ticketId: row.id, adminId: v === UNASSIGNED ? null : Number(v) })
-                  }
-                >
-                  <SelectTrigger className="w-40" aria-label={`Assignee for ticket #${row.id}`}>
-                    <SelectValue>
-                      {row.adminId !== null
-                        ? (adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`)
-                        : "Unassigned"}
-                    </SelectValue>
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                    {assignableAdmins.map((a) => (
-                      <SelectItem key={a.id} value={String(a.id)}>
-                        {a.name ?? `Telegram ID ${a.telegramId}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ),
-          },
-          {
-            key: "date",
-            header: "Date",
-            render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ticket #${row.id}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/support/${row.id}`)}>
-                      <Eye className="h-4 w-4" />
-                      View
-                    </DropdownMenuItem>
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>
-                        <UserCog className="h-4 w-4" />
-                        Assign
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>
-                        <DropdownMenuItem onSelect={() => assign.mutate({ ticketId: row.id, adminId: null })}>
-                          Unassigned
-                        </DropdownMenuItem>
+                ),
+              },
+              {
+                key: "assigned",
+                header: "Assigned",
+                render: (row) => (
+                  // Stop the click from bubbling to the row's onRowClick (which
+                  // navigates to the ticket detail page) — covers both the
+                  // trigger button and item picks inside the portaled dropdown.
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <Select
+                      value={row.adminId !== null ? String(row.adminId) : UNASSIGNED}
+                      onValueChange={(v) =>
+                        assign.mutate({ ticketId: row.id, adminId: v === UNASSIGNED ? null : Number(v) })
+                      }
+                    >
+                      <SelectTrigger className="w-40" aria-label={`Assignee for ticket #${row.id}`}>
+                        <SelectValue>
+                          {row.adminId !== null
+                            ? (adminNameById.get(row.adminId) ?? `Admin #${row.adminId}`)
+                            : "Unassigned"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
                         {assignableAdmins.map((a) => (
-                          <DropdownMenuItem
-                            key={a.id}
-                            onSelect={() => assign.mutate({ ticketId: row.id, adminId: a.id })}
-                          >
+                          <SelectItem key={a.id} value={String(a.id)}>
                             {a.name ?? `Telegram ID ${a.telegramId}`}
-                          </DropdownMenuItem>
+                          </SelectItem>
                         ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger>
-                        <Tag className="h-4 w-4" />
-                        Classify
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>
-                        {CATEGORY_VALUES.map((c) => (
-                          <DropdownMenuItem
-                            key={c}
-                            onSelect={() => classify.mutate({ ticketId: row.id, category: c })}
-                          >
-                            {categoryLabel(c)}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                    {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
-                        (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
-                        whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
-                        and were silently losing this button under the old check. */}
-                    {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
-                      <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
-                        <CheckCircle2 className="h-4 w-4" />
-                        Resolve
-                      </DropdownMenuItem>
-                    )}
-                    {row.status === "CLOSED" && (
-                      <DropdownMenuItem onSelect={() => reopen.mutate(row.id)}>
-                        <RotateCcw className="h-4 w-4" />
-                        Reopen
-                      </DropdownMenuItem>
-                    )}
-                    {row.status !== "CLOSED" && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            setCloseTarget(row.id);
-                          }}
-                        >
-                          <XCircle className="h-4 w-4" />
-                          Close
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ),
+              },
+              {
+                key: "date",
+                header: "Date",
+                render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ticket #${row.id}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => navigate(`/support/${row.id}`)}>
+                          <Eye className="h-4 w-4" />
+                          View
                         </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={items}
-        isLoading={!data}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/support/${row.id}`)}
-        empty={
-          hasActiveFilter ? (
-            <EmptyState
-              icon={MessageCircle}
-              title="No matching tickets"
-              description="Try a different search or filter."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          ) : (
-            <EmptyState
-              icon={MessageCircle}
-              title="No support tickets"
-              description="Customer support tickets will appear here as customers create them."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-            />
-          )
-        }
-      />
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <UserCog className="h-4 w-4" />
+                            Assign
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            <DropdownMenuItem onSelect={() => assign.mutate({ ticketId: row.id, adminId: null })}>
+                              Unassigned
+                            </DropdownMenuItem>
+                            {assignableAdmins.map((a) => (
+                              <DropdownMenuItem
+                                key={a.id}
+                                onSelect={() => assign.mutate({ ticketId: row.id, adminId: a.id })}
+                              >
+                                {a.name ?? `Telegram ID ${a.telegramId}`}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <Tag className="h-4 w-4" />
+                            Classify
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent>
+                            {CATEGORY_VALUES.map((c) => (
+                              <DropdownMenuItem
+                                key={c}
+                                onSelect={() => classify.mutate({ ticketId: row.id, category: c })}
+                              >
+                                {categoryLabel(c)}
+                              </DropdownMenuItem>
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        {/* Task 1 fix: mirrors the backend's actual resolveTicket guard
+                            (status NOT IN [RESOLVED, CLOSED]) instead of an OPEN/REPLIED
+                            whitelist — WAITING_ADMIN/WAITING_CUSTOMER tickets are now real
+                            and were silently losing this button under the old check. */}
+                        {row.status !== "RESOLVED" && row.status !== "CLOSED" && (
+                          <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
+                            <CheckCircle2 className="h-4 w-4" />
+                            Resolve
+                          </DropdownMenuItem>
+                        )}
+                        {row.status === "CLOSED" && (
+                          <DropdownMenuItem onSelect={() => reopen.mutate(row.id)}>
+                            <RotateCcw className="h-4 w-4" />
+                            Reopen
+                          </DropdownMenuItem>
+                        )}
+                        {row.status !== "CLOSED" && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                setCloseTarget(row.id);
+                              }}
+                            >
+                              <XCircle className="h-4 w-4" />
+                              Close
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={items}
+            isLoading={!data}
+            keyExtractor={(row) => row.id}
+            onRowClick={(row) => navigate(`/support/${row.id}`)}
+            empty={
+              hasActiveFilter ? (
+                <EmptyState
+                  icon={MessageCircle}
+                  title="No matching tickets"
+                  description="Try a different search or filter."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+                />
+              ) : (
+                <EmptyState
+                  icon={MessageCircle}
+                  title="No support tickets"
+                  description="Customer support tickets will appear here as customers create them."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                />
+              )
+            }
+          />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

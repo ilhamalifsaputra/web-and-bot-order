@@ -13,6 +13,7 @@ import { Pagination } from "../components/shared/Pagination";
 import { StatusBadge, statusLabel } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectTrigger,
@@ -383,164 +384,169 @@ export function TasksPage() {
         </div>
       </FilterBar>
 
-      <DataTable
-        stickyHeader
-        columns={[
-          {
-            key: "task",
-            header: "Task",
-            render: (row) => (
-              <div className="flex flex-col gap-0.5">
-                <span className="font-mono text-xs text-ink-soft">#{row.id}</span>
-                <span className="text-sm text-ink">{typeLabel(row.type)}</span>
-              </div>
-            ),
-          },
-          {
-            key: "priority",
-            header: "Priority",
-            render: (row) => <StatusBadge status={row.priority} />,
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) => <StatusBadge status={row.status} />,
-          },
-          {
-            key: "assignee",
-            header: "Assignee",
-            render: (row) => {
-              const canAssign = (LEGAL_ACTIONS_FROM[row.status] ?? []).includes("assign");
-              if (!canAssign) {
-                return <span className="text-sm text-ink-soft">{row.assigneeName ?? "Unassigned"}</span>;
-              }
-              return (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <Select
-                    value={row.assignedTo !== null ? String(row.assignedTo) : NO_ASSIGNEE}
-                    onValueChange={(v) => {
-                      if (v === NO_ASSIGNEE) return;
-                      assign.mutate({ taskId: row.id, from: row.status, assignedTo: Number(v) });
-                    }}
-                  >
-                    <SelectTrigger className="w-40" aria-label={`Assignee for task #${row.id}`}>
-                      <SelectValue>{row.assigneeName ?? "Unassigned"}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {assignableAdmins.length === 0 ? (
-                        <SelectItem value={NO_ASSIGNEE} disabled>
-                          No admins available
-                        </SelectItem>
-                      ) : (
-                        assignableAdmins.map((a) => (
-                          <SelectItem key={a.id} value={String(a.id)}>
-                            {a.name}
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-              );
-            },
-          },
-          {
-            key: "reference",
-            header: "Reference",
-            render: (row) => {
-              const ref = referenceLabel(row);
-              return ref.href ? (
-                <Link
-                  to={ref.href}
-                  onClick={(e) => e.stopPropagation()}
-                  className="font-mono text-xs text-pine hover:underline"
-                >
-                  {ref.text}
-                </Link>
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            stickyHeader
+            columns={[
+              {
+                key: "task",
+                header: "Task",
+                render: (row) => (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-mono text-xs text-ink-soft">#{row.id}</span>
+                    <span className="text-sm text-ink">{typeLabel(row.type)}</span>
+                  </div>
+                ),
+              },
+              {
+                key: "priority",
+                header: "Priority",
+                render: (row) => <StatusBadge status={row.priority} />,
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => <StatusBadge status={row.status} />,
+              },
+              {
+                key: "assignee",
+                header: "Assignee",
+                render: (row) => {
+                  const canAssign = (LEGAL_ACTIONS_FROM[row.status] ?? []).includes("assign");
+                  if (!canAssign) {
+                    return <span className="text-sm text-ink-soft">{row.assigneeName ?? "Unassigned"}</span>;
+                  }
+                  return (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <Select
+                        value={row.assignedTo !== null ? String(row.assignedTo) : NO_ASSIGNEE}
+                        onValueChange={(v) => {
+                          if (v === NO_ASSIGNEE) return;
+                          assign.mutate({ taskId: row.id, from: row.status, assignedTo: Number(v) });
+                        }}
+                      >
+                        <SelectTrigger className="w-40" aria-label={`Assignee for task #${row.id}`}>
+                          <SelectValue>{row.assigneeName ?? "Unassigned"}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {assignableAdmins.length === 0 ? (
+                            <SelectItem value={NO_ASSIGNEE} disabled>
+                              No admins available
+                            </SelectItem>
+                          ) : (
+                            assignableAdmins.map((a) => (
+                              <SelectItem key={a.id} value={String(a.id)}>
+                                {a.name}
+                              </SelectItem>
+                            ))
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "reference",
+                header: "Reference",
+                render: (row) => {
+                  const ref = referenceLabel(row);
+                  return ref.href ? (
+                    <Link
+                      to={ref.href}
+                      onClick={(e) => e.stopPropagation()}
+                      className="font-mono text-xs text-pine hover:underline"
+                    >
+                      {ref.text}
+                    </Link>
+                  ) : (
+                    <span className="text-xs text-ink-soft">{ref.text}</span>
+                  );
+                },
+              },
+              {
+                key: "due",
+                header: "Due",
+                render: (row) => <span className="text-xs text-ink-soft">{row.dueAtDisplay ?? "—"}</span>,
+              },
+              {
+                key: "created",
+                header: "Created",
+                render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => {
+                  const legal = LEGAL_ACTIONS_FROM[row.status] ?? [];
+                  if (legal.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for task #${row.id}`}>
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          {legal.includes("start") && (
+                            <DropdownMenuItem onSelect={() => start.mutate({ taskId: row.id, from: row.status })}>
+                              <PlayCircle className="h-4 w-4" />
+                              Start
+                            </DropdownMenuItem>
+                          )}
+                          {legal.includes("complete") && (
+                            <DropdownMenuItem
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                setCompleteTarget(row.id);
+                              }}
+                            >
+                              <CheckCircle2 className="h-4 w-4" />
+                              Complete
+                            </DropdownMenuItem>
+                          )}
+                          {legal.includes("escalate") && (
+                            <DropdownMenuItem onSelect={() => escalate.mutate({ taskId: row.id, from: row.status })}>
+                              <ArrowUpCircle className="h-4 w-4" />
+                              Escalate
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  );
+                },
+              },
+            ]}
+            data={items}
+            isLoading={!data}
+            keyExtractor={(row) => row.id}
+            empty={
+              hasActiveFilter ? (
+                <EmptyState
+                  icon={ClipboardList}
+                  title="No matching tasks"
+                  description="Try a different filter."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+                />
               ) : (
-                <span className="text-xs text-ink-soft">{ref.text}</span>
-              );
-            },
-          },
-          {
-            key: "due",
-            header: "Due",
-            render: (row) => <span className="text-xs text-ink-soft">{row.dueAtDisplay ?? "—"}</span>,
-          },
-          {
-            key: "created",
-            header: "Created",
-            render: (row) => <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>,
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => {
-              const legal = LEGAL_ACTIONS_FROM[row.status] ?? [];
-              if (legal.length === 0) {
-                return null;
-              }
-              return (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for task #${row.id}`}>
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      {legal.includes("start") && (
-                        <DropdownMenuItem onSelect={() => start.mutate({ taskId: row.id, from: row.status })}>
-                          <PlayCircle className="h-4 w-4" />
-                          Start
-                        </DropdownMenuItem>
-                      )}
-                      {legal.includes("complete") && (
-                        <DropdownMenuItem
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            setCompleteTarget(row.id);
-                          }}
-                        >
-                          <CheckCircle2 className="h-4 w-4" />
-                          Complete
-                        </DropdownMenuItem>
-                      )}
-                      {legal.includes("escalate") && (
-                        <DropdownMenuItem onSelect={() => escalate.mutate({ taskId: row.id, from: row.status })}>
-                          <ArrowUpCircle className="h-4 w-4" />
-                          Escalate
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              );
-            },
-          },
-        ]}
-        data={items}
-        isLoading={!data}
-        keyExtractor={(row) => row.id}
-        empty={
-          hasActiveFilter ? (
-            <EmptyState
-              icon={ClipboardList}
-              title="No matching tasks"
-              description="Try a different filter."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          ) : (
-            <EmptyState
-              icon={ClipboardList}
-              title="No admin tasks"
-              description="Manual-operations tasks (deliveries, account assignments, top-up and refund reviews) will appear here."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-            />
-          )
-        }
-      />
+                <EmptyState
+                  icon={ClipboardList}
+                  title="No admin tasks"
+                  description="Manual-operations tasks (deliveries, account assignments, top-up and refund reviews) will appear here."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                />
+              )
+            }
+          />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

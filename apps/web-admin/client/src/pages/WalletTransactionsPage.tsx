@@ -9,6 +9,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { Pagination } from "../components/shared/Pagination";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectTrigger,
@@ -218,19 +219,24 @@ export function WalletTransactionsPage() {
 
         {isError && <p className="text-sm text-rust">Failed to load wallet transactions.</p>}
 
-        <DataTable
-          columns={COLUMNS}
-          data={data?.rows ?? []}
-          isLoading={isLoading && !data}
-          keyExtractor={r => r.id}
-          empty={
-            <EmptyState
-              icon={Wallet}
-              title="No wallet movements found"
-              description="Top-ups, refunds and wallet payments will appear here as they happen."
+        <Card>
+          <CardContent>
+            <DataTable
+              nested
+              columns={COLUMNS}
+              data={data?.rows ?? []}
+              isLoading={isLoading && !data}
+              keyExtractor={r => r.id}
+              empty={
+                <EmptyState
+                  icon={Wallet}
+                  title="No wallet movements found"
+                  description="Top-ups, refunds and wallet payments will appear here as they happen."
+                />
+              }
             />
-          }
-        />
+          </CardContent>
+        </Card>
 
         {data && (
           <Pagination

@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Pagination } from "../components/shared/Pagination";
+import { SearchBar } from "../components/shared/SearchBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -48,22 +50,41 @@ interface StockProductData {
     product: { id: number; name: string; category: { name: string } | null } | null;
   };
   items: StockItem[];
-  available: number;
+  statusCounts: { available: number; reserved: number; sold: number; dead: number };
+  total: number;
   waiting: number;
 }
 
-function useStockProduct(productId: string) {
+// Must match the server's PAGE_SIZE in apps/web-admin/src/routes/api/stock.ts.
+const PAGE_SIZE = 50;
+
+function useStockProduct(productId: string, tab: string, page: number, search: string) {
   return useQuery<StockProductData>({
-    queryKey: ["stock", productId],
-    queryFn: () => apiGet<StockProductData>(`/api/stock/${productId}`),
+    queryKey: ["stock", productId, tab, page, search],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      params.set("tab", tab);
+      if (search) params.set("q", search);
+      else params.set("page", String(page));
+      return apiGet<StockProductData>(`/api/stock/${productId}?${params.toString()}`);
+    },
     enabled: !!productId,
+    // Keeps the previously-loaded tab's rows on screen while the new tab's
+    // page is fetched, instead of unmounting the whole table (and the tab
+    // bar with it) back to the top-level "Loading…" state on every switch.
+    placeholderData: keepPreviousData,
+    // Every mutation on this page explicitly invalidates ["stock", productId]
+    // (which forces a refetch regardless of staleness), so a short staleTime
+    // here only avoids a redundant network round-trip when an admin flips
+    // back and forth between tabs they've already loaded — it doesn't risk
+    // showing outdated data after an actual change.
+    staleTime: 15_000,
   });
 }
 
 export function StockProductPage() {
   const { productId } = useParams<{ productId: string }>();
   const qc = useQueryClient();
-  const { data, isError } = useStockProduct(productId ?? "");
   const [credentials, setCredentials] = useState("");
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
@@ -72,6 +93,10 @@ export function StockProductPage() {
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeTab, setActiveTab] = useState<"available" | "sold" | "dead">("available");
+  const [page, setPage] = useState(1);
+  const [searchDraft, setSearchDraft] = useState("");
+  const [search, setSearch] = useState(""); // committed/submitted query — drives the fetch
+  const { data, isError } = useStockProduct(productId ?? "", activeTab, page, search);
   // Only one account is readable at a time — revealing another row hides the
   // previous one, so a shared screen never shows a column of plaintext logins.
   // `revealedText` is fetched fresh from the server (never derived from the
@@ -88,6 +113,9 @@ export function StockProductPage() {
     setSelected(new Set());
     setRevealedId(null);
     setRevealedText(null);
+    setPage(1);
+    setSearch("");
+    setSearchDraft("");
   }
 
   async function fetchRevealed(item: StockItem): Promise<string> {
@@ -151,29 +179,36 @@ export function StockProductPage() {
       ),
     // Optimistic flip: this is a single boolean on an otherwise-static page,
     // so ticking it shouldn't wait on a POST round-trip or pay for a refetch
-    // of the whole (up to 500-row, credential-bearing) stock payload. Cancel
-    // any in-flight refetch first so it can't race the optimistic write and
-    // clobber it with stale data.
-    onMutate: async (enabled): Promise<{ previous: StockProductData | undefined }> => {
+    // of a full page of the stock payload (PAGE_SIZE rows, credential-bearing).
+    // Cancel any in-flight refetch first so it can't race the optimistic
+    // write and clobber it with stale data.
+    //
+    // The query key now carries tab/page/search (["stock", productId, tab,
+    // page, search]), so a plain setQueryData/getQueryData against the bare
+    // ["stock", productId] key would silently no-op. setQueriesData/
+    // getQueriesData match by key *prefix*, patching every cached tab/page/
+    // search combination for this product at once.
+    onMutate: async (enabled): Promise<{ previous: [readonly unknown[], StockProductData | undefined][] }> => {
       await qc.cancelQueries({ queryKey: ["stock", productId] });
-      const previous = qc.getQueryData<StockProductData>(["stock", productId]);
-      qc.setQueryData<StockProductData>(["stock", productId], (old) =>
+      const previous = qc.getQueriesData<StockProductData>({ queryKey: ["stock", productId] });
+      qc.setQueriesData<StockProductData>({ queryKey: ["stock", productId] }, (old) =>
         old ? { ...old, product: { ...old.product, broadcastOnRestock: enabled } } : old,
       );
       return { previous };
     },
     onError: (err: Error, _enabled, ctx) => {
-      // `previous` is undefined only when the cache was empty at onMutate time,
-      // in which case onMutate itself wrote nothing either — and setQueryData
-      // with an undefined updater returns early without writing, so this
-      // rollback is a deliberate no-op rather than a cache-clearing bug.
-      if (ctx) qc.setQueryData<StockProductData>(["stock", productId], ctx.previous);
+      // `previous` entries with undefined data are deliberate no-ops when
+      // restored — setQueryData with undefined leaves that cache slot empty,
+      // matching what onMutate found there before the optimistic write.
+      if (ctx) {
+        ctx.previous.forEach(([key, snapshot]) => qc.setQueryData(key, snapshot));
+      }
       toast.error(describeError(err.message));
     },
     // Patch with the server's authoritative value instead of invalidating —
     // this toggle doesn't change anything else on the page worth refetching.
     onSuccess: (result) => {
-      qc.setQueryData<StockProductData>(["stock", productId], (old) =>
+      qc.setQueriesData<StockProductData>({ queryKey: ["stock", productId] }, (old) =>
         old ? { ...old, product: { ...old.product, broadcastOnRestock: result.broadcastOnRestock } } : old,
       );
     },
@@ -454,10 +489,7 @@ export function StockProductPage() {
     );
   }
 
-  const { product, items, available, waiting } = data;
-  const availableItems = items.filter(i => i.status === "AVAILABLE");
-  const soldItems = items.filter(i => i.status === "SOLD" || i.status === "RESERVED");
-  const deadItems = items.filter(i => i.status === "DEAD");
+  const { product, items, statusCounts, waiting, total } = data;
 
   return (
     <PageLayout title={product.name}>
@@ -477,7 +509,7 @@ export function StockProductPage() {
       <div className="mb-4 flex gap-4 text-sm">
         <span className="text-ink-soft">Product: <span className="text-ink">{product.product?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Category: <span className="text-ink">{product.product?.category?.name ?? "—"}</span></span>
-        <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{available}</span></span>
+        <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{statusCounts.available}</span></span>
         <span className="text-ink-soft">Waiting: <span className="text-ink">{waiting}</span></span>
       </div>
 
@@ -511,24 +543,55 @@ export function StockProductPage() {
       </Card>
 
       {/* Items table, grouped by status */}
-      <h2 className="text-sm font-semibold text-ink mb-3">Stock Items ({items.length})</h2>
+      <h2 className="text-sm font-semibold text-ink mb-3">Stock Items</h2>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <SearchBar
+          value={searchDraft}
+          onChange={setSearchDraft}
+          onSearch={() => { setSearch(searchDraft); setPage(1); }}
+          placeholder="Search this tab's accounts…"
+        />
+        {search && (
+          <>
+            <span className="text-sm text-ink-soft">
+              Showing {total} result{total === 1 ? "" : "s"} for &quot;{search}&quot;
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { setSearch(""); setSearchDraft(""); setPage(1); }}
+            >
+              Clear
+            </Button>
+          </>
+        )}
+      </div>
 
       <Tabs value={activeTab} onValueChange={changeTab}>
         <TabsList>
-          <TabsTrigger value="available">Available ({availableItems.length})</TabsTrigger>
-          <TabsTrigger value="sold">Sold ({soldItems.length})</TabsTrigger>
-          <TabsTrigger value="dead">Dead ({deadItems.length})</TabsTrigger>
+          <TabsTrigger value="available">Available ({statusCounts.available})</TabsTrigger>
+          <TabsTrigger value="sold">Sold ({statusCounts.sold + statusCounts.reserved})</TabsTrigger>
+          <TabsTrigger value="dead">Dead ({statusCounts.dead})</TabsTrigger>
         </TabsList>
         <TabsContent value="available">
-          {renderStockTable(availableItems)}
+          {renderStockTable(items)}
         </TabsContent>
         <TabsContent value="sold">
-          {renderStockTable(soldItems)}
+          {renderStockTable(items)}
         </TabsContent>
         <TabsContent value="dead">
-          {renderStockTable(deadItems)}
+          {renderStockTable(items)}
         </TabsContent>
       </Tabs>
+
+      {/* Search results aren't paginated server-side (Task 2) — hide the
+          pagination control while a search is active. */}
+      {!search && (
+        <div className="mt-4">
+          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPageChange={setPage} />
+        </div>
+      )}
 
       {pendingMarkDead && (
         <ConfirmDialog

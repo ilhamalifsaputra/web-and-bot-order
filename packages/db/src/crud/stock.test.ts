@@ -509,18 +509,18 @@ describe("searchStockCredentials", () => {
         prisma,
         product.id,
         [StockStatus.AVAILABLE],
-        items[0].credentials,
+        items[0]!.credentials,
       );
-      expect(resultsAvailable.every((r) => r.id !== items[0].id)).toBe(true);
+      expect(resultsAvailable.every((r) => r.id !== items[0]!.id)).toBe(true);
 
       // Search for RESERVED should find it
       const resultsReserved = await searchStockCredentials(
         prisma,
         product.id,
         [StockStatus.RESERVED],
-        items[0].credentials,
+        items[0]!.credentials,
       );
-      expect(resultsReserved.some((r) => r.id === items[0].id)).toBe(true);
+      expect(resultsReserved.some((r) => r.id === items[0]!.id)).toBe(true);
     }
   });
 });

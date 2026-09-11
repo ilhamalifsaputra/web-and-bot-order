@@ -3,6 +3,7 @@
  * reserved-stock allocation that prevents two buyers grabbing the same row.
  */
 import { StockStatus } from "@app/core/enums";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 
 /**
@@ -219,4 +220,68 @@ export async function stockStatusCounts(
     if (key in bucket) bucket[key] = r._count.id;
   }
   return result;
+}
+
+/** Scoped single-product sibling of stockStatusCounts — {available, reserved, sold, dead} for one product via one grouped query. */
+export async function stockStatusCountsForProduct(
+  db: Db,
+  productId: number,
+): Promise<{ available: number; reserved: number; sold: number; dead: number }> {
+  const rows = await db.stockItem.groupBy({
+    by: ["status"],
+    where: { productId },
+    _count: { id: true },
+  });
+  const result = { available: 0, reserved: 0, sold: 0, dead: 0 };
+  for (const r of rows) {
+    const key = r.status.toLowerCase() as keyof typeof result;
+    if (key in result) result[key] = r._count.id;
+  }
+  return result;
+}
+
+/** Paginated list of stock items for a product, filtered by statuses, ordered by id. */
+export function listStockItemsForProductPage(
+  db: Db,
+  productId: number,
+  statuses: StockStatus[],
+  opts: { limit: number; offset: number },
+) {
+  return db.stockItem.findMany({
+    where: { productId, status: { in: statuses } },
+    orderBy: { id: "asc" },
+    take: opts.limit,
+    skip: opts.offset,
+  });
+}
+
+/** Count stock items for a product and status group — used for pagination total. */
+export async function countStockItemsForStatuses(
+  db: Db,
+  productId: number,
+  statuses: StockStatus[],
+): Promise<number> {
+  return db.stockItem.count({
+    where: { productId, status: { in: statuses } },
+  });
+}
+
+/** Search stock credentials and notes by decrypted substring (case-insensitive). Scans the entire status group for correctness (encrypted columns can't be SQL-filtered), then caps returned results at 200. */
+export async function searchStockCredentials(
+  db: Db,
+  productId: number,
+  statuses: StockStatus[],
+  query: string,
+) {
+  const rows = await db.stockItem.findMany({
+    where: { productId, status: { in: statuses } },
+    orderBy: { id: "asc" },
+  });
+  const q = query.toLowerCase();
+  const matches = rows.filter((r) => {
+    const cred = decryptCredentials(r.credentials).toLowerCase();
+    const note = (r.note ?? "").toLowerCase();
+    return cred.includes(q) || note.includes(q);
+  });
+  return matches.slice(0, 200);
 }

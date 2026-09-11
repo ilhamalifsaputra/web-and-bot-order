@@ -73,6 +73,7 @@ export function GamesPage() {
       <Card>
         <CardContent>
           <DataTable
+            nested
             columns={[
               {
                 key: "name",

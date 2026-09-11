@@ -486,6 +486,7 @@ export function OrdersPage() {
       <Card>
         <CardContent>
           <DataTable
+            nested
             stickyHeader
             columns={[
               {

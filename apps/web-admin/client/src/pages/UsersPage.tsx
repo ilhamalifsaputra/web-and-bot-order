@@ -425,6 +425,7 @@ export function UsersPage() {
       <Card>
         <CardContent>
           <DataTable
+            nested
             stickyHeader
             columns={[
               {

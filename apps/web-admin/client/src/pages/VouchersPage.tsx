@@ -717,6 +717,7 @@ export function VouchersPage() {
       <Card>
         <CardContent>
           <DataTable
+            nested
             columns={[
               {
                 key: "select",

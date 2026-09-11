@@ -209,6 +209,7 @@ export function StockPage() {
       <Card>
         <CardContent>
           <DataTable
+            nested
             columns={[
               {
                 key: "denomination",

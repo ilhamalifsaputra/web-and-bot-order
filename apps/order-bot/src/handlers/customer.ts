@@ -327,6 +327,7 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).gameRegionEntries;
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
+  delete sc(ctx).gameVariantDimensionSkipped;
   await smartEdit(ctx, t(ctx, "browse.group_picker_title"), ckb.groupPickerKb(lang));
 }
 
@@ -352,6 +353,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   delete sc(ctx).gameRegionEntries;
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
+  delete sc(ctx).gameVariantDimensionSkipped;
   sc(ctx).group = group;
 
   const categories = await listActiveCategoriesByGroup(prisma, group);
@@ -434,8 +436,10 @@ export async function browseCategoryEntry(ctx: MyContext, categoryId: number, ba
     const groupCategories = await listActiveCategoriesByGroup(prisma, group);
     effectiveBackTarget = groupCategories.length <= 1 ? ckb.cb("browse", "grps") : ckb.cb("browse", "grp", group);
   }
-  const variants = await listCategoryGameVariants(prisma, categoryId);
-  const unvariantedCount = await countCategoryProductsWithoutGameVariant(prisma, categoryId);
+  const [variants, unvariantedCount] = await Promise.all([
+    listCategoryGameVariants(prisma, categoryId),
+    countCategoryProductsWithoutGameVariant(prisma, categoryId),
+  ]);
 
   // A genuinely MIXED category — at least one catalog-eligible product carries
   // a gameVariant AND at least one doesn't. A variant picker (or the

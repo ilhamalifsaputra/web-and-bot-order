@@ -2979,6 +2979,114 @@ describe("splitMixedTypeProducts / detectMixedTypeProducts", () => {
     expect(created.name).toBe("Foo (Indonesia)");
   });
 
+  // Final whole-branch review Critical finding: importDigiflazzBrand and
+  // splitMixedDigiflazzProducts both unconditionally strip the region suffix
+  // off every denomination name they write (stripRegionSuffix), so a REAL
+  // region-suffixed product's denomination names never carry the region —
+  // unlike test 13 above, whose fixture (denom names DO carry "(Indonesia)")
+  // happened to mask the bug. This test uses the realistic shape: region
+  // lives ONLY on digiflazzBrand, never on a denomination name.
+  it("13b. region-then-type with REALISTIC (already-stripped) denomination names: region is recovered from digiflazzBrand, not lost", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Mobile Legends (Indonesia)",
+      digiflazzBrand: "Mobile Legends (Indonesia)",
+    });
+    // Denomination names carry NO region suffix — exactly what
+    // importDigiflazzBrand's stripRegionSuffix(row.productName) produces.
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "ML 100 Diamond",
+      type: "SHARED",
+      durationLabel: "ML 100 Diamond",
+      price: "16500",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml-umum-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "ML Infinite 500 Diamond",
+      type: "SHARED",
+      durationLabel: "ML Infinite 500 Diamond",
+      price: "80000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ml-inf-1",
+    });
+    const typeMap = new Map<string, string | null>([
+      ["ml-umum-1", null],
+      ["ml-inf-1", "Infinite"],
+    ]);
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.failures).toEqual([]);
+    expect(result.productsSplit).toBe(1);
+    expect(result.productsCreated).toBe(1);
+
+    // Umum (1) ties Infinite (1) on count -> base wins the tie-break and
+    // keeps the original product id, VERBATIM (region never dropped).
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.digiflazzBrand).toBe("Mobile Legends (Indonesia)");
+    expect(winner.name).toBe("Mobile Legends (Indonesia)");
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: { contains: "Infinite" } } });
+    expect(created.id).not.toBe(product.id);
+    // The region must survive onto the new edition product too.
+    expect(created.digiflazzBrand).toBe("Mobile Legends Infinite (Indonesia)");
+  });
+
+  it("13c. region x type dedupe on the migration path: a type suffix matching the brand's own region folds into one, not a doubled parenthetical", async () => {
+    const category = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Free Fire (Global)",
+      digiflazzBrand: "Free Fire (Global)",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "FF 100 Diamond",
+      type: "SHARED",
+      durationLabel: "FF 100 Diamond",
+      price: "15000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-umum-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "FF Global 200 Diamond",
+      type: "SHARED",
+      durationLabel: "FF Global 200 Diamond",
+      price: "30000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-global-1",
+    });
+    await createDenomination(prisma, {
+      productId: product.id,
+      name: "FF Global 500 Diamond",
+      type: "SHARED",
+      durationLabel: "FF Global 500 Diamond",
+      price: "70000",
+      autoDeliverySource: "digiflazz",
+      supplierSku: "ff-global-2",
+    });
+    const typeMap = new Map<string, string | null>([
+      ["ff-umum-1", null],
+      ["ff-global-1", "Global"],
+      ["ff-global-2", "Global"],
+    ]);
+
+    const result = await splitMixedTypeProducts(prisma, typeMap);
+    expect(result.failures).toEqual([]);
+
+    // Global (2) wins over Umum (1) and keeps the original product id.
+    const winner = await prisma.product.findUniqueOrThrow({ where: { id: product.id } });
+    expect(winner.digiflazzBrand).toBe("Free Fire Global");
+    expect(winner.digiflazzBrand).not.toBe("Free Fire Global (Global)");
+
+    const created = await prisma.product.findFirstOrThrow({ where: { digiflazzBrand: "Free Fire (Global)" } });
+    expect(created.id).not.toBe(product.id);
+  });
+
   it("14. a non-mixed product (all denominations map to the same suffix, including all-base) stays in skipped, untouched", async () => {
     const category = await prisma.category.findFirstOrThrow();
     const { typeMap } = await seedMixedTypeProduct(category.id, { baseCount: 3, suffixCount: 5 });

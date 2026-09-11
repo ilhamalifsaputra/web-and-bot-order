@@ -1921,18 +1921,42 @@ export async function detectMixedTypeProducts(
       continue;
     }
 
-    // stripRegionSuffix is REQUIRED here — a product already split by the
-    // region migration (e.g. digiflazzBrand: "Arena Breakout (Indonesia)")
-    // must recover the pre-region brand ("Arena Breakout") before this
-    // composes a type-suffixed name, or a region-then-type-mixed product
-    // would produce a malformed concatenated name like
-    // "Arena Breakout (Indonesia) Infinite" instead of the correct
-    // "Arena Breakout Infinite (Indonesia)" (the region, if any, is
-    // recovered from the denomination name itself by digiflazzGroupKey below).
+    // The region (if any) MUST be recovered from product.digiflazzBrand
+    // itself, not from a denomination's name — both importDigiflazzBrand and
+    // splitMixedDigiflazzProducts unconditionally strip the region suffix off
+    // every denomination name they write (stripRegionSuffix(row.productName)/
+    // stripRegionSuffix(denom.name)), so for any already-imported or
+    // already-region-migrated product a denomination name simply does not
+    // carry the region anymore. Reading it from the denomination name here
+    // would silently drop the region from a product like
+    // digiflazzBrand: "Mobile Legends (Indonesia)" the first time this
+    // migration ran, renaming it to plain "Mobile Legends" — destroying its
+    // region scoping and, since that no longer matches what a fresh import
+    // would produce, setting up a duplicate-SKU collision the next time the
+    // wizard imports "Mobile Legends (Indonesia)" as "new".
+    // parseProductRegion(denominations[0].name) is kept only as a fallback
+    // for a product that was never region-migrated but happens to carry a
+    // literal region suffix on its (hand-entered or pre-migration) rows.
+    const brandRegion = parseProductRegion(product.digiflazzBrand!);
     const brandBase = stripRegionSuffix(product.digiflazzBrand!);
     const groups: DigiflazzTypeGroup[] = [...bySuffix.entries()].map(([suffix, denominations]) => {
-      const groupBrand = suffix === null ? brandBase : `${brandBase} ${suffix}`;
-      const { displayName } = digiflazzGroupKey(groupBrand, denominations[0]!.name);
+      if (suffix === null) {
+        // Base bucket keeps the product's current brand VERBATIM — the same
+        // guarantee a fresh import gives a ≤1-suffix brand (byte-identical
+        // displayName), so a base-bucket winner never churns its own name or
+        // slug, and a base-bucket loser is created under the exact name a
+        // fresh import of this same data would use.
+        return { suffix, displayName: product.digiflazzBrand!, denominations };
+      }
+      const region = brandRegion ?? parseProductRegion(denominations[0]!.name);
+      // Region×type dedupe — identical rule to groupDigiflazzPriceListByBrand's
+      // own dedupe (Task 21): when the type suffix already names this
+      // product's region (e.g. suffix "Global" on a brand region "Global"),
+      // the region is expressed twice — fold it into the suffix instead of
+      // emitting "Brand Global (Global)".
+      const dedupe = region != null && region.toLowerCase() === suffix.toLowerCase();
+      const displayName =
+        region != null && !dedupe ? `${brandBase} ${suffix} (${region})` : `${brandBase} ${suffix}`;
       return { suffix, displayName, denominations };
     });
 
@@ -2140,6 +2164,16 @@ export async function splitMixedTypeProducts(
           "This product's transaction rolled back and was left untouched — earlier products already split in this run are unaffected, and the migration is idempotent, so re-running --apply will retry this one.",
       );
     }
+  }
+
+  // Unlike splitMixedDigiflazzProducts (which relies on getCatalogIndex's 30s
+  // TTL, acceptable while detection is shadow-mode-only), this migration
+  // renames Products and moves denominations under an admin-triggered CLI
+  // run rather than routine background traffic — bump once, after every
+  // product's transaction has settled, so a detection pass immediately after
+  // --apply sees the post-split catalog rather than a stale cached index.
+  if (productsSplit > 0) {
+    await bumpCatalogRevision(db);
   }
 
   return { productsSplit, productsCreated, denominationsMoved, skipped, conflicts, unmapped, failures };

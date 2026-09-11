@@ -1,11 +1,12 @@
 /**
- * Nickname-verification conversation — for an AUTO Game Top-Up SKU whose
- * linked `Game` has nickname-check configured (`Game.nicknameSupported` AND
- * at least one `ProviderGameMapping` resolves to a credentialed provider
- * entry — see `buildNicknameProviderEntries`, Trustance reconciliation
- * Phase B Task 1), the buyer's target account id (+ zone/server, when the
- * Game requires them) is looked up via `NicknameService` BEFORE payment, and
- * the resolved nickname is shown back to the buyer for confirmation. Entered
+ * Nickname-verification conversation — for an AUTO Game Top-Up SKU that
+ * resolves to a nickname-check `gameCode` (admin override or catalog
+ * auto-detect from Product.digiflazzBrand — see resolveNicknameGate's doc
+ * comment, packages/db/src/crud/nickname.ts) AND has KokinPay credentials
+ * configured (see `buildNicknameProviderEntries`), the buyer's target
+ * account id (+ zone/server, when the game requires them) is looked up via
+ * `NicknameService` BEFORE payment, and the resolved nickname is shown back
+ * to the buyer for confirmation. Entered
  * programmatically from checkout.ts's showOrderConfirmation (not from a
  * callback/command trigger — see conversations/index.ts) once per checkout
  * attempt; scratch.customerData being unset is what makes the gate re-enter
@@ -67,15 +68,13 @@ import { startCommand, handleProductNumber } from "../handlers/customer";
 /** Plain, JSON-serializable summary of the denomination/game config this
  * conversation needs — the ONLY thing the config-resolving external() call
  * returns, instead of the raw Prisma row (which carries Decimal/Date fields)
- * or the gate's `gameId`/`legacyGameCode` computed inline outside external()
- * (which would re-duplicate the shared resolveNicknameGate rule — final-review
- * Important #4). */
+ * or the gate's `gameCode` computed inline outside external() (which would
+ * re-duplicate the shared resolveNicknameGate rule). */
 interface NicknameCheckConfig {
   productName: string;
   requiresZone: boolean;
   requiresServer: boolean;
-  gameId: number | null;
-  legacyGameCode: string | null;
+  gameCode: string | null;
 }
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
@@ -106,36 +105,36 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
   // the raw Prisma denomination row (Decimal/Date fields) never crosses the
   // boundary. Same rule as the gate that entered us (checkout.ts's
   // showOrderConfirmation) and the storefront's own gate (apiTopup.ts POST
-  // /topup/check-account, final-review Finding 3), via the shared
-  // resolveNicknameGate (final-review Important #4) — re-checked here
-  // defensively in case config changed in the moment between that gate's
-  // read and this conversation actually starting.
+  // /topup/check-account), via the shared resolveNicknameGate — re-checked
+  // here defensively in case config changed in the moment between that
+  // gate's read and this conversation actually starting. `resolveNicknameGate`
+  // already returns requiresZone/requiresServer alongside gameCode, so there
+  // is no separate relation read for them.
   const config: NicknameCheckConfig | null = await conversation.external(async () => {
     const denom = await getDenominationWithProduct(prisma, productId);
     if (!denom) return null;
-    const { gameId, legacyGameCode } = resolveNicknameGate(denom);
+    const { gameCode, requiresZone, requiresServer } = resolveNicknameGate(denom);
     return {
       productName: denom.product.name,
-      requiresZone: Boolean(denom.product.game?.requiresZone),
-      requiresServer: Boolean(denom.product.game?.requiresServer),
-      gameId,
-      legacyGameCode,
+      requiresZone,
+      requiresServer,
+      gameCode,
     };
   });
-  if (!config || (!config.gameId && !config.legacyGameCode)) {
+  if (!config || !config.gameCode) {
     // Defensive — shouldn't normally happen since the gate just verified this.
     // Nothing to collect; go straight to confirmation.
     await renderOrderConfirmation(ctx, productId, quantity);
     return;
   }
-  const { productName, requiresZone, requiresServer, gameId, legacyGameCode } = config;
-  // Defensive pre-check, same race as above (e.g. an admin disabled the last
-  // enabled mapping a moment ago) — entries are built and immediately
+  const { productName, requiresZone, requiresServer, gameCode } = config;
+  // Defensive pre-check, same race as above (e.g. an admin cleared the
+  // KokinPay credentials a moment ago) — entries are built and immediately
   // reduced to a plain count inside this external(), never returned as an
-  // array (that array's `provider` objects carry a `checkNickname` closure —
-  // see the file-header comment on final-review Important #3).
+  // array (that array's `provider` object carries a `checkNickname` closure —
+  // see the file-header comment on external() discipline).
   const providersConfigured = await conversation.external(async () => {
-    const entries = await buildNicknameProviderEntries(prisma, { gameId, legacyGameCode });
+    const entries = await buildNicknameProviderEntries(prisma, gameCode);
     return entries.length;
   });
   if (providersConfigured === 0) {
@@ -265,13 +264,13 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
       server = value;
     }
 
-    // Every field this Game requires has been collected — run the lookup.
+    // Every field this game requires has been collected — run the lookup.
     // Entries are built AND consumed inside this one external() call, so the
     // closure-carrying NicknameServiceProviderEntry[] never crosses the
-    // boundary (final-review Important #3) — only the plain result object
-    // plus two primitive fields kept for the not-found diagnostic log below.
+    // boundary — only the plain result object plus two primitive fields kept
+    // for the not-found diagnostic log below.
     const lookup = await conversation.external(async () => {
-      const entries = await buildNicknameProviderEntries(prisma, { gameId, legacyGameCode });
+      const entries = await buildNicknameProviderEntries(prisma, gameCode);
       const lookupResult = await new NicknameService(entries).checkNickname({ target, zone, server });
       return {
         result: lookupResult,
@@ -300,24 +299,21 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
       // requiresZone/requiresServer flags re-trigger those prompts
       // regardless of what's currently stored in those variables.
       //
-      // Diagnostic log (final-review Important #2) — mirrors
-      // apps/storefront/src/routes/apiTopup.ts's logger.info at its own
-      // definitive not-found point: a misconfigured priority-0
-      // ProviderGameMapping (e.g. a typo'd providerGameCode) can make the
-      // highest-priority provider return a non-retryable error, which stops
-      // NicknameService before any lower-priority provider is ever tried.
+      // Diagnostic log — mirrors apps/storefront/src/routes/apiTopup.ts's
+      // logger.info at its own definitive not-found point: a misconfigured
+      // nicknameCheckGameCode override, or a catalog `code` KokinPay no
+      // longer recognizes, can make the lookup return a non-retryable error.
       // Without this, an admin has no way to see that a SKU's nickname check
       // is silently dead. Only counts/ids — no credentials or raw provider
       // responses.
       logger.info(
         {
           productId,
-          gameId,
-          legacyGameCode,
+          gameCode,
           providersConfigured: lookup.providersConfigured,
           lastConfiguredProviderId: lookup.lastConfiguredProviderId,
         },
-        "Bot nickname check got a definitive not-found for one checkout attempt — buyer was offered a 'Continue anyway' escape; if this recurs for the same product, its provider mapping (providerGameCode) may be misconfigured.",
+        "Bot nickname check got a definitive not-found for one checkout attempt — buyer was offered a 'Continue anyway' escape; if this recurs for the same product, its nickname-check game code may be misconfigured.",
       );
       step = "target";
       await menuAnchor(

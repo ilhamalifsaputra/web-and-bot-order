@@ -156,10 +156,6 @@ describe("DenominationEditPage", () => {
         // admin can clear a previously-set value by blanking the field, not
         // just set one. This fixture never touched the field, so it's null.
         nicknameCheckGameCode: null,
-        // Region-check Task B: regionWarning/expectedRegionCode follow the
-        // same always-sent-on-edit convention as nicknameCheckGameCode above.
-        regionWarning: null,
-        expectedRegionCode: null,
         // Task 14: qtyValue/qtyUnit follow the same always-sent-on-edit
         // convention — this fixture never touched them, so both are null.
         qtyValue: null,
@@ -291,9 +287,9 @@ describe("DenominationEditPage", () => {
 
   // Task 12: DeliveryTypeSection's legacy-field note, driven by the parent
   // Product's Linked Game (Task 10's Product.gameId) — a UI hint only, shown
-  // near the nicknameCheckGameCode/expectedRegionCode fields, which only
-  // render once deliveryType is manual_with_info (same requiresInfo gate the
-  // fields themselves use).
+  // near the nicknameCheckGameCode field, which only renders once
+  // deliveryType is manual_with_info (same requiresInfo gate the field
+  // itself uses).
   const NOTE_TEXT = /this product uses the new game-based nickname check/i;
 
   it("shows the Game-based nickname check note when the parent product has a Linked Game", async () => {
@@ -303,8 +299,7 @@ describe("DenominationEditPage", () => {
     render(<DenominationEditPage />, { wrapper: Wrapper });
 
     await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
-    // Rendered twice — once near nicknameCheckGameCode, once near expectedRegionCode.
-    expect(screen.getAllByText(NOTE_TEXT)).toHaveLength(2);
+    expect(screen.getByText(NOTE_TEXT)).toBeInTheDocument();
   });
 
   it("does not show the Game-based nickname check note when the parent product has no Linked Game", async () => {

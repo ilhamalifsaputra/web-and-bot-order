@@ -350,8 +350,7 @@ describe("DenominationCreatePage", () => {
 
     await reachRequiresInfoStep(user);
 
-    // Rendered twice — once near nicknameCheckGameCode, once near expectedRegionCode.
-    expect(screen.getAllByText(NOTE_TEXT)).toHaveLength(2);
+    expect(screen.getByText(NOTE_TEXT)).toBeInTheDocument();
   });
 
   it("does not show the Game-based nickname check note when the parent product has no Linked Game", async () => {

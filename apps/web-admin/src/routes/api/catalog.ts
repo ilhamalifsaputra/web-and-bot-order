@@ -414,14 +414,6 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const nicknameCheckGameCode =
       typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
 
-    // regionWarning/expectedRegionCode (Region-check Task B): plain optional
-    // strings, independent of deliveryType/autoDeliverySource and of each
-    // other — same "no cross-field validation rule" treatment as
-    // nicknameCheckGameCode above.
-    const regionWarning = typeof body.regionWarning === "string" ? body.regionWarning.trim() || null : null;
-    const expectedRegionCode =
-      typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
-
     // qtyValue/qtyUnit (Task 8/14): the compact-button quantity shown on the
     // bot, e.g. "86 Diamonds" — independent of every other field above.
     // qtyValue is optional but must be a non-negative integer when present;
@@ -451,8 +443,6 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,
-      regionWarning,
-      expectedRegionCode,
       qtyValue,
       qtyUnit,
     });
@@ -857,18 +847,10 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     const nicknameCheckGameCode =
       typeof body.nicknameCheckGameCode === "string" ? body.nicknameCheckGameCode.trim() || null : null;
 
-    // regionWarning/expectedRegionCode (Region-check Task B): plain optional
-    // strings, same always-set-from-this-request convention as
-    // nicknameCheckGameCode above — no deliveryType coupling, independent
-    // of each other.
-    const regionWarning = typeof body.regionWarning === "string" ? body.regionWarning.trim() || null : null;
-    const expectedRegionCode =
-      typeof body.expectedRegionCode === "string" ? body.expectedRegionCode.trim() || null : null;
-
     // qtyValue/qtyUnit (Task 8/14): same always-set-from-this-request
-    // convention as nicknameCheckGameCode/regionWarning/expectedRegionCode
-    // above — qtyValue must be a non-negative integer when present, qtyUnit
-    // is a plain optional string independent of qtyValue.
+    // convention as nicknameCheckGameCode above — qtyValue must be a
+    // non-negative integer when present, qtyUnit is a plain optional string
+    // independent of qtyValue.
     let qtyValue: number | null = null;
     if (body.qtyValue != null && body.qtyValue !== "") {
       const n = Number(body.qtyValue);
@@ -894,8 +876,6 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       autoDeliverySource,
       supplierSku,
       nicknameCheckGameCode,
-      regionWarning,
-      expectedRegionCode,
       priceOverridden,
       qtyValue,
       qtyUnit,

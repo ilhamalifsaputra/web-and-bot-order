@@ -472,7 +472,7 @@ describe("searchStockCredentials", () => {
     const results = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "test-search");
 
     expect(results.length).toBeGreaterThan(0);
-    expect(results.some((r) => r.credentials.includes("test-search"))).toBe(true);
+    expect(results.some((r) => decryptCredentials(r.credentials).includes("test-search"))).toBe(true);
   });
 
   it("finds a row by substring of note", async () => {
@@ -527,12 +527,14 @@ describe("searchStockCredentials", () => {
         data: { status: StockStatus.RESERVED },
       });
 
+      const plainCredential = decryptCredentials(items[0]!.credentials);
+
       // Search for AVAILABLE only should not find the RESERVED item
       const resultsAvailable = await searchStockCredentials(
         prisma,
         product.id,
         [StockStatus.AVAILABLE],
-        items[0]!.credentials,
+        plainCredential,
       );
       expect(resultsAvailable.every((r) => r.id !== items[0]!.id)).toBe(true);
 
@@ -541,7 +543,7 @@ describe("searchStockCredentials", () => {
         prisma,
         product.id,
         [StockStatus.RESERVED],
-        items[0]!.credentials,
+        plainCredential,
       );
       expect(resultsReserved.some((r) => r.id === items[0]!.id)).toBe(true);
     }

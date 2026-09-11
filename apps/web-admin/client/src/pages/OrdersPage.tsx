@@ -13,6 +13,7 @@ import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { Pagination } from "../components/shared/Pagination";
 import { OrdersKpiRow } from "./orders/OrdersKpiRow";
 import { OrderStatusTabs, statusesForTab, type StatusTabKey } from "./orders/OrderStatusTabs";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -482,195 +483,199 @@ export function OrdersPage() {
         </div>
       )}
 
-      <DataTable
-        stickyHeader
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allOnPageSelected}
-                onCheckedChange={toggleSelectAllOnPage}
-                aria-label="Select all orders on this page"
-              />
-            ),
-            render: (row) => (
-              <Checkbox
-                checked={selected.has(row.id)}
-                onCheckedChange={() => toggleSelected(row.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select order ${row.orderCode}`}
-              />
-            ),
-          },
-          {
-            key: "code",
-            header: "Order Code",
-            render: (row) => (
-              <span className="font-mono text-sm font-semibold text-ink">{row.orderCode}</span>
-            ),
-          },
-          {
-            key: "customer",
-            header: "Customer",
-            render: (row) => {
-              // A guest has no name of any kind, so the default branch below
-              // would print a bare "—" and leave the admin with nothing to
-              // act on. Show the Guest marker plus the contact email (the
-              // guest's actual identity here) — and, if that email is
-              // somehow missing, say that outright rather than blank out.
-              if (row.user?.isGuest) {
-                return (
-                  <div className="max-w-[240px]">
-                    <div className="flex min-w-0 items-start gap-2">
-                      <Badge variant="secondary" className="shrink-0">Guest</Badge>
-                      {/* The only way to reach a guest buyer, so it wraps and
-                          stays fully readable — never truncated. whitespace-normal
-                          defeats TableCell's default nowrap, matching the
-                          treatment on OrderDetailPage. */}
-                      <span className="text-sm break-all whitespace-normal text-ink">
-                        {row.user.guestEmail ?? "No contact email"}
-                      </span>
+      <Card>
+        <CardContent>
+          <DataTable
+            stickyHeader
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allOnPageSelected}
+                    onCheckedChange={toggleSelectAllOnPage}
+                    aria-label="Select all orders on this page"
+                  />
+                ),
+                render: (row) => (
+                  <Checkbox
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => toggleSelected(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select order ${row.orderCode}`}
+                  />
+                ),
+              },
+              {
+                key: "code",
+                header: "Order Code",
+                render: (row) => (
+                  <span className="font-mono text-sm font-semibold text-ink">{row.orderCode}</span>
+                ),
+              },
+              {
+                key: "customer",
+                header: "Customer",
+                render: (row) => {
+                  // A guest has no name of any kind, so the default branch below
+                  // would print a bare "—" and leave the admin with nothing to
+                  // act on. Show the Guest marker plus the contact email (the
+                  // guest's actual identity here) — and, if that email is
+                  // somehow missing, say that outright rather than blank out.
+                  if (row.user?.isGuest) {
+                    return (
+                      <div className="max-w-[240px]">
+                        <div className="flex min-w-0 items-start gap-2">
+                          <Badge variant="secondary" className="shrink-0">Guest</Badge>
+                          {/* The only way to reach a guest buyer, so it wraps and
+                              stays fully readable — never truncated. whitespace-normal
+                              defeats TableCell's default nowrap, matching the
+                              treatment on OrderDetailPage. */}
+                          <span className="text-sm break-all whitespace-normal text-ink">
+                            {row.user.guestEmail ?? "No contact email"}
+                          </span>
+                        </div>
+                        <div className="text-xs text-ink-soft">Guest checkout — no account</div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="max-w-[240px]">
+                      <div
+                        className="truncate text-sm text-ink"
+                        title={row.user?.fullName ?? row.user?.username ?? undefined}
+                      >
+                        {row.user?.fullName ?? row.user?.username ?? "—"}
+                      </div>
+                      <div className="truncate text-xs text-ink-soft">
+                        {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
+                      </div>
                     </div>
-                    <div className="text-xs text-ink-soft">Guest checkout — no account</div>
-                  </div>
-                );
-              }
-              return (
-                <div className="max-w-[240px]">
-                  <div
-                    className="truncate text-sm text-ink"
-                    title={row.user?.fullName ?? row.user?.username ?? undefined}
-                  >
-                    {row.user?.fullName ?? row.user?.username ?? "—"}
-                  </div>
-                  <div className="truncate text-xs text-ink-soft">
-                    {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
-                  </div>
-                </div>
-              );
-            },
-          },
-          {
-            key: "products",
-            header: "Product Count",
-            render: (row) => {
-              if (row.kind === "WALLET_TOPUP") {
-                return <Badge variant="secondary">Wallet Top-Up ({row.currency})</Badge>;
-              }
-              if (row.items.length === 0) return <span className="text-sm text-ink-soft">—</span>;
-              const first = row.items[0]!;
-              const extra = row.items.length - 1;
-              return (
-                // The "+N more" suffix must never be the part that gets cut,
-                // so only the product name truncates.
-                <span className="flex max-w-[240px] items-baseline text-sm text-ink">
-                  <span className="truncate" title={first.product.name}>{first.product.name}</span>
-                  {extra > 0 && <span className="ml-1 shrink-0 text-ink-soft">+{extra}</span>}
-                </span>
-              );
-            },
-          },
-          {
-            key: "paymentMethod",
-            header: "Payment Method",
-            render: (row) => <PaymentMethodBadge method={row.paymentMethod} />,
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) => <OrderStatusBadge status={row.status} />,
-          },
-          {
-            key: "total",
-            header: "Total",
-            render: (row) => {
-              const { amount, suffix } = formatCurrencyParts(row.totalAmount, row.currency as "IDR" | "USDT" | "USD");
-              return (
-                <span className="font-mono text-sm">
-                  <span className="font-semibold text-ink">{amount}</span>
-                  {suffix && <span className="ml-1 text-xs text-ink-soft">{suffix}</span>}
-                </span>
-              );
-            },
-          },
-          {
-            key: "date",
-            header: "Order Date",
-            render: (row) => (
-              <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.orderCode}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
-                      <Eye className="h-4 w-4" />
-                      View Order
-                    </DropdownMenuItem>
-                    {row.eligibility.canAct && (
-                      <DropdownMenuItem onSelect={() => deliverMutation.mutate(row.id)}>
-                        <Check className="h-4 w-4" />
-                        Deliver
-                      </DropdownMenuItem>
-                    )}
-                    {row.eligibility.canFulfill && (
-                      <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
-                        <Send className="h-4 w-4" />
-                        Fulfill Manually
-                      </DropdownMenuItem>
-                    )}
-                    {row.eligibility.canResend && (
-                      <DropdownMenuItem onSelect={() => resendMutation.mutate(row.id)}>
-                        <RefreshCw className="h-4 w-4" />
-                        Resend Delivery
-                      </DropdownMenuItem>
-                    )}
-                    {canCancelOrder(row) && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            openCancelDialog([row.id]);
-                          }}
-                        >
-                          <XCircle className="h-4 w-4" />
-                          Cancel Order
+                  );
+                },
+              },
+              {
+                key: "products",
+                header: "Product Count",
+                render: (row) => {
+                  if (row.kind === "WALLET_TOPUP") {
+                    return <Badge variant="secondary">Wallet Top-Up ({row.currency})</Badge>;
+                  }
+                  if (row.items.length === 0) return <span className="text-sm text-ink-soft">—</span>;
+                  const first = row.items[0]!;
+                  const extra = row.items.length - 1;
+                  return (
+                    // The "+N more" suffix must never be the part that gets cut,
+                    // so only the product name truncates.
+                    <span className="flex max-w-[240px] items-baseline text-sm text-ink">
+                      <span className="truncate" title={first.product.name}>{first.product.name}</span>
+                      {extra > 0 && <span className="ml-1 shrink-0 text-ink-soft">+{extra}</span>}
+                    </span>
+                  );
+                },
+              },
+              {
+                key: "paymentMethod",
+                header: "Payment Method",
+                render: (row) => <PaymentMethodBadge method={row.paymentMethod} />,
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => <OrderStatusBadge status={row.status} />,
+              },
+              {
+                key: "total",
+                header: "Total",
+                render: (row) => {
+                  const { amount, suffix } = formatCurrencyParts(row.totalAmount, row.currency as "IDR" | "USDT" | "USD");
+                  return (
+                    <span className="font-mono text-sm">
+                      <span className="font-semibold text-ink">{amount}</span>
+                      {suffix && <span className="ml-1 text-xs text-ink-soft">{suffix}</span>}
+                    </span>
+                  );
+                },
+              },
+              {
+                key: "date",
+                header: "Order Date",
+                render: (row) => (
+                  <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.orderCode}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
+                          <Eye className="h-4 w-4" />
+                          View Order
                         </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={pageOrders}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/orders/${row.id}`)}
-        empty={
-          <EmptyState
-            icon={ShoppingCart}
-            title="No orders found."
-            description="Orders will appear here once customers start purchasing."
-            action={{ label: "Refresh", onClick: () => void refetch() }}
-            secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+                        {row.eligibility.canAct && (
+                          <DropdownMenuItem onSelect={() => deliverMutation.mutate(row.id)}>
+                            <Check className="h-4 w-4" />
+                            Deliver
+                          </DropdownMenuItem>
+                        )}
+                        {row.eligibility.canFulfill && (
+                          <DropdownMenuItem onSelect={() => navigate(`/orders/${row.id}`)}>
+                            <Send className="h-4 w-4" />
+                            Fulfill Manually
+                          </DropdownMenuItem>
+                        )}
+                        {row.eligibility.canResend && (
+                          <DropdownMenuItem onSelect={() => resendMutation.mutate(row.id)}>
+                            <RefreshCw className="h-4 w-4" />
+                            Resend Delivery
+                          </DropdownMenuItem>
+                        )}
+                        {canCancelOrder(row) && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                openCancelDialog([row.id]);
+                              }}
+                            >
+                              <XCircle className="h-4 w-4" />
+                              Cancel Order
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={pageOrders}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            onRowClick={(row) => navigate(`/orders/${row.id}`)}
+            empty={
+              <EmptyState
+                icon={ShoppingCart}
+                title="No orders found."
+                description="Orders will appear here once customers start purchasing."
+                action={{ label: "Refresh", onClick: () => void refetch() }}
+                secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+              />
+            }
           />
-        }
-      />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

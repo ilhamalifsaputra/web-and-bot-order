@@ -18,6 +18,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { DateInput } from "../components/shared/DateInput";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
+import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
   DropdownMenu,
@@ -421,217 +422,221 @@ export function UsersPage() {
         </div>
       )}
 
-      <DataTable
-        stickyHeader
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allOnPageSelected}
-                onCheckedChange={toggleSelectAllOnPage}
-                aria-label="Select all customers on this page"
-              />
-            ),
-            render: (row) => (
-              <Checkbox
-                checked={selected.has(row.id)}
-                onCheckedChange={() => toggleSelected(row.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select customer ${row.fullName ?? row.username ?? row.id}`}
-              />
-            ),
-          },
-          {
-            key: "customer",
-            header: "Customer",
-            render: (row) => (
-              <div className="flex max-w-[240px] items-center gap-3">
-                <Avatar className="shrink-0">
-                  <AvatarFallback>{initialFor(row)}</AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row)}>
-                    {primaryIdentity(row)}
+      <Card>
+        <CardContent>
+          <DataTable
+            stickyHeader
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allOnPageSelected}
+                    onCheckedChange={toggleSelectAllOnPage}
+                    aria-label="Select all customers on this page"
+                  />
+                ),
+                render: (row) => (
+                  <Checkbox
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => toggleSelected(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select customer ${row.fullName ?? row.username ?? row.id}`}
+                  />
+                ),
+              },
+              {
+                key: "customer",
+                header: "Customer",
+                render: (row) => (
+                  <div className="flex max-w-[240px] items-center gap-3">
+                    <Avatar className="shrink-0">
+                      <AvatarFallback>{initialFor(row)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row)}>
+                        {primaryIdentity(row)}
+                      </div>
+                      <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row)}>
+                        {secondaryIdentity(row)}
+                      </div>
+                    </div>
                   </div>
-                  <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row)}>
-                    {secondaryIdentity(row)}
-                  </div>
-                </div>
-              </div>
-            ),
-          },
-          {
-            key: "telegramId",
-            header: "Telegram ID",
-            render: (row) => (
-              <span className="font-mono text-xs text-ink-soft">{row.telegramId ?? "—"}</span>
-            ),
-          },
-          {
-            key: "role",
-            header: "Role",
-            render: (row) => <StatusBadge status={row.role} />,
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) =>
-              row.banned ? (
-                <StatusBadge status="BANNED" />
-              ) : isNewCustomer(row) ? (
-                <StatusBadge status="NEW_CUSTOMER" />
-              ) : row.deliveredOrders >= 2 ? (
-                <StatusBadge status="RETURNING" />
-              ) : null,
-          },
-          {
-            key: "joined",
-            header: "Joined",
-            render: (row) => (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="text-xs text-ink-soft">
-                    {formatRelativeTime(row.createdAt, row.createdAtDisplay ?? "—")}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{row.createdAtDisplay ?? "—"}</TooltipContent>
-              </Tooltip>
-            ),
-          },
-          {
-            key: "lastSeen",
-            header: "Last Seen",
-            render: (row) =>
-              row.lastSeenAt ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="text-xs text-ink-soft">
-                      {formatRelativeTime(row.lastSeenAt, row.lastSeenAtDisplay ?? "—")}
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>{row.lastSeenAtDisplay ?? "—"}</TooltipContent>
-                </Tooltip>
+                ),
+              },
+              {
+                key: "telegramId",
+                header: "Telegram ID",
+                render: (row) => (
+                  <span className="font-mono text-xs text-ink-soft">{row.telegramId ?? "—"}</span>
+                ),
+              },
+              {
+                key: "role",
+                header: "Role",
+                render: (row) => <StatusBadge status={row.role} />,
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) =>
+                  row.banned ? (
+                    <StatusBadge status="BANNED" />
+                  ) : isNewCustomer(row) ? (
+                    <StatusBadge status="NEW_CUSTOMER" />
+                  ) : row.deliveredOrders >= 2 ? (
+                    <StatusBadge status="RETURNING" />
+                  ) : null,
+              },
+              {
+                key: "joined",
+                header: "Joined",
+                render: (row) => (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="text-xs text-ink-soft">
+                        {formatRelativeTime(row.createdAt, row.createdAtDisplay ?? "—")}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{row.createdAtDisplay ?? "—"}</TooltipContent>
+                  </Tooltip>
+                ),
+              },
+              {
+                key: "lastSeen",
+                header: "Last Seen",
+                render: (row) =>
+                  row.lastSeenAt ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <span className="text-xs text-ink-soft">
+                          {formatRelativeTime(row.lastSeenAt, row.lastSeenAtDisplay ?? "—")}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>{row.lastSeenAtDisplay ?? "—"}</TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <span className="text-xs text-ink-soft">—</span>
+                  ),
+              },
+              {
+                key: "totalSpent",
+                header: "Total Spent",
+                render: (row) => {
+                  const amounts = nonZeroAmounts(row.totalSpent);
+                  return amounts.length > 0 ? (
+                    <CurrencyStack amounts={amounts} />
+                  ) : (
+                    <span className="text-xs text-ink-soft">—</span>
+                  );
+                },
+              },
+              {
+                key: "orders",
+                header: "Orders",
+                render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
+              },
+              {
+                key: "lastOrder",
+                header: "Last Order",
+                render: (row) => (
+                  <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => {
+                  const ordersTarget = targetForOrders(row);
+                  return (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.fullName ?? row.username ?? row.id}`}>
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}`)}>
+                            <Eye className="h-4 w-4" />
+                            View Customer
+                          </DropdownMenuItem>
+                          {ordersTarget != null && (
+                            <DropdownMenuItem onSelect={() => navigate(`/orders?q=${encodeURIComponent(ordersTarget)}`)}>
+                              <ShoppingBag className="h-4 w-4" />
+                              View Orders
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#ledger`)}>
+                            <Wallet className="h-4 w-4" />
+                            Transactions
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#tickets`)}>
+                            <LifeBuoy className="h-4 w-4" />
+                            Support Tickets
+                          </DropdownMenuItem>
+                          {row.telegramId != null && (
+                            <DropdownMenuItem onSelect={() => copyTelegramId(row.telegramId!)}>
+                              <Copy className="h-4 w-4" />
+                              Copy Telegram ID
+                            </DropdownMenuItem>
+                          )}
+                          <DropdownMenuSeparator />
+                          {row.banned ? (
+                            <DropdownMenuItem
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                setBanTargetId(row.id);
+                              }}
+                            >
+                              <CircleCheck className="h-4 w-4" />
+                              Unban
+                            </DropdownMenuItem>
+                          ) : (
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={(e) => {
+                                e.preventDefault();
+                                setBanTargetId(row.id);
+                              }}
+                            >
+                              <Ban className="h-4 w-4" />
+                              Suspend
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  );
+                },
+              },
+            ]}
+            data={pageUsers}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            onRowClick={(row) => navigate(`/users/${row.id}`)}
+            empty={
+              hasActiveFilter ? (
+                <EmptyState
+                  icon={Users}
+                  title="No customers match these filters."
+                  description="Try widening the date range or clearing a filter."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+                />
               ) : (
-                <span className="text-xs text-ink-soft">—</span>
-              ),
-          },
-          {
-            key: "totalSpent",
-            header: "Total Spent",
-            render: (row) => {
-              const amounts = nonZeroAmounts(row.totalSpent);
-              return amounts.length > 0 ? (
-                <CurrencyStack amounts={amounts} />
-              ) : (
-                <span className="text-xs text-ink-soft">—</span>
-              );
-            },
-          },
-          {
-            key: "orders",
-            header: "Orders",
-            render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
-          },
-          {
-            key: "lastOrder",
-            header: "Last Order",
-            render: (row) => (
-              <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => {
-              const ordersTarget = targetForOrders(row);
-              return (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.fullName ?? row.username ?? row.id}`}>
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}`)}>
-                        <Eye className="h-4 w-4" />
-                        View Customer
-                      </DropdownMenuItem>
-                      {ordersTarget != null && (
-                        <DropdownMenuItem onSelect={() => navigate(`/orders?q=${encodeURIComponent(ordersTarget)}`)}>
-                          <ShoppingBag className="h-4 w-4" />
-                          View Orders
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#ledger`)}>
-                        <Wallet className="h-4 w-4" />
-                        Transactions
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => navigate(`/users/${row.id}#tickets`)}>
-                        <LifeBuoy className="h-4 w-4" />
-                        Support Tickets
-                      </DropdownMenuItem>
-                      {row.telegramId != null && (
-                        <DropdownMenuItem onSelect={() => copyTelegramId(row.telegramId!)}>
-                          <Copy className="h-4 w-4" />
-                          Copy Telegram ID
-                        </DropdownMenuItem>
-                      )}
-                      <DropdownMenuSeparator />
-                      {row.banned ? (
-                        <DropdownMenuItem
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            setBanTargetId(row.id);
-                          }}
-                        >
-                          <CircleCheck className="h-4 w-4" />
-                          Unban
-                        </DropdownMenuItem>
-                      ) : (
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            setBanTargetId(row.id);
-                          }}
-                        >
-                          <Ban className="h-4 w-4" />
-                          Suspend
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              );
-            },
-          },
-        ]}
-        data={pageUsers}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/users/${row.id}`)}
-        empty={
-          hasActiveFilter ? (
-            <EmptyState
-              icon={Users}
-              title="No customers match these filters."
-              description="Try widening the date range or clearing a filter."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          ) : (
-            <EmptyState
-              icon={Users}
-              title="No customers yet"
-              description="Customers will appear here once they interact with the shop."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-            />
-          )
-        }
-      />
+                <EmptyState
+                  icon={Users}
+                  title="No customers yet"
+                  description="Customers will appear here once they interact with the shop."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                />
+              )
+            }
+          />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

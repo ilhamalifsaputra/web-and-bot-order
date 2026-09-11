@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { GameDialog } from "../components/catalog/GameDialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { Card, CardContent } from "@/components/ui/card";
 import { AlertCircle, Gamepad2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost } from "../api/client";
@@ -69,59 +70,63 @@ export function GamesPage() {
         }
       />
 
-      <DataTable
-        columns={[
-          {
-            key: "name",
-            header: "Name",
-            render: (row: GameRow) => <span className="text-ink">{row.name}</span>,
-          },
-          {
-            key: "slug",
-            header: "Slug",
-            render: (row: GameRow) => <span className="font-mono text-xs text-ink-soft">{row.slug}</span>,
-          },
-          {
-            key: "category",
-            header: "Category",
-            render: (row: GameRow) => <span className="text-ink-soft">{row.category ?? "—"}</span>,
-          },
-          {
-            key: "mappings",
-            header: "Provider Mappings",
-            render: (row: GameRow) => (
-              <span className="text-ink-soft">
-                {row.providerMappings.length} {row.providerMappings.length === 1 ? "provider" : "providers"}
-              </span>
-            ),
-          },
-          {
-            key: "active",
-            header: "Active",
-            render: (row: GameRow) => (
-              <Switch
-                aria-label={`${row.name} active`}
-                checked={row.isActive}
-                disabled={toggling.has(row.id)}
-                onCheckedChange={(checked) => void toggleActive(row.id, checked)}
-                onClick={(e) => e.stopPropagation()}
+      <Card>
+        <CardContent>
+          <DataTable
+            columns={[
+              {
+                key: "name",
+                header: "Name",
+                render: (row: GameRow) => <span className="text-ink">{row.name}</span>,
+              },
+              {
+                key: "slug",
+                header: "Slug",
+                render: (row: GameRow) => <span className="font-mono text-xs text-ink-soft">{row.slug}</span>,
+              },
+              {
+                key: "category",
+                header: "Category",
+                render: (row: GameRow) => <span className="text-ink-soft">{row.category ?? "—"}</span>,
+              },
+              {
+                key: "mappings",
+                header: "Provider Mappings",
+                render: (row: GameRow) => (
+                  <span className="text-ink-soft">
+                    {row.providerMappings.length} {row.providerMappings.length === 1 ? "provider" : "providers"}
+                  </span>
+                ),
+              },
+              {
+                key: "active",
+                header: "Active",
+                render: (row: GameRow) => (
+                  <Switch
+                    aria-label={`${row.name} active`}
+                    checked={row.isActive}
+                    disabled={toggling.has(row.id)}
+                    onCheckedChange={(checked) => void toggleActive(row.id, checked)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ),
+              },
+            ]}
+            data={games}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            onRowClick={(row) => navigate(`/games/${row.id}`)}
+            empty={
+              <EmptyState
+                icon={Gamepad2}
+                title="No games yet"
+                description="Games link a nickname-checkable title to the supplier codes used for its lookups."
+                action={{ label: "Add Game", onClick: () => setCreating(true) }}
               />
-            ),
-          },
-        ]}
-        data={games}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/games/${row.id}`)}
-        empty={
-          <EmptyState
-            icon={Gamepad2}
-            title="No games yet"
-            description="Games link a nickname-checkable title to the supplier codes used for its lookups."
-            action={{ label: "Add Game", onClick: () => setCreating(true) }}
+            }
           />
-        }
-      />
+        </CardContent>
+      </Card>
 
       {creating && (
         <GameDialog onClose={() => setCreating(false)} onSaved={() => void invalidateGames()} />

@@ -1145,8 +1145,8 @@
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/App.tsx": {
-    "mtime": 1789151742.359631,
-    "ast_hash": "1d00533b5d0b7a7bad4faf08bb1f7e96",
+    "mtime": 1789155879.2171378,
+    "ast_hash": "80a5cc4197e10a62ceaaffe8b3831d84",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/api/client.test.ts": {
@@ -1300,8 +1300,8 @@
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/components/layout/Sidebar.tsx": {
-    "mtime": 1789151742.3826296,
-    "ast_hash": "53913a32e16560df19d27ef63e1ddcc6",
+    "mtime": 1789155882.202274,
+    "ast_hash": "96d9d68035bb9e8fd4c0196bcdc12555",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/components/layout/TopBar.test.tsx": {
@@ -1365,8 +1365,8 @@
     "semantic_hash": "387f3de9da17e48adc11c526f3b24df1"
   },
   "apps/web-admin/client/src/components/shared/DeliveryTypeSection.tsx": {
-    "mtime": 1789153886.2428184,
-    "ast_hash": "4b317081914a73fbd318cef954ac5580",
+    "mtime": 1789154988.8482215,
+    "ast_hash": "554dace4ca9c8a6d059715127c5205b6",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/components/shared/EmptyState.test.tsx": {
@@ -2040,13 +2040,13 @@
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/pages/ProductDetailPage.test.tsx": {
-    "mtime": 1789151742.4770496,
-    "ast_hash": "bcee1ed513e946c03a8daafef480834d",
+    "mtime": 1789155970.3708785,
+    "ast_hash": "be0052d4e448dacda23db0d7af1c0c2f",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/pages/ProductDetailPage.tsx": {
-    "mtime": 1789151742.4810517,
-    "ast_hash": "626573852eb5fb23e6743c2545e02de6",
+    "mtime": 1789155915.5482342,
+    "ast_hash": "52c7f6c84aa169f416658cdf711eb112",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/pages/ReportsPage.test.tsx": {
@@ -2330,8 +2330,8 @@
     "semantic_hash": ""
   },
   "apps/web-admin/src/routes/api/catalog.ts": {
-    "mtime": 1789153713.6871672,
-    "ast_hash": "24a7c54ae25bc8867947bceed85f0819",
+    "mtime": 1789156099.272127,
+    "ast_hash": "ac364ca33e9b54ea6fb65ff30c67edce",
     "semantic_hash": ""
   },
   "apps/web-admin/src/routes/api/dashboard.ts": {
@@ -2455,8 +2455,8 @@
     "semantic_hash": ""
   },
   "apps/web-admin/src/server.ts": {
-    "mtime": 1789151742.5339146,
-    "ast_hash": "d07a6c7643c95df8d4bf4312df06f8db",
+    "mtime": 1789155875.820727,
+    "ast_hash": "cef51083705d347e56f66b8b516df445",
     "semantic_hash": ""
   },
   "apps/web-admin/static/admin-ui.js": {
@@ -3205,8 +3205,8 @@
     "semantic_hash": ""
   },
   "packages/db/src/index.ts": {
-    "mtime": 1789151744.0574946,
-    "ast_hash": "4ebbe52ab54982b1b9a2e12c629fba8c",
+    "mtime": 1789155876.8033113,
+    "ast_hash": "ae10c9596edeb9a338a2394700c92c7f",
     "semantic_hash": ""
   },
   "packages/db/src/migrate/catalogRename.test.ts": {
@@ -5979,11 +5979,6 @@
     "ast_hash": "76f3765203fe1f0a49c6953e14aa68d2",
     "semantic_hash": ""
   },
-  "apps/web-admin/client/src/api/games.ts": {
-    "mtime": 1789151742.3652222,
-    "ast_hash": "f92ec4eca3aacb031d2114622b2377ff",
-    "semantic_hash": ""
-  },
   "apps/web-admin/client/src/api/idempotency.test.ts": {
     "mtime": 1789151742.366217,
     "ast_hash": "21e5c5ea8566524cdb340ffcdfd4d491",
@@ -5992,16 +5987,6 @@
   "apps/web-admin/client/src/api/idempotency.ts": {
     "mtime": 1789151742.3682764,
     "ast_hash": "543e1289db01329e74be74ee45e7aea3",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/client/src/components/catalog/GameDialog.tsx": {
-    "mtime": 1789151742.3732462,
-    "ast_hash": "e86a89c92daeb6d020cabd10e3a2d595",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/client/src/components/catalog/MappingDialog.tsx": {
-    "mtime": 1789151742.3732462,
-    "ast_hash": "f17f72902af37825e37370869cf775fc",
     "semantic_hash": ""
   },
   "apps/web-admin/client/src/hooks/useAdmins.test.tsx": {
@@ -6029,26 +6014,6 @@
     "ast_hash": "df157d1901c88bc943b3957e4b2834e9",
     "semantic_hash": ""
   },
-  "apps/web-admin/client/src/pages/GameDetailPage.test.tsx": {
-    "mtime": 1789151742.4472613,
-    "ast_hash": "73c1e3a1eb20c7952e58dd80dfee1421",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/client/src/pages/GameDetailPage.tsx": {
-    "mtime": 1789151742.4501638,
-    "ast_hash": "3d01216c44e249e7cded263e295e448c",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/client/src/pages/GamesPage.test.tsx": {
-    "mtime": 1789151742.4513626,
-    "ast_hash": "43b543407652a74e9b81f1361e2aaec1",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/client/src/pages/GamesPage.tsx": {
-    "mtime": 1789151742.4523826,
-    "ast_hash": "d93888d538419e813c5cf39375e41200",
-    "semantic_hash": ""
-  },
   "apps/web-admin/client/src/pages/TasksPage.test.tsx": {
     "mtime": 1789151742.5000536,
     "ast_hash": "61a8094006dc1274da519ca0c7d0aeb7",
@@ -6064,11 +6029,6 @@
     "ast_hash": "fab99825c3ff3a49272cdaddb435ab56",
     "semantic_hash": ""
   },
-  "apps/web-admin/src/routes/api/games.ts": {
-    "mtime": 1789151742.523355,
-    "ast_hash": "96da5ef75254f06bd56869c7ef9aa1f2",
-    "semantic_hash": ""
-  },
   "apps/web-admin/src/routes/metrics.ts": {
     "mtime": 1789151742.5328867,
     "ast_hash": "31e5717491c32811222530e0e462d040",
@@ -6077,11 +6037,6 @@
   "apps/web-admin/test/adminTasks-api.test.ts": {
     "mtime": 1789151742.5349119,
     "ast_hash": "d49c69c0660870ae4f19a81eb9df1266",
-    "semantic_hash": ""
-  },
-  "apps/web-admin/test/games.test.ts": {
-    "mtime": 1789151742.5427456,
-    "ast_hash": "31e63ff26e08d3dc63d185fc1e748bbd",
     "semantic_hash": ""
   },
   "apps/web-admin/test/metrics.test.ts": {
@@ -6167,16 +6122,6 @@
   "packages/db/src/crud/checkout_intent_concurrency.test.ts": {
     "mtime": 1789151743.9553726,
     "ast_hash": "24e27ce0595cef0faf2b001d92b584f1",
-    "semantic_hash": ""
-  },
-  "packages/db/src/crud/games.test.ts": {
-    "mtime": 1789151743.976838,
-    "ast_hash": "e5cba5ee29ec8c24a847b394df5e5899",
-    "semantic_hash": ""
-  },
-  "packages/db/src/crud/games.ts": {
-    "mtime": 1789151743.9780364,
-    "ast_hash": "e43a8f5d9a09bc94dfa170c0bcbcae51",
     "semantic_hash": ""
   },
   "packages/db/src/crud/idempotency.test.ts": {

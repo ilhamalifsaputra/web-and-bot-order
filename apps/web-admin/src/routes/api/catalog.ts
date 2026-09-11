@@ -12,7 +12,6 @@ import {
   getCatalogProduct,
   getCatalogProductWithDenominations,
   updateCatalogProduct,
-  getGame,
   deleteCatalogProduct,
   getDenomination,
   getDenominationWithProduct,
@@ -479,32 +478,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     }
     const isMove = newCategory != null && newCategory.id !== existing.categoryId;
 
-    // gameId (Task 10): links this Product to the canonical Game record that
-    // drives the multi-provider nickname-check. Unlike gameVariant/gameRegion
-    // above (free text, "blank means null"), this is a numeric FK — omitted
-    // entirely means "leave the existing link untouched"; explicit null
-    // clears it; a number must resolve to an existing, active Game.
-    let gameId: number | null | undefined;
-    if (body.gameId !== undefined) {
-      if (body.gameId === null) {
-        gameId = null;
-      } else {
-        const parsedGameId = Number(body.gameId);
-        if (!Number.isInteger(parsedGameId)) return reply.code(400).send({ error: "Invalid game id." });
-        const game = await getGame(prisma, parsedGameId);
-        // Final-review fix, Finding 4: distinguish "doesn't exist" from
-        // "exists but inactive" — the admin's Linked Game picker can still
-        // submit an id for a game that's since been deactivated (it keeps
-        // the currently-linked game visible even when inactive), and a
-        // generic "Game not found." there is misleading.
-        if (!game) return reply.code(400).send({ error: "Game not found." });
-        if (!game.isActive) return reply.code(400).send({ error: "That game is inactive." });
-        gameId = parsedGameId;
-      }
-    }
-
     // thumbnailKind/currencyIconKind (Fase 12 task 22): validated up front,
-    // same as categoryId/gameId above, so a rejected value leaves every
+    // same as categoryId above, so a rejected value leaves every
     // other field on this request untouched too.
     const kindFields = { thumbnailKind: null as string | null, currencyIconKind: null as string | null };
     const kindError = catalogKindFields(body, kindFields);
@@ -516,7 +491,6 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       ...storefrontDetailFields(body),
       ...gameNavigationFields(body),
       ...kindFields,
-      ...(gameId !== undefined ? { gameId } : {}),
       ...(newCategory ? { categoryId: newCategory.id } : {}),
     });
 

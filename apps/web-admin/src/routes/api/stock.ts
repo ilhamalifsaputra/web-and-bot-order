@@ -2,13 +2,18 @@ import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { formatIdr, formatUsdt, usdtFromIdr } from "@app/core/formatters";
+import { StockStatus } from "@app/core/enums";
 import {
   prisma,
   getUsdIdrRate,
   listAllDenominations,
   stockStatusCounts,
   getDenominationWithProduct,
-  listStockItemsForProduct,
+  stockStatusCountsForProduct,
+  listStockItemsForProductPage,
+  countStockItemsForStatuses,
+  searchStockCredentials,
+  SEARCH_RESULT_CAP,
   countAvailableStock,
   countRestockSubscribers,
   bulkAddStock,
@@ -52,6 +57,12 @@ function csvRow(fields: string[]): string {
  * partial plaintext (or its length) to a page load nobody asked to reveal
  * anything on. */
 const MASKED_CREDENTIAL = "••••••••";
+
+/** Page size for GET /api/stock/:productId's tab/page pagination — replaces
+ * the old flat `take: 500` that spanned every status at once (the bug this
+ * route was rewritten to fix: counts/tabs got stuck at 500 and rows past it
+ * were invisible). Each tab is now counted and paginated independently. */
+const PAGE_SIZE = 50;
 
 /** Operator-facing message for `CredentialKeyConfigError` — the bulk-add and
  * reveal routes below (the ones that call into encryptCredentials/
@@ -131,15 +142,59 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send(csv);
   });
 
+  // Tabbed + paginated stock detail. `tab` selects a status group (mirrors
+  // StockProductPage.tsx's availableItems/soldItems/deadItems split — "sold"
+  // includes RESERVED alongside SOLD), `page` paginates within that group,
+  // and a non-empty `q` switches to a search-across-the-group mode instead
+  // (page is then irrelevant). `statusCounts` is always computed for all
+  // three tabs regardless of mode, so the tab bar's counts never depend on
+  // which tab happens to be open.
   app.get("/api/stock/:productId", { preHandler: blockReadonlyReads }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
-    const [items, available, waiting] = await Promise.all([
-      listStockItemsForProduct(prisma, productId, 500),
-      countAvailableStock(prisma, productId),
+
+    const query = req.query as Record<string, string | undefined>;
+    const tab = query.tab === "sold" || query.tab === "dead" ? query.tab : "available";
+    const statuses =
+      tab === "sold"
+        ? [StockStatus.SOLD, StockStatus.RESERVED]
+        : tab === "dead"
+          ? [StockStatus.DEAD]
+          : [StockStatus.AVAILABLE];
+    const page = Math.max(Number(query.page) || 1, 1);
+    const q = (query.q ?? "").trim();
+
+    const [statusCounts, waiting] = await Promise.all([
+      stockStatusCountsForProduct(prisma, productId),
       countRestockSubscribers(prisma, productId),
     ]);
+
+    let items;
+    let total;
+    let capped = false;
+    if (q) {
+      try {
+        items = await searchStockCredentials(prisma, productId, statuses, q);
+      } catch (e) {
+        if (e instanceof CredentialKeyConfigError) {
+          logger.error({ err: e }, "Stock search failed — credential encryption is not configured correctly");
+          return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+        }
+        throw e;
+      }
+      total = items.length;
+      capped = items.length === SEARCH_RESULT_CAP;
+    } else {
+      [items, total] = await Promise.all([
+        listStockItemsForProductPage(prisma, productId, statuses, {
+          limit: PAGE_SIZE,
+          offset: (page - 1) * PAGE_SIZE,
+        }),
+        countStockItemsForStatuses(prisma, productId, statuses),
+      ]);
+    }
+
     // Stock items are timestamped `addedAt` in the DB/crud layer (not
     // `createdAt`) — the client's "Added" column had been reading a
     // nonexistent `createdAt` field (always undefined → Invalid Date).
@@ -156,7 +211,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
-    return reply.send({ product, items: itemsWithDisplay, available, waiting });
+    return reply.send({ product, items: itemsWithDisplay, statusCounts, total, capped, page, waiting });
   });
 
   app.post("/api/stock/:productId/bulk-add", { preHandler: csrfProtect }, async (req, reply) => {

@@ -9,7 +9,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { bulkAddStock, availableStockCountsByDenomination, markStockDead, bulkMarkStockDead } from "./stock";
+import {
+  bulkAddStock,
+  availableStockCountsByDenomination,
+  markStockDead,
+  bulkMarkStockDead,
+  stockStatusCountsForProduct,
+  listStockItemsForProductPage,
+  countStockItemsForStatuses,
+  searchStockCredentials,
+} from "./stock";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
@@ -277,5 +286,266 @@ describe("availableStockCountsByDenomination", () => {
     expect(result.get(product.id)).toBe(5);
     expect(result.has(otherDenom.id)).toBe(false);
     expect(result.has(untouchedDenom.id)).toBe(false);
+  });
+});
+
+describe("stockStatusCountsForProduct", () => {
+  it("returns accurate counts scoped to the single product", async () => {
+    const { product, parentProduct } = sample;
+    // sample.product already has stock rows from buildSampleData
+
+    const counts = await stockStatusCountsForProduct(prisma, product.id);
+
+    expect(counts).toHaveProperty("available");
+    expect(counts).toHaveProperty("reserved");
+    expect(counts).toHaveProperty("sold");
+    expect(counts).toHaveProperty("dead");
+    expect(counts.available).toBeGreaterThan(0); // sample has AVAILABLE rows
+    expect(counts.reserved).toBe(0); // sample starts with all AVAILABLE
+  });
+
+  it("does NOT leak counts from other products", async () => {
+    const { product, parentProduct } = sample;
+
+    // Add stock to another denomination (different product)
+    const otherDenom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, otherDenom.id, ["other1@x.com:pw", "other2@x.com:pw"]);
+
+    const productCounts = await stockStatusCountsForProduct(prisma, product.id);
+    const otherCounts = await stockStatusCountsForProduct(prisma, otherDenom.id);
+
+    expect(productCounts.available).toBeGreaterThan(0);
+    expect(otherCounts.available).toBe(2);
+    // They should not be equal — different products
+    expect(productCounts.available).not.toBe(otherCounts.available);
+  });
+
+  it("correctly counts items with mixed statuses for a product", async () => {
+    const { product } = sample;
+    const items = await prisma.stockItem.findMany({ where: { productId: product.id }, take: 3 });
+
+    // Change statuses
+    await prisma.stockItem.update({ where: { id: items[0]!.id }, data: { status: StockStatus.RESERVED } });
+    await prisma.stockItem.update({
+      where: { id: items[1]!.id },
+      data: { status: StockStatus.SOLD, soldAt: new Date() },
+    });
+    await prisma.stockItem.update({ where: { id: items[2]!.id }, data: { status: StockStatus.DEAD } });
+
+    const counts = await stockStatusCountsForProduct(prisma, product.id);
+
+    expect(counts.reserved).toBe(1);
+    expect(counts.sold).toBe(1);
+    expect(counts.dead).toBe(1);
+  });
+});
+
+describe("listStockItemsForProductPage", () => {
+  it("respects limit and returns correct number of items", async () => {
+    const { product } = sample;
+
+    const page1 = await listStockItemsForProductPage(prisma, product.id, [StockStatus.AVAILABLE], {
+      limit: 2,
+      offset: 0,
+    });
+
+    expect(page1.length).toBe(2);
+  });
+
+  it("respects offset and returns items from the correct page", async () => {
+    const { product } = sample;
+
+    const page1 = await listStockItemsForProductPage(prisma, product.id, [StockStatus.AVAILABLE], {
+      limit: 2,
+      offset: 0,
+    });
+    const page2 = await listStockItemsForProductPage(prisma, product.id, [StockStatus.AVAILABLE], {
+      limit: 2,
+      offset: 2,
+    });
+
+    // Pages should be different
+    if (page1.length > 0 && page2.length > 0) {
+      expect(page1[0]!.id).not.toBe(page2[0]!.id);
+    }
+  });
+
+  it("filters by status correctly", async () => {
+    const { product } = sample;
+    const items = await prisma.stockItem.findMany({ where: { productId: product.id }, take: 1 });
+
+    // Change one to RESERVED
+    await prisma.stockItem.update({ where: { id: items[0]!.id }, data: { status: StockStatus.RESERVED } });
+
+    const availableOnly = await listStockItemsForProductPage(prisma, product.id, [StockStatus.AVAILABLE], {
+      limit: 100,
+      offset: 0,
+    });
+    const reservedOnly = await listStockItemsForProductPage(prisma, product.id, [StockStatus.RESERVED], {
+      limit: 100,
+      offset: 0,
+    });
+
+    expect(availableOnly.every((r) => r.status === StockStatus.AVAILABLE)).toBe(true);
+    expect(reservedOnly.every((r) => r.status === StockStatus.RESERVED)).toBe(true);
+  });
+
+  it("orders results by id ascending", async () => {
+    const { product } = sample;
+
+    const results = await listStockItemsForProductPage(prisma, product.id, [StockStatus.AVAILABLE], {
+      limit: 100,
+      offset: 0,
+    });
+
+    for (let i = 1; i < results.length; i++) {
+      expect(results[i]!.id).toBeGreaterThan(results[i - 1]!.id);
+    }
+  });
+});
+
+describe("countStockItemsForStatuses", () => {
+  it("returns the correct count for a status group", async () => {
+    const { product } = sample;
+
+    const count = await countStockItemsForStatuses(prisma, product.id, [StockStatus.AVAILABLE]);
+
+    expect(count).toBeGreaterThan(0);
+    const actual = await prisma.stockItem.count({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    });
+    expect(count).toBe(actual);
+  });
+
+  it("counts multiple statuses correctly", async () => {
+    const { product } = sample;
+    const items = await prisma.stockItem.findMany({ where: { productId: product.id }, take: 2 });
+
+    // Change one to RESERVED
+    if (items[0]) {
+      await prisma.stockItem.update({ where: { id: items[0].id }, data: { status: StockStatus.RESERVED } });
+    }
+
+    const count = await countStockItemsForStatuses(prisma, product.id, [
+      StockStatus.AVAILABLE,
+      StockStatus.RESERVED,
+    ]);
+
+    const expected = await prisma.stockItem.count({
+      where: {
+        productId: product.id,
+        status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] },
+      },
+    });
+    expect(count).toBe(expected);
+  });
+
+  it("returns 0 for an empty product", async () => {
+    const { product, parentProduct } = sample;
+    const emptyDenom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "Empty",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+
+    const count = await countStockItemsForStatuses(prisma, emptyDenom.id, [StockStatus.AVAILABLE]);
+
+    expect(count).toBe(0);
+  });
+});
+
+describe("searchStockCredentials", () => {
+  it("finds a row by substring of credentials", async () => {
+    const { product } = sample;
+
+    // Add stock with a known credential
+    await bulkAddStock(prisma, product.id, ["test-search@example.com:password123"]);
+
+    const results = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "test-search");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some((r) => decryptCredentials(r.credentials).includes("test-search"))).toBe(true);
+  });
+
+  it("finds a row by substring of note", async () => {
+    const { product } = sample;
+    const item = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    }))!;
+
+    // Set a note
+    await prisma.stockItem.update({ where: { id: item.id }, data: { note: "important-tag-123" } });
+
+    const results = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "important-tag");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.some((r) => r.id === item.id)).toBe(true);
+  });
+
+  it("does NOT match unrelated rows", async () => {
+    const { product, parentProduct } = sample;
+
+    const otherDenom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "Other",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, otherDenom.id, ["other@x.com:pw"]);
+
+    const results = await searchStockCredentials(prisma, otherDenom.id, [StockStatus.AVAILABLE], "product");
+
+    // Should not find anything from sample.product in the other product
+    expect(results.length).toBe(0);
+  });
+
+  it("is case-insensitive", async () => {
+    const { product } = sample;
+    await bulkAddStock(prisma, product.id, ["CaseTest@Example.COM:pwd"]);
+
+    const results = await searchStockCredentials(prisma, product.id, [StockStatus.AVAILABLE], "casetest");
+
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it("respects status filter", async () => {
+    const { product } = sample;
+    const items = await prisma.stockItem.findMany({ where: { productId: product.id }, take: 1 });
+
+    if (items[0]) {
+      await prisma.stockItem.update({
+        where: { id: items[0].id },
+        data: { status: StockStatus.RESERVED },
+      });
+
+      const plainCredential = decryptCredentials(items[0]!.credentials);
+
+      // Search for AVAILABLE only should not find the RESERVED item
+      const resultsAvailable = await searchStockCredentials(
+        prisma,
+        product.id,
+        [StockStatus.AVAILABLE],
+        plainCredential,
+      );
+      expect(resultsAvailable.every((r) => r.id !== items[0]!.id)).toBe(true);
+
+      // Search for RESERVED should find it
+      const resultsReserved = await searchStockCredentials(
+        prisma,
+        product.id,
+        [StockStatus.RESERVED],
+        plainCredential,
+      );
+      expect(resultsReserved.some((r) => r.id === items[0]!.id)).toBe(true);
+    }
   });
 });

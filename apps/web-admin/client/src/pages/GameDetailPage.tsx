@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -256,82 +256,86 @@ export function GameDetailPage() {
         </Card>
       )}
 
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-ink">Provider Mappings ({game.providerMappings.length})</h2>
-        <Button size="sm" disabled={!canAddMapping} onClick={() => setMappingDialog({ mapping: null })}>
-          <Plus className="h-4 w-4" />
-          Add mapping
-        </Button>
-      </div>
-
-      <DataTable
-        columns={[
-          {
-            key: "provider",
-            header: "Provider",
-            render: (m: ProviderMappingRow) => <span className="text-ink">{providerLabel(m.provider)}</span>,
-          },
-          {
-            key: "code",
-            header: "Code",
-            render: (m: ProviderMappingRow) => <span className="font-mono text-sm text-ink-soft">{m.providerGameCode}</span>,
-          },
-          {
-            key: "priority",
-            header: "Priority",
-            render: (m: ProviderMappingRow) => <span className="text-sm text-ink-soft">{m.priority}</span>,
-          },
-          {
-            key: "enabled",
-            header: "Enabled",
-            render: (m: ProviderMappingRow) => (
-              <Switch
-                aria-label={`${providerLabel(m.provider)} enabled`}
-                checked={m.enabled}
-                disabled={togglingMapping.has(m.id)}
-                onCheckedChange={(checked) => void toggleMappingEnabled(m, checked)}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <CardTitle as="h2">Provider Mappings ({game.providerMappings.length})</CardTitle>
+          <Button size="sm" disabled={!canAddMapping} onClick={() => setMappingDialog({ mapping: null })}>
+            <Plus className="h-4 w-4" />
+            Add mapping
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "provider",
+                header: "Provider",
+                render: (m: ProviderMappingRow) => <span className="text-ink">{providerLabel(m.provider)}</span>,
+              },
+              {
+                key: "code",
+                header: "Code",
+                render: (m: ProviderMappingRow) => <span className="font-mono text-sm text-ink-soft">{m.providerGameCode}</span>,
+              },
+              {
+                key: "priority",
+                header: "Priority",
+                render: (m: ProviderMappingRow) => <span className="text-sm text-ink-soft">{m.priority}</span>,
+              },
+              {
+                key: "enabled",
+                header: "Enabled",
+                render: (m: ProviderMappingRow) => (
+                  <Switch
+                    aria-label={`${providerLabel(m.provider)} enabled`}
+                    checked={m.enabled}
+                    disabled={togglingMapping.has(m.id)}
+                    onCheckedChange={(checked) => void toggleMappingEnabled(m, checked)}
+                  />
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (m: ProviderMappingRow) => (
+                  <div className="flex justify-end">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${providerLabel(m.provider)} mapping`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => setMappingDialog({ mapping: m })}>
+                          <SquarePen className="h-4 w-4" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => { e.preventDefault(); setPendingDeleteMapping(m); }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={game.providerMappings}
+            keyExtractor={(m) => m.id}
+            empty={
+              <EmptyState
+                title="No provider mappings"
+                description="Add a mapping to let the nickname check flow query a supplier for this game."
               />
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (m: ProviderMappingRow) => (
-              <div className="flex justify-end">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${providerLabel(m.provider)} mapping`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => setMappingDialog({ mapping: m })}>
-                      <SquarePen className="h-4 w-4" />
-                      Edit
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => { e.preventDefault(); setPendingDeleteMapping(m); }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={game.providerMappings}
-        keyExtractor={(m) => m.id}
-        empty={
-          <EmptyState
-            title="No provider mappings"
-            description="Add a mapping to let the nickname check flow query a supplier for this game."
+            }
           />
-        }
-      />
+        </CardContent>
+      </Card>
 
       {mappingDialog && (
         <MappingDialog

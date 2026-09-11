@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical, Check } from "lucide-react";
 import {
   DropdownMenu,
@@ -563,140 +563,144 @@ export function ProductDetailPage() {
         />
       </div>
 
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-ink">Denominations ({product.denominations.length})</h2>
-        <Button size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/new`)}>
-          <Plus className="h-4 w-4" />
-          Add Denomination
-        </Button>
-      </div>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between gap-2">
+          <CardTitle as="h2">Denominations ({product.denominations.length})</CardTitle>
+          <Button size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/new`)}>
+            <Plus className="h-4 w-4" />
+            Add Denomination
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {visibleSelectedDenoms.size > 0 && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
+              <span className="text-ink-soft">{visibleSelectedDenoms.size} selected</span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={bulkActing}
+                onClick={() => void bulkSetDenomActive(true, Array.from(visibleSelectedDenoms))}
+              >
+                <Check className="h-4 w-4" />
+                Activate
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={bulkActing}
+                onClick={() => void bulkSetDenomActive(false, Array.from(visibleSelectedDenoms))}
+              >
+                <X className="h-4 w-4" />
+                Deactivate
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedDenoms(new Set())}>
+                Clear
+              </Button>
+            </div>
+          )}
 
-      {visibleSelectedDenoms.size > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-line bg-sand px-3 py-2 text-sm">
-          <span className="text-ink-soft">{visibleSelectedDenoms.size} selected</span>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkActing}
-            onClick={() => void bulkSetDenomActive(true, Array.from(visibleSelectedDenoms))}
-          >
-            <Check className="h-4 w-4" />
-            Activate
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={bulkActing}
-            onClick={() => void bulkSetDenomActive(false, Array.from(visibleSelectedDenoms))}
-          >
-            <X className="h-4 w-4" />
-            Deactivate
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setSelectedDenoms(new Set())}>
-            Clear
-          </Button>
-        </div>
-      )}
-
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allDenomsSelected}
-                onCheckedChange={toggleSelectAllDenoms}
-                disabled={product.denominations.length === 0}
-                aria-label="Select all denominations"
-              />
-            ),
-            render: d => (
-              <Checkbox
-                checked={selectedDenoms.has(d.id)}
-                onCheckedChange={() => toggleDenomSelected(d.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select ${d.name}`}
-              />
-            ),
-          },
-          {
-            key: "name",
-            header: "Name",
-            render: d => {
-              // ⚡ marks a flash sale that is live *right now* (the API decides
-              // that from the window), so the row shows the price buyers are
-              // actually being charged rather than the column's base price.
-              const flash = statsByDenom[String(d.id)]?.flash;
-              return (
-                <span
-                  className={`flex max-w-[240px] items-center text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}
-                >
-                  <span className="truncate" title={d.name}>
-                    {d.name}
-                  </span>
-                  {flash?.active && (
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allDenomsSelected}
+                    onCheckedChange={toggleSelectAllDenoms}
+                    disabled={product.denominations.length === 0}
+                    aria-label="Select all denominations"
+                  />
+                ),
+                render: d => (
+                  <Checkbox
+                    checked={selectedDenoms.has(d.id)}
+                    onCheckedChange={() => toggleDenomSelected(d.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select ${d.name}`}
+                  />
+                ),
+              },
+              {
+                key: "name",
+                header: "Name",
+                render: d => {
+                  // ⚡ marks a flash sale that is live *right now* (the API decides
+                  // that from the window), so the row shows the price buyers are
+                  // actually being charged rather than the column's base price.
+                  const flash = statsByDenom[String(d.id)]?.flash;
+                  return (
                     <span
-                      className="ml-1.5 inline-flex shrink-0 items-center align-middle"
-                      title={`Flash sale live: ${flash.discountPercent}% off`}
+                      className={`flex max-w-[240px] items-center text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}
                     >
-                      <Zap className="h-4 w-4 text-amberx" />
+                      <span className="truncate" title={d.name}>
+                        {d.name}
+                      </span>
+                      {flash?.active && (
+                        <span
+                          className="ml-1.5 inline-flex shrink-0 items-center align-middle"
+                          title={`Flash sale live: ${flash.discountPercent}% off`}
+                        >
+                          <Zap className="h-4 w-4 text-amberx" />
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-              );
-            },
-          },
-          { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
-          { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
-          { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
-          { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
-          { key: "waiting", header: "Waiting", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{stat?.waiting ?? 0}</span>; } },
-          {
-            key: "active",
-            header: "Active",
-            render: d => (
-              <Switch
-                checked={d.isActive}
-                onCheckedChange={(checked) => void toggleDenominationActive(d.id, checked)}
-                disabled={togglingDenom.has(d.id)}
-              />
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: d => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${d.name}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${productId}/denominations/${d.id}/edit`)}>
-                      <SquarePen className="h-4 w-4" />
-                      Edit
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => { e.preventDefault(); setPendingDeleteDenom(d); }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={product.denominations}
-        keyExtractor={d => d.id}
-        empty={<EmptyState title="No denominations" description="Add a denomination to start selling this product." />}
-      />
+                  );
+                },
+              },
+              { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
+              { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
+              { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
+              { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
+              { key: "waiting", header: "Waiting", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{stat?.waiting ?? 0}</span>; } },
+              {
+                key: "active",
+                header: "Active",
+                render: d => (
+                  <Switch
+                    checked={d.isActive}
+                    onCheckedChange={(checked) => void toggleDenominationActive(d.id, checked)}
+                    disabled={togglingDenom.has(d.id)}
+                  />
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: d => (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${d.name}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => navigate(`/catalog/${productId}/denominations/${d.id}/edit`)}>
+                          <SquarePen className="h-4 w-4" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => { e.preventDefault(); setPendingDeleteDenom(d); }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={product.denominations}
+            keyExtractor={d => d.id}
+            empty={<EmptyState title="No denominations" description="Add a denomination to start selling this product." />}
+          />
+        </CardContent>
+      </Card>
 
       {pendingDeleteDenom && (
         <ConfirmDialog

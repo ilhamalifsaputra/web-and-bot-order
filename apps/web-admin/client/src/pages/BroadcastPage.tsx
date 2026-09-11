@@ -286,104 +286,109 @@ export function BroadcastPage() {
       </div>
 
       <div className="mt-8">
-        <h2 className="text-sm font-semibold text-ink">History</h2>
-        <p className="mb-3 text-xs text-ink-soft">Recent broadcast activity.</p>
-        <DataTable
-          columns={[
-            {
-              key: "message",
-              header: "Message",
-              render: b => (
-                <span className="text-sm text-ink truncate max-w-[240px] block">
-                  {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
-                </span>
-              ),
-            },
-            {
-              key: "image",
-              header: "Image",
-              render: b => b.webImageUrl
-                ? <img src={b.webImageUrl} alt="" className="h-8 w-8 object-cover rounded border border-line" />
-                : <span className="text-xs text-ink-soft">—</span>,
-            },
-            {
-              key: "segment",
-              header: "Segment",
-              render: b => b.segment,
-            },
-            {
-              key: "status",
-              header: "Status",
-              render: b => (
-                <div className="flex flex-col gap-0.5">
-                  <StatusBadge status={b.status} />
-                  {b.status === "FAILED" && b.failureReason && (
-                    <span className="text-xs text-ink-faint">{b.failureReason}</span>
-                  )}
-                </div>
-              ),
-            },
-            {
-              key: "sent",
-              header: "Sent",
-              render: b => `${b.sent}/${b.total}`,
-            },
-            {
-              key: "scheduled",
-              header: "Scheduled",
-              render: b => (
-                <span className="text-xs text-ink-soft">
-                  {b.scheduledAtDisplay ?? "immediate"}
-                </span>
-              ),
-            },
-            {
-              key: "actions",
-              header: "",
-              render: b => {
-                if (b.status !== "DRAFT" && b.status !== "PENDING") return null;
-                return (
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for broadcast ${b.id}`}>
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        {b.status === "DRAFT" && (
-                          <>
-                            <DropdownMenuItem onSelect={() => setPendingSendNow(b)}>
-                              <Send className="h-4 w-4" /> Send Now
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onSelect={() => setPendingDeleteDraft(b)} className="text-rust">
-                              <Trash2 className="h-4 w-4" /> Delete draft
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {b.status === "PENDING" && (
-                          <DropdownMenuItem onSelect={() => setPendingCancel(b)} className="text-rust">
-                            <X className="h-4 w-4" /> Cancel
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                );
-              },
-            },
-          ]}
-          data={data?.history ?? []}
-          isLoading={!data}
-          keyExtractor={b => b.id}
-          empty={
-            <EmptyState
-              icon={Megaphone}
-              title="No broadcasts yet"
-              description="Sent and scheduled broadcasts will appear here."
+        <Card>
+          <CardHeader><CardTitle as="h2">History</CardTitle></CardHeader>
+          <CardContent>
+            <p className="mb-3 text-xs text-ink-soft">Recent broadcast activity.</p>
+            <DataTable
+              nested
+              columns={[
+                {
+                  key: "message",
+                  header: "Message",
+                  render: b => (
+                    <span className="text-sm text-ink truncate max-w-[240px] block">
+                      {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
+                    </span>
+                  ),
+                },
+                {
+                  key: "image",
+                  header: "Image",
+                  render: b => b.webImageUrl
+                    ? <img src={b.webImageUrl} alt="" className="h-8 w-8 object-cover rounded border border-line" />
+                    : <span className="text-xs text-ink-soft">—</span>,
+                },
+                {
+                  key: "segment",
+                  header: "Segment",
+                  render: b => b.segment,
+                },
+                {
+                  key: "status",
+                  header: "Status",
+                  render: b => (
+                    <div className="flex flex-col gap-0.5">
+                      <StatusBadge status={b.status} />
+                      {b.status === "FAILED" && b.failureReason && (
+                        <span className="text-xs text-ink-faint">{b.failureReason}</span>
+                      )}
+                    </div>
+                  ),
+                },
+                {
+                  key: "sent",
+                  header: "Sent",
+                  render: b => `${b.sent}/${b.total}`,
+                },
+                {
+                  key: "scheduled",
+                  header: "Scheduled",
+                  render: b => (
+                    <span className="text-xs text-ink-soft">
+                      {b.scheduledAtDisplay ?? "immediate"}
+                    </span>
+                  ),
+                },
+                {
+                  key: "actions",
+                  header: "",
+                  render: b => {
+                    if (b.status !== "DRAFT" && b.status !== "PENDING") return null;
+                    return (
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon-sm" aria-label={`Actions for broadcast ${b.id}`}>
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {b.status === "DRAFT" && (
+                              <>
+                                <DropdownMenuItem onSelect={() => setPendingSendNow(b)}>
+                                  <Send className="h-4 w-4" /> Send Now
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => setPendingDeleteDraft(b)} className="text-rust">
+                                  <Trash2 className="h-4 w-4" /> Delete draft
+                                </DropdownMenuItem>
+                              </>
+                            )}
+                            {b.status === "PENDING" && (
+                              <DropdownMenuItem onSelect={() => setPendingCancel(b)} className="text-rust">
+                                <X className="h-4 w-4" /> Cancel
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    );
+                  },
+                },
+              ]}
+              data={data?.history ?? []}
+              isLoading={!data}
+              keyExtractor={b => b.id}
+              empty={
+                <EmptyState
+                  icon={Megaphone}
+                  title="No broadcasts yet"
+                  description="Sent and scheduled broadcasts will appear here."
+                />
+              }
             />
-          }
-        />
+          </CardContent>
+        </Card>
       </div>
 
       {pendingSendNow && (

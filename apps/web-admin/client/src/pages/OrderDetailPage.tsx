@@ -375,26 +375,29 @@ export function OrderDetailPage() {
           description={`This order credited the buyer's wallet balance directly (${order.currency}); it never had products to deliver.`}
         />
       ) : (
-        <>
-          <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>
-          <DataTable
-            columns={[
-              { key: "product", header: "Product", render: item => <span className="block max-w-[240px] truncate text-sm" title={item.product.name}>{item.product.name}</span> },
-              { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
-              { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
-              ...(isManualOrder
-                ? []
-                // Credentials are email:password blobs an admin must read in
-                // full, so they wrap instead of truncating. TableCell is
-                // whitespace-nowrap by default, hence the explicit override —
-                // without it break-all has nothing to act on.
-                : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
-            ]}
-            data={order.items}
-            keyExtractor={item => item.id}
-            empty={<EmptyState title="No items" />}
-          />
-        </>
+        <Card>
+          <CardHeader><CardTitle as="h2">Items ({order.items.length})</CardTitle></CardHeader>
+          <CardContent>
+            <DataTable
+              nested
+              columns={[
+                { key: "product", header: "Product", render: item => <span className="block max-w-[240px] truncate text-sm" title={item.product.name}>{item.product.name}</span> },
+                { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
+                { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
+                ...(isManualOrder
+                  ? []
+                  // Credentials are email:password blobs an admin must read in
+                  // full, so they wrap instead of truncating. TableCell is
+                  // whitespace-nowrap by default, hence the explicit override —
+                  // without it break-all has nothing to act on.
+                  : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
+              ]}
+              data={order.items}
+              keyExtractor={item => item.id}
+              empty={<EmptyState title="No items" />}
+            />
+          </CardContent>
+        </Card>
       )}
 
       {/* Buyer-submitted custom checkout info (manual_with_info orders only) */}

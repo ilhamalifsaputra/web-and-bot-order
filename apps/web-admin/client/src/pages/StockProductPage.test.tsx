@@ -523,6 +523,32 @@ describe("StockProductPage", () => {
     expect(screen.queryByText(/Showing 1 result/)).not.toBeInTheDocument();
   });
 
+  // Final whole-branch review finding: the server now reports `capped` so
+  // the admin can tell "200 results" (exact) from "at least 200, narrow your
+  // search" (silently truncated) — see SEARCH_RESULT_CAP in
+  // packages/db/src/crud/stock.ts. This exercises the frontend half of that
+  // wiring (interface field -> destructure -> conditional message).
+  it("shows a narrow-your-search message instead of a bare count when the search results are capped", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({
+        ...STOCK_PRODUCT_DATA,
+        items: [{ id: 101, status: "AVAILABLE", note: null, credentials: "a@mail.com:Pw1", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" }],
+        total: 200,
+        capped: true,
+      }),
+    );
+    await user.type(screen.getByPlaceholderText("Search this tab's accounts…"), "a@mail.com{Enter}");
+
+    expect(await screen.findByText('Showing the first 200 matches for "a@mail.com" — narrow your search')).toBeInTheDocument();
+    expect(screen.queryByText(/Showing 200 results/)).not.toBeInTheDocument();
+  });
+
   it("changes page via the shared pagination control", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(jsonResponse({ ...STOCK_PRODUCT_DATA, total: 120 }));

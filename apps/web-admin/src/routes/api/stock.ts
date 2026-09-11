@@ -13,6 +13,7 @@ import {
   listStockItemsForProductPage,
   countStockItemsForStatuses,
   searchStockCredentials,
+  SEARCH_RESULT_CAP,
   countAvailableStock,
   countRestockSubscribers,
   bulkAddStock,
@@ -171,9 +172,19 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
 
     let items;
     let total;
+    let capped = false;
     if (q) {
-      items = await searchStockCredentials(prisma, productId, statuses, q);
+      try {
+        items = await searchStockCredentials(prisma, productId, statuses, q);
+      } catch (e) {
+        if (e instanceof CredentialKeyConfigError) {
+          logger.error({ err: e }, "Stock search failed — credential encryption is not configured correctly");
+          return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+        }
+        throw e;
+      }
       total = items.length;
+      capped = items.length === SEARCH_RESULT_CAP;
     } else {
       [items, total] = await Promise.all([
         listStockItemsForProductPage(prisma, productId, statuses, {
@@ -200,7 +211,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       credentials: MASKED_CREDENTIAL,
       createdAtDisplay: displayDate(i.addedAt),
     }));
-    return reply.send({ product, items: itemsWithDisplay, statusCounts, total, page, waiting });
+    return reply.send({ product, items: itemsWithDisplay, statusCounts, total, capped, page, waiting });
   });
 
   app.post("/api/stock/:productId/bulk-add", { preHandler: csrfProtect }, async (req, reply) => {

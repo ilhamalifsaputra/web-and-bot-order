@@ -11,7 +11,7 @@
  * code paths. `revealStockCredentials` is the sole explicit-reveal read.
  */
 import { StockStatus } from "@app/core/enums";
-import { encryptCredentials, decryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 
 /**
@@ -305,7 +305,15 @@ export async function countStockItemsForStatuses(
   });
 }
 
-/** Search stock credentials and notes by decrypted substring (case-insensitive). Scans the entire status group for correctness (encrypted columns can't be SQL-filtered), then caps returned results at 200. */
+/** Search results are capped, not paginated (Task 2) — this scan is O(status
+ * group) and unbounded rendering isn't worth supporting for an admin search
+ * box. Exported so callers (the route) can detect the cap was hit instead of
+ * presenting `matches.length` as if it were the real match count — the same
+ * "silently capped number presented as exact" shape as the original bug this
+ * branch fixes, just one layer up (final review, 2026-09-11). */
+export const SEARCH_RESULT_CAP = 200;
+
+/** Search stock credentials and notes by decrypted substring (case-insensitive). Scans the entire status group for correctness (encrypted columns can't be SQL-filtered), then caps returned results at SEARCH_RESULT_CAP. */
 export async function searchStockCredentials(
   db: Db,
   productId: number,
@@ -318,9 +326,17 @@ export async function searchStockCredentials(
   });
   const q = query.toLowerCase();
   const matches = rows.filter((r) => {
-    const cred = decryptCredentials(r.credentials).toLowerCase();
+    let cred: string;
+    try {
+      cred = decryptCredentials(r.credentials).toLowerCase();
+    } catch (err) {
+      if (err instanceof CredentialKeyConfigError) throw err;
+      // A single corrupted/tampered row must not abort the whole scan for
+      // every other row — treat it as a non-match instead.
+      return false;
+    }
     const note = (r.note ?? "").toLowerCase();
     return cred.includes(q) || note.includes(q);
   });
-  return matches.slice(0, 200);
+  return matches.slice(0, SEARCH_RESULT_CAP);
 }

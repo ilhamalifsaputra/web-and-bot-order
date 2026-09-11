@@ -52,6 +52,7 @@ interface StockProductData {
   items: StockItem[];
   statusCounts: { available: number; reserved: number; sold: number; dead: number };
   total: number;
+  capped: boolean;
   waiting: number;
 }
 
@@ -489,7 +490,7 @@ export function StockProductPage() {
     );
   }
 
-  const { product, items, statusCounts, waiting, total } = data;
+  const { product, items, statusCounts, waiting, total, capped } = data;
 
   return (
     <PageLayout title={product.name}>
@@ -549,13 +550,15 @@ export function StockProductPage() {
         <SearchBar
           value={searchDraft}
           onChange={setSearchDraft}
-          onSearch={() => { setSearch(searchDraft); setPage(1); }}
+          onSearch={() => { setSearch(searchDraft.trim()); setPage(1); }}
           placeholder="Search this tab's accounts…"
         />
         {search && (
           <>
             <span className="text-sm text-ink-soft">
-              Showing {total} result{total === 1 ? "" : "s"} for &quot;{search}&quot;
+              {capped
+                ? `Showing the first ${total} matches for "${search}" — narrow your search`
+                : `Showing ${total} result${total === 1 ? "" : "s"} for "${search}"`}
             </span>
             <Button
               variant="ghost"

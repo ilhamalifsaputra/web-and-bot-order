@@ -21,6 +21,7 @@ import {
   createDenomination,
   updateDenomination,
   bulkAddStock,
+  SEARCH_RESULT_CAP,
   getUser,
   getUserByTelegramId,
   getOrder,
@@ -3714,9 +3715,11 @@ describe("stock", () => {
 
     const res = await get(`/api/stock/${seed.productId}?tab=available&q=findme-unique`, seed.cookie);
     expect(res.statusCode).toBe(200);
-    const data = JSON.parse(res.body) as { items: { credentials: string }[]; total: number };
+    const data = JSON.parse(res.body) as { items: { credentials: string }[]; total: number; capped: boolean };
     expect(data.total).toBeGreaterThan(0);
     expect(data.items.length).toBeGreaterThan(0);
+    // Well under SEARCH_RESULT_CAP, so the cap must not be flagged.
+    expect(data.capped).toBe(false);
     // Never the decrypted value in the list payload — same invariant as the
     // existing masked-credentials test at web.test.ts:3597.
     for (const item of data.items) {
@@ -3730,6 +3733,83 @@ describe("stock", () => {
     const data = JSON.parse(res.body) as { items: unknown[]; total: number };
     expect(data.items.length).toBe(0);
     expect(data.total).toBe(0);
+  });
+
+  // Final whole-branch review finding: searchStockCredentials silently
+  // truncated matches to 200 while the route reported `total = items.length`
+  // as if it were the real match count — the same "silently capped number
+  // presented as exact" shape as the original stuck-at-500 bug this branch
+  // fixes, just one layer up. The route now also reports `capped` so the
+  // admin can tell "200 results" from "at least 200, narrow your search".
+  it("search exposes capped:true and total:SEARCH_RESULT_CAP once matches exceed the cap, instead of silently presenting the cap as an exact count", async () => {
+    const tag = `capseek${counter++}`;
+    await bulkAddStock(
+      prisma,
+      seed.productId,
+      Array.from({ length: SEARCH_RESULT_CAP + 1 }, (_, i) => `${tag}-${i}@example.com:Secret1`),
+    );
+
+    const res = await get(`/api/stock/${seed.productId}?tab=available&q=${tag}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { total: number; capped: boolean; items: unknown[] };
+    expect(data.total).toBe(SEARCH_RESULT_CAP);
+    expect(data.items.length).toBe(SEARCH_RESULT_CAP);
+    expect(data.capped).toBe(true);
+  });
+
+  // Final whole-branch review finding: a misconfigured CREDENTIAL_ENCRYPTION_KEY
+  // used to make the search path throw straight into server.ts's generic
+  // text/html 500 page (the route's bulk-add and reveal handlers already
+  // catch CredentialKeyConfigError specifically — see their tests above —
+  // but the search branch didn't). CREDENTIAL_ENCRYPTION_KEY is read straight
+  // from process.env at call time, so mutating it here takes effect
+  // immediately (same technique as the bulk-add/reveal tests above).
+  it("a malformed CREDENTIAL_ENCRYPTION_KEY surfaces as a JSON 500 on the search path, not an HTML error page", async () => {
+    const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+    try {
+      const res = await get(`/api/stock/${seed.productId}?tab=available&q=anything`, seed.cookie);
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["content-type"]).toContain("application/json");
+      const body = JSON.parse(res.body) as { error: string };
+      expect(body.error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+    } finally {
+      if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+    }
+  });
+
+  // Final whole-branch review finding: one corrupted/tampered credential row
+  // anywhere in the scanned status group used to abort the ENTIRE search for
+  // every other row, since decryptCredentials's thrown error wasn't caught
+  // per-row. A structurally-valid envelope with a wrong auth tag decrypts to
+  // neither a CredentialKeyConfigError (that's the "unconfigured" case) nor a
+  // clean plaintext — decipher.final() throws a plain integrity error, which
+  // the fix now treats as "this row doesn't match" instead of failing the
+  // whole scan. Written directly via prisma.stockItem.create (not
+  // encryptCredentials) so it's deliberately undecryptable while still
+  // parsing as a valid envelope shape.
+  it("a single corrupted/tampered credential row doesn't abort the whole search scan for other rows", async () => {
+    const tag = `scanok${counter++}`;
+    await bulkAddStock(prisma, seed.productId, [`${tag}-good@example.com:Secret1`]);
+    const badEnvelope = JSON.stringify({
+      keyVersion: 1,
+      iv: Buffer.alloc(12, 1).toString("base64"),
+      ciphertext: Buffer.from(`${tag}-corrupted`, "utf8").toString("base64"),
+      authTag: Buffer.alloc(16, 2).toString("base64"),
+    });
+    const corrupted = await prisma.stockItem.create({
+      data: { productId: seed.productId, credentials: badEnvelope, status: "AVAILABLE" },
+    });
+
+    const res = await get(`/api/stock/${seed.productId}?tab=available&q=${tag}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { total: number; items: { id: number }[] };
+    // The still-decryptable "good" row is found; the scan wasn't aborted by
+    // the corrupted row, which itself is treated as a non-match rather than
+    // surfacing as a 500.
+    expect(data.total).toBe(1);
+    expect(data.items.some((i) => i.id === corrupted.id)).toBe(false);
   });
 
   it("sold tab groups SOLD + RESERVED items together and statusCounts shows individual counts", async () => {

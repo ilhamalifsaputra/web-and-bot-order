@@ -1,10 +1,11 @@
 /**
- * Nickname-verification conversation — for an AUTO Game Top-Up SKU that
- * resolves to a nickname-check `gameCode` (admin override or catalog
- * auto-detect from Product.digiflazzBrand — see resolveNicknameGate's doc
- * comment, packages/db/src/crud/nickname.ts) AND has KokinPay credentials
- * configured (see `buildNicknameProviderEntries`), the buyer's target
- * account id (+ zone/server, when the game requires them) is looked up via
+ * Nickname-verification conversation — for a Game Top-Up SKU (AUTO, or
+ * MANUAL_WITH_INFO since the I-6 fix) that resolves to a nickname-check
+ * `gameCode` (admin override or catalog auto-detect from
+ * Product.digiflazzBrand — see resolveNicknameGate's doc comment,
+ * packages/db/src/crud/nickname.ts) AND has KokinPay credentials configured
+ * (see `buildNicknameProviderEntries`), the buyer's target account id (+
+ * zone/server, when the game requires them) is looked up via
  * `NicknameService` BEFORE payment, and the resolved nickname is shown back
  * to the buyer for confirmation. Entered
  * programmatically from checkout.ts's showOrderConfirmation (not from a
@@ -23,7 +24,22 @@
  * JSON.stringify(Array<Record<string,string>>) shape customerInfo.ts uses —
  * NOT a new scratch key — so the existing customerData threading into
  * createOrderDirect/createInternalOrder/etc. (checkout.ts's buyNow*
- * handlers) picks it up with zero further changes there.
+ * handlers) picks it up with zero further changes there. Critically, the
+ * unit is keyed through the SKU's OWN `additionalFields` (via
+ * `nicknameFieldMapping`/`buildCustomerDataUnit` below) — NOT hardcoded
+ * `{target, zone, server}` keys — because that's the shape
+ * `buildDigiflazzCustomerNo` and `computeAccountDiagnosticNote` actually read
+ * (final-review round 2 fix; see fieldMapping.ts's doc comment for why).
+ *
+ * Multi-unit handoff: this wizard only ever collects ONE unit's worth of
+ * account info, even when `quantity > 1`. For a MANUAL_WITH_INFO SKU with
+ * `quantity > 1` and at least one `additionalField`, the collected unit is
+ * stashed as `scratch.prefilledCustomerDataUnit` and control hands off to
+ * `customerInfo` to collect the remaining units (see `finalizeNicknameCheck`
+ * below) — customerInfo.ts picks that prefilled unit up as unit 1 and
+ * continues from unit 2. AUTO's quantity handling is unaffected: an AUTO SKU
+ * always finalizes immediately regardless of quantity, since there's nothing
+ * left for customerInfo to collect for it.
  *
  * Graceful degrade: a definitive "not found" answer re-prompts the buyer
  * (typo protection) with an error line and a 'Continue anyway' escape
@@ -56,6 +72,9 @@
  */
 import { prisma, getDenominationWithProduct, buildNicknameProviderEntries, resolveNicknameGate } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
+import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
+import { parseAdditionalFields, type AdditionalField } from "@app/core/deliveryFields";
+import { DeliveryType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import type { MyContext, MyConversation } from "../context";
 import { menuAnchor, consumeInput } from "../util/chat";
@@ -75,6 +94,91 @@ interface NicknameCheckConfig {
   requiresZone: boolean;
   requiresServer: boolean;
   gameCode: string | null;
+  /** The SKU's own admin-defined additionalFields — nicknameFieldMapping
+   * writes the collected answer into these keys, positionally, instead of
+   * the old hardcoded {target,zone,server} shape (final-review round 2 —
+   * this is what makes buildDigiflazzCustomerNo/computeAccountDiagnosticNote
+   * actually see the data). parseAdditionalFields is a pure function (no DB
+   * call), so parsing it inside this same external() call is fine — see
+   * this file's header comment on external() discipline. */
+  fields: AdditionalField[];
+  /** The denomination's own deliveryType — needed to decide whether a
+   * quantity > 1 checkout hands the remaining units off to customerInfo
+   * (MANUAL_WITH_INFO only; see finalizeNicknameCheck below). */
+  deliveryType: string;
+}
+
+/**
+ * Build the final customerData unit for one nickname-check result, keyed
+ * through the SKU's own additionalFields (positionally, via
+ * nicknameFieldMapping) instead of the old hardcoded {target,zone,server}
+ * shape — see fieldMapping.ts's doc comment for why field ORDER, not field
+ * NAME, is the only reliable convention here. Falls back to the legacy
+ * {target,zone,server} keys when the SKU has no additionalFields at all
+ * (mapping is null) — there's no schema to map into, so nothing is lost by
+ * keeping the old shape for that edge case (matches this file's pre-fix
+ * behavior for every AUTO SKU with no additionalFields, which is most of them).
+ */
+function buildCustomerDataUnit(
+  fields: AdditionalField[],
+  requiresZone: boolean,
+  requiresServer: boolean,
+  answer: { target: string; zone?: string; server?: string; nickname?: string },
+): Record<string, string> {
+  const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
+  const unit: Record<string, string> = mapping
+    ? {
+        [mapping.targetKey]: answer.target,
+        ...(mapping.zoneKey && answer.zone ? { [mapping.zoneKey]: answer.zone } : {}),
+        ...(mapping.serverKey && answer.server ? { [mapping.serverKey]: answer.server } : {}),
+      }
+    : { target: answer.target, ...(answer.zone ? { zone: answer.zone } : {}), ...(answer.server ? { server: answer.server } : {}) };
+  // Preserve the found nickname for display purposes — never consumed by
+  // buildDigiflazzCustomerNo/computeAccountDiagnosticNote (they only read
+  // known field keys), purely for whatever UI currently shows it.
+  if (answer.nickname) unit.nickname = answer.nickname;
+  return unit;
+}
+
+/**
+ * The single finalize path for a nickname-check attempt — every place in
+ * this file that completes the wizard (the confirm tap, the not-found
+ * 'Continue anyway' escape, and the non-definitive graceful-degrade
+ * fallthrough) MUST route through this function so the multi-unit handoff
+ * branching below can never drift between them (final-review round 2 —
+ * missing one of these branches would silently reintroduce the
+ * empty-customerNo bug for whichever branch was missed).
+ *
+ * Multi-unit quantity handling (user's explicit decision — see this file's
+ * header comment): nickname-check only ever collects ONE unit's worth of
+ * account info. If quantity === 1 (any deliveryType), OR the SKU has no
+ * additionalFields, OR deliveryType is AUTO: finalize immediately exactly as
+ * before this fix (customerData = [unit], straight to confirmation). Only a
+ * MANUAL_WITH_INFO SKU with quantity > 1 AND at least one additionalField
+ * hands the remaining units off to customerInfo, prefilled with this unit.
+ */
+async function finalizeNicknameCheck(
+  u: MyContext,
+  productId: number,
+  quantity: number,
+  deliveryType: string,
+  fields: AdditionalField[],
+  requiresZone: boolean,
+  requiresServer: boolean,
+  answer: { target: string; zone?: string; server?: string; nickname?: string },
+): Promise<void> {
+  const unit = buildCustomerDataUnit(fields, requiresZone, requiresServer, answer);
+  delete u.session.scratch.pendingNicknameProductId;
+  delete u.session.scratch.pendingNicknameQuantity;
+  if (deliveryType === DeliveryType.MANUAL_WITH_INFO && quantity > 1 && fields.length > 0) {
+    u.session.scratch.pendingInfoProductId = productId;
+    u.session.scratch.pendingInfoQuantity = quantity;
+    u.session.scratch.prefilledCustomerDataUnit = JSON.stringify(unit);
+    await u.conversation.enter("customerInfo");
+    return;
+  }
+  u.session.scratch.customerData = JSON.stringify([unit]);
+  await renderOrderConfirmation(u, productId, quantity);
 }
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
@@ -119,6 +223,8 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
       requiresZone,
       requiresServer,
       gameCode,
+      fields: parseAdditionalFields(denom.additionalFields),
+      deliveryType: denom.deliveryType,
     };
   });
   if (!config || !config.gameCode) {
@@ -127,7 +233,7 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
     await renderOrderConfirmation(ctx, productId, quantity);
     return;
   }
-  const { productName, requiresZone, requiresServer, gameCode } = config;
+  const { productName, requiresZone, requiresServer, gameCode, fields, deliveryType } = config;
   // Defensive pre-check, same race as above (e.g. an admin cleared the
   // KokinPay credentials a moment ago) — entries are built and immediately
   // reduced to a plain count inside this external(), never returned as an
@@ -179,10 +285,7 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
       // last-typed values. Proceed unverified, matching the non-definitive
       // graceful-degrade path below.
       await u.answerCallbackQuery();
-      u.session.scratch.customerData = JSON.stringify([{ target, ...(zone ? { zone } : {}), ...(server ? { server } : {}) }]);
-      delete u.session.scratch.pendingNicknameProductId;
-      delete u.session.scratch.pendingNicknameQuantity;
-      await renderOrderConfirmation(u, productId, quantity);
+      await finalizeNicknameCheck(u, productId, quantity, deliveryType, fields, requiresZone, requiresServer, { target, zone, server });
       return;
     }
     const text = u.message?.text;
@@ -194,17 +297,12 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
     if (step === "confirm") {
       if (data === ckb.cb("nick", "confirm")) {
         await u.answerCallbackQuery();
-        u.session.scratch.customerData = JSON.stringify([
-          {
-            target,
-            ...(zone ? { zone } : {}),
-            ...(server ? { server } : {}),
-            ...(foundNickname ? { nickname: foundNickname } : {}),
-          },
-        ]);
-        delete u.session.scratch.pendingNicknameProductId;
-        delete u.session.scratch.pendingNicknameQuantity;
-        await renderOrderConfirmation(u, productId, quantity);
+        await finalizeNicknameCheck(u, productId, quantity, deliveryType, fields, requiresZone, requiresServer, {
+          target,
+          zone,
+          server,
+          nickname: foundNickname,
+        });
         return;
       }
       if (data === ckb.cb("nick", "retry")) {
@@ -326,10 +424,7 @@ export async function nicknameCheckConversation(conversation: MyConversation, ct
     // Non-definitive failure (every configured provider errored/timed out) —
     // graceful degrade, never strand the buyer over a transient provider
     // hiccup: proceed with the typed target, no confirmed nickname.
-    u.session.scratch.customerData = JSON.stringify([{ target, ...(zone ? { zone } : {}), ...(server ? { server } : {}) }]);
-    delete u.session.scratch.pendingNicknameProductId;
-    delete u.session.scratch.pendingNicknameQuantity;
-    await renderOrderConfirmation(u, productId, quantity);
+    await finalizeNicknameCheck(u, productId, quantity, deliveryType, fields, requiresZone, requiresServer, { target, zone, server });
     return;
   }
 }

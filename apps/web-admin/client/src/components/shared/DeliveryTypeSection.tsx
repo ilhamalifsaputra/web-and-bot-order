@@ -89,9 +89,12 @@ export function DeliveryTypeSection({
   supplierSku: string;
   onSupplierSkuChange: (next: string) => void;
   /** KokinPay's game_code for this denomination's title (Task 7) — an
-   * independent, optional field: it offers the storefront's live
-   * nickname-check UX for ANY manual_with_info product, not just ones with a
-   * Digiflazz auto-delivery link. Blank = no live check for this product. */
+   * independent, optional field: it offers the storefront's/bot's live
+   * nickname-check UX for an Automatic-delivery product OR a manual_with_info
+   * product that collects buyer-info fields — not just ones with a Digiflazz
+   * auto-delivery link. Blank means auto-detect from this product's Digiflazz
+   * brand (not "no live check"); fill it in only to override the detected
+   * game, or to force a check for a product the catalog can't auto-detect. */
   nicknameCheckGameCode: string;
   onNicknameCheckGameCodeChange: (next: string) => void;
 }) {

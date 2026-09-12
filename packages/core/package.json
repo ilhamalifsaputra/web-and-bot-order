@@ -44,6 +44,7 @@
     "./nickname/service": "./src/nickname/service.ts",
     "./nickname/gameCatalog": "./src/nickname/gameCatalog.ts",
     "./nickname/kokinpayProvider": "./src/nickname/kokinpayProvider.ts",
+    "./nickname/fieldMapping": "./src/nickname/fieldMapping.ts",
     "./nudge": "./src/nudge.ts",
     "./realtime/digiflazzEvents": "./src/realtime/digiflazzEvents.ts",
     "./realtime/sseRoute": "./src/realtime/sseRoute.ts",

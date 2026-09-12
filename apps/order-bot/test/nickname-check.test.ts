@@ -111,6 +111,35 @@ async function makeConfiguredDenom(opts: { gameCode?: string; withCreds?: boolea
   return { denom, parentProduct };
 }
 
+/**
+ * A MANUAL_WITH_INFO SKU with its OWN admin-defined additionalFields, fully
+ * configured for a live nickname-check (final-review round 2 — the write
+ * side must key the collected answer through THESE fields, positionally,
+ * not the old hardcoded {target,zone,server} shape). No stock rows needed —
+ * manual_with_info never draws from stock.
+ */
+async function makeConfiguredManualWithInfoDenomWithFields(
+  fields: Array<{ key: string }>,
+  opts: { gameCode?: string; withCreds?: boolean } = {},
+) {
+  if (opts.withCreds) await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+  const category = await createCategory(prisma, `manual-info-fields-cat-${Math.random()}`);
+  const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Test Manual-With-Info Fields Game Top-Up" });
+  const denom = await createDenomination(prisma, {
+    productId: parentProduct.id,
+    name: "100 Diamonds",
+    type: ProductType.SHARED,
+    durationLabel: "N/A",
+    price: "10.00",
+    deliveryType: "manual_with_info",
+    additionalFields: JSON.stringify(
+      fields.map((f) => ({ key: f.key, label: { id: f.key, en: f.key }, type: "text", required: true, options: [], placeholder: "" })),
+    ),
+    nicknameCheckGameCode: opts.gameCode ?? "free-fire",
+  });
+  return denom;
+}
+
 // ===========================================================================
 // showOrderConfirmation — the nickname-check gate. The unconfigured-skip
 // cases here are the single most important behavior in this task: nickname
@@ -554,6 +583,112 @@ describe("nicknameCheckConversation", () => {
       assertNoFunctionProps(result);
       expect(() => JSON.parse(JSON.stringify(result))).not.toThrow();
     }
+  });
+});
+
+// ===========================================================================
+// Final-review round 2 (money-critical): the write side must key the
+// collected answer through the SKU's OWN additionalFields, positionally —
+// not the old hardcoded {target,zone,server} shape, which
+// buildDigiflazzCustomerNo/computeAccountDiagnosticNote never read (see
+// packages/db/src/crud/digiflazz.test.ts for the round-trip proof).
+// ===========================================================================
+
+describe("nicknameCheckConversation — keys customerData through the SKU's own additionalFields (final-review round 2)", () => {
+  it("a MANUAL_WITH_INFO SKU with 2 additionalFields (requiresServer) maps target/server into the ACTUAL field keys, not {target,server}", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
+      gameCode: "mobile-legends",
+      withCreds: true,
+    });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "MappedPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "111222333" }).ctx;
+    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-7" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    // Keyed through the SKU's own additionalFields (user_id/server_id) —
+    // NOT the old {target, server} shape.
+    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
+      { user_id: "111222333", server_id: "SRV-7", nickname: "MappedPlayer" },
+    ]);
+  });
+
+  it("quantity > 1 on a MANUAL_WITH_INFO SKU with additionalFields hands off the remaining units to customerInfo instead of finalizing customerData directly", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
+      withCreds: true, // "free-fire" default game code — requiresZone/requiresServer both false
+    });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "HandoffPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 2 } },
+      callbackData: `v1:buy:${denom.id}:2`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "unit-one-id" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    // Does NOT finalize customerData directly — hands off to customerInfo
+    // with the collected unit prefilled instead.
+    expect(confirmTap.session.scratch.customerData).toBeUndefined();
+    expect(confirmTap.session.scratch.pendingNicknameProductId).toBeUndefined();
+    expect(confirmTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
+    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
+    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(2);
+    expect(JSON.parse(confirmTap.session.scratch.prefilledCustomerDataUnit as string)).toEqual({
+      user_id: "unit-one-id",
+      nickname: "HandoffPlayer",
+    });
+    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  });
+
+  it("quantity === 1 on the SAME MANUAL_WITH_INFO + additionalFields SKU finalizes immediately (no handoff) — only quantity > 1 hands off", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], { withCreds: true });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "SingleUnitPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "single-unit-id" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
+      { user_id: "single-unit-id", nickname: "SingleUnitPlayer" },
+    ]);
+    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(false);
   });
 });
 

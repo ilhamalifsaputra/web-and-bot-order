@@ -55,6 +55,7 @@ import {
   type DigiflazzPriceListItem,
 } from "@app/core/suppliers/digiflazz";
 import { NicknameService } from "@app/core/nickname/service";
+import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting, getDecryptedSetting } from "./settings";
@@ -464,17 +465,30 @@ async function computeAccountDiagnosticNote(
     // (yes, again) is the ACTUAL Product row, which has digiflazzBrand/name.
     if (!denomination) return null;
 
-    const { gameCode } = resolveNicknameGate(denomination);
+    const { gameCode, requiresZone, requiresServer } = resolveNicknameGate(denomination);
     if (!gameCode) return null;
 
     const entries = await buildNicknameProviderEntries(db, gameCode);
     if (entries.length === 0) return null;
 
+    // Resolve target/zone/server through the SAME nicknameFieldMapping the
+    // write side (nicknameCheck.ts) now uses, keyed off this denomination's
+    // OWN additionalFields — NOT the old hardcoded {target,zone,server}
+    // shape, which only ever matched bot-originated orders and left this
+    // diagnostic permanently dead for every storefront-placed order
+    // (final-review round 2 fix). Falls back to the legacy {target,zone,
+    // server} keys for backward compat with any order already in PROCESSING
+    // at deploy time whose customerData was written by the pre-fix
+    // nicknameCheck.ts.
     const unit = parseCustomerData(order.customerData)[0] ?? {};
-    const target = unit.target;
+    const fields = parseAdditionalFields(denomination.additionalFields);
+    const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
+    const target = (mapping ? unit[mapping.targetKey] : undefined) ?? unit.target;
     if (!target) return null;
+    const zone = (mapping?.zoneKey ? unit[mapping.zoneKey] : undefined) ?? unit.zone;
+    const server = (mapping?.serverKey ? unit[mapping.serverKey] : undefined) ?? unit.server;
 
-    const result = await new NicknameService(entries).checkNickname({ target, zone: unit.zone, server: unit.server });
+    const result = await new NicknameService(entries).checkNickname({ target, zone, server });
     if (result.status === "found") {
       return `KokinPay: akun ditemukan (nickname "${result.nickname}") — kemungkinan bukan masalah ID/region.`;
     }
@@ -488,8 +502,11 @@ async function computeAccountDiagnosticNote(
   } catch (err) {
     // No credentials, no stack trace with secrets — just enough for an
     // operator to notice the diagnostic is silently degrading for every
-    // order, not a specific customer's data.
-    logger.info(
+    // order, not a specific customer's data. warn (not info): this usually
+    // means CredentialKeyConfigError fired, which makes this reactive
+    // diagnostic silently dead fleet-wide until the config is fixed — that's
+    // worth an operator's attention, not routine noise.
+    logger.warn(
       { err, orderId: order.id },
       "Could not compute the reactive account diagnostic for one Digiflazz order — proceeding without a diagnostic note; this order's terminal failure is otherwise unaffected.",
     );

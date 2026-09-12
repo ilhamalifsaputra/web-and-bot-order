@@ -88,6 +88,8 @@ import {
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
+import { parseAdditionalFields } from "@app/core/deliveryFields";
 import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 import { encryptCredentials } from "@app/core/credentialCrypto";
@@ -164,10 +166,14 @@ async function makeProcessingDigiflazzOrderForDiagnostic(opts: {
       // createOrderDirect re-validates manual_with_info customerData
       // against the denomination's field spec (orders.ts), so an
       // undeclared key (like "target") would otherwise be silently
-      // stripped before it ever reaches the diagnostic.
+      // stripped before it ever reaches the diagnostic. Exactly 2 fields,
+      // matching what a real "mobile-legends" SKU (requiresZone: false,
+      // requiresServer: true) would actually be configured with —
+      // nicknameFieldMapping reads fields POSITIONALLY (final-review round
+      // 2), so `server` must sit at field index 1 (right after `target`),
+      // not a 3rd slot behind an unused `zone` field this game never needs.
       additionalFields: JSON.stringify([
         { key: "target", label: { id: "Target", en: "Target" }, type: "text", required: true, options: [], placeholder: "" },
-        { key: "zone", label: { id: "Zone", en: "Zone" }, type: "text", required: false, options: [], placeholder: "" },
         { key: "server", label: { id: "Server", en: "Server" }, type: "text", required: false, options: [], placeholder: "" },
       ]),
       nicknameCheckGameCode: opts.nicknameCheckGameCode ?? null,
@@ -357,6 +363,61 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
     expect(refreshed!.accountDiagnosticNote).toContain("AutoDetectedPlayer");
     expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
   });
+
+  // ===========================================================================
+  // Final-review round 2 (money-critical gap this closes): every case above
+  // uses a bot-shaped {target,zone,server} customerData fixture. Before this
+  // fix, computeAccountDiagnosticNote ONLY ever read `unit.target` — so it
+  // silently returned null for every STOREFRONT-placed order, whose
+  // customerData is keyed by the SKU's own additionalFields (e.g.
+  // {user_id,server_id}), never `target`. This test uses a
+  // storefront-shaped fixture to prove the diagnostic now actually works for
+  // that traffic too — this is the exact gap the re-review found the
+  // existing test suite blind to.
+  // ===========================================================================
+  it("a STOREFRONT-shaped customerData fixture ({user_id,server_id}, no 'target' key at all) still produces a diagnostic note", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: "ml100",
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        // Storefront-shaped field keys — exactly what apiTopup.ts's
+        // checkout form (and the storefront's account-info step generally)
+        // writes, driven by the SKU's OWN additionalFields schema. No
+        // "target" key anywhere.
+        additionalFields: JSON.stringify([
+          { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+          { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+        ]),
+        nicknameCheckGameCode: "mobile-legends", // requiresZone:false, requiresServer:true
+      },
+    });
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      customerData: JSON.stringify([{ user_id: "12345", server_id: "6" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "StorefrontPlayer" });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "12345", server: "6" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("StorefrontPlayer");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+  });
 });
 
 describe("getDigiflazzCreds", () => {
@@ -402,6 +463,82 @@ describe("buildDigiflazzCustomerNo", () => {
     };
     const customerData = JSON.stringify([{ user_id: "123456789", server_id: "" }]);
     expect(buildDigiflazzCustomerNo(product, customerData)).toBe("123456789");
+  });
+
+  // ===========================================================================
+  // Money-critical (final-review round 2). The bug this closes: nicknameCheck.ts
+  // (the bot's live nickname-check wizard) used to write Order.customerData as
+  // a hardcoded {target,zone,server} object, completely independent of the
+  // SKU's OWN additionalFields — which is what buildDigiflazzCustomerNo (this
+  // function, the thing that actually builds the string sent to the real
+  // Digiflazz supplier API) reads. That meant an order that went through the
+  // nickname-check wizard dispatched to Digiflazz with an EMPTY customer_no —
+  // a real order with no account id at all. The fix: nicknameCheck.ts now
+  // builds its customerData unit through nicknameFieldMapping, keyed into the
+  // SKU's actual additionalFields, positionally — exactly what this test
+  // reproduces and asserts round-trips into a NON-EMPTY customerNo.
+  // ===========================================================================
+  it("[MONEY-CRITICAL] a unit built the way nicknameCheck.ts now builds it (via nicknameFieldMapping) round-trips into a NON-EMPTY customerNo containing the target", () => {
+    // The SKU's own admin-defined additionalFields — e.g. a real
+    // "mobile-legends" SKU (requiresZone: false, requiresServer: true).
+    const product = {
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+    };
+    const additionalFields = parseAdditionalFields(product.additionalFields);
+
+    // Exactly nicknameCheck.ts's buildCustomerDataUnit logic: map the
+    // wizard's collected {target,zone,server,nickname} answer into the SKU's
+    // real field keys via nicknameFieldMapping, instead of the old hardcoded
+    // {target,zone,server} shape.
+    const requiresZone = false;
+    const requiresServer = true;
+    const answer: { target: string; zone?: string; server?: string; nickname?: string } = {
+      target: "GAMER-999888777",
+      server: "SRV-42",
+      nickname: "MoneyCriticalPlayer",
+    };
+    const mapping = nicknameFieldMapping(additionalFields, requiresZone, requiresServer);
+    expect(mapping).not.toBeNull();
+    const unit: Record<string, string> = mapping
+      ? {
+          [mapping.targetKey]: answer.target,
+          ...(mapping.zoneKey && answer.zone ? { [mapping.zoneKey]: answer.zone } : {}),
+          ...(mapping.serverKey && answer.server ? { [mapping.serverKey]: answer.server } : {}),
+        }
+      : { target: answer.target };
+    if (answer.nickname) unit.nickname = answer.nickname;
+
+    // This is exactly what nicknameCheck.ts now writes onto
+    // scratch.customerData / Order.customerData.
+    expect(unit).toEqual({ user_id: "GAMER-999888777", server_id: "SRV-42", nickname: "MoneyCriticalPlayer" });
+
+    const customerNo = buildDigiflazzCustomerNo(product, JSON.stringify([unit]));
+
+    // The exact assertion that would have caught the pre-fix bug: a
+    // regression back to the old hardcoded {target,zone,server} shape would
+    // make this an EMPTY string (buildDigiflazzCustomerNo's field.key ->
+    // unit[field.key] lookup would find nothing under "user_id"/"server_id").
+    expect(customerNo).not.toBe("");
+    expect(customerNo.length).toBeGreaterThan(0);
+    expect(customerNo).toContain("GAMER-999888777");
+    expect(customerNo).toBe("GAMER-999888777 SRV-42");
+  });
+
+  it("[MONEY-CRITICAL] the OLD hardcoded {target,zone,server} shape (pre-fix behavior) produces an EMPTY customerNo — proves this is a real regression risk, not a hypothetical one", () => {
+    const product = {
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+    };
+    // The pre-fix nicknameCheck.ts shape — none of these keys match the
+    // SKU's actual additionalFields ("user_id"/"server_id"), so every value
+    // filters out of buildDigiflazzCustomerNo's field.map(f => unit[f.key]).
+    const legacyUnit = JSON.stringify([{ target: "GAMER-999888777", server: "SRV-42" }]);
+    expect(buildDigiflazzCustomerNo(product, legacyUnit)).toBe("");
   });
 });
 

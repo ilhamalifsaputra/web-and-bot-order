@@ -106,9 +106,10 @@ describe("resolveNicknameGate", () => {
     });
   });
 
-  it("override absent, digiflazzBrand null, name matches a catalog entry: falls back to name", () => {
+  it("override absent, digiflazzBrand null, name matches a catalog entry, product is Digiflazz-sourced: falls back to name", () => {
     const denomination = {
       nicknameCheckGameCode: null,
+      autoDeliverySource: "digiflazz",
       product: { digiflazzBrand: null, name: "Free Fire 100 Diamonds" },
     } as unknown as Fixture;
 
@@ -117,6 +118,16 @@ describe("resolveNicknameGate", () => {
       requiresZone: false,
       requiresServer: false,
     });
+  });
+
+  it("override absent, digiflazzBrand null, name matches a catalog entry, but product is NOT Digiflazz-sourced: no name fallback (I-8 false-positive guard)", () => {
+    const denomination = {
+      nicknameCheckGameCode: null,
+      autoDeliverySource: null,
+      product: { digiflazzBrand: null, name: "Joki Mobile Legends" },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameCode: null, requiresZone: false, requiresServer: false });
   });
 
   it("neither override nor a catalog match: gameCode null, requiresZone/requiresServer false", () => {

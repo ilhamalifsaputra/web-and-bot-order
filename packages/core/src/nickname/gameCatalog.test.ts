@@ -28,8 +28,22 @@ describe("matchGameKey", () => {
     expect(matchGameKey({ digiflazzBrand: "Mobile Legends (Indonesia)", name: "irrelevant" })).toBe("mobileLegends");
   });
 
-  it("falls back to product.name when digiflazzBrand is null", () => {
-    expect(matchGameKey({ digiflazzBrand: null, name: "PUBG Mobile" })).toBe("pubgMobile");
+  it("falls back to product.name when digiflazzBrand is null and the product is Digiflazz-sourced", () => {
+    expect(matchGameKey({ digiflazzBrand: null, name: "PUBG Mobile", autoDeliverySource: "digiflazz" })).toBe(
+      "pubgMobile",
+    );
+  });
+
+  it("does NOT fall back to product.name for a non-Digiflazz-sourced product, even when the name matches a game — a hand-created product's admin-typed name (e.g. 'Joki Mobile Legends') must never be misdetected as that game", () => {
+    expect(matchGameKey({ digiflazzBrand: null, name: "Joki Mobile Legends", autoDeliverySource: null })).toBeNull();
+    expect(matchGameKey({ digiflazzBrand: null, name: "PUBG Mobile" })).toBeNull(); // autoDeliverySource omitted
+  });
+
+  it("treats an empty/whitespace-only digiflazzBrand as absent, falling through to the name check", () => {
+    expect(matchGameKey({ digiflazzBrand: "   ", name: "Valorant", autoDeliverySource: "digiflazz" })).toBe(
+      "valorant",
+    );
+    expect(matchGameKey({ digiflazzBrand: "", name: "irrelevant" })).toBeNull();
   });
 
   it("returns null for a brand string that matches none of the 41 games", () => {
@@ -37,7 +51,7 @@ describe("matchGameKey", () => {
   });
 
   it("returns null when digiflazzBrand is null and name matches nothing", () => {
-    expect(matchGameKey({ digiflazzBrand: null, name: "Spotify Premium" })).toBeNull();
+    expect(matchGameKey({ digiflazzBrand: null, name: "Spotify Premium", autoDeliverySource: "digiflazz" })).toBeNull();
   });
 
   it("picks the more specific catalog entry when a shorter name is a substring of a longer one", () => {

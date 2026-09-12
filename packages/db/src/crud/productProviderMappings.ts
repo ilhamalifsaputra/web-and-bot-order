@@ -1,24 +1,32 @@
 /**
  * CRUD for ProductProviderMapping — the transaction-provider fallback
- * catalog layer (Task 4, Trustance Master Architecture Phase 1). Mirrors
- * `crud/games.ts`'s ProviderGameMapping pattern (list/getEnabled/upsert/
- * delete, `[fkId, provider]` unique key), applied to the *transaction*
- * dispatch side instead of the nickname-check side.
+ * catalog layer (Task 4, Trustance Master Architecture Phase 1): lets a
+ * Denomination (SKU) have more than one candidate fulfilment provider
+ * (`[productId, provider]` rows, ordered by `priority`) instead of being
+ * hard-bound to Digiflazz alone via `Denomination.autoDeliverySource`/
+ * `supplierSku` directly.
  *
- * Key difference from ProviderGameMapping: ProviderGameMapping is read live,
- * per nickname-check request, by NicknameService — a request-time fan-out is
- * cheap because nickname checks are inherently low-volume, interactive
- * lookups. Digiflazz dispatch (`crud/digiflazz.ts`,
- * `dispatchPendingDigiflazzOrders`/`resolveSingleDigiflazzItem`) is a
- * read-heavy poller path that must stay a single-table read — see
- * `Denomination.autoDeliverySource`/`supplierSku`'s doc comments. So instead
- * of the dispatch path joining against this table on every tick,
- * `resolveDenominationProvider` (below) is the one place that recomputes
- * those two Denomination fields from this table's current top-priority
- * ENABLED row, and is invoked automatically by every mutation in this file
- * (upsert/delete). The dispatch path itself is untouched by this task — it
- * keeps reading the two Denomination fields exactly as it did before, now
- * kept fresh by this resolver instead of hand-set at import time only.
+ * Current status (final whole-branch review, this branch): no production
+ * caller invokes any export from this file — `resolveDenominationProvider`,
+ * `upsertProductProviderMapping`, and `deleteProductProviderMapping` are
+ * exercised only by this file's own test suite
+ * (`productProviderMappings.test.ts`); the structural blocker this table
+ * removes (a SKU hard-bound to Digiflazz in the schema) has not yet been
+ * exploited by a second real transaction provider or an admin UI wired to
+ * this table. Digiflazz dispatch (`crud/digiflazz.ts`,
+ * `dispatchPendingDigiflazzOrders`/`resolveSingleDigiflazzItem`) keeps
+ * reading `Denomination.autoDeliverySource`/`supplierSku` directly and
+ * unchanged, exactly as documented in that file — see the COUPLING WARNING
+ * on `resolveDenominationProvider` below for why writing any provider value
+ * other than `"digiflazz"` through this table would silently break that
+ * poller (and two other guards) today. This module proves the
+ * mapping-to-cache wiring works; it is not yet load-bearing.
+ *
+ * `resolveDenominationProvider` (below) is the one place that recomputes a
+ * Denomination's `autoDeliverySource`/`supplierSku` from this table's
+ * current top-priority ENABLED row, and is invoked automatically by every
+ * mutation in this file (upsert/delete) so those two Denomination fields
+ * never observably lag the mapping row that produced them.
  *
  * `productId` here holds a Denomination id — see the model's own doc
  * comment in schema.prisma for why the column is still called `product_id`

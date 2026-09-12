@@ -72,9 +72,6 @@ interface ProductDetailForEdit {
     name: string;
     category: { id: number; name: string } | null;
     denominations: EditableDenomination[];
-    /** Task 10/12: the parent Product's Linked Game (null until an admin
-     * links one) — drives DeliveryTypeSection's legacy-field note below. */
-    gameId?: number | null;
   };
   statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
 }
@@ -324,7 +321,6 @@ export function DenominationEditPage() {
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
-          productHasLinkedGame={Boolean(data?.product.gameId)}
         />
 
         <div>

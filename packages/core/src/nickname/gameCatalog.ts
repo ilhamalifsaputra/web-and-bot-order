@@ -181,19 +181,36 @@ function normalize(value: string): string {
 }
 
 /**
- * Normalize `product.digiflazzBrand` (fall back to `product.name` when
- * digiflazzBrand is null) and match it against GAME_CATALOG's `name` values
- * to find which catalog key (if any) this product belongs to. Match rule:
- * the normalized product string must CONTAIN the normalized catalog name
- * (substring match) — Digiflazz brand strings sometimes carry extra
- * suffixes (e.g. "Mobile Legends (Indonesia)"). When more than one catalog
- * name matches (e.g. "Free Fire" is itself a substring of "Free Fire Max"
- * once normalized), the longest matching name wins, since it's the more
+ * Normalize `product.digiflazzBrand` and match it against GAME_CATALOG's
+ * `name` values to find which catalog key (if any) this product belongs to.
+ * Match rule: the normalized product string must CONTAIN the normalized
+ * catalog name (substring match) — Digiflazz brand strings sometimes carry
+ * extra suffixes (e.g. "Mobile Legends (Indonesia)"). When more than one
+ * catalog name matches (e.g. "Free Fire" is itself a substring of "Free Fire
+ * Max" once normalized), the longest matching name wins, since it's the more
  * specific match. Returns null if no catalog entry matches. Pure function,
  * no DB/IO.
+ *
+ * The `product.name` fallback (used when `digiflazzBrand` is null/empty)
+ * ONLY fires when the product is actually Digiflazz-sourced
+ * (`autoDeliverySource === "digiflazz"`). A hand-created product's name is
+ * admin-typed free text — e.g. "Joki Mobile Legends" or "Akun Mobile Legends
+ * Sultan" — and substring-matching that against the catalog would
+ * misdetect it as that game and wrongly divert the buyer into the
+ * nickname-check wizard for an account id that has nothing to do with what's
+ * actually being sold. A Digiflazz-sourced product's name, by contrast, is
+ * drawn from Digiflazz's own catalog and doesn't carry that risk the same
+ * way `digiflazzBrand` doesn't.
  */
-export function matchGameKey(product: { digiflazzBrand: string | null; name: string }): string | null {
-  const normalizedProduct = normalize(product.digiflazzBrand ?? product.name);
+export function matchGameKey(product: {
+  digiflazzBrand: string | null;
+  name: string;
+  autoDeliverySource?: string | null;
+}): string | null {
+  const brand = product.digiflazzBrand?.trim() || null;
+  const raw = brand ?? (product.autoDeliverySource === "digiflazz" ? product.name : null);
+  if (!raw) return null;
+  const normalizedProduct = normalize(raw);
 
   let bestKey: string | null = null;
   let bestLength = -1;

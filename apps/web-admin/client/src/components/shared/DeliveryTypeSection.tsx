@@ -79,7 +79,6 @@ export function DeliveryTypeSection({
   onSupplierSkuChange,
   nicknameCheckGameCode,
   onNicknameCheckGameCodeChange,
-  productHasLinkedGame,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -95,12 +94,6 @@ export function DeliveryTypeSection({
    * Digiflazz auto-delivery link. Blank = no live check for this product. */
   nicknameCheckGameCode: string;
   onNicknameCheckGameCodeChange: (next: string) => void;
-  /** Task 12: true when the parent Product has a Linked Game (a Task 10
-   * `Product.gameId`) set. Purely a UI hint — renders a note near the two
-   * legacy nickname/region-check fields below pointing out that the new
-   * Game-based nickname check has taken over for products that opted in;
-   * never changes those fields' own behavior or validation. */
-  productHasLinkedGame?: boolean;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
@@ -263,13 +256,16 @@ export function DeliveryTypeSection({
         </div>
       )}
 
-      {/* Nickname check (Task 7) — an independent storefront UX enhancement,
-          NOT gated on autoDeliverySource above: a manual_with_info product
-          with no Digiflazz link can still offer a live nickname lookup on the
-          buyer's account field before they pay. Shown under the same
-          requiresInfo condition as Step 3, since the check needs a buyer
-          account field to run against. */}
-      {requiresInfo && (
+      {/* Nickname check (Task 7) — an independent storefront + bot UX
+          enhancement. Shown whenever the buyer submits an account field the
+          check can run against: either Step 3's buyer-info fields
+          (requiresInfo) or an Automatic-delivery product (method === "auto"),
+          which is always eligible for catalog auto-detect from the product's
+          Digiflazz brand regardless of whether an admin ever touches this
+          field. NOT shown for plain Manual (no info) — that combination
+          collects no buyer account field at all, so there's nothing for a
+          live check to verify against. */}
+      {(requiresInfo || method === "auto") && (
         <div>
           <label className="text-sm font-medium text-ink">Nickname check game code (optional)</label>
           <Input
@@ -279,15 +275,10 @@ export function DeliveryTypeSection({
             onChange={(e) => onNicknameCheckGameCodeChange(e.target.value)}
           />
           <p className="mt-1 text-xs text-ink-soft">
-            e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
-            the live nickname check for this product.
+            e.g. <code>mobile-legends</code> — auto-detected from this product&apos;s Digiflazz brand by
+            default. Fill this in only to override the detected game, or to force a check for a
+            product the catalog can&apos;t auto-detect.
           </p>
-          {productHasLinkedGame && (
-            <p className="mt-1 text-xs text-ink-soft">
-              This product uses the new Game-based nickname check — this field only affects the
-              legacy region-check, if separately configured.
-            </p>
-          )}
         </div>
       )}
     </div>

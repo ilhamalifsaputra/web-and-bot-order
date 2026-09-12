@@ -145,15 +145,80 @@ describe("showOrderConfirmation — nickname-check gate: unconfigured products a
     expect(sentIncludes(sink, "Confirm Order")).toBe(true);
   });
 
-  it("a MANUAL/MANUAL_WITH_INFO SKU is untouched by this gate regardless of nickname-check config (deliveryType !== AUTO short-circuits it)", async () => {
-    // sample.product is AUTO; this just re-asserts the gate's own condition
-    // is scoped by deliveryType, using the existing manual_with_info fixture
-    // shape indirectly is unnecessary — the `product.deliveryType === AUTO`
-    // check in checkout.ts is what's under test, proven by the AUTO cases
-    // above never firing for the wrong game config, and by the pre-existing
-    // manual_with_info gate's own tests in customer-info.test.ts staying
-    // green (run as part of the full suite) after this change.
-    expect(sample.product.deliveryType).toBe("auto");
+  it("an unconfigured MANUAL_WITH_INFO SKU is untouched by this gate and still goes through customerInfo (I-6: the nickname gate no longer assumes AUTO, but an unconfigured product's behavior per deliveryType is unchanged)", async () => {
+    const category = await createCategory(prisma, `manual-info-cat-${Math.random()}`);
+    const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: `Unrelated Manual Info Product ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "Manual Info Denom",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "10.00",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify([
+        { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ]),
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+
+    await checkout.showOrderConfirmation(ctx, denom.id, 1);
+
+    const enters = calls(sink, "conversation.enter");
+    expect(enters.length).toBe(1);
+    expect(enters[0]!.args[0]).toBe("customerInfo");
+    expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+  });
+});
+
+// ===========================================================================
+// I-6: the nickname-check gate now preempts MANUAL_WITH_INFO too — for a
+// product whose game resolves to a gameCode AND KokinPay credentials are
+// configured, the live nicknameCheck wizard replaces the customerInfo
+// custom-fields wizard entirely, regardless of deliveryType.
+// ===========================================================================
+
+describe("showOrderConfirmation — nickname-check gate preempts MANUAL_WITH_INFO's customerInfo wizard (I-6)", () => {
+  async function makeConfiguredManualWithInfoDenom(opts: { gameCode?: string; withCreds?: boolean } = {}) {
+    if (opts.withCreds) await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const category = await createCategory(prisma, `manual-info-nick-cat-${Math.random()}`);
+    const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Test Manual-With-Info Game Top-Up" });
+    const denom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "100 Diamonds",
+      type: ProductType.SHARED,
+      durationLabel: "N/A",
+      price: "10.00",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify([
+        { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ]),
+      nicknameCheckGameCode: opts.gameCode ?? "free-fire",
+    });
+    return denom;
+  }
+
+  it("enters nicknameCheck (not customerInfo) for a MANUAL_WITH_INFO SKU whose nickname-check is fully configured", async () => {
+    const denom = await makeConfiguredManualWithInfoDenom({ withCreds: true });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+
+    await checkout.showOrderConfirmation(ctx, denom.id, 1);
+
+    const enters = calls(sink, "conversation.enter");
+    expect(enters.length).toBe(1);
+    expect(enters[0]!.args[0]).toBe("nicknameCheck");
+    expect(ctx.session.scratch.pendingNicknameProductId).toBe(denom.id);
+    expect(sentIncludes(sink, "Confirm Order")).toBe(false);
+  });
+
+  it("falls back to customerInfo for a MANUAL_WITH_INFO SKU with a nickname-check override set but no KokinPay credentials configured", async () => {
+    const denom = await makeConfiguredManualWithInfoDenom({ gameCode: "mobile-legends", withCreds: false });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${denom.id}:1` });
+
+    await checkout.showOrderConfirmation(ctx, denom.id, 1);
+
+    const enters = calls(sink, "conversation.enter");
+    expect(enters.length).toBe(1);
+    expect(enters[0]!.args[0]).toBe("customerInfo");
   });
 });
 

@@ -285,33 +285,6 @@ describe("DenominationEditPage", () => {
     expect(btn).toBeDisabled();
   });
 
-  // Task 12: DeliveryTypeSection's legacy-field note, driven by the parent
-  // Product's Linked Game (Task 10's Product.gameId) — a UI hint only, shown
-  // near the nicknameCheckGameCode field, which only renders once
-  // deliveryType is manual_with_info (same requiresInfo gate the field
-  // itself uses).
-  const NOTE_TEXT = /this product uses the new game-based nickname check/i;
-
-  it("shows the Game-based nickname check note when the parent product has a Linked Game", async () => {
-    vi.mocked(apiGet).mockResolvedValue({
-      product: { ...MANUAL_WITH_INFO_PRODUCT_DETAIL.product, gameId: 5 },
-    });
-    render(<DenominationEditPage />, { wrapper: Wrapper });
-
-    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
-    expect(screen.getByText(NOTE_TEXT)).toBeInTheDocument();
-  });
-
-  it("does not show the Game-based nickname check note when the parent product has no Linked Game", async () => {
-    vi.mocked(apiGet).mockResolvedValue({
-      product: { ...MANUAL_WITH_INFO_PRODUCT_DETAIL.product, gameId: null },
-    });
-    render(<DenominationEditPage />, { wrapper: Wrapper });
-
-    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
-    expect(screen.queryByText(NOTE_TEXT)).not.toBeInTheDocument();
-  });
-
   it("shows an error message when saving fails", async () => {
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
     vi.mocked(apiPatch).mockRejectedValueOnce(new Error("A valid type is required."));

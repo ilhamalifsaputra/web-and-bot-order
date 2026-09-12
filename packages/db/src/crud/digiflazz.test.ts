@@ -328,6 +328,35 @@ describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Tas
     expect(refreshed!.accountDiagnosticNote).toContain("tidak ditemukan");
     expect(refreshed!.accountDiagnosticNote).toContain("mobile-legends");
   });
+
+  // Minor-4 (final whole-branch review): every case above drives the
+  // diagnostic via the nicknameCheckGameCode override — none exercises
+  // catalog auto-detect through the nested `product: { digiflazzBrand,
+  // name }` select dispatchPendingDigiflazzOrders's query joins. This one
+  // does: no override at all, only the parent Product's digiflazzBrand.
+  it("supplierGaveReason:false, no nicknameCheckGameCode override, but the parent Product's digiflazzBrand auto-detects a catalog game -> accountDiagnosticNote is set from the lookup", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { digiflazzBrand: "Mobile Legends" } });
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      customerDataUnit: { target: "123456789", server: "2001" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "AutoDetectedPlayer" });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "123456789", server: "2001" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("AutoDetectedPlayer");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+  });
 });
 
 describe("getDigiflazzCreds", () => {

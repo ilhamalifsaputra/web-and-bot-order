@@ -50,6 +50,16 @@ export async function buildNicknameProviderEntries(
  * function's behavior is unchanged. */
 type DenominationForNicknameGate = {
   nicknameCheckGameCode: string | null;
+  /** The Denomination's OWN autoDeliverySource (not a Product field) —
+   * passed through to matchGameKey alongside product.digiflazzBrand/name so
+   * it can restrict its product.name fallback to Digiflazz-sourced products
+   * only (see matchGameKey's own doc comment, packages/core/src/nickname/
+   * gameCatalog.ts, for why). Every real caller already selects/includes
+   * this as a plain Denomination scalar (getDenominationWithProduct uses no
+   * `select`, so it comes along for free; the reactive-diagnostic queries in
+   * digiflazz.ts explicitly select it for resolveSingleDigiflazzItem's own
+   * needs). */
+  autoDeliverySource?: string | null;
   product?: { digiflazzBrand: string | null; name: string } | null;
 };
 
@@ -77,7 +87,7 @@ export function resolveNicknameGate(
     return { gameCode: override, requiresZone: known?.requiresZone ?? false, requiresServer: known?.requiresServer ?? false };
   }
   const product = denomination?.product;
-  const key = product ? matchGameKey(product) : null;
+  const key = product ? matchGameKey({ ...product, autoDeliverySource: denomination?.autoDeliverySource }) : null;
   const entry = key ? GAME_CATALOG[key] : null;
   return entry
     ? { gameCode: entry.code, requiresZone: entry.requiresZone, requiresServer: entry.requiresServer }

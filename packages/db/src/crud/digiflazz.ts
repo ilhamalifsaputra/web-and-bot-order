@@ -210,14 +210,16 @@ type DigiflazzCandidateOrder = {
        * runs when Digiflazz itself gave no failure reason — see this file's
        * module doc comment and resolveNicknameGate (./nickname).
        *
-       * `product` (the nested Product row) is OPTIONAL here — not every
-       * caller's query joins it (the storefront webhook's live re-check,
-       * checkout.ts POST /pay/digiflazz/callback, fetches via getOrderByCode's
-       * fullInclude, which doesn't nest this far — only the poller's own
-       * dispatchPendingDigiflazzOrders query does). computeAccountDiagnosticNote
-       * treats a missing/undefined product exactly like a null one (no
-       * catalog auto-detect possible), so this is a pure type widening with
-       * no behavior change for either caller. */
+       * `product` (the nested Product row) is declared OPTIONAL here purely
+       * for structural-typing convenience — both real callers now actually
+       * join it: the poller's own dispatchPendingDigiflazzOrders query below,
+       * and the storefront webhook's live re-check (checkout.ts POST
+       * /pay/digiflazz/callback), which fetches via getOrderByCode
+       * (packages/db/src/crud/orders.ts) — that function now nests this same
+       * `product.product` sub-object too, so catalog auto-detect works from
+       * both entry points. computeAccountDiagnosticNote still treats a
+       * missing/undefined product exactly like a null one (no catalog
+       * auto-detect possible), as a defensive fallback only. */
       nicknameCheckGameCode: string | null;
       product?: { digiflazzBrand: string | null; name: string } | null;
     };
@@ -434,41 +436,65 @@ export async function recordDigiflazzOutcome(
  * tell" case — no matching game, no KokinPay credentials, no target on the
  * order, or a non-definitive lookup result — so a diagnostic that can't say
  * anything useful never blocks or pollutes the existing failure-handling
- * path (alert/audit log/realtime emit) it runs inside of.
+ * path (alert/audit log/realtime emit) it runs inside of. The whole body
+ * runs inside a try/catch for the same reason: buildNicknameProviderEntries
+ * → getKokinpayCreds → getDecryptedSetting → decryptCredentials can throw
+ * CredentialKeyConfigError when CREDENTIAL_ENCRYPTION_KEY is unset/
+ * misconfigured (widened to cover this the same way apiTopup.ts's own
+ * nickname-check catch does — see its comment "Widened to also cover
+ * getKokinpayCreds above"), and if that throw escaped here it would
+ * propagate through terminalFailDigiflazzOrder → recordDigiflazzOutcome into
+ * the poller's outer catch around the Digiflazz createTransaction call,
+ * misclassifying a genuine terminal failure as a transient HTTP error.
  */
 async function computeAccountDiagnosticNote(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
 ): Promise<string | null> {
-  const item = order.items[0]; // the single Digiflazz-routed item — resolveSingleDigiflazzItem
-  // already guarantees exactly one by the time a terminal failure is recorded.
-  const denomination = item?.product; // NOTE: confusingly, OrderItem's relation field is
-  // literally named `product` but points at a Denomination row (this repo's
-  // schema renamed the old products table to denominations); denomination.product
-  // (yes, again) is the ACTUAL Product row, which has digiflazzBrand/name.
-  if (!denomination) return null;
+  try {
+    // Don't assume the Digiflazz-routed item is at index 0 — an order can
+    // carry other, non-Digiflazz lines alongside it (same rule
+    // resolveSingleDigiflazzItem above applies; `autoDeliverySource` is
+    // already selected on this nested `product` object by
+    // dispatchPendingDigiflazzOrders's query).
+    const item = order.items.find((i) => i.product.autoDeliverySource === "digiflazz");
+    const denomination = item?.product; // NOTE: confusingly, OrderItem's relation field is
+    // literally named `product` but points at a Denomination row (this repo's
+    // schema renamed the old products table to denominations); denomination.product
+    // (yes, again) is the ACTUAL Product row, which has digiflazzBrand/name.
+    if (!denomination) return null;
 
-  const { gameCode } = resolveNicknameGate(denomination);
-  if (!gameCode) return null;
+    const { gameCode } = resolveNicknameGate(denomination);
+    if (!gameCode) return null;
 
-  const entries = await buildNicknameProviderEntries(db, gameCode);
-  if (entries.length === 0) return null;
+    const entries = await buildNicknameProviderEntries(db, gameCode);
+    if (entries.length === 0) return null;
 
-  const unit = parseCustomerData(order.customerData)[0] ?? {};
-  const target = unit.target;
-  if (!target) return null;
+    const unit = parseCustomerData(order.customerData)[0] ?? {};
+    const target = unit.target;
+    if (!target) return null;
 
-  const result = await new NicknameService(entries).checkNickname({ target, zone: unit.zone, server: unit.server });
-  if (result.status === "found") {
-    return `KokinPay: akun ditemukan (nickname "${result.nickname}") — kemungkinan bukan masalah ID/region.`;
+    const result = await new NicknameService(entries).checkNickname({ target, zone: unit.zone, server: unit.server });
+    if (result.status === "found") {
+      return `KokinPay: akun ditemukan (nickname "${result.nickname}") — kemungkinan bukan masalah ID/region.`;
+    }
+    if (result.status === "not_found" && result.definitive) {
+      return `KokinPay: akun tidak ditemukan untuk kode game ${gameCode} — kemungkinan salah ID/region.`;
+    }
+    // Any other status (no_providers_configured — already ruled out above by
+    // the entries.length check, but kept exhaustive — or a non-definitive
+    // not_found) — don't write a misleading note.
+    return null;
+  } catch (err) {
+    // No credentials, no stack trace with secrets — just enough for an
+    // operator to notice the diagnostic is silently degrading for every
+    // order, not a specific customer's data.
+    logger.info(
+      { err, orderId: order.id },
+      "Could not compute the reactive account diagnostic for one Digiflazz order — proceeding without a diagnostic note; this order's terminal failure is otherwise unaffected.",
+    );
+    return null;
   }
-  if (result.status === "not_found" && result.definitive) {
-    return `KokinPay: akun tidak ditemukan untuk kode game ${gameCode} — kemungkinan salah ID/region.`;
-  }
-  // Any other status (no_providers_configured — already ruled out above by
-  // the entries.length check, but kept exhaustive — or a non-definitive
-  // not_found) — don't write a misleading note.
-  return null;
 }
 
 /** Shared terminal-failure tail for recordDigiflazzOutcome above: writes

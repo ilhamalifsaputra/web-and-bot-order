@@ -118,8 +118,6 @@ const TABLES = [
   "wallet_transactions",
   "password_reset_tokens",
   "categories",
-  "games",
-  "provider_game_mappings",
   "products",
   "denominations",
   "product_provider_mappings",

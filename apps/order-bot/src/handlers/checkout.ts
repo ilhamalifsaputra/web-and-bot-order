@@ -414,39 +414,25 @@ export async function showOrderConfirmation(
     }
   }
 
-  // manual_with_info: the buyer must fill the SKU's custom fields BEFORE
-  // payment. Divert to the single-bubble info-collection wizard the first
-  // time through; once it completes it stashes the answers in
-  // scratch.customerData and re-enters here via renderOrderConfirmation, so
-  // this branch doesn't fire again for the same checkout attempt. A buyer who
-  // backs out of quantity/product and re-taps Buy re-triggers this gate,
-  // which is correct (customerData was never set for the abandoned attempt).
-  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO && !ctx.session.scratch.customerData) {
-    ctx.session.scratch.pendingInfoProductId = productId;
-    ctx.session.scratch.pendingInfoQuantity = quantity;
-    await ctx.conversation.enter("customerInfo");
-    return;
-  }
-
-  // Game Top-Up nickname-check gate — parallel to the manual_with_info gate
-  // above: for an AUTO SKU whose game resolves to a nickname-check
-  // `gameCode` (admin override or catalog auto-detect from
-  // Product.digiflazzBrand — see resolveNicknameGate's doc comment) AND
-  // KokinPay credentials are configured (buildNicknameProviderEntries), the
-  // buyer's target account must be verified BEFORE payment. Same re-entry
-  // guard (scratch.customerData unset) and the same one-shot semantics as
-  // the manual_with_info gate: nicknameCheck.ts stashes its result into
-  // scratch.customerData and re-enters here via renderOrderConfirmation, so
-  // this branch doesn't fire again for the same checkout attempt.
+  // Game Top-Up nickname-check gate — resolved once, ahead of the
+  // deliveryType branches below, because it can now preempt EITHER of them:
+  // for a product whose game resolves to a nickname-check gameCode (admin
+  // override or catalog auto-detect) AND KokinPay credentials are
+  // configured, the live check wizard replaces whatever wizard that
+  // deliveryType would otherwise show (manual_with_info's customerInfo
+  // custom-fields wizard, or nothing at all for auto). See
+  // resolveNicknameGate's own doc comment for the override-then-auto-detect
+  // precedence rule this shares with the storefront's identical gate
+  // (apiTopup.ts) and nicknameCheck.ts's own defensive re-check.
   //
-  // Deliberately scoped to AUTO only — MANUAL_WITH_INFO has its own gate
-  // above and is mutually exclusive by deliveryType. The vast majority of
-  // AUTO products resolve to no gameCode at all, so the extra
-  // getDenominationWithProduct join below is the ONLY added cost for them,
-  // and buildNicknameProviderEntries is never even called (see the `if
-  // (gameCode)` short-circuit): zero behavior change, by construction, for
-  // every unconfigured product.
-  if (product.deliveryType === DeliveryType.AUTO && !ctx.session.scratch.customerData) {
+  // The extra getDenominationWithProduct join below now runs for
+  // MANUAL_WITH_INFO products too (previously only AUTO) — expected and
+  // fine: the vast majority of products resolve to no gameCode at all, so
+  // this join is the ONLY added cost for them, and
+  // buildNicknameProviderEntries is never even called (see the `if
+  // (gameCode)` short-circuit) — zero behavior change, by construction, for
+  // every unconfigured product, regardless of delivery type.
+  if (!ctx.session.scratch.customerData) {
     const withGame = await getDenominationWithProduct(prisma, productId);
     // Same rule as the storefront's own gate (apiTopup.ts POST
     // /topup/check-account) — shared via resolveNicknameGate so this gate
@@ -461,6 +447,21 @@ export async function showOrderConfirmation(
         return;
       }
     }
+  }
+
+  // manual_with_info: the buyer must fill the SKU's custom fields BEFORE
+  // payment. Divert to the single-bubble info-collection wizard the first
+  // time through — only reached here when the nickname-check gate above
+  // didn't already divert; once it completes it stashes the answers in
+  // scratch.customerData and re-enters here via renderOrderConfirmation, so
+  // this branch doesn't fire again for the same checkout attempt. A buyer who
+  // backs out of quantity/product and re-taps Buy re-triggers this gate,
+  // which is correct (customerData was never set for the abandoned attempt).
+  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO && !ctx.session.scratch.customerData) {
+    ctx.session.scratch.pendingInfoProductId = productId;
+    ctx.session.scratch.pendingInfoQuantity = quantity;
+    await ctx.conversation.enter("customerInfo");
+    return;
   }
 
   const rate = await currentUsdtRate();

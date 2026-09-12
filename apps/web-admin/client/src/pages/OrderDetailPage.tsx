@@ -376,7 +376,7 @@ export function OrderDetailPage() {
         />
       ) : (
         <Card>
-          <CardHeader><CardTitle>Items ({order.items.length})</CardTitle></CardHeader>
+          <CardHeader><CardTitle as="h2">Items ({order.items.length})</CardTitle></CardHeader>
           <CardContent>
             <DataTable
               nested

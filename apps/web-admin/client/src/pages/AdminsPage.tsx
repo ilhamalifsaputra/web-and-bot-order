@@ -17,6 +17,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
@@ -93,88 +94,93 @@ export function AdminsPage() {
         {addError && <span className="text-sm text-rust">{addError}</span>}
       </FilterBar>
 
-      <DataTable
-        columns={[
-          {
-            key: "tid",
-            header: "Telegram ID",
-            render: a => (
-              <span className="font-mono text-sm">
-                {a.telegramId}{a.isSelf ? <Badge className="ml-2">You</Badge> : ""}
-              </span>
-            ),
-          },
-          {
-            key: "name",
-            header: "Name",
-            render: a => a.name ?? "—",
-          },
-          {
-            key: "role",
-            header: "Role",
-            render: a => (
-              <Select
-                value={a.role}
-                onValueChange={role => setRole.mutate({ tgId: a.telegramId, role })}
-                disabled={a.isSelf}
-              >
-                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(data?.roles ?? []).map(r => (
-                    <SelectItem key={r} value={r}>{r}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ),
-          },
-          {
-            key: "pwd",
-            header: "Password Set",
-            render: a => a.passwordSet
-              ? <Badge variant="default"><Check /></Badge>
-              : <span className="text-ink-faint">—</span>,
-          },
-          {
-            key: "twofa",
-            header: "2FA",
-            render: a => a.twoFa
-              ? <Badge variant="default"><Check /></Badge>
-              : <span className="text-ink-faint">—</span>,
-          },
-          {
-            key: "session",
-            header: "Session",
-            render: a => a.hasSession ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => forceLogout.mutate(a.telegramId)}
-                disabled={a.isSelf}
-              >
-                <LogOut className="h-4 w-4" />
-                Logout
-              </Button>
-            ) : "—",
-          },
-          {
-            key: "actions",
-            header: "",
-            render: a => !a.fromEnv && !a.isSelf ? (
-              <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm" className="text-rust"><Trash2 className="h-4 w-4" />Remove</Button>}
-                title="Remove admin?"
-                description={`Remove admin ${a.telegramId} from the system.`}
-                confirmLabel="Remove"
-                onConfirm={() => remove.mutate(a.telegramId)}
-              />
-            ) : null,
-          },
-        ]}
-        data={data?.admins ?? []}
-        isLoading={!data}
-        keyExtractor={a => a.telegramId}
-        empty={<EmptyState icon={Shield} title="No admins" />}
-      />
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "tid",
+                header: "Telegram ID",
+                render: a => (
+                  <span className="font-mono text-sm">
+                    {a.telegramId}{a.isSelf ? <Badge className="ml-2">You</Badge> : ""}
+                  </span>
+                ),
+              },
+              {
+                key: "name",
+                header: "Name",
+                render: a => a.name ?? "—",
+              },
+              {
+                key: "role",
+                header: "Role",
+                render: a => (
+                  <Select
+                    value={a.role}
+                    onValueChange={role => setRole.mutate({ tgId: a.telegramId, role })}
+                    disabled={a.isSelf}
+                  >
+                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {(data?.roles ?? []).map(r => (
+                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ),
+              },
+              {
+                key: "pwd",
+                header: "Password Set",
+                render: a => a.passwordSet
+                  ? <Badge variant="default"><Check /></Badge>
+                  : <span className="text-ink-faint">—</span>,
+              },
+              {
+                key: "twofa",
+                header: "2FA",
+                render: a => a.twoFa
+                  ? <Badge variant="default"><Check /></Badge>
+                  : <span className="text-ink-faint">—</span>,
+              },
+              {
+                key: "session",
+                header: "Session",
+                render: a => a.hasSession ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => forceLogout.mutate(a.telegramId)}
+                    disabled={a.isSelf}
+                  >
+                    <LogOut className="h-4 w-4" />
+                    Logout
+                  </Button>
+                ) : "—",
+              },
+              {
+                key: "actions",
+                header: "",
+                render: a => !a.fromEnv && !a.isSelf ? (
+                  <ConfirmDialog
+                    trigger={<Button variant="ghost" size="sm" className="text-rust"><Trash2 className="h-4 w-4" />Remove</Button>}
+                    title="Remove admin?"
+                    description={`Remove admin ${a.telegramId} from the system.`}
+                    confirmLabel="Remove"
+                    onConfirm={() => remove.mutate(a.telegramId)}
+                  />
+                ) : null,
+              },
+            ]}
+            data={data?.admins ?? []}
+            isLoading={!data}
+            keyExtractor={a => a.telegramId}
+            empty={<EmptyState icon={Shield} title="No admins" />}
+          />
+        </CardContent>
+      </Card>
     </PageLayout>
   );
 }

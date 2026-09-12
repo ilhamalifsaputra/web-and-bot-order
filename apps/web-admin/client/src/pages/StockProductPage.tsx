@@ -335,142 +335,147 @@ export function StockProductPage() {
           </div>
         )}
 
-        <DataTable
-          columns={[
-            {
-              key: "select",
-              kind: "selection",
-              header: (
-                <Checkbox
-                  checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}
-                  onCheckedChange={() => toggleSelectAllInTab(tabItems)}
-                  aria-label="Select all stock items on this page"
-                />
-              ),
-              render: item => (
-                <Checkbox
-                  checked={selected.has(item.id)}
-                  onCheckedChange={() => toggleSelected(item.id)}
-                  aria-label={`Select stock item ${item.id}`}
-                />
-              ),
-            },
-            { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
-            { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
-            {
-              key: "credentials",
-              header: (
-                <span className="inline-flex items-center gap-1">
-                  <Lock className="h-3.5 w-3.5 text-ink-faint" />
-                  Account
-                </span>
-              ),
-              render: item => {
-                const revealed = revealedId === item.id;
-                return (
-                  <div className="flex items-center gap-1">
-                    <span className="font-mono text-xs text-ink break-all">
-                      {revealed ? (revealedText || "—") : item.credentials}
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={
-                        revealed
-                          ? `Hide account for stock item ${item.id}`
-                          : `Show account for stock item ${item.id}`
-                      }
-                      onClick={() => toggleReveal(item)}
-                    >
-                      {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Copy account for stock item ${item.id}`}
-                      onClick={() => void copyCredential(item)}
-                    >
-                      {copiedId === item.id
-                        ? <Check className="h-3.5 w-3.5 text-grass" />
-                        : <Copy className="h-3.5 w-3.5" />}
-                    </Button>
-                  </div>
-                );
-              },
-            },
-            {
-              key: "note",
-              header: "Note",
-              render: item =>
-                editingNoteId === item.id ? (
-                  <div className="flex items-center gap-2">
-                    <Input
-                      aria-label={`Note for stock item ${item.id}`}
-                      value={noteDraft}
-                      onChange={e => setNoteDraft(e.target.value)}
-                      className="h-7 text-xs max-w-[180px]"
-                      autoFocus
+        <Card>
+          <CardContent>
+            <DataTable
+              nested
+              columns={[
+                {
+                  key: "select",
+                  kind: "selection",
+                  header: (
+                    <Checkbox
+                      checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}
+                      onCheckedChange={() => toggleSelectAllInTab(tabItems)}
+                      aria-label="Select all stock items on this page"
                     />
-                    <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}><Save className="h-4 w-4" />Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
-                  </div>
-                ) : (
-                  <span
-                    className="block max-w-[240px] truncate text-xs text-ink-soft"
-                    title={item.note ?? undefined}
-                  >
-                    {item.note ?? "—"}
-                  </span>
-                ),
-            },
-            { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
-            {
-              key: "actions",
-              header: "",
-              render: item => (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for stock item ${item.id}`}>
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}>
-                        <SquarePen className="h-4 w-4" />
-                        Edit Note
-                      </DropdownMenuItem>
-                      {item.status !== "DEAD" && (
-                        <>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onSelect={(e) => { e.preventDefault(); setPendingMarkDead(item); }}
-                          >
-                            <Ban className="h-4 w-4" />
-                            Mark Dead
-                          </DropdownMenuItem>
-                        </>
-                      )}
-                      {item.status !== "SOLD" && (
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={(e) => { e.preventDefault(); setPendingDelete(item); }}
+                  ),
+                  render: item => (
+                    <Checkbox
+                      checked={selected.has(item.id)}
+                      onCheckedChange={() => toggleSelected(item.id)}
+                      aria-label={`Select stock item ${item.id}`}
+                    />
+                  ),
+                },
+                { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
+                { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
+                {
+                  key: "credentials",
+                  header: (
+                    <span className="inline-flex items-center gap-1">
+                      <Lock className="h-3.5 w-3.5 text-ink-faint" />
+                      Account
+                    </span>
+                  ),
+                  render: item => {
+                    const revealed = revealedId === item.id;
+                    return (
+                      <div className="flex items-center gap-1">
+                        <span className="font-mono text-xs text-ink break-all">
+                          {revealed ? (revealedText || "—") : item.credentials}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={
+                            revealed
+                              ? `Hide account for stock item ${item.id}`
+                              : `Show account for stock item ${item.id}`
+                          }
+                          onClick={() => toggleReveal(item)}
                         >
-                          <Trash2 className="h-4 w-4" />
-                          Delete
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              ),
-            },
-          ]}
-          data={tabItems}
-          keyExtractor={item => item.id}
-          empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
-        />
+                          {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Copy account for stock item ${item.id}`}
+                          onClick={() => void copyCredential(item)}
+                        >
+                          {copiedId === item.id
+                            ? <Check className="h-3.5 w-3.5 text-grass" />
+                            : <Copy className="h-3.5 w-3.5" />}
+                        </Button>
+                      </div>
+                    );
+                  },
+                },
+                {
+                  key: "note",
+                  header: "Note",
+                  render: item =>
+                    editingNoteId === item.id ? (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          aria-label={`Note for stock item ${item.id}`}
+                          value={noteDraft}
+                          onChange={e => setNoteDraft(e.target.value)}
+                          className="h-7 text-xs max-w-[180px]"
+                          autoFocus
+                        />
+                        <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}><Save className="h-4 w-4" />Save</Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
+                      </div>
+                    ) : (
+                      <span
+                        className="block max-w-[240px] truncate text-xs text-ink-soft"
+                        title={item.note ?? undefined}
+                      >
+                        {item.note ?? "—"}
+                      </span>
+                    ),
+                },
+                { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
+                {
+                  key: "actions",
+                  header: "",
+                  render: item => (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for stock item ${item.id}`}>
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}>
+                            <SquarePen className="h-4 w-4" />
+                            Edit Note
+                          </DropdownMenuItem>
+                          {item.status !== "DEAD" && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={(e) => { e.preventDefault(); setPendingMarkDead(item); }}
+                              >
+                                <Ban className="h-4 w-4" />
+                                Mark Dead
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                          {item.status !== "SOLD" && (
+                            <DropdownMenuItem
+                              variant="destructive"
+                              onSelect={(e) => { e.preventDefault(); setPendingDelete(item); }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                              Delete
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  ),
+                },
+              ]}
+              data={tabItems}
+              keyExtractor={item => item.id}
+              empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
+            />
+          </CardContent>
+        </Card>
       </>
     );
   }

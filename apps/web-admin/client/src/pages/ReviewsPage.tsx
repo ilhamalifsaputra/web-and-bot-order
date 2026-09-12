@@ -19,6 +19,7 @@ import { ProductRatingsCard } from "./reviews/ProductRatingsCard";
 import { ReplyDialog, type ReplyDialogReview } from "./reviews/ReplyDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import {
@@ -430,189 +431,194 @@ export function ReviewsPage() {
         </div>
       </FilterBar>
 
-      <DataTable
-        stickyHeader
-        columns={[
-          {
-            key: "customer",
-            header: "Customer",
-            render: (row) => (
-              <div className="flex max-w-[240px] items-center gap-3">
-                <Avatar className="shrink-0">
-                  <AvatarFallback>{reviewerInitial(row.user)}</AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row.user)}>
-                    {primaryIdentity(row.user)}
-                  </div>
-                  {secondaryIdentity(row.user) && (
-                    <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row.user)}>
-                      {secondaryIdentity(row.user)}
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            stickyHeader
+            columns={[
+              {
+                key: "customer",
+                header: "Customer",
+                render: (row) => (
+                  <div className="flex max-w-[240px] items-center gap-3">
+                    <Avatar className="shrink-0">
+                      <AvatarFallback>{reviewerInitial(row.user)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium text-ink" title={primaryIdentity(row.user)}>
+                        {primaryIdentity(row.user)}
+                      </div>
+                      {secondaryIdentity(row.user) && (
+                        <div className="truncate text-xs text-ink-soft" title={secondaryIdentity(row.user)}>
+                          {secondaryIdentity(row.user)}
+                        </div>
+                      )}
+                      <Badge variant="secondary" className="mt-1">
+                        Verified Purchase
+                      </Badge>
                     </div>
-                  )}
-                  <Badge variant="secondary" className="mt-1">
-                    Verified Purchase
-                  </Badge>
-                </div>
-              </div>
-            ),
-          },
-          {
-            key: "review",
-            header: "Review",
-            render: (row) => (
-              <div className={row.hidden ? "flex max-w-xs flex-col gap-1 opacity-50" : "flex max-w-xs flex-col gap-1"}>
-                <Stars rating={row.rating} />
-                <span className="line-clamp-2 text-sm text-ink-soft">{row.comment ?? "—"}</span>
-              </div>
-            ),
-          },
-          {
-            key: "product",
-            header: "Product",
-            render: (row) => (
-              <span
-                className="block max-w-[240px] truncate text-sm text-ink-soft"
-                title={row.product?.name ?? undefined}
-              >
-                {row.product?.name ?? "—"}
-              </span>
-            ),
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) => (
-              <div className="flex flex-wrap items-center gap-1">
-                <StatusBadge status={row.hidden ? "HIDDEN" : row.status} />
-                <StatusBadge status={row.sentiment} />
-              </div>
-            ),
-          },
-          {
-            key: "activity",
-            header: "Activity",
-            render: (row) => {
-              // No repliedAtDisplay from the API (only createdAtDisplay is
-              // server-formatted), so there's no correct absolute string to
-              // fall back on here. formatRelativeTime(iso, display) only
-              // reads `display` once the gap exceeds 30 days (or the date is
-              // invalid) — every other branch is purely elapsed-time-based
-              // and timezone-safe. Passing the raw ISO as `display` and then
-              // comparing the result back against it detects exactly that
-              // fallback path (reusing formatRelativeTime's own threshold
-              // instead of duplicating the "30 days" constant here), so a
-              // reply older than 30 days omits the line rather than ever
-              // rendering a raw ISO timestamp to the admin.
-              const repliedRelative =
-                row.adminReply != null && row.repliedAt != null
-                  ? formatRelativeTime(row.repliedAt, row.repliedAt)
-                  : null;
-              const repliedLabel =
-                repliedRelative != null && repliedRelative !== row.repliedAt ? repliedRelative : null;
-              return (
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
-                  {repliedLabel != null && (
-                    <span className="text-xs text-ink-faint">Replied {repliedLabel}</span>
-                  )}
-                </div>
-              );
-            },
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for review #${row.id}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/users/${row.userId}`)}>
-                      <Eye className="h-4 w-4" />
-                      View Customer
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => navigate(`/orders/${row.orderId}`)}>
-                      <ShoppingBag className="h-4 w-4" />
-                      View Order
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        openReply(row);
-                      }}
-                    >
-                      <Reply className="h-4 w-4" />
-                      {row.adminReply != null ? "Edit Reply" : "Reply"}
-                    </DropdownMenuItem>
-                    {row.adminReply != null && (
-                      <DropdownMenuItem onSelect={() => deleteReply.mutate(row.id)}>
-                        <MessageSquareOff className="h-4 w-4" />
-                        Delete Reply
-                      </DropdownMenuItem>
-                    )}
-                    {row.status === "CLOSED" ? (
-                      <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "PENDING_REPLY" })}>
-                        <RotateCcw className="h-4 w-4" />
-                        Reopen
-                      </DropdownMenuItem>
-                    ) : (
-                      <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "CLOSED" })}>
-                        <XCircle className="h-4 w-4" />
-                        Mark Closed
-                      </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem onSelect={() => toggleHide.mutate({ id: row.id, hide: !row.hidden })}>
-                      {/* CircleCheck for Unhide (not Eye — Eye is already
-                          "View Customer" above in this same menu; CircleCheck
-                          mirrors UsersPage.tsx's Unban, the same shape of
-                          reversing a suppression state). */}
-                      {row.hidden ? <CircleCheck className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-                      {row.hidden ? "Unhide" : "Hide"}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        setDeleteTargetId(row.id);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete Review
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={reviews}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        empty={
-          hasActiveFilter ? (
-            <EmptyState
-              icon={Star}
-              title="No reviews match these filters."
-              description="Try widening the date range or clearing a filter."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          ) : (
-            <EmptyState
-              icon={Star}
-              title="No reviews yet"
-              description="Customer reviews will appear here after their first delivered order."
-              action={{ label: "Refresh", onClick: () => void refetch() }}
-            />
-          )
-        }
-      />
+                  </div>
+                ),
+              },
+              {
+                key: "review",
+                header: "Review",
+                render: (row) => (
+                  <div className={row.hidden ? "flex max-w-xs flex-col gap-1 opacity-50" : "flex max-w-xs flex-col gap-1"}>
+                    <Stars rating={row.rating} />
+                    <span className="line-clamp-2 text-sm text-ink-soft">{row.comment ?? "—"}</span>
+                  </div>
+                ),
+              },
+              {
+                key: "product",
+                header: "Product",
+                render: (row) => (
+                  <span
+                    className="block max-w-[240px] truncate text-sm text-ink-soft"
+                    title={row.product?.name ?? undefined}
+                  >
+                    {row.product?.name ?? "—"}
+                  </span>
+                ),
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => (
+                  <div className="flex flex-wrap items-center gap-1">
+                    <StatusBadge status={row.hidden ? "HIDDEN" : row.status} />
+                    <StatusBadge status={row.sentiment} />
+                  </div>
+                ),
+              },
+              {
+                key: "activity",
+                header: "Activity",
+                render: (row) => {
+                  // No repliedAtDisplay from the API (only createdAtDisplay is
+                  // server-formatted), so there's no correct absolute string to
+                  // fall back on here. formatRelativeTime(iso, display) only
+                  // reads `display` once the gap exceeds 30 days (or the date is
+                  // invalid) — every other branch is purely elapsed-time-based
+                  // and timezone-safe. Passing the raw ISO as `display` and then
+                  // comparing the result back against it detects exactly that
+                  // fallback path (reusing formatRelativeTime's own threshold
+                  // instead of duplicating the "30 days" constant here), so a
+                  // reply older than 30 days omits the line rather than ever
+                  // rendering a raw ISO timestamp to the admin.
+                  const repliedRelative =
+                    row.adminReply != null && row.repliedAt != null
+                      ? formatRelativeTime(row.repliedAt, row.repliedAt)
+                      : null;
+                  const repliedLabel =
+                    repliedRelative != null && repliedRelative !== row.repliedAt ? repliedRelative : null;
+                  return (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
+                      {repliedLabel != null && (
+                        <span className="text-xs text-ink-faint">Replied {repliedLabel}</span>
+                      )}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for review #${row.id}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => navigate(`/users/${row.userId}`)}>
+                          <Eye className="h-4 w-4" />
+                          View Customer
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => navigate(`/orders/${row.orderId}`)}>
+                          <ShoppingBag className="h-4 w-4" />
+                          View Order
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            openReply(row);
+                          }}
+                        >
+                          <Reply className="h-4 w-4" />
+                          {row.adminReply != null ? "Edit Reply" : "Reply"}
+                        </DropdownMenuItem>
+                        {row.adminReply != null && (
+                          <DropdownMenuItem onSelect={() => deleteReply.mutate(row.id)}>
+                            <MessageSquareOff className="h-4 w-4" />
+                            Delete Reply
+                          </DropdownMenuItem>
+                        )}
+                        {row.status === "CLOSED" ? (
+                          <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "PENDING_REPLY" })}>
+                            <RotateCcw className="h-4 w-4" />
+                            Reopen
+                          </DropdownMenuItem>
+                        ) : (
+                          <DropdownMenuItem onSelect={() => setStatus.mutate({ id: row.id, status: "CLOSED" })}>
+                            <XCircle className="h-4 w-4" />
+                            Mark Closed
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem onSelect={() => toggleHide.mutate({ id: row.id, hide: !row.hidden })}>
+                          {/* CircleCheck for Unhide (not Eye — Eye is already
+                              "View Customer" above in this same menu; CircleCheck
+                              mirrors UsersPage.tsx's Unban, the same shape of
+                              reversing a suppression state). */}
+                          {row.hidden ? <CircleCheck className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                          {row.hidden ? "Unhide" : "Hide"}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            setDeleteTargetId(row.id);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete Review
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={reviews}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            empty={
+              hasActiveFilter ? (
+                <EmptyState
+                  icon={Star}
+                  title="No reviews match these filters."
+                  description="Try widening the date range or clearing a filter."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+                />
+              ) : (
+                <EmptyState
+                  icon={Star}
+                  title="No reviews yet"
+                  description="Customer reviews will appear here after their first delivered order."
+                  action={{ label: "Refresh", onClick: () => void refetch() }}
+                />
+              )
+            }
+          />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

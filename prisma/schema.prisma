@@ -618,6 +618,11 @@ model Order {
   /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
   /// text, not this field.
   digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
+  /// Internal-only diagnostic for admins (OrderDetailPage/AuditLog) — set automatically
+  /// when a Digiflazz fulfillment failure gave no specific reason of its own; holds the
+  /// result of a fallback KokinPay nickname lookup on the order's target account, to
+  /// help distinguish "wrong ID/region" from other causes. NEVER shown to the buyer.
+  accountDiagnosticNote String? @map("account_diagnostic_note")
   /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
   /// bubble is first rendered for a given checkout attempt and passed through
   /// to createOrderDirect/createOrderFromCart. The unique constraint is the

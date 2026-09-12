@@ -18,6 +18,17 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   getPriceList: digiflazzMock.getPriceList,
 }));
 
+// Reactive account/region diagnostic (Task 5): terminalFailDigiflazzOrder
+// runs a fallback KokinPay nickname lookup through NicknameService/
+// resolveNicknameGate/buildNicknameProviderEntries — mock the HTTP-layer
+// checkGameNickname (same choke point apiTopup.ts's test suite mocks) so
+// these tests never make a real network call.
+const kokinpayHttpMock = vi.hoisted(() => ({ checkGameNickname: vi.fn() }));
+vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@app/core/suppliers/kokinpay")>()),
+  checkGameNickname: kokinpayHttpMock.checkGameNickname,
+}));
+
 // Fix-pass regression test support (Critical #2): enqueueManualDeliveredDm is
 // called INSIDE fulfillDigiflazzOrder, AFTER its own PROCESSING->DELIVERED
 // claim and finalizeDeliverySideEffects have already run — mocking it to
@@ -49,6 +60,7 @@ import {
   deleteSetting,
   getOrder,
   ADMIN_IDS_KEY,
+  KOKINPAY_API_KEY_KEY,
 } from "@app/db";
 import {
   getDigiflazzCreds,
@@ -100,6 +112,7 @@ beforeEach(async () => {
   sample = await buildSampleData(prisma);
   digiflazzMock.createTransaction.mockReset();
   digiflazzMock.getPriceList.mockReset();
+  kokinpayHttpMock.checkGameNickname.mockReset();
   await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
   await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
 });
@@ -127,6 +140,195 @@ async function makeProcessingDigiflazzOrder(supplierSku = "ml100") {
   await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
   return order;
 }
+
+/** Same shape as makeProcessingDigiflazzOrder, but built for the reactive
+ * account/region diagnostic tests: no additionalFields (customerNo/
+ * buildDigiflazzCustomerNo aren't under test here), an optional
+ * `nicknameCheckGameCode` override on the denomination, and a customerData
+ * unit shaped `{ target, zone?, server? }` — the exact shape
+ * nicknameCheck.ts (order-bot) stashes into Order.customerData when a
+ * checkout actually went through the nickname-check gate (see
+ * apps/order-bot/src/conversations/nicknameCheck.ts). */
+async function makeProcessingDigiflazzOrderForDiagnostic(opts: {
+  nicknameCheckGameCode?: string | null;
+  customerDataUnit?: Record<string, string>;
+  supplierSku?: string;
+} = {}) {
+  await prisma.denomination.update({
+    where: { id: sample.product.id },
+    data: {
+      autoDeliverySource: "digiflazz",
+      supplierSku: opts.supplierSku ?? "ml100",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      // Field defs matching the customerData keys these tests write —
+      // createOrderDirect re-validates manual_with_info customerData
+      // against the denomination's field spec (orders.ts), so an
+      // undeclared key (like "target") would otherwise be silently
+      // stripped before it ever reaches the diagnostic.
+      additionalFields: JSON.stringify([
+        { key: "target", label: { id: "Target", en: "Target" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "zone", label: { id: "Zone", en: "Zone" }, type: "text", required: false, options: [], placeholder: "" },
+        { key: "server", label: { id: "Server", en: "Server" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+      nicknameCheckGameCode: opts.nicknameCheckGameCode ?? null,
+    },
+  });
+  const order = (await createOrderDirect(prisma, {
+    user: sample.user,
+    productId: sample.product.id,
+    quantity: 1,
+    customerData: JSON.stringify([opts.customerDataUnit ?? {}]),
+  }))!;
+  await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+  return order;
+}
+
+describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Task 5)", () => {
+  it("supplierGaveReason:false + a game code that resolves + KokinPay credentials configured -> accountDiagnosticNote is set from the lookup", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789", server: "2001" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "ProGamer99" });
+    // Bare "Gagal" — no message field at all — is exactly the "Digiflazz
+    // gave no reason" trigger (supplierGaveReason: Boolean(result.message)).
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "123456789", server: "2001" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toContain("ProGamer99");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+
+    // Recommended §5 wiring: the note is folded into the audit log sentence.
+    const auditRow = await prisma.auditLog.findFirst({ where: { targetId: order.id, action: "order.digiflazz_dispatch_failed" } });
+    expect(auditRow!.details).toContain("ProGamer99");
+  });
+
+  it("supplierGaveReason:true (Digiflazz gave a real message) -> KokinPay is never called, accountDiagnosticNote stays null", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: "Saldo tidak cukup", price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:true (structural resolution failure, e.g. missing supplierSku) -> KokinPay is never called, accountDiagnosticNote stays null", async () => {
+    // No supplierSku configured on the denomination at all — resolveSingleDigiflazzItem
+    // refuses before createTransaction is ever called, and that reason is
+    // always structural/meaningful (never "Digiflazz gave no reason").
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: null,
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        nicknameCheckGameCode: "mobile-legends",
+      },
+    });
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      customerData: JSON.stringify([{ target: "123456789" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:false but the product doesn't match any catalog game -> no crash, accountDiagnosticNote stays null, failure-handling still happens normally", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    // No nicknameCheckGameCode override, and the sample denomination's
+    // parent Product ("Netflix Premium 1M") doesn't auto-detect against the
+    // static game catalog — resolveNicknameGate resolves gameCode: null.
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+    // Existing failure-handling behavior (alert, audit log, realtime emit)
+    // still happens normally — same assertions as the pre-existing "alerts
+    // admins... on Gagal" test.
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
+    const auditRow = await prisma.auditLog.findFirst({ where: { targetId: order.id, action: "order.digiflazz_dispatch_failed" } });
+    expect(auditRow).not.toBeNull();
+  });
+
+  it("supplierGaveReason:false, game code resolves, but no KokinPay credentials configured -> no crash, accountDiagnosticNote stays null", async () => {
+    await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:false, game code resolves, KokinPay configured, but the lookup is a definitive not_found -> accountDiagnosticNote reports the mismatch", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "000000000" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    await dispatchPendingDigiflazzOrders(prisma);
+
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("tidak ditemukan");
+    expect(refreshed!.accountDiagnosticNote).toContain("mobile-legends");
+  });
+});
 
 describe("getDigiflazzCreds", () => {
   it("returns credentials when username/apiKey are set and not disabled", async () => {

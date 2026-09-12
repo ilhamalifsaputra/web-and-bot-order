@@ -54,10 +54,12 @@ import {
   type DigiflazzCreds,
   type DigiflazzPriceListItem,
 } from "@app/core/suppliers/digiflazz";
+import { NicknameService } from "@app/core/nickname/service";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { getSetting, getDecryptedSetting } from "./settings";
 import { getOrder, finalizeDeliverySideEffects } from "./orders";
+import { resolveNicknameGate, buildNicknameProviderEntries } from "./nickname";
 import { enqueueManualOrderAdminAlert, enqueueManualDeliveredDm, enqueueAdminDigiflazzResyncAborted } from "./notifications";
 import { logAdminAction } from "./audit";
 import {
@@ -200,6 +202,24 @@ type DigiflazzCandidateOrder = {
       supplierSku: string | null;
       additionalFields: string | null;
       autoDeliverySource: string | null;
+      /** The Denomination's own nickname-check fields (confusingly, this
+       * `product` relation on OrderItem actually points at a Denomination
+       * row — see schema.prisma's own comments — and Denomination's OWN
+       * `product` relation below points at the real Product row). Needed
+       * only for the reactive account/region diagnostic terminalFailDigiflazzOrder
+       * runs when Digiflazz itself gave no failure reason — see this file's
+       * module doc comment and resolveNicknameGate (./nickname).
+       *
+       * `product` (the nested Product row) is OPTIONAL here — not every
+       * caller's query joins it (the storefront webhook's live re-check,
+       * checkout.ts POST /pay/digiflazz/callback, fetches via getOrderByCode's
+       * fullInclude, which doesn't nest this far — only the poller's own
+       * dispatchPendingDigiflazzOrders query does). computeAccountDiagnosticNote
+       * treats a missing/undefined product exactly like a null one (no
+       * catalog auto-detect possible), so this is a pure type widening with
+       * no behavior change for either caller. */
+      nicknameCheckGameCode: string | null;
+      product?: { digiflazzBrand: string | null; name: string } | null;
     };
   }[];
 };
@@ -263,6 +283,12 @@ export async function alertDigiflazzDispatchFailed(
   db: Db,
   order: DigiflazzCandidateOrder,
   reason: string,
+  /** The reactive KokinPay account/region diagnostic note (see
+   * terminalFailDigiflazzOrder), when one was computed for this failure —
+   * folded into the audit log as a second sentence. Omitted/null for a
+   * failure that never ran the diagnostic (e.g. Digiflazz gave its own
+   * reason, or this alert came from a non-diagnostic caller). */
+  accountDiagnosticNote?: string | null,
 ): Promise<void> {
   await enqueueManualOrderAdminAlert(db, {
     orderId: order.id,
@@ -271,12 +297,15 @@ export async function alertDigiflazzDispatchFailed(
     total: order.totalAmount,
     currency: order.currency,
   });
+  const details = accountDiagnosticNote
+    ? `Digiflazz gagal — perlu ditangani manual. Order ${order.orderCode}: ${reason}. ${accountDiagnosticNote}`
+    : `Digiflazz gagal — perlu ditangani manual. Order ${order.orderCode}: ${reason}`;
   await logAdminAction(db, {
     adminId: null,
     action: "order.digiflazz_dispatch_failed",
     targetType: "order",
     targetId: order.id,
-    details: `Digiflazz gagal — perlu ditangani manual. Order ${order.orderCode}: ${reason}`,
+    details,
   });
   logger.warn(
     `Digiflazz dispatch failed for order ${order.orderCode} (${reason}) — queued for manual fulfilment and alerted admins`,
@@ -309,7 +338,21 @@ function describeFulfillFailure(err: unknown): string {
 export type DigiflazzOutcome =
   | { kind: "pending" }
   | { kind: "transient_error"; message: string }
-  | { kind: "terminal"; reason: string };
+  | {
+      kind: "terminal";
+      reason: string;
+      /** Whether Digiflazz's own "Gagal" response carried real content in
+       * its `message` field (or, for a structural resolution failure like a
+       * missing supplierSku, always true — that's a config problem, not a
+       * "Digiflazz gave no reason" case). Only when this is false does
+       * terminalFailDigiflazzOrder run the reactive KokinPay account/region
+       * diagnostic — see this file's module doc comment and the "Gagal"
+       * branch in dispatchPendingDigiflazzOrders, the one place this
+       * distinction is still knowable (by the time a raw Digiflazz response
+       * becomes a DigiflazzOutcome, `reason` has already been folded into
+       * one string and "empty" is no longer a usable signal). */
+      supplierGaveReason: boolean;
+    };
 
 /**
  * Single place that decides what a non-Sukses Digiflazz dispatch/recheck
@@ -369,27 +412,98 @@ export async function recordDigiflazzOutcome(
       outcome.kind === "pending"
         ? "Digiflazz never resolved this order within 24h of dispatch — still reporting Pending"
         : `Digiflazz dispatch kept failing transiently for 24h and gave up retrying (last error: ${outcome.message})`;
-    return terminalFailDigiflazzOrder(db, order, reason);
+    // Both of these reasons are always-meaningful, structural explanations
+    // (a 24h backoff window exhausted) — never a "Digiflazz gave no reason"
+    // case, so the reactive diagnostic below must not run for them.
+    return terminalFailDigiflazzOrder(db, order, reason, true);
   }
-  return terminalFailDigiflazzOrder(db, order, outcome.reason);
+  return terminalFailDigiflazzOrder(db, order, outcome.reason, outcome.supplierGaveReason);
+}
+
+/**
+ * The reactive account/region diagnostic: when Digiflazz's own "Gagal"
+ * report gave no specific reason (supplierGaveReason: false at the call
+ * site — see terminalFailDigiflazzOrder below), run a best-effort KokinPay
+ * nickname lookup on the order's target account so the admin reviewing the
+ * failure has a hint whether it's a wrong-ID/region problem or something
+ * else. Reuses resolveNicknameGate/buildNicknameProviderEntries (the same
+ * functions the 3 pre-checkout nickname-check call sites use) — never
+ * duplicates their resolution logic.
+ *
+ * Deliberately silent (returns null, never throws) for every "we couldn't
+ * tell" case — no matching game, no KokinPay credentials, no target on the
+ * order, or a non-definitive lookup result — so a diagnostic that can't say
+ * anything useful never blocks or pollutes the existing failure-handling
+ * path (alert/audit log/realtime emit) it runs inside of.
+ */
+async function computeAccountDiagnosticNote(
+  db: PrismaClient,
+  order: DigiflazzCandidateOrder,
+): Promise<string | null> {
+  const item = order.items[0]; // the single Digiflazz-routed item — resolveSingleDigiflazzItem
+  // already guarantees exactly one by the time a terminal failure is recorded.
+  const denomination = item?.product; // NOTE: confusingly, OrderItem's relation field is
+  // literally named `product` but points at a Denomination row (this repo's
+  // schema renamed the old products table to denominations); denomination.product
+  // (yes, again) is the ACTUAL Product row, which has digiflazzBrand/name.
+  if (!denomination) return null;
+
+  const { gameCode } = resolveNicknameGate(denomination);
+  if (!gameCode) return null;
+
+  const entries = await buildNicknameProviderEntries(db, gameCode);
+  if (entries.length === 0) return null;
+
+  const unit = parseCustomerData(order.customerData)[0] ?? {};
+  const target = unit.target;
+  if (!target) return null;
+
+  const result = await new NicknameService(entries).checkNickname({ target, zone: unit.zone, server: unit.server });
+  if (result.status === "found") {
+    return `KokinPay: akun ditemukan (nickname "${result.nickname}") — kemungkinan bukan masalah ID/region.`;
+  }
+  if (result.status === "not_found" && result.definitive) {
+    return `KokinPay: akun tidak ditemukan untuk kode game ${gameCode} — kemungkinan salah ID/region.`;
+  }
+  // Any other status (no_providers_configured — already ruled out above by
+  // the entries.length check, but kept exhaustive — or a non-definitive
+  // not_found) — don't write a misleading note.
+  return null;
 }
 
 /** Shared terminal-failure tail for recordDigiflazzOutcome above: writes
  * the order's digiflazz* fields to their terminal-failed shape, alerts
  * admins via alertDigiflazzDispatchFailed (unchanged), and emits the
  * realtime status-changed event. Not exported — recordDigiflazzOutcome is
- * the only entry point callers (this file and, later, the webhook) use. */
+ * the only entry point callers (this file and, later, the webhook) use.
+ *
+ * `supplierGaveReason` gates the reactive account/region diagnostic
+ * (computeAccountDiagnosticNote above): only when Digiflazz's own "Gagal"
+ * report carried no real explanation of its own is it worth running a
+ * fallback KokinPay lookup — see this file's module doc comment for why
+ * "reason is non-empty" isn't a usable trigger on its own (every call site
+ * already folds a fallback string in even when Digiflazz gave nothing). */
 async function terminalFailDigiflazzOrder(
   db: PrismaClient,
   order: DigiflazzCandidateOrder,
   reason: string,
+  supplierGaveReason: boolean,
 ): Promise<"failed"> {
+  const accountDiagnosticNote = supplierGaveReason ? null : await computeAccountDiagnosticNote(db, order);
+
   const claim = await db.order.updateMany({
     where: { id: order.id, status: OrderStatus.PROCESSING },
-    data: { digiflazzStatus: "failed", digiflazzNextRecheckAt: null, digiflazzFailureDetail: reason },
+    data: {
+      digiflazzStatus: "failed",
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: reason,
+      // Never overwrite a previous note with null when this particular call
+      // didn't produce one.
+      ...(accountDiagnosticNote ? { accountDiagnosticNote } : {}),
+    },
   });
   if (claim.count === 1) {
-    await alertDigiflazzDispatchFailed(db, order, reason);
+    await alertDigiflazzDispatchFailed(db, order, reason, accountDiagnosticNote);
     emitDigiflazzOrderStatusChanged(order.id);
   }
   return "failed";
@@ -448,7 +562,16 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     include: {
       items: {
         include: {
-          product: { select: { name: true, supplierSku: true, additionalFields: true, autoDeliverySource: true } },
+          product: {
+            select: {
+              name: true,
+              supplierSku: true,
+              additionalFields: true,
+              autoDeliverySource: true,
+              nicknameCheckGameCode: true,
+              product: { select: { digiflazzBrand: true, name: true } },
+            },
+          },
         },
       },
     },
@@ -497,7 +620,16 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
     // distinguishes.
     const resolution = resolveSingleDigiflazzItem(order);
     if (!resolution.ok) {
-      await recordDigiflazzOutcome(db, order, { kind: "terminal", reason: resolution.reason }, dispatchedAt);
+      // A structural resolution failure (missing supplierSku, wrong
+      // quantity) is always a specific, meaningful explanation — a config
+      // problem, not a "Digiflazz gave no reason" one — so the reactive
+      // diagnostic must never run for it.
+      await recordDigiflazzOutcome(
+        db,
+        order,
+        { kind: "terminal", reason: resolution.reason, supplierGaveReason: true },
+        dispatchedAt,
+      );
       summary.failed++;
       continue;
     }
@@ -556,7 +688,15 @@ export async function dispatchPendingDigiflazzOrders(db: PrismaClient): Promise<
         const outcome = await recordDigiflazzOutcome(
           db,
           order,
-          { kind: "terminal", reason: `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}` },
+          {
+            kind: "terminal",
+            reason: `Digiflazz reported Gagal${result.message ? ` (${result.message})` : ""}`,
+            // Only true when Digiflazz's own `message` field carried real
+            // content — a bare "Gagal" with no explanation is exactly the
+            // case the reactive account/region diagnostic exists for (see
+            // this file's module doc comment).
+            supplierGaveReason: Boolean(result.message),
+          },
           dispatchedAt,
         );
         summary.failed++;

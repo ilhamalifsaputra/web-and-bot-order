@@ -10,6 +10,7 @@ interface OrderDigiflazzSnapshot {
   digiflazzAttempts: number;
   digiflazzNextRecheckAt: string | null;
   digiflazzFailureDetail: string | null;
+  accountDiagnosticNote: string | null;
 }
 
 async function readOrderDigiflazzSnapshot(orderId: number): Promise<OrderDigiflazzSnapshot | null> {
@@ -21,6 +22,7 @@ async function readOrderDigiflazzSnapshot(orderId: number): Promise<OrderDigifla
       digiflazzAttempts: true,
       digiflazzNextRecheckAt: true,
       digiflazzFailureDetail: true,
+      accountDiagnosticNote: true,
     },
   });
   if (!order) return null;
@@ -30,6 +32,7 @@ async function readOrderDigiflazzSnapshot(orderId: number): Promise<OrderDigifla
     digiflazzAttempts: order.digiflazzAttempts,
     digiflazzNextRecheckAt: order.digiflazzNextRecheckAt?.toISOString() ?? null,
     digiflazzFailureDetail: order.digiflazzFailureDetail,
+    accountDiagnosticNote: order.accountDiagnosticNote,
   };
 }
 

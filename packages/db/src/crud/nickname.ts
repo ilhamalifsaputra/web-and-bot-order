@@ -24,7 +24,6 @@ import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvi
 import { GAME_CATALOG, matchGameKey, findCatalogEntryByCode } from "@app/core/nickname/gameCatalog";
 import type { Db } from "./_types";
 import { getKokinpayCreds } from "./kokinpay";
-import type { getDenominationWithProduct } from "./catalog";
 
 /**
  * Resolve the single KokinPay `NicknameServiceProviderEntry` for a resolved
@@ -42,10 +41,17 @@ export async function buildNicknameProviderEntries(
   return [{ provider: createKokinpayNicknameProvider(creds), gameCode }];
 }
 
-/** The exact shape `getDenominationWithProduct` returns — `resolveNicknameGate`
- * takes this directly so every call site can pass what it already has in
- * scope, with no extra DB read. */
-type DenominationForNicknameGate = Awaited<ReturnType<typeof getDenominationWithProduct>>;
+/** The minimal structural shape `resolveNicknameGate` actually needs — wide
+ * enough that both `getDenominationWithProduct`'s full return shape (the 3
+ * pre-checkout call sites) and a narrower Prisma `select` (the reactive
+ * Digiflazz-failure diagnostic in crud/digiflazz.ts, which doesn't need the
+ * rest of getDenominationWithProduct's `include`) satisfy it structurally,
+ * with no extra DB read on either side. Purely a type widening — this
+ * function's behavior is unchanged. */
+type DenominationForNicknameGate = {
+  nicknameCheckGameCode: string | null;
+  product?: { digiflazzBrand: string | null; name: string } | null;
+};
 
 /**
  * The nickname-check opt-in rule — whether a checkout attempt for this

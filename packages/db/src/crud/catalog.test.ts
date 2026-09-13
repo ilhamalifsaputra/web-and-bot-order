@@ -48,7 +48,6 @@ import {
   flashSalePerformance,
   CategoryMismatchError,
 } from "./catalog";
-import { createGame } from "./games";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 
@@ -444,30 +443,21 @@ describe("getCatalogProductWithDenominations / getDenominationWithProduct", () =
     expect(got!.product.category.id).toBe(cat.id);
   });
 
-  // Final-review fix, Finding 3: apiTopup.ts's gameId nickname-check branch
-  // needs product.game's isActive/nicknameSupported to enforce those flags,
-  // which it can't see through product.gameId alone.
-  it("also loads the linked Game when the product has a gameId", async () => {
+  // resolveNicknameGate (packages/db/src/crud/nickname.ts) auto-detects the
+  // nickname-check game from product.digiflazzBrand/name — this shape must
+  // keep carrying those fields for that to work.
+  it("loads product.digiflazzBrand for nickname-check auto-detection", async () => {
     const cat = await makeCategory();
-    const p = await makeProduct(cat.id, "Parent With Game");
-    const game = await createGame(prisma, { slug: "catalog-test-game", name: "Catalog Test Game" });
-    await prisma.product.update({ where: { id: p.id }, data: { gameId: game.id } });
-    const d = await makeDenom(p.id, "1 Month", "5");
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Mobile Legends 86 Diamonds",
+      digiflazzBrand: "Mobile Legends",
+    });
+    const d = await makeDenom(p.id, "86 Diamonds", "5");
 
     const got = await getDenominationWithProduct(prisma, d.id);
-    expect(got!.product.game).not.toBeNull();
-    expect(got!.product.game!.id).toBe(game.id);
-    expect(got!.product.game!.isActive).toBe(true);
-    expect(got!.product.game!.nicknameSupported).toBe(true);
-  });
-
-  it("has a null game when the product has no gameId", async () => {
-    const cat = await makeCategory();
-    const p = await makeProduct(cat.id, "Parent No Game");
-    const d = await makeDenom(p.id, "1 Month", "5");
-
-    const got = await getDenominationWithProduct(prisma, d.id);
-    expect(got!.product.game).toBeNull();
+    expect(got!.product.digiflazzBrand).toBe("Mobile Legends");
+    expect(got!.product.name).toBe("Mobile Legends 86 Diamonds");
   });
 });
 

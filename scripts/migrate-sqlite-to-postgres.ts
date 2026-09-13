@@ -72,10 +72,10 @@
  *
  * This also transparently handles two forms of source/target drift without
  * special-casing every table:
- *  - Whole tables absent from the source (7 of them: `games`,
- *    `provider_game_mappings`, `product_provider_mappings`, `refunds`,
- *    `refund_items`, `admin_tasks`, `idempotency_records` — all added to
- *    the schema after this snapshot was staged) are skipped with 0 rows;
+ *  - Whole tables absent from the source (5 of them: `product_provider_mappings`,
+ *    `refunds`, `refund_items`, `admin_tasks`, `idempotency_records` — all
+ *    added to the schema after this snapshot was staged) are skipped with 0
+ *    rows;
  *    the target simply keeps the empty rows Task 4 already created.
  *  - Columns absent from an otherwise-present source table (e.g.
  *    `orders.digiflazz_*` — five columns added after this snapshot) are
@@ -118,8 +118,6 @@ const TABLES = [
   "wallet_transactions",
   "password_reset_tokens",
   "categories",
-  "games",
-  "provider_game_mappings",
   "products",
   "denominations",
   "product_provider_mappings",

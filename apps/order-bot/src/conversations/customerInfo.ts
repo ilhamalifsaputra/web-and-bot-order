@@ -74,13 +74,33 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
     return;
   }
 
+  // A nickname-check handoff (nicknameCheck.ts, MANUAL_WITH_INFO + quantity >
+  // 1) already collected unit 1's answer before entering this conversation —
+  // pick it up here so the wizard resumes at unit 2 instead of re-asking for
+  // unit 1's fields (final-review round 2 fix; see nicknameCheck.ts's
+  // finalizeNicknameCheck for the write side of this handoff).
+  const prefilledJson = ctx.session.scratch.prefilledCustomerDataUnit as string | undefined;
+  if (prefilledJson) delete ctx.session.scratch.prefilledCustomerDataUnit;
+  const answers: Array<Record<string, string>> = prefilledJson ? [JSON.parse(prefilledJson)] : [];
+  let unitIdx = prefilledJson ? 1 : 0;
+
   if (ctx.callbackQuery) await ctx.answerCallbackQuery();
   const cancelKb = ckb.voucherCancelKb(productId, quantity, lang);
-  await menuAnchor(ctx, fieldPrompt(lang, 0, quantity, fields[0]!), cancelKb);
 
-  const answers: Array<Record<string, string>> = [];
+  if (unitIdx >= quantity) {
+    // Defensive — shouldn't happen given nicknameCheck.ts's own quantity > 1
+    // guard, but never strand the buyer if it ever does: the prefilled unit
+    // alone already satisfies the full quantity.
+    ctx.session.scratch.customerData = JSON.stringify(answers);
+    delete ctx.session.scratch.pendingInfoProductId;
+    delete ctx.session.scratch.pendingInfoQuantity;
+    await renderOrderConfirmation(ctx, productId, quantity);
+    return;
+  }
+
+  await menuAnchor(ctx, fieldPrompt(lang, unitIdx, quantity, fields[0]!), cancelKb);
+
   let currentUnit: Record<string, string> = {};
-  let unitIdx = 0;
   let fieldIdx = 0;
 
   for (;;) {

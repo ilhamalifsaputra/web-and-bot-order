@@ -330,39 +330,6 @@ describe("DenominationCreatePage", () => {
     expect(sentBody.deliveryType).toBe("manual");
   });
 
-  // Task 12: DeliveryTypeSection's legacy-field note, driven by the parent
-  // Product's Linked Game (Task 10's Product.gameId) — fetched via the same
-  // breadcrumb query as the product name (F-007), just like the note wired
-  // into DenominationEditPage. Only rendered once deliveryType is
-  // manual_with_info, matching the two fields it sits next to.
-  const NOTE_TEXT = /this product uses the new game-based nickname check/i;
-
-  async function reachRequiresInfoStep(user: ReturnType<typeof userEvent.setup>) {
-    await fillBaseFields(user);
-    await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
-    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
-  }
-
-  it("shows the Game-based nickname check note when the parent product has a Linked Game", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", gameId: 5 } });
-    render(<DenominationCreatePage />, { wrapper: Wrapper });
-
-    await reachRequiresInfoStep(user);
-
-    // Rendered twice — once near nicknameCheckGameCode, once near expectedRegionCode.
-    expect(screen.getAllByText(NOTE_TEXT)).toHaveLength(2);
-  });
-
-  it("does not show the Game-based nickname check note when the parent product has no Linked Game", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    vi.mocked(apiGet).mockResolvedValue({ product: { id: 42, name: "Netflix Premium", gameId: null } });
-    render(<DenominationCreatePage />, { wrapper: Wrapper });
-
-    await reachRequiresInfoStep(user);
-
-    expect(screen.queryByText(NOTE_TEXT)).not.toBeInTheDocument();
-  });
 
   it("shows an error message when create fails", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });

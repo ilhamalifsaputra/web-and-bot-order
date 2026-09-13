@@ -80,8 +80,7 @@ export const ENCRYPTED_SETTING_KEYS = new Set([
   "binance_api_key", "binance_api_secret",
   "nowpayments_api_key", "nowpayments_ipn_secret",
   "bscscan_api_key", "smtp_pass", "digiflazz_api_key",
-  "kokinpay_api_key", "vipreseller_api_key",
-  "melostore_api_key", "melostore_secret_key",
+  "kokinpay_api_key",
 ]);
 
 /** Encrypt `plaintext` and store it under `key`. Throws

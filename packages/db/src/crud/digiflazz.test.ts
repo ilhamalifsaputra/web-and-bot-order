@@ -18,6 +18,17 @@ vi.mock("@app/core/suppliers/digiflazz", async (importOriginal) => ({
   getPriceList: digiflazzMock.getPriceList,
 }));
 
+// Reactive account/region diagnostic (Task 5): terminalFailDigiflazzOrder
+// runs a fallback KokinPay nickname lookup through NicknameService/
+// resolveNicknameGate/buildNicknameProviderEntries — mock the HTTP-layer
+// checkGameNickname (same choke point apiTopup.ts's test suite mocks) so
+// these tests never make a real network call.
+const kokinpayHttpMock = vi.hoisted(() => ({ checkGameNickname: vi.fn() }));
+vi.mock("@app/core/suppliers/kokinpay", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@app/core/suppliers/kokinpay")>()),
+  checkGameNickname: kokinpayHttpMock.checkGameNickname,
+}));
+
 // Fix-pass regression test support (Critical #2): enqueueManualDeliveredDm is
 // called INSIDE fulfillDigiflazzOrder, AFTER its own PROCESSING->DELIVERED
 // claim and finalizeDeliverySideEffects have already run — mocking it to
@@ -49,6 +60,7 @@ import {
   deleteSetting,
   getOrder,
   ADMIN_IDS_KEY,
+  KOKINPAY_API_KEY_KEY,
 } from "@app/db";
 import {
   getDigiflazzCreds,
@@ -76,6 +88,8 @@ import {
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
+import { parseAdditionalFields } from "@app/core/deliveryFields";
 import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
 import { encryptCredentials } from "@app/core/credentialCrypto";
@@ -100,6 +114,7 @@ beforeEach(async () => {
   sample = await buildSampleData(prisma);
   digiflazzMock.createTransaction.mockReset();
   digiflazzMock.getPriceList.mockReset();
+  kokinpayHttpMock.checkGameNickname.mockReset();
   await setSetting(prisma, DIGIFLAZZ_USERNAME_KEY, "shopuser");
   await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, "shopkey");
 });
@@ -127,6 +142,283 @@ async function makeProcessingDigiflazzOrder(supplierSku = "ml100") {
   await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
   return order;
 }
+
+/** Same shape as makeProcessingDigiflazzOrder, but built for the reactive
+ * account/region diagnostic tests: no additionalFields (customerNo/
+ * buildDigiflazzCustomerNo aren't under test here), an optional
+ * `nicknameCheckGameCode` override on the denomination, and a customerData
+ * unit shaped `{ target, zone?, server? }` — the exact shape
+ * nicknameCheck.ts (order-bot) stashes into Order.customerData when a
+ * checkout actually went through the nickname-check gate (see
+ * apps/order-bot/src/conversations/nicknameCheck.ts). */
+async function makeProcessingDigiflazzOrderForDiagnostic(opts: {
+  nicknameCheckGameCode?: string | null;
+  customerDataUnit?: Record<string, string>;
+  supplierSku?: string;
+} = {}) {
+  await prisma.denomination.update({
+    where: { id: sample.product.id },
+    data: {
+      autoDeliverySource: "digiflazz",
+      supplierSku: opts.supplierSku ?? "ml100",
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      // Field defs matching the customerData keys these tests write —
+      // createOrderDirect re-validates manual_with_info customerData
+      // against the denomination's field spec (orders.ts), so an
+      // undeclared key (like "target") would otherwise be silently
+      // stripped before it ever reaches the diagnostic. Exactly 2 fields,
+      // matching what a real "mobile-legends" SKU (requiresZone: false,
+      // requiresServer: true) would actually be configured with —
+      // nicknameFieldMapping reads fields POSITIONALLY (final-review round
+      // 2), so `server` must sit at field index 1 (right after `target`),
+      // not a 3rd slot behind an unused `zone` field this game never needs.
+      additionalFields: JSON.stringify([
+        { key: "target", label: { id: "Target", en: "Target" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "server", label: { id: "Server", en: "Server" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+      nicknameCheckGameCode: opts.nicknameCheckGameCode ?? null,
+    },
+  });
+  const order = (await createOrderDirect(prisma, {
+    user: sample.user,
+    productId: sample.product.id,
+    quantity: 1,
+    customerData: JSON.stringify([opts.customerDataUnit ?? {}]),
+  }))!;
+  await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+  return order;
+}
+
+describe("terminalFailDigiflazzOrder — reactive account/region diagnostic (Task 5)", () => {
+  it("supplierGaveReason:false + a game code that resolves + KokinPay credentials configured -> accountDiagnosticNote is set from the lookup", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789", server: "2001" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "ProGamer99" });
+    // Bare "Gagal" — no message field at all — is exactly the "Digiflazz
+    // gave no reason" trigger (supplierGaveReason: Boolean(result.message)).
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "123456789", server: "2001" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toContain("ProGamer99");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+
+    // Recommended §5 wiring: the note is folded into the audit log sentence.
+    const auditRow = await prisma.auditLog.findFirst({ where: { targetId: order.id, action: "order.digiflazz_dispatch_failed" } });
+    expect(auditRow!.details).toContain("ProGamer99");
+  });
+
+  it("supplierGaveReason:true (Digiflazz gave a real message) -> KokinPay is never called, accountDiagnosticNote stays null", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: "Saldo tidak cukup", price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:true (structural resolution failure, e.g. missing supplierSku) -> KokinPay is never called, accountDiagnosticNote stays null", async () => {
+    // No supplierSku configured on the denomination at all — resolveSingleDigiflazzItem
+    // refuses before createTransaction is ever called, and that reason is
+    // always structural/meaningful (never "Digiflazz gave no reason").
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: null,
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        nicknameCheckGameCode: "mobile-legends",
+      },
+    });
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      customerData: JSON.stringify([{ target: "123456789" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(digiflazzMock.createTransaction).not.toHaveBeenCalled();
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:false but the product doesn't match any catalog game -> no crash, accountDiagnosticNote stays null, failure-handling still happens normally", async () => {
+    await setSetting(prisma, ADMIN_IDS_KEY, "555");
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    // No nicknameCheckGameCode override, and the sample denomination's
+    // parent Product ("Netflix Premium 1M") doesn't auto-detect against the
+    // static game catalog — resolveNicknameGate resolves gameCode: null.
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.digiflazzStatus).toBe("failed");
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+    // Existing failure-handling behavior (alert, audit log, realtime emit)
+    // still happens normally — same assertions as the pre-existing "alerts
+    // admins... on Gagal" test.
+    const alertRow = await prisma.notificationOutbox.findFirst({ where: { orderId: order.id } });
+    expect(alertRow).not.toBeNull();
+    const auditRow = await prisma.auditLog.findFirst({ where: { targetId: order.id, action: "order.digiflazz_dispatch_failed" } });
+    expect(auditRow).not.toBeNull();
+  });
+
+  it("supplierGaveReason:false, game code resolves, but no KokinPay credentials configured -> no crash, accountDiagnosticNote stays null", async () => {
+    await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "123456789" },
+    });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).not.toHaveBeenCalled();
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toBeNull();
+  });
+
+  it("supplierGaveReason:false, game code resolves, KokinPay configured, but the lookup is a definitive not_found -> accountDiagnosticNote reports the mismatch", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      nicknameCheckGameCode: "mobile-legends",
+      customerDataUnit: { target: "000000000" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: false, nickname: null });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    await dispatchPendingDigiflazzOrders(prisma);
+
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("tidak ditemukan");
+    expect(refreshed!.accountDiagnosticNote).toContain("mobile-legends");
+  });
+
+  // Minor-4 (final whole-branch review): every case above drives the
+  // diagnostic via the nicknameCheckGameCode override — none exercises
+  // catalog auto-detect through the nested `product: { digiflazzBrand,
+  // name }` select dispatchPendingDigiflazzOrders's query joins. This one
+  // does: no override at all, only the parent Product's digiflazzBrand.
+  it("supplierGaveReason:false, no nicknameCheckGameCode override, but the parent Product's digiflazzBrand auto-detects a catalog game -> accountDiagnosticNote is set from the lookup", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { digiflazzBrand: "Mobile Legends" } });
+    const order = await makeProcessingDigiflazzOrderForDiagnostic({
+      customerDataUnit: { target: "123456789", server: "2001" },
+    });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "AutoDetectedPlayer" });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "123456789", server: "2001" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("AutoDetectedPlayer");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+  });
+
+  // ===========================================================================
+  // Final-review round 2 (money-critical gap this closes): every case above
+  // uses a bot-shaped {target,zone,server} customerData fixture. Before this
+  // fix, computeAccountDiagnosticNote ONLY ever read `unit.target` — so it
+  // silently returned null for every STOREFRONT-placed order, whose
+  // customerData is keyed by the SKU's own additionalFields (e.g.
+  // {user_id,server_id}), never `target`. This test uses a
+  // storefront-shaped fixture to prove the diagnostic now actually works for
+  // that traffic too — this is the exact gap the re-review found the
+  // existing test suite blind to.
+  // ===========================================================================
+  it("a STOREFRONT-shaped customerData fixture ({user_id,server_id}, no 'target' key at all) still produces a diagnostic note", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: {
+        autoDeliverySource: "digiflazz",
+        supplierSku: "ml100",
+        deliveryType: DeliveryType.MANUAL_WITH_INFO,
+        // Storefront-shaped field keys — exactly what apiTopup.ts's
+        // checkout form (and the storefront's account-info step generally)
+        // writes, driven by the SKU's OWN additionalFields schema. No
+        // "target" key anywhere.
+        additionalFields: JSON.stringify([
+          { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+          { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+        ]),
+        nicknameCheckGameCode: "mobile-legends", // requiresZone:false, requiresServer:true
+      },
+    });
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      customerData: JSON.stringify([{ user_id: "12345", server_id: "6" }]),
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PROCESSING } });
+    kokinpayHttpMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "StorefrontPlayer" });
+    digiflazzMock.createTransaction.mockResolvedValue({
+      refId: order.orderCode, status: "Gagal", sn: null, message: null, price: null,
+    });
+
+    const summary = await dispatchPendingDigiflazzOrders(prisma);
+    expect(summary).toEqual({ claimed: 1, delivered: 0, pending: 0, failed: 1 });
+
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledTimes(1);
+    expect(kokinpayHttpMock.checkGameNickname).toHaveBeenCalledWith(
+      { apiKey: "kp-key" },
+      { gameCode: "mobile-legends", id: "12345", server: "6" },
+    );
+    const refreshed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshed!.accountDiagnosticNote).toContain("StorefrontPlayer");
+    expect(refreshed!.accountDiagnosticNote).toContain("ditemukan");
+  });
+});
 
 describe("getDigiflazzCreds", () => {
   it("returns credentials when username/apiKey are set and not disabled", async () => {
@@ -171,6 +463,74 @@ describe("buildDigiflazzCustomerNo", () => {
     };
     const customerData = JSON.stringify([{ user_id: "123456789", server_id: "" }]);
     expect(buildDigiflazzCustomerNo(product, customerData)).toBe("123456789");
+  });
+
+  // ===========================================================================
+  // Money-critical (final-review round 2). The bug this closes: nicknameCheck.ts
+  // (the bot's live nickname-check wizard) used to write Order.customerData as
+  // a hardcoded {target,zone,server} object, completely independent of the
+  // SKU's OWN additionalFields — which is what buildDigiflazzCustomerNo (this
+  // function, the thing that actually builds the string sent to the real
+  // Digiflazz supplier API) reads. That meant an order that went through the
+  // nickname-check wizard dispatched to Digiflazz with an EMPTY customer_no —
+  // a real order with no account id at all. The fix: nicknameCheck.ts now
+  // builds its customerData unit through nicknameFieldMapping, keyed into the
+  // SKU's actual additionalFields, positionally — exactly what this test
+  // reproduces and asserts round-trips into a NON-EMPTY customerNo.
+  // ===========================================================================
+  it("[MONEY-CRITICAL] a unit built the way nicknameCheck.ts now builds it (via the shared buildCustomerDataUnit) round-trips into a NON-EMPTY customerNo containing the target", () => {
+    // The SKU's own admin-defined additionalFields — e.g. a real
+    // "mobile-legends" SKU (requiresZone: false, requiresServer: true).
+    const product = {
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+    };
+    const additionalFields = parseAdditionalFields(product.additionalFields);
+
+    // Final-review round 3 dedup: call the REAL, shared buildCustomerDataUnit
+    // (packages/core/src/nickname/fieldMapping.ts) — the exact function
+    // nicknameCheck.ts's production code calls — instead of an inlined copy
+    // of its logic, so this test actually catches drift in the shipped
+    // implementation, not just in the mapping pattern.
+    const requiresZone = false;
+    const requiresServer = true;
+    const answer: { target: string; zone?: string; server?: string; nickname?: string } = {
+      target: "GAMER-999888777",
+      server: "SRV-42",
+      nickname: "MoneyCriticalPlayer",
+    };
+    const unit = buildCustomerDataUnit(additionalFields, requiresZone, requiresServer, answer);
+
+    // This is exactly what nicknameCheck.ts now writes onto
+    // scratch.customerData / Order.customerData.
+    expect(unit).toEqual({ user_id: "GAMER-999888777", server_id: "SRV-42", nickname: "MoneyCriticalPlayer" });
+
+    const customerNo = buildDigiflazzCustomerNo(product, JSON.stringify([unit]));
+
+    // The exact assertion that would have caught the pre-fix bug: a
+    // regression back to the old hardcoded {target,zone,server} shape would
+    // make this an EMPTY string (buildDigiflazzCustomerNo's field.key ->
+    // unit[field.key] lookup would find nothing under "user_id"/"server_id").
+    expect(customerNo).not.toBe("");
+    expect(customerNo.length).toBeGreaterThan(0);
+    expect(customerNo).toContain("GAMER-999888777");
+    expect(customerNo).toBe("GAMER-999888777 SRV-42");
+  });
+
+  it("[MONEY-CRITICAL] the OLD hardcoded {target,zone,server} shape (pre-fix behavior) produces an EMPTY customerNo — proves this is a real regression risk, not a hypothetical one", () => {
+    const product = {
+      additionalFields: JSON.stringify([
+        { key: "user_id", label: { id: "User ID", en: "User ID" }, type: "text", required: true, options: [], placeholder: "" },
+        { key: "server_id", label: { id: "Server ID", en: "Server ID" }, type: "text", required: false, options: [], placeholder: "" },
+      ]),
+    };
+    // The pre-fix nicknameCheck.ts shape — none of these keys match the
+    // SKU's actual additionalFields ("user_id"/"server_id"), so every value
+    // filters out of buildDigiflazzCustomerNo's field.map(f => unit[f.key]).
+    const legacyUnit = JSON.stringify([{ target: "GAMER-999888777", server: "SRV-42" }]);
+    expect(buildDigiflazzCustomerNo(product, legacyUnit)).toBe("");
   });
 });
 

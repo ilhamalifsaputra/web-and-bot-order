@@ -79,11 +79,6 @@ export function DeliveryTypeSection({
   onSupplierSkuChange,
   nicknameCheckGameCode,
   onNicknameCheckGameCodeChange,
-  regionWarning,
-  onRegionWarningChange,
-  expectedRegionCode,
-  onExpectedRegionCodeChange,
-  productHasLinkedGame,
 }: {
   deliveryType: string;
   onDeliveryTypeChange: (next: string) => void;
@@ -94,29 +89,14 @@ export function DeliveryTypeSection({
   supplierSku: string;
   onSupplierSkuChange: (next: string) => void;
   /** KokinPay's game_code for this denomination's title (Task 7) — an
-   * independent, optional field: it offers the storefront's live
-   * nickname-check UX for ANY manual_with_info product, not just ones with a
-   * Digiflazz auto-delivery link. Blank = no live check for this product. */
+   * independent, optional field: it offers the storefront's/bot's live
+   * nickname-check UX for an Automatic-delivery product OR a manual_with_info
+   * product that collects buyer-info fields — not just ones with a Digiflazz
+   * auto-delivery link. Blank means auto-detect from this product's Digiflazz
+   * brand (not "no live check"); fill it in only to override the detected
+   * game, or to force a check for a product the catalog can't auto-detect. */
   nicknameCheckGameCode: string;
   onNicknameCheckGameCodeChange: (next: string) => void;
-  /** Admin-authored short warning shown near the account field on the
-   * storefront's instant-buy page (Region-check Task B) — a manual mitigation
-   * for the wrong-region-variant problem. Independent of every other field,
-   * including expectedRegionCode below: works with no live check configured. */
-  regionWarning: string;
-  onRegionWarningChange: (next: string) => void;
-  /** The region this SKU is FOR (Region-check Task B), compared against a
-   * live VIP-Reseller region lookup. Independent of regionWarning above and
-   * of nicknameCheckGameCode/autoDeliverySource/supplierSku — blank = no
-   * automatic region check for this product. */
-  expectedRegionCode: string;
-  onExpectedRegionCodeChange: (next: string) => void;
-  /** Task 12: true when the parent Product has a Linked Game (a Task 10
-   * `Product.gameId`) set. Purely a UI hint — renders a note near the two
-   * legacy nickname/region-check fields below pointing out that the new
-   * Game-based nickname check has taken over for products that opted in;
-   * never changes those fields' own behavior or validation. */
-  productHasLinkedGame?: boolean;
 }) {
   const method = methodOf(deliveryType);
   const requiresInfo = deliveryType === "manual_with_info";
@@ -151,8 +131,6 @@ export function DeliveryTypeSection({
     onAutoDeliverySourceChange(null);
     onSupplierSkuChange("");
     onNicknameCheckGameCodeChange("");
-    onRegionWarningChange("");
-    onExpectedRegionCodeChange("");
   }
 
   // Same "no hidden memory" reset as selectMethod above, for the other path
@@ -164,8 +142,6 @@ export function DeliveryTypeSection({
       onAutoDeliverySourceChange(null);
       onSupplierSkuChange("");
       onNicknameCheckGameCodeChange("");
-      onRegionWarningChange("");
-      onExpectedRegionCodeChange("");
     }
   }
 
@@ -283,13 +259,16 @@ export function DeliveryTypeSection({
         </div>
       )}
 
-      {/* Nickname check (Task 7) — an independent storefront UX enhancement,
-          NOT gated on autoDeliverySource above: a manual_with_info product
-          with no Digiflazz link can still offer a live nickname lookup on the
-          buyer's account field before they pay. Shown under the same
-          requiresInfo condition as Step 3, since the check needs a buyer
-          account field to run against. */}
-      {requiresInfo && (
+      {/* Nickname check (Task 7) — an independent storefront + bot UX
+          enhancement. Shown whenever the buyer submits an account field the
+          check can run against: either Step 3's buyer-info fields
+          (requiresInfo) or an Automatic-delivery product (method === "auto"),
+          which is always eligible for catalog auto-detect from the product's
+          Digiflazz brand regardless of whether an admin ever touches this
+          field. NOT shown for plain Manual (no info) — that combination
+          collects no buyer account field at all, so there's nothing for a
+          live check to verify against. */}
+      {(requiresInfo || method === "auto") && (
         <div>
           <label className="text-sm font-medium text-ink">Nickname check game code (optional)</label>
           <Input
@@ -299,66 +278,10 @@ export function DeliveryTypeSection({
             onChange={(e) => onNicknameCheckGameCodeChange(e.target.value)}
           />
           <p className="mt-1 text-xs text-ink-soft">
-            e.g. <code>mobile-legends</code> — copy from KokinPay&apos;s game code list. Leave blank to skip
-            the live nickname check for this product.
+            e.g. <code>mobile-legends</code> — auto-detected from this product&apos;s Digiflazz brand by
+            default. Fill this in only to override the detected game, or to force a check for a
+            product the catalog can&apos;t auto-detect.
           </p>
-          {productHasLinkedGame && (
-            <p className="mt-1 text-xs text-ink-soft">
-              This product uses the new Game-based nickname check — this field only affects the
-              legacy region-check, if separately configured.
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* Region warning (Region-check Task B) — an independent, plain-text
-          mitigation for the wrong-region-variant problem: works for ANY
-          manual_with_info product, no live API dependency, always available.
-          Shown under the same requiresInfo condition as the fields above
-          since it renders near the buyer account field they collect. */}
-      {requiresInfo && (
-        <div>
-          <label className="text-sm font-medium text-ink">Region warning (optional)</label>
-          <Input
-            className="mt-1"
-            placeholder="e.g. Hanya untuk akun region Indonesia"
-            value={regionWarning}
-            onChange={(e) => onRegionWarningChange(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-ink-soft">
-            Shown near the account field on the buy page — e.g. &quot;Only for Indonesia-region
-            accounts&quot;. Leave blank to skip.
-          </p>
-        </div>
-      )}
-
-      {/* Expected region code (Region-check Task B) — an independent,
-          automatic-check opt-in: only works for games where a mapped
-          game_code + this expected region exist, degrades silently
-          otherwise (same "never block the buyer" discipline as the
-          nickname check above). NOT gated on nicknameCheckGameCode or
-          autoDeliverySource — a product can have either, both, or neither. */}
-      {requiresInfo && (
-        <div>
-          <label className="text-sm font-medium text-ink">Expected region code (optional)</label>
-          <Input
-            className="mt-1 w-32"
-            maxLength={5}
-            placeholder="e.g. ID"
-            value={expectedRegionCode}
-            onChange={(e) => onExpectedRegionCodeChange(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-ink-soft">
-            e.g. &quot;ID&quot; for Indonesia — compared against a live account lookup via
-            VIP-Reseller (only available for some games, e.g. Mobile Legends). Leave blank to skip
-            the automatic check.
-          </p>
-          {productHasLinkedGame && (
-            <p className="mt-1 text-xs text-ink-soft">
-              This product uses the new Game-based nickname check — this field only affects the
-              legacy region-check, if separately configured.
-            </p>
-          )}
         </div>
       )}
     </div>

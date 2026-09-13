@@ -53,9 +53,12 @@ export const CONVERSATIONS: ConvSpec[] = [
   // (spec.callback)`/`if (spec.command)`/`if (spec.hears)` simply skips).
   { name: "customerInfo", fn: customerInfoConversation },
   // Entered programmatically only (checkout.ts's showOrderConfirmation calls
-  // ctx.conversation.enter("nicknameCheck") for an AUTO SKU whose linked Game
-  // has nickname-check configured — Trustance reconciliation Phase B Task 2)
-  // — same no-trigger shape as customerInfo above.
+  // ctx.conversation.enter("nicknameCheck") for a denomination whose
+  // resolveNicknameGate resolves a KokinPay gameCode — admin override or
+  // catalog auto-detect from Product.digiflazzBrand — with credentials
+  // configured; no longer requires deliveryType === AUTO, since this gate
+  // now preempts MANUAL_WITH_INFO's customerInfo wizard too, see final-review
+  // Important #6) — same no-trigger shape as customerInfo above.
   { name: "nicknameCheck", fn: nicknameCheckConversation },
   // Entered programmatically only (callbacks.ts's dispatchOrder calls
   // ctx.conversation.enter("editCustomerInfo") for a v1:order:editinfo:<id>

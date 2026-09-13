@@ -812,7 +812,6 @@
   "web.nickname_check_found": "✓ {nickname}",
   "web.nickname_check_not_found": "Account not found — double-check the ID before paying.",
   "web.nickname_checking": "Checking account…",
-  "web.region_mismatch_hint": "This account may be registered in a different region than this product. Double check before continuing.",
   "web.pay_method": "How would you like to pay?",
   "web.pay_group_idr": "QRIS & e-wallet",
   "web.pay_group_crypto": "Cryptocurrency",

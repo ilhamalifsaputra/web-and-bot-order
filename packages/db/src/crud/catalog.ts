@@ -395,15 +395,6 @@ export async function createDenomination(
      * the storefront's live nickname-check UX. Independent of supplierSku/
      * autoDeliverySource above. */
     nicknameCheckGameCode?: string | null;
-    /** Admin-authored short warning shown near the account field on the
-     * storefront's instant-buy page (Region-check Task B). Independent of
-     * every other field on this row. */
-    regionWarning?: string | null;
-    /** The region this SKU is FOR, compared against VIP-Reseller's live
-     * region-check result (Region-check Task B). Independent of
-     * regionWarning and of nicknameCheckGameCode/supplierSku/
-     * autoDeliverySource above. */
-    expectedRegionCode?: string | null;
     /** True when `price` was set by a human rather than the Digiflazz markup
      * suggestion (C2 fix) — protects it from being silently overwritten by
      * the next resyncDigiflazzCatalog tick. Defaults to false (computed by
@@ -444,8 +435,6 @@ export async function createDenomination(
       ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
       supplierSku: args.supplierSku ?? null,
       nicknameCheckGameCode: args.nicknameCheckGameCode ?? null,
-      regionWarning: args.regionWarning ?? null,
-      expectedRegionCode: args.expectedRegionCode ?? null,
       priceOverridden: args.priceOverridden ?? false,
       qtyValue: args.qtyValue ?? null,
       qtyUnit: args.qtyUnit ?? null,
@@ -474,14 +463,10 @@ export function getDenominationBySlug(db: Db, slug: string) {
 export function getDenominationWithProduct(db: Db, denominationId: number) {
   return db.denomination.findUnique({
     where: { id: denominationId },
-    // `game` (final-review fix, Finding 3): the storefront's gameId
-    // nickname-check branch (apiTopup.ts) needs `product.game.isActive` /
-    // `.nicknameSupported` to enforce those flags, which it can't see
-    // through `product.gameId` alone. Purely additive — every other caller
-    // (apps/web-admin's stock routes, apps/storefront's cart/apiAccount,
-    // the order-bot's product-detail render) only reads fields already on
-    // this shape, so widening the include doesn't change what they get.
-    include: { product: { include: { category: true, game: true } } },
+    // Product's `digiflazzBrand`/`name` (pulled in as bare scalars by this
+    // nested `include`) are what `resolveNicknameGate` auto-detects the
+    // nickname-check game from (packages/db/src/crud/nickname.ts).
+    include: { product: { include: { category: true } } },
   });
 }
 

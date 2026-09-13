@@ -2,8 +2,8 @@
 
 Diagram ini diverifikasi terhadap kode aktual (`packages/core/src/enums.ts`,
 `apps/storefront/src/routes/checkout.ts`, `packages/db/src/crud/orders.ts`,
-`digiflazz.ts`, `kokinpay.ts`, `vipreseller.ts`, `melostore.ts`,
-`wallet_topup.ts`, `OrderStatusTabs.tsx`) — bukan istilah generik. Ada dua
+`digiflazz.ts`, `kokinpay.ts`, `gameCatalog.ts`, `wallet_topup.ts`,
+`OrderStatusTabs.tsx`) — bukan istilah generik. Ada dua
 jalur order yang benar-benar terpisah di kode: **PRODUCT** (beli game
 top-up / app premium) dan **WALLET_TOPUP** (isi saldo).
 
@@ -24,8 +24,9 @@ top-up / app premium) dan **WALLET_TOPUP** (isi saldo).
                           │
                           ▼
                      INPUT DATA
-        (akun/ID game — dicek via KokinPay / VIP-Reseller /
-         MeloStore untuk nickname/region, bukan fulfillment)
+        (akun/ID game — dicek via KokinPay untuk nickname
+         [auto-detect dari brand Digiflazz produk, atau override
+         admin], bukan fulfillment)
                           │
                           ▼
               VALIDASI + KONFIRMASI ORDER
@@ -109,9 +110,11 @@ eksplisit menolak order berkind `WALLET_TOPUP`.
 
 ## Catatan penting
 
-- **KokinPay / VIP-Reseller / MeloStore** = layanan cek nickname/region akun
-  game saat "input data" — **bukan** metode pembayaran, **bukan** provider
-  fulfillment.
+- **KokinPay** = satu-satunya layanan cek nickname akun game saat "input
+  data" (gameCode diresolusi dari override admin per-SKU atau auto-detect
+  katalog statis 41 game terhadap `Product.digiflazzBrand`/`name`, lihat
+  `packages/core/src/nickname/gameCatalog.ts`) — **bukan** metode
+  pembayaran, **bukan** provider fulfillment.
 - **Digiflazz** = satu-satunya supplier fulfillment eksternal nyata di kode,
   tapi statusnya masih pilot/dormant.
 - **Notifikasi** selalu lewat `notification_outbox` (`packages/outbox-dispatcher`)

@@ -3,125 +3,93 @@
  * credential + game-code list `NicknameService` (@app/core/nickname/service)
  * tries in order to answer a live "does this account exist?" lookup.
  *
- * `buildNicknameProviderEntries` extracts the gameId/`ProviderGameMapping`
- * resolution that used to be inlined in the storefront's
- * `apps/storefront/src/routes/apiTopup.ts` (Task 9, nickname-multiprovider
- * plan) so a second caller — the order-bot's nickname-check conversation
- * (Trustance reconciliation Phase B, Task 2) — can reuse the exact same
- * mapping/credential resolution instead of duplicating it. This is a pure
- * extraction: for a `gameId`, the DB reads, credential lookups, and
- * entry-ordering are byte-for-byte what apiTopup.ts's inline block already
- * did (see its own doc comment for the full behavioral contract this
- * mirrors — skipped/unrecognized providers, credential-missing skip, etc.).
+ * KokinPay is the only nickname-check provider today. Which game (if any)
+ * a checkout should run a nickname-check for is resolved by
+ * `resolveNicknameGate`: an admin-set per-denomination override
+ * (`Denomination.nicknameCheckGameCode`) wins when present; otherwise the
+ * game is auto-detected from `Product.digiflazzBrand`/`name` against the
+ * static catalog (`@app/core/nickname/gameCatalog`, built from KokinPay's
+ * own published game-code list). `buildNicknameProviderEntries` then turns
+ * that resolved `gameCode` into the KokinPay provider entry `NicknameService`
+ * needs, or `[]` if KokinPay credentials aren't configured.
  *
- * The `legacyGameCode` fallback (used only when `gameId` resolves to no
- * entries) is NEW: apiTopup.ts's own legacy KokinPay-only block predates
- * `NicknameService` entirely and calls @app/core/suppliers/kokinpay's
- * `checkGameNickname` directly with its own bespoke result-shape mapping, so
- * it is deliberately NOT rewired to call this function — doing so would
- * change its response shape in an edge case (a well-formed `valid:true`
- * result with a falsy nickname maps to "found" for the direct call but to a
- * non-retryable "not found" once routed through `kokinpayProvider`'s
- * `NicknameService` adapter). The fallback exists purely so a fresh caller
- * (the bot) can resolve entries for EITHER path through one function call,
- * matching apiTopup.ts's own precedence rule: `gameId`, when it resolves to
- * at least one entry, always wins over `legacyGameCode`.
+ * Shared by all 3 call sites that used to spell out gameId/`ProviderGameMapping`
+ * resolution independently: `apps/storefront/src/routes/apiTopup.ts`'s
+ * POST /topup/check-account, `apps/order-bot/src/handlers/checkout.ts`'s
+ * showOrderConfirmation gate, and `apps/order-bot/src/conversations/nicknameCheck.ts`'s
+ * own defensive re-check.
  */
 import type { NicknameServiceProviderEntry } from "@app/core/nickname/service";
 import { createKokinpayNicknameProvider } from "@app/core/nickname/kokinpayProvider";
-import { createVipResellerNicknameProvider } from "@app/core/nickname/vipresellerProvider";
-import { createMelostoreNicknameProvider } from "@app/core/nickname/melostoreProvider";
+import { GAME_CATALOG, matchGameKey, findCatalogEntryByCode } from "@app/core/nickname/gameCatalog";
 import type { Db } from "./_types";
-import { getEnabledProviderMappingsForGame } from "./games";
 import { getKokinpayCreds } from "./kokinpay";
-import { getVipResellerCreds } from "./vipreseller";
-import { getMelostoreCreds } from "./melostore";
-import type { getDenominationWithProduct } from "./catalog";
 
 /**
- * Resolve the ordered `NicknameServiceProviderEntry[]` for one nickname
- * check, from either a `Game` link or the legacy per-denomination game code.
- *
- * `gameId` set: every ENABLED `ProviderGameMapping` row for that game, in
- * ascending `priority` order, each turned into an entry via that provider's
- * credential lookup + adapter factory. A mapping whose provider has no
- * credentials configured is skipped (a config gap, not a lookup failure) —
- * never added to the result. An unrecognized `mapping.provider` string is
- * likewise silently skipped. Byte-for-byte the same resolution
- * apiTopup.ts's inline block performed.
- *
- * `gameId` unset (or resolves to zero entries) and `legacyGameCode` set: a
- * single KokinPay entry (the legacy path is KokinPay-only), or `[]` if no
- * KokinPay credentials are configured.
- *
- * Neither set, or `gameId` set but zero mappings resolve and no
- * `legacyGameCode` given: `[]` — the caller's `NicknameService` will then
- * report `{ status: "no_providers_configured" }`.
+ * Resolve the single KokinPay `NicknameServiceProviderEntry` for a resolved
+ * `gameCode`, or `[]` if `gameCode` is null or KokinPay credentials aren't
+ * configured (a config gap, not a lookup failure — the caller's
+ * `NicknameService` then reports `{ status: "no_providers_configured" }`).
  */
 export async function buildNicknameProviderEntries(
   db: Db,
-  { gameId, legacyGameCode }: { gameId?: number | null; legacyGameCode?: string | null },
+  gameCode: string | null,
 ): Promise<NicknameServiceProviderEntry[]> {
-  if (gameId != null) {
-    const mappings = await getEnabledProviderMappingsForGame(db, gameId);
-    const entries: NicknameServiceProviderEntry[] = [];
-    for (const mapping of mappings) {
-      let provider: NicknameServiceProviderEntry["provider"] | null = null;
-      if (mapping.provider === "kokinpay") {
-        const creds = await getKokinpayCreds(db);
-        if (creds) provider = createKokinpayNicknameProvider(creds);
-      } else if (mapping.provider === "vipreseller") {
-        const creds = await getVipResellerCreds(db);
-        if (creds) provider = createVipResellerNicknameProvider(creds);
-      } else if (mapping.provider === "melostore") {
-        const creds = await getMelostoreCreds(db);
-        if (creds) provider = createMelostoreNicknameProvider(creds);
-      }
-      // An unrecognized `mapping.provider` string (shouldn't happen — admin
-      // UI only writes the three known values) is silently skipped, same as
-      // a mapping with no credentials configured.
-      if (provider) entries.push({ provider, gameCode: mapping.providerGameCode });
-    }
-    if (entries.length > 0) return entries;
-  }
-
-  if (legacyGameCode) {
-    const creds = await getKokinpayCreds(db);
-    if (creds) return [{ provider: createKokinpayNicknameProvider(creds), gameCode: legacyGameCode }];
-  }
-
-  return [];
+  if (!gameCode) return [];
+  const creds = await getKokinpayCreds(db);
+  if (!creds) return [];
+  return [{ provider: createKokinpayNicknameProvider(creds), gameCode }];
 }
 
-/** The exact shape `getDenominationWithProduct` returns — `resolveNicknameGate`
- * takes this directly so every call site can pass what it already has in
- * scope, with no extra DB read. */
-type DenominationForNicknameGate = Awaited<ReturnType<typeof getDenominationWithProduct>>;
+/** The minimal structural shape `resolveNicknameGate` actually needs — wide
+ * enough that both `getDenominationWithProduct`'s full return shape (the 3
+ * pre-checkout call sites) and a narrower Prisma `select` (the reactive
+ * Digiflazz-failure diagnostic in crud/digiflazz.ts, which doesn't need the
+ * rest of getDenominationWithProduct's `include`) satisfy it structurally,
+ * with no extra DB read on either side. Purely a type widening — this
+ * function's behavior is unchanged. */
+type DenominationForNicknameGate = {
+  nicknameCheckGameCode: string | null;
+  /** The Denomination's OWN autoDeliverySource (not a Product field) —
+   * passed through to matchGameKey alongside product.digiflazzBrand/name so
+   * it can restrict its product.name fallback to Digiflazz-sourced products
+   * only (see matchGameKey's own doc comment, packages/core/src/nickname/
+   * gameCatalog.ts, for why). Every real caller already selects/includes
+   * this as a plain Denomination scalar (getDenominationWithProduct uses no
+   * `select`, so it comes along for free; the reactive-diagnostic queries in
+   * digiflazz.ts explicitly select it for resolveSingleDigiflazzItem's own
+   * needs). */
+  autoDeliverySource?: string | null;
+  product?: { digiflazzBrand: string | null; name: string } | null;
+};
 
 /**
  * The nickname-check opt-in rule — whether a checkout attempt for this
  * denomination should be diverted through a nickname/target-account
- * verification step before payment, and if so, which `buildNicknameProviderEntries`
- * input to resolve it with.
+ * verification step before payment, and if so, which `gameCode` to check
+ * against, plus whether that game needs a zone and/or server prompt.
  *
- * Shared by all 3 call sites that used to spell this out independently
- * (Trustance reconciliation Phase B final-review Important #4):
- * `apps/storefront/src/routes/apiTopup.ts`'s POST /topup/check-account,
- * `apps/order-bot/src/handlers/checkout.ts`'s showOrderConfirmation gate, and
- * `apps/order-bot/src/conversations/nicknameCheck.ts`'s own defensive
- * re-check. A `gameId` link only counts when the linked `Game` row is loaded
- * AND still active AND still supports nickname checks — any of those failing
- * degrades exactly as if `gameId` were unset, falling through to
- * `legacyGameCode` when set. `gameId`, when non-null, always takes precedence
- * over `legacyGameCode` in `buildNicknameProviderEntries` itself; this
- * function just decides which (if either) is in play.
+ * Shared by all 3 call sites (see this file's top-of-file doc comment).
+ * Precedence: `Denomination.nicknameCheckGameCode` (an admin-set override),
+ * when present, always wins — its `requiresZone`/`requiresServer` are looked
+ * up from the static catalog by matching `code` when possible, defaulting to
+ * `false` for a hand-typed code that isn't in the catalog. Otherwise the
+ * game is auto-detected from `Product.digiflazzBrand`/`name` against the
+ * static catalog; no match means no nickname-check for this denomination
+ * (`gameCode: null`).
  */
 export function resolveNicknameGate(
   denomination: DenominationForNicknameGate | null | undefined,
-): { gameId: number | null; legacyGameCode: string | null } {
-  const rawGameId = denomination?.product?.gameId ?? null;
-  const linkedGame = denomination?.product?.game ?? null;
-  const gameId = rawGameId != null && linkedGame?.isActive && linkedGame.nicknameSupported ? rawGameId : null;
-  const legacyGameCode = denomination?.nicknameCheckGameCode ?? null;
-  return { gameId, legacyGameCode };
+): { gameCode: string | null; requiresZone: boolean; requiresServer: boolean } {
+  const override = denomination?.nicknameCheckGameCode;
+  if (override) {
+    const known = findCatalogEntryByCode(override);
+    return { gameCode: override, requiresZone: known?.requiresZone ?? false, requiresServer: known?.requiresServer ?? false };
+  }
+  const product = denomination?.product;
+  const key = product ? matchGameKey({ ...product, autoDeliverySource: denomination?.autoDeliverySource }) : null;
+  const entry = key ? GAME_CATALOG[key] : null;
+  return entry
+    ? { gameCode: entry.code, requiresZone: entry.requiresZone, requiresServer: entry.requiresServer }
+    : { gameCode: null, requiresZone: false, requiresServer: false };
 }

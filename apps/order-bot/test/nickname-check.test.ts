@@ -627,9 +627,9 @@ describe("nicknameCheckConversation — keys customerData through the SKU's own 
     ]);
   });
 
-  it("quantity > 1 on a MANUAL_WITH_INFO SKU with additionalFields hands off the remaining units to customerInfo instead of finalizing customerData directly", async () => {
+  it("quantity > 1 on a MANUAL_WITH_INFO SKU whose additionalFields are NOT fully covered by the mapping hands off to customerInfo WITHOUT a prefilled unit (final-review round 3: field-coverage gate, not quantity, decides the handoff)", async () => {
     const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
-      withCreds: true, // "free-fire" default game code — requiresZone/requiresServer both false
+      withCreds: true, // "free-fire" default game code — requiresZone/requiresServer both false, so only 1 of these 2 fields ever gets mapped
     });
     kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "HandoffPlayer" });
     const sink: SentCall[] = [];
@@ -650,21 +650,19 @@ describe("nicknameCheckConversation — keys customerData through the SKU's own 
 
     await nicknameCheckConversation(conv.asMyConversation(), entry);
 
-    // Does NOT finalize customerData directly — hands off to customerInfo
-    // with the collected unit prefilled instead.
+    // Does NOT finalize customerData directly, and — since coverage is
+    // incomplete — the mapped unit is discarded entirely rather than
+    // prefilled: customerInfo re-collects EVERY field from a clean slate.
     expect(confirmTap.session.scratch.customerData).toBeUndefined();
     expect(confirmTap.session.scratch.pendingNicknameProductId).toBeUndefined();
     expect(confirmTap.session.scratch.pendingNicknameQuantity).toBeUndefined();
     expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
     expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(2);
-    expect(JSON.parse(confirmTap.session.scratch.prefilledCustomerDataUnit as string)).toEqual({
-      user_id: "unit-one-id",
-      nickname: "HandoffPlayer",
-    });
+    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
     expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
   });
 
-  it("quantity === 1 on the SAME MANUAL_WITH_INFO + additionalFields SKU finalizes immediately (no handoff) — only quantity > 1 hands off", async () => {
+  it("quantity === 1 on the SAME under-covered MANUAL_WITH_INFO SKU ALSO hands off to customerInfo instead of finalizing with an incomplete unit (final-review round 3 Critical fix — round 2's `quantity > 1` gate used to let this finalize and permanently strand the buyer at order-creation validation)", async () => {
     const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], { withCreds: true });
     kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "SingleUnitPlayer" });
     const sink: SentCall[] = [];
@@ -685,10 +683,82 @@ describe("nicknameCheckConversation — keys customerData through the SKU's own 
 
     await nicknameCheckConversation(conv.asMyConversation(), entry);
 
+    expect(confirmTap.session.scratch.customerData).toBeUndefined();
+    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
+    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
+    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(1);
+    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  });
+
+  it("quantity === 1 on a MANUAL_WITH_INFO SKU whose additionalFields ARE fully covered by the mapping still finalizes directly (proves the coverage fix didn't overcorrect into always routing through customerInfo)", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
+      gameCode: "mobile-legends", // requiresZone:false, requiresServer:true -> both fields get mapped
+      withCreds: true,
+    });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "FullyCoveredPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "full-cov-id" }).ctx;
+    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-9" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
     expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
-      { user_id: "single-unit-id", nickname: "SingleUnitPlayer" },
+      { user_id: "full-cov-id", server_id: "SRV-9", nickname: "FullyCoveredPlayer" },
     ]);
+    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
     expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(false);
+  });
+
+  it("quantity > 1 on a MANUAL_WITH_INFO SKU whose additionalFields ARE fully covered by the mapping still hands off to customerInfo WITH the mapped unit prefilled (round 2's original behavior, unchanged by the round 3 coverage gate)", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields([{ key: "user_id" }, { key: "server_id" }], {
+      gameCode: "mobile-legends", // requiresZone:false, requiresServer:true -> both fields get mapped
+      withCreds: true,
+    });
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "FullyCoveredMultiPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 3 } },
+      callbackData: `v1:buy:${denom.id}:3`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "full-cov-multi-id" }).ctx;
+    const serverMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "SRV-3" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, serverMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    // Full coverage + quantity > 1: hands off to customerInfo, but — unlike the
+    // under-coverage case above — WITH the collected unit prefilled, since it's
+    // a complete, valid unit that customerInfo can safely reuse as unit 1.
+    expect(confirmTap.session.scratch.customerData).toBeUndefined();
+    expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
+    expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(3);
+    expect(JSON.parse(confirmTap.session.scratch.prefilledCustomerDataUnit as string)).toEqual({
+      user_id: "full-cov-multi-id",
+      server_id: "SRV-3",
+      nickname: "FullyCoveredMultiPlayer",
+    });
+    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
   });
 });
 

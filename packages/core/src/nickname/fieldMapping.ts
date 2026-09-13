@@ -30,3 +30,41 @@ export function nicknameFieldMapping(
   const serverKey = requiresServer && fields[idx] ? fields[idx]!.key : null;
   return { targetKey, zoneKey, serverKey };
 }
+
+/**
+ * Build the final customerData unit for one nickname-check result, keyed
+ * through the SKU's own additionalFields (positionally, via
+ * nicknameFieldMapping) instead of the old hardcoded {target,zone,server}
+ * shape — see this file's header comment for why field ORDER, not field
+ * NAME, is the only reliable convention here. Falls back to the legacy
+ * {target,zone,server} keys when the SKU has no additionalFields at all
+ * (mapping is null) — there's no schema to map into, so nothing is lost by
+ * keeping the old shape for that edge case.
+ *
+ * Shared between apps/order-bot/src/conversations/nicknameCheck.ts (the real
+ * production caller) and the money-critical round-trip test in
+ * packages/db/src/crud/digiflazz.test.ts (final-review round 3 dedup — that
+ * test used to carry its own inlined copy of this exact logic, which meant it
+ * only proved the mapping *pattern* round-trips, not that the actually
+ * shipped implementation does).
+ */
+export function buildCustomerDataUnit(
+  fields: AdditionalField[],
+  requiresZone: boolean,
+  requiresServer: boolean,
+  answer: { target: string; zone?: string; server?: string; nickname?: string },
+): Record<string, string> {
+  const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
+  const unit: Record<string, string> = mapping
+    ? {
+        [mapping.targetKey]: answer.target,
+        ...(mapping.zoneKey && answer.zone ? { [mapping.zoneKey]: answer.zone } : {}),
+        ...(mapping.serverKey && answer.server ? { [mapping.serverKey]: answer.server } : {}),
+      }
+    : { target: answer.target, ...(answer.zone ? { zone: answer.zone } : {}), ...(answer.server ? { server: answer.server } : {}) };
+  // Preserve the found nickname for display purposes — never consumed by
+  // buildDigiflazzCustomerNo/computeAccountDiagnosticNote (they only read
+  // known field keys), purely for whatever UI currently shows it.
+  if (answer.nickname) unit.nickname = answer.nickname;
+  return unit;
+}

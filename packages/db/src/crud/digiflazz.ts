@@ -485,8 +485,8 @@ async function computeAccountDiagnosticNote(
     const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
     const target = (mapping ? unit[mapping.targetKey] : undefined) ?? unit.target;
     if (!target) return null;
-    const zone = (mapping?.zoneKey ? unit[mapping.zoneKey] : undefined) ?? unit.zone;
-    const server = (mapping?.serverKey ? unit[mapping.serverKey] : undefined) ?? unit.server;
+    const zone = (mapping?.zoneKey ? unit[mapping.zoneKey] : undefined) || unit.zone;
+    const server = (mapping?.serverKey ? unit[mapping.serverKey] : undefined) || unit.server;
 
     const result = await new NicknameService(entries).checkNickname({ target, zone, server });
     if (result.status === "found") {

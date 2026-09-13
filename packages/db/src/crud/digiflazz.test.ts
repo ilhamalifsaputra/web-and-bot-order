@@ -88,7 +88,7 @@ import {
 } from "@app/db";
 import { OrderStatus, DeliveryType, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
+import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
@@ -478,7 +478,7 @@ describe("buildDigiflazzCustomerNo", () => {
   // SKU's actual additionalFields, positionally — exactly what this test
   // reproduces and asserts round-trips into a NON-EMPTY customerNo.
   // ===========================================================================
-  it("[MONEY-CRITICAL] a unit built the way nicknameCheck.ts now builds it (via nicknameFieldMapping) round-trips into a NON-EMPTY customerNo containing the target", () => {
+  it("[MONEY-CRITICAL] a unit built the way nicknameCheck.ts now builds it (via the shared buildCustomerDataUnit) round-trips into a NON-EMPTY customerNo containing the target", () => {
     // The SKU's own admin-defined additionalFields — e.g. a real
     // "mobile-legends" SKU (requiresZone: false, requiresServer: true).
     const product = {
@@ -489,10 +489,11 @@ describe("buildDigiflazzCustomerNo", () => {
     };
     const additionalFields = parseAdditionalFields(product.additionalFields);
 
-    // Exactly nicknameCheck.ts's buildCustomerDataUnit logic: map the
-    // wizard's collected {target,zone,server,nickname} answer into the SKU's
-    // real field keys via nicknameFieldMapping, instead of the old hardcoded
-    // {target,zone,server} shape.
+    // Final-review round 3 dedup: call the REAL, shared buildCustomerDataUnit
+    // (packages/core/src/nickname/fieldMapping.ts) — the exact function
+    // nicknameCheck.ts's production code calls — instead of an inlined copy
+    // of its logic, so this test actually catches drift in the shipped
+    // implementation, not just in the mapping pattern.
     const requiresZone = false;
     const requiresServer = true;
     const answer: { target: string; zone?: string; server?: string; nickname?: string } = {
@@ -500,16 +501,7 @@ describe("buildDigiflazzCustomerNo", () => {
       server: "SRV-42",
       nickname: "MoneyCriticalPlayer",
     };
-    const mapping = nicknameFieldMapping(additionalFields, requiresZone, requiresServer);
-    expect(mapping).not.toBeNull();
-    const unit: Record<string, string> = mapping
-      ? {
-          [mapping.targetKey]: answer.target,
-          ...(mapping.zoneKey && answer.zone ? { [mapping.zoneKey]: answer.zone } : {}),
-          ...(mapping.serverKey && answer.server ? { [mapping.serverKey]: answer.server } : {}),
-        }
-      : { target: answer.target };
-    if (answer.nickname) unit.nickname = answer.nickname;
+    const unit = buildCustomerDataUnit(additionalFields, requiresZone, requiresServer, answer);
 
     // This is exactly what nicknameCheck.ts now writes onto
     // scratch.customerData / Order.customerData.

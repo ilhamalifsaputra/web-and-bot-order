@@ -72,7 +72,7 @@
  */
 import { prisma, getDenominationWithProduct, buildNicknameProviderEntries, resolveNicknameGate } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
-import { nicknameFieldMapping } from "@app/core/nickname/fieldMapping";
+import { nicknameFieldMapping, buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
 import { parseAdditionalFields, type AdditionalField } from "@app/core/deliveryFields";
 import { DeliveryType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -109,38 +109,6 @@ interface NicknameCheckConfig {
 }
 
 /**
- * Build the final customerData unit for one nickname-check result, keyed
- * through the SKU's own additionalFields (positionally, via
- * nicknameFieldMapping) instead of the old hardcoded {target,zone,server}
- * shape — see fieldMapping.ts's doc comment for why field ORDER, not field
- * NAME, is the only reliable convention here. Falls back to the legacy
- * {target,zone,server} keys when the SKU has no additionalFields at all
- * (mapping is null) — there's no schema to map into, so nothing is lost by
- * keeping the old shape for that edge case (matches this file's pre-fix
- * behavior for every AUTO SKU with no additionalFields, which is most of them).
- */
-function buildCustomerDataUnit(
-  fields: AdditionalField[],
-  requiresZone: boolean,
-  requiresServer: boolean,
-  answer: { target: string; zone?: string; server?: string; nickname?: string },
-): Record<string, string> {
-  const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
-  const unit: Record<string, string> = mapping
-    ? {
-        [mapping.targetKey]: answer.target,
-        ...(mapping.zoneKey && answer.zone ? { [mapping.zoneKey]: answer.zone } : {}),
-        ...(mapping.serverKey && answer.server ? { [mapping.serverKey]: answer.server } : {}),
-      }
-    : { target: answer.target, ...(answer.zone ? { zone: answer.zone } : {}), ...(answer.server ? { server: answer.server } : {}) };
-  // Preserve the found nickname for display purposes — never consumed by
-  // buildDigiflazzCustomerNo/computeAccountDiagnosticNote (they only read
-  // known field keys), purely for whatever UI currently shows it.
-  if (answer.nickname) unit.nickname = answer.nickname;
-  return unit;
-}
-
-/**
  * The single finalize path for a nickname-check attempt — every place in
  * this file that completes the wizard (the confirm tap, the not-found
  * 'Continue anyway' escape, and the non-definitive graceful-degrade
@@ -149,13 +117,36 @@ function buildCustomerDataUnit(
  * missing one of these branches would silently reintroduce the
  * empty-customerNo bug for whichever branch was missed).
  *
- * Multi-unit quantity handling (user's explicit decision — see this file's
- * header comment): nickname-check only ever collects ONE unit's worth of
- * account info. If quantity === 1 (any deliveryType), OR the SKU has no
- * additionalFields, OR deliveryType is AUTO: finalize immediately exactly as
- * before this fix (customerData = [unit], straight to confirmation). Only a
- * MANUAL_WITH_INFO SKU with quantity > 1 AND at least one additionalField
- * hands the remaining units off to customerInfo, prefilled with this unit.
+ * Field-coverage gate (final-review round 3 — replaces round 2's
+ * `quantity > 1` heuristic, which was the wrong condition): the real
+ * constraint isn't quantity, it's whether nicknameFieldMapping actually fills
+ * every additionalField this SKU defines. A MANUAL_WITH_INFO SKU whose
+ * admin-defined fields aren't fully covered by this game's
+ * requiresZone/requiresServer flags (e.g. 2 required fields but the matched
+ * game only accounts for 1) can NEVER produce a complete customerData unit
+ * from this wizard alone — finalizing anyway would submit an incomplete unit
+ * that validateCustomerData (packages/core/src/deliveryFields.ts, called from
+ * packages/db/src/crud/orders.ts at order-creation time, gated to
+ * MANUAL_WITH_INFO) rejects, and since nothing clears scratch.customerData on
+ * that rejection, the buyer would be stuck retrying the identical failure
+ * forever. So under-coverage MANUAL_WITH_INFO always hands off to
+ * customerInfo to re-collect EVERY field from a clean slate, regardless of
+ * quantity — the mapped unit from this wizard is discarded entirely for
+ * customerData purposes (the live KokinPay verification still ran and told
+ * the buyer their account is valid; it just can't be reused to pre-fill an
+ * incompletely-covered field schema).
+ *
+ * When coverage IS full: quantity === 1 (any deliveryType), OR the SKU has no
+ * additionalFields, OR deliveryType is AUTO all finalize immediately
+ * (customerData = [unit], straight to confirmation) — unchanged from round 2.
+ * Only a MANUAL_WITH_INFO SKU with full coverage AND quantity > 1 AND at
+ * least one additionalField hands the remaining units off to customerInfo,
+ * prefilled with this one verified unit (round 2's original behavior).
+ *
+ * AUTO doesn't go through validateCustomerData's hard block, so under-coverage
+ * there can't strand a buyer the same way — it still finalizes directly, but
+ * logs a warning since it's the same root misconfiguration and silently ships
+ * an incomplete customerNo to the supplier.
  */
 async function finalizeNicknameCheck(
   u: MyContext,
@@ -167,16 +158,58 @@ async function finalizeNicknameCheck(
   requiresServer: boolean,
   answer: { target: string; zone?: string; server?: string; nickname?: string },
 ): Promise<void> {
-  const unit = buildCustomerDataUnit(fields, requiresZone, requiresServer, answer);
   delete u.session.scratch.pendingNicknameProductId;
   delete u.session.scratch.pendingNicknameQuantity;
+
+  const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
+  const mappedFieldCount = mapping ? 1 + (mapping.zoneKey ? 1 : 0) + (mapping.serverKey ? 1 : 0) : 0;
+  const fullyCovered = fields.length === 0 || mappedFieldCount === fields.length;
+
+  if (deliveryType === DeliveryType.MANUAL_WITH_INFO && !fullyCovered) {
+    // The SKU has admin-defined fields this game's requiresZone/requiresServer
+    // flags don't account for (e.g. a "zone" field on a game whose catalog
+    // entry says requiresZone:false) — finalizing here would submit an
+    // incomplete unit that validateCustomerData rejects at order-creation
+    // time, permanently blocking checkout for this SKU (Critical finding,
+    // final-review round 3). Discard this wizard's mapped result for
+    // customerData purposes — the live KokinPay verification still ran and
+    // told the buyer their account is valid, it just can't be reused to
+    // pre-fill an incompletely-covered field schema — and let customerInfo
+    // re-collect EVERY field for EVERY unit from a clean slate, exactly as if
+    // this game hadn't matched the nickname catalog at all.
+    u.session.scratch.pendingInfoProductId = productId;
+    u.session.scratch.pendingInfoQuantity = quantity;
+    await u.conversation.enter("customerInfo");
+    return;
+  }
+
+  const unit = buildCustomerDataUnit(fields, requiresZone, requiresServer, answer);
+
   if (deliveryType === DeliveryType.MANUAL_WITH_INFO && quantity > 1 && fields.length > 0) {
+    // fullyCovered is true here (the branch above would have returned
+    // otherwise) — safe to prefill this one verified unit and let
+    // customerInfo collect the rest.
     u.session.scratch.pendingInfoProductId = productId;
     u.session.scratch.pendingInfoQuantity = quantity;
     u.session.scratch.prefilledCustomerDataUnit = JSON.stringify(unit);
     await u.conversation.enter("customerInfo");
     return;
   }
+
+  if (deliveryType === DeliveryType.AUTO && mapping && mappedFieldCount < fields.length) {
+    // AUTO doesn't go through validateCustomerData's hard block (confirmed —
+    // see this file's finalizeNicknameCheck doc comment). But it's the same
+    // root misconfiguration (an admin-typed nicknameCheckGameCode, or a
+    // catalog entry, whose requiresZone/requiresServer doesn't match this
+    // SKU's actual field layout) and it silently ships an incomplete
+    // customerNo to Digiflazz — visible only here, not blocking, purely
+    // diagnostic.
+    logger.warn(
+      { productId, fieldsConfigured: fields.length, fieldsMapped: mappedFieldCount },
+      "Nickname-check result covers fewer additionalFields than this AUTO SKU defines — the Digiflazz customerNo sent to the supplier may be missing a value. Check whether this SKU's nicknameCheckGameCode override (or its auto-detected game's requiresZone/requiresServer flags) match its actual field layout.",
+    );
+  }
+
   u.session.scratch.customerData = JSON.stringify([unit]);
   await renderOrderConfirmation(u, productId, quantity);
 }

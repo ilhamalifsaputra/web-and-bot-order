@@ -561,165 +561,170 @@ export function CatalogPage() {
         </div>
       )}
 
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allFilteredSelected}
-                onCheckedChange={toggleSelectAllFiltered}
-                disabled={filtered.length === 0}
-                aria-label="Select all products matching the current filters"
-              />
-            ),
-            render: (row) => (
-              <Checkbox
-                checked={selected.has(row.id)}
-                onCheckedChange={() => toggleSelected(row.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select ${row.name}`}
-              />
-            ),
-          },
-          {
-            key: "name",
-            header: "Product",
-            className: "py-3",
-            render: (row) => (
-              <div className="flex items-center gap-3">
-                {row.webImageUrl ? (
-                  <img
-                    src={row.webImageUrl}
-                    alt=""
-                    className="h-10 w-10 shrink-0 rounded-lg object-cover"
-                  />
-                ) : (
-                  <div
-                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sand text-lg"
-                    aria-hidden="true"
-                  >
-                    {row.category?.emoji || <Package className="h-4 w-4 text-ink-faint" />}
-                  </div>
-                )}
-                <div className="min-w-0 max-w-[240px]">
-                  <div className="truncate text-sm font-medium text-ink" title={row.name}>
-                    {row.name}
-                  </div>
-                  <div
-                    className="truncate text-xs text-ink-soft"
-                    title={row.category?.name ?? undefined}
-                  >
-                    {row.category?.name ?? "—"}
+      <Card>
+        <CardContent>
+        <DataTable
+          nested
+          columns={[
+            {
+              key: "select",
+              kind: "selection",
+              header: (
+                <Checkbox
+                  checked={allFilteredSelected}
+                  onCheckedChange={toggleSelectAllFiltered}
+                  disabled={filtered.length === 0}
+                  aria-label="Select all products matching the current filters"
+                />
+              ),
+              render: (row) => (
+                <Checkbox
+                  checked={selected.has(row.id)}
+                  onCheckedChange={() => toggleSelected(row.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label={`Select ${row.name}`}
+                />
+              ),
+            },
+            {
+              key: "name",
+              header: "Product",
+              className: "py-3",
+              render: (row) => (
+                <div className="flex items-center gap-3">
+                  {row.webImageUrl ? (
+                    <img
+                      src={row.webImageUrl}
+                      alt=""
+                      className="h-10 w-10 shrink-0 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <div
+                      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sand text-lg"
+                      aria-hidden="true"
+                    >
+                      {row.category?.emoji || <Package className="h-4 w-4 text-ink-faint" />}
+                    </div>
+                  )}
+                  <div className="min-w-0 max-w-[240px]">
+                    <div className="truncate text-sm font-medium text-ink" title={row.name}>
+                      {row.name}
+                    </div>
+                    <div
+                      className="truncate text-xs text-ink-soft"
+                      title={row.category?.name ?? undefined}
+                    >
+                      {row.category?.name ?? "—"}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ),
-          },
-          {
-            key: "denominations",
-            header: "Denominations",
-            render: (row) => (
-              <span className="text-sm text-ink-soft">
-                {row._count.denominations}
-              </span>
-            ),
-          },
-          {
-            key: "active",
-            header: "Status",
-            className: "py-3",
-            render: (row) => (
-              <div className="flex items-center gap-2">
-                <UrgencyDot level={row.isActive ? "ok" : "idle"} />
-                <span className="w-14 text-sm text-ink-soft">
-                  {row.isActive ? "Active" : "Inactive"}
+              ),
+            },
+            {
+              key: "denominations",
+              header: "Denominations",
+              render: (row) => (
+                <span className="text-sm text-ink-soft">
+                  {row._count.denominations}
                 </span>
-                <Switch
-                  checked={row.isActive}
-                  onCheckedChange={(checked) => void toggleProductActive(row.id, checked)}
-                  disabled={togglingProduct.has(row.id)}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              </div>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.id}`)}>
-                      <SquarePen className="h-4 w-4" />
-                      Edit
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      disabled={togglingArchive.has(row.id)}
-                      onSelect={() => void toggleProductArchived(row.id, !row.isArchived)}
-                    >
-                      {row.isArchived ? (
-                        <ArchiveRestore className="h-4 w-4" />
-                      ) : (
-                        <Archive className="h-4 w-4" />
-                      )}
-                      {row.isArchived ? "Unarchive" : "Archive"}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        setPendingDelete(row);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={filtered}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/catalog/${row.id}`)}
-        empty={
-          hasActiveFilter ? (
-            <EmptyState
-              icon={Package}
-              title="No products match your filters"
-              description="Try adjusting or clearing your filters."
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          ) : (
-            <EmptyState
-              icon={Package}
-              title="No products yet"
-              description="Add your first product to start selling."
-              action={{ label: "Add Product", onClick: () => navigate("/catalog/new") }}
-              secondaryAction={{
-                label: "Import CSV",
-                onClick: () => {
-                  setShowImport(true);
-                  setPreview(null);
-                  setCsv("");
-                },
-              }}
-            />
-          )
-        }
-      />
+              ),
+            },
+            {
+              key: "active",
+              header: "Status",
+              className: "py-3",
+              render: (row) => (
+                <div className="flex items-center gap-2">
+                  <UrgencyDot level={row.isActive ? "ok" : "idle"} />
+                  <span className="w-14 text-sm text-ink-soft">
+                    {row.isActive ? "Active" : "Inactive"}
+                  </span>
+                  <Switch
+                    checked={row.isActive}
+                    onCheckedChange={(checked) => void toggleProductActive(row.id, checked)}
+                    disabled={togglingProduct.has(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
+              ),
+            },
+            {
+              key: "actions",
+              header: "",
+              render: (row) => (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.id}`)}>
+                        <SquarePen className="h-4 w-4" />
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        disabled={togglingArchive.has(row.id)}
+                        onSelect={() => void toggleProductArchived(row.id, !row.isArchived)}
+                      >
+                        {row.isArchived ? (
+                          <ArchiveRestore className="h-4 w-4" />
+                        ) : (
+                          <Archive className="h-4 w-4" />
+                        )}
+                        {row.isArchived ? "Unarchive" : "Archive"}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={(e) => {
+                          e.preventDefault();
+                          setPendingDelete(row);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              ),
+            },
+          ]}
+          data={filtered}
+          isLoading={isLoading}
+          keyExtractor={(row) => row.id}
+          onRowClick={(row) => navigate(`/catalog/${row.id}`)}
+          empty={
+            hasActiveFilter ? (
+              <EmptyState
+                icon={Package}
+                title="No products match your filters"
+                description="Try adjusting or clearing your filters."
+                secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+              />
+            ) : (
+              <EmptyState
+                icon={Package}
+                title="No products yet"
+                description="Add your first product to start selling."
+                action={{ label: "Add Product", onClick: () => navigate("/catalog/new") }}
+                secondaryAction={{
+                  label: "Import CSV",
+                  onClick: () => {
+                    setShowImport(true);
+                    setPreview(null);
+                    setCsv("");
+                  },
+                }}
+              />
+            )
+          }
+        />
+        </CardContent>
+      </Card>
 
       {pendingDelete && (
         <ConfirmDialog

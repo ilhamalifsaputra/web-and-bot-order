@@ -5,6 +5,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Select,
   SelectTrigger,
@@ -325,13 +326,18 @@ export function AuditPage() {
 
         {isError && <p className="text-sm text-rust">Failed to load audit log.</p>}
 
-        <DataTable
-          columns={auditColumns}
-          data={data?.rows ?? []}
-          isLoading={isLoading && !data}
-          keyExtractor={(r) => r.id}
-          empty={<div className="py-8 text-center text-sm text-ink-soft">No audit entries found.</div>}
-        />
+        <Card>
+          <CardContent>
+            <DataTable
+              nested
+              columns={auditColumns}
+              data={data?.rows ?? []}
+              isLoading={isLoading && !data}
+              keyExtractor={(r) => r.id}
+              empty={<div className="py-8 text-center text-sm text-ink-soft">No audit entries found.</div>}
+            />
+          </CardContent>
+        </Card>
 
         {data && (data.hasNext || page > 1) && (
           <div className="flex items-center gap-2">

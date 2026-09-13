@@ -714,171 +714,176 @@ export function VouchersPage() {
         </div>
       )}
 
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allSelected}
-                onCheckedChange={toggleSelectAll}
-                disabled={vouchers.length === 0}
-                aria-label="Select all vouchers"
-              />
-            ),
-            render: v => (
-              <Checkbox
-                checked={selected.has(v.id)}
-                onCheckedChange={() => toggleSelected(v.id)}
-                onClick={e => e.stopPropagation()}
-                aria-label={`Select voucher ${v.code}`}
-              />
-            ),
-          },
-          {
-            key: "voucher",
-            header: "Voucher",
-            render: v => (
-              <div className="flex flex-col gap-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(v)}
-                    aria-label={`Copy code ${v.code}`}
-                    className="shrink-0 text-ink-soft transition-colors hover:text-ink"
-                  >
-                    {copiedId === v.id
-                      ? <Check className="h-3.5 w-3.5 text-grass-dark" />
-                      : <Copy className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-                <span className="text-xs text-ink-soft">
-                  {v.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
-                </span>
-              </div>
-            ),
-          },
-          {
-            key: "discount",
-            header: "Discount",
-            render: v => {
-              const secondary = discountSecondary(v);
-              return (
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-mono text-sm">{discountPrimary(v)}</span>
-                  {secondary && <span className="text-xs text-ink-soft">{secondary}</span>}
-                </div>
-              );
-            },
-          },
-          {
-            key: "usage",
-            header: "Usage",
-            render: v => {
-              const pct = v.usageLimit != null ? (v.usedCount / v.usageLimit) * 100 : 0;
-              const tone = pct < 50 ? "grass" : pct < 85 ? "amberx" : "rust";
-              return (
-                <div className="flex min-w-[100px] flex-col gap-1">
-                  <span className="text-sm">{usagePrimary(v)}</span>
-                  {v.usageLimit != null && <ProgressBar value={pct} tone={tone} />}
-                </div>
-              );
-            },
-          },
-          {
-            key: "expiration",
-            header: "Expiration",
-            render: v => {
-              const { text, muted } = expirationCell(v, now);
-              return <span className={`text-sm ${muted ? "text-ink-soft" : "text-ink"}`}>{text}</span>;
-            },
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: v => <StatusBadge status={voucherStatusToneKey(v.status)} />,
-          },
-          {
-            key: "scope",
-            header: "Scope",
-            render: v => {
-              if (v.scope === "ALL") return <span className="text-sm text-ink-soft">All Products</span>;
-              const shown = v.products.slice(0, 2);
-              const extra = v.products.length - shown.length;
-              return (
-                <div className="flex flex-wrap gap-1">
-                  {shown.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
-                  {extra > 0 && <Badge variant="default">+{extra} more</Badge>}
-                </div>
-              );
-            },
-          },
-          {
-            key: "performance",
-            header: "Performance",
-            render: v => (
-              <div className="flex flex-col gap-0.5">
-                <span className="text-sm">{v.ordersCount} orders</span>
-                <span className="text-xs text-ink-soft">
-                  {formatCurrencyDisplay(v.revenue, "IDR")} · {v.customers} customers
-                </span>
-              </div>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: v => (
-              <div onClick={e => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.code}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => setViewing(v)}>
-                      <Eye className="h-4 w-4" />
-                      View
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => openEditForm(v)}>
-                      <Pencil className="h-4 w-4" />
-                      Edit
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => openDuplicateForm(v)}>
-                      <CopyPlus className="h-4 w-4" />
-                      Duplicate
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onSelect={() => toggle.mutate({ id: v.id, active: !v.isActive })}>
-                      {v.isActive ? <Ban className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
-                      {v.isActive ? "Disable" : "Enable"}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      variant="destructive"
-                      onSelect={e => { e.preventDefault(); setPendingDelete(v); }}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={vouchers}
-        isLoading={!data}
-        keyExtractor={v => v.id}
-        empty={
-          status || q
-            ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
-            : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
-        }
-      />
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allSelected}
+                    onCheckedChange={toggleSelectAll}
+                    disabled={vouchers.length === 0}
+                    aria-label="Select all vouchers"
+                  />
+                ),
+                render: v => (
+                  <Checkbox
+                    checked={selected.has(v.id)}
+                    onCheckedChange={() => toggleSelected(v.id)}
+                    onClick={e => e.stopPropagation()}
+                    aria-label={`Select voucher ${v.code}`}
+                  />
+                ),
+              },
+              {
+                key: "voucher",
+                header: "Voucher",
+                render: v => (
+                  <div className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="max-w-[200px] truncate font-mono text-sm" title={v.code}>{v.code}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(v)}
+                        aria-label={`Copy code ${v.code}`}
+                        className="shrink-0 text-ink-soft transition-colors hover:text-ink"
+                      >
+                        {copiedId === v.id
+                          ? <Check className="h-3.5 w-3.5 text-grass-dark" />
+                          : <Copy className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                    <span className="text-xs text-ink-soft">
+                      {v.type === "PERCENT" ? "Percent off" : "Fixed amount off"}
+                    </span>
+                  </div>
+                ),
+              },
+              {
+                key: "discount",
+                header: "Discount",
+                render: v => {
+                  const secondary = discountSecondary(v);
+                  return (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-mono text-sm">{discountPrimary(v)}</span>
+                      {secondary && <span className="text-xs text-ink-soft">{secondary}</span>}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "usage",
+                header: "Usage",
+                render: v => {
+                  const pct = v.usageLimit != null ? (v.usedCount / v.usageLimit) * 100 : 0;
+                  const tone = pct < 50 ? "grass" : pct < 85 ? "amberx" : "rust";
+                  return (
+                    <div className="flex min-w-[100px] flex-col gap-1">
+                      <span className="text-sm">{usagePrimary(v)}</span>
+                      {v.usageLimit != null && <ProgressBar value={pct} tone={tone} />}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "expiration",
+                header: "Expiration",
+                render: v => {
+                  const { text, muted } = expirationCell(v, now);
+                  return <span className={`text-sm ${muted ? "text-ink-soft" : "text-ink"}`}>{text}</span>;
+                },
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: v => <StatusBadge status={voucherStatusToneKey(v.status)} />,
+              },
+              {
+                key: "scope",
+                header: "Scope",
+                render: v => {
+                  if (v.scope === "ALL") return <span className="text-sm text-ink-soft">All Products</span>;
+                  const shown = v.products.slice(0, 2);
+                  const extra = v.products.length - shown.length;
+                  return (
+                    <div className="flex flex-wrap gap-1">
+                      {shown.map(p => <Badge key={p.id} variant="default" className="max-w-full truncate" title={p.name}>{p.name}</Badge>)}
+                      {extra > 0 && <Badge variant="default">+{extra} more</Badge>}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "performance",
+                header: "Performance",
+                render: v => (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-sm">{v.ordersCount} orders</span>
+                    <span className="text-xs text-ink-soft">
+                      {formatCurrencyDisplay(v.revenue, "IDR")} · {v.customers} customers
+                    </span>
+                  </div>
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: v => (
+                  <div onClick={e => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${v.code}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => setViewing(v)}>
+                          <Eye className="h-4 w-4" />
+                          View
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openEditForm(v)}>
+                          <Pencil className="h-4 w-4" />
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openDuplicateForm(v)}>
+                          <CopyPlus className="h-4 w-4" />
+                          Duplicate
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onSelect={() => toggle.mutate({ id: v.id, active: !v.isActive })}>
+                          {v.isActive ? <Ban className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                          {v.isActive ? "Disable" : "Enable"}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={e => { e.preventDefault(); setPendingDelete(v); }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                ),
+              },
+            ]}
+            data={vouchers}
+            isLoading={!data}
+            keyExtractor={v => v.id}
+            empty={
+              status || q
+                ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
+                : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
+            }
+          />
+        </CardContent>
+      </Card>
 
       {data && (
         <div className="mt-4">

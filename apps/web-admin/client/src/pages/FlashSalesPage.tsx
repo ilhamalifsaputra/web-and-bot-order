@@ -33,6 +33,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import { Card, CardContent } from "@/components/ui/card";
 import { Zap, Plus, Clock, Ban, Tag, MoreVertical, Eye, Pencil, XCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { visibleSelection } from "../lib/selection";
@@ -444,182 +445,187 @@ export function FlashSalesPage() {
         </div>
       )}
 
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            kind: "selection",
-            header: (
-              <Checkbox
-                checked={allFilteredSelected}
-                onCheckedChange={toggleSelectAllFiltered}
-                aria-label="Select all SKUs matching the current filters"
-              />
-            ),
-            render: (row) => (
-              <Checkbox
-                checked={selected.has(row.id)}
-                onCheckedChange={() => toggleSelected(row.id)}
-                onClick={(e) => e.stopPropagation()}
-                aria-label={`Select ${row.name}`}
-              />
-            ),
-          },
-          {
-            key: "product",
-            header: "Product",
-            render: (row) => {
-              const context = `${row.productName}${row.categoryName ? ` · ${row.categoryName}` : ""}`;
-              return (
-                <div className="max-w-[240px]">
-                  <div className="truncate font-medium text-sm text-ink" title={row.name}>
-                    {row.name}
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "select",
+                kind: "selection",
+                header: (
+                  <Checkbox
+                    checked={allFilteredSelected}
+                    onCheckedChange={toggleSelectAllFiltered}
+                    aria-label="Select all SKUs matching the current filters"
+                  />
+                ),
+                render: (row) => (
+                  <Checkbox
+                    checked={selected.has(row.id)}
+                    onCheckedChange={() => toggleSelected(row.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={`Select ${row.name}`}
+                  />
+                ),
+              },
+              {
+                key: "product",
+                header: "Product",
+                render: (row) => {
+                  const context = `${row.productName}${row.categoryName ? ` · ${row.categoryName}` : ""}`;
+                  return (
+                    <div className="max-w-[240px]">
+                      <div className="truncate font-medium text-sm text-ink" title={row.name}>
+                        {row.name}
+                      </div>
+                      <div className="truncate text-xs text-ink-soft" title={context}>
+                        {context}
+                      </div>
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "price",
+                header: "Price",
+                render: (row) =>
+                  row.flash ? (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="font-mono text-xs text-ink-faint line-through">
+                        {formatCurrencyDisplay(row.price, "IDR")}
+                      </span>
+                      <span className="font-mono text-sm font-medium text-ink">
+                        {formatCurrencyDisplay(row.flash.salePrice, "IDR")}
+                      </span>
+                      <span className="text-xs font-medium text-grass-dark">-{row.flash.discountPercent}%</span>
+                    </div>
+                  ) : (
+                    <span className="font-mono text-sm">{formatCurrencyDisplay(row.price, "IDR")}</span>
+                  ),
+              },
+              {
+                key: "window",
+                header: "Window",
+                render: (row) =>
+                  row.flash ? (
+                    <div className="flex flex-col gap-0.5 text-sm text-ink-soft">
+                      <span>Starts {row.flash.startsAtDisplay}</span>
+                      <span>Ends {row.flash.endsAtDisplay}</span>
+                    </div>
+                  ) : (
+                    <span className="text-sm text-ink-soft">—</span>
+                  ),
+              },
+              {
+                key: "status",
+                header: "Flash Status",
+                render: (row) => {
+                  const subtext = row.flash ? flashSubtext(row.flash, now) : null;
+                  return (
+                    <div className="flex flex-col items-start gap-1">
+                      <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
+                      {subtext && <span className="text-xs text-ink-soft">{subtext}</span>}
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "performance",
+                header: "Performance",
+                render: (row) =>
+                  row.flash ? (
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-sm text-ink">Sold {row.flash.sold}</span>
+                      <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
+                      <span className="text-xs text-ink-soft">
+                        {row.flash.orders} order{row.flash.orders === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-sm text-ink-soft">—</span>
+                  ),
+              },
+              {
+                key: "progress",
+                header: "Progress",
+                render: (row) => {
+                  if (!row.flash || row.flash.availableStock === null) {
+                    return <span className="text-sm text-ink-soft">—</span>;
+                  }
+                  const { sold, availableStock } = row.flash;
+                  const total = sold + availableStock;
+                  const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
+                  // Deliberately inverted from the usual stock-health convention
+                  // (grass=healthy/low-risk, rust=danger): for a flash sale, a
+                  // HIGH sold-percentage is the good outcome ("almost sold out"),
+                  // not a low-stock warning, so rust marks high % here, not low %.
+                  const tone = pct >= 80 ? "rust" : pct >= 50 ? "amberx" : "grass";
+                  return (
+                    <div className="flex flex-col gap-1 w-28">
+                      <span className="text-xs text-ink-soft">{sold} / {total} sold</span>
+                      <ProgressBar value={pct} tone={tone} />
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => (
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.productId}/denominations/${row.id}/edit`)}>
+                          <Eye className="h-4 w-4" />
+                          View SKU
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => openEditSchedule(row)}>
+                          <Pencil className="h-4 w-4" />
+                          Edit Schedule
+                        </DropdownMenuItem>
+                        {row.flash && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <ConfirmDialog
+                              trigger={
+                                <DropdownMenuItem onSelect={(e) => e.preventDefault()} variant="destructive">
+                                  <XCircle className="h-4 w-4" />
+                                  End Sale Now
+                                </DropdownMenuItem>
+                              }
+                              title="End this flash sale?"
+                              description={`Cancel the flash sale on "${row.name}". It reverts to its base price immediately.`}
+                              confirmLabel="End now"
+                              onConfirm={() => bulkEnd.mutate([row.id])}
+                            />
+                          </>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
-                  <div className="truncate text-xs text-ink-soft" title={context}>
-                    {context}
-                  </div>
-                </div>
-              );
-            },
-          },
-          {
-            key: "price",
-            header: "Price",
-            render: (row) =>
-              row.flash ? (
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-mono text-xs text-ink-faint line-through">
-                    {formatCurrencyDisplay(row.price, "IDR")}
-                  </span>
-                  <span className="font-mono text-sm font-medium text-ink">
-                    {formatCurrencyDisplay(row.flash.salePrice, "IDR")}
-                  </span>
-                  <span className="text-xs font-medium text-grass-dark">-{row.flash.discountPercent}%</span>
-                </div>
-              ) : (
-                <span className="font-mono text-sm">{formatCurrencyDisplay(row.price, "IDR")}</span>
-              ),
-          },
-          {
-            key: "window",
-            header: "Window",
-            render: (row) =>
-              row.flash ? (
-                <div className="flex flex-col gap-0.5 text-sm text-ink-soft">
-                  <span>Starts {row.flash.startsAtDisplay}</span>
-                  <span>Ends {row.flash.endsAtDisplay}</span>
-                </div>
-              ) : (
-                <span className="text-sm text-ink-soft">—</span>
-              ),
-          },
-          {
-            key: "status",
-            header: "Flash Status",
-            render: (row) => {
-              const subtext = row.flash ? flashSubtext(row.flash, now) : null;
-              return (
-                <div className="flex flex-col items-start gap-1">
-                  <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
-                  {subtext && <span className="text-xs text-ink-soft">{subtext}</span>}
-                </div>
-              );
-            },
-          },
-          {
-            key: "performance",
-            header: "Performance",
-            render: (row) =>
-              row.flash ? (
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-sm text-ink">Sold {row.flash.sold}</span>
-                  <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
-                  <span className="text-xs text-ink-soft">
-                    {row.flash.orders} order{row.flash.orders === 1 ? "" : "s"}
-                  </span>
-                </div>
-              ) : (
-                <span className="text-sm text-ink-soft">—</span>
-              ),
-          },
-          {
-            key: "progress",
-            header: "Progress",
-            render: (row) => {
-              if (!row.flash || row.flash.availableStock === null) {
-                return <span className="text-sm text-ink-soft">—</span>;
-              }
-              const { sold, availableStock } = row.flash;
-              const total = sold + availableStock;
-              const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
-              // Deliberately inverted from the usual stock-health convention
-              // (grass=healthy/low-risk, rust=danger): for a flash sale, a
-              // HIGH sold-percentage is the good outcome ("almost sold out"),
-              // not a low-stock warning, so rust marks high % here, not low %.
-              const tone = pct >= 80 ? "rust" : pct >= 50 ? "amberx" : "grass";
-              return (
-                <div className="flex flex-col gap-1 w-28">
-                  <span className="text-xs text-ink-soft">{sold} / {total} sold</span>
-                  <ProgressBar value={pct} tone={tone} />
-                </div>
-              );
-            },
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => (
-              <div onClick={(e) => e.stopPropagation()}>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
-                      <MoreVertical className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.productId}/denominations/${row.id}/edit`)}>
-                      <Eye className="h-4 w-4" />
-                      View SKU
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => openEditSchedule(row)}>
-                      <Pencil className="h-4 w-4" />
-                      Edit Schedule
-                    </DropdownMenuItem>
-                    {row.flash && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <ConfirmDialog
-                          trigger={
-                            <DropdownMenuItem onSelect={(e) => e.preventDefault()} variant="destructive">
-                              <XCircle className="h-4 w-4" />
-                              End Sale Now
-                            </DropdownMenuItem>
-                          }
-                          title="End this flash sale?"
-                          description={`Cancel the flash sale on "${row.name}". It reverts to its base price immediately.`}
-                          confirmLabel="End now"
-                          onConfirm={() => bulkEnd.mutate([row.id])}
-                        />
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            ),
-          },
-        ]}
-        data={filtered}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        empty={
-          <EmptyState
-            icon={Zap}
-            title="No SKUs found"
-            description="Try adjusting your search or filters."
-            secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+                ),
+              },
+            ]}
+            data={filtered}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            empty={
+              <EmptyState
+                icon={Zap}
+                title="No SKUs found"
+                description="Try adjusting your search or filters."
+                secondaryAction={hasActiveFilter ? { label: "Clear Filters", onClick: clearFilters } : undefined}
+              />
+            }
           />
-        }
-      />
+        </CardContent>
+      </Card>
     </PageLayout>
   );
 }

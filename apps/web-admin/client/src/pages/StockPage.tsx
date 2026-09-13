@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { Boxes, Eye, Download, MoreVertical } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "../components/shared/SearchBar";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
@@ -205,174 +206,179 @@ export function StockPage() {
         </div>
       </FilterBar>
 
-      <DataTable
-        columns={[
-          {
-            key: "denomination",
-            header: "Denomination",
-            render: (row) => (
-              <div className="max-w-[240px]">
-                <div className="truncate font-medium text-sm text-ink" title={row.name}>
-                  {row.name}
-                </div>
-                <div
-                  className="truncate text-xs text-ink-soft"
-                  title={row.product?.category?.name ?? undefined}
-                >
-                  {row.product?.category?.name ?? "—"}
-                </div>
-              </div>
-            ),
-          },
-          {
-            key: "status",
-            header: "Status",
-            render: (row) => {
-              const available = counts[String(row.id)]?.available ?? 0;
-              const tier = stockTier(available);
-              if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
-              if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
-              return <StatusBadge status="IN_STOCK" />;
-            },
-          },
-          {
-            key: "available",
-            header: "Available",
-            render: (row) => {
-              const available = counts[String(row.id)]?.available ?? 0;
-              return (
-                <span
-                  className={
-                    available === 0
-                      ? "font-semibold text-rust"
-                      : "text-sm text-ink"
-                  }
-                >
-                  {available}
-                </span>
-              );
-            },
-          },
-          {
-            key: "waiting",
-            header: "Waiting",
-            render: (row) => {
-              const wait = data?.waiting[String(row.id)] ?? 0;
-              return (
-                <span className="text-sm text-ink-soft">
-                  {wait > 0 ? wait : "—"}
-                </span>
-              );
-            },
-          },
-          {
-            key: "stock",
-            header: "Stock",
-            render: (row) => {
-              const cnt = counts[String(row.id)];
-              const available = cnt?.available ?? 0;
-              const reserved = cnt?.reserved ?? 0;
-              const sold = cnt?.sold ?? 0;
-              const total = available + reserved + sold;
-              const pct = total > 0 ? Math.round((available / total) * 100) : 0;
-              const tone = pct < 20 ? "rust" : pct < 50 ? "amberx" : "grass";
-              return (
-                <div className="min-w-[120px]">
-                  <div className="mb-1 text-xs text-ink-soft">
-                    {total > 0 ? `${available} / ${total} Ready` : "No stock added"}
+      <Card>
+        <CardContent>
+          <DataTable
+            nested
+            columns={[
+              {
+                key: "denomination",
+                header: "Denomination",
+                render: (row) => (
+                  <div className="max-w-[240px]">
+                    <div className="truncate font-medium text-sm text-ink" title={row.name}>
+                      {row.name}
+                    </div>
+                    <div
+                      className="truncate text-xs text-ink-soft"
+                      title={row.product?.category?.name ?? undefined}
+                    >
+                      {row.product?.category?.name ?? "—"}
+                    </div>
                   </div>
-                  <ProgressBar value={pct} tone={tone} />
-                </div>
-              );
-            },
-          },
-          {
-            key: "reserved",
-            header: "Reserved",
-            render: (row) => {
-              const cnt = counts[String(row.id)];
-              return (
-                <span className="text-sm text-ink-soft">{cnt?.reserved ?? 0}</span>
-              );
-            },
-          },
-          {
-            key: "sold",
-            header: "Sold",
-            render: (row) => {
-              const cnt = counts[String(row.id)];
-              return (
-                <span className="text-sm text-ink-soft">{cnt?.sold ?? 0}</span>
-              );
-            },
-          },
-          {
-            key: "product",
-            header: "Product",
-            render: (row) => (
-              <span
-                className="block max-w-[240px] truncate text-sm text-ink-soft"
-                title={row.product?.name ?? undefined}
-              >
-                {row.product?.name ?? "—"}
-              </span>
-            ),
-          },
-          {
-            key: "actions",
-            header: "",
-            render: (row) => {
-              const available = counts[String(row.id)]?.available ?? 0;
-              return (
-                <div onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
-                        <MoreVertical className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onSelect={() => navigate(`/stock/${row.id}`)}>
-                        <Eye className="h-4 w-4" />
-                        View
-                      </DropdownMenuItem>
-                      {available > 0 && (
-                        <DropdownMenuItem asChild>
-                          <a href={`/api/stock/${row.id}/download`}>
-                            <Download className="h-4 w-4" />
-                            Download Credentials
-                          </a>
-                        </DropdownMenuItem>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              );
-            },
-          },
-        ]}
-        data={filtered}
-        isLoading={isLoading}
-        keyExtractor={(row) => row.id}
-        onRowClick={(row) => navigate(`/stock/${row.id}`)}
-        empty={
-          isGenuinelyEmpty ? (
-            <EmptyState
-              icon={Boxes}
-              title="No denominations found"
-              description="Stock will appear here once denominations exist."
-              action={{ label: "Go to Catalog", onClick: () => navigate("/catalog") }}
-            />
-          ) : (
-            <EmptyState
-              icon={Boxes}
-              title="No denominations found"
-              description="Try adjusting your search or filters."
-              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
-            />
-          )
-        }
-      />
+                ),
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (row) => {
+                  const available = counts[String(row.id)]?.available ?? 0;
+                  const tier = stockTier(available);
+                  if (tier === "out") return <StatusBadge status="OUT_OF_STOCK" />;
+                  if (tier === "low") return <StatusBadge status="LOW_STOCK" />;
+                  return <StatusBadge status="IN_STOCK" />;
+                },
+              },
+              {
+                key: "available",
+                header: "Available",
+                render: (row) => {
+                  const available = counts[String(row.id)]?.available ?? 0;
+                  return (
+                    <span
+                      className={
+                        available === 0
+                          ? "font-semibold text-rust"
+                          : "text-sm text-ink"
+                      }
+                    >
+                      {available}
+                    </span>
+                  );
+                },
+              },
+              {
+                key: "waiting",
+                header: "Waiting",
+                render: (row) => {
+                  const wait = data?.waiting[String(row.id)] ?? 0;
+                  return (
+                    <span className="text-sm text-ink-soft">
+                      {wait > 0 ? wait : "—"}
+                    </span>
+                  );
+                },
+              },
+              {
+                key: "stock",
+                header: "Stock",
+                render: (row) => {
+                  const cnt = counts[String(row.id)];
+                  const available = cnt?.available ?? 0;
+                  const reserved = cnt?.reserved ?? 0;
+                  const sold = cnt?.sold ?? 0;
+                  const total = available + reserved + sold;
+                  const pct = total > 0 ? Math.round((available / total) * 100) : 0;
+                  const tone = pct < 20 ? "rust" : pct < 50 ? "amberx" : "grass";
+                  return (
+                    <div className="min-w-[120px]">
+                      <div className="mb-1 text-xs text-ink-soft">
+                        {total > 0 ? `${available} / ${total} Ready` : "No stock added"}
+                      </div>
+                      <ProgressBar value={pct} tone={tone} />
+                    </div>
+                  );
+                },
+              },
+              {
+                key: "reserved",
+                header: "Reserved",
+                render: (row) => {
+                  const cnt = counts[String(row.id)];
+                  return (
+                    <span className="text-sm text-ink-soft">{cnt?.reserved ?? 0}</span>
+                  );
+                },
+              },
+              {
+                key: "sold",
+                header: "Sold",
+                render: (row) => {
+                  const cnt = counts[String(row.id)];
+                  return (
+                    <span className="text-sm text-ink-soft">{cnt?.sold ?? 0}</span>
+                  );
+                },
+              },
+              {
+                key: "product",
+                header: "Product",
+                render: (row) => (
+                  <span
+                    className="block max-w-[240px] truncate text-sm text-ink-soft"
+                    title={row.product?.name ?? undefined}
+                  >
+                    {row.product?.name ?? "—"}
+                  </span>
+                ),
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (row) => {
+                  const available = counts[String(row.id)]?.available ?? 0;
+                  return (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onSelect={() => navigate(`/stock/${row.id}`)}>
+                            <Eye className="h-4 w-4" />
+                            View
+                          </DropdownMenuItem>
+                          {available > 0 && (
+                            <DropdownMenuItem asChild>
+                              <a href={`/api/stock/${row.id}/download`}>
+                                <Download className="h-4 w-4" />
+                                Download Credentials
+                              </a>
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  );
+                },
+              },
+            ]}
+            data={filtered}
+            isLoading={isLoading}
+            keyExtractor={(row) => row.id}
+            onRowClick={(row) => navigate(`/stock/${row.id}`)}
+            empty={
+              isGenuinelyEmpty ? (
+                <EmptyState
+                  icon={Boxes}
+                  title="No denominations found"
+                  description="Stock will appear here once denominations exist."
+                  action={{ label: "Go to Catalog", onClick: () => navigate("/catalog") }}
+                />
+              ) : (
+                <EmptyState
+                  icon={Boxes}
+                  title="No denominations found"
+                  description="Try adjusting your search or filters."
+                  secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+                />
+              )
+            }
+          />
+        </CardContent>
+      </Card>
     </PageLayout>
   );
 }

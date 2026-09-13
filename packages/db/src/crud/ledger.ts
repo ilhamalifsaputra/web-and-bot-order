@@ -1,0 +1,537 @@
+/**
+ * Ledger posting service (Financial Ledger M2) — the ONLY writer of
+ * `FinancialTransaction`/`LedgerEntry` rows, plus the two read helpers that
+ * interpret them (`getAccountBalance`, `trialBalance`).
+ *
+ * Being the only writer is what makes this file load-bearing. Every invariant
+ * the ledger depends on is an APPLICATION-layer invariant (see LedgerEntry's
+ * doc comment in prisma/schema.prisma): `amount` positive, `entry.currency ==
+ * account.currency`, and debits equal credits per currency. Postgres cannot
+ * express the third at all (a cross-row aggregate), and this schema does not use
+ * CHECK constraints for the first two either — `db push` is the deploy mechanism
+ * (docs/MIGRATIONS.md), so invariants live in code. Nothing else may insert into
+ * these two tables: a second writer is a second, unreviewed copy of the rules.
+ *
+ * Two things are enforced here that no amount of care at the CALL site could
+ * enforce instead:
+ *
+ * 1. **Balance before write.** Validation runs to completion before the first
+ *    INSERT, so a rejected posting leaves no half-written event behind. An
+ *    unbalanced FinancialTransaction is not a recoverable state — nothing later
+ *    can tell which of its legs was the wrong one.
+ * 2. **One economic effect per `idempotencyKey`.** Every payment rail in this
+ *    shop is at-least-once (webhooks redeliver, pollers re-check the same order
+ *    every cycle), so posting sites WILL ask to post the same event twice. A
+ *    duplicate returns the already-posted row rather than throwing, because a
+ *    retry is normal operation, not an error a webhook handler should surface.
+ *
+ * Deliberately NOT in this file:
+ * - **No reversal helper.** The ledger is append-only and a mis-posting is
+ *   cancelled by a REVERSAL transaction, but nothing in this milestone needs to
+ *   reverse anything yet, and `FinancialTransaction` has no
+ *   `@@unique([reversalOfId])` — so a reversal helper also owes a
+ *   one-reversal-per-transaction guard, which is a decision better made by the
+ *   milestone that first needs it than guessed at here.
+ * - **No wiring.** No order, payment, wallet or refund code path calls this yet;
+ *   that is the next milestone. A balance read off these tables today is
+ *   therefore complete only with respect to what tests posted.
+ * - **No chart-of-accounts cache.** Each call batch-fetches the accounts it
+ *   names. The chart is 15 rows and nothing hot calls this, so a cache would
+ *   only add a staleness failure mode (a newly seeded account looking unknown)
+ *   in exchange for nothing measurable.
+ */
+import { ValidationError } from "@app/core/errors";
+import { LedgerAccountType, LedgerDirection } from "@app/core/enums";
+import { Decimal, money, moneyEq, ZERO } from "@app/core/money";
+import type { FinancialTransaction } from "@prisma/client";
+import type { Db } from "./_types";
+import { isUniqueViolation } from "./_types";
+
+/** One debit or credit line of a posting, as the caller describes it. */
+export interface LedgerEntryInput {
+  /** `LedgerAccount.code`, e.g. "cash.idr" — NOT the numeric id. */
+  accountCode: string;
+  /** DEBIT | CREDIT (`LedgerDirection`, @app/core/enums). */
+  direction: LedgerDirection;
+  /**
+   * Always positive: the sign is carried by `direction`, never by this value.
+   * Quantized to 4 decimal places on the way in, like every money value in this
+   * repo (@app/core/money) — see `parseEntryAmount`.
+   */
+  amount: Decimal.Value;
+  /**
+   * "IDR" | "USDT" (`OrderCurrency`, @app/core/enums). Must equal the named
+   * account's own `currency`; a mismatch is rejected rather than silently
+   * trusting one over the other.
+   */
+  currency: string;
+}
+
+/** Everything one posted event needs. */
+export interface PostFinancialTransactionArgs {
+  /** `FinancialTransactionType` value (@app/core/enums). */
+  type: string;
+  /**
+   * What business thing this event is about — "order" | "payment" |
+   * "refund_execution" | "wallet_topup" | "manual". A free string, not an enum,
+   * matching `AuditLog.targetType`'s precedent and FinancialTransaction's own
+   * "intentionally UNTYPED back-pointer" doc comment: a general journal has to
+   * be able to record an event against anything, including a purely manual
+   * adjustment with no domain row at all.
+   */
+  referenceType: string;
+  referenceId: number;
+  /**
+   * Caller-derived and globally unique — the retry guard. The convention this
+   * service expects (FinancialTransaction's doc comment) is
+   * `<type>:<referenceType>:<referenceId>[:<discriminator>]`. Posting the same
+   * key twice returns the first posting instead of creating a second one or
+   * throwing.
+   */
+  idempotencyKey: string;
+  /**
+   * Human-readable summary for the admin-facing ledger view. Written as a
+   * natural-language sentence, not `key=value` shorthand — same audience and
+   * convention as `AuditLog.details` (docs/LOGGING.md).
+   */
+  description: string;
+  /**
+   * When the money moved in the real world (UTC). Not defaulted anywhere: a
+   * backfilled or settlement posting must not be able to claim it happened at
+   * import time. `postedAt` is set here, and is a different fact.
+   */
+  occurredAt: Date;
+  entries: LedgerEntryInput[];
+}
+
+/** One line of a trial balance — an account and where it stands right now. */
+export interface TrialBalanceRow {
+  accountCode: string;
+  accountType: string;
+  currency: string;
+  balance: Decimal;
+}
+
+/**
+ * Account types whose balance RISES on a debit.
+ *
+ * `CLEARING` is listed here as a documented default rather than a claim: it is
+ * normal-balance-agnostic by design, and the seeded chart of accounts contains
+ * no `CLEARING` row precisely so no real account's sign depends on this guess
+ * (Task 1 typed `provider_clearing.*` ASSET and `refund_clearing.*` LIABILITY
+ * for exactly that reason — see `CHART_OF_ACCOUNTS`' doc comment). If a future
+ * account is ever typed `CLEARING`, it reads debit-positive, which matches the
+ * "money in transit we expect to receive" case.
+ */
+const DEBIT_NORMAL_TYPES: readonly string[] = [
+  LedgerAccountType.ASSET,
+  LedgerAccountType.EXPENSE,
+  LedgerAccountType.CLEARING,
+];
+
+/** Account types whose balance RISES on a credit. */
+const CREDIT_NORMAL_TYPES: readonly string[] = [
+  LedgerAccountType.LIABILITY,
+  LedgerAccountType.REVENUE,
+  LedgerAccountType.EQUITY,
+];
+
+/** Recognised `LedgerEntry.direction` values. */
+const VALID_DIRECTIONS: readonly string[] = [LedgerDirection.DEBIT, LedgerDirection.CREDIT];
+
+/** The two sides of one account's (or one currency group's) entries. */
+interface DirectionSums {
+  debit: Decimal;
+  credit: Decimal;
+}
+
+/** An entry with its account resolved and its amount parsed — ready to insert. */
+interface PreparedEntry {
+  accountId: number;
+  direction: string;
+  amount: Decimal;
+  currency: string;
+}
+
+const noSums = (): DirectionSums => ({ debit: ZERO, credit: ZERO });
+
+/**
+ * Parse and validate one entry amount: well-formed, finite, and strictly
+ * positive AFTER quantizing to this repo's 4 decimal places.
+ *
+ * Same idiom as `refunds.ts`'s `parseRefundAmount` — a malformed `Decimal`
+ * constructor throw is converted into a clean `ValidationError` so no raw
+ * `[DecimalError] Invalid argument` ever escapes to a future route as an
+ * unhandled 500 instead of a 422.
+ *
+ * The quantizing is not cosmetic. `ledger_entries.amount` is DECIMAL(65,30), so
+ * it would happily store more precision than this repo's money type recognises,
+ * while `moneyEq` (the balance check below) compares at 4 places — two legs
+ * differing in the 5th decimal would pass the check and then be STORED unequal,
+ * leaving a transaction whose own rows do not add up. Quantizing here means the
+ * values compared are exactly the values written. It also makes an amount that
+ * vanishes at 4 places (0.00001) a rejection rather than a stored 0, which would
+ * have broken LedgerEntry's "amount is always positive" invariant.
+ */
+function parseEntryAmount(raw: Decimal.Value): Decimal {
+  let amount: Decimal;
+  try {
+    amount = money(raw);
+  } catch {
+    throw new ValidationError("error.ledger_amount_invalid");
+  }
+  if (!amount.isFinite() || !amount.greaterThan(0)) {
+    throw new ValidationError("error.ledger_amount_invalid");
+  }
+  return amount;
+}
+
+/**
+ * The core double-entry invariant: within each currency, the DEBIT amounts and
+ * the CREDIT amounts must sum to the same total.
+ *
+ * Currency groups are independent and are NEVER summed against each other. A
+ * posting with an IDR leg and a USDT leg is valid as long as IDR balances
+ * against IDR and USDT against USDT — this shop holds two unconvertible
+ * balances (see `User.walletBalanceUsdt`'s "no cross-currency conversion" note),
+ * so "100000 IDR == 6.25 USDT" is not a statement this codebase may make for any
+ * purpose, including a balance check.
+ *
+ * A mismatch in ANY group rejects the WHOLE posting — the balanced groups are
+ * not salvaged. They were written as one event by a caller that believed all of
+ * it; posting the half that happens to add up would record a real-world event
+ * that never occurred. The error names the first offending currency and both of
+ * its sums, so the leg that is wrong is visible from the message alone.
+ *
+ * Uses `moneyEq`, not `Decimal.equals`, matching this repo's convention for
+ * every money comparison: both sides are quantized to 4 places first, which is
+ * the precision the amounts were parsed (and will be stored) at.
+ */
+function assertBalancedPerCurrency(entries: readonly PreparedEntry[]): void {
+  const totals = new Map<string, DirectionSums>();
+  for (const entry of entries) {
+    const sums = totals.get(entry.currency) ?? noSums();
+    if (entry.direction === LedgerDirection.DEBIT) {
+      sums.debit = sums.debit.plus(entry.amount);
+    } else {
+      sums.credit = sums.credit.plus(entry.amount);
+    }
+    totals.set(entry.currency, sums);
+  }
+
+  // Map iteration is insertion-ordered, so the currency reported is the first
+  // one that appears in `entries` and fails — deterministic across runs.
+  for (const [currency, sums] of totals) {
+    if (!moneyEq(sums.debit, sums.credit)) {
+      throw new ValidationError("error.ledger_unbalanced", {
+        currency,
+        debitTotal: money(sums.debit).toString(),
+        creditTotal: money(sums.credit).toString(),
+      });
+    }
+  }
+}
+
+/**
+ * Validate every entry and resolve each `accountCode` to an account id, or
+ * throw. Runs entirely before the caller writes anything.
+ *
+ * Accounts are batch-fetched in ONE query keyed by `code: { in: [...] }` rather
+ * than looked up per entry: a posting with a dozen legs would otherwise cost a
+ * dozen round trips inside the critical path of a payment webhook.
+ */
+async function prepareEntries(db: Db, entries: readonly LedgerEntryInput[]): Promise<PreparedEntry[]> {
+  if (entries.length === 0) {
+    // A transaction with no entries is trivially "balanced" (0 == 0) and would
+    // record a money event that moved no money — meaningless in the books and
+    // invisible in every report.
+    throw new ValidationError("error.ledger_entries_empty");
+  }
+
+  // Amounts first, so a malformed amount is reported as such even if the entry
+  // also names an account that does not exist.
+  const amounts = entries.map((entry) => parseEntryAmount(entry.amount));
+
+  const codes = [...new Set(entries.map((entry) => entry.accountCode))];
+  const accounts = await db.ledgerAccount.findMany({
+    where: { code: { in: codes } },
+    select: { id: true, code: true, currency: true },
+  });
+  const byCode = new Map(accounts.map((account) => [account.code, account] as const));
+
+  return entries.map((entry, index) => {
+    const account = byCode.get(entry.accountCode);
+    if (!account) {
+      // Not an internal error: posting sites name accounts as string constants,
+      // so a typo or a chart-of-accounts row that was never seeded lands here.
+      throw new ValidationError("error.ledger_account_not_found", { accountCode: entry.accountCode });
+    }
+    if (!VALID_DIRECTIONS.includes(entry.direction)) {
+      // The one bad input the balance check cannot catch by itself: an
+      // unrecognised direction belongs to neither sum, so a posting made
+      // entirely of them sums 0 == 0 and would look perfectly balanced while
+      // moving money nowhere. `direction` is typed, but this service is the
+      // ledger's only gate and a JS caller (or a JSON body) is not type-checked.
+      throw new ValidationError("error.ledger_direction_invalid", {
+        accountCode: entry.accountCode,
+        direction: String(entry.direction),
+      });
+    }
+    if (entry.currency !== account.currency) {
+      // LedgerEntry invariant #3. Rejected rather than silently corrected to the
+      // account's own currency: the caller's two statements disagree about what
+      // was moved, and guessing which one it meant is how a USDT amount ends up
+      // booked as rupiah.
+      throw new ValidationError("error.ledger_currency_mismatch", {
+        accountCode: entry.accountCode,
+        entryCurrency: entry.currency,
+        accountCurrency: account.currency,
+      });
+    }
+    return {
+      accountId: account.id,
+      direction: entry.direction,
+      amount: amounts[index]!,
+      currency: entry.currency,
+    };
+  });
+}
+
+/**
+ * Post one balanced, idempotent financial event: a `FinancialTransaction` and
+ * its `LedgerEntry` children, written together or not at all.
+ *
+ * Order of operations, each step load-bearing:
+ *
+ * 1. **Idempotency check first.** An already-posted key returns its existing row
+ *    immediately — no re-validation, no second insert, no throw. This is the
+ *    "same operation ten times = one economic effect" guarantee the whole ledger
+ *    rests on, and it must hold even if the retry's `entries` differ (a
+ *    redelivered webhook carrying a corrected amount must NOT rewrite a posted
+ *    event; that is what a REVERSAL is for).
+ * 2. **Validate everything** (`prepareEntries`, `assertBalancedPerCurrency`)
+ *    before the first write.
+ * 3. **Write in one transaction**, so a failure cannot leave a transaction
+ *    without its entries. `reversalOfId` is never set here — only a REVERSAL
+ *    posting has one, and this milestone builds no reversal path.
+ * 4. **Reclaim on the idempotency race.** Two callers posting the same key for
+ *    the first time can both pass step 1 before either commits; the loser hits
+ *    the unique index on `idempotency_key`, and what it does then is return the
+ *    winner's row. The same "insert-first, reclaim-on-conflict" idiom the
+ *    `Processed*Tx` tables already use for redelivered gateway callbacks.
+ *
+ * The reclaim happens OUTSIDE the transaction on purpose: a unique violation
+ * aborts the Postgres transaction it occurred in, so re-reading on that same
+ * connection would fail with "current transaction is aborted" instead of
+ * returning the winner's row. Letting the transaction roll back first and then
+ * re-reading is what makes the reclaim actually work.
+ *
+ * Accepts either the bare client or a caller's `tx` (`Db` is `PrismaClient |
+ * Tx`), opening its own transaction only when given the former — a `Tx` cannot
+ * nest one. Same detection as `adjustWallet`'s (./users.ts). One consequence is
+ * documented rather than hidden: when the caller owns the transaction, a lost
+ * idempotency race CANNOT be reclaimed, because the violation has already
+ * aborted the caller's transaction and every later statement in it — including
+ * the caller's own other writes — is doomed. The P2002 is rethrown so the
+ * caller's transaction fails cleanly and can be retried whole, at which point
+ * step 1 returns the winner's row.
+ */
+export async function postFinancialTransaction(
+  db: Db,
+  args: PostFinancialTransactionArgs,
+): Promise<FinancialTransaction> {
+  if (args.idempotencyKey.trim() === "") {
+    // A blank key is not "no key" — it is a key every other blank-key caller
+    // shares, so the second such posting would be handed an unrelated
+    // transaction as its own idempotent replay and would silently skip writing
+    // real money.
+    throw new ValidationError("error.ledger_idempotency_key_required");
+  }
+
+  const alreadyPosted = await db.financialTransaction.findUnique({
+    where: { idempotencyKey: args.idempotencyKey },
+  });
+  if (alreadyPosted) return alreadyPosted;
+
+  const prepared = await prepareEntries(db, args.entries);
+  assertBalancedPerCurrency(prepared);
+
+  const write = async (trx: Db): Promise<FinancialTransaction> => {
+    const transaction = await trx.financialTransaction.create({
+      data: {
+        type: args.type,
+        referenceType: args.referenceType,
+        referenceId: args.referenceId,
+        idempotencyKey: args.idempotencyKey,
+        description: args.description,
+        occurredAt: args.occurredAt,
+        // When the books learned about it, as opposed to when it happened. The
+        // column defaults to now() anyway; set explicitly so the row's meaning
+        // does not depend on the database clock of whoever deploys this.
+        postedAt: new Date(),
+      },
+    });
+    // `createMany` is workable because every `accountId` was resolved by the
+    // batch fetch above, so no child needs a nested write to discover its
+    // parent — one INSERT for all legs instead of one per leg.
+    await trx.ledgerEntry.createMany({
+      data: prepared.map((entry) => ({
+        financialTransactionId: transaction.id,
+        accountId: entry.accountId,
+        direction: entry.direction,
+        amount: entry.amount,
+        currency: entry.currency,
+      })),
+    });
+    return transaction;
+  };
+
+  // A `Tx` has no `$transaction` (Prisma strips it from the interactive
+  // transaction client), so its presence is what distinguishes the bare client
+  // from a caller-owned transaction. Same check as ./users.ts's `adjustWallet`.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  try {
+    return ownsTransaction ? await db.$transaction(write) : await write(db);
+  } catch (e) {
+    if (!isUniqueViolation(e) || !ownsTransaction) throw e;
+    // The only unique constraint these two tables carry is
+    // `ix_financial_tx_idempotency_key`, and the re-read confirms it: a row now
+    // exists under our key, so a concurrent caller posted this same event while
+    // we were validating. That is the guard working, not a fault.
+    const raced = await db.financialTransaction.findUnique({
+      where: { idempotencyKey: args.idempotencyKey },
+    });
+    if (raced) return raced;
+    throw e;
+  }
+}
+
+/**
+ * Sum the debits and credits of every entry belonging to the given accounts, as
+ * ONE aggregate query.
+ *
+ * `groupBy` rather than fetching rows and adding them up in JS: `ledger_entries`
+ * grows without bound (every payment, refund and settlement adds rows forever),
+ * so a balance read that transfers the whole history would degrade silently and
+ * without limit. Accounts with no entries are simply absent from the result —
+ * callers substitute zero.
+ */
+async function sumsByAccount(db: Db, accountIds: readonly number[]): Promise<Map<number, DirectionSums>> {
+  const grouped = await db.ledgerEntry.groupBy({
+    by: ["accountId", "direction"],
+    where: { accountId: { in: [...accountIds] } },
+    _sum: { amount: true },
+  });
+
+  const byAccount = new Map<number, DirectionSums>();
+  for (const row of grouped) {
+    const sums = byAccount.get(row.accountId) ?? noSums();
+    const total = money(row._sum.amount?.toString() ?? 0);
+    if (row.direction === LedgerDirection.DEBIT) {
+      sums.debit = sums.debit.plus(total);
+    } else if (row.direction === LedgerDirection.CREDIT) {
+      sums.credit = sums.credit.plus(total);
+    }
+    // Any other `direction` value cannot have been written by this service (see
+    // `prepareEntries`), and counting it on either side would misstate the
+    // balance — so it is left out, and the balance reads as if the row is not
+    // there rather than as if it were a debit.
+    byAccount.set(row.accountId, sums);
+  }
+  return byAccount;
+}
+
+/**
+ * Turn one account's debit/credit sums into the signed balance its type implies.
+ *
+ * The single place this codebase decides what a balance's sign MEANS — both
+ * `getAccountBalance` and `trialBalance` route through it, so the two can never
+ * drift into reporting the same account with opposite signs.
+ *
+ * Debit-normal accounts (ASSET, EXPENSE, CLEARING) read `debits - credits`;
+ * credit-normal ones (LIABILITY, REVENUE, EQUITY) read `credits - debits`. So a
+ * DEBIT increases `cash.idr` (ASSET) and DECREASES `wallet_liability.idr`
+ * (LIABILITY), which is the accounting convention and the reason
+ * `LedgerAccount.type` exists.
+ *
+ * The result is SIGNED, not absolute: an ASSET account credited beyond its
+ * debits is genuinely negative, and reporting that as a positive number would
+ * hide exactly the kind of bug a trial balance is read to find.
+ *
+ * An unrecognised `type` throws instead of defaulting. Defaulting would pick a
+ * sign for an account nobody classified and report a confidently wrong balance —
+ * the one outcome worse than an error here.
+ */
+function signedBalance(account: { code: string; type: string }, sums: DirectionSums): Decimal {
+  if (DEBIT_NORMAL_TYPES.includes(account.type)) return money(sums.debit.minus(sums.credit));
+  if (CREDIT_NORMAL_TYPES.includes(account.type)) return money(sums.credit.minus(sums.debit));
+  throw new ValidationError("error.ledger_account_type_unknown", {
+    accountCode: account.code,
+    accountType: account.type,
+  });
+}
+
+/**
+ * One account's current balance, signed per its type (see `signedBalance`).
+ *
+ * Reads the whole history of the account every call — there is no running-total
+ * column to go stale, which is the point: the entries ARE the balance, and a
+ * cached total that disagrees with them is unfixable without knowing which one
+ * lied. Cheap because the sum happens in Postgres.
+ *
+ * Throws if `accountCode` names no account, rather than returning zero: "this
+ * account has no entries" and "there is no such account" are different answers,
+ * and a typo'd code silently reading 0.00 would make a reconciliation report
+ * look clean.
+ */
+export async function getAccountBalance(db: Db, accountCode: string): Promise<Decimal> {
+  const account = await db.ledgerAccount.findUnique({
+    where: { code: accountCode },
+    select: { id: true, code: true, type: true },
+  });
+  if (!account) throw new ValidationError("error.ledger_account_not_found", { accountCode });
+
+  const sums = (await sumsByAccount(db, [account.id])).get(account.id) ?? noSums();
+  return signedBalance(account, sums);
+}
+
+/**
+ * Every ACTIVE account of one currency with its current balance — "show me
+ * where the money is right now", ordered by `code` so successive reads are
+ * comparable line by line.
+ *
+ * Read-only, for the reconciliation milestone and for manual admin inspection.
+ * It does NOT assert that debits equal credits across accounts: that property is
+ * true by construction, because `postFinancialTransaction` refuses to write an
+ * unbalanced posting in the first place. A trial balance that does not balance
+ * is therefore a signal about the posting service (or about rows written around
+ * it), which is information to report, not to throw away by refusing to render.
+ *
+ * Retired accounts (`isActive: false`) are omitted — an admin retired them from
+ * the books' current picture on purpose; their entries stay readable through
+ * `getAccountBalance`, which takes any code.
+ *
+ * One aggregate query for all of them, not one per account: this is exactly the
+ * N+1 a per-account loop over `getAccountBalance` would have been, and the sign
+ * logic is shared through `signedBalance` instead.
+ */
+export async function trialBalance(db: Db, currency: string): Promise<TrialBalanceRow[]> {
+  const accounts = await db.ledgerAccount.findMany({
+    where: { currency, isActive: true },
+    select: { id: true, code: true, type: true, currency: true },
+    orderBy: { code: "asc" },
+  });
+  if (accounts.length === 0) return [];
+
+  const sums = await sumsByAccount(
+    db,
+    accounts.map((account) => account.id),
+  );
+
+  return accounts.map((account) => ({
+    accountCode: account.code,
+    accountType: account.type,
+    currency: account.currency,
+    balance: signedBalance(account, sums.get(account.id) ?? noSums()),
+  }));
+}

@@ -31,15 +31,24 @@
  * `buildDigiflazzCustomerNo` and `computeAccountDiagnosticNote` actually read
  * (final-review round 2 fix; see fieldMapping.ts's doc comment for why).
  *
- * Multi-unit handoff: this wizard only ever collects ONE unit's worth of
- * account info, even when `quantity > 1`. For a MANUAL_WITH_INFO SKU with
- * `quantity > 1` and at least one `additionalField`, the collected unit is
- * stashed as `scratch.prefilledCustomerDataUnit` and control hands off to
- * `customerInfo` to collect the remaining units (see `finalizeNicknameCheck`
- * below) — customerInfo.ts picks that prefilled unit up as unit 1 and
- * continues from unit 2. AUTO's quantity handling is unaffected: an AUTO SKU
- * always finalizes immediately regardless of quantity, since there's nothing
- * left for customerInfo to collect for it.
+ * Multi-unit handoff and field coverage (final-review round 3/4 — see
+ * `finalizeNicknameCheck` below for the exact branches): this wizard only
+ * ever collects ONE unit's worth of account info. Whether that's enough to
+ * finalize checkout directly depends on FIELD COVERAGE, not just quantity —
+ * `nicknameFieldMapping` only ever fills the SKU's first 1-3 `additionalFields`
+ * (target, optionally zone, optionally server); any REQUIRED field beyond
+ * that range would fail `validateCustomerData` at order-creation time if left
+ * unset. For a MANUAL_WITH_INFO SKU: if every required field is covered and
+ * `quantity > 1`, the collected unit is stashed as
+ * `scratch.prefilledCustomerDataUnit` and control hands off to `customerInfo`
+ * to collect the remaining units (customerInfo.ts picks that prefilled unit
+ * up as unit 1 and continues from unit 2); if a required field is NOT
+ * covered (regardless of quantity), this wizard's result is discarded
+ * entirely and customerInfo re-collects every field for every unit from
+ * scratch. AUTO SKUs always finalize immediately regardless of coverage or
+ * quantity (AUTO never goes through customerInfo/validateCustomerData), but
+ * log a warning when coverage is incomplete since the resulting
+ * Digiflazz customerNo may be missing a value.
  *
  * Graceful degrade: a definitive "not found" answer re-prompts the buyer
  * (typo protection) with an error line and a 'Continue anyway' escape
@@ -102,9 +111,10 @@ interface NicknameCheckConfig {
    * call), so parsing it inside this same external() call is fine — see
    * this file's header comment on external() discipline. */
   fields: AdditionalField[];
-  /** The denomination's own deliveryType — needed to decide whether a
-   * quantity > 1 checkout hands the remaining units off to customerInfo
-   * (MANUAL_WITH_INFO only; see finalizeNicknameCheck below). */
+  /** The denomination's own deliveryType — needed to decide whether an
+   * incompletely-covered or quantity > 1 checkout hands off to customerInfo
+   * (MANUAL_WITH_INFO only; see finalizeNicknameCheck's field-coverage logic
+   * below). */
   deliveryType: string;
 }
 
@@ -163,20 +173,35 @@ async function finalizeNicknameCheck(
 
   const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
   const mappedFieldCount = mapping ? 1 + (mapping.zoneKey ? 1 : 0) + (mapping.serverKey ? 1 : 0) : 0;
-  const fullyCovered = fields.length === 0 || mappedFieldCount === fields.length;
+  // Coverage only matters for REQUIRED fields — validateCustomerData (the
+  // actual hard block at order-creation) accepts a blank optional field, so
+  // an uncovered field beyond the mapped range is only a real problem when
+  // it's required. Counting ALL fields here (final-review round 4) made this
+  // gate over-trigger on the common, harmless shape of one required target
+  // field plus one optional server/zone field, discarding a successful live
+  // verification and making the buyer retype everything for no reason.
+  const uncoveredRequiredFieldExists = fields.slice(mappedFieldCount).some((f) => f.required);
+  const fullyCovered = fields.length === 0 || !uncoveredRequiredFieldExists;
 
   if (deliveryType === DeliveryType.MANUAL_WITH_INFO && !fullyCovered) {
-    // The SKU has admin-defined fields this game's requiresZone/requiresServer
-    // flags don't account for (e.g. a "zone" field on a game whose catalog
-    // entry says requiresZone:false) — finalizing here would submit an
-    // incomplete unit that validateCustomerData rejects at order-creation
-    // time, permanently blocking checkout for this SKU (Critical finding,
-    // final-review round 3). Discard this wizard's mapped result for
-    // customerData purposes — the live KokinPay verification still ran and
-    // told the buyer their account is valid, it just can't be reused to
-    // pre-fill an incompletely-covered field schema — and let customerInfo
-    // re-collect EVERY field for EVERY unit from a clean slate, exactly as if
-    // this game hadn't matched the nickname catalog at all.
+    // The SKU has a REQUIRED admin-defined field this game's
+    // requiresZone/requiresServer flags don't account for (e.g. a required
+    // "zone" field on a game whose catalog entry says requiresZone:false) —
+    // finalizing here would submit an incomplete unit that
+    // validateCustomerData rejects at order-creation time, permanently
+    // blocking checkout for this SKU (Critical finding, final-review round
+    // 3). Discard this wizard's mapped result for customerData purposes —
+    // the live KokinPay verification still ran and told the buyer their
+    // account is valid, it just can't be reused to pre-fill an
+    // incompletely-covered field schema — and let customerInfo re-collect
+    // EVERY field for EVERY unit from a clean slate, exactly as if this game
+    // hadn't matched the nickname catalog at all. Clear any stale prefill
+    // from a PRIOR attempt (final-review round 4) — this branch itself never
+    // sets one, but a leftover value from an earlier checkout attempt that
+    // hit this same branch, followed by customerInfo exiting before its own
+    // cleanup (an early return or a thrown error), would otherwise splice a
+    // stranger unit into this fresh attempt's first slot.
+    delete u.session.scratch.prefilledCustomerDataUnit;
     u.session.scratch.pendingInfoProductId = productId;
     u.session.scratch.pendingInfoQuantity = quantity;
     await u.conversation.enter("customerInfo");

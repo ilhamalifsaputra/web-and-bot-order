@@ -119,7 +119,7 @@ async function makeConfiguredDenom(opts: { gameCode?: string; withCreds?: boolea
  * manual_with_info never draws from stock.
  */
 async function makeConfiguredManualWithInfoDenomWithFields(
-  fields: Array<{ key: string }>,
+  fields: Array<{ key: string; required?: boolean }>,
   opts: { gameCode?: string; withCreds?: boolean } = {},
 ) {
   if (opts.withCreds) await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
@@ -133,7 +133,14 @@ async function makeConfiguredManualWithInfoDenomWithFields(
     price: "10.00",
     deliveryType: "manual_with_info",
     additionalFields: JSON.stringify(
-      fields.map((f) => ({ key: f.key, label: { id: f.key, en: f.key }, type: "text", required: true, options: [], placeholder: "" })),
+      fields.map((f) => ({
+        key: f.key,
+        label: { id: f.key, en: f.key },
+        type: "text",
+        required: f.required ?? true,
+        options: [],
+        placeholder: "",
+      })),
     ),
     nicknameCheckGameCode: opts.gameCode ?? "free-fire",
   });
@@ -688,6 +695,40 @@ describe("nicknameCheckConversation — keys customerData through the SKU's own 
     expect(confirmTap.session.scratch.pendingInfoProductId).toBe(denom.id);
     expect(confirmTap.session.scratch.pendingInfoQuantity).toBe(1);
     expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  });
+
+  it("quantity === 1 on a MANUAL_WITH_INFO SKU whose ONLY uncovered field is OPTIONAL still finalizes directly (final-review round 4: coverage counts REQUIRED fields only — validateCustomerData tolerates a blank optional field, so this shape was never actually broken and must not be routed through customerInfo)", async () => {
+    const denom = await makeConfiguredManualWithInfoDenomWithFields(
+      [
+        { key: "user_id", required: true },
+        { key: "server_id", required: false },
+      ],
+      { withCreds: true }, // "free-fire" default game code — requiresZone/requiresServer both false, so server_id is never mapped, but it's optional
+    );
+    kokinpayMock.checkGameNickname.mockResolvedValueOnce({ valid: true, nickname: "OptionalGapPlayer" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingNicknameProductId: denom.id, pendingNicknameQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const targetMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "optional-gap-id" }).ctx;
+    const confirmTap = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: userSession(),
+      callbackData: ckb.cb("nick", "confirm"),
+    }).ctx;
+    const conv = new FakeConversation([targetMsg, confirmTap]);
+
+    await nicknameCheckConversation(conv.asMyConversation(), entry);
+
+    expect(JSON.parse(confirmTap.session.scratch.customerData as string)).toEqual([
+      { user_id: "optional-gap-id", nickname: "OptionalGapPlayer" },
+    ]);
+    expect(confirmTap.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
+    expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(false);
   });
 
   it("quantity === 1 on a MANUAL_WITH_INFO SKU whose additionalFields ARE fully covered by the mapping still finalizes directly (proves the coverage fix didn't overcorrect into always routing through customerInfo)", async () => {

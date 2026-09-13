@@ -483,7 +483,7 @@ async function computeAccountDiagnosticNote(
     const unit = parseCustomerData(order.customerData)[0] ?? {};
     const fields = parseAdditionalFields(denomination.additionalFields);
     const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
-    const target = (mapping ? unit[mapping.targetKey] : undefined) ?? unit.target;
+    const target = (mapping ? unit[mapping.targetKey] : undefined) || unit.target;
     if (!target) return null;
     const zone = (mapping?.zoneKey ? unit[mapping.zoneKey] : undefined) || unit.zone;
     const server = (mapping?.serverKey ? unit[mapping.serverKey] : undefined) || unit.server;

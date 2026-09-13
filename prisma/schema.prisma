@@ -503,16 +503,103 @@ model StockItem {
   soldAt      DateTime? @map("sold_at")
   note        String?
 
+  // ── Stock traceability hardening plan, Fase 1 (schema-only, additive) ──
+  // These columns are all nullable or safely defaulted; no crud code reads
+  // or writes them yet. They exist so a later phase can record identity/
+  // provenance/lifecycle detail without a further migration.
+  identityFingerprint   String?   @map("identity_fingerprint")
+  credentialFingerprint String?   @map("credential_fingerprint")
+
+  soldToOrderId     Int? @map("sold_to_order_id")
+  soldToOrderItemId Int? @map("sold_to_order_item_id")
+
+  addedByAdminId Int?     @map("added_by_admin_id")
+  importBatchId  Int?     @map("import_batch_id")
+  supplierRef    String?  @map("supplier_ref")
+  unitCost       Decimal? @map("unit_cost")
+
+  credentialKeyVersion Int @default(1) @map("credential_key_version")
+
+  warrantyUntil       DateTime? @map("warranty_until")
+  replacesStockItemId Int?      @map("replaces_stock_item_id")
+
+  lastCheckedAt   DateTime? @map("last_checked_at")
+  lastCheckResult String?   @map("last_check_result")
+
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByAdminId Int?      @map("deleted_by_admin_id")
+
+  deadReason String? @map("dead_reason")
+
   // Relation field kept as `product` for source-compat; it resolves to a
   // Denomination (the SKU). Renamed to `denomination` in Phase 5 cleanup.
   product    Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   order      Order?       @relation(fields: [orderId], references: [id], onUpdate: NoAction)
   orderItems OrderItem[]
 
+  events      StockItemEvent[]
+  importBatch StockImportBatch? @relation(fields: [importBatchId], references: [id])
+
   @@index([status], map: "ix_stock_items_status")
   @@index([productId], map: "ix_stock_items_product_id")
   @@index([productId, status], map: "ix_stock_product_status")
+  @@index([identityFingerprint])
+  @@index([credentialFingerprint])
+  @@index([soldToOrderId])
   @@map("stock_items")
+}
+
+// Immutable lifecycle-event log for a StockItem (stock traceability
+// hardening plan, Fase 1). Recorded alongside — never instead of — the
+// mutable columns on StockItem itself, so a rollback/substitution keeps its
+// history instead of losing it to a null-out/overwrite. Fase 1 only adds
+// this table; no crud code writes to it yet.
+model StockItemEvent {
+  id          Int     @id @default(autoincrement())
+  stockItemId Int     @map("stock_item_id")
+  eventType   String  @map("event_type")
+  fromStatus  String? @map("from_status")
+  toStatus    String? @map("to_status")
+
+  orderId     Int? @map("order_id")
+  orderItemId Int? @map("order_item_id")
+
+  actorType       String  @map("actor_type")
+  actorAdminId    Int?    @map("actor_admin_id")
+  actorCustomerId Int?    @map("actor_customer_id")
+
+  reasonCode    String?  @map("reason_code")
+  correlationId String?  @map("correlation_id")
+  meta          Json?
+  occurredAt    DateTime @default(now()) @map("occurred_at")
+
+  stockItem StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict)
+
+  @@index([stockItemId, occurredAt])
+  @@index([orderId])
+  @@index([eventType, occurredAt])
+  @@map("stock_item_events")
+}
+
+// One row per bulk stock-import operation (stock traceability hardening
+// plan, Fase 1). StockItem.importBatchId will point back here so a later
+// phase can trace a credential to the exact import run that added it. Fase
+// 1 only adds this table; no crud code writes to it yet.
+model StockImportBatch {
+  id            Int      @id @default(autoincrement())
+  adminId       Int?     @map("admin_id")
+  productId     Int?     @map("product_id")
+  sourceLabel   String?  @map("source_label")
+  sourceHash    String?  @map("source_hash")
+  rowsSubmitted Int      @map("rows_submitted")
+  rowsInserted  Int      @map("rows_inserted")
+  rowsDuplicate Int      @map("rows_duplicate")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  items StockItem[]
+
+  @@index([createdAt])
+  @@map("stock_import_batches")
 }
 
 model Order {

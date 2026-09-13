@@ -71,6 +71,58 @@ export const StockStatus = {
 export type StockStatus = (typeof StockStatus)[keyof typeof StockStatus];
 export const zStockStatus = z.nativeEnum(StockStatus);
 
+/**
+ * StockItemEvent.eventType (stock-traceability hardening plan, Fase 1) —
+ * every lifecycle transition a StockItem can go through, recorded as an
+ * immutable event row rather than only mutating StockItem's own columns in
+ * place (which loses history on rollback/substitution). String, not a
+ * native Prisma enum, matching every other lifecycle-status column in this
+ * schema (see this file's header comment and StockStatus above). Fase 1
+ * only introduces this vocabulary and the schema to store it — no crud code
+ * writes these events yet; that starts in a later phase.
+ */
+export const StockEventType = {
+  IMPORTED: "IMPORTED",
+  RESERVED: "RESERVED",
+  RESERVATION_RELEASED: "RESERVATION_RELEASED",
+  SOLD: "SOLD",
+  SUBSTITUTED_OUT: "SUBSTITUTED_OUT",
+  SUBSTITUTED_IN: "SUBSTITUTED_IN",
+  MARKED_DEAD: "MARKED_DEAD",
+  CREDENTIAL_REVEALED: "CREDENTIAL_REVEALED",
+  REENCRYPTED: "REENCRYPTED",
+  SOFT_DELETED: "SOFT_DELETED",
+  WARRANTY_REPLACED: "WARRANTY_REPLACED",
+} as const;
+export type StockEventType = (typeof StockEventType)[keyof typeof StockEventType];
+export const zStockEventType = z.nativeEnum(StockEventType);
+
+/** StockItemEvent.actorType — who/what caused the event: an admin action, a
+ * customer-facing flow (e.g. checkout reserving stock), or an automated
+ * system process (e.g. an expiry sweep releasing a reservation). */
+export const StockActorType = {
+  ADMIN: "ADMIN",
+  CUSTOMER: "CUSTOMER",
+  SYSTEM: "SYSTEM",
+} as const;
+export type StockActorType = (typeof StockActorType)[keyof typeof StockActorType];
+export const zStockActorType = z.nativeEnum(StockActorType);
+
+/** StockItem.deadReason — why a stock item was marked DEAD, set alongside
+ * the existing `StockStatus.DEAD` status. Nullable/free-form in practice
+ * until a stock item is actually marked dead. */
+export const DeadReason = {
+  PASSWORD_CHANGED: "PASSWORD_CHANGED",
+  REGION_LOCK: "REGION_LOCK",
+  SUPPLIER_REVOKED: "SUPPLIER_REVOKED",
+  EXPIRED: "EXPIRED",
+  DUPLICATE: "DUPLICATE",
+  TEST: "TEST",
+  OTHER: "OTHER",
+} as const;
+export type DeadReason = (typeof DeadReason)[keyof typeof DeadReason];
+export const zDeadReason = z.nativeEnum(DeadReason);
+
 export const OrderStatus = {
   PENDING_PAYMENT: "PENDING_PAYMENT",
   // ── Bybit BSC on-chain rail ONLY — every other payment method never writes

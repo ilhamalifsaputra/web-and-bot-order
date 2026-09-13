@@ -109,8 +109,8 @@ export type StockActorType = (typeof StockActorType)[keyof typeof StockActorType
 export const zStockActorType = z.nativeEnum(StockActorType);
 
 /** StockItem.deadReason — why a stock item was marked DEAD, set alongside
- * the existing `StockStatus.DEAD` status. Nullable/free-form in practice
- * until a stock item is actually marked dead. */
+ * the existing `StockStatus.DEAD` status. The column is nullable and stays
+ * null until a stock item is actually marked dead. */
 export const DeadReason = {
   PASSWORD_CHANGED: "PASSWORD_CHANGED",
   REGION_LOCK: "REGION_LOCK",

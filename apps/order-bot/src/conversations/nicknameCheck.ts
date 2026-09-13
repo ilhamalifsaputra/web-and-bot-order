@@ -128,12 +128,14 @@ interface NicknameCheckConfig {
  * empty-customerNo bug for whichever branch was missed).
  *
  * Field-coverage gate (final-review round 3 — replaces round 2's
- * `quantity > 1` heuristic, which was the wrong condition): the real
- * constraint isn't quantity, it's whether nicknameFieldMapping actually fills
- * every additionalField this SKU defines. A MANUAL_WITH_INFO SKU whose
- * admin-defined fields aren't fully covered by this game's
- * requiresZone/requiresServer flags (e.g. 2 required fields but the matched
- * game only accounts for 1) can NEVER produce a complete customerData unit
+ * `quantity > 1` heuristic, which was the wrong condition; refined in round 4
+ * to count only REQUIRED fields, since validateCustomerData tolerates a
+ * blank optional one): the real constraint isn't quantity, it's whether
+ * nicknameFieldMapping actually fills every REQUIRED additionalField this SKU
+ * defines. A MANUAL_WITH_INFO SKU whose REQUIRED admin-defined fields aren't
+ * fully covered by this game's requiresZone/requiresServer flags (e.g. 2
+ * required fields but the matched game only accounts for 1) can NEVER produce
+ * a complete customerData unit
  * from this wizard alone — finalizing anyway would submit an incomplete unit
  * that validateCustomerData (packages/core/src/deliveryFields.ts, called from
  * packages/db/src/crud/orders.ts at order-creation time, gated to
@@ -170,6 +172,16 @@ async function finalizeNicknameCheck(
 ): Promise<void> {
   delete u.session.scratch.pendingNicknameProductId;
   delete u.session.scratch.pendingNicknameQuantity;
+  // Clear any prefilled unit inherited from a PRIOR checkout attempt (final
+  // review round 4/5) — hoisted here, before every branch below, rather than
+  // only inside the no-prefill handoff branch: the direct-finalize tail at
+  // the bottom of this function also exits without entering customerInfo,
+  // and would otherwise leave a stale value in place too if a PRIOR attempt
+  // set one and customerInfo exited before its own cleanup (an early return
+  // or a thrown error). The quantity>1+fully-covered branch below sets its
+  // own fresh value immediately after this, so hoisting the delete here
+  // doesn't change that branch's behavior.
+  delete u.session.scratch.prefilledCustomerDataUnit;
 
   const mapping = nicknameFieldMapping(fields, requiresZone, requiresServer);
   const mappedFieldCount = mapping ? 1 + (mapping.zoneKey ? 1 : 0) + (mapping.serverKey ? 1 : 0) : 0;
@@ -195,13 +207,9 @@ async function finalizeNicknameCheck(
     // account is valid, it just can't be reused to pre-fill an
     // incompletely-covered field schema — and let customerInfo re-collect
     // EVERY field for EVERY unit from a clean slate, exactly as if this game
-    // hadn't matched the nickname catalog at all. Clear any stale prefill
-    // from a PRIOR attempt (final-review round 4) — this branch itself never
-    // sets one, but a leftover value from an earlier checkout attempt that
-    // hit this same branch, followed by customerInfo exiting before its own
-    // cleanup (an early return or a thrown error), would otherwise splice a
-    // stranger unit into this fresh attempt's first slot.
-    delete u.session.scratch.prefilledCustomerDataUnit;
+    // hadn't matched the nickname catalog at all. (Any stale
+    // prefilledCustomerDataUnit from a prior attempt is already cleared
+    // above, before this branch.)
     u.session.scratch.pendingInfoProductId = productId;
     u.session.scratch.pendingInfoQuantity = quantity;
     await u.conversation.enter("customerInfo");

@@ -43,18 +43,40 @@ export interface ChartOfAccountsEntry {
  * but not-yet-paid refund sits in `refund_clearing.*`. Both are expected to
  * trend back to zero; a persistent balance on one is the signal that something
  * never settled.
+ *
+ * The two clearing purposes are NOT both typed `CLEARING`, even though that
+ * type exists, because money in transit is still somebody's asset or somebody's
+ * liability and a trial balance can only balance if each side is classified by
+ * its actual normal balance:
+ *
+ * - `provider_clearing.*` is an ASSET (debit-normal). It is money a gateway has
+ *   collected and now owes us — a receivable we expect to convert into
+ *   `cash.*`. A sale posts `Dr provider_clearing / Cr sales_revenue`, so the
+ *   balance sits on the debit side.
+ * - `refund_clearing.*` is a LIABILITY (credit-normal). It is money we owe a
+ *   buyer once a refund is approved but before it is paid out: approval posts
+ *   `Cr refund_clearing` and the payout posts `Dr refund_clearing`, so the
+ *   balance sits on the credit side.
+ *
+ * Typing both as the normal-balance-agnostic `CLEARING` would leave a future
+ * trial-balance or reconciliation report to guess a sign, and it would get one
+ * of the two backwards. The "expected to trend to zero" property that motivates
+ * the `CLEARING` type is a monitoring concern, and it is preserved here by the
+ * `*_clearing` code prefix, which is what such a report should key off.
  */
 export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
   {
     code: "provider_clearing.idr",
     name: "Provider Clearing (IDR)",
-    type: LedgerAccountType.CLEARING,
+    // Debit-normal: a receivable from the gateway. See the doc comment above.
+    type: LedgerAccountType.ASSET,
     currency: OrderCurrency.IDR,
   },
   {
     code: "provider_clearing.usdt",
     name: "Provider Clearing (USDT)",
-    type: LedgerAccountType.CLEARING,
+    // Debit-normal: a receivable from the gateway. See the doc comment above.
+    type: LedgerAccountType.ASSET,
     currency: OrderCurrency.USDT,
   },
   {
@@ -108,13 +130,15 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
   {
     code: "refund_clearing.idr",
     name: "Refund Clearing (IDR)",
-    type: LedgerAccountType.CLEARING,
+    // Credit-normal: money owed to the buyer. See the doc comment above.
+    type: LedgerAccountType.LIABILITY,
     currency: OrderCurrency.IDR,
   },
   {
     code: "refund_clearing.usdt",
     name: "Refund Clearing (USDT)",
-    type: LedgerAccountType.CLEARING,
+    // Credit-normal: money owed to the buyer. See the doc comment above.
+    type: LedgerAccountType.LIABILITY,
     currency: OrderCurrency.USDT,
   },
   {
@@ -142,10 +166,30 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
  * upserted on its unique `code`, so running this against an already-seeded
  * database changes nothing observable and adds no duplicates.
  *
- * `name`/`type`/`currency` ARE refreshed on an existing row, so correcting a
- * label or a misfiled classification in the list above and re-running is the
- * intended way to apply that fix. `isActive` is deliberately NOT touched: an
- * admin who retired an account should not have the seed silently revive it.
+ * ONLY `name` is refreshed on an existing row. Rewording a display label in the
+ * list above and re-running is the intended way to apply that fix, because a
+ * label carries no accounting meaning.
+ *
+ * `type` and `currency` are deliberately NOT refreshed, and must not be added
+ * back to the `update` clause. By the time a re-seed runs, an account may
+ * already have LedgerEntry rows posted against it, and this ledger is
+ * append-only:
+ *
+ * - Changing `type` reinterprets the accounting sign of every historical entry
+ *   on that account, silently turning a correct balance into a wrong one.
+ * - Changing `currency` breaks this schema's documented invariant that
+ *   `entry.currency == account.currency` for every row already posted.
+ *
+ * Either change would happen with no error, no warning and no audit trail, on a
+ * CLI bootstrap a human re-runs after every deploy. So re-classifying an
+ * existing account is a migration decision — one that has to reason about (and
+ * usually reverse, via REVERSAL entries) the entries already posted against it —
+ * not something a seed re-run may do behind the operator's back. Add a new
+ * account with the correct classification and retire the old one, or write a
+ * real migration; do not "fix" this clause.
+ *
+ * `isActive` is likewise NOT touched: an admin who retired an account should not
+ * have the seed silently revive it.
  *
  * Writes no audit-log entry — this is a system/CLI bootstrap with no acting
  * admin, and it changes reference data rather than any shop state an admin
@@ -172,8 +216,6 @@ export async function seedChartOfAccounts(db: Db): Promise<{ accountCount: numbe
       },
       update: {
         name: account.name,
-        type: account.type,
-        currency: account.currency,
       },
     });
   }

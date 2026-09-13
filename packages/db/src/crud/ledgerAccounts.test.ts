@@ -48,6 +48,25 @@ describe("CHART_OF_ACCOUNTS", () => {
       expect(currencies).toContain(account.currency);
     }
   });
+
+  it("classifies each clearing purpose by its real normal balance, not as CLEARING", () => {
+    // Pinned explicitly rather than derived from the list, because this is the
+    // one classification a future trial-balance report can get backwards
+    // without anything failing: `provider_clearing.*` is money a gateway owes
+    // us (debit-normal, ASSET) and `refund_clearing.*` is money we owe a buyer
+    // (credit-normal, LIABILITY). See CHART_OF_ACCOUNTS' doc comment.
+    const byCode = new Map(CHART_OF_ACCOUNTS.map((a) => [a.code, a] as const));
+    const expectedClearingTypes: Record<string, LedgerAccountType> = {
+      "provider_clearing.idr": LedgerAccountType.ASSET,
+      "provider_clearing.usdt": LedgerAccountType.ASSET,
+      "refund_clearing.idr": LedgerAccountType.LIABILITY,
+      "refund_clearing.usdt": LedgerAccountType.LIABILITY,
+    };
+
+    for (const [code, expectedType] of Object.entries(expectedClearingTypes)) {
+      expect(byCode.get(code)?.type).toBe(expectedType);
+    }
+  });
 });
 
 describe("seedChartOfAccounts", () => {
@@ -86,6 +105,34 @@ describe("seedChartOfAccounts", () => {
     // LedgerEntry.accountId already pointing at them.
     expect(after.map((r) => r.id)).toEqual(before.map((r) => r.id));
     expect(after.map((r) => r.code)).toEqual(before.map((r) => r.code));
+  });
+
+  it("does not clobber a diverged account's type or currency, but does refresh its name", async () => {
+    await seedChartOfAccounts(prisma);
+    // Simulate an existing account whose stored classification no longer matches
+    // CHART_OF_ACCOUNTS. The name is diverged too, so this test can tell "the
+    // update clause left type alone" apart from "the update clause never ran".
+    await prisma.ledgerAccount.update({
+      where: { code: "cash.idr" },
+      data: {
+        name: "Renamed by hand",
+        type: LedgerAccountType.EXPENSE,
+        currency: OrderCurrency.USDT,
+      },
+    });
+
+    await seedChartOfAccounts(prisma);
+
+    const account = await prisma.ledgerAccount.findUniqueOrThrow({ where: { code: "cash.idr" } });
+    // `type`/`currency` are absent from the upsert's `update` clause on purpose:
+    // re-typing an account reinterprets the sign of every LedgerEntry already
+    // posted against it, and re-denominating it breaks the
+    // `entry.currency == account.currency` invariant — neither may happen
+    // silently on a seed re-run (see seedChartOfAccounts' doc comment).
+    expect(account.type).toBe(LedgerAccountType.EXPENSE);
+    expect(account.currency).toBe(OrderCurrency.USDT);
+    // `name` is display-only, so it is the one field the seed does reassert.
+    expect(account.name).toBe("Cash (IDR)");
   });
 
   it("does not revive an account an admin retired", async () => {

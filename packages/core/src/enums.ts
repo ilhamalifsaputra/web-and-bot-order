@@ -867,3 +867,127 @@ export const AdminTaskStatus = {
 } as const;
 export type AdminTaskStatus = (typeof AdminTaskStatus)[keyof typeof AdminTaskStatus];
 export const zAdminTaskStatus = z.nativeEnum(AdminTaskStatus);
+
+/**
+ * LedgerAccount.type (Financial Ledger M1) — the accounting classification of
+ * a chart-of-accounts row, which is what decides whether a DEBIT to that
+ * account increases or decreases its real-world balance. String, not a native
+ * Prisma enum, matching every other classification column in this schema.
+ *
+ * ASSET/EXPENSE accounts increase on DEBIT; LIABILITY/REVENUE/EQUITY accounts
+ * increase on CREDIT. CLEARING is a normal-balance-agnostic transit account:
+ * money that has left the buyer but has not yet landed in a `cash.*` account
+ * (a gateway holding a settlement, a refund approved but not yet paid out)
+ * sits there so it is never double-counted as cash on hand. A CLEARING
+ * account is expected to trend back toward zero; a persistent balance on one
+ * is the signal that something never settled, which is the whole reason this
+ * type exists as its own classification rather than being filed under ASSET.
+ */
+export const LedgerAccountType = {
+  ASSET: "ASSET",
+  LIABILITY: "LIABILITY",
+  REVENUE: "REVENUE",
+  EXPENSE: "EXPENSE",
+  CLEARING: "CLEARING",
+  EQUITY: "EQUITY",
+} as const;
+export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
+export const zLedgerAccountType = z.nativeEnum(LedgerAccountType);
+
+/**
+ * LedgerEntry.direction (Financial Ledger M1) — which side of the
+ * double-entry a single ledger line sits on. `LedgerEntry.amount` is ALWAYS
+ * stored positive; this column carries the sign. A balanced
+ * FinancialTransaction's DEBIT entries and CREDIT entries sum to the same
+ * total per currency, which is the invariant the ledger posting service
+ * (a later milestone) enforces — nothing in this milestone posts entries yet.
+ */
+export const LedgerDirection = {
+  DEBIT: "DEBIT",
+  CREDIT: "CREDIT",
+} as const;
+export type LedgerDirection = (typeof LedgerDirection)[keyof typeof LedgerDirection];
+export const zLedgerDirection = z.nativeEnum(LedgerDirection);
+
+/**
+ * FinancialTransaction.type (Financial Ledger M1) — what real-world event a
+ * balanced group of LedgerEntry rows records. String, not a native Prisma
+ * enum, matching every other lifecycle/classification column in this schema.
+ *
+ * REVERSAL is the only value that is about the ledger itself rather than
+ * about money moving: this ledger is append-only, so a mis-posted
+ * transaction is never edited or deleted — it is cancelled by posting a
+ * REVERSAL whose entries mirror the original's with the directions flipped,
+ * linked back through `FinancialTransaction.reversalOfId`. ADJUSTMENT, by
+ * contrast, is a deliberate human correction of the books (a write-off, an
+ * opening balance), not a fix for a bad posting.
+ */
+export const FinancialTransactionType = {
+  ORDER_PAYMENT: "ORDER_PAYMENT",
+  WALLET_DEPOSIT: "WALLET_DEPOSIT",
+  WALLET_WITHDRAWAL: "WALLET_WITHDRAWAL",
+  REFUND: "REFUND",
+  REVERSAL: "REVERSAL",
+  ADJUSTMENT: "ADJUSTMENT",
+  FEE: "FEE",
+  SETTLEMENT: "SETTLEMENT",
+} as const;
+export type FinancialTransactionType =
+  (typeof FinancialTransactionType)[keyof typeof FinancialTransactionType];
+export const zFinancialTransactionType = z.nativeEnum(FinancialTransactionType);
+
+/**
+ * RefundExecution.method (Financial Ledger M1) — how an approved Refund is
+ * actually paid back to the buyer. WALLET credits the buyer's in-DB balance
+ * (`User.walletBalance`/`walletBalanceUsdt`); MANUAL_TRANSFER is an admin
+ * sending money out of band (bank transfer, gateway refund done by hand),
+ * evidenced by `RefundExecution.reference`/`proofFileId`.
+ *
+ * This is deliberately separate from `Refund.status`: a Refund reaching
+ * COMPLETED is record-keeping only and triggers no payout (see
+ * Refund.status's own doc comment in prisma/schema.prisma), whereas a
+ * RefundExecution row IS the payout attempt. Nothing writes these rows yet —
+ * the refund-payout wiring is a later milestone.
+ */
+export const RefundExecutionMethod = {
+  WALLET: "WALLET",
+  MANUAL_TRANSFER: "MANUAL_TRANSFER",
+} as const;
+export type RefundExecutionMethod =
+  (typeof RefundExecutionMethod)[keyof typeof RefundExecutionMethod];
+export const zRefundExecutionMethod = z.nativeEnum(RefundExecutionMethod);
+
+/**
+ * RefundExecution.status (Financial Ledger M1) — the lifecycle of one payout
+ * attempt. PENDING -> COMPLETED | FAILED, both terminal. A FAILED execution
+ * does not reopen its parent Refund; it records that this particular attempt
+ * did not land, leaving an admin free to add another RefundExecution row for
+ * the same Refund (which is why RefundExecution is a one-to-many child of
+ * Refund rather than a single set of columns on Refund itself).
+ */
+export const RefundExecutionStatus = {
+  PENDING: "PENDING",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+} as const;
+export type RefundExecutionStatus =
+  (typeof RefundExecutionStatus)[keyof typeof RefundExecutionStatus];
+export const zRefundExecutionStatus = z.nativeEnum(RefundExecutionStatus);
+
+/**
+ * Settlement.status (Financial Ledger M1) — how far an admin has got in
+ * reconciling one payout batch from a payment provider against this shop's
+ * own Payment rows. RECORDED is the raw manual entry ("the provider says it
+ * paid us this"); RECONCILED means its SettlementTransaction children have
+ * been matched to real payments and the totals agree; DISPUTED flags a batch
+ * whose totals do not agree and that is being chased with the provider.
+ * Manual entry is the only path in this milestone — no provider settlement
+ * API is wired up.
+ */
+export const SettlementStatus = {
+  RECORDED: "RECORDED",
+  RECONCILED: "RECONCILED",
+  DISPUTED: "DISPUTED",
+} as const;
+export type SettlementStatus = (typeof SettlementStatus)[keyof typeof SettlementStatus];
+export const zSettlementStatus = z.nativeEnum(SettlementStatus);

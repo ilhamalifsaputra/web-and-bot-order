@@ -57,3 +57,4 @@ export * from "./crud/detectionKnowledge";
 export * from "./crud/detectionIndex";
 export * from "./crud/detectionRun";
 export * from "./crud/detectionIssues";
+export * from "./crud/ledgerAccounts";

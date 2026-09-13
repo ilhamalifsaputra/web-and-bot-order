@@ -29,6 +29,7 @@
     "check-frontend-boundaries": "tsx scripts/check-frontend-boundaries.ts",
     "check-detection-engine-purity": "tsx scripts/check-detection-engine-purity.ts",
     "seed-detection-knowledge": "tsx scripts/seed-detection-knowledge.ts",
+    "seed-chart-of-accounts": "tsx scripts/seed-chart-of-accounts.ts",
     "export-detection-fixture": "tsx scripts/export-detection-fixture.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",

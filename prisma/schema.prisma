@@ -46,12 +46,12 @@ model User {
   /// row to a full account clears this: `setLoginCredentials` sets it false
   /// (and nulls `guestEmail`) as soon as the row is given a `passwordHash`,
   /// so the code+email shortcut can never bypass a password.
-  isGuest    Boolean @default(false) @map("is_guest")
+  isGuest           Boolean   @default(false) @map("is_guest")
   /// Contact email a guest shopper enters at checkout. NOT unique (unlike
   /// the registered account's `email`) — one guest row per checkout
   /// session, and the same email may be used repeatedly. Nulled together
   /// with `isGuest` when the row gains a password (see above).
-  guestEmail String? @map("guest_email")
+  guestEmail        String?   @map("guest_email")
 
   referredBy User?  @relation("UserReferral", fields: [referredById], references: [id], onUpdate: NoAction)
   referees   User[] @relation("UserReferral")
@@ -103,7 +103,6 @@ model WalletTransaction {
   // moderation tool); this is a schema-level guardrail against ever adding one.
   user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
-  @@index([userId], map: "ix_wallet_transactions_user_id")
   /// "One wallet movement per order per reason" (Task E5 item 2). Every
   /// order-scoped reason is already once-per-order in the code, but each by a
   /// DIFFERENT mechanism — an atomic claim (`wallet_topup`, via
@@ -131,6 +130,7 @@ model WalletTransaction {
   /// production, on a legitimate payment, with no test catching it first.
   /// Widen this constraint in the same change that adds such a caller.
   @@unique([orderId, reason], map: "ix_wallet_transactions_order_id_reason")
+  @@index([userId], map: "ix_wallet_transactions_user_id")
   @@map("wallet_transactions")
 }
 
@@ -151,29 +151,29 @@ model PasswordResetToken {
 }
 
 model Category {
-  id          Int     @id @default(autoincrement())
-  name        String  @unique(map: "sqlite_autoindex_categories_1")
+  id           Int     @id @default(autoincrement())
+  name         String  @unique(map: "sqlite_autoindex_categories_1")
   /// URL-safe handle (storefront `/c/:slug`). Backfilled from name at the
   /// catalog-rename migration; UNIQUE + NOT NULL.
-  slug        String  @unique(map: "ix_categories_slug")
-  emoji       String?
-  description String?
+  slug         String  @unique(map: "ix_categories_slug")
+  emoji        String?
+  description  String?
   /// Web-facing category image URL (admin-set, storefront only).
-  image       String?
-  sortOrder   Int     @default(0) @map("sort_order")
-  isActive    Boolean @default(true) @map("is_active")
+  image        String?
+  sortOrder    Int     @default(0) @map("sort_order")
+  isActive     Boolean @default(true) @map("is_active")
   /// Top-level bucket for the bot's "🛍 Products" entry point — GAME_TOPUP |
   /// PREMIUM_APPS (packages/core/src/enums.ts CategoryGroup). Admin-set, null
   /// until classified. A category with no group is unreachable from the
   /// customer group→category picker until an admin assigns one — it stays
   /// reachable via search, Popular, and /start deep links, which are
   /// intentionally group-agnostic.
-  group       String?
+  group        String?
   /// How checkout behaves for every product/denomination under this category:
   /// "catalog" (default, unchanged behavior — normal cart/checkout flow) or
   /// "instant" (Digiflazz-backed top-up pilot — buyer enters a game ID/server
   /// at checkout and the order auto-dispatches to the supplier on payment).
-  checkoutFlow String @default("catalog") @map("checkout_flow")
+  checkoutFlow String  @default("catalog") @map("checkout_flow")
 
   products Product[]
 
@@ -238,43 +238,43 @@ model ProviderGameMapping {
 /// NO price, NO stock — those live on each child Denomination (the sellable SKU).
 /// Physically the old `product_groups` table, renamed to `products`.
 model Product {
-  id          Int      @id @default(autoincrement())
-  categoryId  Int      @map("category_id")
-  name        String
+  id                      Int      @id @default(autoincrement())
+  categoryId              Int      @map("category_id")
+  name                    String
   /// URL-safe handle (storefront `/p/:slug`). UNIQUE + NOT NULL.
-  slug        String   @unique(map: "ix_products_slug")
-  emoji       String?
-  description String?
+  slug                    String   @unique(map: "ix_products_slug")
+  emoji                   String?
+  description             String?
   /// Storefront-only detail blocks, rendered under `description` on the
   /// product page and folded into its structured data. All optional — a
   /// product created before these existed simply shows fewer blocks.
   /// What the buyer actually receives ("Akun private, 1 device…").
-  whatYouGet   String? @map("what_you_get")
+  whatYouGet              String?  @map("what_you_get")
   /// Product-specific rules ("jangan ganti email — garansi hangus").
-  terms        String?
+  terms                   String?
   /// Warranty detail for this product, overriding the generic warranty copy.
-  warrantyNote String? @map("warranty_note")
+  warrantyNote            String?  @map("warranty_note")
   /// Web-facing product photo URL (admin-set, storefront only). Telegram
   /// imageFileId can't be used as an <img src>. When null the storefront
   /// renders a generated DefaultThumb placeholder (a lucide icon in a tinted
   /// well), keyed by `thumbnailKind` / category `group` / a category-name
   /// heuristic — see `thumbnailKind` below and `defaultThumbKind` in
   /// apps/storefront/src/images.ts.
-  webImageUrl String?  @map("web_image_url")
-  imageFileId String?  @map("image_file_id")
+  webImageUrl             String?  @map("web_image_url")
+  imageFileId             String?  @map("image_file_id")
   /// Default placeholder art style shown when no `webImageUrl` is set —
   /// admin-set, null = auto-resolve from category. One of "game" | "voucher"
   /// | "steam" | "entertainment" | "app" | "generic".
-  thumbnailKind     String? @map("thumbnail_kind")
+  thumbnailKind           String?  @map("thumbnail_kind")
   /// Currency-icon style shown on this product's DenominationCard chips —
   /// admin-set, null = auto-resolve (or always null for PREMIUM_APPS
   /// category). One of "diamond" | "coin" | "key" | "card" | "voucher".
-  currencyIconKind  String? @map("currency_icon_kind")
+  currencyIconKind        String?  @map("currency_icon_kind")
   /// The exact Digiflazz `brand` string this Product was imported from (Import
   /// Wizard). Null for hand-created products. Re-sync matching key — chosen
   /// over matching by name so the admin can rename the display name freely
   /// without breaking future syncs.
-  digiflazzBrand String? @map("digiflazz_brand")
+  digiflazzBrand          String?  @map("digiflazz_brand")
   /// Game Top Up display grouping only (Category.group === "GAME_TOPUP");
   /// Premium Apps products leave this null and render exactly as today.
   /// Free-text edition label distinguishing multiple purchasable editions of
@@ -289,33 +289,33 @@ model Product {
   /// The value mirrors Digiflazz's own `type` term ("Umum" for the base
   /// edition); it is unrelated to the Digiflazz Product-name "(Region)"
   /// suffix, which is a separate supplier re-sync mechanism.
-  gameVariant      String? @map("game_variant")
+  gameVariant             String?  @map("game_variant")
   /// Admin-set emoji shown on the variant-picker button (prefixed to
   /// gameVariant's label) and reused as a prefix on denomination buttons
   /// under this product. Kept separate from gameVariant so the bot never
   /// has to parse an emoji back out of admin-authored text.
-  gameVariantEmoji String? @map("game_variant_emoji")
+  gameVariantEmoji        String?  @map("game_variant_emoji")
   /// Admin-set free-text region/country label (e.g. "🇮🇩 Indonesia") — any
   /// flag glyph is part of this string, unlike gameVariantEmoji, since a
   /// region label is only ever rendered once, at the region picker.
   /// Independent of Denomination.expectedRegionCode (machine ISO-ish code
   /// checked against a live supplier API) and of the Digiflazz Product-name
   /// "(Region)" suffix — neither backfills this field.
-  gameRegion       String? @map("game_region")
-  sortOrder   Int      @default(0) @map("sort_order")
-  isActive    Boolean  @default(true) @map("is_active")
+  gameRegion              String?  @map("game_region")
+  sortOrder               Int      @default(0) @map("sort_order")
+  isActive                Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
   /// admin's default catalog list and every customer-facing surface, but
   /// keeps its data (denominations, order history) intact — unlike a hard
   /// Delete, which is refused once it has denominations.
-  isArchived  Boolean  @default(false) @map("is_archived")
-  createdAt   DateTime @default(now()) @map("created_at")
+  isArchived              Boolean  @default(false) @map("is_archived")
+  createdAt               DateTime @default(now()) @map("created_at")
   /// Nullable FK to Game — links this Product to the canonical Game record
   /// that drives the multi-provider nickname-check (NicknameService). Null =
   /// not yet migrated; the storefront falls back entirely to the legacy
   /// per-Denomination nicknameCheckGameCode/expectedRegionCode fields, which
   /// keep working completely unchanged.
-  gameId      Int?     @map("game_id")
+  gameId                  Int?     @map("game_id")
   /// Detection Engine (packages/core/src/detection) output, cached on the
   /// Product row so read paths never call detect() inline. Null = never run
   /// / not yet classified. All five fields are written together by the
@@ -334,8 +334,8 @@ model Product {
   /// stamp means this row's detection fields are stale and due a re-run.
   detectionStamp          String?  @map("detection_stamp")
 
-  category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
-  game            Game?          @relation(fields: [gameId], references: [id], onUpdate: NoAction)
+  category        Category         @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  game            Game?            @relation(fields: [gameId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
   supportTickets  SupportTicket[]
@@ -352,27 +352,27 @@ model Product {
 /// (stock_items, order_items, cart_items, bulk_pricing, reviews,
 /// restock_subscriptions) keeps pointing at the same rows.
 model Denomination {
-  id                   Int       @id @default(autoincrement())
-  productId            Int       @map("product_id")
-  name                 String
+  id                    Int       @id @default(autoincrement())
+  productId             Int       @map("product_id")
+  name                  String
   /// URL-safe handle. UNIQUE + NOT NULL.
-  slug                 String    @unique(map: "ix_denominations_slug")
-  description          String?
-  imageFileId          String?   @map("image_file_id")
+  slug                  String    @unique(map: "ix_denominations_slug")
+  description           String?
+  imageFileId           String?   @map("image_file_id")
   /// Web-facing photo URL (admin-set, storefront only); null → curated fallback.
-  webImageUrl          String?   @map("web_image_url")
-  type                 String
-  durationLabel        String    @map("duration_label")
-  price                Decimal
+  webImageUrl           String?   @map("web_image_url")
+  type                  String
+  durationLabel         String    @map("duration_label")
+  price                 Decimal
   /// Unit cost for margin reporting. Null = unknown / not tracked.
-  costPrice            Decimal?  @map("cost_price")
-  resellerPrice        Decimal?  @map("reseller_price")
+  costPrice             Decimal?  @map("cost_price")
+  resellerPrice         Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
-  autoDeliverySource   String?   @map("auto_delivery_source")
+  autoDeliverySource    String?   @map("auto_delivery_source")
   /// The Digiflazz `buyer_sku_code` this denomination maps to (e.g. "ML86").
   /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
   /// points at the Digiflazz supplier.
-  supplierSku          String?   @map("supplier_sku")
+  supplierSku           String?   @map("supplier_sku")
   /// KokinPay's game_code for this denomination's title (e.g. "mobile-legends"),
   /// used to offer a live nickname lookup on the buyer's account field before
   /// they pay. Null = no live check for this product — the field still works
@@ -381,7 +381,7 @@ model Denomination {
   /// Independent of autoDeliverySource/supplierSku — this is a storefront UX
   /// enhancement, not a fulfilment link, so it applies to any manual_with_info
   /// product regardless of who (if anyone) auto-fulfils it.
-  nicknameCheckGameCode String?  @map("nickname_check_game_code")
+  nicknameCheckGameCode String?   @map("nickname_check_game_code")
   /// Admin-authored short warning shown near the account field on the
   /// storefront's instant-buy page (e.g. "Hanya untuk akun region
   /// Indonesia") — a manual mitigation for the wrong-region-variant problem
@@ -389,7 +389,7 @@ model Denomination {
   /// multiple Digiflazz SKUs per region, and nothing else in the catalog
   /// enforces which one a buyer picks). Independent of every other field on
   /// this model — works even with no live nickname/region check configured.
-  regionWarning String? @map("region_warning")
+  regionWarning         String?   @map("region_warning")
   /// The region this SKU is FOR, as an ISO-3166-alpha2-ish code (e.g. "ID"
   /// for Indonesia) — compared against VIP-Reseller's live region-check
   /// result (packages/core/src/suppliers/vipreseller.ts, only returns
@@ -398,28 +398,28 @@ model Denomination {
   /// live check is skipped silently, same graceful-degrade discipline as
   /// nicknameCheckGameCode). Admin sets this to match whichever Digiflazz
   /// SKU/region this particular Product/Denomination represents.
-  expectedRegionCode String? @map("expected_region_code")
+  expectedRegionCode    String?   @map("expected_region_code")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this
   /// is true, so a deliberate manual price change is never silently
   /// overwritten by the next sync tick.
-  priceOverridden      Boolean   @default(false) @map("price_overridden")
+  priceOverridden       Boolean   @default(false) @map("price_overridden")
   /// Game Top Up compact-label display only. The pure numeric top-up amount
   /// (e.g. 2500), decoupled from name/durationLabel's free text — which for
   /// Digiflazz-imported rows already repeats the game name (e.g. "Mobile
   /// Legends 86 Diamonds") and can't be reliably re-parsed. Null = this SKU
   /// has no compact quantity set; the bot falls back unchanged to
   /// durationLabel||name.
-  qtyValue Int?    @map("qty_value")
+  qtyValue              Int?      @map("qty_value")
   /// The short unit word paired with qtyValue on the compact button, e.g.
   /// "Diamonds", "UC", "Bonds". Set together with qtyValue by the admin,
   /// never derived/parsed from name/durationLabel.
-  qtyUnit  String? @map("qty_unit")
-  warrantyDays         Int       @default(30) @map("warranty_days")
-  sortOrder            Int       @default(0) @map("sort_order")
-  isActive             Boolean   @default(true) @map("is_active")
-  createdAt            DateTime  @default(now()) @map("created_at")
+  qtyUnit               String?   @map("qty_unit")
+  warrantyDays          Int       @default(30) @map("warranty_days")
+  sortOrder             Int       @default(0) @map("sort_order")
+  isActive              Boolean   @default(true) @map("is_active")
+  createdAt             DateTime  @default(now()) @map("created_at")
   /// When true, adding stock to this SKU enqueues a "back in stock" DM to
   /// every non-banned customer with a linked Telegram account (not just
   /// RestockSubscription opt-ins) via notification_outbox. Declared after
@@ -438,7 +438,7 @@ model Denomination {
   /// resulting schema state, not declaration position. (NOT NULL + DEFAULT
   /// columns are a separate story and do need a rebuild either way — see
   /// deliveryType below.)
-  broadcastOnRestock   Boolean   @default(false) @map("broadcast_on_restock")
+  broadcastOnRestock    Boolean   @default(false) @map("broadcast_on_restock")
   /// How this SKU is fulfilled: "auto" (pull stock, deliver instantly — default,
   /// unchanged behavior), "manual" (admin types & sends the account by hand, no
   /// stock), or "manual_with_info" (manual + buyer fills custom fields at
@@ -468,33 +468,33 @@ model Denomination {
   /// just doesn't choose to emit it that way. See that migration file's
   /// header for the full write-up and the verification that `db push` /
   /// `db execute` / `migrate deploy` all apply it safely today.
-  deliveryType         String    @default("auto") @map("delivery_type")
+  deliveryType          String    @default("auto") @map("delivery_type")
   /// For "manual_with_info" only: JSON-encoded array of buyer-input field specs
   /// (key/label{id,en}/type/required/options/placeholder). Null otherwise. Stored
   /// as TEXT per the repo's JSON-in-string convention (see NotificationOutbox).
-  additionalFields     String?   @map("additional_fields")
+  additionalFields      String?   @map("additional_fields")
   /// Flash sale: percent off (0,100] that REPLACES the base price for everyone
   /// while now is inside [flashStartsAt, flashEndsAt). All three fields are set
   /// and cleared together — any of them null means this SKU has no flash sale.
   /// Bulk pricing and vouchers still stack on top of the discounted price; a
   /// reseller pays whichever of resellerPrice/flash price is cheaper, never
   /// both discounts (see effectiveUnitPrice in @app/core/flash).
-  flashDiscountPercent Decimal?  @map("flash_discount_percent")
-  flashStartsAt        DateTime? @map("flash_starts_at")
-  flashEndsAt          DateTime? @map("flash_ends_at")
+  flashDiscountPercent  Decimal?  @map("flash_discount_percent")
+  flashStartsAt         DateTime? @map("flash_starts_at")
+  flashEndsAt           DateTime? @map("flash_ends_at")
   /// Stamped once the "flash sale started" broadcast has been enqueued, so the
   /// announce job can't fan it out twice. Reset to null whenever the schedule
   /// is rewritten or cleared, which is what lets the same SKU be flashed again.
-  flashAnnouncedAt     DateTime? @map("flash_announced_at")
+  flashAnnouncedAt      DateTime? @map("flash_announced_at")
   /// Detection Engine (packages/core/src/detection) SKU-level key this
   /// Denomination was resolved to (denomination category, e.g. which
   /// diamond-pack tier). Null = never classified. Companion to
   /// Product.detectionProductKey, not a duplicate of it.
-  detectionSkuKey      String?   @map("detection_sku_key")
+  detectionSkuKey       String?   @map("detection_sku_key")
   /// Same cache-invalidation stamp convention as Product.detectionStamp.
-  detectionStamp       String?   @map("detection_stamp")
+  detectionStamp        String?   @map("detection_stamp")
 
-  product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  product              Product                  @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
   orderItems           OrderItem[]
   cartItems            CartItem[]
@@ -594,66 +594,66 @@ model StockItem {
 }
 
 model Order {
-  id                    Int       @id @default(autoincrement())
-  orderCode             String    @unique(map: "ix_orders_order_code") @map("order_code")
-  userId                Int       @map("user_id")
-  subtotalAmount        Decimal   @map("subtotal_amount")
-  discountAmount        Decimal   @default(0) @map("discount_amount")
-  uniqueCents           Decimal   @default(0) @map("unique_cents")
-  totalAmount           Decimal   @map("total_amount")
-  voucherId             Int?      @map("voucher_id")
-  walletUsed            Decimal   @default(0) @map("wallet_used")
-  bulkDiscountAmount    Decimal   @default(0) @map("bulk_discount_amount")
-  status                String    @default("PENDING_PAYMENT")
+  id                     Int       @id @default(autoincrement())
+  orderCode              String    @unique(map: "ix_orders_order_code") @map("order_code")
+  userId                 Int       @map("user_id")
+  subtotalAmount         Decimal   @map("subtotal_amount")
+  discountAmount         Decimal   @default(0) @map("discount_amount")
+  uniqueCents            Decimal   @default(0) @map("unique_cents")
+  totalAmount            Decimal   @map("total_amount")
+  voucherId              Int?      @map("voucher_id")
+  walletUsed             Decimal   @default(0) @map("wallet_used")
+  bulkDiscountAmount     Decimal   @default(0) @map("bulk_discount_amount")
+  status                 String    @default("PENDING_PAYMENT")
   /// Transaction currency, set when the buyer picks a payment method
   /// (plan.md §15): "IDR" (TokoPay) or "USDT" (Binance). Catalog prices are
   /// central IDR; rows created before this column existed are USDT-era
   /// snapshots (see scripts/convert-prices-to-idr.ts).
-  currency              String    @default("IDR")
+  currency               String    @default("IDR")
   /// Rupiah-per-USDT snapshot taken when currency=USDT, so later rate edits
   /// never change what historical orders were charged.
-  fxRate                Decimal?  @map("fx_rate")
-  paymentMethod         String    @default("BINANCE_PAY") @map("payment_method")
-  paymentRef            String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
-  paymentMsgChatId      BigInt?   @map("payment_msg_chat_id")
-  paymentMsgId          Int?      @map("payment_msg_id")
-  paymentProofFileId    String?   @map("payment_proof_file_id")
-  binanceTxid           String?   @map("binance_txid")
-  bybitTxid             String?   @map("bybit_txid")
-  adminNote             String?   @map("admin_note")
-  rejectionReason       String?   @map("rejection_reason")
-  createdAt             DateTime  @default(now()) @map("created_at")
-  expiresAt             DateTime? @map("expires_at")
-  paidAt                DateTime? @map("paid_at")
-  deliveredAt           DateTime? @map("delivered_at")
+  fxRate                 Decimal?  @map("fx_rate")
+  paymentMethod          String    @default("BINANCE_PAY") @map("payment_method")
+  paymentRef             String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
+  paymentMsgChatId       BigInt?   @map("payment_msg_chat_id")
+  paymentMsgId           Int?      @map("payment_msg_id")
+  paymentProofFileId     String?   @map("payment_proof_file_id")
+  binanceTxid            String?   @map("binance_txid")
+  bybitTxid              String?   @map("bybit_txid")
+  adminNote              String?   @map("admin_note")
+  rejectionReason        String?   @map("rejection_reason")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  expiresAt              DateTime? @map("expires_at")
+  paidAt                 DateTime? @map("paid_at")
+  deliveredAt            DateTime? @map("delivered_at")
   /// For manual_with_info orders: JSON-encoded list of the buyer's per-unit
   /// answers (keyed by field `key`), collected at checkout before payment. Null
   /// for auto/manual orders. TEXT per the JSON-in-string convention.
-  customerData          String?   @map("customer_data")
+  customerData           String?   @map("customer_data")
   /// For manual / manual_with_info orders: the exact text the admin sent when
   /// fulfilling the order by hand (audit trail). Null for auto orders.
-  deliveredContent      String?   @map("delivered_content")
+  deliveredContent       String?   @map("delivered_content")
   /// On-chain network of the tracked deposit (e.g. "BSC"). Set only by the
   /// Bybit BSC confirmation tracker — null forever for every other payment
   /// method, which have no block-depth concept to report.
-  network               String?   @map("network")
+  network                String?   @map("network")
   /// Live confirmation count from a read-only block-explorer lookup. Null
   /// means "no real count available" (the renderer's signal to never show a
   /// fabricated number) — only the Bybit BSC rail ever sets this.
-  confirmations         Int?      @map("confirmations")
-  requiredConfirmations Int?      @map("required_confirmations")
+  confirmations          Int?      @map("confirmations")
+  requiredConfirmations  Int?      @map("required_confirmations")
   /// When the deposit was first seen on-chain, before Bybit itself reports it
   /// confirmed — distinct from `paidAt` (set only once Bybit's own status
   /// reaches Success).
-  firstDetectedAt       DateTime? @map("first_detected_at")
+  firstDetectedAt        DateTime? @map("first_detected_at")
   /// PRODUCT (default) | WALLET_TOPUP. A WALLET_TOPUP order has no OrderItem
   /// rows, no voucher, no stock — settlement credits the buyer's wallet via
   /// settleWalletTopup instead of settlePaidOrder/approveOrder.
-  kind                  String    @default("PRODUCT") @map("kind")
+  kind                   String    @default("PRODUCT") @map("kind")
   /// When the tracker's own confirmation count first reached
   /// `requiredConfirmations` — a display-grade milestone, intentionally
   /// separate from `paidAt`/`deliveredAt` (which stay gated on Bybit's report).
-  confirmedAt           DateTime? @map("confirmed_at")
+  confirmedAt            DateTime? @map("confirmed_at")
   /// Set once the confirmation tracker's on-chain lookup has failed
   /// MAX_CONSECUTIVE_LOOKUP_FAILURES consecutive times (tx genuinely vanished
   /// from the explorer, or a flaky free-tier API key) — a *non-terminal*
@@ -662,13 +662,13 @@ model Order {
   /// inside PRE_DELIVERY_STATUSES) so a later genuine Bybit "Success" report
   /// can still auto-deliver it. Cleared back to null the next time an
   /// explorer lookup succeeds.
-  trackingStaleAt       DateTime? @map("tracking_stale_at")
+  trackingStaleAt        DateTime? @map("tracking_stale_at")
   /// Idempotency guard for the Digiflazz dispatch poller (later task): set
   /// atomically via an `updateMany`-with-status-guard claim (mirrors
   /// `fulfillManualOrder`'s pattern, packages/db/src/crud/orders.ts:1657-1661)
   /// the moment this order is dispatched to Digiflazz, so a poller crash/retry
   /// can never place the same top-up order twice. Null = not yet dispatched.
-  digiflazzDispatchedAt DateTime? @map("digiflazz_dispatched_at")
+  digiflazzDispatchedAt  DateTime? @map("digiflazz_dispatched_at")
   /// Digiflazz supplier-dispatch sub-status — separate from Order.status
   /// (which stays PROCESSING for every one of these until DELIVERED) because
   /// Order.status already carries broader lifecycle meaning (PROCESSING/
@@ -896,9 +896,15 @@ model Refund {
   // financial-audit record — deleting the Order it refunds must never
   // silently erase it. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order      Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order      Order             @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   items      RefundItem[]
   adminTasks AdminTask[]
+  /// The actual payout attempts for this Refund (Financial Ledger M1). A
+  /// Refund reaching COMPLETED is record-keeping only and moves no money —
+  /// see this model's `status` doc comment above; a RefundExecution row is
+  /// where a payout is actually recorded. One-to-many because a failed
+  /// attempt does not reopen the Refund, so a second attempt is a new row.
+  executions RefundExecution[]
 
   @@index([orderId], map: "ix_refunds_order_id")
   @@index([status], map: "ix_refunds_status")
@@ -1022,49 +1028,79 @@ model RefundItem {
 /// `confirmPaymentAttempt` clear it to `null` in the same atomic
 /// `updateMany`-with-guard call that moves `status` off PENDING.
 model Payment {
-  id      Int    @id @default(autoincrement())
-  orderId Int    @map("order_id")
+  id                    Int       @id @default(autoincrement())
+  orderId               Int       @map("order_id")
   /// PaymentMethod value (@app/core/enums) — free String, not a native Prisma
   /// enum, matching Order.paymentMethod's own column and every other
   /// lifecycle-status-adjacent column in this schema.
-  method  String
+  method                String
   /// PENDING | CONFIRMED | EXPIRED | FAILED (PaymentStatus, @app/core/enums).
   /// See this model's own doc comment for the transition shape and the
   /// at-most-one-PENDING-per-order invariant.
-  status  String @default("PENDING")
+  status                String    @default("PENDING")
   /// This attempt's own external reference at whatever rail it's for (e.g. a
   /// gateway transaction id, a Binance Internal Transfer note) — same
   /// "external reference" role as Refund.externalReference, just for the
   /// payment side. Independent of Order.paymentRef (which is only ever the
   /// CURRENT attempt's reference) — an EXPIRED attempt here keeps its OWN
   /// reference even after a rail change moves Order.paymentRef on.
-  reference String?
+  reference             String?
   /// This attempt's own quoted amount, snapshotted at creation time — same
   /// snapshot-at-creation-time reasoning as Refund.amount/RefundItem.amount
   /// (their own doc comments) — later Order edits must never retroactively
   /// change what a past attempt quoted. Decimal, never Float (CLAUDE.md money
   /// rule; matches every other money column in this schema, e.g.
   /// Refund.amount, Order.totalAmount).
-  amount    Decimal
+  amount                Decimal
   /// Snapshot of the currency this attempt was quoted in — same
   /// snapshot-at-creation-time reasoning as `amount` above and
   /// Refund.currency's own doc comment.
-  currency    String
-  createdAt   DateTime  @default(now()) @map("created_at")
+  currency              String
+  createdAt             DateTime  @default(now()) @map("created_at")
   /// Set together with `expiryReason` the moment this attempt reaches
   /// EXPIRED — mirrors Refund.processedAt's nullable-until-terminal pattern.
-  expiredAt   DateTime? @map("expired_at")
+  expiredAt             DateTime? @map("expired_at")
   /// Set the moment this attempt reaches CONFIRMED.
-  confirmedAt DateTime? @map("confirmed_at")
+  confirmedAt           DateTime? @map("confirmed_at")
   /// Set only when `status` reaches EXPIRED — "RAIL_CHANGED" | "TIMEOUT" |
   /// "CANCELLED" (PaymentExpiryReason, @app/core/enums). Null for every
   /// PENDING/CONFIRMED/FAILED row.
-  expiryReason String? @map("expiry_reason")
+  expiryReason          String?   @map("expiry_reason")
   /// Mirrors `orderId` while (and only while) `status` is PENDING; `null`
   /// for every non-PENDING row. See this model's own doc comment — the
   /// `@unique` index below on this column, not a partial index on `orderId`,
   /// is what enforces "at most one PENDING Payment per order".
-  pendingOrderId Int? @unique(map: "ix_payments_pending_order_id") @map("pending_order_id")
+  pendingOrderId        Int?      @unique(map: "ix_payments_pending_order_id") @map("pending_order_id")
+  /// The gateway's OWN id for the underlying transaction, as distinct from
+  /// `reference` above (Financial Ledger M1). `reference` is whatever this
+  /// shop quoted or showed for the attempt — a Tokopay merchant ref, a Binance
+  /// transfer note — and is chosen by US; this column is chosen by THEM, and
+  /// is the id that appears on the provider's settlement report. Reconciling a
+  /// Settlement batch means matching its lines on this column, which is why it
+  /// needs its own uniqueness guarantee rather than reusing `reference`.
+  ///
+  /// Nullable, and deliberately so: every row that predates this column has it
+  /// null, and no backfill is possible (the six existing payment-rail handlers
+  /// never captured it). The `@@unique([method, providerTransactionId])` below
+  /// is therefore safe to add with no backfill — Postgres unique indexes treat
+  /// every NULL as distinct from every other NULL (default `NULLS DISTINCT`),
+  /// exactly the same property `pendingOrderId` above already relies on, so
+  /// any number of null rows coexist freely. Scoped by `method` rather than
+  /// global because two different providers can legitimately issue the same
+  /// transaction id string, and a collision between them is not a duplicate.
+  providerTransactionId String?   @map("provider_transaction_id")
+  /// The provider's cut for this payment, in `currency` — what the gateway
+  /// kept, not what the buyer paid. Decimal, never Float (CLAUDE.md money
+  /// rule; matches every other money column in this schema). Null means "not
+  /// known", which is every row today and every row on a rail that does not
+  /// report a fee — NOT "the fee was zero"; a genuinely free payment stores 0.
+  fee                   Decimal?
+  /// `amount - fee`: what actually reaches this shop's own cash account, in
+  /// `currency`. Stored rather than derived so the settlement side reads what
+  /// the provider reported instead of recomputing it from two other columns
+  /// (which would silently disagree with the provider's own arithmetic over
+  /// rounding). Null on the same rows `fee` is null.
+  netAmount             Decimal?  @map("net_amount")
 
   // Restrict, not Cascade — matches every other Order-adjacent
   // financial-audit row in this schema (WalletTransaction/
@@ -1072,8 +1108,10 @@ model Payment {
   // 2026-06-23): no code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one that would silently erase
   // payment-attempt history.
-  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order                  Order                   @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  settlementTransactions SettlementTransaction[]
 
+  @@unique([method, providerTransactionId], map: "ix_payments_method_provider_txn")
   @@index([orderId], map: "ix_payments_order_id")
   @@index([status], map: "ix_payments_status")
   @@map("payments")
@@ -1116,7 +1154,7 @@ model AdminTask {
   /// leave an admin to guess which of the order's Refund rows is under
   /// review. Optional/nullable like every other reference field here; every
   /// other task `type` is expected to leave this null.
-  refundId Int? @map("refund_id")
+  refundId    Int? @map("refund_id")
 
   /// Acting admin this task is currently assigned to — same "which admin did
   /// this" convention as SupportTicket.adminId/AuditLog.adminId: a plain
@@ -1141,7 +1179,7 @@ model AdminTask {
   /// `transitionAdminTaskStatus`.
   status String @default("PENDING")
 
-  dueAt DateTime? @map("due_at")
+  dueAt       DateTime? @map("due_at")
   /// Set once, when this task reaches COMPLETED — mirrors
   /// Refund.processedAt's "not yet reached this milestone" pattern.
   completedAt DateTime? @map("completed_at")
@@ -1162,7 +1200,7 @@ model AdminTask {
   // assignedTo: NoAction, matching SupportTicket.admin/AuditLog.admin's
   // existing "acting admin" FK policy (not Restrict) — see the field's own
   // doc comment above for why this one FK is deliberately not Restrict.
-  assignee User? @relation("AdminTaskAssignee", fields: [assignedTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  assignee  User?      @relation("AdminTaskAssignee", fields: [assignedTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([status], map: "ix_admin_tasks_status")
   @@index([type], map: "ix_admin_tasks_type")
@@ -1188,9 +1226,9 @@ model Voucher {
   startAt     DateTime? @map("start_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
-  orders           Order[]
-  redemptions      VoucherRedemption[]
-  voucherProducts  VoucherProduct[]
+  orders          Order[]
+  redemptions     VoucherRedemption[]
+  voucherProducts VoucherProduct[]
 
   @@map("vouchers")
 }
@@ -1298,60 +1336,60 @@ model Referral {
 }
 
 model SupportTicket {
-  id             Int       @id @default(autoincrement())
-  userId         Int       @map("user_id")
-  message        String
-  photoFileIds   String?   @map("photo_file_ids")
-  attachmentUrls String?   @map("attachment_urls")
-  status         String    @default("OPEN")
+  id                 Int       @id @default(autoincrement())
+  userId             Int       @map("user_id")
+  message            String
+  photoFileIds       String?   @map("photo_file_ids")
+  attachmentUrls     String?   @map("attachment_urls")
+  status             String    @default("OPEN")
   /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
-  priority       String    @default("MEDIUM") @map("priority")
+  priority           String    @default("MEDIUM") @map("priority")
   /// Ticket triage category. Customer-set at creation on the /help create
   /// form; may also be set/changed later by an admin via classifyTicket.
   /// Null for legacy rows created before either path existed.
-  category       String?   @map("category")
+  category           String?   @map("category")
   /// Short customer-authored ticket title (≤100 chars), set on the /help
   /// create form. Nullable: historical rows created before this column
   /// existed have none — the storefront falls back to the first line of
   /// `message` for display.
-  subject   String?   @map("subject")
-  adminReply     String?   @map("admin_reply")
-  adminId        Int?      @map("admin_id")
+  subject            String?   @map("subject")
+  adminReply         String?   @map("admin_reply")
+  adminId            Int?      @map("admin_id")
   /// TCK-YYYYMMDD-NNNNN, minted once at creation (createTicket/
   /// uniqueTicketNumberCandidate) — nullable because `db push` never
   /// backfills historical rows created before this column existed (same
   /// reasoning as OrderItem.deliveryTypeSnapshot / this model's own
   /// lastStatusChangeAt above). Admin UI must fall back to `#id` for rows
   /// where this is null.
-  ticketNumber   String?   @unique @map("ticket_number")
+  ticketNumber       String?   @unique @map("ticket_number")
   /// Set together with `assignedBy` by the assignment-with-audit-trail path
   /// (see `assignedBy`'s own comment) — when this ticket's `adminId` (the
   /// admin CURRENTLY working it) was last explicitly assigned.
-  assignedAt     DateTime? @map("assigned_at")
+  assignedAt         DateTime? @map("assigned_at")
   /// The admin who PERFORMED an assignment action — distinct from `adminId`
   /// (who the ticket is assigned TO / is currently working it). E.g. a lead
   /// admin assigns a ticket to a junior admin: `adminId` becomes the junior
   /// admin's id, `assignedBy` stays the lead admin's id. Nullable: most
   /// existing tickets were never assigned through this audited path (the
   /// plain `adminId`-only assign predates it).
-  assignedBy     Int?      @map("assigned_by")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  repliedAt      DateTime? @map("replied_at")
+  assignedBy         Int?      @map("assigned_by")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  repliedAt          DateTime? @map("replied_at")
   /// Set once, the first time an admin message lands on the ticket — true
   /// first-response time, unlike repliedAt which is overwritten on every reply.
-  firstResponseAt DateTime? @map("first_response_at")
+  firstResponseAt    DateTime? @map("first_response_at")
   /// Set once, when an admin marks the ticket RESOLVED (distinct from CLOSED).
-  resolvedAt     DateTime? @map("resolved_at")
+  resolvedAt         DateTime? @map("resolved_at")
   /// Optional link to the order this ticket is about — customer-picked at
   /// creation time. Null for general-purpose tickets (account issues,
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
   /// Product Summary sidebar and warranty/credential context.
-  orderId        Int?      @map("order_id")
+  orderId            Int?      @map("order_id")
   /// Optional link to the catalog Product this ticket is about — customer-
   /// picked on the /help create form. Distinct from `orderId` (a specific
   /// past purchase); this is "which product", set even for pre-purchase
   /// questions. Null for general tickets.
-  productId Int?      @map("product_id")
+  productId          Int?      @map("product_id")
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
@@ -1366,7 +1404,7 @@ model SupportTicket {
   /// write-up because `support_tickets` is a cascade parent (child:
   /// ticket_messages). See that file's header for the empirical verification
   /// of when this kind of rebuild is/isn't safe to run.
-  lastStatusChangeAt DateTime @default(now()) @map("last_status_change_at")
+  lastStatusChangeAt DateTime  @default(now()) @map("last_status_change_at")
   /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
   /// cleanup job's "delete evidence N days after close" eligibility check.
   /// Nullable, no default, so on its own this column is a zero-risk plain
@@ -1393,7 +1431,7 @@ model SupportTicket {
   /// this schema, not the SQL text/mechanism used to reach it, so this is
   /// unaffected by the rebuild 20260801000001 still needs for
   /// lastStatusChangeAt + the FK.
-  closedAt       DateTime? @map("closed_at")
+  closedAt           DateTime? @map("closed_at")
 
   user            User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin           User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -1496,13 +1534,13 @@ model Setting {
 }
 
 model AuditLog {
-  id         Int      @id @default(autoincrement())
-  adminId    Int?     @map("admin_id")
-  action     String
-  targetType String?  @map("target_type")
-  targetId   Int?     @map("target_id")
-  details    String?
-  createdAt  DateTime @default(now()) @map("created_at")
+  id             Int      @id @default(autoincrement())
+  adminId        Int?     @map("admin_id")
+  action         String
+  targetType     String?  @map("target_type")
+  targetId       Int?     @map("target_id")
+  details        String?
+  createdAt      DateTime @default(now()) @map("created_at")
   /// "ADMIN" | "CUSTOMER" — who initiated this entry. Defaults to "ADMIN" so
   /// every existing row and every existing logAdminAction call site keeps
   /// working untouched (Phase H, customer-action audit trail).
@@ -1582,21 +1620,21 @@ model NotificationOutbox {
 /// Broadcast queue — the web ENQUEUES here; the order-bot drains and sends
 /// (the web never calls Telegram). One row = one broadcast to a segment.
 model Broadcast {
-  id          Int       @id @default(autoincrement())
-  message     String
-  segment     String // ALL | RESELLERS | RECENT_BUYERS
-  status      String    @default("PENDING") // DRAFT | PENDING | SENDING | SENT | CANCELLED | FAILED
-  scheduledAt DateTime? @map("scheduled_at") // null = send asap
-  createdById Int?      @map("created_by_id") // acting web admin (user id)
-  totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
-  sentCount   Int       @default(0) @map("sent_count")
-  failedCount Int       @default(0) @map("failed_count")
-  webImageUrl String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
-  imageFileId String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
-  claimedAt     DateTime? @map("claimed_at")      // NEW — set when claimNextDueBroadcast flips PENDING→SENDING
-  failureReason String?   @map("failure_reason")  // NEW — set when a row is marked FAILED
-  createdAt   DateTime  @default(now()) @map("created_at")
-  sentAt      DateTime? @map("sent_at")
+  id            Int       @id @default(autoincrement())
+  message       String
+  segment       String // ALL | RESELLERS | RECENT_BUYERS
+  status        String    @default("PENDING") // DRAFT | PENDING | SENDING | SENT | CANCELLED | FAILED
+  scheduledAt   DateTime? @map("scheduled_at") // null = send asap
+  createdById   Int?      @map("created_by_id") // acting web admin (user id)
+  totalCount    Int       @default(0) @map("total_count") // recipients at enqueue (display)
+  sentCount     Int       @default(0) @map("sent_count")
+  failedCount   Int       @default(0) @map("failed_count")
+  webImageUrl   String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
+  imageFileId   String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
+  claimedAt     DateTime? @map("claimed_at") // NEW — set when claimNextDueBroadcast flips PENDING→SENDING
+  failureReason String?   @map("failure_reason") // NEW — set when a row is marked FAILED
+  createdAt     DateTime  @default(now()) @map("created_at")
+  sentAt        DateTime? @map("sent_at")
 
   @@index([status], map: "ix_broadcasts_status")
   @@map("broadcasts")
@@ -1877,4 +1915,340 @@ model DetectionIssue {
 
   @@index([reviewStatus, lastSeenAt], map: "ix_detection_issues_status_seen")
   @@map("detection_issues")
+}
+
+// ---------------------------------------------------------------------------
+// Financial Ledger (M1) — double-entry bookkeeping layer.
+//
+// Everything above this line records what the SHOP's domain did: an order was
+// paid, a refund was approved, a wallet was credited. None of it answers "how
+// much money does this business actually have, and where is it" — that answer
+// was previously derived by summing domain tables, which cannot express money
+// in transit (a gateway holding a settlement) or distinguish cash on hand from
+// a customer-owed wallet balance.
+//
+// These six models are that missing layer: a FinancialTransaction is one
+// real-world money event, its LedgerEntry children are the balanced
+// debit/credit lines, and LedgerAccount is the chart of accounts they post
+// against. The ledger is APPEND-ONLY — nothing edits or deletes a posted
+// transaction; a mistake is cancelled by posting a REVERSAL that mirrors it
+// (FinancialTransaction.reversalOfId). Every FK here is Restrict/NoAction for
+// the same Infra-5 reason the rest of this schema's financial-audit rows are.
+//
+// M1 SCOPE: these tables, their enums (@app/core/enums) and the
+// chart-of-accounts seed (scripts/seed-chart-of-accounts.ts) only. NOTHING
+// posts to this ledger yet — there is no posting service, and no payment,
+// order or refund code path writes a FinancialTransaction or LedgerEntry. Do
+// not assume a balance read off these tables is complete until that wiring
+// lands in a later milestone.
+// ---------------------------------------------------------------------------
+
+/// One row of the chart of accounts — the fixed set of buckets every
+/// LedgerEntry posts against. Seeded, not user-created:
+/// `scripts/seed-chart-of-accounts.ts` upserts the canonical 15 rows by
+/// `code` and is safe to re-run (see `CHART_OF_ACCOUNTS`,
+/// packages/db/src/crud/ledgerAccounts.ts).
+///
+/// `code` is the stable identifier every posting site refers to (a
+/// `<purpose>.<currency>` string like "cash.idr"), deliberately NOT the
+/// autoincrement `id` — the seed must be able to run against a fresh database
+/// and an existing one and have posting code keep working either way, which an
+/// id assigned by insertion order cannot guarantee. `name` is display-only and
+/// safe to reword.
+///
+/// Accounts are never deleted (LedgerEntry.account is Restrict, and deleting an
+/// account would orphan history anyway) — `isActive` retires one from the
+/// pick-lists of future postings while leaving its past entries readable.
+model LedgerAccount {
+  id        Int      @id @default(autoincrement())
+  /// Stable `<purpose>.<currency>` key, e.g. "cash.idr",
+  /// "provider_clearing.usdt", "wallet_liability.idr". Unique, and the key the
+  /// seed upserts on.
+  code      String   @unique(map: "ix_ledger_accounts_code")
+  name      String
+  /// LedgerAccountType value (@app/core/enums) — ASSET | LIABILITY | REVENUE |
+  /// EXPENSE | CLEARING | EQUITY. Free String, not a native Prisma enum,
+  /// matching every other classification column in this schema.
+  type      String
+  /// "IDR" | "USDT" (OrderCurrency, @app/core/enums). An account is
+  /// single-currency by design: this shop holds two unconvertible balances (see
+  /// User.walletBalanceUsdt's "no cross-currency conversion" note), so a
+  /// mixed-currency account could report a meaningless sum. Every LedgerEntry
+  /// posted here must carry this same currency.
+  currency  String
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  entries LedgerEntry[]
+
+  @@map("ledger_accounts")
+}
+
+/// One real-world money event, and the parent of the balanced set of
+/// LedgerEntry rows that express it in double-entry form.
+///
+/// `idempotencyKey` is the load-bearing column: it is what makes posting safe
+/// to retry. Every payment rail here is already at-least-once (webhooks
+/// redeliver, pollers re-check the same order every cycle — see
+/// markOrderUnderpaid's own comment in packages/db/src/crud/orderStatus.ts), so
+/// a posting site WILL be asked to post the same event twice, and without a
+/// unique key the ledger would silently double-count real money. It is unique
+/// across the whole table (not scoped to a reference) so the caller has to
+/// construct a key that names the specific event, not just the row it hangs off
+/// — the convention, for the posting service to enforce, is
+/// `<type>:<referenceType>:<referenceId>[:<discriminator>]`.
+///
+/// `referenceType`/`referenceId` are an intentionally UNTYPED back-pointer
+/// ("order" | "payment" | "refund_execution" | "wallet_topup" | "manual"), not
+/// a set of nullable FKs. A ledger is a general journal: it must be able to
+/// record an event against anything, including a purely manual adjustment with
+/// no domain row at all, and a column-per-domain shape would need a new
+/// migration every time the ledger learns to record something new. The cost is
+/// that the DB cannot enforce the pointer resolves; the index below is what
+/// makes it usable in practice.
+///
+/// `occurredAt` vs `postedAt` are deliberately separate and must not be
+/// collapsed: `occurredAt` is when the money actually moved in the real world
+/// (a gateway's own timestamp, possibly days earlier for a backfilled
+/// settlement), `postedAt` is when this row was written here. Financial
+/// reporting for a period reads `occurredAt`; auditing what the books said at a
+/// point in time reads `postedAt`. UTC in the DB as always (CLAUDE.md).
+model FinancialTransaction {
+  id             Int      @id @default(autoincrement())
+  /// FinancialTransactionType value (@app/core/enums) — ORDER_PAYMENT |
+  /// WALLET_DEPOSIT | WALLET_WITHDRAWAL | REFUND | REVERSAL | ADJUSTMENT | FEE
+  /// | SETTLEMENT. Free String, not a native Prisma enum.
+  type           String
+  /// "order" | "payment" | "refund_execution" | "wallet_topup" | "manual". See
+  /// this model's doc comment for why this pair is untyped.
+  referenceType  String   @map("reference_type")
+  referenceId    Int      @map("reference_id")
+  /// Unique per posted event — the retry guard. See this model's doc comment.
+  idempotencyKey String   @unique(map: "ix_financial_tx_idempotency_key") @map("idempotency_key")
+  /// Human-readable summary of the event, for the admin-facing ledger view.
+  /// Written as a natural-language sentence, not `key=value` shorthand — same
+  /// audience and same convention as AuditLog.details (docs/LOGGING.md).
+  description    String
+  /// When the money moved in the real world (UTC). Supplied by the caller, NOT
+  /// defaulted — a caller that means "now" must say so, so that a backfilled or
+  /// settlement posting cannot silently claim to have occurred at import time.
+  occurredAt     DateTime @map("occurred_at")
+  /// When this row was written here (UTC). See the doc comment above for why
+  /// this is not the same thing as `occurredAt`.
+  postedAt       DateTime @default(now()) @map("posted_at")
+  /// Set only on a REVERSAL: the FinancialTransaction this one cancels. The
+  /// ledger is append-only, so this is the ONLY way a posted transaction is
+  /// undone — see this model's doc comment.
+  reversalOfId   Int?     @map("reversal_of_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  entries    LedgerEntry[]
+  // Restrict, not Cascade (Infra-5 policy, as everywhere else in this schema's
+  // financial-audit rows): deleting a transaction must never silently erase the
+  // reversal that cancelled it, or vice versa.
+  reversalOf FinancialTransaction?  @relation("Reversal", fields: [reversalOfId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reversals  FinancialTransaction[] @relation("Reversal")
+
+  @@index([referenceType, referenceId], map: "ix_financial_tx_reference")
+  @@index([type, occurredAt], map: "ix_financial_tx_type_occurred")
+  @@map("financial_transactions")
+}
+
+/// One debit or credit line of a FinancialTransaction — the actual
+/// double-entry row.
+///
+/// INVARIANTS (enforced at the APPLICATION layer by the posting service, NOT
+/// here — the same "app-layer invariant, not a CHECK constraint" pattern this
+/// schema already documents on RefundItem's sum invariant):
+///   1. `amount` is always POSITIVE. The sign is carried by `direction`, so
+///      that a stored negative can never quietly flip a balance's meaning.
+///   2. Per FinancialTransaction and per currency, the DEBIT amounts and the
+///      CREDIT amounts sum to the same total. An unbalanced transaction is a
+///      bug, not a state this schema can represent meaningfully.
+///   3. `currency` equals the `currency` of the LedgerAccount in `accountId`.
+///      Duplicated here rather than only joined from the account so a query can
+///      group entries by currency without a join, matching this schema's
+///      existing currency-snapshot convention (Payment.currency,
+///      Refund.currency).
+/// Postgres cannot express #2 (a cross-row aggregate) and this schema does not
+/// use CHECK constraints for #1/#3 either; the posting service is the only
+/// writer, and it is where these are checked. Do not assume they hold of
+/// arbitrary rows — that service does not exist yet in this milestone.
+model LedgerEntry {
+  id                     Int      @id @default(autoincrement())
+  financialTransactionId Int      @map("financial_transaction_id")
+  accountId              Int      @map("account_id")
+  /// LedgerDirection value (@app/core/enums) — DEBIT | CREDIT. Free String, not
+  /// a native Prisma enum.
+  direction              String
+  /// Always positive; the sign is implied by `direction` (invariant #1 above).
+  /// Decimal, never Float (CLAUDE.md money rule).
+  amount                 Decimal
+  /// Must match `account.currency` (invariant #3 above).
+  currency               String
+  createdAt              DateTime @default(now()) @map("created_at")
+
+  // Restrict, not Cascade (Infra-5 policy): a ledger entry is the primary
+  // financial-audit record in this schema — neither its parent transaction nor
+  // its account may ever take it down with them.
+  financialTransaction FinancialTransaction @relation(fields: [financialTransactionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  account              LedgerAccount        @relation(fields: [accountId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([financialTransactionId], map: "ix_ledger_entries_ft")
+  @@index([accountId], map: "ix_ledger_entries_account")
+  @@map("ledger_entries")
+}
+
+/// One payout ATTEMPT against an approved Refund — the row that records money
+/// actually going back to a buyer.
+///
+/// This exists because `Refund` alone cannot express it. Reaching
+/// `Refund.status` COMPLETED is explicitly record-keeping only and triggers no
+/// payout (see Refund.status's doc comment, and the `acknowledgeNoPayout` flag
+/// `transitionRefundStatus` demands), which left "was this buyer actually paid
+/// back, how, when, and by whom" unanswerable. That is this table.
+///
+/// One-to-many against Refund, not one-to-one: a FAILED execution does not
+/// reopen or invalidate its parent Refund, so an admin can record a second
+/// attempt as a new row while the first stays readable as history.
+///
+/// NOTHING writes these rows in this milestone — the refund-payout wiring is a
+/// later one.
+model RefundExecution {
+  id          Int       @id @default(autoincrement())
+  refundId    Int       @map("refund_id")
+  /// RefundExecutionMethod value (@app/core/enums) — WALLET | MANUAL_TRANSFER.
+  /// Free String, not a native Prisma enum.
+  method      String
+  /// Amount actually paid out in this attempt, in `currency`. Decimal, never
+  /// Float (CLAUDE.md money rule). Not necessarily the whole `Refund.amount` —
+  /// a refund may be settled in more than one attempt.
+  amount      Decimal
+  /// Snapshot of the currency this payout was made in — same
+  /// snapshot-at-creation-time reasoning as Refund.currency's own doc comment.
+  currency    String
+  /// PENDING | COMPLETED | FAILED (RefundExecutionStatus, @app/core/enums).
+  status      String    @default("PENDING")
+  /// The payout's external identifier: a WalletTransaction id for a WALLET
+  /// execution, or a bank/gateway transfer reference for a MANUAL_TRANSFER.
+  /// Nullable — a PENDING attempt has none yet.
+  reference   String?
+  /// Evidence for a MANUAL_TRANSFER payout (a Telegram file_id or upload
+  /// reference for the transfer receipt). NEVER log this value — payment-proof
+  /// file_ids are on CLAUDE.md's "never log secrets" list.
+  proofFileId String?   @map("proof_file_id")
+  /// User.id of the admin who performed this payout. Required: a payout is a
+  /// money-moving admin action and must always be attributable (CLAUDE.md's
+  /// audit rule). No FK relation is declared, matching this schema's existing
+  /// convention for admin-attribution columns (see DetectionOverride.createdBy).
+  executedBy  Int       @map("executed_by")
+  /// Set when this attempt reaches a terminal status (COMPLETED or FAILED) —
+  /// mirrors Refund.processedAt's nullable-until-terminal pattern, and is NOT
+  /// the same as `createdAt` below.
+  executedAt  DateTime? @map("executed_at")
+  /// Free-text admin explanation, same role as Refund.reason.
+  notes       String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  // Restrict, not Cascade (Infra-5 policy): a recorded payout is a
+  // financial-audit record and must never be erasable by deleting its Refund.
+  refund Refund @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([refundId], map: "ix_refund_executions_refund_id")
+  @@map("refund_executions")
+}
+
+/// One payout batch a payment provider says it sent this shop — the bridge
+/// between "the gateway confirmed the buyer paid" and "the money is in our bank
+/// account". Those are different events, often days apart, and until this table
+/// there was nowhere to record the second one, so a confirmed Payment was
+/// implicitly treated as cash in hand.
+///
+/// `grossAmount`/`feeAmount`/`netAmount` are all stored as the provider
+/// reported them rather than deriving `netAmount` — see Payment.netAmount's doc
+/// comment for the same reasoning (recomputing invites silent rounding
+/// disagreements with the provider's own arithmetic).
+///
+/// Manual admin entry is the only creation path in this milestone (hence the
+/// required `createdBy`); no provider settlement API is wired up, and nothing
+/// posts a SETTLEMENT FinancialTransaction from these rows yet.
+model Settlement {
+  id             Int      @id @default(autoincrement())
+  /// PaymentMethod value (@app/core/enums) — TOKOPAY | PAYDISINI | NOWPAYMENTS
+  /// | BINANCE | BYBIT. Free String, not a native Prisma enum, matching
+  /// Payment.method and Order.paymentMethod.
+  provider       String
+  /// The provider's own identifier for this batch (a statement or payout id),
+  /// as typed by the admin. Nullable — not every provider gives one, and an
+  /// admin reconciling from a bank statement may have nothing to put here.
+  /// Deliberately NOT unique: it is admin-typed free text from an external
+  /// system, so a uniqueness violation here would block a legitimate entry over
+  /// a provider's own id reuse rather than catch a real duplicate.
+  batchReference String?  @map("batch_reference")
+  /// The date the provider settled this batch (UTC; displayed via TIMEZONE like
+  /// every other timestamp here). This, not `createdAt`, is what financial
+  /// reporting for a period reads — the same `occurredAt` vs `postedAt`
+  /// distinction FinancialTransaction draws.
+  settlementDate DateTime @map("settlement_date")
+  currency       String
+  /// What the provider collected from buyers in this batch, before its cut.
+  /// Decimal, never Float (CLAUDE.md money rule).
+  grossAmount    Decimal  @map("gross_amount")
+  /// The provider's total cut for this batch. Defaults to 0 (unlike
+  /// Payment.fee, which is nullable): an admin entering a batch by hand has the
+  /// statement in front of them, so "no fee line" genuinely means zero here
+  /// rather than "unknown".
+  feeAmount      Decimal  @default(0) @map("fee_amount")
+  /// What actually landed in this shop's account. Stored, not derived — see
+  /// this model's doc comment.
+  netAmount      Decimal  @map("net_amount")
+  /// RECORDED | RECONCILED | DISPUTED (SettlementStatus, @app/core/enums).
+  status         String   @default("RECORDED")
+  /// User.id of the admin who entered this batch. Required — manual entry is
+  /// the only path, so there is always an accountable human (CLAUDE.md's audit
+  /// rule). No FK relation declared, matching DetectionOverride.createdBy.
+  createdBy      Int      @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  transactions SettlementTransaction[]
+
+  @@index([provider, settlementDate], map: "ix_settlements_provider_date")
+  @@map("settlements")
+}
+
+/// One line inside a Settlement batch, ideally matched to the Payment it
+/// settles. This is where reconciliation actually happens: a batch's lines are
+/// matched to `Payment` rows (on `Payment.providerTransactionId`, which is
+/// exactly why that column was added), and a batch whose matched lines account
+/// for its `netAmount` can move to RECONCILED.
+///
+/// `paymentId` is NULLABLE on purpose — an unmatched line is the single most
+/// important thing this table has to be able to represent. A provider reporting
+/// money this shop has no Payment row for is precisely the discrepancy
+/// reconciliation exists to surface, and forcing a match would make that line
+/// unrecordable (or, worse, invite matching it to the wrong payment just to
+/// satisfy the constraint). `matchedAt` is null for exactly those lines.
+model SettlementTransaction {
+  id           Int       @id @default(autoincrement())
+  settlementId Int       @map("settlement_id")
+  /// The Payment this line settles, or null while unmatched. See this model's
+  /// doc comment.
+  paymentId    Int?      @map("payment_id")
+  /// The amount the provider reported for this line, in `currency`. Decimal,
+  /// never Float (CLAUDE.md money rule). Not assumed equal to the matched
+  /// `Payment.amount` — a mismatch between the two is a finding to investigate,
+  /// so both are kept.
+  amount       Decimal
+  currency     String
+  /// When this line was matched to a Payment; null while unmatched.
+  matchedAt    DateTime? @map("matched_at")
+
+  // Restrict, not Cascade (Infra-5 policy): a settlement line is a
+  // financial-audit record — neither its batch nor the Payment it matched may
+  // silently erase it.
+  settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  payment    Payment?   @relation(fields: [paymentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([settlementId], map: "ix_settlement_tx_settlement_id")
+  @@map("settlement_transactions")
 }

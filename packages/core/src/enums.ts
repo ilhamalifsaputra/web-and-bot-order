@@ -991,3 +991,60 @@ export const SettlementStatus = {
 } as const;
 export type SettlementStatus = (typeof SettlementStatus)[keyof typeof SettlementStatus];
 export const zSettlementStatus = z.nativeEnum(SettlementStatus);
+
+/**
+ * `LedgerReconciliationFinding.type` (Financial Ledger M5) — what kind of drift
+ * `reconcileLedger` (packages/db/src/crud/reconcileLedger.ts) found between the
+ * shop's operational rows (Order/Payment/User wallet balances/RefundExecution)
+ * and the double-entry ledger that is supposed to describe them.
+ *
+ * Every value names a comparison between two real sets of rows, never a
+ * heuristic — the reconciliation reports only discrepancies it can point at:
+ *
+ * - LEDGER_POSTING_MISSING — real money moved (an order settled, a top-up was
+ *   credited, a refund was paid out) but no `FinancialTransaction` exists under
+ *   the idempotency key that event derives. The most serious class: the books
+ *   are silently understating what happened.
+ * - WALLET_LEDGER_DRIFT — the sum of every `User.walletBalance` (or
+ *   `walletBalanceUsdt`) disagrees with the `wallet_liability.<ccy>` control
+ *   account that exists to mirror it. The control-account invariant the whole
+ *   wallet sub-ledger rests on.
+ * - DUPLICATE_PROVIDER_TRANSACTION — two `Payment` rows share one
+ *   `(method, providerTransactionId)` pair. The schema's own
+ *   `@@unique([method, providerTransactionId])` already forbids this, so a hit
+ *   means something wrote around the Prisma client (a manual edit, a migration
+ *   inconsistency) — a defensive read, expected to find nothing.
+ * - REFUND_AMOUNT_MISMATCH — a `RefundExecution.amount` disagrees with the
+ *   amount its own posted `FinancialTransaction` recorded, i.e. the buyer was
+ *   paid one figure and the books say another.
+ */
+export const ReconciliationFindingType = {
+  LEDGER_POSTING_MISSING: "LEDGER_POSTING_MISSING",
+  WALLET_LEDGER_DRIFT: "WALLET_LEDGER_DRIFT",
+  DUPLICATE_PROVIDER_TRANSACTION: "DUPLICATE_PROVIDER_TRANSACTION",
+  REFUND_AMOUNT_MISMATCH: "REFUND_AMOUNT_MISMATCH",
+} as const;
+export type ReconciliationFindingType =
+  (typeof ReconciliationFindingType)[keyof typeof ReconciliationFindingType];
+export const zReconciliationFindingType = z.nativeEnum(ReconciliationFindingType);
+
+/**
+ * `LedgerReconciliationFinding.severity` (Financial Ledger M5) — how loudly one
+ * finding should be escalated.
+ *
+ * WARNING is drift worth understanding but consistent with money being correct;
+ * CRITICAL means the books and the money may genuinely disagree, which is the
+ * class an admin has to act on. Every check `reconcileLedger` ships with today
+ * reports CRITICAL — each of them compares two records of the SAME money, so
+ * any disagreement means one of the two is wrong. WARNING exists for the
+ * softer checks later milestones will add (an unsettled clearing balance, a
+ * provider fee that drifted within tolerance) rather than being reserved
+ * speculatively: a severity field with one possible value would not be one.
+ */
+export const ReconciliationSeverity = {
+  WARNING: "WARNING",
+  CRITICAL: "CRITICAL",
+} as const;
+export type ReconciliationSeverity =
+  (typeof ReconciliationSeverity)[keyof typeof ReconciliationSeverity];
+export const zReconciliationSeverity = z.nativeEnum(ReconciliationSeverity);

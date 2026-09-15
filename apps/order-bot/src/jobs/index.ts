@@ -4,14 +4,14 @@
  * it can DM users/admins directly.
  *
  * Schedule (scheduleJobs): auto-cancel every minute, stale-ticket close hourly,
- * finance reconcile every 6h.
+ * finance reconcile every 6h, ledger reconcile every 6h.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus } from "@app/core/enums";
+import { langCode, OrderStatus, ReconciliationFindingType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
@@ -23,6 +23,8 @@ import {
   closeTicket,
   getUser,
   reconcileFinances,
+  reconcileLedger,
+  countFindingsByType,
   logAdminAction,
   getBinancePollHealth,
   getBybitPollHealth,
@@ -664,6 +666,78 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
       );
     } catch (err) {
       logger.error({ err }, "Failed to DM the admin about reconciliation drift — drift is still recorded in the audit log, but no one was paged");
+    }
+  }
+}
+
+/**
+ * Ledger reconciliation (Financial Ledger M5) — cross-checks the double-entry
+ * ledger against the rows it is supposed to describe, and pages an admin when
+ * they disagree.
+ *
+ * Runs ALONGSIDE `reconcileFinancesJob` above, on the same 6-hourly schedule,
+ * and deliberately does not replace it: that job checks the operational rows
+ * against each other (order totals, voucher counts, negative balances), while
+ * this one checks those same rows against the ledger. A shop can pass either
+ * check and fail the other, so both alerts are worth having.
+ *
+ * Every finding `reconcileLedger` returns is CRITICAL by construction — each
+ * check compares two records of the SAME money — so there is no severity
+ * filtering here: anything it returns is worth an admin's attention. The DM
+ * follows `reconcileFinancesJob`'s pattern exactly (plain text, first admin
+ * only, swallowed failure), not the HTML/every-admin shape the payment-rail
+ * watchdogs use: this is financial-drift reporting an admin reviews, not a
+ * rail outage that needs everyone woken up.
+ */
+export async function reconcileLedgerJob(api: Api): Promise<void> {
+  const findings = await reconcileLedger(prisma);
+  if (findings.length === 0) {
+    logger.info(
+      "Ledger reconciliation finished — every settled order, wallet balance, payment and refund payout matched the double-entry ledger, no drift found",
+    );
+    return;
+  }
+
+  const counts = countFindingsByType(findings);
+  const missingPostings = counts[ReconciliationFindingType.LEDGER_POSTING_MISSING] ?? 0;
+  const walletDrift = counts[ReconciliationFindingType.WALLET_LEDGER_DRIFT] ?? 0;
+  const duplicatePayments = counts[ReconciliationFindingType.DUPLICATE_PROVIDER_TRANSACTION] ?? 0;
+  const refundMismatches = counts[ReconciliationFindingType.REFUND_AMOUNT_MISMATCH] ?? 0;
+
+  logger.warn(
+    `Ledger reconciliation found drift — ${missingPostings} settled event(s) with no ledger posting, ` +
+      `${walletDrift} wallet balance total(s) disagreeing with their control account, ` +
+      `${duplicatePayments} duplicated provider transaction(s), and ` +
+      `${refundMismatches} refund payout(s) whose posted amount differs from what was paid. ` +
+      `Every one of these means the books and the money may genuinely disagree, so each needs manual review ` +
+      `(see audit log for details)`,
+  );
+
+  await logAdminAction(prisma, {
+    adminId: null, // system action
+    action: "reconcile_ledger.drift",
+    targetType: "system",
+    targetId: null,
+    details:
+      `Ledger reconciliation found ${missingPostings} settled events with no ledger record, ` +
+      `${walletDrift} wallet balance totals that disagree with the ledger, ` +
+      `${duplicatePayments} duplicated provider transactions, and ` +
+      `${refundMismatches} refunds whose recorded amount differs from what was paid out.`,
+  });
+
+  if (adminIds().length) {
+    try {
+      await api.sendMessage(
+        adminIds()[0]!,
+        "⚠ Ledger drift detected\n" +
+          `missing ledger postings: ${missingPostings}\n` +
+          `wallet balance drift: ${walletDrift}\n` +
+          `duplicate provider transactions: ${duplicatePayments}\n` +
+          `refund amount mismatches: ${refundMismatches}\n` +
+          "See audit log for full details.",
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to DM the admin about ledger drift — the drift is still recorded in the audit log, but no one was paged");
     }
   }
 }
@@ -1578,6 +1652,11 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", { protect: true }, wrap("reconcileFinancesJob", reconcileFinancesJob)),
+    // Additive alongside the finance reconcile above, not a replacement for it
+    // (Financial Ledger M5): same cadence, same overlap guard, different
+    // question — that one checks the operational rows against each other, this
+    // one checks them against the double-entry ledger.
+    new Cron("0 */6 * * *", { protect: true }, wrap("reconcileLedgerJob", reconcileLedgerJob)),
     // { protect: true } (M-26 fix, backend audit 2026-07-31): these watchdogs
     // were the one group of jobs in this list missing it. A slow Telegram API
     // call during the admin DM loop below can let a tick overlap with the

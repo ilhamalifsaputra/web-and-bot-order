@@ -7,6 +7,7 @@ import {
   getUser,
   getUserByTelegramId,
   searchUsers,
+  userTotalSpent,
   totalSpentByUserIds,
   orderCountByUserIds,
   setUserRole,
@@ -22,14 +23,16 @@ import {
   countAllWalletTransactions,
 } from "./users";
 import { primeWarmUser, peekWarmUser } from "./warmUserCache";
-import { UserRole } from "@app/core/enums";
+import { UserRole, OrderKind } from "@app/core/enums";
 import { startOfDayUtc } from "@app/core/datetime";
 
-/** Minimal DELIVERED order for KPI/spend-ranking fixtures. */
+/** Minimal DELIVERED order for KPI/spend-ranking fixtures. `kind` defaults to
+ * the schema default (PRODUCT); pass WALLET_TOPUP to build the row shape
+ * `settleWalletTopup` leaves behind — a DELIVERED Order with no OrderItems. */
 function makeOrder(
   prisma: PrismaClient,
   userId: number,
-  args: { amount: string; currency?: "IDR" | "USDT"; status?: string; createdAt?: Date },
+  args: { amount: string; currency?: "IDR" | "USDT"; status?: string; createdAt?: Date; kind?: string },
 ) {
   return prisma.order.create({
     data: {
@@ -39,6 +42,7 @@ function makeOrder(
       totalAmount: args.amount,
       currency: args.currency ?? "IDR",
       status: args.status ?? "DELIVERED",
+      ...(args.kind ? { kind: args.kind } : {}),
       ...(args.createdAt ? { createdAt: args.createdAt } : {}),
     },
   });
@@ -602,6 +606,110 @@ describe("orderStatsByUserIds", () => {
     const user = await upsertUser(prisma, { telegramId: 9701, username: "stats_zero_orders", fullName: null });
     const stats = await orderStatsByUserIds(prisma, [user.id]);
     expect(stats.has(user.id)).toBe(false);
+  });
+});
+
+// Task 6a (Financial Ledger M6). A settled WALLET_TOPUP is a DELIVERED Order
+// row (settleWalletTopup writes PENDING_PAYMENT -> DELIVERED), so before this
+// fix every "how much has this customer spent" figure counted a buyer moving
+// their own money into their own wallet as spend — and the Customers page's
+// revenue/returning KPIs counted it as shop revenue.
+//
+// Funding a wallet is not spending: the money is still the buyer's (it sits in
+// the wallet_liability control account, not revenue) and it gets counted for
+// real when they later place a WALLET-paid product order. Counting both is
+// double-counting.
+//
+// Deliberately NOT narrowed, and asserted as such below: `totalOrders` /
+// `lastOrderAt` (the Customers page's "Orders" and "Last Order" columns) stay
+// all-kinds, because those columns answer "what has this account been doing",
+// not "what has it bought".
+describe("wallet top-ups are excluded from spend and revenue figures (kind: PRODUCT)", () => {
+  it("userTotalSpent counts the product order and not the top-up", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9801, username: "spend_kind_single", fullName: null });
+    await makeOrder(prisma, user.id, { amount: "30000", kind: OrderKind.PRODUCT });
+    await makeOrder(prisma, user.id, { amount: "500000", kind: OrderKind.WALLET_TOPUP });
+    await makeOrder(prisma, user.id, { amount: "9", currency: "USDT", kind: OrderKind.WALLET_TOPUP });
+
+    const spent = await userTotalSpent(prisma, user.id);
+    expect(spent.idr.equals(new Decimal("30000"))).toBe(true);
+    expect(spent.usdt.equals(new Decimal(0))).toBe(true);
+  });
+
+  it("totalSpentByUserIds counts the product order and not the top-up", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 9802, username: "spend_kind_buyer", fullName: null });
+    const topperUpper = await upsertUser(prisma, { telegramId: 9803, username: "spend_kind_topup_only", fullName: null });
+    await makeOrder(prisma, buyer.id, { amount: "30000", kind: OrderKind.PRODUCT });
+    await makeOrder(prisma, buyer.id, { amount: "500000", kind: OrderKind.WALLET_TOPUP });
+    await makeOrder(prisma, topperUpper.id, { amount: "500000", kind: OrderKind.WALLET_TOPUP });
+
+    const result = await totalSpentByUserIds(prisma, [buyer.id, topperUpper.id]);
+    expect(result.get(buyer.id)!.idr.equals(new Decimal("30000"))).toBe(true);
+    // A top-up-only customer has spent nothing, so they drop out of the Map
+    // entirely — the same shape as a customer with no orders at all.
+    expect(result.has(topperUpper.id)).toBe(false);
+  });
+
+  it("customersKpis' totalRevenue and returningCustomers ignore top-ups", async () => {
+    const before = await customersKpis(prisma);
+
+    // Two settled top-ups: enough to look like a "returning customer" and to
+    // add half a million rupiah of phantom revenue before this fix.
+    const topupOnly = await upsertUser(prisma, { telegramId: 9804, username: "kpi_kind_topup_only", fullName: null });
+    await makeOrder(prisma, topupOnly.id, { amount: "250000", kind: OrderKind.WALLET_TOPUP });
+    await makeOrder(prisma, topupOnly.id, { amount: "250000", kind: OrderKind.WALLET_TOPUP });
+
+    const afterTopups = await customersKpis(prisma);
+    expect(afterTopups.returningCustomers).toBe(before.returningCustomers);
+    expect(afterTopups.totalRevenue.idr.equals(before.totalRevenue.idr)).toBe(true);
+
+    // A real two-purchase customer still counts, so the filter narrows the
+    // query rather than breaking it.
+    const realBuyer = await upsertUser(prisma, { telegramId: 9805, username: "kpi_kind_real_buyer", fullName: null });
+    await makeOrder(prisma, realBuyer.id, { amount: "10000", kind: OrderKind.PRODUCT });
+    await makeOrder(prisma, realBuyer.id, { amount: "10000", kind: OrderKind.PRODUCT });
+
+    const afterBuyer = await customersKpis(prisma);
+    expect(afterBuyer.returningCustomers).toBe(before.returningCustomers + 1);
+    expect(afterBuyer.totalRevenue.idr.minus(before.totalRevenue.idr).equals(new Decimal("20000"))).toBe(true);
+  });
+
+  it("orderStatsByUserIds excludes top-ups from deliveredOrders but keeps them in totalOrders/lastOrderAt", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9806, username: "stats_kind_user", fullName: null });
+    await makeOrder(prisma, user.id, {
+      amount: "10000",
+      kind: OrderKind.PRODUCT,
+      createdAt: new Date("2024-01-01T00:00:00Z"),
+    });
+    await makeOrder(prisma, user.id, {
+      amount: "500000",
+      kind: OrderKind.WALLET_TOPUP,
+      createdAt: new Date("2024-05-01T00:00:00Z"),
+    });
+
+    const stats = await orderStatsByUserIds(prisma, [user.id]);
+    const s = stats.get(user.id)!;
+    // deliveredOrders drives the per-row "RETURNING" badge (>=2), the exact
+    // concept customersKpis.returningCustomers counts page-wide — the two must
+    // agree, so both exclude top-ups.
+    expect(s.deliveredOrders).toBe(1);
+    // Account-activity columns, not purchase columns: a top-up is real
+    // activity on the account and stays visible here.
+    expect(s.totalOrders).toBe(2);
+    expect(s.lastOrderAt?.toISOString()).toBe(new Date("2024-05-01T00:00:00Z").toISOString());
+  });
+
+  it("the Customers page's spend ranking treats a top-up-only customer as a zero spender", async () => {
+    const realSpender = await upsertUser(prisma, { telegramId: 9807, username: "rank_kind_real", fullName: null });
+    const topupWhale = await upsertUser(prisma, { telegramId: 9808, username: "rank_kind_topup_whale", fullName: null });
+    // The top-up is an order of magnitude larger, so an unfiltered ranking
+    // would put this customer first.
+    await makeOrder(prisma, realSpender.id, { amount: "10000", kind: OrderKind.PRODUCT });
+    await makeOrder(prisma, topupWhale.id, { amount: "999000", kind: OrderKind.WALLET_TOPUP });
+
+    const ids = [realSpender.id, topupWhale.id];
+    const page = await listUsers(prisma, { ids, sort: "spend", limit: 10 });
+    expect(page.map((u) => u.id)).toEqual([realSpender.id, topupWhale.id]);
   });
 });
 

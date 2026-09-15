@@ -1184,9 +1184,35 @@ export function listExpiredPendingOrders(db: Db, now: Date) {
   });
 }
 
+// ---- Operational status counters (admin queues + Orders-page tab badges) ---
+//
+// KIND-AGNOSTIC ON PURPOSE (Financial Ledger M6, Task 6a). Financial Ledger
+// M6 narrowed every SALES aggregate to `kind: OrderKind.PRODUCT` — see
+// `ORDER_KIND_SALES_FILTER` in crud/revenue.ts, plus `ordersByStatus`/
+// `ordersByStatusSince` in crud/reports.ts and the spend/revenue functions in
+// crud/users.ts. The counters in this block were reviewed in that pass and
+// deliberately left counting BOTH kinds. Do not "finish the job" here.
+//
+// They are not sales metrics. They feed exactly two surfaces:
+//   - the dashboard's Operation Center and Pending Actions cards — admin
+//     work-queue counters, each one deep-linking to the Orders page filtered
+//     by that same status (apps/web-admin/client/src/components/dashboard/
+//     OperationCenter.tsx);
+//   - the Orders page's own KPI row and status-tab count badges
+//     (pages/orders/OrderStatusTabs.tsx, via GET /api/orders/kpis).
+//
+// The Orders list behind both is itself kind-agnostic (`listOrders` applies no
+// kind filter, and admins genuinely resolve top-up orders there — see
+// routes/api/orders.ts's WALLET_TOPUP branches), so filtering these would
+// (a) make every tab badge contradict the list it labels, and (b) hide real
+// work: an UNDERPAID or expired wallet top-up needs a human exactly as much
+// as an UNDERPAID product order does. `countOrders`/`OrderFilter` below is the
+// escape hatch for a caller that genuinely wants one kind only.
+
 /** Orders awaiting payment confirmation right now — covers every payment
  * method's pre-confirmation states, including the Bybit BSC on-chain
- * milestones ("Pending Payments" on the dashboard). */
+ * milestones ("Pending Payments" on the dashboard). Counts both order kinds —
+ * see this block's header comment. */
 export function countPendingPaymentLike(db: Db): Promise<number> {
   return db.order.count({
     where: { status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] } },
@@ -1215,19 +1241,36 @@ export function countUnderpaid(db: Db): Promise<number> {
  * Deliberately NOT named countProcessing — that pre-existing function counts
  * CONFIRMED/PAID orders (a different, payment-gateway-in-flight concept) and
  * must not be touched or confused with this one.
+ *
+ * This is the one counter in this block that needs no `kind` filter for a
+ * STRUCTURAL reason rather than a product one: a `WALLET_TOPUP` order can never
+ * hold `PROCESSING`. Only `settlePaidOrder`'s MANUAL branch puts a fresh order
+ * there, and that function refuses a top-up before the branch split (see
+ * settlePaidOrder.test.ts, "wallet top-ups cannot be settled through the
+ * product-delivery path"); even without that guard the branch is unreachable,
+ * because `isManual` reads `order.items.some(...)` and a top-up order has zero
+ * `OrderItem` rows. The only other writer — digiflazz.ts's dispatcher —
+ * re-asserts `PROCESSING` on orders that already hold it and additionally
+ * requires `items: { some: ... }`. So a filter here would be dead weight that
+ * implies the invariant is weaker than it is.
  */
 export function countAwaitingManualFulfillment(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PROCESSING } });
 }
 
-/** Orders successfully delivered — the Orders page KPI's "Delivered" count. */
+/** Orders successfully delivered — the Orders page KPI's "Delivered" count and
+ * its "Delivered" tab badge, so it counts both order kinds to stay equal to
+ * the row count that tab shows (see this block's header comment). For
+ * delivered PRODUCT SALES, use revenue.ts's `revenueSummary`/`ordersByDay` or
+ * `countOrders(db, { kind: OrderKind.PRODUCT, status: DELIVERED })`. */
 export function countDelivered(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.DELIVERED } });
 }
 
 /** Orders voided (admin-cancelled or rejected) — folded together for the
  * Orders page KPI's "Cancelled" count, matching the display bucket
- * OrderStatusBadge groups them into on the client. */
+ * OrderStatusBadge groups them into on the client. Counts both order kinds,
+ * for the same tab-badge reason as `countDelivered` above. */
 export function countCancelled(db: Db): Promise<number> {
   return db.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } });
 }
@@ -2461,6 +2504,21 @@ export interface OrderFilter {
   /** Restrict to this exact set of order ids — the bulk-toolbar's
    * "export only the selected rows" path. */
   ids?: number[] | null;
+  /**
+   * Restrict to one `OrderKind` ("PRODUCT" / "WALLET_TOPUP"). Added by
+   * Financial Ledger M6 (Task 6a) so a sales-oriented caller can exclude
+   * wallet top-ups from a filtered list/count — before this, no caller could
+   * even ask.
+   *
+   * Omitting it counts/lists BOTH kinds, and `orderWhere` deliberately applies
+   * no default: this is the generic helper behind the admin Orders list, whose
+   * existing callers (the `/api/orders` list + its `total`, `/api/orders/kpis`'
+   * "Total Orders" card and "All" tab badge, `/api/orders/export`) must keep
+   * showing every kind — an admin resolves top-up orders on that page too, and
+   * a count that disagreed with its own list would be a bug, not a fix. A new
+   * sales/revenue caller must pass `OrderKind.PRODUCT` explicitly.
+   */
+  kind?: string | null;
 }
 
 function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
@@ -2469,6 +2527,9 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
   }
   if (f.userId != null) where.userId = f.userId;
+  // Top-level (AND) clause, so it narrows the `q` free-text OR below rather
+  // than competing with it. No default — see OrderFilter.kind.
+  if (f.kind) where.kind = f.kind;
   if (f.orderCode) where.orderCode = { contains: f.orderCode.trim(), mode: "insensitive" };
   if (f.paymentMethod) where.paymentMethod = f.paymentMethod;
   if (f.voucherId != null) where.voucherId = f.voucherId;

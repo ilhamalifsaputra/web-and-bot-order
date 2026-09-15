@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+import { OrderKind } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
+import { ordersByStatus, ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -51,6 +52,48 @@ describe("ordersByStatusSince", () => {
 
     const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
     expect(result).toEqual([{ status: "PENDING_PAYMENT", count: 1 }]);
+  });
+
+  // Task 6a (Financial Ledger M6). This funnel feeds the dashboard's "Orders
+  // Today" card (GET /api/dashboard/kpis -> OrdersKpiCard), a sales-volume
+  // metric — a buyer funding their wallet is not an order the shop sold, so a
+  // settled WALLET_TOPUP must not inflate the "delivered" leg of the funnel.
+  it("excludes WALLET_TOPUP orders from the funnel", async () => {
+    const now = new Date();
+    await prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId, kind: OrderKind.PRODUCT, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", createdAt: now, deliveredAt: now },
+    });
+    await prisma.order.create({
+      data: { orderCode: `TOPUP-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "100000", totalAmount: "100000", status: "DELIVERED", createdAt: now, deliveredAt: now },
+    });
+
+    const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
+    expect(result).toEqual([{ status: "DELIVERED", count: 1 }]);
+  });
+});
+
+// Sibling of ordersByStatusSince above, with no time bound — its one caller is
+// the Reports page's order funnel (GET /api/reports), alongside revenueByDay
+// and topProducts, so it is a sales report too and gets the same filter.
+describe("ordersByStatus", () => {
+  it("excludes WALLET_TOPUP orders from the funnel", async () => {
+    const now = new Date();
+    await prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId, kind: OrderKind.PRODUCT, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-p-${Math.random()}`, userId, kind: OrderKind.PRODUCT, subtotalAmount: "1", totalAmount: "1", status: "PENDING_PAYMENT" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `TOPUP-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "100000", totalAmount: "100000", status: "DELIVERED", deliveredAt: now },
+    });
+
+    // Order-insensitive: two buckets tied at count 1 have no defined order.
+    const result = await ordersByStatus(prisma);
+    expect([...result].sort((a, b) => a.status.localeCompare(b.status))).toEqual([
+      { status: "DELIVERED", count: 1 },
+      { status: "PENDING_PAYMENT", count: 1 },
+    ]);
   });
 });
 

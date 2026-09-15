@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import {
@@ -11,6 +11,7 @@ import {
   topProductsByMargin,
   ordersByDay,
   combinedRevenueByDay,
+  botOverallStats,
 } from "./revenue";
 
 let db: TestDb;
@@ -444,5 +445,114 @@ describe("status exclusion", () => {
 
     const profit = await profitSummarySince(prisma, since);
     expect(profit.idr).toEqual({ netProfit: "5000", marginPct: "50", excludedItemCount: 0 });
+  });
+});
+
+// Task 6a (Financial Ledger M6): a settled WALLET_TOPUP order is a real Order
+// row that reaches DELIVERED with a deliveredAt stamped (settleWalletTopup
+// writes PENDING_PAYMENT -> DELIVERED directly), so before this fix every
+// Order-level revenue aggregate in this module counted a buyer funding their
+// own wallet as shop revenue. A top-up is money the shop holds on the buyer's
+// behalf — a liability, not a sale — so none of these figures may include it.
+//
+// The OrderItem-rooted functions (topProducts, topProductsByMargin,
+// profitSummarySince) need no such test: a top-up order carries zero OrderItem
+// rows, so they were already immune.
+describe("wallet top-ups are excluded from every revenue figure (kind: PRODUCT)", () => {
+  /** A settled top-up: DELIVERED, deliveredAt set, zero OrderItem rows —
+   * exactly the row shape settleWalletTopup leaves behind. */
+  function makeSettledTopup(deliveredAt: Date, amount = "100000", currency: "IDR" | "USDT" = "IDR") {
+    return prisma.order.create({
+      data: {
+        orderCode: `TOPUP-${Math.random()}`,
+        userId,
+        kind: OrderKind.WALLET_TOPUP,
+        subtotalAmount: amount,
+        totalAmount: amount,
+        currency,
+        ...(currency === "USDT" ? { fxRate: "16000" } : {}),
+        status: OrderStatus.DELIVERED,
+        paidAt: deliveredAt,
+        deliveredAt,
+      },
+    });
+  }
+
+  function makeProductSale(deliveredAt: Date, amount = "54000") {
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-${Math.random()}`,
+        userId,
+        kind: OrderKind.PRODUCT,
+        subtotalAmount: amount,
+        totalAmount: amount,
+        currency: "IDR",
+        status: OrderStatus.DELIVERED,
+        deliveredAt,
+      },
+    });
+  }
+
+  it("revenueSummary counts the product sale and not the top-up", async () => {
+    const now = new Date();
+    await makeProductSale(now);
+    await makeSettledTopup(now);
+    await makeSettledTopup(now, "7", "USDT");
+
+    const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+    expect(result.revenue_idr.toString()).toBe("54000");
+    expect(result.revenue_usdt.toString()).toBe("0");
+    expect(result.orders).toBe(1);
+  });
+
+  it("revenueByDay counts the product sale and not the top-up", async () => {
+    const now = new Date();
+    await makeProductSale(now);
+    await makeSettledTopup(now);
+
+    const days = await revenueByDay(prisma, 1);
+    expect(days[0]).toMatchObject({ revenue_idr: "54000", revenue_usdt: "0", orders: 1 });
+  });
+
+  it("ordersByDay counts the product sale and not the top-up", async () => {
+    const now = new Date();
+    await makeProductSale(now);
+    await makeSettledTopup(now);
+    await makeSettledTopup(now, "7", "USDT");
+
+    const days = await ordersByDay(prisma, 1);
+    expect(days[0]).toMatchObject({ ordersIdr: 1, ordersUsdt: 0 });
+  });
+
+  it("combinedRevenueByDay counts the product sale and not the top-up", async () => {
+    const now = new Date();
+    await makeProductSale(now);
+    await makeSettledTopup(now);
+
+    const days = await combinedRevenueByDay(prisma, 1);
+    expect(days[0]!.revenueIdrEquiv).toBe("54000");
+  });
+
+  it("botOverallStats' shop-wide revenue counts the product sale and not the top-up", async () => {
+    const now = new Date();
+    await makeProductSale(now);
+    await makeSettledTopup(now);
+
+    const stats = await botOverallStats(prisma);
+    expect(stats.revenue_idr.toString()).toBe("54000");
+    expect(stats.revenue_usdt.toString()).toBe("0");
+  });
+
+  // deliveredRevenueByCurrency is module-private and revenueSummary is the one
+  // caller that passes it an `extraWhere`. The kind filter has to live in the
+  // helper's own base `where`, applied so a caller's extraWhere can never
+  // clear it — proven here through the only public door into that helper.
+  it("a top-up stays out even when reached through revenueSummary's extraWhere date window", async () => {
+    const now = new Date();
+    await makeSettledTopup(now);
+
+    const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+    expect(result.orders).toBe(0);
+    expect(result.revenue_idr.toString()).toBe("0");
   });
 });

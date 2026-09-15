@@ -6,13 +6,40 @@
  * re-deriving "line revenue" and drifting apart — see orderItemRevenueIdr
  * below for the bug that split prevents from recurring.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
+
+/**
+ * Every Order-level aggregate in this module is a SALES figure, so all of them
+ * carry this clause (Financial Ledger M6, Task 6a).
+ *
+ * A `WALLET_TOPUP` order is a real `Order` row that reaches `DELIVERED` with a
+ * `deliveredAt` stamped — `settleWalletTopup` (crud/wallet_topup.ts) writes
+ * `PENDING_PAYMENT -> DELIVERED` directly — so before this filter existed, a
+ * buyer moving their own money into their own wallet was counted as shop
+ * revenue on the dashboard, in the Reports page's charts, and in the bot's
+ * shop-wide stats. It is not: the money is still the buyer's (it lands in the
+ * `wallet_liability.<ccy>` control account, not a revenue account) and it is
+ * counted for real when they later spend it on a product order. Counting both
+ * double-counts the same rupiah.
+ *
+ * Hard-coded rather than caller-optional on purpose: a top-up is never
+ * revenue, by definition, so there is no legitimate caller of a function named
+ * "revenue" that should get top-ups mixed in. Fixing this LOWERS historical
+ * revenue/order-count figures for any shop with top-up history — that is the
+ * correction, not a regression.
+ *
+ * The `OrderItem`-rooted functions below (`topProducts`,
+ * `topProductsByMargin`, `profitSummarySince`, and `botOverallStats`'
+ * `items_sold`) deliberately do NOT repeat it: a top-up order carries zero
+ * `OrderItem` rows, so they were already immune.
+ */
+const ORDER_KIND_SALES_FILTER = { kind: OrderKind.PRODUCT } as const;
 
 /**
  * IDR revenue for one delivered OrderItem line: unitPrice × quantity, minus
@@ -76,14 +103,19 @@ function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decima
 
 /** Delivered-order totals split per transaction currency (plan.md §15.8 —
  * reports keep currencies apart instead of pretending one unit). Orders
- * predating the currency column count as USDT (their snapshot currency). */
+ * predating the currency column count as USDT (their snapshot currency).
+ *
+ * `status`/`kind` are spread AFTER `extraWhere` on purpose: they are this
+ * helper's own invariants, and a caller must not be able to widen "delivered
+ * product revenue" into something else by passing its own `status`/`kind` key
+ * (see ORDER_KIND_SALES_FILTER above for why the kind half matters). */
 async function deliveredRevenueByCurrency(
   db: Db,
   extraWhere: Record<string, unknown> = {},
 ): Promise<{ idr: Decimal; usdt: Decimal; orders: number }> {
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { status: OrderStatus.DELIVERED, ...extraWhere },
+    where: { ...extraWhere, status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER },
     _sum: { totalAmount: true },
     _count: { _all: true },
   });
@@ -99,6 +131,16 @@ async function deliveredRevenueByCurrency(
   return { idr, usdt, orders };
 }
 
+/**
+ * Shop-wide lifetime stats shown on the bot's own customer dashboard
+ * ("X items sold · Rp Y total revenue · Z users").
+ *
+ * `revenue_idr`/`revenue_usdt` are product-sales-only via
+ * `deliveredRevenueByCurrency` (see `ORDER_KIND_SALES_FILTER`) — this is a
+ * "total revenue" figure shown to buyers, so a top-up must not inflate it.
+ * `items_sold` needs no filter (it aggregates `OrderItem.quantity`, and a
+ * top-up order has no items) and `total_users` is not order-derived at all.
+ */
 export async function botOverallStats(db: Db): Promise<{
   items_sold: number;
   revenue_idr: Decimal;
@@ -119,6 +161,14 @@ export async function botOverallStats(db: Db): Promise<{
   };
 }
 
+/**
+ * Delivered product-sales revenue in the window `[since, until]`, split per
+ * currency, plus the order count behind it — the dashboard's "Revenue
+ * Today"/"Revenue Yesterday" cards and the Orders page's "Revenue Today" KPI.
+ * Excludes wallet top-ups via `deliveredRevenueByCurrency` (see
+ * `ORDER_KIND_SALES_FILTER`), so `orders` here is a count of SALES, not of all
+ * delivered order rows.
+ */
 export async function revenueSummary(
   db: Db,
   since: Date,
@@ -151,7 +201,7 @@ export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
   since.setUTCHours(0, 0, 0, 0);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
     select: { deliveredAt: true, totalAmount: true, currency: true },
   });
 
@@ -392,7 +442,7 @@ export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> 
   since.setUTCHours(0, 0, 0, 0);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
     select: { deliveredAt: true, currency: true },
   });
 
@@ -433,7 +483,7 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
   since.setUTCHours(0, 0, 0, 0);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
     select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
   });
 

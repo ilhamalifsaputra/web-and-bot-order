@@ -150,19 +150,42 @@ export interface StatusCount {
   count: number;
 }
 
-/** Order counts grouped by status (the funnel). */
+/**
+ * Order counts grouped by status (the funnel) — product sales only.
+ *
+ * Its one caller is the Reports page's order funnel (GET /api/reports,
+ * alongside `revenueByDay`, `topProducts` and `voucherUsage`), so this is a
+ * sales report, not an operational queue view. A settled `WALLET_TOPUP` order
+ * reaches `DELIVERED` like any sale (`settleWalletTopup`) and would otherwise
+ * inflate the funnel's delivered leg with money the buyer has not spent —
+ * Financial Ledger M6, Task 6a. Sibling `ordersByStatusSince` below carries
+ * the same filter for the same reason.
+ *
+ * Kind-agnostic status counters live in crud/orders.ts (`countDelivered`,
+ * `countPendingVerifications`, ...) and deliberately do NOT carry this filter:
+ * they feed admin work queues and the Orders page's own tab badges, where a
+ * top-up is real, actionable work. See that file's
+ * "operational order counters stay kind-agnostic" test for the full reasoning.
+ */
 export async function ordersByStatus(db: Db): Promise<StatusCount[]> {
-  const grouped = await db.order.groupBy({ by: ["status"], _count: { _all: true } });
+  const grouped = await db.order.groupBy({
+    by: ["status"],
+    where: { kind: OrderKind.PRODUCT },
+    _count: { _all: true },
+  });
   return grouped
     .map((g) => ({ status: g.status, count: g._count._all }))
     .sort((a, b) => b.count - a.count);
 }
 
-/** Order counts grouped by status, restricted to orders created since `since` — the dashboard's "today" funnel. */
+/** Order counts grouped by status, restricted to product orders created since
+ * `since` — the dashboard's "Orders Today" funnel (GET /api/dashboard/kpis ->
+ * OrdersKpiCard). Product-sales-only for the same reason as `ordersByStatus`
+ * above. */
 export async function ordersByStatusSince(db: Db, since: Date): Promise<StatusCount[]> {
   const grouped = await db.order.groupBy({
     by: ["status"],
-    where: { createdAt: { gte: since } },
+    where: { kind: OrderKind.PRODUCT, createdAt: { gte: since } },
     _count: { _all: true },
   });
   return grouped

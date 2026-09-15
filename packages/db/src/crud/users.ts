@@ -4,7 +4,7 @@
  */
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { UserRole, Language, OrderStatus } from "@app/core/enums";
+import { UserRole, Language, OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -23,6 +23,29 @@ const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const
 /** Admins are managed on the separate Admins page — the Customers page's list,
  * filters, and KPIs never include role=ADMIN, filtered or not. */
 const NON_ADMIN_ROLES = [UserRole.CUSTOMER, UserRole.RESELLER];
+
+/**
+ * Every "what has this customer bought / how much have they spent" aggregate in
+ * this file carries this clause (Financial Ledger M6, Task 6a).
+ *
+ * A settled `WALLET_TOPUP` is a real `Order` row at `DELIVERED` —
+ * `settleWalletTopup` (crud/wallet_topup.ts) writes `PENDING_PAYMENT ->
+ * DELIVERED` directly — so before this filter existed, a buyer moving their own
+ * money into their own wallet counted as spend on their profile and as shop
+ * revenue on the Customers page KPI row.
+ *
+ * Funding a wallet is not spending: the money is still the buyer's (it sits in
+ * the `wallet_liability.<ccy>` control account, not a revenue account) and it is
+ * counted for real when they later place a WALLET-paid product order. Counting
+ * both double-counts the same rupiah, and a shop with top-up history will see
+ * these figures DROP — that is the correction.
+ *
+ * NOT applied to the pure account-activity fields: `orderStatsByUserIds`'
+ * `totalOrders`/`lastOrderAt` (the Customers page's "Orders"/"Last Order"
+ * columns) still count every kind, because those columns answer "what has this
+ * account been doing", not "what has it bought". See that function's comment.
+ */
+const SPEND_KIND_FILTER = { kind: OrderKind.PRODUCT } as const;
 
 /** Every User column except `passwordHash` and `email` — the general-purpose
  * projection for `getUser`/`listUsers`, used by web-admin's Customers page and
@@ -340,15 +363,21 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   return db.user.findMany({ where: { OR: or }, take: limit, select: SEARCH_USER_SELECT });
 }
 
-/** This user's DELIVERED-order totals, split per transaction currency (orders
- * predating the currency column count as USDT — their snapshot unit). */
+/**
+ * How much this user has SPENT: their DELIVERED product-order totals, split
+ * per transaction currency (orders predating the currency column count as
+ * USDT — their snapshot unit).
+ *
+ * Product orders only (`SPEND_KIND_FILTER`) — funding a wallet is not
+ * spending.
+ */
 export async function userTotalSpent(
   db: Db,
   userId: number,
 ): Promise<{ idr: Decimal; usdt: Decimal }> {
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { userId, status: "DELIVERED" },
+    where: { userId, status: "DELIVERED", ...SPEND_KIND_FILTER },
     _sum: { totalAmount: true },
   });
   let idr = new Decimal(0);
@@ -361,12 +390,14 @@ export async function userTotalSpent(
   return { idr, usdt };
 }
 
-/** Batched DELIVERED-order totals for a page of users, split per transaction
- * currency (orders predating the currency column count as USDT — their
- * snapshot unit). One `groupBy` for the whole page instead of one query per
- * row (the N+1 pattern `userTotalSpent` has when called per-row). Users with
- * no DELIVERED orders are absent from the returned Map — callers should
- * default to `{ idr: new Decimal(0), usdt: new Decimal(0) }` on a miss. */
+/** Batched DELIVERED product-order totals for a page of users, split per
+ * transaction currency (orders predating the currency column count as USDT —
+ * their snapshot unit). One `groupBy` for the whole page instead of one query
+ * per row (the N+1 pattern `userTotalSpent` has when called per-row). Users
+ * with no DELIVERED product orders are absent from the returned Map — callers
+ * should default to `{ idr: new Decimal(0), usdt: new Decimal(0) }` on a miss,
+ * which is also what a top-up-only customer now falls back to
+ * (`SPEND_KIND_FILTER`). */
 export async function totalSpentByUserIds(
   db: Db,
   userIds: number[],
@@ -375,7 +406,7 @@ export async function totalSpentByUserIds(
   if (userIds.length === 0) return result;
   const groups = await db.order.groupBy({
     by: ["userId", "currency"],
-    where: { userId: { in: userIds }, status: "DELIVERED" },
+    where: { userId: { in: userIds }, status: "DELIVERED", ...SPEND_KIND_FILTER },
     _sum: { totalAmount: true },
   });
   for (const g of groups) {
@@ -388,9 +419,16 @@ export async function totalSpentByUserIds(
   return result;
 }
 
-/** Lifetime order count per user (any status), batched for a page of users —
- * same batching shape as totalSpentByUserIds. Users with zero orders are
- * absent from the returned Map. */
+/** Lifetime order count per user (any status, any kind), batched for a page of
+ * users — same batching shape as totalSpentByUserIds. Users with zero orders
+ * are absent from the returned Map.
+ *
+ * Left kind-agnostic by Financial Ledger M6 (Task 6a) because it has no callers
+ * at all: `orderStatsByUserIds.totalOrders` superseded it for the Customers
+ * page, and that field is itself deliberately all-kinds account activity. There
+ * is therefore no sales context here to correct — a filter would be inventing a
+ * semantic for a function nobody calls. If a caller appears, decide then which
+ * of the two questions it is asking. */
 export async function orderCountByUserIds(db: Db, userIds: number[]): Promise<Map<number, number>> {
   const result = new Map<number, number>();
   if (userIds.length === 0) return result;
@@ -659,6 +697,15 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
  * spenders, appended after every real IDR spender in their original
  * createdAt-desc order.
  *
+ * Product orders only (`SPEND_KIND_FILTER`), on all three of its queries at
+ * once — the ranked slice, the `rankedCount` that decides where the ranked side
+ * ends, and the zero-spender `orders: { none: ... }` complement must agree on
+ * what "has spent something" means, or a customer lands on both sides of the
+ * boundary (or neither) and a page silently duplicates or drops rows. A
+ * top-up-only customer is a zero spender here, which is also exactly what
+ * `totalSpentByUserIds` now reports for the same row: this ranking and the
+ * "Total Spent" column it sorts are the same question on one screen.
+ *
  * Bounded, not the "materialize every matched id, then groupBy over all of
  * them, then slice" shape this replaced (which pulled every filtered user id
  * — unbounded on a large customer base — before ranking a single page and
@@ -687,7 +734,7 @@ async function rankUserIdsBySpend(
   if (limit <= 0) return [];
 
   const hasDeliveredIdrOrder: Prisma.UserWhereInput = {
-    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR" } },
+    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR", ...SPEND_KIND_FILTER } },
   };
   const rankedCount = await db.user.count({ where: { ...where, ...hasDeliveredIdrOrder } });
 
@@ -696,7 +743,7 @@ async function rankUserIdsBySpend(
   if (offset < rankedCount) {
     const ranked = await db.order.groupBy({
       by: ["userId"],
-      where: { status: OrderStatus.DELIVERED, currency: "IDR", user: where },
+      where: { status: OrderStatus.DELIVERED, currency: "IDR", ...SPEND_KIND_FILTER, user: where },
       _sum: { totalAmount: true },
       orderBy: { _sum: { totalAmount: "desc" } },
       skip: offset,
@@ -708,7 +755,7 @@ async function rankUserIdsBySpend(
   const remaining = limit - result.length;
   if (remaining > 0) {
     const zeroSpenders = await db.user.findMany({
-      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR" } } },
+      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR", ...SPEND_KIND_FILTER } } },
       select: { id: true },
       orderBy: { createdAt: "desc" },
       skip: Math.max(0, offset - rankedCount),
@@ -755,9 +802,15 @@ export interface CustomersKpis {
 
 /**
  * Customers page KPI row. All figures are non-admin only.
- * `returningCustomers` counts users with >=2 DELIVERED orders — a user with 1
- * DELIVERED + 3 PENDING does not count. `totalRevenue` is all-time (distinct
- * from Orders' "Revenue Today"), DELIVERED-only.
+ * `returningCustomers` counts users with >=2 DELIVERED product orders — a user
+ * with 1 DELIVERED + 3 PENDING does not count, and neither does one with 2
+ * settled wallet top-ups (`SPEND_KIND_FILTER`; a repeat customer is a repeat
+ * BUYER, and this must agree with the per-row "RETURNING" badge, which reads
+ * `orderStatsByUserIds.deliveredOrders`). `totalRevenue` is all-time (distinct
+ * from Orders' "Revenue Today"), DELIVERED product orders only.
+ *
+ * `newToday`/`activeToday` are not order-derived (they read `User.createdAt`/
+ * `lastSeenAt`), so the kind filter does not apply to them.
  */
 export async function customersKpis(db: Db): Promise<CustomersKpis> {
   const todayStart = startOfDayUtc();
@@ -766,8 +819,8 @@ export async function customersKpis(db: Db): Promise<CustomersKpis> {
     db.user.count({ where: nonAdmin }),
     db.user.count({ where: { ...nonAdmin, createdAt: { gte: todayStart } } }),
     db.user.count({ where: { ...nonAdmin, lastSeenAt: { gte: todayStart } } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _count: { _all: true } }),
-    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _sum: { totalAmount: true } }),
+    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, ...SPEND_KIND_FILTER, user: nonAdmin }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, ...SPEND_KIND_FILTER, user: nonAdmin }, _sum: { totalAmount: true } }),
   ]);
 
   const returningCustomers = returningGroups.filter((g) => g._count._all >= 2).length;
@@ -782,9 +835,15 @@ export async function customersKpis(db: Db): Promise<CustomersKpis> {
 }
 
 export interface UserOrderStats {
-  totalOrders: number; // any status
-  lastOrderAt: Date | null; // max createdAt, any status
-  deliveredOrders: number; // DELIVERED only — feeds the per-row "Returning" badge in Task 5
+  /** Any status, ANY KIND — account activity, not purchases. See the function's
+   * doc comment for why this one is not narrowed to PRODUCT. */
+  totalOrders: number;
+  /** Max createdAt, any status, any kind — same account-activity framing. */
+  lastOrderAt: Date | null;
+  /** DELIVERED PRODUCT orders only — feeds the per-row "Returning" badge
+   * (>= 2) in Task 5, the same concept `customersKpis.returningCustomers`
+   * counts page-wide. */
+  deliveredOrders: number;
 }
 
 /**
@@ -792,6 +851,19 @@ export interface UserOrderStats {
  * calls total for the whole page (never one query per user), mirroring
  * `totalSpentByUserIds`'s existing batching discipline. Users with zero
  * orders are absent from the returned Map.
+ *
+ * The three fields answer two DIFFERENT questions and Financial Ledger M6
+ * (Task 6a) split them accordingly rather than filtering the whole function:
+ *
+ *  - `totalOrders`/`lastOrderAt` feed the Customers page's "Orders" and "Last
+ *    Order" columns and the customers CSV export — an admin looking at an
+ *    account's activity. A wallet top-up IS activity on that account (and is
+ *    visible as its own row on the Orders page), so they stay all-kinds.
+ *  - `deliveredOrders` exists only to drive the "RETURNING" badge (>= 2), which
+ *    is the per-row form of `customersKpis.returningCustomers`. That KPI counts
+ *    repeat BUYERS and now excludes top-ups, so this must too — otherwise a
+ *    customer with two top-ups and no purchase would wear a "Returning" badge
+ *    on a page whose own KPI refused to count them.
  */
 export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Map<number, UserOrderStats>> {
   const result = new Map<number, UserOrderStats>();
@@ -800,7 +872,7 @@ export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Ma
   const [counts, lastOrders, delivered] = await Promise.all([
     db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _count: { _all: true } }),
     db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _max: { createdAt: true } }),
-    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, status: OrderStatus.DELIVERED }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, status: OrderStatus.DELIVERED, ...SPEND_KIND_FILTER }, _count: { _all: true } }),
   ]);
   const lastMap = new Map(lastOrders.map((r) => [r.userId, r._max.createdAt]));
   const deliveredMap = new Map(delivered.map((r) => [r.userId, r._count._all]));

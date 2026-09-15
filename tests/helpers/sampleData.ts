@@ -79,6 +79,11 @@ export async function resetDb(prisma: PrismaClient) {
   // cleared before RefundItem/Refund/OrderItem/Order, or a leftover
   // AdminTask row blocks any of those deletes below.
   await prisma.adminTask.deleteMany();
+  // RefundExecution.refund is onDelete:Restrict (Financial Ledger M1 — a
+  // recorded payout is a financial-audit record and must never be erasable by
+  // deleting its Refund) — must be cleared before Refund, or a payout row left
+  // behind by `executeRefund` blocks that delete and every later one with it.
+  await prisma.refundExecution.deleteMany();
   // RefundItem.orderItem and Refund.order are both onDelete:Restrict
   // (Refund domain, Task 8a — same financial-audit-record policy as
   // OrderItem/OrderStatusHistory) — must be cleared before OrderItem/Order,

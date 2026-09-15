@@ -1,30 +1,45 @@
 /**
- * Refund domain — record-keeping + workflow state machine layered on top of
- * this repo's existing wallet-credit refund path (Trustance Master
- * Architecture Task 8b, following Task 8a's schema-only `Refund`/
- * `RefundItem` models).
+ * Refund domain — the workflow state machine (Trustance Master Architecture
+ * Task 8b, following Task 8a's schema-only `Refund`/`RefundItem` models) plus
+ * the general-purpose payout that settles it (`executeRefund`, Financial
+ * Ledger M4).
  *
- * SCOPE: this file builds create/list/transition/per-item-invariant plumbing
- * for the Refund domain, and nothing here independently moves money.
- * Transitioning a Refund to COMPLETED via `transitionRefundStatus` is a pure
- * record-state change — it does NOT call `adjustWallet` or any other payout
- * mechanism. The one payout path this task wires up is the existing,
- * already-tested `refundUnderpaidOrder` (packages/db/src/crud/
- * binance_internal.ts), which already credits the buyer's wallet; that
- * function now ALSO writes a `Refund` row (pre-COMPLETED, no
- * `transitionRefundStatus` call — see its own comment for why) to make that
- * concrete payout show up in Refund history. A general-purpose "approve this
- * arbitrary refund and pay it out" flow is future work, once an admin UI
- * exists to decide amount/method for a refund that didn't arise from one of
- * the specific existing payout paths — building that now would be a
- * significant, un-requested expansion of scope.
+ * SCOPE, and the one distinction to hold on to when reading this file: the
+ * workflow functions move RECORDS, `executeRefund` moves MONEY.
+ * `createRefund`, `createRefundItem` and `transitionRefundStatus` never touch a
+ * balance — reaching COMPLETED through `transitionRefundStatus` is a pure
+ * record-state change, which is why it demands an explicit
+ * `acknowledgeNoPayout` (see its own doc comment). `executeRefund` is the
+ * function that actually pays a buyer back: it credits their wallet or records
+ * a manual transfer out, writes the `RefundExecution` row that IS the payout,
+ * posts the double-entry ledger event for it, and only then walks the Refund to
+ * COMPLETED through that same state machine.
+ *
+ * It is not the only payout path in the codebase. `refundUnderpaidOrder`
+ * (crud/binance_internal.ts) predates it and stays separate and untouched: it
+ * resolves one specific case (a crypto deposit that fell short of an order's
+ * price), credits the wallet itself, and writes its own already-COMPLETED
+ * `Refund` row directly without the state machine — see its comment for why
+ * fabricating PENDING/PROCESSING states for it would be wrong. `executeRefund`
+ * is the general case: any refund an admin decided on, in either payout method,
+ * against any order.
  */
-import { RefundStatus } from "@app/core/enums";
+import {
+  OrderStatus,
+  RefundExecutionMethod,
+  RefundExecutionStatus,
+  RefundStatus,
+} from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { quantizeMoney } from "@app/core/formatters";
+import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
-import type { Prisma, Refund, RefundItem } from "@prisma/client";
+import type { Prisma, Refund, RefundExecution, RefundItem } from "@prisma/client";
 import type { Db } from "./_types";
 import { logAdminAction } from "./audit";
+import { postRefundExecutionPosting } from "./ledgerPostings";
+import { transitionOrderStatus } from "./orderStatus";
+import { adjustWallet } from "./users";
 
 /**
  * Legal Refund.status transitions — mirrors `LEGAL_TRANSITIONS` in
@@ -198,9 +213,15 @@ export async function transitionRefundStatus(
      * explicit, named acknowledgment here (rather than silently allowing
      * COMPLETED) is what stops a future caller from mistaking this for a
      * payout-triggering completion. A refund that should actually pay the
-     * buyer must go through a dedicated payout function instead (today:
-     * refundUnderpaidOrder in binance_internal.ts, which writes its own
-     * COMPLETED Refund row directly and never calls this function). */
+     * buyer must go through a dedicated payout function instead:
+     * `executeRefund` below for the general case, or `refundUnderpaidOrder`
+     * (binance_internal.ts) for the crypto-shortfall case, which writes its own
+     * COMPLETED Refund row directly and never calls this function.
+     *
+     * `executeRefund` DOES call this, with the flag set, and that is correct
+     * rather than a loophole: by the time it does, it has already moved the
+     * money in the same transaction, so the claim the flag makes — "this
+     * transition alone pays nobody" — is still exactly true of the transition. */
     acknowledgeNoPayout?: boolean;
   },
 ): Promise<Refund> {
@@ -391,4 +412,314 @@ export async function createRefundItem(
   });
 
   return refundItem;
+}
+
+/** The two payout methods `executeRefund` knows how to carry out. */
+const REFUND_EXECUTION_METHODS: readonly string[] = [
+  RefundExecutionMethod.WALLET,
+  RefundExecutionMethod.MANUAL_TRANSFER,
+];
+
+/**
+ * How much of an order's value is still refundable: its own `totalAmount` minus
+ * everything already PAID OUT against it.
+ *
+ * "Already paid out" is the sum of COMPLETED `RefundExecution` amounts across
+ * every `Refund` on the order, not a stored `order.refundedAmount` — there is no
+ * such column, and adding one would be a second source of truth for a figure the
+ * execution rows already state exactly. PENDING executions are excluded because
+ * they have not paid anyone yet, and FAILED ones because they never will: a
+ * bounced bank transfer must not permanently burn refund budget, the same
+ * reasoning `createRefundItem` applies to CANCELLED/FAILED refunds.
+ *
+ * This is an ORDER-level ceiling, and it is deliberately separate from — and
+ * additional to — `createRefundItem`'s per-`OrderItem` subtotal invariant. That
+ * one stops any single line being over-refunded; this one stops an order being
+ * refunded for more than the buyer ever paid for it, which nothing else checks:
+ * a `Refund` needs no `RefundItem` rows at all (`refundUnderpaidOrder` writes
+ * none), so the per-item check can be silently absent for a whole refund.
+ *
+ * Known limitation, deliberate for this milestone: `Order.totalAmount` is what
+ * the buyer owed EXTERNALLY and is already net of `Order.walletUsed`, so an
+ * order partly paid with wallet credit has a refundable ceiling below what the
+ * buyer really handed over. That fails CLOSED (it refuses too much, never pays
+ * too much), which is the right direction for a payout guard to err in, and the
+ * wallet-paid portion is released by `releaseOrderHolds` on the paths that undo
+ * such an order rather than by a refund.
+ */
+async function refundableAmountForOrder(
+  db: Db,
+  orderId: number,
+  orderTotal: Decimal,
+): Promise<{ refundable: Decimal; alreadyPaidOut: Decimal }> {
+  const executed = await db.refundExecution.aggregate({
+    where: { status: RefundExecutionStatus.COMPLETED, refund: { orderId } },
+    _sum: { amount: true },
+  });
+  const alreadyPaidOut = quantizeMoney(new Decimal(executed._sum?.amount ?? 0), 4);
+  return { refundable: orderTotal.minus(alreadyPaidOut), alreadyPaidOut };
+}
+
+/**
+ * Pay a refund out, and record that it was paid: the money movement the rest of
+ * this file deliberately does not do (Financial Ledger M4).
+ *
+ * Everything below happens in ONE transaction — the wallet credit, the
+ * `RefundExecution` row, the ledger posting, the Refund's move to COMPLETED and
+ * the order's own status — so a failure anywhere leaves no trace of a payout
+ * that did not fully happen. That is also why there is no "mark this attempt
+ * FAILED" path here: a mid-flight error rolls the attempt away entirely, and a
+ * FAILED `RefundExecution` row means something different and more deliberate —
+ * an admin recording after the fact that a transfer which really was attempted
+ * bounced. Nothing stops such a row being written later; this function just
+ * never writes one itself.
+ *
+ * The caller is responsible for getting the `Refund` to PROCESSING first (via
+ * `transitionRefundStatus`), which is the review step: this function pays a
+ * refund, it does not decide whether to. A Refund in any other status is
+ * rejected, which also makes double-paying one impossible — the first call
+ * leaves it COMPLETED, and a second call finds it there.
+ *
+ * ## The two payout methods
+ *
+ * `WALLET` credits the buyer's balance through `adjustWallet`, with **no
+ * `orderId` on the wallet movement**, and that omission is load-bearing rather
+ * than an oversight. `wallet_transactions` is UNIQUE on `(orderId, reason)` —
+ * "one wallet movement per order per reason" — and every other reason that sets
+ * `orderId` can only fire once per order because a state machine gates it
+ * (`order_payment`, `wallet_topup`, `underpaid_refund`, `unfulfilled_credit`,
+ * `order_refund`). Refunds break that assumption outright: one order can
+ * legitimately be refunded twice (a second dead account found a week later, or a
+ * bounced transfer retried), and with an `orderId` set the SECOND such payout
+ * would die on a unique violation — a real customer, genuinely owed money, not
+ * getting paid. `adjustWallet`'s own doc comment spells out the escape:
+ * "callers with no order (`orderId` null) are unconstrained." Nothing is lost
+ * from the audit trail, because the linkage lives on richer rows anyway: the
+ * `RefundExecution` points at its `Refund`, which points at the `Order`, and
+ * `RefundExecution.reference` records the id of the `WalletTransaction` this
+ * created (unless the caller supplied a reference of their own, which wins —
+ * theirs names something outside this system that a reconciliation cannot
+ * rediscover).
+ *
+ * `MANUAL_TRANSFER` moves no wallet money at all; the admin already sent it out
+ * of band, and `proofFileId` is the evidence. It is required for this method,
+ * stored verbatim as the Telegram `file_id` convention this codebase uses
+ * everywhere else (`Order.paymentProofFileId`), and NEVER logged — payment-proof
+ * file_ids are on CLAUDE.md's "never log secrets" list, so it appears in no
+ * audit line, no ledger description and no pino message. Such an execution is
+ * COMPLETED the moment it is recorded: there is no "payout queued" state in any
+ * UI yet, so a two-phase PENDING→COMPLETED workflow would model a step no admin
+ * can see or act on.
+ *
+ * ## What else moves
+ *
+ * The ledger posting is `postRefundExecutionPosting`'s job (crud/
+ * ledgerPostings.ts owns every account mapping) and is made inside this same
+ * transaction. `Order.status` moves DELIVERED → REFUNDED only when THIS payout
+ * brings the order's total refunded amount up to `Order.totalAmount` exactly:
+ * a partial refund leaves the order DELIVERED, because it still has a delivered,
+ * partly-paid-for sale behind it. An order in any other status is left alone
+ * without an error — a full refund of, say, a `PARTIALLY_DELIVERED` order is a
+ * legitimate payout, and `orderStatus.ts` deliberately gives that status no
+ * outgoing edge to REFUNDED yet; refusing the payout over the status of a row
+ * that is not the money would be the wrong failure.
+ */
+export async function executeRefund(
+  db: Db,
+  args: {
+    refundId: number;
+    /** `RefundExecutionMethod` (@app/core/enums): WALLET | MANUAL_TRANSFER. */
+    method: string;
+    amount: Decimal.Value;
+    /** An identifier for the payout outside this system (a bank transfer
+     *  reference, a support ticket). Left unset on a WALLET payout, the created
+     *  `WalletTransaction`'s id is recorded instead. */
+    reference?: string | null;
+    /** Required for MANUAL_TRANSFER, ignored for WALLET. Never logged. */
+    proofFileId?: string | null;
+    /** The admin performing the payout. A payout is always attributable. */
+    executedBy: number;
+    notes?: string | null;
+  },
+): Promise<RefundExecution> {
+  // Validated before opening a transaction: these three are pure checks on the
+  // arguments, so there is nothing to roll back if one rejects.
+  if (!REFUND_EXECUTION_METHODS.includes(args.method)) {
+    throw new ValidationError("error.refund_execution_method_invalid", { method: args.method });
+  }
+  // Quantized to the same 4 decimal places `adjustWallet` applies to a balance
+  // and `crud/ledger.ts` stores an entry at, so the amount on the
+  // `RefundExecution` row, the amount the buyer's balance moves by and the
+  // amount in the books are one number rather than three roundings of it. Then
+  // re-checked for positivity, because an amount small enough to quantize away
+  // (0.00001) passes `parseRefundAmount` and would otherwise record a payout of
+  // zero as COMPLETED.
+  const amount = quantizeMoney(parseRefundAmount(args.amount), 4);
+  if (!amount.greaterThan(0)) throw new ValidationError("error.refund_amount_invalid");
+  const proofFileId = args.proofFileId?.trim() || null;
+  if (args.method === RefundExecutionMethod.MANUAL_TRANSFER && !proofFileId) {
+    throw new ValidationError("error.refund_execution_proof_required");
+  }
+  const reference = args.reference?.trim() || null;
+
+  const payOut = async (tx: Db) => {
+    const refund = await tx.refund.findUnique({ where: { id: args.refundId } });
+    if (!refund) throw new ValidationError("error.refund_not_found");
+    if (refund.status !== RefundStatus.PROCESSING) {
+      throw new ValidationError("error.refund_not_processing", { status: refund.status });
+    }
+
+    // Hold the ORDER row for the rest of this transaction, before the
+    // refundable-budget sum below reads anything.
+    //
+    // That sum is a read-then-write over rows this function is about to add to,
+    // and unlike the rest of the Refund domain there IS a single row to gate it
+    // on. Without the lock, two admins paying out two different Refunds on the
+    // same order at the same instant both read the same "already paid out"
+    // total, both pass their own budget check, and both commit — refunding more
+    // than the order was ever worth, which is the one thing this check exists to
+    // prevent. (Two payouts on the SAME Refund are already impossible:
+    // `transitionRefundStatus`' atomic claim below lets exactly one of them
+    // reach COMPLETED.) Same lock-then-read shape and reasoning as
+    // `adjustWallet`'s own `SELECT ... FOR UPDATE` on the user row.
+    //
+    // Lock order is order-then-user here, while `refundUnderpaidOrder` takes
+    // user-then-order, so those two could in principle deadlock on one
+    // order+buyer. Postgres detects that and aborts one transaction, which for a
+    // payout is the harmless direction: nothing is paid and nothing is recorded,
+    // versus a buyer paid twice.
+    await tx.$queryRaw`SELECT id FROM orders WHERE id = ${refund.orderId} FOR UPDATE`;
+    const order = await tx.order.findUnique({
+      where: { id: refund.orderId },
+      select: { id: true, orderCode: true, currency: true, totalAmount: true, status: true, userId: true },
+    });
+    // Unreachable in practice — `Refund.order` is a required FK with
+    // onDelete: Restrict — but a payout must never proceed on an order it could
+    // not read, since every figure below comes from that row.
+    if (!order) throw new ValidationError("error.order_not_found");
+    // `createRefund` already pins a Refund to its order's currency, so this can
+    // only differ on a row written directly. Checked anyway because the budget
+    // check below compares this payout against `order.totalAmount`: two
+    // currencies in that comparison is a meaningless number, not a large one.
+    if (refund.currency !== order.currency) {
+      throw new ValidationError("error.refund_currency_mismatch", {
+        refundCurrency: refund.currency,
+        orderCurrency: order.currency,
+      });
+    }
+
+    const orderTotal = quantizeMoney(new Decimal(order.totalAmount), 4);
+    const { refundable, alreadyPaidOut } = await refundableAmountForOrder(tx, order.id, orderTotal);
+    if (amount.greaterThan(refundable)) {
+      throw new ValidationError("error.refund_exceeds_refundable_amount", {
+        refundable: refundable.toString(),
+        currency: refund.currency,
+        alreadyPaidOut: alreadyPaidOut.toString(),
+        attempted: amount.toString(),
+      });
+    }
+
+    // The payout itself, first: everything after this only describes it, and
+    // nothing may claim a payout that has not already succeeded.
+    let walletTransactionId: number | null = null;
+    if (args.method === RefundExecutionMethod.WALLET) {
+      const movement = await adjustWallet(tx, order.userId, amount, {
+        reason: "refund_execution",
+        currency: refund.currency as "IDR" | "USDT",
+        // Deliberately null — see this function's doc comment. With an orderId
+        // here, a second legitimate refund on this order dies on
+        // `wallet_transactions`' UNIQUE (orderId, reason).
+        orderId: null,
+        adminId: args.executedBy,
+        note: `Refund #${refund.id} for order ${order.orderCode}`,
+      });
+      walletTransactionId = movement.transactionId;
+    }
+
+    const executedAt = new Date();
+    const execution = await tx.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: args.method,
+        amount,
+        // Snapshotted from the Refund (itself pinned to the order's currency),
+        // never re-derived on read — same reasoning as Refund.currency's own.
+        currency: refund.currency,
+        // Written COMPLETED in one insert rather than PENDING-then-updated: the
+        // payout above has already happened by this line, and if anything after
+        // it throws, this row goes away with the transaction. A PENDING row
+        // would only be observable in a transaction nobody else can read.
+        status: RefundExecutionStatus.COMPLETED,
+        reference: reference ?? (walletTransactionId !== null ? String(walletTransactionId) : null),
+        proofFileId: args.method === RefundExecutionMethod.MANUAL_TRANSFER ? proofFileId : null,
+        executedBy: args.executedBy,
+        executedAt,
+        notes: args.notes ?? null,
+      },
+    });
+
+    await postRefundExecutionPosting(tx, {
+      refundExecutionId: execution.id,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt: executedAt,
+    });
+
+    await transitionRefundStatus(tx, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: args.executedBy,
+      // True as stated, and not a contradiction of the sentence
+      // `transitionRefundStatus` appends for COMPLETED: the money moved a few
+      // lines above, in this transaction, not in the transition.
+      acknowledgeNoPayout: true,
+      meta: `payout already made: refund execution #${execution.id} paid ${amount.toString()} ${refund.currency} by ${args.method}`,
+    });
+
+    const fullyRefunded = alreadyPaidOut.plus(amount).equals(orderTotal);
+    const closesOrder = fullyRefunded && order.status === OrderStatus.DELIVERED;
+    if (closesOrder) {
+      await transitionOrderStatus(tx, {
+        orderId: order.id,
+        from: OrderStatus.DELIVERED,
+        to: OrderStatus.REFUNDED,
+        meta: `fully refunded by admin_id=${args.executedBy} (refund execution #${execution.id})`,
+      });
+    }
+
+    const paidHow =
+      args.method === RefundExecutionMethod.WALLET
+        ? "as credit on their wallet balance"
+        : "by a manual transfer";
+    await logAdminAction(tx, {
+      adminId: args.executedBy,
+      action: "refund_executed",
+      targetType: "refund_execution",
+      targetId: execution.id,
+      details:
+        `Paid back ${amount.toString()} ${refund.currency} to the buyer of order ${order.orderCode} ${paidHow}, settling refund #${refund.id}.` +
+        (closesOrder ? " The whole order has now been refunded, so it is marked REFUNDED." : ""),
+    });
+
+    return { execution, orderCode: order.orderCode, closesOrder };
+  };
+
+  // A `Tx` has no `$transaction` (Prisma strips it from the interactive
+  // transaction client), so its presence is what distinguishes the bare client
+  // from a caller-owned transaction — same idiom as `adjustWallet`.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  const { execution, orderCode, closesOrder } = ownsTransaction
+    ? await db.$transaction(payOut)
+    : await payOut(db);
+
+  // Logged after the commit, never inside it: a line claiming a buyer was paid
+  // must not survive a transaction that rolled the payment back.
+  logger.info(
+    { refundExecutionId: execution.id, refundId: execution.refundId },
+    `Paid a refund of ${execution.amount.toString()} ${execution.currency} to the buyer of order ${orderCode} by ${execution.method}, recorded as refund execution ${execution.id} by admin ${args.executedBy}.` +
+      (closesOrder ? " That settles the order's whole value, so the order is now REFUNDED." : ""),
+  );
+
+  return execution;
 }

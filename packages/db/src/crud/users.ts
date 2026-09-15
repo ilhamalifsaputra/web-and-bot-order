@@ -478,13 +478,22 @@ export const WALLET_TX_REASONS = [
   "adjust",
   "wallet_topup",
   "unfulfilled_credit",
+  // Written by `executeRefund` (crud/refunds.ts) for a WALLET refund payout.
+  // Deliberately distinct from `underpaid_refund` and `unfulfilled_credit`,
+  // which are the two narrow, order-specific credit paths that predate the
+  // general-purpose refund payout — an admin filtering the wallet ledger for
+  // "money we handed back through the refund workflow" must not have to pick
+  // those apart from it. It is also the one order-adjacent reason that
+  // deliberately stores NO orderId, because the same order can legitimately be
+  // refunded more than once; see `executeRefund` for why.
+  "refund_execution",
 ] as const;
 
 export interface WalletTransactionFilter {
   userId?: number | null;
   /** Machine reason code as stored: admin_adjust | underpaid_refund |
    *  referral | order_payment | order_refund | adjust | wallet_topup |
-   *  unfulfilled_credit. */
+   *  unfulfilled_credit | refund_execution. */
   reason?: string | null;
   currency?: string | null;
   /** createdAt >= from */

@@ -946,8 +946,8 @@ export const zFinancialTransactionType = z.nativeEnum(FinancialTransactionType);
  * This is deliberately separate from `Refund.status`: a Refund reaching
  * COMPLETED is record-keeping only and triggers no payout (see
  * Refund.status's own doc comment in prisma/schema.prisma), whereas a
- * RefundExecution row IS the payout attempt. Nothing writes these rows yet —
- * the refund-payout wiring is a later milestone.
+ * RefundExecution row IS the payout attempt. `executeRefund`
+ * (packages/db/src/crud/refunds.ts) is what carries one out and writes the row.
  */
 export const RefundExecutionMethod = {
   WALLET: "WALLET",

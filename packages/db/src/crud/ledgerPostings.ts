@@ -7,7 +7,7 @@
  * append-only) and is the ledger's only writer. This file owns WHAT to write:
  * for an order payment, a wallet top-up (settled in full, or credited short when
  * the money arrived short), a manual adjustment, a referral commission and the
- * three ways money flows back toward a customer, it turns the event into a list
+ * four ways money flows back toward a customer, it turns the event into a list
  * of debit/credit legs and hands them to `postFinancialTransaction`. Nothing here
  * writes a ledger row itself.
  *
@@ -53,7 +53,12 @@
  * first needs one should own it). Every posting below is an independent
  * `FinancialTransaction` with its own entries, not a mirror of another one.
  */
-import { FinancialTransactionType, LedgerDirection, OrderCurrency } from "@app/core/enums";
+import {
+  FinancialTransactionType,
+  LedgerDirection,
+  OrderCurrency,
+  RefundExecutionMethod,
+} from "@app/core/enums";
 import { AppError } from "@app/core/errors";
 import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
@@ -126,6 +131,17 @@ const suffix = (currency: string): string => currency.toLowerCase();
  */
 const orderPaymentKey = (orderId: number): string => `order:${orderId}:payment`;
 const walletKey = (walletTransactionId: number): string => `wallet:${walletTransactionId}`;
+/**
+ * A refund payout's key is the EXECUTION's id, not the order's and not the
+ * wallet movement's. One order can be refunded several times over its life (a
+ * second bad unit found later, a bounced transfer retried), so an order-keyed
+ * posting would swallow every refund after the first as a replay of it; and a
+ * `MANUAL_TRANSFER` payout has no wallet movement to key off at all. The
+ * `RefundExecution` row is the one thing that exists exactly once per payout
+ * attempt, in both methods.
+ */
+const refundExecutionKey = (refundExecutionId: number): string =>
+  `refund_execution:${refundExecutionId}`;
 
 /** The subset of an order every posting here needs. Deliberately structural. */
 export interface PostableOrder {
@@ -151,9 +167,9 @@ function pair(
 /**
  * Has an `ORDER_PAYMENT` already been posted for this order?
  *
- * This one lookup is what makes the three "money flows back toward the
- * customer" postings below correct, and it replaces guessing the answer from
- * which code path is running. The same wallet credit means two different things
+ * This one lookup is what makes the "money flows back toward the customer"
+ * postings below correct, and it replaces guessing the answer from which code
+ * path is running. The same credit back to a buyer means two different things
  * depending on it:
  *
  * - **A posting exists** → revenue was already recognised for this order at
@@ -639,6 +655,127 @@ export async function postOrderWalletCreditPosting(
       entries: pair(source, wallet, movement.amount, movement.currency),
     },
     `credit given to the buyer for order ${args.orderCode}`,
+  );
+}
+
+/**
+ * One refund PAYOUT attempt landing (`executeRefund`, crud/refunds.ts): an
+ * admin decided a buyer is owed money back, and this is the moment that money
+ * actually left the shop — into the buyer's wallet balance (`WALLET`) or out of
+ * the shop's own settled funds by hand (`MANUAL_TRANSFER`).
+ *
+ * Deliberately NOT `postOrderWalletCreditPosting`, whose two callers share the
+ * arithmetic but not the story. Those are "money the buyer sent that we could
+ * not turn into a delivered order, handed back as credit" — a payment the shop
+ * never earned, returned before (or instead of) a sale. This is an admin
+ * deciding to give back money on a refund the shop DID earn, for whatever
+ * reason the `Refund` row records, and it can happen more than once on one
+ * order. Same accounting shape, different event, different description, and
+ * separate so a report reading `FinancialTransaction.description` never has to
+ * claim a refunded delivered order was an undeliverable one.
+ *
+ * Amount, currency and method all come from the `RefundExecution` row rather
+ * than from the caller's arguments — this file's convention #1 applied to a
+ * payout that may have no `WalletTransaction` at all. That row is what an admin
+ * reads as "what we actually paid this buyer", so it is what the books must
+ * agree with.
+ *
+ * Which account the money comes OUT of follows exactly the same rule as
+ * `postOrderWalletCreditPosting` (see `hasPostedOrderPayment`), because the
+ * question is the same one:
+ *
+ * - **An `ORDER_PAYMENT` exists** → `Dr sales_revenue.<ccy>`. Revenue was
+ *   recognised when the order settled, and refunding part of it reverses that
+ *   much revenue. This is the ordinary case: a refund normally follows a real,
+ *   delivered sale.
+ * - **No `ORDER_PAYMENT` exists** → `Dr provider_clearing.<ccy>`. The order
+ *   never settled, so no revenue was ever recognised and there is nothing to
+ *   reverse; the cash a gateway collected is being recognised for the first
+ *   time, on its way back out. Debiting `sales_revenue` here would book
+ *   negative revenue that was never earned.
+ *
+ * Which account it goes INTO is what the method decides, and the difference is
+ * economically real:
+ *
+ * - **`WALLET`** → `Cr wallet_liability.<ccy>`. The money has not left the shop
+ *   at all; it has become credit the shop owes the buyer, spendable on the next
+ *   order.
+ * - **`MANUAL_TRANSFER`** → `Cr cash.<ccy>`. The money genuinely left the
+ *   shop's own settled funds (`cash.*` is "money actually settled into our own
+ *   account" — see `CHART_OF_ACCOUNTS`). Crediting `wallet_liability` for a
+ *   bank transfer would invent an obligation that was just discharged and leave
+ *   the shop's cash overstated by every manual refund ever paid.
+ *
+ * A method this function does not recognise is logged and skipped rather than
+ * guessed at: there is no third account it could plausibly credit, and guessing
+ * would misstate the books more quietly than a missing posting does.
+ */
+export async function postRefundExecutionPosting(
+  db: Db,
+  args: { refundExecutionId: number; orderId: number; orderCode: string; occurredAt: Date },
+): Promise<FinancialTransaction | null> {
+  const context = `the refund paid out for order ${args.orderCode}`;
+
+  const execution = await db.refundExecution.findUnique({
+    where: { id: args.refundExecutionId },
+    select: { amount: true, currency: true, method: true },
+  });
+  if (!execution) {
+    // Only reachable if a caller passed an id from a transaction that has since
+    // rolled back, or a hand-written one. The payout this was meant to describe
+    // does not exist, so there is no financial event to record either.
+    logger.error(
+      `Posted nothing to the ledger for ${context} because refund execution ${args.refundExecutionId} could not be found — if that payout really happened, the books do not reflect it and it needs a manual entry.`,
+    );
+    return null;
+  }
+
+  const amount = q4(new Decimal(execution.amount));
+  if (!amount.greaterThan(0)) {
+    logger.warn(
+      `Recorded no ledger posting for ${context} because the recorded payout amount is zero or negative, so no money moved. A refund execution with no value should not be creatable, so whichever path wrote it is worth investigating.`,
+    );
+    return null;
+  }
+
+  const paidInto =
+    execution.method === RefundExecutionMethod.WALLET
+      ? `wallet_liability.${suffix(execution.currency)}`
+      : execution.method === RefundExecutionMethod.MANUAL_TRANSFER
+        ? `cash.${suffix(execution.currency)}`
+        : null;
+  if (paidInto === null) {
+    logger.error(
+      { method: execution.method },
+      `Recorded no ledger posting for ${context} because its payout method is not one this shop knows how to book. The buyer may well have been paid, so this refund is missing from the books and needs a manual entry, and whichever path wrote an unknown method is the real bug.`,
+    );
+    return null;
+  }
+  const destination =
+    execution.method === RefundExecutionMethod.WALLET
+      ? "into the buyer's wallet balance"
+      : "by a transfer out of the shop's own funds";
+
+  const revenueWasRecognised = await hasPostedOrderPayment(db, args.orderId);
+  const paidFrom = revenueWasRecognised
+    ? `sales_revenue.${suffix(execution.currency)}`
+    : `provider_clearing.${suffix(execution.currency)}`;
+  const explanation = revenueWasRecognised
+    ? "reversing that much of the revenue recognised for it"
+    : "recognising the payment that arrived for it, which was never recognised as revenue";
+
+  return postOrSkipMissingAccount(
+    db,
+    {
+      type: FinancialTransactionType.REFUND,
+      referenceType: "refund_execution",
+      referenceId: args.refundExecutionId,
+      idempotencyKey: refundExecutionKey(args.refundExecutionId),
+      description: `Refunded ${amount.toString()} ${execution.currency} to the buyer of order ${args.orderCode} ${destination}, ${explanation}.`,
+      occurredAt: args.occurredAt,
+      entries: pair(paidFrom, paidInto, amount, execution.currency),
+    },
+    context,
   );
 }
 

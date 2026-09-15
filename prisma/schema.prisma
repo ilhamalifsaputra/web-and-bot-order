@@ -2117,8 +2117,12 @@ model LedgerEntry {
 /// reopen or invalidate its parent Refund, so an admin can record a second
 /// attempt as a new row while the first stays readable as history.
 ///
-/// NOTHING writes these rows in this milestone — the refund-payout wiring is a
-/// later one.
+/// Written by `executeRefund` (packages/db/src/crud/refunds.ts), which is the
+/// only thing that creates a COMPLETED row: it pays the buyer (a wallet credit,
+/// or an out-of-band transfer evidenced by `proofFileId`), records the payout
+/// here, and posts the matching double-entry ledger event, all in one
+/// transaction. A FAILED row is the other case and is written by hand after the
+/// fact, when a transfer that really was attempted bounced.
 model RefundExecution {
   id          Int       @id @default(autoincrement())
   refundId    Int       @map("refund_id")

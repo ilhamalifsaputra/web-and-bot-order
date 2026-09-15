@@ -7,7 +7,7 @@
  * that writes its own Refund row and never touches the state machine.
  *
  * So these tests are the only thing standing between a buyer who is owed money
- * and a payout that silently does not happen. Four properties get asserted
+ * and a payout that silently does not happen. Five properties get asserted
  * everywhere, because each fails silently:
  *
  * 1. **The money really moved.** A `RefundExecution` row marked COMPLETED next
@@ -30,9 +30,14 @@
  * 4. **`Order.status` only moves on a FULL refund.** Flipping a
  *    partially-refunded order to REFUNDED would terminate an order that still
  *    has live obligations against it.
+ * 5. **The refundable ceiling holds under a real race.** The budget check is a
+ *    read-then-write, so it is only as good as the order-row lock taken before
+ *    it; section 9 races two payouts on one order from two separate
+ *    PrismaClients to prove that lock, because nothing that runs one `await` at
+ *    a time can.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
-import type { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import {
   FinancialTransactionType,
@@ -681,7 +686,12 @@ describe("executeRefund — preconditions", () => {
     expect(await prisma.refundExecution.count()).toBe(0);
   });
 
-  it.each([["0"], ["-2.00"], ["not-a-number"]])(
+  // "0.00001" is not redundant with "0": `parseRefundAmount` accepts it (it is
+  // finite and greater than zero), and only the re-check AFTER
+  // `quantizeMoney(…, 4)` catches it. Without that second check this amount
+  // would record a COMPLETED payout of 0.0000 — a written claim that a buyer
+  // was paid, next to a wallet balance that never moved.
+  it.each([["0"], ["-2.00"], ["not-a-number"], ["0.00001"]])(
     "rejects the invalid amount %s as a clean ValidationError",
     async (amount) => {
       const order = await makeDeliveredOrder();
@@ -741,4 +751,154 @@ describe("wallet reason vocabulary", () => {
   it("lists refund_execution, so the admin wallet ledger can filter these payouts", () => {
     expect(WALLET_TX_REASONS).toContain("refund_execution");
   });
+});
+
+// ── 9. True Postgres concurrency: the order-row lock ───────────────────────
+//
+// Section 4's budget tests call `executeRefund` one `await` at a time, so they
+// prove the arithmetic of the refundable ceiling but say nothing about the
+// `SELECT id FROM orders WHERE id = … FOR UPDATE` that guards it
+// (`refunds.ts`): delete that line and every test above still passes. The
+// budget check is a read-then-write — sum what has already been paid out, then
+// add to it — so two admins approving two different Refunds on ONE order at the
+// same instant would otherwise both read the same "already paid out" total,
+// both pass their own check, and both commit, refunding more than the order was
+// ever worth.
+//
+// `Promise.allSettled` against the real dev Postgres is the idiom
+// checkout_intent_concurrency.test.ts and stock_concurrency.test.ts use, and it
+// is kept here — but it is NOT enough on its own, which is worth stating
+// because it is not obvious: two interactive transactions opened from ONE
+// PrismaClient do not overlap in this setup. Measured while building this test,
+// the second transaction's BEGIN did not run until ~2.0s after the first one
+// COMMITted, so the "loser" only ever read the budget after the winner had
+// already finished — which is why an earlier version of this test still passed
+// with the `FOR UPDATE` line commented out. (That also explains the P2028
+// "unable to start a transaction in the given time" flake
+// checkout_intent_concurrency.test.ts documents on Prisma's 2s default
+// maxWait: the second transaction really was waiting that long to start.)
+//
+// So the two racers get a PrismaClient each, pointed at this test's own schema.
+// Separate clients mean separate connection pools, and two transactions that are
+// genuinely open at the same instant: verified by measurement (both read before
+// either committed) and by mutation (commenting out the `FOR UPDATE` line makes
+// this test fail with two payouts, as it must).
+describe("executeRefund under true Postgres concurrency — the order-row lock", () => {
+  /**
+   * A second PrismaClient on the same schema as `prisma`, so its transactions
+   * really can interleave with the first client's. `current_schema()` is read
+   * back from the live connection rather than recomputed, because the schema
+   * name is `makeTestDb`'s private random per-file value.
+   */
+  async function connectRivalClient(): Promise<PrismaClient> {
+    const baseUrl = process.env.DATABASE_URL_PRISMA;
+    if (!baseUrl) throw new Error("DATABASE_URL_PRISMA must be set to a Postgres connection string for tests.");
+    const rows = await prisma.$queryRaw<Array<{ schema: string }>>`SELECT current_schema() AS schema`;
+    const url = new URL(baseUrl);
+    url.searchParams.set("schema", rows[0]!.schema);
+    const rival = new PrismaClient({ datasourceUrl: url.toString() });
+    // Connect before the race: otherwise the first thing the rival's
+    // transaction waits for is a TCP handshake, not the row lock under test.
+    await prisma.$queryRaw`SELECT 1`;
+    await rival.$queryRaw`SELECT 1`;
+    return rival;
+  }
+
+  it("two admins pay out two PROCESSING refunds on one order at the same instant: exactly one payout lands", async () => {
+    const order = await makeDeliveredOrder();
+    const total = new Decimal(order.totalAmount);
+    // Each attempt is legitimate on its own (it fits inside the untouched
+    // refundable total) but the two together exceed it, so exactly one of them
+    // must lose. Asserted rather than assumed: if the sample order's total ever
+    // changed such that both payouts fit, this test would still pass while
+    // proving nothing.
+    const payout = total.minus(1);
+    expect(
+      payout.times(2).greaterThan(total),
+      "both payouts together must exceed the order's refundable total, or there is no race to lose",
+    ).toBe(true);
+
+    const firstRefund = await makeProcessingRefund(order.id, payout.toString());
+    const secondRefund = await makeProcessingRefund(order.id, payout.toString());
+    const rival = await connectRivalClient();
+
+    try {
+      // maxWait/timeout are raised well above Prisma's 2s/5s defaults ON
+      // PURPOSE, the same way checkout_intent_concurrency.test.ts raises them on
+      // its wallet-credit double-tap: the loser blocks on the winner's row lock
+      // for as long as the winner's whole transaction takes (wallet credit,
+      // execution row, ledger posting, two status transitions, audit line), and
+      // that wait counts against the loser's own transaction budget. On the
+      // defaults, a loaded parallel run can make the loser give up with a
+      // timeout BEFORE it ever reaches the budget check — still safe (nothing is
+      // paid either way) but a different code path, which is exactly the kind of
+      // flake that makes a money-critical test worthless.
+      const payOut = (client: PrismaClient, refundId: number) =>
+        client.$transaction(
+          (tx) =>
+            executeRefund(tx, {
+              refundId,
+              method: RefundExecutionMethod.WALLET,
+              amount: payout.toString(),
+              executedBy: ADMIN_ID,
+            }),
+          { maxWait: 30_000, timeout: 60_000 },
+        );
+
+      const results = await Promise.allSettled([
+        payOut(prisma, firstRefund.id),
+        payOut(rival, secondRefund.id),
+      ]);
+
+      const fulfilled = results.filter(
+        (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof executeRefund>>> => r.status === "fulfilled",
+      );
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      // The loser must be refused by the budget check itself, with the clean
+      // ValidationError an admin UI can render — not by a raw Postgres lock
+      // timeout or deadlock leaking out as an unhandled 500.
+      expect(rejected[0]!.reason).toBeInstanceOf(ValidationError);
+      expect((rejected[0]!.reason as ValidationError).key).toBe("error.refund_exceeds_refundable_amount");
+
+      // Exactly one payout, and it is a real one — not a "both attempts failed"
+      // false pass.
+      const winner = fulfilled[0]!.value;
+      expect(winner.status).toBe(RefundExecutionStatus.COMPLETED);
+      expect(await prisma.refundExecution.count()).toBe(1);
+      expect(await prisma.refundExecution.count({ where: { status: RefundExecutionStatus.COMPLETED } })).toBe(1);
+
+      // The buyer was credited once, for exactly one payout — not twice, and
+      // not some half-applied amount.
+      expect(await idrBalance(sample.user.id)).toBe(payout.toString());
+      expect(await prisma.walletTransaction.count({ where: { reason: "refund_execution" } })).toBe(1);
+
+      // The books agree: one refund posting, with no orphan left behind by the
+      // loser's rolled-back attempt.
+      expect(await prisma.financialTransaction.count({ where: { referenceType: "refund_execution" } })).toBe(1);
+
+      // The loser's Refund is untouched and still payable — its money was never
+      // sent, so an admin can still act on it (lower the amount, or cancel it).
+      const loserRefundId = winner.refundId === firstRefund.id ? secondRefund.id : firstRefund.id;
+      const loser = await prisma.refund.findUniqueOrThrow({ where: { id: loserRefundId } });
+      expect(loser.status).toBe(RefundStatus.PROCESSING);
+      expect(loser.processedAt).toBeNull();
+      const won = await prisma.refund.findUniqueOrThrow({ where: { id: winner.refundId } });
+      expect(won.status).toBe(RefundStatus.COMPLETED);
+
+      // A partial refund leaves the order where it was.
+      expect((await getOrder(prisma, order.id))!.status).toBe(OrderStatus.DELIVERED);
+    } finally {
+      await rival.$disconnect();
+    }
+    // An explicit budget rather than the config's shared 20s testTimeout: this
+    // test costs ~5.3s on an idle machine, and only ~0.2s of that is the race
+    // itself — ~2.1s is the second PrismaClient spinning up its own query engine
+    // and pool, the rest is the DELIVERED-order fixture. That makes it the
+    // slowest test in the suite, i.e. the first one a loaded parallel run would
+    // push past 20s, and a money-critical lock test must fail because the lock
+    // failed, never because the machine was busy.
+  }, 40_000);
 });

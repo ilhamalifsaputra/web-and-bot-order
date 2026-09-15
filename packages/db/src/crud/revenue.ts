@@ -695,6 +695,24 @@ export type PeriodGranularity = "week" | "month" | "year";
  * - `year: 5` — enough to read a multi-year trend without an axis of mostly
  *   pre-launch years. A shop younger than that shows real zeros for the years
  *   before it existed (zero-filled, never interpolated).
+ *
+ * A `year: 5` window is a genuinely unbounded row fetch, not just a wide one:
+ * `revenueByPeriod`/`ordersByPeriod`/`profitByPeriod` each issue ONE
+ * `findMany` (per this file's own no-per-bucket-query discipline) covering
+ * the whole window, so a 5-year-old shop's "year" view pulls every matching
+ * `Order`/`OrderItem` row from that whole span into Node memory in one
+ * request — `profitByPeriod` is the most expensive of the three, since its
+ * rows carry a joined `product.costPrice` select. This is markedly wider
+ * than anything else in this file (`revenueByDay`'s widest production window
+ * is 30 days; `profitSummarySince`'s only production caller passes a 1-day
+ * window), and `useAnalytics.ts`'s `refetchInterval: 30_000` re-issues it
+ * every 30 seconds for as long as an admin leaves the Year view open. Not a
+ * correctness bug — there is no `take`, so no silent truncation — but a
+ * real scaling ceiling, accepted here rather than fixed, because fixing it
+ * (a raw `date_trunc`-based `GROUP BY`, which `revenue.sql-crosscheck.test.ts`
+ * already establishes a precedent for) is more machinery than a first cut of
+ * a chart feature needs. Revisit if `year: 5` history or per-admin
+ * dashboard-tab dwell time grows enough for this to matter in practice.
  */
 const DEFAULT_PERIOD_COUNT: Record<PeriodGranularity, number> = { week: 12, month: 12, year: 5 };
 

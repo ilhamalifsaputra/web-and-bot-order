@@ -2,6 +2,7 @@ import "./setup-env";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
+import { DateTime } from "@app/core/datetime";
 import {
   prisma,
   initDb,
@@ -558,5 +559,96 @@ describe("GET /api/dashboard/analytics", () => {
   it("accepts range=30d", async () => {
     const res = await get("/api/dashboard/analytics?range=30d", cookie);
     expect(res.json()).toHaveLength(30);
+  });
+
+  // Financial Ledger M6, Task 6c — the calendar-rollup ranges and the Profit
+  // metric. The bucket labels are recomputed here from the same luxon call the
+  // crud layer makes, so these assertions don't expire with the calendar.
+  describe("calendar ranges and the profit metric (Task 6c)", () => {
+    /** A delivered sale whose denomination has a known costPrice, so the profit
+     *  series has something real to report: revenue 10000 - cost 6000 = 4000. */
+    async function makeSaleWithMargin() {
+      const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      const category = await createCategory(prisma, "Cat");
+      const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+      const denom = await createDenomination(prisma, {
+        productId: parent.id, name: "Item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "6000",
+      });
+      const order = await prisma.order.create({
+        data: { orderCode: "ORD-margin", userId: buyer.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 },
+      });
+    }
+
+    it("returns 12 monthly revenue buckets when range=month, labelled by calendar month", async () => {
+      const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() } });
+
+      const body = (await get("/api/dashboard/analytics?range=month", cookie)).json();
+      expect(body).toHaveLength(12);
+      expect(body[11].day).toBe(DateTime.utc().toFormat("yyyy-LL"));
+      expect(body[11].value).toBe("5000");
+    });
+
+    it("returns 12 weekly order-count buckets when range=week&metric=orders, labelled by ISO week", async () => {
+      const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() } });
+
+      const body = (await get("/api/dashboard/analytics?range=week&metric=orders", cookie)).json();
+      expect(body).toHaveLength(12);
+      expect(body[11].day).toBe(DateTime.utc().toFormat("kkkk-'W'WW"));
+      expect(body[11].value).toBe(1);
+    });
+
+    it("returns 5 yearly revenue buckets when range=year", async () => {
+      const body = (await get("/api/dashboard/analytics?range=year", cookie)).json();
+      expect(body).toHaveLength(5);
+      expect(body[4].day).toBe(DateTime.utc().toFormat("yyyy"));
+    });
+
+    it("blends currencies for a calendar range when currency=combined", async () => {
+      const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+
+      const body = (await get("/api/dashboard/analytics?range=month&currency=combined", cookie)).json();
+      expect(body[11].value).toBe("48000");
+    });
+
+    it("returns a daily profit series when metric=profit, with null for days that have no cost-known sale", async () => {
+      await makeSaleWithMargin();
+
+      const body = (await get("/api/dashboard/analytics?metric=profit", cookie)).json();
+      expect(body).toHaveLength(7);
+      expect(body[6].value).toBe("4000");
+      // A day with nothing delivered is an absence, not a break-even day.
+      expect(body[0].value).toBeNull();
+    });
+
+    it("returns a yearly profit series when range=year&metric=profit", async () => {
+      await makeSaleWithMargin();
+
+      const body = (await get("/api/dashboard/analytics?range=year&metric=profit", cookie)).json();
+      expect(body).toHaveLength(5);
+      expect(body[4].value).toBe("4000");
+    });
+
+    it("reports the USDT profit series when metric=profit&currency=usdt", async () => {
+      await makeSaleWithMargin();
+
+      const body = (await get("/api/dashboard/analytics?metric=profit&currency=usdt", cookie)).json();
+      // The only sale settled in IDR, so the USDT series has nothing to report.
+      expect(body[6].value).toBeNull();
+    });
+
+    it("falls back to the IDR profit series when metric=profit&currency=combined — there is no combined-profit figure to fabricate", async () => {
+      await makeSaleWithMargin();
+
+      const combined = (await get("/api/dashboard/analytics?metric=profit&currency=combined", cookie)).json();
+      const idr = (await get("/api/dashboard/analytics?metric=profit&currency=idr", cookie)).json();
+      expect(combined).toEqual(idr);
+      expect(combined[6].value).toBe("4000");
+    });
   });
 });

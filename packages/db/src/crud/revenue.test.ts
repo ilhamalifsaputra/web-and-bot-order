@@ -7,6 +7,7 @@ import {
   RefundExecutionStatus,
   RefundStatus,
 } from "@app/core/enums";
+import { DateTime } from "@app/core/datetime";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { seedChartOfAccounts } from "./ledgerAccounts";
@@ -23,6 +24,10 @@ import {
   refundTotalsSince,
   refundsByDay,
   grossSalesForNetSales,
+  revenueByPeriod,
+  ordersByPeriod,
+  profitByPeriod,
+  profitByDay,
 } from "./revenue";
 
 let db: TestDb;
@@ -873,6 +878,381 @@ describe("refund totals from RefundExecution", () => {
         new Date(now.getTime() - 60_000),
       );
       expect(gross.idr.toString()).toBe("0");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Financial Ledger M6, Task 6c — week/month/year-bucketed Sales/Orders/Profit,
+// plus a Day-granularity profit series.
+//
+// Every bucket boundary below is asserted against a label recomputed from the
+// same luxon call the implementation makes, relative to the real "now", rather
+// than a hard-coded calendar date: a fixed date would silently fall out of the
+// default window and stop testing anything a few months after it was written.
+// ---------------------------------------------------------------------------
+describe("period-bucketed analytics (Task 6c)", () => {
+  const WEEK = "kkkk-'W'WW";
+  const MONTH = "yyyy-LL";
+  const YEAR = "yyyy";
+
+  /** A delivered order with no items — enough for the revenue/order-count
+   *  functions, which read `Order.totalAmount` and never touch OrderItem. */
+  function makeSale(
+    deliveredAt: Date,
+    opts: { amount?: string; currency?: "IDR" | "USDT"; kind?: OrderKind } = {},
+  ) {
+    const amount = opts.amount ?? "54000";
+    const currency = opts.currency ?? "IDR";
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-period-${Math.random()}`,
+        userId,
+        kind: opts.kind ?? OrderKind.PRODUCT,
+        subtotalAmount: amount,
+        totalAmount: amount,
+        currency,
+        ...(currency === "USDT" ? { fxRate: "16000" } : {}),
+        status: OrderStatus.DELIVERED,
+        deliveredAt,
+      },
+    });
+  }
+
+  /** A delivered order carrying one OrderItem line — what the profit functions
+   *  actually read. `costPrice: null` reproduces the cost-unknown denomination
+   *  `profitSummarySince` excludes from BOTH its revenue and its cost sum.
+   *  `subtotalAmount`/`totalAmount` are passed explicitly (never derived by
+   *  float arithmetic in the fixture) so each case's money is readable inline. */
+  async function makeSaleWithItem(
+    deliveredAt: Date,
+    opts: {
+      unitPrice: string;
+      costPrice: string | null;
+      subtotalAmount: string;
+      totalAmount: string;
+      quantity?: number;
+      currency?: "IDR" | "USDT";
+      bulkDiscountAmount?: string;
+      discountAmount?: string;
+    },
+  ) {
+    const denomination = await createDenomination(prisma, {
+      productId: parentProductId,
+      name: `Denom-${Math.random()}`,
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: opts.unitPrice,
+      costPrice: opts.costPrice,
+    });
+    const currency = opts.currency ?? "IDR";
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-pitem-${Math.random()}`,
+        userId,
+        kind: OrderKind.PRODUCT,
+        subtotalAmount: opts.subtotalAmount,
+        totalAmount: opts.totalAmount,
+        bulkDiscountAmount: opts.bulkDiscountAmount ?? "0",
+        discountAmount: opts.discountAmount ?? "0",
+        currency,
+        ...(currency === "USDT" ? { fxRate: "16000" } : {}),
+        status: OrderStatus.DELIVERED,
+        deliveredAt,
+      },
+    });
+    await prisma.orderItem.create({
+      data: {
+        orderId: order.id,
+        productId: denomination.id,
+        quantity: opts.quantity ?? 1,
+        unitPrice: opts.unitPrice,
+        warrantyDaysSnapshot: 30,
+      },
+    });
+    return order;
+  }
+
+  describe("revenueByPeriod", () => {
+    it("splits two sales one second apart across the Monday-00:00-UTC ISO week boundary into adjacent buckets", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      await makeSale(thisWeek.toJSDate(), { amount: "54000" });
+      await makeSale(thisWeek.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
+
+      const rows = await revenueByPeriod(prisma, "week", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisWeek.minus({ weeks: 1 }).toFormat(WEEK),
+        thisWeek.toFormat(WEEK),
+      ]);
+      expect(rows[0]!.revenue_idr).toBe("10000");
+      expect(rows[0]!.orders).toBe(1);
+      expect(rows[1]!.revenue_idr).toBe("54000");
+      expect(rows[1]!.orders).toBe(1);
+    });
+
+    it("splits two sales one second apart across a calendar-month boundary into adjacent buckets", async () => {
+      const thisMonth = DateTime.utc().startOf("month");
+      await makeSale(thisMonth.toJSDate(), { amount: "54000" });
+      await makeSale(thisMonth.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
+
+      const rows = await revenueByPeriod(prisma, "month", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisMonth.minus({ months: 1 }).toFormat(MONTH),
+        thisMonth.toFormat(MONTH),
+      ]);
+      expect(rows[0]!.revenue_idr).toBe("10000");
+      expect(rows[1]!.revenue_idr).toBe("54000");
+    });
+
+    it("splits two sales one second apart across a calendar-year boundary into adjacent buckets", async () => {
+      const thisYear = DateTime.utc().startOf("year");
+      await makeSale(thisYear.toJSDate(), { amount: "54000" });
+      await makeSale(thisYear.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
+
+      const rows = await revenueByPeriod(prisma, "year", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisYear.minus({ years: 1 }).toFormat(YEAR),
+        thisYear.toFormat(YEAR),
+      ]);
+      expect(rows[0]!.revenue_idr).toBe("10000");
+      expect(rows[1]!.revenue_idr).toBe("54000");
+    });
+
+    it("fills periods with no activity with a real zero in both currencies and a zero order count", async () => {
+      const rows = await revenueByPeriod(prisma, "week", 4);
+      expect(rows).toHaveLength(4);
+      for (const r of rows) {
+        expect(r.revenue_idr).toBe("0");
+        expect(r.revenue_usdt).toBe("0");
+        expect(r.revenueIdrEquiv).toBe("0");
+        expect(r.orders).toBe(0);
+      }
+    });
+
+    it("keeps a USDT sale's total out of the IDR figure while blending it into the IDR-equivalent via that order's own fxRate", async () => {
+      const now = DateTime.utc().startOf("week").toJSDate();
+      await makeSale(now, { amount: "54000" });
+      await makeSale(now, { amount: "3.43", currency: "USDT" });
+
+      const rows = await revenueByPeriod(prisma, "week", 1);
+      expect(rows).toHaveLength(1);
+      // 3.43 USDT must never be added to the Rupiah figure (the "Rp3" bug), but
+      // the opt-in combined figure is 54000 + 3.43 x 16000 = 108880.
+      expect(rows[0]!.revenue_idr).toBe("54000");
+      expect(rows[0]!.revenue_usdt).toBe("3.43");
+      expect(rows[0]!.revenueIdrEquiv).toBe("108880");
+      expect(rows[0]!.orders).toBe(2);
+    });
+
+    it("excludes a settled wallet top-up from every figure it reports (kind: PRODUCT)", async () => {
+      const now = DateTime.utc().startOf("week").toJSDate();
+      await makeSale(now, { amount: "54000" });
+      await makeSale(now, { amount: "100000", kind: OrderKind.WALLET_TOPUP });
+      await makeSale(now, { amount: "7", currency: "USDT", kind: OrderKind.WALLET_TOPUP });
+
+      const rows = await revenueByPeriod(prisma, "week", 1);
+      expect(rows[0]).toMatchObject({
+        revenue_idr: "54000",
+        revenue_usdt: "0",
+        revenueIdrEquiv: "54000",
+        orders: 1,
+      });
+    });
+
+    it("defaults to 12 weekly, 12 monthly, and 5 yearly buckets", async () => {
+      expect(await revenueByPeriod(prisma, "week")).toHaveLength(12);
+      expect(await revenueByPeriod(prisma, "month")).toHaveLength(12);
+      expect(await revenueByPeriod(prisma, "year")).toHaveLength(5);
+    });
+  });
+
+  describe("ordersByPeriod", () => {
+    it("splits counts across the ISO week boundary and keeps currencies apart", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      await makeSale(thisWeek.toJSDate());
+      await makeSale(thisWeek.toJSDate(), { amount: "3.43", currency: "USDT" });
+      await makeSale(thisWeek.minus({ seconds: 1 }).toJSDate());
+
+      const rows = await ordersByPeriod(prisma, "week", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisWeek.minus({ weeks: 1 }).toFormat(WEEK),
+        thisWeek.toFormat(WEEK),
+      ]);
+      expect(rows[0]).toMatchObject({ ordersIdr: 1, ordersUsdt: 0 });
+      expect(rows[1]).toMatchObject({ ordersIdr: 1, ordersUsdt: 1 });
+    });
+
+    it("fills periods with no activity with zero counts", async () => {
+      const rows = await ordersByPeriod(prisma, "month", 3);
+      expect(rows).toHaveLength(3);
+      for (const r of rows) expect(r).toMatchObject({ ordersIdr: 0, ordersUsdt: 0 });
+    });
+
+    it("excludes a settled wallet top-up from the counts (kind: PRODUCT)", async () => {
+      const now = DateTime.utc().startOf("month").toJSDate();
+      await makeSale(now);
+      await makeSale(now, { amount: "100000", kind: OrderKind.WALLET_TOPUP });
+
+      const rows = await ordersByPeriod(prisma, "month", 1);
+      expect(rows[0]).toMatchObject({ ordersIdr: 1, ordersUsdt: 0 });
+    });
+  });
+
+  describe("profitByPeriod", () => {
+    it("buckets net profit per ISO week, keeping a sale one second before the Monday boundary in the previous week", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      // This week: revenue 2 x 10000 = 20000, cost 2 x 6000 = 12000 -> 8000.
+      await makeSaleWithItem(thisWeek.toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", quantity: 2, subtotalAmount: "20000", totalAmount: "20000",
+      });
+      // Last week: revenue 10000, cost 6000 -> 4000.
+      await makeSaleWithItem(thisWeek.minus({ seconds: 1 }).toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
+      });
+
+      const rows = await profitByPeriod(prisma, "week", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisWeek.minus({ weeks: 1 }).toFormat(WEEK),
+        thisWeek.toFormat(WEEK),
+      ]);
+      expect(rows[0]!.profit_idr).toBe("4000");
+      expect(rows[1]!.profit_idr).toBe("8000");
+      // No USDT-settled item in either week — not a zero, an absence.
+      expect(rows[0]!.profit_usdt).toBeNull();
+      expect(rows[1]!.profit_usdt).toBeNull();
+    });
+
+    it("buckets net profit per calendar month", async () => {
+      const thisMonth = DateTime.utc().startOf("month");
+      await makeSaleWithItem(thisMonth.toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
+      });
+      await makeSaleWithItem(thisMonth.minus({ seconds: 1 }).toJSDate(), {
+        unitPrice: "10000", costPrice: "9000", subtotalAmount: "10000", totalAmount: "10000",
+      });
+
+      const rows = await profitByPeriod(prisma, "month", 2);
+      expect(rows.map((r) => r.day)).toEqual([
+        thisMonth.minus({ months: 1 }).toFormat(MONTH),
+        thisMonth.toFormat(MONTH),
+      ]);
+      expect(rows[0]!.profit_idr).toBe("1000");
+      expect(rows[1]!.profit_idr).toBe("4000");
+    });
+
+    it("converts a USDT-settled period's revenue AND cost through that order's own fxRate, never blending the two currencies", async () => {
+      const thisYear = DateTime.utc().startOf("year");
+      await makeSaleWithItem(thisYear.toJSDate(), {
+        // unitPrice/costPrice are catalog-central IDR even for a USDT order —
+        // 160000 IDR / 16000 = 10 USDT-equiv revenue, 32000 / 16000 = 2 cost.
+        unitPrice: "160000", costPrice: "32000", subtotalAmount: "160000", totalAmount: "10", currency: "USDT",
+      });
+
+      const rows = await profitByPeriod(prisma, "year", 1);
+      expect(rows[0]!.profit_usdt).toBe("8");
+      expect(rows[0]!.profit_idr).toBeNull();
+    });
+
+    it("reports null (not zero) for a period with no delivered items at all", async () => {
+      const rows = await profitByPeriod(prisma, "week", 3);
+      expect(rows).toHaveLength(3);
+      for (const r of rows) {
+        expect(r.profit_idr).toBeNull();
+        expect(r.profit_usdt).toBeNull();
+      }
+    });
+
+    it("excludes a cost-unknown item from both the revenue and the cost sum, reaching the same figure profitSummarySince does for the same data", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      await makeSaleWithItem(thisWeek.toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
+      });
+      await makeSaleWithItem(thisWeek.toJSDate(), {
+        unitPrice: "5000", costPrice: null, subtotalAmount: "5000", totalAmount: "5000",
+      });
+
+      const rows = await profitByPeriod(prisma, "week", 1);
+      // Only the priced item contributes: 10000 - 6000 = 4000. The cost-unknown
+      // item's 5000 revenue must not leak in (that would read as free margin).
+      expect(rows[0]!.profit_idr).toBe("4000");
+      const summary = await profitSummarySince(prisma, thisWeek.toJSDate());
+      expect(rows[0]!.profit_idr).toBe(summary.idr!.netProfit);
+    });
+
+    it("reports null for a period whose only delivered items have unknown cost, where profitSummarySince's richer shape reports 0 alongside an excluded count", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      await makeSaleWithItem(thisWeek.toJSDate(), {
+        unitPrice: "5000", costPrice: null, subtotalAmount: "5000", totalAmount: "5000",
+      });
+
+      const rows = await profitByPeriod(prisma, "week", 1);
+      // A bucket label on a chart has nowhere to carry `excludedItemCount`, so a
+      // period whose profit is entirely unknown must plot as a gap, not as a
+      // Rp0 that reads like a break-even week that never happened.
+      expect(rows[0]!.profit_idr).toBeNull();
+      const summary = await profitSummarySince(prisma, thisWeek.toJSDate());
+      expect(summary.idr).toEqual({ netProfit: "0", marginPct: null, excludedItemCount: 1 });
+    });
+
+    it("prorates the order's bulkDiscountAmount + discountAmount into the bucket, so a discounted period that lost money reports the loss (M-1)", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
+      await makeSaleWithItem(thisWeek.toJSDate(), {
+        unitPrice: "10000", costPrice: "8000", subtotalAmount: "10000", totalAmount: "7000",
+        bulkDiscountAmount: "1000", discountAmount: "2000",
+      });
+
+      const rows = await profitByPeriod(prisma, "week", 1);
+      // Net revenue 10000 - 3000 = 7000 against an 8000 cost basis: a real loss.
+      expect(rows[0]!.profit_idr).toBe("-1000");
+    });
+  });
+
+  describe("profitByDay", () => {
+    it("returns one bucket per UTC day, oldest→newest, with null for days that had no delivered items", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
+      });
+
+      const rows = await profitByDay(prisma, 3);
+      expect(rows.map((r) => r.day)).toEqual([
+        todayUtc.minus({ days: 2 }).toFormat("yyyy-LL-dd"),
+        todayUtc.minus({ days: 1 }).toFormat("yyyy-LL-dd"),
+        todayUtc.toFormat("yyyy-LL-dd"),
+      ]);
+      expect(rows[0]!.profit_idr).toBeNull();
+      expect(rows[1]!.profit_idr).toBeNull();
+      expect(rows[2]!.profit_idr).toBe("4000");
+    });
+
+    it("reaches the same IDR figure profitSummarySince does for a single UTC day's data", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
+        unitPrice: "10000", costPrice: "6000", quantity: 2, subtotalAmount: "20000", totalAmount: "20000",
+      });
+      await makeSaleWithItem(todayUtc.toJSDate(), {
+        unitPrice: "5000", costPrice: null, subtotalAmount: "5000", totalAmount: "5000",
+      });
+
+      const rows = await profitByDay(prisma, 1);
+      const summary = await profitSummarySince(prisma, todayUtc.toJSDate());
+      expect(rows[0]!.profit_idr).toBe(summary.idr!.netProfit);
+      expect(rows[0]!.profit_idr).toBe("8000");
+    });
+
+    it("converts a USDT-settled day through that order's own fxRate and leaves the IDR bucket absent", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
+        unitPrice: "160000", costPrice: "32000", subtotalAmount: "160000", totalAmount: "10", currency: "USDT",
+      });
+
+      const rows = await profitByDay(prisma, 1);
+      expect(rows[0]!.profit_usdt).toBe("8");
+      expect(rows[0]!.profit_idr).toBeNull();
+    });
+
+    it("defaults to a 30-day series", async () => {
+      expect(await profitByDay(prisma)).toHaveLength(30);
     });
   });
 });

@@ -9,7 +9,7 @@
 import { OrderStatus, OrderKind, RefundExecutionStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
-import { addDays } from "@app/core/datetime";
+import { addDays, DateTime } from "@app/core/datetime";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -655,5 +655,404 @@ export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
     day,
     refunds_idr: q4(b.idr).toString(),
     refunds_usdt: q4(b.usdt).toString(),
+  }));
+}
+
+/* ==========================================================================
+ * Calendar-period analytics (Financial Ledger M6, Task 6c)
+ *
+ * Everything above this line buckets by UTC calendar DAY. The user's ask was
+ * for Sales and Profit "per hari, minggu, bulan dan tahun", so the four
+ * functions below add the week/month/year rollups (and the Day-granularity
+ * PROFIT series, which did not exist in any form — `profitSummarySince` is a
+ * single-window aggregate, not a series). The existing `*ByDay` functions are
+ * deliberately untouched: they are already shipped and tested, and a rolling
+ * "last N days" window is a genuinely different question from a calendar
+ * rollup, so retrofitting one into the other would have made both harder to
+ * reason about.
+ *
+ * Boundaries are UTC calendar boundaries — ISO week (Monday 00:00 UTC),
+ * calendar month, calendar year — via luxon's `startOf`, matching this
+ * module's existing "UTC in the DB, localize only on display" convention and
+ * avoiding hand-rolled ISO-week math (ISO week NUMBERING in particular is
+ * easy to get subtly wrong around new year: 2027-01-01 belongs to ISO week
+ * 2026-W53, which luxon's `kkkk` week-year token handles and a naive
+ * `yyyy`-based label would not).
+ * ========================================================================== */
+
+export type PeriodGranularity = "week" | "month" | "year";
+
+/**
+ * How many buckets each granularity reports when the caller doesn't say.
+ * These set the default WIDTH OF THE CHART WINDOW only — never which rows are
+ * real — so they are a readability choice, not a correctness one:
+ *
+ * - `week: 12` — a quarter of weekly history, so a week compares against the
+ *   rest of its quarter, at roughly the same number of x-axis labels the
+ *   existing 30-day daily view already renders comfortably.
+ * - `month: 12` — a full year, so seasonality is visible and this December
+ *   sits next to last December.
+ * - `year: 5` — enough to read a multi-year trend without an axis of mostly
+ *   pre-launch years. A shop younger than that shows real zeros for the years
+ *   before it existed (zero-filled, never interpolated).
+ */
+const DEFAULT_PERIOD_COUNT: Record<PeriodGranularity, number> = { week: 12, month: 12, year: 5 };
+
+/**
+ * Bucket labels: `"2026-W38"` / `"2026-09"` / `"2026"`. Sortable as plain
+ * strings (so the seeded-Map insertion order and lexicographic order agree),
+ * deterministic, and readable verbatim as a chart axis tick — the dashboard
+ * renders this string with no `tickFormatter`, so it has to be legible as-is.
+ * `kkkk` is the ISO WEEK-YEAR (not `yyyy`, the calendar year) — see the
+ * 2026-W53 note above for why that distinction is load-bearing.
+ */
+const PERIOD_LABEL_FORMAT: Record<PeriodGranularity, string> = {
+  week: "kkkk-'W'WW",
+  month: "yyyy-LL",
+  year: "yyyy",
+};
+
+/** A luxon duration of `n` of this granularity's own unit. Spelled out per
+ *  granularity rather than built from a computed key so it stays type-checked
+ *  against luxon's `DurationLikeObject`. */
+const periodStep = (granularity: PeriodGranularity, n: number) =>
+  granularity === "week" ? { weeks: n } : granularity === "month" ? { months: n } : { years: n };
+
+/** The label of the UTC calendar period `at` falls in. */
+function periodLabel(at: Date, granularity: PeriodGranularity): string {
+  return DateTime.fromJSDate(at, { zone: "utc" })
+    .startOf(granularity)
+    .toFormat(PERIOD_LABEL_FORMAT[granularity]);
+}
+
+/**
+ * The query window and the ordered bucket labels for the last `count` periods,
+ * oldest→newest and INCLUDING the period in progress — the same convention
+ * `revenueByDay(days)` uses for days (its window ends with today, not with
+ * yesterday). `since` is the first bucket's own start instant, so one bulk
+ * query with `deliveredAt >= since` covers every bucket; the buckets are then
+ * filled by reducing in JS, never with a query per bucket.
+ */
+function periodWindow(granularity: PeriodGranularity, count: number): { since: Date; labels: string[] } {
+  const first = DateTime.utc().startOf(granularity).plus(periodStep(granularity, -(count - 1)));
+  const labels: string[] = [];
+  for (let i = 0; i < count; i++) {
+    labels.push(first.plus(periodStep(granularity, i)).toFormat(PERIOD_LABEL_FORMAT[granularity]));
+  }
+  return { since: first.toJSDate(), labels };
+}
+
+/** Every period in range pre-seeded with an empty accumulator, so a period with
+ *  no activity reports a real zero (or a real `null` for profit) instead of
+ *  being missing from the series — the same zero-filled contract every
+ *  `*ByDay` function above already honours. */
+function seedPeriods<T>(labels: readonly string[], empty: () => T): Map<string, T> {
+  const buckets = new Map<string, T>();
+  for (const label of labels) buckets.set(label, empty());
+  return buckets;
+}
+
+export interface PeriodRevenue {
+  /**
+   * The bucket label — `"2026-W38"`, `"2026-09"` or `"2026"`. Named `day`, not
+   * `period`, on purpose: the dashboard's chart point type is `{day, value}`
+   * and its `XAxis` is `dataKey="day"`, so keeping this one field name makes
+   * every granularity flow through the existing chart and API shape with no
+   * per-granularity branching. A deliberate simplicity choice, not an
+   * oversight — the same reasoning applies to `PeriodOrderCounts.day` and
+   * `PeriodProfit.day` below.
+   */
+  day: string;
+  revenue_idr: string;
+  revenue_usdt: string;
+  /**
+   * The two currencies blended to IDR-equivalent, for the chart's opt-in
+   * "Combined" filter — USDT orders converted through THEIR OWN `fxRate`
+   * snapshot, exactly as `combinedRevenueByDay` does it (so a past period's
+   * combined total never moves when today's rate does). Carried on this row
+   * rather than in a separate `combinedRevenueByPeriod` function because the
+   * blend is one extra accumulator over rows this query already reads; the Day
+   * path keeps its own separate function, untouched.
+   */
+  revenueIdrEquiv: string;
+  orders: number;
+}
+
+/**
+ * Delivered product-sales revenue per calendar week/month/year, oldest→newest,
+ * with empty periods zero-filled — the calendar-rollup counterpart to
+ * `revenueByDay`. Currencies are kept apart for the same reason as everywhere
+ * else in this module (a USDT order's small decimal total must never land in
+ * the Rupiah figure), with the blended figure offered separately.
+ *
+ * Wallet top-ups are excluded via `ORDER_KIND_SALES_FILTER` — see its comment;
+ * this is a revenue figure, and a buyer moving their own money into their own
+ * wallet is not revenue at any granularity.
+ */
+export async function revenueByPeriod(
+  db: Db,
+  granularity: PeriodGranularity,
+  count: number = DEFAULT_PERIOD_COUNT[granularity],
+): Promise<PeriodRevenue[]> {
+  const { since, labels } = periodWindow(granularity, count);
+
+  const orders = await db.order.findMany({
+    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
+    select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+  });
+
+  const buckets = seedPeriods(labels, () => ({
+    idr: new Decimal(0),
+    usdt: new Decimal(0),
+    idrEquiv: new Decimal(0),
+    orders: 0,
+  }));
+  for (const o of orders) {
+    if (!o.deliveredAt) continue;
+    const b = buckets.get(periodLabel(o.deliveredAt, granularity));
+    if (!b) continue; // outside the window (shouldn't happen)
+    const total = new Decimal(o.totalAmount);
+    if (o.currency === "IDR") {
+      b.idr = b.idr.plus(total);
+      b.idrEquiv = b.idrEquiv.plus(total);
+    } else {
+      b.usdt = b.usdt.plus(total);
+      // Same rule as combinedRevenueByDay, including its treatment of an
+      // fxRate-less USDT order (counted unconverted rather than dropped), so
+      // the Day and period-granularity combined series can never disagree.
+      b.idrEquiv = b.idrEquiv.plus(o.fxRate != null ? total.times(o.fxRate) : total);
+    }
+    b.orders += 1;
+  }
+
+  return [...buckets.entries()].map(([day, b]) => ({
+    day,
+    revenue_idr: q4(b.idr).toString(),
+    revenue_usdt: q4(b.usdt).toString(),
+    revenueIdrEquiv: q4(b.idrEquiv).toString(),
+    orders: b.orders,
+  }));
+}
+
+export interface PeriodOrderCounts {
+  day: string; // bucket label — see PeriodRevenue.day
+  ordersIdr: number;
+  ordersUsdt: number;
+}
+
+/** Delivered product-sale counts per calendar week/month/year, oldest→newest,
+ *  split by currency and zero-filled — the calendar-rollup counterpart to
+ *  `ordersByDay`, for the Sales Analytics chart's "Orders" metric. Wallet
+ *  top-ups excluded, same as `revenueByPeriod` above. */
+export async function ordersByPeriod(
+  db: Db,
+  granularity: PeriodGranularity,
+  count: number = DEFAULT_PERIOD_COUNT[granularity],
+): Promise<PeriodOrderCounts[]> {
+  const { since, labels } = periodWindow(granularity, count);
+
+  const orders = await db.order.findMany({
+    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
+    select: { deliveredAt: true, currency: true },
+  });
+
+  const buckets = seedPeriods(labels, () => ({ idr: 0, usdt: 0 }));
+  for (const o of orders) {
+    if (!o.deliveredAt) continue;
+    const b = buckets.get(periodLabel(o.deliveredAt, granularity));
+    if (!b) continue;
+    if (o.currency === "IDR") b.idr += 1;
+    else b.usdt += 1;
+  }
+  return [...buckets.entries()].map(([day, b]) => ({ day, ordersIdr: b.idr, ordersUsdt: b.usdt }));
+}
+
+/**
+ * The exact `OrderItem` selection both bucketed-profit functions read, kept as
+ * one constant so the Day and week/month/year series can never drift apart in
+ * what they feed the arithmetic. It is `profitSummarySince`'s own selection
+ * plus `order.deliveredAt`, which those two need in order to bucket at all.
+ *
+ * No `kind: PRODUCT` clause, deliberately: this is rooted at `OrderItem`, and a
+ * wallet top-up carries zero item rows — the same structural immunity
+ * `ORDER_KIND_SALES_FILTER`'s comment already records for the other
+ * OrderItem-rooted functions in this module.
+ */
+const PROFIT_ITEM_SELECT = {
+  quantity: true,
+  unitPrice: true,
+  product: { select: { costPrice: true } },
+  order: {
+    select: {
+      deliveredAt: true,
+      currency: true,
+      fxRate: true,
+      subtotalAmount: true,
+      bulkDiscountAmount: true,
+      discountAmount: true,
+    },
+  },
+} as const;
+
+interface ProfitAccumulator {
+  revenue: Decimal;
+  cost: Decimal;
+  /** How many items actually contributed. Zero means "nothing known", which is
+   *  what makes a bucket `null` rather than a fabricated 0 — see
+   *  `shapeBucketProfit`. */
+  costKnownItems: number;
+}
+
+/** One bucket's two currency accumulators — never blended, same rule as
+ *  `profitSummarySince`. */
+interface ProfitBucket {
+  idr: ProfitAccumulator;
+  usdt: ProfitAccumulator;
+}
+
+const emptyProfitBucket = (): ProfitBucket => ({
+  idr: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0 },
+  usdt: { revenue: new Decimal(0), cost: new Decimal(0), costKnownItems: 0 },
+});
+
+/**
+ * Adds one delivered line to its bucket's own currency accumulator, with
+ * `profitSummarySince`'s arithmetic verbatim: discount-prorated line revenue
+ * via `orderItemRevenueIdr`, cost as catalog-central IDR × quantity, and BOTH
+ * brought into the bucket's currency through `idrToBucketCurrency` (that
+ * order's own `fxRate` snapshot) so revenue and cost can never end up in
+ * mismatched units.
+ *
+ * A cost-unknown item is excluded from both sums rather than nulling the whole
+ * bucket — counting it at cost=0 would read as a fabricated 100% margin, and
+ * dropping the bucket would throw away the profit that IS known. Same rule
+ * `profitSummarySince` and `topProductsByMargin` already apply.
+ */
+function accumulateLineProfit(
+  bucket: ProfitBucket,
+  item: {
+    quantity: number;
+    unitPrice: Decimal.Value;
+    product: { costPrice: Decimal.Value | null };
+    order: {
+      currency: string;
+      fxRate: Decimal.Value | null;
+      subtotalAmount: Decimal.Value;
+      bulkDiscountAmount: Decimal.Value;
+      discountAmount: Decimal.Value;
+    };
+  },
+): void {
+  if (item.product.costPrice == null) return;
+  const isUsdt = item.order.currency === "USDT";
+  const acc = isUsdt ? bucket.usdt : bucket.idr;
+  const lineRevenueIdr = orderItemRevenueIdr(item);
+  const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
+  acc.revenue = acc.revenue.plus(idrToBucketCurrency(lineRevenueIdr, isUsdt, item.order.fxRate));
+  acc.cost = acc.cost.plus(idrToBucketCurrency(lineCostIdr, isUsdt, item.order.fxRate));
+  acc.costKnownItems += 1;
+}
+
+/**
+ * One currency's profit for one bucket, or `null` when that bucket has no
+ * cost-known delivered item in it — "empty bucket is null, not zero", the same
+ * rule `profitSummarySince`'s `shape` helper applies to its whole window.
+ *
+ * Two deliberate differences from `shape`, both forced by what a chart series
+ * can carry: `shape` returns a RICH object (`netProfit` + `marginPct` +
+ * `excludedItemCount`), so it can honestly report `netProfit: "0",
+ * excludedItemCount: 1` for a window whose only item had unknown cost — the
+ * excluded count is what tells the reader the 0 is not a real break-even. A
+ * bucket on a line chart is a single number with nowhere to put that caveat, so
+ * here an all-cost-unknown bucket is `null` (the chart draws a gap) rather than
+ * a 0 that would read as a period that genuinely broke even.
+ *
+ * And the emptiness test is `costKnownItems === 0` rather than `shape`'s
+ * `revenue.isZero() && excluded === 0`: a fully-discounted-to-zero line with a
+ * known cost is a real loss, and keying on the counter reports it instead of
+ * hiding it behind a zero-revenue check.
+ */
+const shapeBucketProfit = (acc: ProfitAccumulator): string | null =>
+  acc.costKnownItems === 0 ? null : q4(acc.revenue.minus(acc.cost)).toString();
+
+export interface DayProfit {
+  day: string; // YYYY-MM-DD (UTC), matching revenueByDay's convention exactly
+  profit_idr: string | null;
+  profit_usdt: string | null;
+}
+
+/**
+ * Daily net profit for the last `days` days, oldest→newest, split per currency
+ * — the profit counterpart to `revenueByDay`, and the Day half of the chart's
+ * "Profit" metric. `profitSummarySince` answers "profit since X" as one
+ * aggregate and cannot be sliced into a series, so this exists rather than
+ * calling it in a loop (which would also have meant one query per day).
+ *
+ * A day with no cost-known delivered item reports `null`, not `"0"` — see
+ * `shapeBucketProfit`.
+ */
+export async function profitByDay(db: Db, days = 30): Promise<DayProfit[]> {
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
+
+  const items = await db.orderItem.findMany({
+    where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
+    select: PROFIT_ITEM_SELECT,
+  });
+
+  const buckets = new Map<string, ProfitBucket>();
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), emptyProfitBucket());
+  }
+  for (const item of items) {
+    const deliveredAt = item.order.deliveredAt;
+    if (!deliveredAt) continue;
+    const bucket = buckets.get(deliveredAt.toISOString().slice(0, 10));
+    if (!bucket) continue; // outside the window (shouldn't happen)
+    accumulateLineProfit(bucket, item);
+  }
+  return [...buckets.entries()].map(([day, b]) => ({
+    day,
+    profit_idr: shapeBucketProfit(b.idr),
+    profit_usdt: shapeBucketProfit(b.usdt),
+  }));
+}
+
+export interface PeriodProfit {
+  day: string; // bucket label — see PeriodRevenue.day
+  profit_idr: string | null;
+  profit_usdt: string | null;
+}
+
+/** Net profit per calendar week/month/year, oldest→newest, split per currency —
+ *  the calendar-rollup counterpart to `profitByDay` above, sharing its
+ *  selection (`PROFIT_ITEM_SELECT`), its per-line arithmetic
+ *  (`accumulateLineProfit`) and its null-vs-zero rule (`shapeBucketProfit`), so
+ *  the two granularities cannot report different profit for the same data. */
+export async function profitByPeriod(
+  db: Db,
+  granularity: PeriodGranularity,
+  count: number = DEFAULT_PERIOD_COUNT[granularity],
+): Promise<PeriodProfit[]> {
+  const { since, labels } = periodWindow(granularity, count);
+
+  const items = await db.orderItem.findMany({
+    where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
+    select: PROFIT_ITEM_SELECT,
+  });
+
+  const buckets = seedPeriods(labels, emptyProfitBucket);
+  for (const item of items) {
+    const deliveredAt = item.order.deliveredAt;
+    if (!deliveredAt) continue;
+    const bucket = buckets.get(periodLabel(deliveredAt, granularity));
+    if (!bucket) continue;
+    accumulateLineProfit(bucket, item);
+  }
+  return [...buckets.entries()].map(([day, b]) => ({
+    day,
+    profit_idr: shapeBucketProfit(b.idr),
+    profit_usdt: shapeBucketProfit(b.usdt),
   }));
 }

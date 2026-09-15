@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { OrderStatus, OrderKind } from "@app/core/enums";
+import {
+  OrderStatus,
+  OrderKind,
+  RefundExecutionMethod,
+  RefundExecutionStatus,
+  RefundStatus,
+} from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
+import { seedChartOfAccounts } from "./ledgerAccounts";
+import { createRefund, executeRefund, transitionRefundStatus } from "./refunds";
 import {
   revenueByDay,
   revenueSummary,
@@ -12,6 +20,8 @@ import {
   ordersByDay,
   combinedRevenueByDay,
   botOverallStats,
+  refundTotalsSince,
+  refundsByDay,
 } from "./revenue";
 
 let db: TestDb;
@@ -23,16 +33,37 @@ let parentProductName: string;
 beforeAll(async () => {
   db = await makeTestDb();
   prisma = db.prisma;
+  // `executeRefund` posts its payout to the double-entry ledger in the same
+  // transaction, so the chart of accounts has to exist or every refund fixture
+  // below fails on an unknown account code. Seeded once here rather than per
+  // test: the 15 account rows carry no per-test state, and the refund describes
+  // deliberately leave `ledgerAccount` out of the reset above for that reason.
+  await seedChartOfAccounts(prisma);
 });
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  // The Refund-domain and ledger rows the refundTotalsSince/refundsByDay
+  // describes below create through the real `executeRefund` path, cleared
+  // children-before-parents. Every one of these relations is onDelete: Restrict
+  // (a recorded payout is a financial-audit record), so without this the plain
+  // `order.deleteMany()` underneath would start failing on a foreign-key
+  // violation from the moment the first refund test runs — including for every
+  // unrelated test in this file that happens to be declared after it.
+  await prisma.refundExecution.deleteMany();
+  await prisma.refundItem.deleteMany();
+  await prisma.refund.deleteMany();
   await prisma.orderItem.deleteMany();
+  await prisma.orderStatusHistory.deleteMany();
   await prisma.order.deleteMany();
   await prisma.denomination.deleteMany();
   await prisma.product.deleteMany();
   await prisma.category.deleteMany();
+  await prisma.ledgerEntry.deleteMany();
+  await prisma.financialTransaction.deleteMany();
+  await prisma.auditLog.deleteMany();
+  await prisma.walletTransaction.deleteMany();
   await prisma.user.deleteMany();
 
   const user = await prisma.user.create({
@@ -554,5 +585,197 @@ describe("wallet top-ups are excluded from every revenue figure (kind: PRODUCT)"
     const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
     expect(result.orders).toBe(0);
     expect(result.revenue_idr.toString()).toBe("0");
+  });
+});
+
+// Task 6b (Financial Ledger M6): before these functions existed, a refund had
+// zero effect on any dashboard figure — a customer paid back in full still
+// showed up as full revenue, and nothing anywhere subtracted the payout. These
+// two functions are the source of the "Refunds Today"/"Net Sales Today" cards,
+// so a silent under- or over-count here is a wrong money figure on the
+// dashboard, not a cosmetic bug.
+//
+// Every fixture pays out through Task 4's real `executeRefund` rather than
+// hand-writing a `RefundExecution` row, so these tests exercise the exact row
+// shape production writes (COMPLETED in one insert, `executedAt` stamped at the
+// actual payout instant, currency snapshotted from the Refund). The one
+// exception is the non-COMPLETED case: `executeRefund` cannot produce a
+// FAILED/PENDING row by design — a mid-flight failure rolls the whole attempt
+// away — so those rows are written directly, which is also how a real bounced
+// transfer gets recorded after the fact.
+describe("refund totals from RefundExecution", () => {
+  let adminId: number;
+
+  beforeEach(async () => {
+    const admin = await prisma.user.create({
+      data: {
+        telegramId: BigInt(Math.floor(Math.random() * 1e15)),
+        username: "refund-admin",
+        fullName: "Refund Admin",
+        role: "ADMIN",
+        referralCode: `ra${Math.random()}`,
+      },
+    });
+    adminId = admin.id;
+  });
+
+  /** A delivered product sale for a refund to be paid out against.
+   *  `totalAmount` is the refundable ceiling `executeRefund` enforces, so it is
+   *  set to exactly the payout under test. */
+  function makeRefundableOrder(amount: string, currency: "IDR" | "USDT") {
+    return prisma.order.create({
+      data: {
+        orderCode: `ORD-refundable-${Math.random()}`,
+        userId,
+        kind: OrderKind.PRODUCT,
+        subtotalAmount: amount,
+        totalAmount: amount,
+        currency,
+        ...(currency === "USDT" ? { fxRate: "16000" } : {}),
+        status: OrderStatus.DELIVERED,
+        deliveredAt: new Date(),
+      },
+    });
+  }
+
+  /** A Refund taken to PROCESSING — the only state `executeRefund` accepts. */
+  async function makeProcessingRefund(orderId: number, amount: string, currency: "IDR" | "USDT") {
+    const refund = await createRefund(prisma, { orderId, amount, currency, adminId });
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PENDING,
+      to: RefundStatus.PROCESSING,
+      adminId,
+    });
+    return refund;
+  }
+
+  /**
+   * One real COMPLETED payout. `executedAt` is stamped by `executeRefund` itself
+   * as the payout's own wall-clock instant, so a test needing a payout on a
+   * different day backdates the row afterwards — that one value is the only
+   * thing the real function cannot be asked for, and backdating it leaves every
+   * other field exactly as production wrote it.
+   */
+  async function payOutRefund(opts: { amount: string; currency?: "IDR" | "USDT"; executedAt?: Date }) {
+    const currency = opts.currency ?? "IDR";
+    const order = await makeRefundableOrder(opts.amount, currency);
+    const refund = await makeProcessingRefund(order.id, opts.amount, currency);
+    const execution = await executeRefund(prisma, {
+      refundId: refund.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: opts.amount,
+      executedBy: adminId,
+    });
+    if (!opts.executedAt) return execution;
+    return prisma.refundExecution.update({
+      where: { id: execution.id },
+      data: { executedAt: opts.executedAt },
+    });
+  }
+
+  /** A payout attempt that did NOT land, written directly — see this describe's
+   *  comment for why `executeRefund` cannot produce one. */
+  async function recordUnlandedExecution(status: string, amount: string, executedAt: Date) {
+    const order = await makeRefundableOrder(amount, "IDR");
+    const refund = await createRefund(prisma, { orderId: order.id, amount, currency: "IDR", adminId });
+    return prisma.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: RefundExecutionMethod.MANUAL_TRANSFER,
+        amount,
+        currency: "IDR",
+        status,
+        executedBy: adminId,
+        executedAt,
+      },
+    });
+  }
+
+  describe("refundTotalsSince", () => {
+    it("counts a payout inside the window and leaves an earlier one out", async () => {
+      const now = new Date();
+      await payOutRefund({ amount: "2000" });
+      await payOutRefund({ amount: "500", executedAt: new Date(now.getTime() - 3 * 86_400_000) });
+
+      const totals = await refundTotalsSince(prisma, new Date(now.getTime() - 86_400_000));
+      expect(totals.refunds_idr.toString()).toBe("2000");
+      expect(totals.refunds_usdt.toString()).toBe("0");
+    });
+
+    it("excludes a payout made after `until`", async () => {
+      const now = new Date();
+      await payOutRefund({ amount: "700" });
+
+      const totals = await refundTotalsSince(
+        prisma,
+        new Date(now.getTime() - 86_400_000),
+        new Date(now.getTime() - 60_000),
+      );
+      expect(totals.refunds_idr.toString()).toBe("0");
+    });
+
+    it("ignores a FAILED or PENDING execution — only a payout that actually landed reduces what a customer spent", async () => {
+      const now = new Date();
+      await recordUnlandedExecution(RefundExecutionStatus.FAILED, "9000", now);
+      await recordUnlandedExecution(RefundExecutionStatus.PENDING, "4000", now);
+
+      const totals = await refundTotalsSince(prisma, new Date(now.getTime() - 86_400_000));
+      expect(totals.refunds_idr.toString()).toBe("0");
+    });
+
+    it("keeps IDR and USDT payouts in separate buckets, never summed into one figure", async () => {
+      const now = new Date();
+      await payOutRefund({ amount: "54000", currency: "IDR" });
+      await payOutRefund({ amount: "3.43", currency: "USDT" });
+
+      const totals = await refundTotalsSince(prisma, new Date(now.getTime() - 86_400_000));
+      // 3.43 USDT must never land in the Rupiah figure — the same "Rp3" class of
+      // bug `deliveredRevenueByCurrency` splits currencies to prevent.
+      expect(totals.refunds_idr.toString()).toBe("54000");
+      expect(totals.refunds_usdt.toString()).toBe("3.43");
+    });
+  });
+
+  describe("refundsByDay", () => {
+    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
+
+    it("buckets payouts by executedAt's UTC day, per currency, leaving the day between them at zero", async () => {
+      const now = new Date();
+      const twoDaysAgo = new Date(now.getTime() - 2 * 86_400_000);
+      await payOutRefund({ amount: "2000" });
+      await payOutRefund({ amount: "3.43", currency: "USDT" });
+      await payOutRefund({ amount: "500", executedAt: twoDaysAgo });
+
+      const days = await refundsByDay(prisma, 3);
+      expect(days).toHaveLength(3);
+      // Oldest → newest, same ordering contract as revenueByDay.
+      expect(days.map((d) => d.day)).toEqual([...days.map((d) => d.day)].sort());
+
+      const byDay = new Map(days.map((d) => [d.day, d]));
+      expect(byDay.get(dayKey(now))).toMatchObject({ refunds_idr: "2000", refunds_usdt: "3.43" });
+      expect(byDay.get(dayKey(twoDaysAgo))).toMatchObject({ refunds_idr: "500", refunds_usdt: "0" });
+      expect(byDay.get(dayKey(new Date(now.getTime() - 86_400_000)))).toMatchObject({
+        refunds_idr: "0",
+        refunds_usdt: "0",
+      });
+    });
+
+    it("fills every day in range with zero when there were no payouts at all", async () => {
+      const days = await refundsByDay(prisma, 3);
+      expect(days).toHaveLength(3);
+      for (const d of days) {
+        expect(d.refunds_idr).toBe("0");
+        expect(d.refunds_usdt).toBe("0");
+      }
+    });
+
+    it("keeps a FAILED execution out of its day's bucket", async () => {
+      const now = new Date();
+      await recordUnlandedExecution(RefundExecutionStatus.FAILED, "9000", now);
+
+      const days = await refundsByDay(prisma, 1);
+      expect(days[0]).toMatchObject({ refunds_idr: "0", refunds_usdt: "0" });
+    });
   });
 });

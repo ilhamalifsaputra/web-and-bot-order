@@ -6,7 +6,7 @@
  * re-deriving "line revenue" and drifting apart — see orderItemRevenueIdr
  * below for the bug that split prevents from recurring.
  */
-import { OrderStatus, OrderKind } from "@app/core/enums";
+import { OrderStatus, OrderKind, RefundExecutionStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
@@ -502,4 +502,99 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
     buckets.set(key, current.plus(idrEquiv));
   }
   return [...buckets.entries()].map(([day, total]) => ({ day, revenueIdrEquiv: q4(total).toString() }));
+}
+
+/**
+ * Refunds actually PAID OUT in the window `[since, until]`, split per currency
+ * (Financial Ledger M6, Task 6b) — the figure behind the dashboard's "Refunds
+ * Today" card, and the amount "Net Sales Today" subtracts from gross revenue.
+ *
+ * Reads `RefundExecution.amount`, never `Refund.amount`: the Refund row is the
+ * REQUEST ("this buyer is owed 50,000"), while a RefundExecution is one real
+ * payout, and the two genuinely differ — a refund may be settled across several
+ * attempts, and a request can sit forever without any payout at all. Only money
+ * that left the shop reduces what a customer effectively spent.
+ *
+ * `status: COMPLETED` only, for the same reason: a FAILED attempt is a transfer
+ * that bounced and a PENDING one has not happened, so counting either would
+ * subtract revenue that was never given back.
+ *
+ * Buckets on `executedAt` (the payout's own wall-clock instant, stamped by
+ * `executeRefund`) rather than `createdAt` — a refund recorded at one moment and
+ * paid at another belongs to the day the money moved, which is the day the
+ * dashboard's own revenue figures are keyed on too.
+ *
+ * Grouped by `RefundExecution.currency` directly, with no join to the Order:
+ * `executeRefund` snapshots that column from the `Refund`, which `createRefund`
+ * pins to the order's own currency, and it re-checks the two agree before paying
+ * anything out. Non-IDR falls into the USDT bucket, mirroring
+ * `deliveredRevenueByCurrency`'s own convention above — those are the only two
+ * currencies an Order (and therefore a Refund, and therefore a payout) can carry.
+ */
+export async function refundTotalsSince(
+  db: Db,
+  since: Date,
+  until: Date = new Date(),
+): Promise<{ refunds_idr: Decimal; refunds_usdt: Decimal }> {
+  const groups = await db.refundExecution.groupBy({
+    by: ["currency"],
+    where: { status: RefundExecutionStatus.COMPLETED, executedAt: { gte: since, lte: until } },
+    _sum: { amount: true },
+  });
+  let idr = new Decimal(0);
+  let usdt = new Decimal(0);
+  for (const g of groups) {
+    const sum = new Decimal(g._sum.amount ?? 0);
+    if (g.currency === "IDR") idr = idr.plus(sum);
+    else usdt = usdt.plus(sum);
+  }
+  return { refunds_idr: idr, refunds_usdt: usdt };
+}
+
+export interface DayRefunds {
+  day: string; // YYYY-MM-DD (UTC)
+  refunds_idr: string;
+  refunds_usdt: string;
+}
+
+/**
+ * Daily refund payouts for the last `days` days, oldest→newest, with empty days
+ * filled with zero — the refund counterpart to `revenueByDay`, and deliberately
+ * the same shape so a chart can line the two series up day-for-day without
+ * re-aligning anything. Same UTC-date bucketing, same per-currency split (a
+ * USDT payout's small decimal must never land in the Rupiah figure), same
+ * 4dp-quantized string output.
+ *
+ * See `refundTotalsSince` above for why this reads COMPLETED
+ * `RefundExecution.amount` bucketed on `executedAt`, and not `Refund.amount` or
+ * `createdAt`.
+ */
+export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
+
+  const executions = await db.refundExecution.findMany({
+    where: { status: RefundExecutionStatus.COMPLETED, executedAt: { gte: since } },
+    select: { executedAt: true, amount: true, currency: true },
+  });
+
+  const buckets = new Map<string, { idr: Decimal; usdt: Decimal }>();
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), { idr: new Decimal(0), usdt: new Decimal(0) });
+  }
+  for (const e of executions) {
+    // Nullable in the schema (it is only stamped once an attempt reaches a
+    // terminal status), so a row with no payout time has no day to belong to.
+    if (!e.executedAt) continue;
+    const b = buckets.get(e.executedAt.toISOString().slice(0, 10));
+    if (!b) continue; // outside the window (shouldn't happen)
+    if (e.currency === "IDR") b.idr = b.idr.plus(e.amount);
+    else b.usdt = b.usdt.plus(e.amount);
+  }
+  return [...buckets.entries()].map(([day, b]) => ({
+    day,
+    refunds_idr: q4(b.idr).toString(),
+    refunds_usdt: q4(b.usdt).toString(),
+  }));
 }

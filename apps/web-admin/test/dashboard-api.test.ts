@@ -18,7 +18,11 @@ import {
   POLL_HEALTH_KEYS,
   DIGIFLAZZ_USERNAME_KEY,
   DIGIFLAZZ_API_KEY_KEY,
+  createRefund,
+  transitionRefundStatus,
+  executeRefund,
 } from "@app/db";
+import { RefundExecutionMethod, RefundStatus } from "@app/core/enums";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { TOKOPAY_POLL_STALE_MS } from "@app/core/payments/reconcileCycleBudget";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -53,6 +57,26 @@ function get(url: string, withCookie: string | null) {
   return app.inject({ method: "GET", url, cookies: withCookie ? { [COOKIE]: withCookie } : {} });
 }
 
+/** A real refund payout against `orderId`, through the same
+ *  createRefund → PROCESSING → executeRefund path an admin walks, so the
+ *  `RefundExecution` row the KPI endpoint reads is the one production writes. */
+async function payOutRefund(orderId: number, amount: string) {
+  const adminId = (await prisma.user.findFirstOrThrow({ where: { telegramId: ADMIN_TG } })).id;
+  const refund = await createRefund(prisma, { orderId, amount, currency: "IDR", adminId });
+  await transitionRefundStatus(prisma, {
+    refundId: refund.id,
+    from: RefundStatus.PENDING,
+    to: RefundStatus.PROCESSING,
+    adminId,
+  });
+  return executeRefund(prisma, {
+    refundId: refund.id,
+    method: RefundExecutionMethod.WALLET,
+    amount,
+    executedBy: adminId,
+  });
+}
+
 describe("GET /api/dashboard/kpis", () => {
   it("anon is redirected to /login", async () => {
     const res = await get("/api/dashboard/kpis", null);
@@ -75,6 +99,41 @@ describe("GET /api/dashboard/kpis", () => {
     expect(body.orders.total).toBe(1);
     expect(body.orders.delivered).toBe(1);
     expect(body.pendingActions).toEqual({ toReview: 0, refundDecisions: 0, failedDeliveries: 0, manualApprovals: 0 });
+  });
+
+  // Financial Ledger M6, Task 6b. Before this, a refund changed no dashboard
+  // number at all: a customer paid back in full still read as full revenue. The
+  // subtraction itself lives only in this route (the two crud functions just
+  // report sales and payouts separately), so these two cases are the only place
+  // it is exercised end to end.
+  it("reports today's refund payouts, and a net-sales figure that is gross revenue minus them", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-refunded", userId: buyer.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() },
+    });
+    await payOutRefund(order.id, "2000");
+
+    const body = (await get("/api/dashboard/kpis", cookie)).json();
+    // Gross is untouched — "Revenue Today" IS the gross figure, by definition.
+    expect(body.revenue.idr).toBe("10000");
+    expect(body.refunds).toEqual({ idr: "2000", usdt: null });
+    expect(body.netSales).toEqual({ idr: "8000", usdt: null });
+  });
+
+  it("reports a NEGATIVE net-sales figure rather than clamping it, when today's payouts are for an order sold on an earlier day", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const yesterday = new Date(Date.now() - 86_400_000);
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-old", userId: buyer.id, subtotalAmount: "5000", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: yesterday },
+    });
+    await payOutRefund(order.id, "2000");
+
+    const body = (await get("/api/dashboard/kpis", cookie)).json();
+    // Nothing was SOLD today, but Rp2000 really did leave the shop today.
+    expect(body.revenue.idr).toBeNull();
+    expect(body.refunds).toEqual({ idr: "2000", usdt: null });
+    // -2000, not 0: clamping this would hide a real day of money going out.
+    expect(body.netSales).toEqual({ idr: "-2000", usdt: null });
   });
 });
 

@@ -18,6 +18,7 @@ import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
   revenueSummary,
+  refundTotalsSince,
   profitSummarySince,
   ordersByStatusSince,
   manualMatchQueueCounts,
@@ -78,6 +79,26 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   };
 }
 
+/**
+ * The same null-when-zero convention `shapeRevenue` above uses, for the
+ * two-currency money figures Task 6b adds (`refunds`, `netSales`): zero means
+ * "nothing to report", and the card renders its own empty state rather than a
+ * literal Rp0. These two carry no `usd` alias — only the revenue card renders
+ * the USDT figure a second time under a USD label.
+ *
+ * A consequence worth naming for `netSales`: a day whose refunds exactly cancel
+ * its gross sales reads the same as a day with no activity at all. That is the
+ * existing convention applied consistently rather than a second, different
+ * null rule invented for one field — and it is only the exact-zero knife edge,
+ * since a genuinely negative net figure is non-zero and renders in full.
+ */
+function shapeMoneyPair(idr: Decimal, usdt: Decimal) {
+  return {
+    idr: idr.isZero() ? null : idr.toString(),
+    usdt: usdt.isZero() ? null : usdt.toString(),
+  };
+}
+
 function trendPct(curr: Decimal, prev: Decimal): string | null {
   if (prev.isZero()) return null;
   return curr.minus(prev).div(prev).times(100).toDecimalPlaces(1).toString();
@@ -92,6 +113,7 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
     const todayRevenue = await revenueSummary(prisma, todayStart);
     const yesterdayRevenue = await revenueSummary(prisma, yesterdayStart, yesterdaySameClock);
+    const todayRefunds = await refundTotalsSince(prisma, todayStart);
     const profit = await profitSummarySince(prisma, todayStart);
     const orderStatus = await ordersByStatusSince(prisma, todayStart);
     const manualQueue = await manualMatchQueueCounts(prisma);
@@ -110,6 +132,21 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
           usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt)),
         },
       },
+      // Refunds actually paid out today, and today's gross sales net of them
+      // (Financial Ledger M6, Task 6b). `revenue` above already IS the Gross
+      // Sales figure — product-only since Task 6a — so there is no separate
+      // gross card, and this is the first thing on the dashboard that reflects a
+      // refund at all.
+      //
+      // Net Sales is a plain Decimal subtraction and is deliberately NOT clamped
+      // at zero: a refund can legitimately be for an order sold on an earlier
+      // day, so "more refunded today than sold today" is a real, negative
+      // signal an operator needs to see, not an error to be hidden behind a 0.
+      refunds: shapeMoneyPair(todayRefunds.refunds_idr, todayRefunds.refunds_usdt),
+      netSales: shapeMoneyPair(
+        todayRevenue.revenue_idr.minus(todayRefunds.refunds_idr),
+        todayRevenue.revenue_usdt.minus(todayRefunds.refunds_usdt),
+      ),
       profit,
       orders: {
         total: ordersTotal,

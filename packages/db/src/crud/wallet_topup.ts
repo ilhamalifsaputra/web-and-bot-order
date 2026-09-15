@@ -41,7 +41,7 @@ import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidReceived } from "./orders";
 import { adjustWallet } from "./users";
-import { postWalletAdjustmentPosting, postWalletTopupPosting } from "./ledgerPostings";
+import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment } from "./pricing";
 import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
@@ -583,6 +583,13 @@ export async function hasPendingWalletTopupOrder(
  * with the `wallet_transactions` UNIQUE (orderId, reason) constraint if the
  * top-up were later settled late).
  *
+ * The double-entry posting is NOT the one those other two `admin_adjust` sites
+ * raise, though: real money arrived on a rail here, so it books `Dr
+ * provider_clearing / Cr wallet_liability` (`postUnderpaidTopupCreditPosting`)
+ * rather than crediting the buyer out of the shop's own equity. The
+ * `WalletTransaction` reason records WHO moved the balance; the ledger has to
+ * record WHERE the money came from, and those are different questions.
+ *
  * The credit is gated on `received > 0`, mirroring `refundUnderpaidOrder`: a
  * top-up flagged UNDERPAID with no ledger row recording an amount (every
  * automated rail writes one, so in practice an order an admin moved to
@@ -624,13 +631,18 @@ export async function creditUnderpaidTopupAnyway(
         adminId: args.adminId,
         note: `Underpaid top-up order ${order.orderCode}: credited the amount actually received.`,
       });
-      // Posted as the manual adjustment it is recorded as, matching the
-      // `admin_adjust` reason chosen above (see this function's doc comment for
-      // why that reason, and not `wallet_topup` or `underpaid_refund`) — an
-      // admin deciding to owe the buyer what they actually sent, rather than a
-      // top-up settling for the amount the order asked for.
-      await postWalletAdjustmentPosting(tx, {
+      // Posted as gateway cash becoming wallet credit (`Dr provider_clearing /
+      // Cr wallet_liability`), NOT as the equity-funded manual adjustment the
+      // `admin_adjust` reason above might suggest: money really did arrive on a
+      // rail here, an admin only decided what to do with it. Sharing a reason
+      // code with the two hand-made adjustment call sites is not sharing their
+      // economics — see `postUnderpaidTopupCreditPosting`'s doc comment for why
+      // booking this against `adjustment.*` would understate the shop's
+      // gateway assets by every shortfall it ever credits.
+      await postUnderpaidTopupCreditPosting(tx, {
         walletTransactionId: transactionId,
+        orderId: order.id,
+        orderCode: order.orderCode,
         adminId: args.adminId,
         occurredAt: new Date(),
       });

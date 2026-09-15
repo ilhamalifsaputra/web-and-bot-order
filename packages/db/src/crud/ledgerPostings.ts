@@ -5,17 +5,17 @@
  *
  * `crud/ledger.ts` owns HOW a posting is written (balanced, idempotent,
  * append-only) and is the ledger's only writer. This file owns WHAT to write:
- * for an order payment, a wallet top-up, a manual adjustment, a referral
- * commission and the three ways money flows back toward a customer, it turns the
- * event into a list of debit/credit legs and hands them to
- * `postFinancialTransaction`. Nothing here writes a ledger row itself.
+ * for an order payment, a wallet top-up (settled in full, or credited short when
+ * the money arrived short), a manual adjustment, a referral commission and the
+ * three ways money flows back toward a customer, it turns the event into a list
+ * of debit/credit legs and hands them to `postFinancialTransaction`. Nothing here
+ * writes a ledger row itself.
  *
  * Why one module rather than a helper inside each caller: three of these events
  * are raised from more than one place (an order payment settles through both
  * `approveOrder` and `settlePaidOrder`'s manual branch; a manual adjustment is
- * raised from `wallet_topup.ts`, from web-admin's users route and from the bot's
- * `/wallet` command), and two of those call sites live outside `packages/db`
- * entirely. A copy of the account mapping per call site is a copy of the
+ * raised from web-admin's users route and from the bot's `/wallet` command), and
+ * two of those call sites live outside `packages/db` entirely. A copy of the account mapping per call site is a copy of the
  * accounting rules, and the copies would drift — a debit/credit direction that
  * is right in one file and backwards in another is exactly the bug a ledger
  * exists to make impossible. It also keeps ad-hoc ledger logic out of route and
@@ -352,7 +352,9 @@ export async function postOrderPaymentPosting(
  * `settleWalletTopup` credits and the figure `createWalletTopupOrder` validated
  * — deliberately not the amount a rail reported (`settleWalletTopup` logs that
  * discrepancy and credits the order's total anyway, so the ledger must agree
- * with the credit, not with the report).
+ * with the credit, not with the report). A top-up whose money arrived SHORT is
+ * never settled through here at all — it is cancelled and the buyer is credited
+ * what turned up, which is `postUnderpaidTopupCreditPosting` below.
  */
 export async function postWalletTopupPosting(
   db: Db,
@@ -388,12 +390,95 @@ export async function postWalletTopupPosting(
 }
 
 /**
+ * A top-up whose money arrived SHORT, credited to the buyer anyway
+ * (`creditUnderpaidTopupAnyway`): the rail collected less than the order asked
+ * for, so the top-up is cancelled instead of settled and the buyer gets exactly
+ * what turned up.
+ *
+ * `Dr provider_clearing.<ccy> / Cr wallet_liability.<ccy>` — the same pair as a
+ * top-up that settled in full, for the same reason: cash a gateway has collected
+ * became credit the shop owes the buyer. Only the amount differs, and it comes
+ * from the movement row, so it is what `adjustWallet` actually applied rather than
+ * the total the order asked for.
+ *
+ * This is deliberately NOT `postWalletAdjustmentPosting`, even though the wallet
+ * movement underneath carries the same `admin_adjust` reason code as the two
+ * genuinely hand-made adjustments (web-admin's users route, the bot's `/wallet`
+ * command). Those two move a balance with no customer payment behind them at all,
+ * which is what makes `adjustment.<ccy>` (EQUITY) right for them. Here money DID
+ * arrive; the admin only decided what to do with it. Posting it against
+ * `adjustment` would claim the shop funded this credit out of its own equity and
+ * would leave the cash the rail really collected unrecorded on the asset side —
+ * a trial balance that still balances, with `provider_clearing` understated by
+ * every shortfall ever credited and equity consumed in its place. Economically
+ * this is the same event as `postOrderWalletCreditPosting`'s no-prior-payment
+ * branch (a rail reported less than expected, so the buyer is credited what came
+ * in); only the KIND of order that triggered it differs, which is not an
+ * accounting distinction. Sharing a `reason` string is not sharing economics.
+ *
+ * The transaction type stays `ADJUSTMENT`, matching that same `admin_adjust`
+ * reason: this is an admin resolving a stuck top-up by hand. It is not a `REFUND`
+ * (no delivery was undone — the whole point of this resolution is that a top-up
+ * has nothing to refund) and not a `WALLET_DEPOSIT` (that is a top-up settling
+ * for the full amount it asked for, and reporting this as one would overstate how
+ * much money the rails actually delivered).
+ *
+ * `referenceType: "order"` points at the top-up whose gateway payment is being
+ * recognised, rather than at the acting admin the way a hand-made adjustment
+ * does: the `provider_clearing` debit is a claim that a rail collected this money
+ * against THIS order, which is exactly what M5's reconciliation has to tie back
+ * to. The admin is named in the description instead, and the `WalletTransaction`
+ * row keeps `adminId` either way.
+ *
+ * The caller credits only a positive received amount, so the movement is always a
+ * credit to the buyer; like every other one-directional posting here, the leg
+ * order is fixed rather than derived from the movement's sign.
+ */
+export async function postUnderpaidTopupCreditPosting(
+  db: Db,
+  args: {
+    walletTransactionId: number;
+    orderId: number;
+    orderCode: string;
+    adminId: number;
+    occurredAt: Date;
+  },
+): Promise<FinancialTransaction | null> {
+  const context = `the shortfall credited for underpaid wallet top-up order ${args.orderCode}`;
+  const movement = await readWalletMovement(db, args.walletTransactionId, context);
+  if (!movement) return null;
+
+  return postOrSkipMissingAccount(
+    db,
+    {
+      type: FinancialTransactionType.ADJUSTMENT,
+      referenceType: "order",
+      referenceId: args.orderId,
+      idempotencyKey: walletKey(args.walletTransactionId),
+      description: `Credited ${movement.amount.toString()} ${movement.currency} to the buyer for underpaid wallet top-up order ${args.orderCode} — the amount that actually arrived, rather than the amount the top-up asked for — as resolved by admin ${args.adminId}.`,
+      occurredAt: args.occurredAt,
+      entries: pair(
+        `provider_clearing.${suffix(movement.currency)}`,
+        `wallet_liability.${suffix(movement.currency)}`,
+        movement.amount,
+        movement.currency,
+      ),
+    },
+    context,
+  );
+}
+
+/**
  * An admin moving a buyer's balance by hand (`admin_adjust`) — a goodwill
  * credit, a correction, a manual debit.
  *
- * There is no customer payment behind this and no sale, so the counter-account
- * is `adjustment.<ccy>` (EQUITY): the shop is deciding to owe the buyer more, or
- * less, out of its own equity. Direction follows the movement:
+ * There is no customer payment behind this and no sale — both remaining call
+ * sites (web-admin's users route, the bot's `/wallet` command) move a balance out
+ * of nothing — so the counter-account is `adjustment.<ccy>` (EQUITY): the shop is
+ * deciding to owe the buyer more, or less, out of its own equity. That is what
+ * makes this posting the WRONG one for any `admin_adjust` movement that real
+ * money did arrive behind; see `postUnderpaidTopupCreditPosting`, which is the
+ * one such case. Direction follows the movement:
  *
  * - **Credit to the buyer** (`delta > 0`): `Dr adjustment / Cr wallet_liability`
  *   — the obligation grows.
@@ -401,10 +486,10 @@ export async function postWalletTopupPosting(
  *   — the obligation shrinks.
  *
  * `referenceId` is the acting admin's id, with `referenceType: "manual"`: a
- * hand-made adjustment's most useful back-pointer is the person who made it, and
- * every call site has one. The order id some call sites also pass to
- * `adjustWallet` is not used here — the movement is not an order's payment, and
- * pointing the posting at the order would make it look like one.
+ * hand-made adjustment's most useful back-pointer is the person who made it, both
+ * call sites have one, and neither has an order to point at — the movement is not
+ * an order's payment, and pointing the posting at an order would make it look
+ * like one.
  */
 export async function postWalletAdjustmentPosting(
   db: Db,

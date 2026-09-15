@@ -60,7 +60,7 @@ import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/p
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -4201,6 +4201,68 @@ describe("admin handlers", () => {
     const after = (await getUser(prisma, sample.user.id))!;
     expect(Number(after.walletBalance)).toBeCloseTo(Number(before.walletBalance) + 3);
     expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+  });
+
+  // Financial Ledger M3: `/wallet` is one of the two `admin_adjust` call sites
+  // that post a manual adjustment to the double-entry ledger, and it is the only
+  // one that lives in the bot process. A hand-made credit has no customer payment
+  // behind it, so it must be funded from the shop's own equity — `Dr
+  // adjustment.<ccy> / Cr wallet_liability.<ccy>` — and it must land in the same
+  // transaction as the balance change, or the books and the balance can disagree
+  // about whether the adjustment happened at all.
+  it("/wallet posts the hand-made credit to the ledger as Dr adjustment / Cr wallet_liability", async () => {
+    const { ctx } = adminCtx({ match: `${sample.user.id} 5000` });
+    await adminWalletCommand(ctx);
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { userId: sample.user.id, reason: "admin_adjust" },
+    });
+    const posting = await prisma.financialTransaction.findUniqueOrThrow({
+      where: { idempotencyKey: `wallet:${movement.id}` },
+    });
+    expect(posting.type).toBe(FinancialTransactionType.ADJUSTMENT);
+    // A hand-made move's most useful back-pointer is the admin who made it — and
+    // it is the acting admin's DB id, not their Telegram id.
+    expect(posting.referenceType).toBe("manual");
+    expect(posting.referenceId).toBe(adminDbId);
+
+    const entries = await prisma.ledgerEntry.findMany({
+      where: { financialTransactionId: posting.id },
+      include: { account: true },
+      orderBy: { id: "asc" },
+    });
+    expect(
+      entries.map((e) => [e.account.code, e.direction, new Decimal(e.amount).toString(), e.currency]),
+    ).toEqual([
+      ["adjustment.idr", LedgerDirection.DEBIT, "5000", "IDR"],
+      ["wallet_liability.idr", LedgerDirection.CREDIT, "5000", "IDR"],
+    ]);
+  });
+
+  // The currency argument has to reach the ledger too, not just the balance: a
+  // USDT credit posted against the IDR accounts would misstate both currencies
+  // at once, and the trial balance would still balance.
+  it("/wallet <uid> <amount> USDT posts against the USDT ledger accounts", async () => {
+    const { ctx } = adminCtx({ match: `${sample.user.id} 2.5 USDT` });
+    await adminWalletCommand(ctx);
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { userId: sample.user.id, reason: "admin_adjust" },
+    });
+    const posting = await prisma.financialTransaction.findUniqueOrThrow({
+      where: { idempotencyKey: `wallet:${movement.id}` },
+    });
+    const entries = await prisma.ledgerEntry.findMany({
+      where: { financialTransactionId: posting.id },
+      include: { account: true },
+      orderBy: { id: "asc" },
+    });
+    expect(
+      entries.map((e) => [e.account.code, e.direction, new Decimal(e.amount).toString(), e.currency]),
+    ).toEqual([
+      ["adjustment.usdt", LedgerDirection.DEBIT, "2.5", "USDT"],
+      ["wallet_liability.usdt", LedgerDirection.CREDIT, "2.5", "USDT"],
+    ]);
   });
 
   it("/wallet rejects an unrecognized trailing currency argument as bad args", async () => {

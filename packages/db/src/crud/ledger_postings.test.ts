@@ -53,10 +53,15 @@ import {
   createOrderDirect,
   createWalletTopupOrder,
   creditOrderToBalance,
+  creditUnderpaidTopupAnyway,
   getOrder,
+  markOrderUnderpaid,
+  markUnderpaid,
   maybePayReferralCommission,
   postFinancialTransaction,
+  postOrderPaymentPosting,
   postWalletAdjustmentPosting,
+  postWalletTopupPosting,
   seedChartOfAccounts,
   refundUnderpaidOrder,
   rejectOrder,
@@ -183,8 +188,8 @@ async function makeOrderAwaitingVerification(args: {
 async function fundIdrWallet(amount: Decimal.Value) {
   await adjustWallet(prisma, sample.user.id, amount, { reason: "admin_adjust", currency: "IDR" });
   // Funding is a real money event, but it is fixture setup here — and it posts
-  // nothing anyway (only the three `admin_adjust` call sites post, and this is
-  // not one of them). Clear the ledger regardless so each test's assertions
+  // nothing anyway (only the `admin_adjust` call sites post, and this is not one
+  // of them). Clear the ledger regardless so each test's assertions
   // start from empty books even if that changes.
   await prisma.ledgerEntry.deleteMany();
   await prisma.financialTransaction.deleteMany();
@@ -277,6 +282,14 @@ describe("order payment posting (approveOrder / settlePaidOrder)", () => {
     // claim refuses the second attempt, which is the behaviour being relied on —
     // and the ledger must be unchanged either way.
     await expect(approveOrder(prisma, order.id, { adminId: ADMIN_ID })).rejects.toThrow();
+
+    // That assertion alone only proves the CALLER refused the retry: approveOrder
+    // threw before it ever reached the posting a second time. The ledger's own
+    // `order:{id}:payment` key has to dedupe too, because it is the last line of
+    // defence for a caller that DOESN'T short-circuit — so drive the posting
+    // directly and require the first row back rather than a second one.
+    const reposted = await postOrderPaymentPosting(prisma, order, first.occurredAt);
+    expect(reposted!.id).toBe(first.id);
 
     const postings = await allPostings();
     expect(postings).toHaveLength(1);
@@ -398,8 +411,126 @@ describe("wallet top-up posting (settleWalletTopup)", () => {
     const replay = await settleWalletTopup(prisma, topup.id, { amount: "100000" });
     expect(new Decimal(replay.credited).toString()).toBe("0");
 
+    // As with the order-payment replay above, that no-op is `settleWalletTopup`'s
+    // own lost-claim branch returning early — it never reaches the posting again.
+    // `order:{id}:topup` must dedupe on its own account, so post it directly a
+    // second time and require the first row back.
+    const first = await postingByKey(`order:${topup.id}:topup`);
+    const reposted = await postWalletTopupPosting(prisma, topup, first.occurredAt);
+    expect(reposted!.id).toBe(first.id);
+
     expect(await allPostings()).toHaveLength(1);
     expect(await prisma.ledgerEntry.count()).toBe(2);
+  });
+});
+
+// ── 2b. An underpaid top-up credited anyway ────────────────────────────────
+
+describe("underpaid wallet top-up credited anyway (creditUnderpaidTopupAnyway)", () => {
+  it("posts Dr provider_clearing / Cr wallet_liability for the amount that really arrived", async () => {
+    const topup = await createWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      amount: "20000",
+      currency: "IDR",
+      method: PaymentMethod.TOKOPAY,
+    });
+    // Driven through the real gateway path that flags a shortfall, because that
+    // is what writes the row `findUnderpaidReceived` reads: without it this
+    // resolution credits nothing and there is no posting to assert on.
+    expect(
+      await markOrderUnderpaid(prisma, {
+        orderId: topup.id,
+        gateway: "TokoPay",
+        receivedAmount: "18500",
+        expectedAmount: topup.totalAmount,
+      }),
+    ).toBe(true);
+
+    const { credited } = await creditUnderpaidTopupAnyway(prisma, {
+      orderId: topup.id,
+      adminId: ADMIN_ID,
+    });
+    expect(credited.toString()).toBe("18500");
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { orderId: topup.id, reason: "admin_adjust" },
+    });
+    const posting = await postingByKey(`wallet:${movement.id}`);
+    expect(posting.type).toBe(FinancialTransactionType.ADJUSTMENT);
+    // The top-up order is the back-pointer, not the acting admin: what this
+    // posting claims is that a rail collected 18500 against THIS order, which is
+    // the figure M5's reconciliation has to tie back to a gateway payment.
+    expect(posting.referenceType).toBe("order");
+    expect(posting.referenceId).toBe(topup.id);
+
+    const entries = await entriesOf(posting.id);
+    // Real gateway cash, recognised for the first time — the same shape as an
+    // underpaid product order's credit. NOT `Dr adjustment.idr`: that would fund
+    // the buyer's new balance out of the shop's own equity and leave the money
+    // the rail actually collected unrecorded on the asset side, which balances
+    // and is still wrong.
+    expect(entries).toEqual([
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: "18500", currency: "IDR" },
+      { code: "wallet_liability.idr", direction: "CREDIT", amount: "18500", currency: "IDR" },
+    ]);
+    expect(entries.some((e) => e.code.startsWith("adjustment"))).toBe(false);
+    await expectBalanced(posting.id);
+    // The top-up itself never settled, so there is no WALLET_DEPOSIT posting
+    // beside this one — the shortfall was never credited as a full top-up.
+    expect(await allPostings()).toHaveLength(1);
+  });
+
+  it("uses the USDT accounts when the underpaid rail was a USDT one", async () => {
+    const topup = await createWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      amount: "10",
+      currency: "USDT",
+      method: PaymentMethod.BINANCE_INTERNAL,
+      rate: "16000",
+    });
+    expect(
+      await markUnderpaid(prisma, {
+        orderId: topup.id,
+        binanceTxId: `bin-ledger-underpaid-${topup.id}`,
+        amount: "6.5",
+      }),
+    ).toBe(true);
+
+    await creditUnderpaidTopupAnyway(prisma, { orderId: topup.id, adminId: ADMIN_ID });
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { orderId: topup.id, reason: "admin_adjust" },
+    });
+    const posting = await postingByKey(`wallet:${movement.id}`);
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "provider_clearing.usdt", direction: "DEBIT", amount: "6.5", currency: "USDT" },
+      { code: "wallet_liability.usdt", direction: "CREDIT", amount: "6.5", currency: "USDT" },
+    ]);
+    await expectBalanced(posting.id);
+  });
+
+  it("posts nothing when no rail recorded how much arrived", async () => {
+    // An order somebody moved to UNDERPAID by hand: it is still cancelled, but no
+    // wallet movement is written, so there is no money event to post either.
+    const topup = await createWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      amount: "20000",
+      currency: "IDR",
+      method: PaymentMethod.TOKOPAY,
+    });
+    await prisma.order.update({
+      where: { id: topup.id },
+      data: { status: OrderStatus.UNDERPAID },
+    });
+
+    const { credited } = await creditUnderpaidTopupAnyway(prisma, {
+      orderId: topup.id,
+      adminId: ADMIN_ID,
+    });
+
+    expect(credited.toString()).toBe("0");
+    expect(await allPostings()).toEqual([]);
+    expect(await prisma.ledgerEntry.count()).toBe(0);
   });
 });
 

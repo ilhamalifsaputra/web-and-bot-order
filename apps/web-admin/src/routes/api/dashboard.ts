@@ -18,6 +18,7 @@ import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
   revenueSummary,
+  grossSalesForNetSales,
   refundTotalsSince,
   profitSummarySince,
   ordersByStatusSince,
@@ -114,6 +115,9 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const todayRevenue = await revenueSummary(prisma, todayStart);
     const yesterdayRevenue = await revenueSummary(prisma, yesterdayStart, yesterdaySameClock);
     const todayRefunds = await refundTotalsSince(prisma, todayStart);
+    // Net Sales' own gross basis — NOT `todayRevenue`. See the comment on the
+    // `netSales` field below, and grossSalesForNetSales' own doc comment.
+    const todayGrossForNet = await grossSalesForNetSales(prisma, todayStart);
     const profit = await profitSummarySince(prisma, todayStart);
     const orderStatus = await ordersByStatusSince(prisma, todayStart);
     const manualQueue = await manualMatchQueueCounts(prisma);
@@ -133,10 +137,18 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         },
       },
       // Refunds actually paid out today, and today's gross sales net of them
-      // (Financial Ledger M6, Task 6b). `revenue` above already IS the Gross
-      // Sales figure — product-only since Task 6a — so there is no separate
-      // gross card, and this is the first thing on the dashboard that reflects a
-      // refund at all.
+      // (Financial Ledger M6, Task 6b). This is the first thing on the
+      // dashboard that reflects a refund at all.
+      //
+      // The gross basis subtracted from is `grossSalesForNetSales`, NOT the
+      // `revenue` figure above, and the two genuinely differ on a day with a
+      // FULL refund: a fully-refunded order leaves DELIVERED for REFUNDED, so
+      // it drops out of "Revenue Today" (delivered-only, by design) while the
+      // sale itself still happened that day. Subtracting the payout from the
+      // figure it had already left charged the same refund twice and reported
+      // -Rp10.000 for a day that netted zero. `revenue` above is unchanged —
+      // only Net Sales' internal basis differs. See grossSalesForNetSales'
+      // doc comment for why Gross and Net are allowed to disagree here.
       //
       // Net Sales is a plain Decimal subtraction and is deliberately NOT clamped
       // at zero: a refund can legitimately be for an order sold on an earlier
@@ -144,8 +156,8 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       // signal an operator needs to see, not an error to be hidden behind a 0.
       refunds: shapeMoneyPair(todayRefunds.refunds_idr, todayRefunds.refunds_usdt),
       netSales: shapeMoneyPair(
-        todayRevenue.revenue_idr.minus(todayRefunds.refunds_idr),
-        todayRevenue.revenue_usdt.minus(todayRefunds.refunds_usdt),
+        todayGrossForNet.idr.minus(todayRefunds.refunds_idr),
+        todayGrossForNet.usdt.minus(todayRefunds.refunds_usdt),
       ),
       profit,
       orders: {

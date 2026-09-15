@@ -135,6 +135,31 @@ describe("GET /api/dashboard/kpis", () => {
     // -2000, not 0: clamping this would hide a real day of money going out.
     expect(body.netSales).toEqual({ idr: "-2000", usdt: null });
   });
+
+  // Regression, Task 6b fix (C1): a full refund moves the order out of
+  // DELIVERED into REFUNDED (executeRefund), so it leaves "Revenue Today"
+  // entirely. Net Sales used to subtract the payout from a gross figure the
+  // sale had already left, charging the same refund twice and reporting
+  // -Rp10.000 for a day that genuinely netted zero. Net Sales now reads its own
+  // gross basis, which still contains the refunded sale.
+  it("nets a same-day FULL refund to zero rather than fabricating a negative figure", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-fullrefund", userId: buyer.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() },
+    });
+    await payOutRefund(order.id, "10000");
+    // The premise of the bug: the order really is no longer DELIVERED.
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("REFUNDED");
+
+    const body = (await get("/api/dashboard/kpis", cookie)).json();
+    // "Revenue Today" is delivered-only and stays that way — unchanged by this
+    // fix, and correctly empty now that the only order of the day is refunded.
+    expect(body.revenue.idr).toBeNull();
+    expect(body.refunds).toEqual({ idr: "10000", usdt: null });
+    // Zero, rendered as null by this endpoint's own zero-means-null convention:
+    // exactly as much was sold today as was handed back. Never "-10000".
+    expect(body.netSales).toEqual({ idr: null, usdt: null });
+  });
 });
 
 describe("GET /api/dashboard/operations", () => {

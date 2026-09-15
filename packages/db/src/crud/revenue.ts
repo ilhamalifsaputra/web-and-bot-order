@@ -101,21 +101,29 @@ function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decima
   return isUsdt && fxRate != null ? idrAmount.div(fxRate) : idrAmount;
 }
 
-/** Delivered-order totals split per transaction currency (plan.md §15.8 —
- * reports keep currencies apart instead of pretending one unit). Orders
- * predating the currency column count as USDT (their snapshot currency).
+/** Sold-order totals split per transaction currency (plan.md §15.8 — reports
+ * keep currencies apart instead of pretending one unit). Orders predating the
+ * currency column count as USDT (their snapshot currency).
  *
  * `status`/`kind` are spread AFTER `extraWhere` on purpose: they are this
- * helper's own invariants, and a caller must not be able to widen "delivered
+ * helper's own invariants, and a caller must not be able to widen "sold
  * product revenue" into something else by passing its own `status`/`kind` key
- * (see ORDER_KIND_SALES_FILTER above for why the kind half matters). */
-async function deliveredRevenueByCurrency(
+ * (see ORDER_KIND_SALES_FILTER above for why the kind half matters).
+ *
+ * `statuses` is a separate, explicit parameter for the same reason — the one
+ * caller that needs a wider set (`grossSalesForNetSales`, which must keep a
+ * sale that was later refunded) has to say so in its own argument list, where
+ * it is reviewable, instead of smuggling a `status` key through `extraWhere`.
+ * It defaults to DELIVERED alone, so every other caller is delivered-only
+ * exactly as before. */
+async function salesRevenueByCurrency(
   db: Db,
   extraWhere: Record<string, unknown> = {},
+  statuses: readonly OrderStatus[] = [OrderStatus.DELIVERED],
 ): Promise<{ idr: Decimal; usdt: Decimal; orders: number }> {
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { ...extraWhere, status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER },
+    where: { ...extraWhere, status: { in: [...statuses] }, ...ORDER_KIND_SALES_FILTER },
     _sum: { totalAmount: true },
     _count: { _all: true },
   });
@@ -136,7 +144,7 @@ async function deliveredRevenueByCurrency(
  * ("X items sold · Rp Y total revenue · Z users").
  *
  * `revenue_idr`/`revenue_usdt` are product-sales-only via
- * `deliveredRevenueByCurrency` (see `ORDER_KIND_SALES_FILTER`) — this is a
+ * `salesRevenueByCurrency` (see `ORDER_KIND_SALES_FILTER`) — this is a
  * "total revenue" figure shown to buyers, so a top-up must not inflate it.
  * `items_sold` needs no filter (it aggregates `OrderItem.quantity`, and a
  * top-up order has no items) and `total_users` is not order-derived at all.
@@ -151,7 +159,7 @@ export async function botOverallStats(db: Db): Promise<{
     where: { order: { status: OrderStatus.DELIVERED } },
     _sum: { quantity: true },
   });
-  const rev = await deliveredRevenueByCurrency(db);
+  const rev = await salesRevenueByCurrency(db);
   const totalUsers = await db.user.count();
   return {
     items_sold: itemsAgg._sum.quantity ?? 0,
@@ -165,7 +173,7 @@ export async function botOverallStats(db: Db): Promise<{
  * Delivered product-sales revenue in the window `[since, until]`, split per
  * currency, plus the order count behind it — the dashboard's "Revenue
  * Today"/"Revenue Yesterday" cards and the Orders page's "Revenue Today" KPI.
- * Excludes wallet top-ups via `deliveredRevenueByCurrency` (see
+ * Excludes wallet top-ups via `salesRevenueByCurrency` (see
  * `ORDER_KIND_SALES_FILTER`), so `orders` here is a count of SALES, not of all
  * delivered order rows.
  */
@@ -174,8 +182,59 @@ export async function revenueSummary(
   since: Date,
   until: Date = new Date(),
 ): Promise<{ revenue_idr: Decimal; revenue_usdt: Decimal; orders: number }> {
-  const rev = await deliveredRevenueByCurrency(db, { deliveredAt: { gte: since, lte: until } });
+  const rev = await salesRevenueByCurrency(db, { deliveredAt: { gte: since, lte: until } });
   return { revenue_idr: rev.idr, revenue_usdt: rev.usdt, orders: rev.orders };
+}
+
+/**
+ * Gross product sales in the window `[since, until]`, split per currency, for
+ * the ONE purpose of being the figure the day's refund payouts are subtracted
+ * from — the dashboard's "Net Sales Today" card (Financial Ledger M6, Task 6b).
+ * Nothing else should read this: "Revenue Today", the Reports page and the
+ * bot's stats all stay on `revenueSummary` above, which is deliberately
+ * unchanged.
+ *
+ * The only difference from `revenueSummary` is the status set: DELIVERED **and
+ * REFUNDED**, where `revenueSummary` is DELIVERED alone. `executeRefund`
+ * (crud/refunds.ts) closes a fully-refunded DELIVERED order by moving it to
+ * REFUNDED, so a sale that is refunded in full on the same day it was sold
+ * disappears from a DELIVERED-only gross figure. Subtracting the payout from
+ * that figure charges the same refund twice: an order sold for Rp10,000 today
+ * and paid back in full today reported Net Sales of **-Rp10,000**, a number
+ * that never happened. Counting the refunded sale in gross makes the same day
+ * net to Rp0 — as much was sold as was handed back, which is the honest answer.
+ *
+ * This does NOT restore a "Revenue Today = Net Sales + Refunds Today" identity,
+ * and is not meant to: that identity only ever held as an artifact of the
+ * double-counting itself. Gross and Net are supposed to be two different
+ * numbers. A PARTIAL same-day refund leaves the order DELIVERED (no legal
+ * PARTIALLY_DELIVERED/DELIVERED -> REFUNDED edge fires for it — see
+ * orderStatus.ts), so both figures count that sale once and the two differ by
+ * exactly the payout; a FULL one moves it to REFUNDED, and this function keeps
+ * counting it so the subtraction still happens exactly once.
+ *
+ * REFUNDED is the only status added. `PARTIALLY_DELIVERED` is deliberately NOT
+ * included: it is not a "sold then refunded" state, and a partial refund never
+ * moves an order into it. Wallet top-ups stay excluded (`kind: PRODUCT`, via
+ * `salesRevenueByCurrency`) exactly as everywhere else — widening the status
+ * filter must not quietly reopen that door. No order count is returned: the
+ * "orders" KPI is a sales-funnel figure with its own source, and a refunded
+ * order does not belong in it.
+ */
+export async function grossSalesForNetSales(
+  db: Db,
+  since: Date,
+  until: Date = new Date(),
+): Promise<{ idr: Decimal; usdt: Decimal }> {
+  const rev = await salesRevenueByCurrency(
+    db,
+    // Same `deliveredAt` window as `revenueSummary`: a refunded order keeps the
+    // `deliveredAt` it was sold at (transitionOrderStatus writes only `status`),
+    // so it still falls on the day the sale actually happened.
+    { deliveredAt: { gte: since, lte: until } },
+    [OrderStatus.DELIVERED, OrderStatus.REFUNDED],
+  );
+  return { idr: rev.idr, usdt: rev.usdt };
 }
 
 export interface DayRevenue {
@@ -190,7 +249,7 @@ export interface DayRevenue {
  * days filled with zero so the sparkline has no gaps. Buckets by UTC date; the
  * dashboard is single-operator so a TZ-exact daily cut isn't worth a raw query.
  *
- * Split by `currency` (mirrors `deliveredRevenueByCurrency` above) — summing
+ * Split by `currency` (mirrors `salesRevenueByCurrency` above) — summing
  * `totalAmount` across orders regardless of currency would add a USDT order's
  * small decimal total straight into the Rupiah figure, the reports-page
  * equivalent of the "Rp3" display bug.
@@ -528,7 +587,7 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
  * `executeRefund` snapshots that column from the `Refund`, which `createRefund`
  * pins to the order's own currency, and it re-checks the two agree before paying
  * anything out. Non-IDR falls into the USDT bucket, mirroring
- * `deliveredRevenueByCurrency`'s own convention above — those are the only two
+ * `salesRevenueByCurrency`'s own convention above — those are the only two
  * currencies an Order (and therefore a Refund, and therefore a payout) can carry.
  */
 export async function refundTotalsSince(

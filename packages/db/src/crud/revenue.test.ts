@@ -22,6 +22,7 @@ import {
   botOverallStats,
   refundTotalsSince,
   refundsByDay,
+  grossSalesForNetSales,
 } from "./revenue";
 
 let db: TestDb;
@@ -574,7 +575,7 @@ describe("wallet top-ups are excluded from every revenue figure (kind: PRODUCT)"
     expect(stats.revenue_usdt.toString()).toBe("0");
   });
 
-  // deliveredRevenueByCurrency is module-private and revenueSummary is the one
+  // salesRevenueByCurrency is module-private and revenueSummary is the one
   // caller that passes it an `extraWhere`. The kind filter has to live in the
   // helper's own base `where`, applied so a caller's extraWhere can never
   // clear it — proven here through the only public door into that helper.
@@ -731,7 +732,7 @@ describe("refund totals from RefundExecution", () => {
 
       const totals = await refundTotalsSince(prisma, new Date(now.getTime() - 86_400_000));
       // 3.43 USDT must never land in the Rupiah figure — the same "Rp3" class of
-      // bug `deliveredRevenueByCurrency` splits currencies to prevent.
+      // bug `salesRevenueByCurrency` splits currencies to prevent.
       expect(totals.refunds_idr.toString()).toBe("54000");
       expect(totals.refunds_usdt.toString()).toBe("3.43");
     });
@@ -776,6 +777,102 @@ describe("refund totals from RefundExecution", () => {
 
       const days = await refundsByDay(prisma, 1);
       expect(days[0]).toMatchObject({ refunds_idr: "0", refunds_usdt: "0" });
+    });
+  });
+
+  // Task 6b fix (C1). Declared inside this describe rather than beside the
+  // other revenue describes because it needs the same real payout fixtures:
+  // the whole point of the function is what happens to a sale AFTER
+  // `executeRefund` has moved it to REFUNDED, which only a real payout does.
+  describe("grossSalesForNetSales", () => {
+    it("still counts an order sold today and fully refunded today — the sale revenueSummary drops the moment executeRefund marks it REFUNDED", async () => {
+      const now = new Date();
+      const since = new Date(now.getTime() - 86_400_000);
+      // payOutRefund's order is created with totalAmount === the payout, so this
+      // is a FULL refund: executeRefund closes the order as REFUNDED.
+      await payOutRefund({ amount: "10000" });
+
+      // "Revenue Today" is delivered-only by design and no longer sees the
+      // sale at all...
+      expect((await revenueSummary(prisma, since)).revenue_idr.toString()).toBe("0");
+
+      // ...but the sale genuinely happened today, so Net Sales' own gross basis
+      // must still contain it. Without this, subtracting the payout from a
+      // gross figure the sale already left charges the same refund twice and
+      // fabricates -10000 for a day that truly netted zero.
+      const gross = await grossSalesForNetSales(prisma, since);
+      expect(gross.idr.toString()).toBe("10000");
+
+      const refunds = await refundTotalsSince(prisma, since);
+      expect(gross.idr.minus(refunds.refunds_idr).toString()).toBe("0");
+    });
+
+    it("sums a still-delivered sale and a refunded one together, keeping IDR and USDT in separate figures", async () => {
+      const now = new Date();
+      await makeRefundableOrder("54000", "IDR"); // sold, never refunded
+      await payOutRefund({ amount: "3.43", currency: "USDT" }); // sold then fully refunded
+
+      const gross = await grossSalesForNetSales(prisma, new Date(now.getTime() - 86_400_000));
+      // 3.43 USDT must never land in the Rupiah figure — the same "Rp3" class of
+      // bug every other function in this module splits currencies to prevent.
+      expect(gross.idr.toString()).toBe("54000");
+      expect(gross.usdt.toString()).toBe("3.43");
+    });
+
+    it("counts no status other than DELIVERED and REFUNDED, and never a wallet top-up", async () => {
+      const now = new Date();
+      const excluded = Object.values(OrderStatus).filter(
+        (s) => s !== OrderStatus.DELIVERED && s !== OrderStatus.REFUNDED,
+      );
+      for (const status of excluded) {
+        // deliveredAt is set on these too, so this proves the guard is the
+        // status filter and not an incidental null deliveredAt.
+        await prisma.order.create({
+          data: {
+            orderCode: `ORD-gross-${status}-${Math.random()}`,
+            userId,
+            kind: OrderKind.PRODUCT,
+            subtotalAmount: "10000",
+            totalAmount: "10000",
+            currency: "IDR",
+            status,
+            deliveredAt: now,
+          },
+        });
+      }
+      // A settled wallet top-up is a DELIVERED order with a deliveredAt too, and
+      // is still not a sale (Task 6a) — widening the status filter must not
+      // quietly reopen that door.
+      await prisma.order.create({
+        data: {
+          orderCode: `TOPUP-gross-${Math.random()}`,
+          userId,
+          kind: OrderKind.WALLET_TOPUP,
+          subtotalAmount: "100000",
+          totalAmount: "100000",
+          currency: "IDR",
+          status: OrderStatus.DELIVERED,
+          paidAt: now,
+          deliveredAt: now,
+        },
+      });
+      await makeRefundableOrder("7000", "IDR");
+
+      const gross = await grossSalesForNetSales(prisma, new Date(now.getTime() - 86_400_000));
+      expect(gross.idr.toString()).toBe("7000");
+      expect(gross.usdt.toString()).toBe("0");
+    });
+
+    it("excludes a sale delivered after `until`", async () => {
+      const now = new Date();
+      await makeRefundableOrder("8000", "IDR");
+
+      const gross = await grossSalesForNetSales(
+        prisma,
+        new Date(now.getTime() - 86_400_000),
+        new Date(now.getTime() - 60_000),
+      );
+      expect(gross.idr.toString()).toBe("0");
     });
   });
 });

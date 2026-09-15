@@ -13,7 +13,7 @@ import { Decimal } from "@app/core/money";
 import { OrderKind } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { revenueSummary, topProductsByMargin, profitSummarySince } from "./revenue";
+import { revenueSummary, grossSalesForNetSales, topProductsByMargin, profitSummarySince } from "./revenue";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -105,6 +105,44 @@ describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
     expect(result.revenue_idr.toString()).toBe(expected.idr.toString());
     expect(result.revenue_usdt.toString()).toBe(expected.usdt.toString());
     expect(result.orders).toBe(expected.orders);
+  });
+
+  // The Net Sales basis is a second orders-rooted money figure, so it gets its
+  // own independent recomputation like every other one in this file (Task 6b
+  // fix, C1). The REFUNDED order is created here rather than in
+  // `seedMixedScenario` so the delivered-only recomputations above keep
+  // proving exactly what they prove today.
+  it("grossSalesForNetSales matches a raw SUM(total_amount) grouped by currency over DELIVERED *and* REFUNDED sales", async () => {
+    const now = new Date();
+    await seedMixedScenario(now);
+    // A sale that was made and later refunded in full: executeRefund leaves it
+    // REFUNDED with its original deliveredAt intact.
+    await prisma.order.create({
+      data: { orderCode: `ORD-refunded-${Math.random()}`, userId, subtotalAmount: "30000", totalAmount: "30000", currency: "IDR", status: "REFUNDED", deliveredAt: now },
+    });
+    const since = new Date(now.getTime() - 60_000);
+
+    const rows = await prisma.$queryRawUnsafe<{ status: string; kind: string; currency: string; total_amount: string }[]>(
+      `SELECT status, kind, currency, total_amount FROM orders`,
+    );
+    const expected = { idr: new Decimal(0), usdt: new Decimal(0) };
+    for (const r of rows) {
+      // The one difference from revenueSummary's recomputation above: a sale
+      // that has since been refunded still belongs in the figure the day's
+      // refund payouts are subtracted from, or the same refund is charged twice.
+      if (r.status !== "DELIVERED" && r.status !== "REFUNDED") continue;
+      if (r.kind !== OrderKind.PRODUCT) continue;
+      if (r.currency === "IDR") expected.idr = expected.idr.plus(r.total_amount);
+      else expected.usdt = expected.usdt.plus(r.total_amount);
+    }
+
+    const result = await grossSalesForNetSales(prisma, since);
+    expect(result.idr.toString()).toBe(expected.idr.toString());
+    expect(result.usdt.toString()).toBe(expected.usdt.toString());
+    // And it really is wider than "Revenue Today" — the refunded sale is the
+    // whole difference between the two, nothing else.
+    const delivered = await revenueSummary(prisma, since);
+    expect(result.idr.minus(delivered.revenue_idr).toString()).toBe("30000");
   });
 
   it("topProductsByMargin.revenueIdrEquiv matches raw unit_price×quantity per denomination, delivered-only, with zero fx multiplication", async () => {

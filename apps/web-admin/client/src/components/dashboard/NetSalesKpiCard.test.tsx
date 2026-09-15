@@ -48,6 +48,26 @@ describe("NetSalesKpiCard", () => {
     expect(screen.getByText(/more refunded today than sold today/i)).toBeInTheDocument();
   });
 
+  // Pins the design decision behind the caveat line (Task 6b fix, M1): it names
+  // only the currency that is actually negative, instead of colouring the whole
+  // CurrencyStack. A rupiah loss sitting beside a USDT gain must never make the
+  // currency that is fine read as a loss too.
+  it("names only the negative currency, and leaves a positive one beside it unstyled, when the two disagree", async () => {
+    stubKpis({ netSales: { idr: "-2000", usdt: "16.82" } });
+    renderWithQuery();
+    await waitFor(() => expect(screen.getByText("-Rp2.000")).toBeInTheDocument());
+
+    const caveat = screen.getByText(/more refunded today than sold today/i);
+    expect(caveat).toHaveTextContent("IDR:");
+    expect(caveat.textContent).not.toMatch(/USDT/);
+
+    // The positive figure still renders in full, and neither it nor any
+    // ancestor carries the negative-value colour.
+    const usdtAmount = screen.getByText("16.82 USDT");
+    expect(usdtAmount.className).not.toMatch(/rust|red|danger/);
+    expect(usdtAmount.closest(".text-rust")).toBeNull();
+  });
+
   it("leaves the explanation off when every net figure is positive", async () => {
     stubKpis({ netSales: { idr: "52000", usdt: null } });
     renderWithQuery();

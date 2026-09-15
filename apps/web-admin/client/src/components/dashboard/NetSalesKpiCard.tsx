@@ -4,9 +4,14 @@ import { useDashboardKpis } from "../../hooks/useDashboardKpis";
 
 /**
  * Today's gross product sales minus today's refund payouts, per currency
- * (Financial Ledger M6, Task 6b). "Revenue Today" next to this card already IS
- * the gross figure — product-only since Task 6a — so this card is what that
- * number becomes once money handed back is taken off it.
+ * (Financial Ledger M6, Task 6b). This is what "Revenue Today" next to it
+ * becomes once money handed back is taken off it — with one deliberate
+ * difference: this card's gross basis (`grossSalesForNetSales`, packages/db/
+ * src/crud/revenue.ts) still counts a sale that was fully refunded the same
+ * day, which "Revenue Today" drops when the order turns REFUNDED. So on a
+ * full-refund day the two cards do NOT differ by exactly the refund total, and
+ * that is correct: subtracting the payout from a gross figure the sale had
+ * already left double-charged the refund and fabricated a negative number.
  *
  * A negative figure is rendered in full, never clamped or hidden: a refund can
  * legitimately be for an order sold on an earlier day, so "more refunded today

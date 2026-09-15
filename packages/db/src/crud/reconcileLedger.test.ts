@@ -25,6 +25,15 @@
  * report, and getting it wrong in the permissive direction floods the first
  * production run with every pre-ledger order the backfill (M10) has not reached
  * yet.
+ *
+ * `WALLET_LEDGER_DRIFT` additionally gets the four states one order's wallet
+ * hold passes through — spent at checkout, released, settled, and spent while a
+ * genuine hand-edit also drifted — because the buyers' balances and the control
+ * account are moved at DIFFERENT moments (checkout vs settlement) and a check
+ * that ignores the gap between them fires on every ordinary wallet checkout. Each
+ * of those fixtures walks the real path (`createOrderDirect` →
+ * `attachPaymentProof` → `approveOrder`/`rejectOrder`) rather than writing
+ * movement rows by hand, since the timing is the thing under test.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -51,6 +60,7 @@ import {
   getOrder,
   postFinancialTransaction,
   reconcileLedger,
+  rejectOrder,
   settleWalletTopup,
   transitionRefundStatus,
   type LedgerReconciliationFinding,
@@ -151,6 +161,49 @@ async function erasePosting(idempotencyKey: string) {
 /** Move an order's payment instant, which is what the cutover boundary reads. */
 async function setPaidAt(orderId: number, paidAt: Date) {
   await prisma.order.update({ where: { id: orderId }, data: { paidAt } });
+}
+
+/**
+ * Fund the sample buyer's IDR wallet the way a real top-up does — one
+ * settlement moving BOTH the balance and `wallet_liability.idr` — so a fixture
+ * that then spends that credit starts from books which already agree. Returns
+ * the refreshed user row, because `createOrderDirect` reads the balance off the
+ * object it is handed rather than re-reading it.
+ */
+async function fundWallet(amount: string) {
+  const topup = await createWalletTopupOrder(prisma, {
+    userId: sample.user.id,
+    amount,
+    currency: "IDR",
+    method: PaymentMethod.TOKOPAY,
+  });
+  await settleWalletTopup(prisma, topup.id, { amount });
+  return prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+}
+
+/**
+ * An order sitting in PENDING_VERIFICATION that spent wallet credit at
+ * checkout, built through the real checkout path (`createOrderDirect` →
+ * `attachPaymentProof`) rather than hand-written rows: the whole point of these
+ * cases is that the ordinary checkout debits `User.walletBalance` immediately
+ * while the ledger posts nothing until settlement, and a hand-written fixture
+ * could quietly get that timing wrong.
+ */
+async function makeInFlightWalletSpendOrder(walletAmount: string) {
+  // Funded well above what the order spends, so the balance left over is
+  // non-zero and a term that wrongly cancelled the whole balance would show up.
+  const user = await fundWallet("20.00");
+  const created = await createOrderDirect(prisma, {
+    user,
+    productId: sample.product.id,
+    quantity: 1,
+    walletAmount,
+  });
+  await attachPaymentProof(prisma, created!.id, { fileId: "proof", txid: `TX-${created!.id}` });
+  const order = (await getOrder(prisma, created!.id))!;
+  expect(order.status).toBe(OrderStatus.PENDING_VERIFICATION);
+  expect(new Decimal(order.walletUsed).toString()).toBe(new Decimal(walletAmount).toString());
+  return order;
 }
 
 /** A Refund sitting in PROCESSING — the only state `executeRefund` accepts. */
@@ -399,6 +452,73 @@ describe("reconcileLedger — WALLET_LEDGER_DRIFT", () => {
       actual: "0",
       difference: "12.5",
       currency: "USDT",
+    });
+  });
+
+  it("reports nothing while an unsettled order holds wallet credit spent at checkout", async () => {
+    // The state every live shop is in between a buyer paying with credit and an
+    // admin approving the order: the balance is already down by 2.00, and the
+    // ledger will not hear about it until settlement posts `order:{id}:payment`.
+    // Reporting that as drift is a false positive that fires on every ordinary
+    // checkout — which is what trains admins to ignore this alert.
+    const order = await makeInFlightWalletSpendOrder("2.00");
+
+    const findings = await reconcileLedger(prisma);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).toString()).toBe("18");
+    expect(order.status).toBe(OrderStatus.PENDING_VERIFICATION);
+    expect(drift(findings)).toEqual([]);
+  });
+
+  it("reports nothing once that unsettled order's wallet hold has been released", async () => {
+    const order = await makeInFlightWalletSpendOrder("2.00");
+    // Rejected before it ever settled: `releaseOrderHolds` credits the 2.00
+    // back and `postOrderHoldReleasePosting` deliberately posts nothing (the
+    // debit was never posted either). The hold has stopped being in flight, so
+    // counting it a second time would invent drift in the opposite direction.
+    await rejectOrder(prisma, order.id, { adminId: ADMIN_ID, reason: "out of stock" });
+
+    const findings = await reconcileLedger(prisma);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).toString()).toBe("20");
+    expect(drift(findings)).toEqual([]);
+  });
+
+  it("reports nothing once that order settles and its wallet leg is posted", async () => {
+    const order = await makeInFlightWalletSpendOrder("2.00");
+    // Settlement debits `wallet_liability.idr` by the 2.00 the buyer spent, via
+    // `postOrderPaymentPosting`'s wallet leg. The hold has been booked, so it
+    // must stop counting as in flight — counting it twice would report the
+    // settled order's own wallet spend as drift.
+    await approveOrder(prisma, order.id, { adminId: ADMIN_ID });
+    expect((await getOrder(prisma, order.id))!.status).toBe(OrderStatus.DELIVERED);
+
+    const findings = await reconcileLedger(prisma);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalance).toString()).toBe("18");
+    expect(drift(findings)).toEqual([]);
+  });
+
+  it("still reports real drift that coexists with an in-flight wallet hold", async () => {
+    await makeInFlightWalletSpendOrder("2.00");
+    // 1.00 leaves the buyer's balance with no movement row and no posting — the
+    // hand-edit case this check exists for. The in-flight term must reconcile
+    // the 2.00 hold and nothing else, or a real loss hides behind it.
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "17.00" } });
+
+    const findings = await reconcileLedger(prisma);
+
+    const found = drift(findings);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      entityId: "IDR",
+      expected: "19",
+      actual: "20",
+      difference: "-1",
+      currency: "IDR",
     });
   });
 

@@ -425,6 +425,92 @@ async function findRefundAmountMismatches(
 }
 
 /**
+ * The two `WalletTransaction` reason codes that make up one order's checkout
+ * hold: the debit `adjustWallet` writes when a buyer spends credit at checkout
+ * (`order_payment`, from all three checkout paths in crud/orders.ts) and the
+ * credit `releaseOrderHolds` writes when that order is rejected, cancelled or
+ * credited back (`order_refund`). `wallet_transactions` is UNIQUE on
+ * `(orderId, reason)`, so an order has at most one of each and their sum is its
+ * outstanding hold — nothing else here depends on that, but it is why the sum is
+ * a net of two rows rather than of an open-ended history.
+ */
+const HOLD_REASONS: readonly string[] = ["order_payment", "order_refund"];
+
+/**
+ * How much wallet credit is spent but not yet booked, per currency.
+ *
+ * This is the reconciling term between two records that are both correct and
+ * updated at DIFFERENT MOMENTS. Checkout debits `User.walletBalance` the instant
+ * a buyer spends credit (crud/orders.ts, all three checkout paths), while
+ * `wallet_liability.<ccy>` is only debited when the order SETTLES, by
+ * `postOrderPaymentPosting`'s wallet leg — this ledger recognises nothing until
+ * an order settles, deliberately (see `postOrderHoldReleasePosting`'s doc
+ * comment for why posting the hold itself would be wrong). So every order
+ * sitting in PENDING_PAYMENT or PENDING_VERIFICATION with credit spent on it
+ * makes the buyers' side of `findWalletLedgerDrift` legitimately SMALLER than
+ * the ledger's, by exactly the amount held. Without this term, an ordinary
+ * checkout — the single most common thing this shop does — would raise a
+ * CRITICAL drift alert every six hours until an admin approved the order.
+ *
+ * An order counts as in flight when NO `order:{id}:payment` posting exists for
+ * it, which is the same question the settlement path answers and not a guess
+ * about status: statuses change and get added, the posting's presence is the
+ * fact that actually decides whether `wallet_liability` has been debited yet.
+ * A settled order whose posting was ERASED therefore lands here too, and is
+ * reported by `findMissingOrderPostings` instead — the same root cause named
+ * once, by the check that can point at the order, rather than twice.
+ *
+ * The release is netted against the debit per order, so a hold returned by
+ * `releaseOrderHolds` stops counting: both movements are invisible to the ledger
+ * on an unsettled order, so their sum is what remains outstanding. A net that
+ * comes out NEGATIVE (more credit returned than was ever spent — unreachable
+ * through the app, since the release amount is the order's own `walletUsed`) is
+ * floored at zero rather than subtracted: this term exists to explain a
+ * shortfall the ledger has not caught up with, and letting it go negative would
+ * let it explain away credit that appeared from nowhere, which is drift.
+ *
+ * Two queries regardless of how many orders are involved: one `groupBy` that
+ * nets each order's movements in the database, then one indexed lookup of the
+ * payment keys for the orders whose net is non-zero. Like the rest of this file
+ * the second one's `IN` list is unbounded (the same precedent `reconcileFinances`
+ * sets); it is bounded in practice by orders that hold wallet credit — every
+ * released hold nets to zero and is dropped before the lookup.
+ */
+async function inFlightWalletHolds(db: Db): Promise<Map<string, Decimal>> {
+  const movements = await db.walletTransaction.groupBy({
+    by: ["orderId", "currency"],
+    where: { reason: { in: [...HOLD_REASONS] }, orderId: { not: null } },
+    _sum: { delta: true },
+  });
+
+  // Grouped per (order, currency) because the movement rows carry their own
+  // currency — the same reading `postOrderPaymentPosting` does when it builds
+  // the wallet leg — and a debit is stored negative, so the outstanding hold is
+  // the negation of the net.
+  const outstanding = movements
+    .filter((movement) => movement.orderId !== null)
+    .map((movement) => ({
+      orderId: movement.orderId as number,
+      currency: movement.currency,
+      hold: Decimal.max(ZERO, sumOrZero(movement._sum.delta?.toString()).negated()),
+    }))
+    .filter((row) => row.hold.greaterThan(0));
+  if (outstanding.length === 0) return new Map();
+
+  const posted = await postedKeys(
+    db,
+    [...new Set(outstanding.map((row) => row.orderId))].map(orderPaymentKey),
+  );
+
+  const totals = new Map<string, Decimal>();
+  for (const row of outstanding) {
+    if (posted.has(orderPaymentKey(row.orderId))) continue;
+    totals.set(row.currency, (totals.get(row.currency) ?? ZERO).plus(row.hold));
+  }
+  return totals;
+}
+
+/**
  * The control-account invariant: the sum of every buyer's wallet balance must
  * equal the `wallet_liability.<ccy>` account that exists to mirror it.
  *
@@ -441,20 +527,39 @@ async function findRefundAmountMismatches(
  * separate books here (see `assertBalancedPerCurrency` in crud/ledger.ts), and
  * a blended total would let a surplus in one hide a shortfall in the other.
  *
+ * **The two records are updated at different moments, so the comparison carries
+ * one reconciling term**: wallet credit spent at checkout leaves
+ * `User.walletBalance` immediately but only reaches `wallet_liability.<ccy>` when
+ * the order settles, so the buyers' side is legitimately lower than the ledger's
+ * while any order is in flight. `inFlightWalletHolds` measures that gap from real
+ * `WalletTransaction` rows and it is ADDED to the buyers' side before comparing.
+ * It is a timing difference between two correct records, not an allowance: it is
+ * computed per order from rows that exist, floored at zero, and it can only ever
+ * explain a shortfall the ledger has not caught up with.
+ *
  * **Before M10's backfill runs, this check is EXPECTED to report the shop's
- * whole pre-ledger wallet float as drift.** Two aggregates are being compared,
- * and only one of them can be scoped: `User.walletBalance` carries every credit
- * a buyer has ever been given, including the ones that predate the ledger, while
- * `wallet_liability.idr` only holds what the ledger has posted since M3 went
- * live. No cutover boundary can fix that — unlike the missing-posting check,
- * there is no per-row timestamp to filter on, because a balance is a running
- * total with no history of its own. So on a shop with existing wallet credit the
- * first runs will report a difference equal to that pre-ledger float, and it
- * will resolve itself when the backfill posts the historical wallet movements.
- * Reporting the real difference is still the right behaviour: suppressing it
- * would need a stored opening balance this milestone does not have, and
- * inventing one would be exactly the fabricated figure this file refuses to
- * produce.
+ * whole pre-ledger wallet float as drift.** That is a different problem from the
+ * in-flight term above and has a different fix. `User.walletBalance` carries
+ * every credit a buyer has ever been given, including the ones granted before the
+ * ledger existed, while `wallet_liability.idr` only holds what has been posted
+ * since M3 went live; until the backfill books that history, the difference
+ * between them is real and this check reports it. It resolves when M10 runs, not
+ * before.
+ *
+ * It is NOT reported unscoped because the per-row history to scope it with is
+ * missing — that history exists. `adjustWallet` (crud/users.ts) writes a
+ * timestamped `WalletTransaction` with `delta` and `balanceAfter` before every
+ * single balance write, so "movements since the cutover" is a query anyone could
+ * write. It is reported unscoped because scoping it that way would blind the
+ * check to any balance change that bypassed `adjustWallet` altogether — a
+ * hand-edited `User.walletBalance` column, a future credit path that forgets to
+ * go through it — which writes no `WalletTransaction` row and would therefore
+ * cancel out of a movements-based comparison exactly. That is precisely the class
+ * of drift this check exists to catch, so the unscoped comparison is the
+ * deliberately more paranoid one, not merely the un-optimised one. Suppressing
+ * the pre-ledger float instead would need a stored opening balance this milestone
+ * does not have, and inventing one would be exactly the fabricated figure this
+ * file refuses to produce.
  *
  * One aggregate for both currencies, then one balance read per account. An
  * account that does not exist at all (an environment where
@@ -476,6 +581,8 @@ async function findWalletLedgerDrift(
     { currency: OrderCurrency.USDT, usersTotal: sumOrZero(totals._sum.walletBalanceUsdt?.toString()) },
   ];
 
+  const holds = await inFlightWalletHolds(db);
+
   const findings: LedgerReconciliationFinding[] = [];
   for (const { currency, usersTotal } of byCurrency) {
     const accountCode = `wallet_liability.${suffix(currency)}`;
@@ -493,17 +600,25 @@ async function findWalletLedgerDrift(
       throw e;
     }
 
-    const difference = money(usersTotal.minus(ledgerTotal));
+    // What the control account should stand at: the credit buyers can still
+    // spend, plus the credit they have already spent on orders the ledger has
+    // not booked yet. Both halves come from real rows.
+    const inFlight = holds.get(currency) ?? ZERO;
+    const expected = money(usersTotal.plus(inFlight));
+
+    const difference = money(expected.minus(ledgerTotal));
     if (!difference.abs().greaterThan(MONEY_TOLERANCE)) continue;
     findings.push({
       type: ReconciliationFindingType.WALLET_LEDGER_DRIFT,
       entity: "wallet_liability",
       entityId: currency,
-      expected: usersTotal.toString(),
+      expected: expected.toString(),
       actual: ledgerTotal.toString(),
       difference: difference.toString(),
       currency,
-      reference: `Buyers hold ${usersTotal.toString()} ${currency} of wallet credit between them, but the "${accountCode}" control account stands at ${ledgerTotal.toString()}`,
+      reference: inFlight.greaterThan(0)
+        ? `Buyers hold ${usersTotal.toString()} ${currency} of wallet credit between them and have spent a further ${inFlight.toString()} ${currency} on orders that have not settled yet, so the "${accountCode}" control account should stand at ${expected.toString()} — it stands at ${ledgerTotal.toString()}`
+        : `Buyers hold ${usersTotal.toString()} ${currency} of wallet credit between them, but the "${accountCode}" control account stands at ${ledgerTotal.toString()}`,
       severity: ReconciliationSeverity.CRITICAL,
       detectedAt,
     });

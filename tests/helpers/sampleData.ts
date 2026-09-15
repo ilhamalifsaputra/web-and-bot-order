@@ -14,6 +14,7 @@ import {
   createDenomination,
   bulkAddStock,
   createVoucher,
+  seedChartOfAccounts,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { ProductType, VoucherType } from "@app/core/enums";
@@ -118,4 +119,21 @@ export async function resetDb(prisma: PrismaClient) {
   // no cascade to do it implicitly anymore.
   await prisma.walletTransaction.deleteMany();
   await prisma.user.deleteMany();
+  // Ledger (Financial Ledger M3). Order settlement, wallet top-ups, manual
+  // wallet adjustments and referral commissions all post to the double-entry
+  // ledger now, so the chart of accounts has to exist in every test schema or
+  // those paths fail on an unknown account code — the same way they would in
+  // production if `pnpm seed-chart-of-accounts` had never been run.
+  //
+  // Postings are cleared each reset so a test can assert "this settlement posted
+  // exactly one transaction" without counting another test's rows. The accounts
+  // themselves are NOT cleared: they carry no per-test state, and re-seeding 15
+  // rows in every beforeEach across the whole suite costs far more than the one
+  // count check that skips it. Children first — LedgerEntry → FinancialTransaction
+  // and → LedgerAccount are both onDelete: Restrict (Infra-5 policy).
+  await prisma.ledgerEntry.deleteMany();
+  await prisma.financialTransaction.deleteMany();
+  if ((await prisma.ledgerAccount.count()) === 0) {
+    await seedChartOfAccounts(prisma);
+  }
 }

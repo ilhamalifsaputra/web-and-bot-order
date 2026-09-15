@@ -67,6 +67,24 @@ describe("CHART_OF_ACCOUNTS", () => {
       expect(byCode.get(code)?.type).toBe(expectedType);
     }
   });
+
+  it("books referral commission as a USDT expense, not as a second liability", () => {
+    // Pinned for the same reason as the clearing types above: nothing fails if
+    // this one is classified wrongly, the books just stop meaning what they say.
+    // A commission is paid by crediting the referrer's wallet, so
+    // wallet_liability already carries the obligation — a `referral_payable`
+    // LIABILITY (which M1 seeded, and which this replaced) would count the same
+    // obligation twice and never be discharged. It is USDT-only because
+    // maybePayReferralCommission pays commission only into the USDT balance.
+    const byCode = new Map(CHART_OF_ACCOUNTS.map((a) => [a.code, a] as const));
+
+    expect(byCode.get("referral_expense.usdt")).toMatchObject({
+      type: LedgerAccountType.EXPENSE,
+      currency: OrderCurrency.USDT,
+    });
+    expect(byCode.has("referral_payable.idr")).toBe(false);
+    expect(byCode.has("referral_expense.idr")).toBe(false);
+  });
 });
 
 describe("seedChartOfAccounts", () => {

@@ -41,6 +41,7 @@ import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidReceived } from "./orders";
 import { adjustWallet } from "./users";
+import { postWalletAdjustmentPosting, postWalletTopupPosting } from "./ledgerPostings";
 import { finalizeOrderPayment } from "./pricing";
 import { enqueueOwnerWalletTopupEmail, enqueueWalletTopupCreditedDm } from "./notifications";
 
@@ -431,12 +432,20 @@ export async function settleWalletTopup(
     );
   }
 
-  const newBalance = await adjustWallet(db, order.userId, order.totalAmount, {
+  const { balance: newBalance } = await adjustWallet(db, order.userId, order.totalAmount, {
     reason: "wallet_topup",
     currency: order.currency as "IDR" | "USDT",
     orderId: order.id,
     adminId: null,
   });
+
+  // Recognise the top-up in the double-entry ledger: the gateway is holding the
+  // buyer's cash, and the shop now owes them that much spendable credit. `now`
+  // is the timestamp the claim above stamped as `paidAt`, so the posting's
+  // `occurredAt` is when the money really arrived. Keyed `order:{id}:topup`, so
+  // a rail that redelivers its webhook posts this once — the same at-least-once
+  // reality the atomic claim above guards the credit itself against.
+  await postWalletTopupPosting(db, order, now);
 
   // The one line that says a buyer's balance actually moved, for every rail.
   // Deliberately AFTER the write rather than around it: `adjustWallet` throws
@@ -608,12 +617,22 @@ export async function creditUnderpaidTopupAnyway(
     const received = (await findUnderpaidReceived(tx, args.orderId)) ?? ZERO;
     const anythingReceived = received.greaterThan(0);
     if (anythingReceived) {
-      await adjustWallet(tx, order.userId, received, {
+      const { transactionId } = await adjustWallet(tx, order.userId, received, {
         reason: "admin_adjust",
         currency: order.currency as "IDR" | "USDT",
         orderId: order.id,
         adminId: args.adminId,
         note: `Underpaid top-up order ${order.orderCode}: credited the amount actually received.`,
+      });
+      // Posted as the manual adjustment it is recorded as, matching the
+      // `admin_adjust` reason chosen above (see this function's doc comment for
+      // why that reason, and not `wallet_topup` or `underpaid_refund`) — an
+      // admin deciding to owe the buyer what they actually sent, rather than a
+      // top-up settling for the amount the order asked for.
+      await postWalletAdjustmentPosting(tx, {
+        walletTransactionId: transactionId,
+        adminId: args.adminId,
+        occurredAt: new Date(),
       });
     }
     await cancelOrder(tx, args.orderId, `underpaid_credited_anyway by admin_id=${args.adminId}`);

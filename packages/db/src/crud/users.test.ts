@@ -737,7 +737,7 @@ describe("listAllWalletTransactions / countAllWalletTransactions", () => {
   });
 
   it("surfaces a wallet_topup row with its signed delta and resulting balance", async () => {
-    const balance = await adjustWallet(prisma, alice, new Decimal("150000"), { reason: "wallet_topup", note: "TokoPay top-up" });
+    const { balance } = await adjustWallet(prisma, alice, new Decimal("150000"), { reason: "wallet_topup", note: "TokoPay top-up" });
     expect(balance.toString()).toBe("150000");
 
     const rows = await listAllWalletTransactions(prisma, { reason: "wallet_topup" });

@@ -32,10 +32,24 @@ export interface ChartOfAccountsEntry {
  * Most purposes exist once per currency because this shop holds two
  * unconvertible balances (see `User.walletBalanceUsdt`'s "no cross-currency
  * conversion" note) and a single mixed-currency account could only report a
- * meaningless sum. `referral_payable` is the one exception — it has an IDR row
- * only, because referral commission is an IDR-denominated concept in this shop
- * (see the Referral model) and inventing a USDT twin for it would create an
- * account nothing can ever legitimately post to.
+ * meaningless sum. `referral_expense` is the one exception — it has a USDT row
+ * only, because `maybePayReferralCommission` (crud/referrals.ts) always pays
+ * commission into the referrer's USDT balance: it converts an IDR order's total
+ * through the order's `fxRate` snapshot first and skips the commission entirely
+ * when no rate is available, precisely so a Rupiah figure can never land in a
+ * USDT wallet. An IDR twin would therefore be an account nothing can ever
+ * legitimately post to.
+ *
+ * That referral row is an EXPENSE, not a liability. M1 first seeded it as
+ * `referral_payable.idr` (LIABILITY, IDR), which was wrong twice over: wrong
+ * currency, as above, and wrong type. A commission is paid by crediting the
+ * referrer's wallet, and that credit already recognises a liability through
+ * `wallet_liability.usdt` — booking a second liability for the same money would
+ * count the shop's obligation twice and would never be discharged by anything.
+ * What the commission actually is, for the shop, is a cost of acquiring the
+ * referred buyer: the same shape as `payment_fee.*`. So the posting is
+ * `Dr referral_expense.usdt / Cr wallet_liability.usdt` (crud/ledgerPostings.ts),
+ * which recognises the cost and the obligation exactly once each.
  *
  * The `*_clearing` accounts are what make money-in-transit expressible at all:
  * funds a gateway has taken from the buyer but not yet paid out to us sit in
@@ -154,10 +168,12 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
     currency: OrderCurrency.USDT,
   },
   {
-    code: "referral_payable.idr",
-    name: "Referral Payable (IDR)",
-    type: LedgerAccountType.LIABILITY,
-    currency: OrderCurrency.IDR,
+    code: "referral_expense.usdt",
+    name: "Referral Commission Expense (USDT)",
+    // Debit-normal: a cost of acquiring the referred buyer, not a second
+    // liability alongside the wallet credit. See the doc comment above.
+    type: LedgerAccountType.EXPENSE,
+    currency: OrderCurrency.USDT,
   },
 ];
 

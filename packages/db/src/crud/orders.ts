@@ -48,6 +48,11 @@ import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
+  postOrderHoldReleasePosting,
+  postOrderPaymentPosting,
+  postOrderWalletCreditPosting,
+} from "./ledgerPostings";
+import {
   enqueueNotification,
   enqueueOrderProcessingDm,
   enqueueManualDeliveredDm,
@@ -1257,10 +1262,21 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
   });
 }
 
-/** Release any reserved stock + refund wallet + roll back voucher usage. */
+/**
+ * Release any reserved stock + refund wallet + roll back voucher usage.
+ *
+ * Called from three places with genuinely different accounting consequences —
+ * `rejectOrder`, `cancelOrder` and `creditOrderToBalance` — which is why the
+ * ledger posting for the wallet release is decided HERE, from the order's own
+ * posting history, rather than at each caller. Only the
+ * `creditOrderToBalance`-on-an-already-settled-order path has anything to post;
+ * see `postOrderHoldReleasePosting` for the full rule and for why posting on the
+ * other two paths would corrupt `wallet_liability`.
+ */
 async function releaseOrderHolds(
   db: Db,
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  occurredAt: Date = new Date(),
 ) {
   for (const item of order.items) {
     if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
@@ -1273,11 +1289,17 @@ async function releaseOrderHolds(
   if (new Decimal(order.walletUsed).greaterThan(0)) {
     // Credit back to the balance matching the order's currency: an order spends
     // and is refunded against the same credit balance (IDR or USDT).
-    await adjustWallet(db, order.userId, order.walletUsed, {
+    const { transactionId } = await adjustWallet(db, order.userId, order.walletUsed, {
       currency: order.currency === "USDT" ? "USDT" : "IDR",
       allowNegative: true,
       reason: "order_refund",
       orderId: order.id,
+    });
+    await postOrderHoldReleasePosting(db, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt,
     });
   }
   if (order.voucherId) {
@@ -1414,18 +1436,36 @@ export async function creditOrderToBalance(
   const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
   const amount = q4(Decimal.max(ZERO, new Decimal(args.amount ?? order.totalAmount)));
 
+  // One timestamp for both money events this function records (the credit and
+  // the hold release), so the two postings share the occurredAt of the single
+  // admin action that caused them rather than two clock reads a few
+  // milliseconds apart.
+  const now = new Date();
+
   if (amount.greaterThan(0)) {
-    await adjustWallet(db, order.userId, amount, {
+    const { transactionId } = await adjustWallet(db, order.userId, amount, {
       currency,
       reason: "unfulfilled_credit",
       orderId: order.id,
       adminId: args.adminId,
     });
+    // The buyer's external payment becoming wallet credit. Whether this reverses
+    // recognised revenue or recognises the payment for the first time depends on
+    // whether this order ever settled — `canCredit` covers PENDING_VERIFICATION
+    // and UNDERPAID (never settled) as well as PROCESSING (settled), so the
+    // posting asks the ledger instead of assuming either.
+    await postOrderWalletCreditPosting(db, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt: now,
+    });
   }
 
   // Release held stock + return the already-spent walletUsed (in order currency)
-  // + roll back voucher usage. Distinct money from the paid amount credited above.
-  await releaseOrderHolds(db, order);
+  // + roll back voucher usage. Distinct money from the paid amount credited above,
+  // and separately posted (or not) by releaseOrderHolds itself.
+  await releaseOrderHolds(db, order, now);
 
   await db.order.update({
     where: { id: order.id },
@@ -1627,6 +1667,17 @@ export async function approveOrder(
   // Referral + testimonial — shared with the manual-delivery path so both pay
   // the referee's commission and post the same channel testimonial.
   await finalizeDeliverySideEffects(db, order, now);
+
+  // Recognise the order's revenue in the double-entry ledger. `now` is the same
+  // timestamp the atomic claim above stamped as `paidAt`, so the posting's
+  // `occurredAt` is the order's real payment time and not a second clock read.
+  //
+  // Placed after delivery rather than before it because a posting must never be
+  // what stops a paid buyer getting their goods: by here the order is already
+  // DELIVERED and its stock SOLD. `settlePaidOrder`'s AUTO branch reaches this
+  // through its call to this function, so it needs no posting of its own — only
+  // the MANUAL branch does.
+  await postOrderPaymentPosting(db, order, now);
 
   logger.info(`Approved and delivered order ${order.orderCode} by admin ${args.adminId}`);
   const refreshed = await getOrder(db, order.id);
@@ -1904,14 +1955,18 @@ export async function finalizeDeliverySideEffects(
 ): Promise<void> {
   // Referral commission (referee's first delivered order only). Currency +
   // fxRate ride along so IDR orders convert to the USDT wallet basis.
-  await maybePayReferralCommission(db, {
-    id: order.id,
-    userId: order.userId,
-    orderCode: order.orderCode,
-    totalAmount: order.totalAmount,
-    currency: order.currency,
-    fxRate: order.fxRate,
-  });
+  await maybePayReferralCommission(
+    db,
+    {
+      id: order.id,
+      userId: order.userId,
+      orderCode: order.orderCode,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      fxRate: order.fxRate,
+    },
+    now,
+  );
 
   // Enqueue testimoni notification in the same transaction as the status flip
   // — but only when a testimonial channel is actually configured. Without
@@ -2205,6 +2260,14 @@ export async function settlePaidOrder(
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
   await db.order.update({ where: { id: orderId }, data: { paidAt: now } });
+  // Recognise the order's revenue, using the same `now` just stamped as
+  // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
+  // it is the only place the posting can happen for a hand-fulfilled order —
+  // and the order is genuinely paid here even though it is not delivered yet
+  // (`fulfillManualOrder` does that later and must not post again, or the same
+  // revenue would be recognised twice; the shared idempotency key
+  // `order:{id}:payment` is the backstop for that).
+  await postOrderPaymentPosting(db, order, now);
   await enqueueOrderProcessingDm(db, {
     orderId,
     orderCode: order.orderCode,

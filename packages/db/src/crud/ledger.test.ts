@@ -497,7 +497,7 @@ describe("getAccountBalance", () => {
   });
 
   it("returns zero for a seeded account with no entries", async () => {
-    expect((await getAccountBalance(prisma, "referral_payable.idr")).toString()).toBe("0");
+    expect((await getAccountBalance(prisma, "refund_clearing.idr")).toString()).toBe("0");
   });
 
   it("rejects an unknown account code", async () => {
@@ -540,7 +540,7 @@ describe("trialBalance", () => {
     const rows = await trialBalance(prisma, OrderCurrency.IDR);
 
     const idrCodes = CHART_OF_ACCOUNTS.filter((a) => a.currency === OrderCurrency.IDR).map((a) => a.code).sort();
-    expect(idrCodes).toHaveLength(8);
+    expect(idrCodes).toHaveLength(7);
     expect(rows.map((r) => r.accountCode).sort()).toEqual(idrCodes);
     // No USDT account may appear, however much was posted to one.
     expect(rows.some((r) => r.currency !== OrderCurrency.IDR)).toBe(false);
@@ -563,7 +563,7 @@ describe("trialBalance", () => {
     // Received in full and settled in full, so the clearing account is back to
     // zero — the property that makes a stuck balance here a real signal.
     expect(byCode.get("provider_clearing.idr")).toBe("0");
-    expect(byCode.get("referral_payable.idr")).toBe("0");
+    expect(byCode.get("refund_clearing.idr")).toBe("0");
 
     // The books balance as a whole: for a set of postings each balanced per
     // currency, the debit-normal and credit-normal totals must agree.
@@ -577,12 +577,12 @@ describe("trialBalance", () => {
   });
 
   it("omits an account an admin retired", async () => {
-    await prisma.ledgerAccount.update({ where: { code: "referral_payable.idr" }, data: { isActive: false } });
+    await prisma.ledgerAccount.update({ where: { code: "refund_clearing.idr" }, data: { isActive: false } });
 
     const rows = await trialBalance(prisma, OrderCurrency.IDR);
 
-    expect(rows.map((r) => r.accountCode)).not.toContain("referral_payable.idr");
-    expect(rows).toHaveLength(7);
+    expect(rows.map((r) => r.accountCode)).not.toContain("refund_clearing.idr");
+    expect(rows).toHaveLength(6);
   });
 
   it("returns an empty list for a currency with no accounts", async () => {

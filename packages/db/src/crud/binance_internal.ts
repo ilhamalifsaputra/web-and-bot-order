@@ -40,6 +40,7 @@ import {
 } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
+import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
@@ -950,11 +951,22 @@ export async function refundUnderpaidOrder(
     }
     const received = (await findUnderpaidReceived(tx, args.orderId)) ?? new Decimal(0);
     if (received.greaterThan(0)) {
-      await adjustWallet(tx, order.userId, received, {
+      const { transactionId } = await adjustWallet(tx, order.userId, received, {
         reason: "underpaid_refund",
         currency: order.currency as "IDR" | "USDT",
         orderId: order.id,
         adminId: args.adminId,
+      });
+      // An UNDERPAID order never settled, so no ORDER_PAYMENT was posted for it
+      // and there is no revenue to reverse: the on-chain transfer the buyer
+      // really sent is being recognised here for the first time, as wallet
+      // credit. `postOrderWalletCreditPosting` checks that rather than assuming
+      // it, so this stays correct if a future path reaches it on a settled order.
+      await postOrderWalletCreditPosting(tx, {
+        walletTransactionId: transactionId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        occurredAt: new Date(),
       });
     }
     if (order.voucherId) {

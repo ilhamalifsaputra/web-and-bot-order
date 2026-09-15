@@ -26,6 +26,7 @@ import {
   getUserByTelegramId,
   setUserRole,
   adjustWallet,
+  postWalletAdjustmentPosting,
   getSetting,
   setSetting,
   deleteSetting,
@@ -249,7 +250,15 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     newBal = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
       const actingId = requireAdminId(admin);
-      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
+      const { balance: bal, transactionId } = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
+      // Record the hand-made move in the double-entry ledger, in the same
+      // transaction as the balance change and the audit row, so the three
+      // cannot disagree about whether this adjustment happened.
+      await postWalletAdjustmentPosting(tx, {
+        walletTransactionId: transactionId,
+        adminId: actingId,
+        occurredAt: new Date(),
+      });
       await logAdminAction(tx, {
         adminId: actingId,
         action: "wallet_adjust",

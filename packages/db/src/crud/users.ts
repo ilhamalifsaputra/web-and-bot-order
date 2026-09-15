@@ -182,9 +182,36 @@ export interface WalletAdjustOpts {
   currency?: "IDR" | "USDT";
 }
 
+/** What one applied wallet movement tells its caller. */
+export interface WalletAdjustResult {
+  /** The balance after the movement, in the currency that was adjusted. */
+  balance: Decimal;
+  /**
+   * The id of the `WalletTransaction` row this movement just wrote.
+   *
+   * Returned, rather than left to be looked up afterwards, because it is what
+   * the ledger postings built on top of a wallet movement derive their
+   * idempotency key from (`wallet:{transactionId}` — see
+   * crud/ledgerPostings.ts). A caller could otherwise only re-find "the most
+   * recent matching row", and that query races: this function holds a row lock
+   * on the USER for the duration of the caller's transaction, so two
+   * adjustments for the same user serialize, but a second one committing
+   * between the first caller's `create` and its post-hoc `findFirst` would hand
+   * back the wrong id — and a ledger posting keyed off the wrong row silently
+   * suppresses a real posting (the key looks already-used) or attaches an
+   * amount to the wrong movement. A returned id cannot be wrong.
+   *
+   * It also identifies the exact row whose `delta` and `currency` the posting
+   * should read, which is what keeps the ledger amount equal to the amount the
+   * wallet actually moved rather than to the amount the caller asked for.
+   */
+  transactionId: number;
+}
+
 /**
  * Atomically add `delta` (may be negative) to a wallet. Throws on overdraw
- * unless allowNegative. Returns the new balance.
+ * unless allowNegative. Returns the new balance and the id of the
+ * `WalletTransaction` row written for the movement (see `WalletAdjustResult`).
  *
  * "Atomically" is enforced here, not inherited from the caller. The read of
  * the current balance, the overdraw check and the write-back are one
@@ -224,11 +251,11 @@ export async function adjustWallet(
   userId: number,
   delta: Decimal.Value,
   opts: WalletAdjustOpts = {},
-): Promise<Decimal> {
+): Promise<WalletAdjustResult> {
   const currency = opts.currency ?? "IDR";
 
   /** The read-modify-write cycle, run on a client that is inside a transaction. */
-  const applyMovement = async (trx: Db): Promise<Decimal> => {
+  const applyMovement = async (trx: Db): Promise<WalletAdjustResult> => {
     // Take the user row's write lock before reading the balance, so a
     // concurrent adjustWallet for this same user blocks here and reads our
     // committed result instead of the value we are about to replace. A
@@ -253,7 +280,7 @@ export async function adjustWallet(
     // callers could reach this with no transaction at all. Both writes use
     // `newBalance`, which was computed above, so neither depends on the other
     // having run.
-    await trx.walletTransaction.create({
+    const movement = await trx.walletTransaction.create({
       data: {
         userId,
         delta: newBalance.minus(oldBalance), // the amount actually applied
@@ -269,16 +296,16 @@ export async function adjustWallet(
       where: { id: userId },
       data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
     });
-    return newBalance;
+    return { balance: newBalance, transactionId: movement.id };
   };
 
   // A `Tx` has no `$transaction` (Prisma strips it from the interactive
   // transaction client), so its presence is what distinguishes the bare client
   // from a caller-owned transaction.
   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
-  const newBalance = ownsTransaction ? await db.$transaction(applyMovement) : await applyMovement(db);
+  const result = ownsTransaction ? await db.$transaction(applyMovement) : await applyMovement(db);
   invalidateWarmUser(userId);
-  return newBalance;
+  return result;
 }
 
 export async function setUserRole(db: Db, userId: number, role: UserRole) {

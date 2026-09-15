@@ -13,6 +13,7 @@ import {
   setUserRole,
   setUserBanned,
   adjustWallet,
+  postWalletAdjustmentPosting,
   logAdminAction,
   listUsers,
   countUsers,
@@ -302,11 +303,19 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     let newBalance: Decimal;
     try {
       newBalance = await prisma.$transaction(async (tx) => {
-        const balance = await adjustWallet(tx, userId, deltaDec, {
+        const { balance, transactionId } = await adjustWallet(tx, userId, deltaDec, {
           reason: "admin_adjust",
           note: note || null,
           adminId: req.admin!.userId,
           currency,
+        });
+        // Record the hand-made move in the double-entry ledger, in the same
+        // transaction as the balance change and the audit row, so the three
+        // cannot disagree about whether this adjustment happened.
+        await postWalletAdjustmentPosting(tx, {
+          walletTransactionId: transactionId,
+          adminId: req.admin!.userId,
+          occurredAt: new Date(),
         });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,

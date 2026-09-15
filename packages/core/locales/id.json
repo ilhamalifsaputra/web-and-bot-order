@@ -238,6 +238,7 @@
   "error.ledger_account_type_unknown": "Akun ledger {accountCode} memiliki tipe yang tidak dikenal ({accountType}), sehingga saldonya tidak dapat dihitung.",
   "error.out_of_stock": "<b>{product}</b> habis. Coba produk lain.",
   "error.payment_amount_invalid": "Jumlah pembayaran harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
+  "error.payment_fee_invalid": "Biaya dan jumlah bersih sebuah pembayaran harus berupa angka yang valid, terbatas, dan tidak negatif.",
   "error.payment_currency_mismatch": "Mata uang pembayaran ini ({paymentCurrency}) tidak sama dengan mata uang pesanan ({orderCurrency}).",
   "error.payment_already_pending": "Pesanan ini sudah punya percobaan pembayaran yang tertunda.",
   "error.rate_limited": "Terlalu banyak permintaan. Tunggu sebentar.",

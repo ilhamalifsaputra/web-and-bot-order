@@ -14,6 +14,7 @@ import {
   TOKOPAY_SECRET_KEY,
   TOKOPAY_ENABLED_KEY,
   TOKOPAY_CHANNEL_KEY,
+  computeQrisAdminFee,
   qrisChargeAmount,
   type TokopayCreds,
 } from "@app/core/payments/tokopay";
@@ -193,7 +194,39 @@ export async function deliverPaidTokopayOrder(
           // interactive transaction on any failed statement; this call
           // cannot rescue the settlement from that, it only prevents the
           // benign race from doing so.
-          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          //
+          // Financial Ledger M3: the confirmation also captures what this rail
+          // knows about the money that arrived — TokoPay's own `trxId` (the id
+          // that will appear on its settlement report, which is what
+          // `Payment.providerTransactionId` is reconciled on), plus the only
+          // fee-shaped figures this shop has for any of its six rails.
+          //
+          // `fee` is `computeQrisAdminFee(order.totalAmount)`: the QRIS
+          // surcharge the buyer pays ON TOP of the order total, so `netAmount`
+          // is the total itself — not `amount - fee`. The buyer's gross payment
+          // is `qrisChargeAmount` (total + fee, which is what the overpayment
+          // check below compares against), and the surcharge portion never
+          // becomes this shop's money at all; the total IS what the shop nets.
+          //
+          // Captured as DATA only — no `FEE` ledger posting is made from it,
+          // here or anywhere. Two reasons, and both matter: the figure is a
+          // LOCAL ESTIMATE (Rp100 + 0.70%, packages/core/src/payments/
+          // tokopay.ts) of what TokoPay will charge, not a cut TokoPay reported
+          // having deducted; and the `ORDER_PAYMENT` posting that settling this
+          // order already made (crud/ledgerPostings.ts) books
+          // `order.totalAmount` — the net receipt — so booking the surcharge
+          // separately would either double-count money that posting already
+          // nets out or invent a financial event from an estimate. This shop's
+          // standing rule is that ledger data and reports never contain
+          // estimated figures dressed up as real ones, so `payment_fee.idr` and
+          // `FinancialTransactionType.FEE` stay unused until a rail reports a
+          // real fee. Pinned by a test in crud/tokopay.test.ts.
+          await confirmPaymentAttempt(tx, {
+            paymentId: pendingPayment.id,
+            providerTransactionId: args.trxId,
+            fee: computeQrisAdminFee(order.totalAmount),
+            netAmount: order.totalAmount,
+          }).catch((err) =>
             logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
           );
         }
@@ -221,8 +254,15 @@ export async function deliverPaidTokopayOrder(
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
       if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
-        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+        // See the WALLET_TOPUP branch above for what this .catch actually
+        // protects against, and for why the fee figures are captured as data
+        // with no `FEE` ledger posting behind them.
+        await confirmPaymentAttempt(tx, {
+          paymentId: pendingPayment.id,
+          providerTransactionId: args.trxId,
+          fee: computeQrisAdminFee(order.totalAmount),
+          netAmount: order.totalAmount,
+        }).catch((err) =>
           logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
         );
       }

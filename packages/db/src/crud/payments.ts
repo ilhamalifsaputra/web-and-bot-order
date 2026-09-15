@@ -37,7 +37,7 @@
  */
 import { PaymentStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
-import { Decimal } from "@app/core/money";
+import { Decimal, money } from "@app/core/money";
 import type { Payment } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -79,6 +79,40 @@ function parsePaymentAmount(raw: Decimal.Value): Decimal {
     throw new ValidationError("error.payment_amount_invalid");
   }
   return amount;
+}
+
+/**
+ * Parse+validate one of the two settlement figures a rail can capture onto a
+ * confirmed Payment row (`fee`, `netAmount` — Financial Ledger M3), quantized
+ * to this repo's 4 decimal places (`money`, @app/core/money).
+ *
+ * Same clean-error discipline as `parsePaymentAmount` above, with one
+ * deliberate difference: **zero is accepted**. `Payment.fee`'s own doc comment
+ * (prisma/schema.prisma) draws the distinction this rests on — `null` means "no
+ * figure is known", while `0` is a real statement that this payment cost the
+ * shop nothing — so rejecting zero would force a genuinely free payment to be
+ * recorded as unknown instead. Negative and non-finite values are still
+ * refused: a gateway that kept a negative cut, or a net receipt of Infinity, is
+ * not a figure this shop should store and later reconcile a settlement report
+ * against.
+ *
+ * The quantizing is not cosmetic, for the same reason `ledger.ts`'s
+ * `parseEntryAmount` quantizes: `payments.fee`/`payments.net_amount` are
+ * DECIMAL(65,30) columns and would happily store more precision than this
+ * repo's money type recognises, leaving a stored figure that `moneyEq` (which
+ * compares at 4 places) can never reproduce.
+ */
+function parseSettlementFigure(raw: Decimal.Value): Decimal {
+  let figure: Decimal;
+  try {
+    figure = money(raw);
+  } catch {
+    throw new ValidationError("error.payment_fee_invalid");
+  }
+  if (!figure.isFinite() || figure.isNegative()) {
+    throw new ValidationError("error.payment_fee_invalid");
+  }
+  return figure;
 }
 
 /**
@@ -270,18 +304,79 @@ export async function expirePaymentAttempt(
  * Move a Payment attempt PENDING -> CONFIRMED: same atomic claim-guard shape
  * as `expirePaymentAttempt`, stamping `confirmedAt` instead of
  * `expiredAt`/`expiryReason`, and audited the same way.
+ *
+ * Also the ONE place the three settlement-data columns Task 1 added to
+ * `Payment` are populated (Financial Ledger M3). All six payment-rail
+ * settlement handlers already call this function at the exact moment they know
+ * a payment really arrived, so the gateway's own facts about it are captured
+ * here rather than in six near-identical copies:
+ *
+ * - `providerTransactionId` — the gateway's OWN id for the transaction, as
+ *   opposed to the `reference` this shop quoted. Every rail passes it (its
+ *   `trxId`/`binanceTxId`/`bybitTxId`), and it is the column a provider
+ *   settlement report is later reconciled against, which is why it carries its
+ *   own `@@unique([method, providerTransactionId])` index (see that index's
+ *   reasoning in prisma/schema.prisma). A unique violation on it therefore
+ *   propagates rather than being swallowed: two confirmed attempts claiming one
+ *   gateway transaction is a genuine data problem, and the rails' own
+ *   reclaim-on-failed-delivery paths never produce one (a prior attempt that
+ *   failed rolled back before reaching this function, so its column is still
+ *   null).
+ * - `fee` / `netAmount` — what the gateway kept and what the shop therefore
+ *   expects to receive, both quantized through `parseSettlementFigure`. Only
+ *   TokoPay passes them today; the other five rails report no fee figure at all
+ *   and leave both null, which is `Payment.fee`'s documented "not known" and NOT
+ *   a claim that those rails are free.
+ *
+ * These are captured DATA, not a financial event: nothing here posts to the
+ * double-entry ledger (`crud/ledgerPostings.ts`). The revenue this payment
+ * earned is already recognised by that file's `ORDER_PAYMENT` posting for the
+ * order's own `totalAmount`, and TokoPay's `fee` is a LOCAL estimate of the
+ * surcharge the buyer pays on top of that total — not a figure TokoPay reports
+ * having deducted — so posting it as a `FEE` transaction would either
+ * double-count money the order posting already nets out or invent a financial
+ * event from an estimate. See `crud/tokopay.ts`'s call site for the full
+ * reasoning; it is pinned by a test in crud/tokopay.test.ts.
+ *
+ * All three are optional, and an omitted (or null) one leaves its column
+ * untouched rather than clearing it: nothing in this shop needs to ERASE a
+ * captured gateway figure, so a caller holding a null-ish variable must not be
+ * able to wipe one, and an ad-hoc admin confirmation with none of this data to
+ * hand must not be forced to invent it.
  */
 export async function confirmPaymentAttempt(
   db: Db,
-  args: { paymentId: number; adminId?: number | null },
+  args: {
+    paymentId: number;
+    adminId?: number | null;
+    providerTransactionId?: string | null;
+    fee?: Decimal.Value | null;
+    netAmount?: Decimal.Value | null;
+  },
 ): Promise<Payment> {
-  const { paymentId, adminId } = args;
+  const { paymentId, adminId, providerTransactionId, fee, netAmount } = args;
+
+  // Parsed BEFORE the claim below, so a malformed figure can never leave a row
+  // CONFIRMED without the settlement data it was confirmed for — same
+  // validate-then-write order as `postFinancialTransaction` (crud/ledger.ts).
+  const parsedFee = fee != null ? parseSettlementFigure(fee) : null;
+  const parsedNetAmount = netAmount != null ? parseSettlementFigure(netAmount) : null;
 
   const claim = await db.payment.updateMany({
     where: { id: paymentId, status: PaymentStatus.PENDING },
     // pendingOrderId: null — same release-the-claim reasoning as
     // expirePaymentAttempt above.
-    data: { status: PaymentStatus.CONFIRMED, confirmedAt: new Date(), pendingOrderId: null },
+    data: {
+      status: PaymentStatus.CONFIRMED,
+      confirmedAt: new Date(),
+      pendingOrderId: null,
+      // Spread in only what the caller actually supplied: Prisma leaves an
+      // absent key alone, which is what makes "omitted means don't touch"
+      // above true of the stored row and not just of this argument list.
+      ...(providerTransactionId != null ? { providerTransactionId } : {}),
+      ...(parsedFee != null ? { fee: parsedFee } : {}),
+      ...(parsedNetAmount != null ? { netAmount: parsedNetAmount } : {}),
+    },
   });
   if (claim.count !== 1) {
     throw new ValidationError("error.illegal_payment_status_transition", {

@@ -238,6 +238,7 @@
   "error.ledger_account_type_unknown": "Ledger account {accountCode} has an unrecognised type ({accountType}), so its balance cannot be computed.",
   "error.out_of_stock": "<b>{product}</b> is out of stock. Please try a different product.",
   "error.payment_amount_invalid": "The payment amount must be a valid, finite number greater than zero.",
+  "error.payment_fee_invalid": "A payment's fee and net amount must each be a valid, finite number that is not negative.",
   "error.payment_currency_mismatch": "This payment's currency ({paymentCurrency}) does not match the order's currency ({orderCurrency}).",
   "error.payment_already_pending": "This order already has a pending payment attempt.",
   "error.rate_limited": "Too many requests. Please wait a moment.",

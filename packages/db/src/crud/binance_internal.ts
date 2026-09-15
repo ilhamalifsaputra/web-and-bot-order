@@ -531,7 +531,18 @@ export async function deliverPaidInternalOrder(
           // interactive transaction on any failed statement; this call
           // cannot rescue the settlement from that, it only prevents the
           // benign race from doing so.
-          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+          //
+          // Financial Ledger M3: the confirmation also captures Binance's own
+          // transfer id, which is what `Payment.providerTransactionId` is
+          // reconciled against when a provider settlement report is matched.
+          // No `fee`/`netAmount` are passed: nothing in this rail's poller
+          // payload reports a cut Binance deducted, so both columns stay null —
+          // Payment.fee's documented "not known" (prisma/schema.prisma), which
+          // is deliberately NOT the same statement as a fee of zero.
+          await confirmPaymentAttempt(tx, {
+            paymentId: pendingPayment.id,
+            providerTransactionId: args.binanceTxId,
+          }).catch((err) =>
             logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
           );
         }
@@ -568,8 +579,12 @@ export async function deliverPaidInternalOrder(
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
       if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
-        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
+        // See the WALLET_TOPUP branch above for what this .catch actually
+        // protects against, and for why no fee figures are captured here.
+        await confirmPaymentAttempt(tx, {
+          paymentId: pendingPayment.id,
+          providerTransactionId: args.binanceTxId,
+        }).catch((err) =>
           logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
         );
       }

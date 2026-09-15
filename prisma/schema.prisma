@@ -1095,11 +1095,16 @@ model Payment {
   /// known", which is every row today and every row on a rail that does not
   /// report a fee — NOT "the fee was zero"; a genuinely free payment stores 0.
   fee                   Decimal?
-  /// `amount - fee`: what actually reaches this shop's own cash account, in
-  /// `currency`. Stored rather than derived so the settlement side reads what
-  /// the provider reported instead of recomputing it from two other columns
-  /// (which would silently disagree with the provider's own arithmetic over
-  /// rounding). Null on the same rows `fee` is null.
+  /// `gross paid - fee`: what actually reaches this shop's own cash account,
+  /// in `currency`. NOT always `amount - fee` — `amount` is this shop's own
+  /// quoted/order-total figure, which on a rail whose fee is a buyer-side
+  /// surcharge (added ON TOP of `amount`, not deducted from it) already
+  /// equals the net, making `netAmount == amount` correct on that rail (see
+  /// TokoPay's `computeQrisAdminFee`). Stored rather than derived so the
+  /// settlement side reads what actually happened instead of recomputing it
+  /// from two other columns (which would silently disagree with a rail's own
+  /// arithmetic over rounding, or over which side of the transaction the fee
+  /// was charged on). Null on the same rows `fee` is null.
   netAmount             Decimal?  @map("net_amount")
 
   // Restrict, not Cascade — matches every other Order-adjacent

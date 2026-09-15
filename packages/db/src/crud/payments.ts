@@ -373,7 +373,13 @@ export async function confirmPaymentAttempt(
       // Spread in only what the caller actually supplied: Prisma leaves an
       // absent key alone, which is what makes "omitted means don't touch"
       // above true of the stored row and not just of this argument list.
-      ...(providerTransactionId != null ? { providerTransactionId } : {}),
+      // An empty string is treated the same as absent, not as a real id:
+      // `''` is NOT NULL, so the unique index on (method, providerTransactionId)
+      // would treat two confirmed payments both carrying `''` as a genuine
+      // collision — the one such collision reachable with no other bug
+      // involved, since a NULL is what every rail's not-yet-confirmed row
+      // already carries.
+      ...(providerTransactionId ? { providerTransactionId } : {}),
       ...(parsedFee != null ? { fee: parsedFee } : {}),
       ...(parsedNetAmount != null ? { netAmount: parsedNetAmount } : {}),
     },

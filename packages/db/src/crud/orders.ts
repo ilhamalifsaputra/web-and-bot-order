@@ -1122,8 +1122,11 @@ export async function shopFulfilmentStats(
   db: Db,
 ): Promise<{ deliveredOrders: number; customers: number }> {
   const [deliveredOrders, buyers] = await Promise.all([
-    db.order.count({ where: { status: OrderStatus.DELIVERED } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED } }),
+    db.order.count({ where: { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT } }),
+    db.order.groupBy({
+      by: ["userId"],
+      where: { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT },
+    }),
   ]);
   return { deliveredOrders, customers: buyers.length };
 }
@@ -2518,7 +2521,7 @@ export interface OrderFilter {
    * a count that disagreed with its own list would be a bug, not a fix. A new
    * sales/revenue caller must pass `OrderKind.PRODUCT` explicitly.
    */
-  kind?: string | null;
+  kind?: OrderKind | null;
 }
 
 function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {

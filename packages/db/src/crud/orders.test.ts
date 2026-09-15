@@ -26,6 +26,7 @@ import {
   countOrders,
   listUserOrders,
   countUserOrders,
+  shopFulfilmentStats,
   computeOrderEligibility,
   channelMaskedBuyerId,
   customerLabel,
@@ -270,6 +271,19 @@ describe("listUserOrders / countUserOrders — exclude WALLET_TOPUP", () => {
     const orders = await listUserOrders(prisma, userId, 5, 0);
     expect(orders.map(o => o.id)).toEqual([order.id]);
     expect(await countUserOrders(prisma, userId)).toBe(1);
+  });
+});
+
+// Task 6a fix pass (I-1): shopFulfilmentStats fed the storefront home page's
+// "honest" delivered-orders/customers band, but neither query filtered
+// kind — a settled WALLET_TOPUP order inflated both figures exactly like the
+// bugs this task's own commit (3c15ba47) already fixed elsewhere in this file.
+describe("shopFulfilmentStats — exclude WALLET_TOPUP", () => {
+  it("counts only the PRODUCT order as a delivered order/customer", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 1, customers: 1 });
   });
 });
 

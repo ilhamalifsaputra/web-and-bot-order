@@ -30,7 +30,7 @@ import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { OrderKind, OrderStatus } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../tests/helpers/testdb";
-import { createCategory, createCatalogProduct, createDenomination } from "@app/db";
+import { createCategory, createCatalogProduct, createDenomination, revenueSummary } from "@app/db";
 import {
   formatParityReport,
   runParityCheck,
@@ -63,6 +63,10 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  // Before the orders and users they point at: `WalletTransaction.user` is
+  // onDelete: Restrict (an append-only financial ledger), so a leftover wallet
+  // row would block the user reset below.
+  await prisma.walletTransaction.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
   await prisma.denomination.deleteMany();
@@ -115,15 +119,24 @@ async function makeDeliveredOrder(args: {
   fxRate?: string | null;
   owner?: number;
   withItem?: boolean;
+  /** Wallet credit spent on this order, as a positive magnitude — written as
+   *  the one `order_payment` WalletTransaction row the checkout path leaves
+   *  behind (debits stored NEGATIVE). `total` stays the GATEWAY leg, which is
+   *  what `Order.totalAmount` means. */
+  walletSpend?: string;
+  /** The wallet row's own currency, when it differs from the order's. */
+  walletCurrency?: string;
 }) {
   const at = args.deliveredAt ?? IN_WINDOW;
+  const owner = args.owner ?? userId;
   const order = await prisma.order.create({
     data: {
       orderCode: `PAR-${Math.random()}`,
-      userId: args.owner ?? userId,
+      userId: owner,
       kind: args.kind ?? OrderKind.PRODUCT,
       subtotalAmount: args.total,
       totalAmount: args.total,
+      walletUsed: args.walletSpend ?? "0",
       currency: args.currency ?? "IDR",
       fxRate: args.fxRate ?? null,
       status: args.status ?? OrderStatus.DELIVERED,
@@ -132,6 +145,19 @@ async function makeDeliveredOrder(args: {
       deliveredAt: at,
     },
   });
+  if (args.walletSpend) {
+    await prisma.walletTransaction.create({
+      data: {
+        userId: owner,
+        delta: `-${args.walletSpend}`,
+        balanceAfter: "0",
+        currency: args.walletCurrency ?? args.currency ?? "IDR",
+        reason: "order_payment",
+        orderId: order.id,
+        createdAt: at,
+      },
+    });
+  }
   // A PRODUCT order carries item rows; a WALLET_TOPUP carries none. That
   // asymmetry is what makes every OrderItem-rooted profit metric structurally
   // immune, so the fixture honours it rather than papering over it.
@@ -165,6 +191,11 @@ async function seedMixedHistory() {
   await makeDeliveredOrder({ total: "25000" });
   await makeDeliveredOrder({ total: "50000" });
   await makeDeliveredOrder({ total: "4", currency: "USDT", fxRate: "16000" });
+  // A sale paid partly from wallet credit: 5,000 through the gateway, 15,000
+  // from credit. Present in the shared fixture so every money row below
+  // exercises the M8.5 wallet leg on both sides of its comparison, not only the
+  // dedicated reconciliation test at the bottom of this file.
+  await makeDeliveredOrder({ total: "5000", walletSpend: "15000" });
   // A sale in the window that was later refunded in full — in `revenueSummary`
   // it is gone, in `grossSalesForNetSales` it is still counted, and the script
   // has to replicate each of those status sets separately.
@@ -283,7 +314,9 @@ describe("runParityCheck — against real top-up history", () => {
     const revenueIdr = row(report, "revenueSummary.revenue_idr");
     expect(revenueIdr.delta).toBe(new Decimal("2000000").plus("500000").plus("750000").toString());
     expect(revenueIdr.attributed).toBe(revenueIdr.delta);
-    expect(revenueIdr.postFix).toBe(new Decimal("25000").plus("50000").toString());
+    // The two cash sales, plus BOTH legs of the wallet-paid one (M8.5): its
+    // 5,000 gateway total and the 15,000 of credit spent on it.
+    expect(revenueIdr.postFix).toBe(new Decimal("25000").plus("50000").plus("5000").plus("15000").toString());
     // ...and the USDT figure by exactly the USDT top-up, never blended with IDR.
     const revenueUsdt = row(report, "revenueSummary.revenue_usdt");
     expect(revenueUsdt.delta).toBe("100");
@@ -292,7 +325,9 @@ describe("runParityCheck — against real top-up history", () => {
     // their value.
     const orderCount = row(report, "revenueSummary.orders");
     expect(orderCount.delta).toBe("4");
-    expect(orderCount.postFix).toBe("3");
+    // Four sales in the window, the wallet-paid one counting once like any
+    // other: adding its second leg to the money figure must not add an order.
+    expect(orderCount.postFix).toBe("4");
   });
 
   it("replicates each metric's own status set, not one status set for all of them", async () => {
@@ -406,6 +441,120 @@ describe("runParityCheck — against real top-up history", () => {
     expect(combined.residual).toBe("0");
     expect(combined.drift).toBe("0");
     expect(report.failures).toEqual([]);
+  });
+});
+
+// ── 1b. The OTHER correction: wallet-spent credit is revenue (M8.5) ────────
+
+/**
+ * The `kind: PRODUCT` fix is not the only correction these figures carry, so it
+ * gets the same treatment: an exact reconciliation against real rows, not a
+ * plausible one.
+ *
+ * `Order.totalAmount` is what the buyer owed EXTERNALLY, so the pre-M8.5
+ * figure is a `totalAmount`-only sum — replicated inline here, exactly as the
+ * script replicates the pre-kind-filter clause, because reverting the code is
+ * not practical. The current function's answer minus that figure must equal the
+ * `order_payment` wallet volume for those same orders, to the rupiah, per
+ * currency, with nothing left over.
+ */
+describe("the wallet-spend correction (M8.5) reconciles exactly", () => {
+  /** The pre-M8.5 figure: `SUM(Order.totalAmount)` per currency, no wallet leg. */
+  async function totalAmountOnly(where: Record<string, unknown>) {
+    const groups = await prisma.order.groupBy({
+      by: ["currency"],
+      where,
+      _sum: { totalAmount: true },
+    });
+    let idr = new Decimal(0);
+    let usdt = new Decimal(0);
+    for (const group of groups) {
+      const sum = new Decimal(group._sum.totalAmount ?? 0);
+      if (group.currency === "IDR") idr = idr.plus(sum);
+      else usdt = usdt.plus(sum);
+    }
+    return { idr, usdt };
+  }
+
+  /** The credit really spent on those orders, read from the WalletTransaction
+   *  rows themselves — never from `Order.walletUsed`, which is a bare number
+   *  with no currency of its own. */
+  async function walletVolume(where: Record<string, unknown>) {
+    const orders = await prisma.order.findMany({ where, select: { id: true } });
+    const legs = await prisma.walletTransaction.findMany({
+      where: { reason: "order_payment", orderId: { in: orders.map((order) => order.id) } },
+      select: { currency: true, delta: true },
+    });
+    let idr = new Decimal(0);
+    let usdt = new Decimal(0);
+    for (const leg of legs) {
+      const spent = new Decimal(leg.delta).negated();
+      if (leg.currency === "IDR") idr = idr.plus(spent);
+      else usdt = usdt.plus(spent);
+    }
+    return { idr, usdt };
+  }
+
+  it("moves each revenue figure by exactly the credit spent on its own orders, in each leg's own currency", async () => {
+    await seedMixedHistory();
+    // A second wallet-paid sale, this one settled in USDT and paid entirely
+    // from USDT credit, so the two currencies are proven not to leak into each
+    // other and a fully-credit-paid order (gateway total 0) is covered.
+    await makeDeliveredOrder({ total: "0", walletSpend: "7", currency: "USDT", fxRate: "16000" });
+
+    const window = {
+      deliveredAt: { gte: SINCE, lte: UNTIL },
+      status: OrderStatus.DELIVERED,
+      kind: OrderKind.PRODUCT,
+    };
+    const preM85 = await totalAmountOnly(window);
+    const wallet = await walletVolume(window);
+    const current = await revenueSummary(prisma, SINCE, UNTIL);
+
+    // Real, non-trivial movement in both currencies — otherwise this
+    // reconciles vacuously and proves nothing, the same trap the top-up
+    // fixtures above are built to avoid.
+    expect(wallet.idr.toString()).toBe("15000");
+    expect(wallet.usdt.toString()).toBe("7");
+    expect(current.revenue_idr.minus(preM85.idr).toString()).toBe(wallet.idr.toString());
+    expect(current.revenue_usdt.minus(preM85.usdt).toString()).toBe(wallet.usdt.toString());
+    // ...and the order count did not move at all: the correction adds a leg to
+    // a sale, never a sale.
+    expect(current.orders).toBe(5);
+  });
+
+  it("leaves the kind-filter report reconciling exactly, so neither correction hides the other", async () => {
+    await seedMixedHistory();
+    await makeDeliveredOrder({ total: "0", walletSpend: "7", currency: "USDT", fxRate: "16000" });
+    // Wallet-paid history dated today as well, so the rolling and calendar
+    // series rows exercise the wallet leg too rather than reconciling at zero.
+    const now = new Date();
+    await makeDeliveredOrder({ total: "9000", walletSpend: "11000", deliveredAt: now });
+    await makeDeliveredOrder({ total: "2", walletSpend: "3", currency: "USDT", fxRate: "15000", deliveredAt: now });
+    await makeDeliveredOrder({ kind: OrderKind.WALLET_TOPUP, total: "600000", deliveredAt: now });
+    await makeDeliveredOrder({
+      kind: OrderKind.WALLET_TOPUP, total: "25", currency: "USDT", fxRate: "15500", deliveredAt: now,
+    });
+
+    const report = await run();
+
+    // Every residual and drift still zero: the script's own replicas carry the
+    // wallet leg on both sides, so the kind-filter delta is still attributable
+    // to top-up volume alone. Before the replicas were updated, `drift` would
+    // have shown a permanent false positive of exactly the wallet volume here.
+    expect(report.failures).toEqual([]);
+    for (const parityRow of report.rows) {
+      expect(parityRow.residual, `${parityRow.metric} residual`).toBe("0");
+      expect(parityRow.drift, `${parityRow.metric} drift`).toBe("0");
+    }
+    // The day series sees both legs of the wallet-paid sale delivered today.
+    const daily = row(report, "revenueByDay.revenue_idr (series total)");
+    expect(daily.postFix).toBe(new Decimal("9000").plus("11000").toString());
+    // ...and the blend converts the USDT sale's own legs at its own rate.
+    const combined = row(report, "combinedRevenueByDay.revenueIdrEquiv (series total)");
+    expect(combined.postFix).toBe(
+      new Decimal("9000").plus("11000").plus(new Decimal("5").times("15000")).toString(),
+    );
   });
 });
 

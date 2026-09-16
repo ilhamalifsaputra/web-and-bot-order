@@ -20,6 +20,23 @@
  * REAL rows by a real query. Nothing is estimated, interpolated, or asserted
  * without computation.
  *
+ * ## The one other correction, and why it is held constant here
+ *
+ * Financial Ledger M8.5 made every money metric below count the WALLET leg of
+ * a sale as well as the gateway leg (`Order.totalAmount` is only what the buyer
+ * owed externally — see `walletSpendByCurrency` in crud/revenue.ts). The
+ * replicas here add it too, on BOTH sides of every comparison, so "pre-fix"
+ * means "before the kind filter, after the wallet fix" rather than "before both
+ * at once". That is deliberate: this report exists to attribute one named
+ * correction, and folding a second one into the same delta would make neither
+ * attributable — the same reasoning `docs/sales-metrics-contract.md` records
+ * for keeping the timezone-boundary question out of it. The wallet fix has its
+ * own exact reconciliation, in `parity-check-kind-filter.test.ts`.
+ *
+ * Without that update the `drift` column would have reported a permanent false
+ * positive equal to the wallet-spend volume, since the current functions add it
+ * and a totalAmount-only replica would not.
+ *
  * ## Why the reconciliation is exact rather than plausible
  *
  * `Order.kind` has exactly two values, so for any additive aggregate:
@@ -33,8 +50,9 @@
  *  - `residual = (preFix - postFix) - topupOnly` — proves the whole delta is
  *    top-up volume and not something else that also moved.
  *  - `drift = productOnly - postFix` — proves the current function really is
- *    the old query PLUS the filter. A metric whose body changed in some other
- *    way fails here even when its delta happens to look right.
+ *    the old query PLUS the filter (plus the wallet leg both sides now carry,
+ *    per the section below). A metric whose body changed in some other way
+ *    fails here even when its delta happens to look right.
  *
  * A non-additive aggregate cannot use that identity, and one metric here is
  * non-additive: `shopFulfilmentStats.customers` is a COUNT(DISTINCT userId), a
@@ -186,8 +204,62 @@ export function unreconciledRows(rows: readonly ParityRow[]): ParityRow[] {
 type KindScope = typeof OrderKind.PRODUCT | typeof OrderKind.WALLET_TOPUP | undefined;
 const kindClause = (kind: KindScope) => (kind === undefined ? {} : { kind });
 
+/**
+ * The wallet half of every sale matching one old-shaped clause, per order, per
+ * currency — replicated from `walletSpendByOrder` (crud/revenue.ts), which
+ * Financial Ledger M8.5 added to every money metric below.
+ *
+ * **Why this is replicated rather than imported**, unlike `periodWindowStart`
+ * above which deliberately calls production's own expression: this one is part
+ * of what the `drift` column is checking. `periodWindowStart` only has to agree
+ * with production about which WINDOW to ask about — a second implementation
+ * there would add a bug of its own and verify nothing. Here, importing
+ * production's helper would make `drift` blind to the very arithmetic M8.5
+ * introduced: any error inside it would appear identically on both sides and
+ * cancel. Fourteen lines that can be read against `walletSpendLegs` line by
+ * line is the price of that column meaning something.
+ *
+ * Wallet-first for the same reason production is: `WalletTransaction` has no
+ * Prisma relation to `Order`, so the order set cannot be a relation filter.
+ */
+async function walletSpendByOrder(db: Db, where: Record<string, unknown>) {
+  const groups = await db.walletTransaction.groupBy({
+    by: ["orderId", "currency"],
+    where: { reason: "order_payment", orderId: { not: null } },
+    _sum: { delta: true },
+  });
+  const spendByOrder = new Map<number, { idr: Decimal; usdt: Decimal }>();
+  if (groups.length === 0) return spendByOrder;
+
+  const candidateIds = [...new Set(groups.map((group) => group.orderId!))];
+  const qualifying = new Set(
+    (await db.order.findMany({ where: { ...where, id: { in: candidateIds } }, select: { id: true } })).map(
+      (order) => order.id,
+    ),
+  );
+  for (const group of groups) {
+    const orderId = group.orderId;
+    if (orderId == null || !qualifying.has(orderId)) continue;
+    // Debits are stored negative; a group that nets to zero or less is not a
+    // payment and posts nothing, exactly as postOrderPaymentPosting treats it.
+    const spent = new Decimal(group._sum.delta ?? 0).negated();
+    if (!spent.greaterThan(0)) continue;
+    const acc = spendByOrder.get(orderId) ?? { idr: ZERO, usdt: ZERO };
+    if (group.currency === "IDR") acc.idr = acc.idr.plus(spent);
+    else acc.usdt = acc.usdt.plus(spent);
+    spendByOrder.set(orderId, acc);
+  }
+  return spendByOrder;
+}
+
 /** Money summed per currency over one old-shaped clause. Non-IDR falls into the
- *  USDT bucket, mirroring `salesRevenueByCurrency`'s own convention. */
+ *  USDT bucket, mirroring `salesRevenueByCurrency`'s own convention.
+ *
+ *  The `totalAmount` sum plus the wallet credit spent on those same orders —
+ *  the two legs of one sale, as of M8.5. Added on BOTH sides of every
+ *  comparison below (see the module header): this script measures the
+ *  `kind: PRODUCT` correction, so holding the wallet correction constant across
+ *  pre-fix and post-fix is what keeps that attribution uncontaminated. */
 async function moneyByCurrency(db: Db, where: Record<string, unknown>) {
   const groups = await db.order.groupBy({
     by: ["currency"],
@@ -203,6 +275,10 @@ async function moneyByCurrency(db: Db, where: Record<string, unknown>) {
     if (group.currency === "IDR") idr = idr.plus(sum);
     else usdt = usdt.plus(sum);
     orders += group._count._all;
+  }
+  for (const spend of (await walletSpendByOrder(db, where)).values()) {
+    idr = idr.plus(spend.idr);
+    usdt = usdt.plus(spend.usdt);
   }
   return { idr, usdt, orders };
 }
@@ -226,11 +302,17 @@ async function countsByCurrency(db: Db, where: Record<string, unknown>) {
  * order is counted unconverted. Replicated verbatim from
  * `combinedRevenueByDay`/`revenueByPeriod`, including the unconverted wart —
  * this has to mirror the code under comparison, not improve on it.
+ *
+ * The wallet leg blends by ITS OWN currency through the same rate (M8.5): an
+ * IDR leg on a USDT order passes through unconverted, a USDT leg converts at
+ * that order's snapshot — the two halves of one sale are never blended by two
+ * different rules.
  */
 async function idrEquivalent(db: Db, where: Record<string, unknown>) {
+  const walletSpend = await walletSpendByOrder(db, where);
   const rows = await db.order.findMany({
     where,
-    select: { totalAmount: true, currency: true, fxRate: true },
+    select: { id: true, totalAmount: true, currency: true, fxRate: true },
   });
   let total = ZERO;
   for (const row of rows) {
@@ -239,6 +321,12 @@ async function idrEquivalent(db: Db, where: Record<string, unknown>) {
       row.currency === "USDT" && row.fxRate != null
         ? total.plus(amount.times(row.fxRate))
         : total.plus(amount);
+    const spend = walletSpend.get(row.id);
+    if (spend) {
+      total = total
+        .plus(spend.idr)
+        .plus(row.fxRate != null ? spend.usdt.times(row.fxRate) : spend.usdt);
+    }
   }
   return total;
 }

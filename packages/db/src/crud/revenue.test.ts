@@ -1496,6 +1496,30 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       expect(days[2]).toMatchObject({ revenue_idr: "54000", revenue_usdt: "0", orders: 1 });
     });
 
+    it("revenueByDay asks the wallet query only about ITS OWN window's orders", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeWalletPaidSale({
+        deliveredAt: todayUtc.plus({ hours: 3 }).toJSDate(),
+        gateway: "1000",
+        walletSpend: "4000",
+      });
+      // Delivered long before the two-day window this call asks for. Neither
+      // its gateway leg nor its credit may appear. This pins the bounded
+      // wallet lookup specifically: the wallet query is handed this window's
+      // own order ids, so a future change to that parameter cannot silently
+      // widen the scan back to every wallet-paid order in history.
+      await makeWalletPaidSale({
+        deliveredAt: todayUtc.minus({ days: 10 }).toJSDate(),
+        gateway: "7000",
+        walletSpend: "9000",
+      });
+
+      const days = await revenueByDay(prisma, 2);
+      expect(days).toHaveLength(2);
+      expect(days[0]!.revenue_idr).toBe("0");
+      expect(days[1]).toMatchObject({ revenue_idr: "5000", revenue_usdt: "0", orders: 1 });
+    });
+
     it("revenueByDay keeps a USDT wallet leg out of the IDR bucket", async () => {
       const now = new Date();
       await makeWalletPaidSale({ deliveredAt: now, gateway: "2", walletSpend: "3", currency: "USDT" });
@@ -1512,6 +1536,49 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       const days = await combinedRevenueByDay(prisma, 1);
       // (2 + 3) USDT at 16,000 + (1,000 + 4,000) IDR.
       expect(days[0]!.revenueIdrEquiv).toBe("85000");
+    });
+
+    it("combinedRevenueByDay blends a wallet leg by the ORDER's currency, so an IDR order carrying an fxRate converts nothing", async () => {
+      const now = new Date();
+      // An IDR-settled order that nonetheless carries an fxRate. Today
+      // `finalizeOrderPayment` (crud/pricing.ts) only ever stamps one on a USDT
+      // order, so this shape cannot be reached through the app — it is injected
+      // here precisely to prove the GUARD, not just to document the intent.
+      // The gateway leg passes through unconverted because the order is IDR;
+      // the wallet leg must be held to the identical condition, or a future
+      // change that stamps an fxRate on an IDR order would silently blend this
+      // sale's two halves by two different rules.
+      await makeWalletPaidSale({
+        deliveredAt: now,
+        gateway: "1000",
+        walletSpend: "3",
+        currency: "IDR",
+        legCurrency: "USDT",
+        fxRate: "16000",
+      });
+
+      const days = await combinedRevenueByDay(prisma, 1);
+      // 1,000 + 3, not 1,000 + 3 x 16,000.
+      expect(days[0]!.revenueIdrEquiv).toBe("1003");
+    });
+
+    it("revenueByPeriod holds its blended figure to that same guard", async () => {
+      const thisMonth = DateTime.utc().startOf("month").plus({ hours: 6 });
+      await makeWalletPaidSale({
+        deliveredAt: thisMonth.toJSDate(),
+        gateway: "1000",
+        walletSpend: "3",
+        currency: "IDR",
+        legCurrency: "USDT",
+        fxRate: "16000",
+      });
+
+      const rows = await revenueByPeriod(prisma, "month", 1);
+      expect(rows[0]).toMatchObject({
+        revenue_idr: "1000",
+        revenue_usdt: "3",
+        revenueIdrEquiv: "1003",
+      });
     });
 
     it("revenueByPeriod counts the credit spent in the order's own calendar period, per currency and blended", async () => {

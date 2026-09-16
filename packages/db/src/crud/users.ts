@@ -803,9 +803,13 @@ async function rankedPageBySpend(
 
   for (const [userId, wallet] of walletByUser) {
     const gateway = combined.get(userId);
-    // No qualifying order for this customer means their credit was spent on
-    // something this ranking does not count (a USDT order, say) — not a row to
-    // invent here.
+    // `gateway` cannot actually be null here: `walletByUser` is read over
+    // `rankedWhere`, and the `missing` groupBy immediately above re-reads
+    // exactly those users under the identical `rankedWhere` — `currency: "IDR"`
+    // filter and all — so every customer reachable through `walletByUser` has a
+    // qualifying IDR order and therefore an entry in `combined`. This guard is
+    // here only because the type system cannot prove that locally; it is not a
+    // defense against some other order shape reaching this loop.
     if (gateway == null) continue;
     combined.set(userId, gateway.plus(wallet.idr));
   }

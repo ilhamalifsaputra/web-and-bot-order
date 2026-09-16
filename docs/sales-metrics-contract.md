@@ -556,6 +556,22 @@ now shows it, so a customer who pays mostly from credit sorts where their own
 > `CurrencyStack` exists to avoid doing on the display side. **Do not resolve
 > this by inventing a blended spend score.** Recorded here for completeness;
 > out of scope for M7.
+>
+> One narrower consequence of that same IDR-only choice, recorded so a later
+> reader does not mistake it for a bug: the ranking filters ORDERS to
+> `currency: "IDR"` before it looks at wallet legs at all, while
+> `totalSpentByUserIds` puts each leg in the column matching the LEG's own
+> currency with no filter on the order's. A customer whose only
+> IDR-denominated spend is an IDR wallet leg on an otherwise-USDT-settled
+> order therefore sees that amount in their "Total Spent" IDR figure but is
+> not elevated by it in the spend ranking. Known and accepted. Loosening the
+> ranking to count it is **not** a one-line change: `rankedCount` and the
+> zero-spender complement (`orders: { none: { currency: "IDR", ... } }`) both
+> decide "has this customer spent anything" by that same IDR-order test, so
+> counting such a customer on the ranked side without moving that boundary too
+> would place them on both sides of it — the duplicate/dropped row the
+> pagination is built to prevent. A design change to the ranked/zero-spend
+> boundary, not a review fix.
 
 ### All-kinds — "what has this account been doing"
 
@@ -942,8 +958,31 @@ M8.5 revision above documents a fix made in code, it does not make one here.
 12. **`WALLET_LEDGER_DRIFT` will report the pre-ledger wallet float** as one
     standing `CRITICAL` per funded currency until M10's backfill runs. Expected,
     not a bug. Whoever deploys should either expect it or run M10 promptly.
+13. **The wallet leg's LIFETIME-scoped readers scan every wallet-paid order in
+    history.** `walletSpendLegs` (`packages/db/src/crud/revenue.ts`) has two
+    query shapes. The window-scoped callers — `revenueByDay`,
+    `combinedRevenueByDay`, `revenueByPeriod` — hand it the order ids they have
+    already read, so their wallet read is bounded by the window. The callers
+    with no window to bound by cannot: `botOverallStats` and
+    `revenueSummary`/`grossSalesForNetSales` (via `salesRevenueByCurrency`),
+    plus `customersKpis`, `userTotalSpent` and `totalSpentByUserIds`
+    (`users.ts`, bounded by *user*, not by date, and holding no order-id list —
+    they aggregate with `groupBy`, not `findMany`). Those six group every
+    `reason: "order_payment"` row in the table and then narrow. Two costs, both
+    growing with wallet-paid order volume and neither a correctness problem:
+    `wallet_transactions` has no index with `reason` as its leading column
+    (only `@@unique([orderId, reason])`), so this is a sequential scan; and the
+    matched ids go out as one `IN (...)` list, which **throws** past Prisma's
+    bind-variable ceiling (~32,767) rather than merely slowing down. A known,
+    accepted ceiling at today's volumes. The fix, if it ever matters, is a raw
+    join or a `created_at` bound — not a rewrite of those six functions'
+    `groupBy` shape, which would change their cost profile for unrelated
+    reasons.
 
 ---
 
 *Financial Ledger M7, verified against commit `7e20b1eb`; revised at M8.5 for
-the wallet-spend correction (`5d755c5c`, `cd34f9ab`).*
+the wallet-spend correction (`5d755c5c`, `cd34f9ab`), and again by that
+correction's own review pass — which bounded the window-scoped wallet reads,
+recorded the lifetime ones' scaling ceiling (open item 13) and pinned the
+combined blend's fxRate guard.*

@@ -101,7 +101,7 @@
 import { pathToFileURL } from "node:url";
 import { OrderKind, OrderStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { addDays } from "@app/core/datetime";
+import { addDays, DateTime } from "@app/core/datetime";
 import {
   botOverallStats,
   combinedRevenueByDay,
@@ -258,38 +258,25 @@ function dayWindowStart(days: number): Date {
 }
 
 /**
- * `revenueByPeriod`/`ordersByPeriod`'s own window start, replicated: the first
- * instant of the oldest of the last `count` UTC calendar periods, INCLUDING the
- * period in progress.
- *
- * Those functions use luxon's `DateTime.utc().startOf(granularity)`, which is
- * not resolvable from this script's own `node_modules` (it is a `packages/db`
- * dependency), so the same three boundaries are computed with plain UTC date
- * arithmetic: luxon's week starts Monday (ISO 8601), which `(getUTCDay() + 6) %
- * 7` reproduces, and its month/year boundaries are the calendar ones.
- *
- * A mismatch here does not pass silently. The `drift` column compares the
- * PRODUCT-filtered replication against the real function's own answer, so a
- * window that is off by a period reports a non-zero drift as long as the
- * database has any order outside the window — which is exactly the shape the
- * test fixture seeds.
+ * `revenueByPeriod`/`ordersByPeriod`'s own window start: the first instant of
+ * the oldest of the last `count` UTC calendar periods, INCLUDING the period in
+ * progress. This is production's OWN expression (`revenue.ts`'s
+ * `periodWindow`/`periodStep`), not a replica of it — an earlier version of
+ * this function hand-rolled the same boundary in plain UTC arithmetic on the
+ * belief that luxon wasn't reachable from this script. That belief was wrong:
+ * luxon is a `packages/core` dependency, re-exported from `@app/core/datetime`
+ * (imported above), which is exactly where production's own `periodWindow`
+ * gets it from. Calling the same expression directly means there is no
+ * second implementation to drift out of sync with the first one, and no
+ * boundary-arithmetic bug this function could introduce on its own — the
+ * `drift` column's job stays entirely "does the current function match its
+ * old query plus the kind filter," not also "did this script's own date math
+ * agree with production's."
  */
 function periodWindowStart(granularity: PeriodGranularity, count: number): Date {
-  const now = new Date();
-  const back = count - 1;
-  if (granularity === "year") {
-    return new Date(Date.UTC(now.getUTCFullYear() - back, 0, 1));
-  }
-  if (granularity === "month") {
-    // Month underflow is well-defined in Date.UTC: month -1 is December of the
-    // previous year, so no year arithmetic is needed here.
-    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1));
-  }
-  // Monday-based day-of-week index: Monday 0 ... Sunday 6.
-  const mondayOffset = (now.getUTCDay() + 6) % 7;
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - mondayOffset - back * 7),
-  );
+  const step = (n: number) =>
+    granularity === "week" ? { weeks: n } : granularity === "month" ? { months: n } : { years: n };
+  return DateTime.utc().startOf(granularity).plus(step(-(count - 1))).toJSDate();
 }
 
 /** The defaults `revenueByPeriod`/`ordersByPeriod` use when the caller is
@@ -298,8 +285,13 @@ const PERIOD_COUNTS: Record<PeriodGranularity, number> = { week: 12, month: 12, 
 const GRANULARITIES: PeriodGranularity[] = ["week", "month", "year"];
 
 /** Sums a `*ByDay`/`*ByPeriod` series' buckets back into one figure. The
- *  buckets are 4dp-quantized strings and `Order.totalAmount` is stored at 4dp,
- *  so summing them loses nothing a raw SUM would keep. */
+ *  column itself is `DECIMAL(65,30)`, not 4dp, but every app-written amount is
+ *  quantized to 4dp before it's stored (`@app/core/money`'s `quantizeMoney`)
+ *  and each bucket is quantized to 4dp again on the way out — so summing the
+ *  buckets loses nothing a raw SUM would keep for any row this app wrote. A
+ *  row with genuine sub-4dp precision (impossible through the app, but not
+ *  impossible in the column) would show up as non-zero `drift`, not as a
+ *  silent mismatch here. */
 function sumSeries<T>(series: readonly T[], pick: (row: T) => Decimal.Value): Decimal {
   return series.reduce<Decimal>((total, row) => total.plus(pick(row)), ZERO);
 }
@@ -704,7 +696,13 @@ export async function runParityCheck(
     topupsWithOrderItems,
     rows,
     failures,
-    inconclusive: lifetimeTopupTotals.orders === 0,
+    // Lifetime alone isn't enough: windowed is a SUBSET of lifetime, so
+    // lifetime being non-empty while the window itself holds no settled
+    // top-up would still let every windowed row (revenueSummary,
+    // revenueByDay, ...) reconcile vacuously at 0 == 0 and report PASSED
+    // while proving nothing for that group. Either being empty means some
+    // metric in this report can't be verified.
+    inconclusive: lifetimeTopupTotals.orders === 0 || windowedTopupTotals.orders === 0,
   };
 }
 

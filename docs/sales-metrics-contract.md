@@ -46,7 +46,8 @@ than carried over from an earlier investigation.
 `WALLET_TOPUP` (a buyer moving their own money into their own wallet). A
 settled top-up is a genuine `Order` row that reaches `DELIVERED` with a
 `deliveredAt` stamped — `settleWalletTopup` (`packages/db/src/crud/wallet_topup.ts`)
-writes `PENDING_PAYMENT -> DELIVERED` directly. **A top-up is never revenue and
+writes `{PENDING_PAYMENT, CANCELLED} -> DELIVERED` directly (the `CANCELLED`
+leg is a late settlement arriving after auto-cancel). **A top-up is never revenue and
 never spend.** The money is still the buyer's; it lands in the
 `wallet_liability.<ccy>` control account, and it is counted for real when they
 later spend it on a product order. Counting both double-counts the same rupiah.
@@ -140,7 +141,7 @@ Sales Today" remains an open, purely cosmetic, zero-data-risk option.
 | **Currency** | IDR and USDT kept strictly separate. Never blended. The API additionally echoes the USDT figure under a `usd` key (1 USDT ≈ 1 USD, the same number under a second label) — it is not a second, independently computed figure. |
 | **Refund treatment** | **Not refund-aware.** This is a gross figure. A partial refund leaves the order `DELIVERED` and does not reduce it; a full refund removes the order from it entirely (see above). Use Net Sales for the refund-aware number. |
 | **Discount treatment** | Net of discounts — sums `Order.totalAmount`, which is post-`bulkDiscountAmount`/`discountAmount`. |
-| **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere). The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can legitimately disagree by up to 7 hours' worth of orders. |
+| **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere). The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can legitimately disagree. Both windows are right-anchored at "now" rather than at a fixed close, so the gap is **not** a flat 7 hours: it's up to 7 hours' worth of orders before 17:00 UTC (when the Jakarta date has not yet rolled), widening to up to 17 hours' worth between 17:00 and 23:59 UTC (once it has). |
 | **Aggregation** | `SUM(Order.totalAmount)` grouped by currency over `deliveredAt ∈ [since, until]`, plus the order count behind it. "Yesterday" is bounded at the same clock time as now (`yesterdaySameClock`) so a mid-day comparison is like-for-like, not today-so-far against a whole day. |
 | **Trend %** | `(today − yesterday) / yesterday × 100`, 1dp, `null` when yesterday was zero (no division by zero, and no "∞%"). |
 
@@ -280,8 +281,15 @@ follows it correctly from the start.
 
 ### Day-granularity series
 
-`revenueByDay`, `ordersByDay`, `combinedRevenueByDay`, `refundsByDay`,
-`profitByDay` — all in `packages/db/src/crud/revenue.ts`.
+`revenueByDay`, `ordersByDay`, `combinedRevenueByDay`, `profitByDay` — all
+in `packages/db/src/crud/revenue.ts` and all feeding the Sales Analytics
+chart. `refundsByDay` lives in the same file and shares the same shape, but
+**has no production caller today** — the analytics route's `metric` only
+ever dispatches to `revenue`, `orders`, or `profit` (`dashboard.ts:340-379`);
+no route or page charts refunds yet. It shipped alongside the Refunds Today
+KPI (Task 6b) as the natural day-bucketed counterpart, ready for a future
+"Refunds" chart series, but is not wired to one — treat its row below as a
+source-of-truth definition, not evidence it's dashboard-visible.
 
 | | |
 |---|---|
@@ -289,7 +297,7 @@ follows it correctly from the start.
 | **Bucket key** | `deliveredAt.toISOString().slice(0, 10)` — a genuine **UTC calendar day**, `YYYY-MM-DD`. (`refundsByDay` keys on `executedAt` instead.) |
 | **Zero-fill** | Every day in the window is pre-seeded, so an inactive day reports a real zero and the chart has no gaps. `profitByDay` seeds with a profit accumulator and reports `null`, not zero — see below. |
 | **Included states / kind** | `DELIVERED` + `kind: PRODUCT` for revenue/orders/combined. `refundsByDay`: `RefundExecutionStatus.COMPLETED`. `profitByDay`: delivered `OrderItem` lines, structurally immune to kind. |
-| **Refund treatment** | `refundsByDay` is the refund series; the others are gross and not refund-aware. There is deliberately **no** `netSalesByDay` — Net Sales shipped as a today-only KPI and a charted version was never asked for. |
+| **Refund treatment** | `refundsByDay` is the refund series (**not currently charted — no production caller**, see above); the others are gross and not refund-aware. There is deliberately **no** `netSalesByDay` — Net Sales shipped as a today-only KPI and a charted version was never asked for. |
 | **Currency** | Per currency, except `combinedRevenueByDay` (see below). |
 | **Discount** | `Order.totalAmount` (net) for revenue/orders/combined; prorated per line for profit. |
 
@@ -463,11 +471,16 @@ and correctly so: with "Total Spent" now product-only, a ranking still sorted
 by top-up-inflated spend would have ordered customers inconsistently with the
 figure displayed next to them on the same row.
 
-> **Pre-existing quirk, unchanged and not introduced by this work:**
+> **Pre-existing, and deliberate by design — not a bug to fix:**
 > `rankUserIdsBySpend` ranks on `currency: "IDR"` orders only. A customer who
 > has only ever paid in USDT ranks as a zero-spender and is sorted into the
 > `createdAt`-desc tail, even though their "Total Spent" cell correctly shows a
-> USDT figure. Recorded here for completeness; out of scope for M7.
+> USDT figure. The function's own doc comment (`users.ts:693-698`) states why:
+> spend is inherently two numbers (IDR, USDT), and blending them into one
+> ranking scalar would fabricate a single figure — exactly what
+> `CurrencyStack` exists to avoid doing on the display side. **Do not resolve
+> this by inventing a blended spend score.** Recorded here for completeness;
+> out of scope for M7.
 
 ### All-kinds — "what has this account been doing"
 
@@ -612,9 +625,12 @@ right now:
 
 **Why it was not fixed at M6:**
 
-1. Changing it shifts "today's revenue" by up to 7 hours' worth of orders — a
-   real, user-visible number change entirely unrelated to the `kind: PRODUCT`
-   bug M6 exists to fix.
+1. Changing it shifts "today's revenue" by up to 7 hours' worth of orders
+   before 17:00 UTC, and up to 17 hours' worth between 17:00 and 23:59 UTC
+   (both bot-vs-web-admin windows are right-anchored at "now", not a fixed
+   close, so the gap widens once the Jakarta date rolls but the UTC one
+   hasn't — see the row above) — a real, user-visible number change entirely
+   unrelated to the `kind: PRODUCT` bug M6 exists to fix.
 2. M8's parity report must attribute every pre-fix/post-fix delta to the
    documented `kind: PRODUCT` correction alone, with nothing unexplained.
    Folding in an unrelated timezone-boundary change would contaminate that
@@ -647,7 +663,7 @@ that figure is bucketed on.
 | Revenue by Day | `revenueByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | `PRODUCT` | No | **UTC calendar day**, rolling last-N-days |
 | Orders by Day | `ordersByDay` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **UTC calendar day**, rolling |
 | Combined Revenue by Day | `combinedRevenueByDay` | `packages/db/src/crud/revenue.ts` | **Blended to IDR-equiv via per-order `fxRate` snapshot** (opt-in) | `PRODUCT` | No | **UTC calendar day**, rolling |
-| Refunds by Day | `refundsByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | n/a | Yes | **UTC calendar day**, rolling, on `executedAt` |
+| Refunds by Day (⚠️ no production caller today) | `refundsByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | n/a | Yes | **UTC calendar day**, rolling, on `executedAt` |
 | Profit by Day | `profitByDay` | `packages/db/src/crud/revenue.ts` | Separate; per-order `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **UTC calendar day**, rolling |
 | Revenue by Week/Month/Year | `revenueByPeriod` | `packages/db/src/crud/revenue.ts` | Separate, **plus** `revenueIdrEquiv` blend (opt-in) | `PRODUCT` | No | **UTC ISO week (Mon) / calendar month / calendar year** |
 | Orders by Week/Month/Year | `ordersByPeriod` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **UTC ISO week / month / year** |
@@ -662,7 +678,7 @@ that figure is bucketed on.
 | Customers KPI row (`newToday`, `activeToday`) | `customersKpis` | `packages/db/src/crud/users.ts` | n/a | n/a (reads `User.createdAt`/`lastSeenAt`) | n/a | ⚠️ Jakarta-local midnight |
 | Customers "Orders" / "Last Order" columns | `orderStatsByUserIds.totalOrders` / `.lastOrderAt` | `packages/db/src/crud/users.ts` | n/a | **None — all kinds, deliberate** | No | Lifetime |
 | "RETURNING" badge | `orderStatsByUserIds.deliveredOrders` | `packages/db/src/crud/users.ts` | n/a | `PRODUCT` | No | Lifetime |
-| Customers sort-by-spend ordering | `rankUserIdsBySpend` (private) | `packages/db/src/crud/users.ts` | **IDR-only ranking** (pre-existing quirk) | `PRODUCT` | No | Lifetime |
+| Customers sort-by-spend ordering | `rankUserIdsBySpend` (private) | `packages/db/src/crud/users.ts` | **IDR-only ranking** (pre-existing, deliberate — see note above, not a bug) | `PRODUCT` | No | Lifetime |
 | Storefront home fulfilment stats | `shopFulfilmentStats` | `packages/db/src/crud/orders.ts` | n/a | `PRODUCT` | No | Lifetime |
 | Bot customer dashboard stats | `botOverallStats` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate; `items_sold` immune; `total_users` not order-derived | `PRODUCT` on revenue | No | Lifetime |
 | Bot admin dashboard "today's revenue/orders" | `revenueSummary` | `packages/db/src/crud/revenue.ts`, called from `apps/order-bot/src/handlers/admin.ts` | IDR/USDT separate | `PRODUCT` | No | **True UTC midnight** — differs from the web admin's same-named figure |
@@ -717,7 +733,7 @@ each window):
 
 | Commit | Subject | What it changed |
 |---|---|---|
-| `3c15ba47` | `fix(db): stop counting wallet top-ups as product sales` | 13 call points across `revenue.ts` (`salesRevenueByCurrency` — which fixes `revenueSummary` *and* `botOverallStats` — `revenueByDay`, `ordersByDay`, `combinedRevenueByDay`), `reports.ts` (`ordersByStatus`, `ordersByStatusSince`), `users.ts` (`userTotalSpent`, `totalSpentByUserIds`, `customersKpis` × 2 groups, `orderStatsByUserIds.deliveredOrders`, `rankUserIdsBySpend`). 13 new tests, each watched failing first. |
+| `3c15ba47` | `fix(db): stop counting wallet top-ups as product sales` | 13 call points across `revenue.ts` (`salesRevenueByCurrency` — which fixes `revenueSummary` *and* `botOverallStats` — `revenueByDay`, `ordersByDay`, `combinedRevenueByDay`), `reports.ts` (`ordersByStatus`, `ordersByStatusSince`), `users.ts` (`userTotalSpent`, `totalSpentByUserIds`, `customersKpis` × 2 groups, `orderStatsByUserIds.deliveredOrders`, `rankUserIdsBySpend`), and `orders.ts` (the kind-agnostic operational-counter block header comment, and the new `OrderFilter.kind` field). 13 new tests, each watched failing first. |
 | `997fd500` | `fix(db): stop shopFulfilmentStats counting wallet top-ups as sales` | The storefront home page's own delivered-orders and distinct-customers counts (found during the Task 6a review, same bug class, not in the original list). Also narrowed `OrderFilter.kind` from `string \| null` to `OrderKind \| null`. |
 
 Two further commits in the same milestone changed what the dashboard *shows*
@@ -758,7 +774,12 @@ these is a fix this document performs** — M7 is documentation-only.
 5. **fxRate-less USDT orders are counted unconverted** in the combined blend
    rather than dropped. Pre-existing; now reachable at more granularities.
 6. **`rankUserIdsBySpend` ranks on IDR-only spend**, so a USDT-only buyer sorts
-   as a zero-spender despite a correct non-zero "Total Spent" cell.
+   as a zero-spender despite a correct non-zero "Total Spent" cell. This is
+   **deliberate by the function's own doc comment** (`users.ts:693-698`):
+   blending IDR and USDT spend into one ranking scalar would fabricate a
+   figure, the same reasoning `CurrencyStack` encodes on the display side.
+   Not an open bug to fix — recorded so a future pass doesn't "fix" it by
+   inventing a blended spend score.
 7. **`listUserDeliveredOrders`** (`orders.ts`) is still kind-agnostic while its
    own siblings `listUserOrders`/`countUserOrders` are `PRODUCT`-filtered — a
    buyer's account page can show an empty "delivered order" for a settled

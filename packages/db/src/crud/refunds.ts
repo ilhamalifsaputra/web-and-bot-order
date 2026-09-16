@@ -161,6 +161,17 @@ export async function createRefund(
     details: `Created a ${refund.status} refund of ${amount.toString()} ${refund.currency} for order ${order.orderCode}.`,
   });
 
+  // The start of a refund's life, and the counterpart to the payout line
+  // `executeRefund` writes at the end of it — between the two, a refund that
+  // was requested but never paid out is visible in the logs as a request with
+  // no payout, rather than as nothing at all. `reason` is deliberately left out
+  // of the sentence: it is free admin-written text of unbounded length, and the
+  // audit line above already carries the admin-facing account of this refund.
+  logger.info(
+    { refundId: refund.id, orderId: order.id },
+    `Opened refund #${refund.id} for ${amount.toString()} ${refund.currency} against order ${order.orderCode}, requested by admin ${args.adminId} and starting in ${refund.status}. No money has moved yet — a refund only pays out when an admin executes it.`,
+  );
+
   return refund;
 }
 
@@ -256,6 +267,17 @@ export async function transitionRefundStatus(
     `Refund #${refundId} for order ${order?.orderCode ?? refund.orderId} moved from ${from} to ${to}${meta ? ` (${meta})` : ""}.` +
     (to === RefundStatus.COMPLETED ? " Record-keeping only — no payout was triggered by this transition." : "");
   await logAdminAction(db, { adminId, action: "refund_status_change", targetType: "refund", targetId: refundId, details });
+
+  if (to === RefundStatus.FAILED) {
+    // The one transition worth a developer's attention on its own: a buyer was
+    // judged owed money and is not going to get it through this refund. The
+    // other moves (PENDING → PROCESSING, → COMPLETED, → CANCELLED) are either
+    // routine workflow or already carried by `executeRefund`'s own payout line.
+    logger.warn(
+      { refundId, orderId: refund.orderId },
+      `Refund #${refundId} for order ${order?.orderCode ?? refund.orderId} was marked FAILED by admin ${adminId}${meta ? ` (${meta})` : ""} — its ${refund.amount.toString()} ${refund.currency} will not be paid out under this refund, so if the buyer is genuinely owed that money somebody has to open a new one. A refund that fails repeatedly on the same order usually means the payout route itself is broken, not the request.`,
+    );
+  }
 
   return refund;
 }
@@ -566,6 +588,20 @@ export async function executeRefund(
     const refund = await tx.refund.findUnique({ where: { id: args.refundId } });
     if (!refund) throw new ValidationError("error.refund_not_found");
     if (refund.status !== RefundStatus.PROCESSING) {
+      // A refund already sitting at COMPLETED is the interesting shape here:
+      // something asked to pay out a refund that has already been paid, so this
+      // guard is the only thing standing between a buyer and a second payout.
+      // Warned rather than errored because it worked — nothing was paid twice —
+      // but unlike a ledger replay this is NOT an expected race: no rail retries
+      // a payout on its own, so a repeat means an admin double-submitted or a
+      // caller lost track of what it had already done, and it is worth finding
+      // out which.
+      logger.warn(
+        { refundId: refund.id, status: refund.status },
+        refund.status === RefundStatus.COMPLETED
+          ? `Paid nothing out for refund #${refund.id}, because it has already been paid and settled — this second payout request was refused, so the buyer keeps exactly the one refund they were owed. Whatever asked for it believes an unpaid refund is outstanding when none is, which is worth tracing back.`
+          : `Paid nothing out for refund #${refund.id}, because a refund can only be paid while it is PROCESSING and this one is ${refund.status} — an admin has to review and move it to PROCESSING first. Nothing was paid and nothing was recorded.`,
+      );
       throw new ValidationError("error.refund_not_processing", { status: refund.status });
     }
 

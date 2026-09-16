@@ -608,6 +608,21 @@ async function findWalletLedgerDrift(
 
     const difference = money(expected.minus(ledgerTotal));
     if (!difference.abs().greaterThan(MONEY_TOLERANCE)) continue;
+    // The one check in this file whose finding is logged individually, and the
+    // only one where that is affordable: it produces at most one finding per
+    // currency, so the log stays bounded however badly the books have drifted.
+    // The other three are reported by count in `reconcileLedgerJob`'s own
+    // summary line (apps/order-bot/src/jobs/index.ts) because each can return a
+    // finding per order, payment or payout — and listing those here would mean
+    // either an unbounded log or a truncated id dump, which docs/LOGGING.md
+    // rules out in favour of summarising by count.
+    //
+    // Logged at `error`, not `warn`: this is the control account for money the
+    // shop owes its buyers, and the two records of that same money disagree.
+    logger.error(
+      { accountCode, currency },
+      `Buyers' wallet balances no longer agree with the ledger in ${currency}: the "${accountCode}" control account stands at ${ledgerTotal.toString()} while the balances buyers actually hold — ${usersTotal.toString()} spendable, plus ${inFlight.toString()} already spent on orders that have not settled yet — come to ${expected.toString()}, a difference of ${difference.toString()}. One of the two is wrong about money the shop owes real people, so this needs reconciling by hand before either figure is reported anywhere. Until the historical backfill has run, a standing difference here is expected and simply measures the wallet credit that pre-dates the ledger.`,
+    );
     findings.push({
       type: ReconciliationFindingType.WALLET_LEDGER_DRIFT,
       entity: "wallet_liability",

@@ -42,6 +42,7 @@
  */
 import { ValidationError } from "@app/core/errors";
 import { LedgerAccountType, LedgerDirection } from "@app/core/enums";
+import { logger } from "@app/core/logger";
 import { Decimal, money, moneyEq, ZERO } from "@app/core/money";
 import type { FinancialTransaction } from "@prisma/client";
 import type { Db } from "./_types";
@@ -345,16 +346,53 @@ export async function postFinancialTransaction(
     // shares, so the second such posting would be handed an unrelated
     // transaction as its own idempotent replay and would silently skip writing
     // real money.
-    throw new ValidationError("error.ledger_idempotency_key_required");
+    const e = new ValidationError("error.ledger_idempotency_key_required");
+    logger.error(
+      { err: e },
+      `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it arrived with a blank idempotency key, and wrote nothing at all — a blank key is shared by every other caller that leaves it blank, so accepting it would eventually hand one event's posting back to an unrelated one as its own replay. Whichever posting site built this key is the bug; the event itself still needs a manual entry.`,
+    );
+    throw e;
   }
 
   const alreadyPosted = await db.financialTransaction.findUnique({
     where: { idempotencyKey: args.idempotencyKey },
   });
-  if (alreadyPosted) return alreadyPosted;
+  if (alreadyPosted) {
+    // The idempotency guard working, not a fault: every payment rail in this
+    // shop is at-least-once, so a posting site asking twice is ordinary
+    // operation. Logged at `info` for exactly the reason
+    // `PaymentLogEvent.PAYMENT_ALREADY_CONFIRMED` is (@app/core/payments/
+    // logEvents) — logging the expected case as a warning teaches whoever reads
+    // these logs to ignore warnings.
+    logger.info(
+      { idempotencyKey: args.idempotencyKey, financialTransactionId: alreadyPosted.id },
+      `Posted nothing new to the ledger for the ${args.type} event on ${args.referenceType} ${args.referenceId}, because financial transaction ${alreadyPosted.id} already records it under the same idempotency key — the existing posting is returned unchanged, so the event is recognised once however many times it is replayed`,
+    );
+    return alreadyPosted;
+  }
 
-  const prepared = await prepareEntries(db, args.entries);
-  assertBalancedPerCurrency(prepared);
+  let prepared: PreparedEntry[];
+  try {
+    prepared = await prepareEntries(db, args.entries);
+    assertBalancedPerCurrency(prepared);
+  } catch (e) {
+    // Every rejection reason is a caller bug (an unbalanced pair of legs, an
+    // account code that does not exist, a currency that disagrees with its
+    // account), and the caller is always a settlement path that has ALREADY
+    // moved real money by the time it asks for a posting — so a refusal here is
+    // never silent, whatever the caller does with the throw.
+    //
+    // `error.ledger_account_not_found` is additionally caught and logged by
+    // `postOrSkipMissingAccount` (./ledgerPostings.ts) one layer up. That
+    // overlap is deliberate rather than a duplicate: this line records that the
+    // ledger service itself refused the posting and carries the error, while
+    // that one names the business event and what an admin has to do about it.
+    logger.error(
+      { err: e, idempotencyKey: args.idempotencyKey },
+      `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it did not pass validation, and wrote nothing at all — the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected`,
+    );
+    throw e;
+  }
 
   const write = async (trx: Db): Promise<FinancialTransaction> => {
     const transaction = await trx.financialTransaction.create({
@@ -391,7 +429,19 @@ export async function postFinancialTransaction(
   // from a caller-owned transaction. Same check as ./users.ts's `adjustWallet`.
   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
   try {
-    return ownsTransaction ? await db.$transaction(write) : await write(db);
+    const posted = ownsTransaction ? await db.$transaction(write) : await write(db);
+    // Says "wrote", not "committed", and adds the caveat below when the caller
+    // owns the transaction: at this line a caller-owned posting is real only
+    // inside that caller's still-open transaction, and a line claiming the
+    // books recorded an event must not outlive a rollback that took it away.
+    // `refunds.ts`'s own payout log makes the same distinction by waiting for
+    // the commit; this service cannot wait, because it does not own the commit.
+    logger.info(
+      { idempotencyKey: args.idempotencyKey, financialTransactionId: posted.id },
+      `Wrote the ${args.type} event on ${args.referenceType} ${args.referenceId} to the ledger as financial transaction ${posted.id}, balanced across ${prepared.length} entries: ${args.description}` +
+        (ownsTransaction ? "" : " (inside the calling transaction, so it becomes final only when that transaction commits)"),
+    );
+    return posted;
   } catch (e) {
     if (!isUniqueViolation(e) || !ownsTransaction) throw e;
     // The only unique constraint these two tables carry is
@@ -401,7 +451,13 @@ export async function postFinancialTransaction(
     const raced = await db.financialTransaction.findUnique({
       where: { idempotencyKey: args.idempotencyKey },
     });
-    if (raced) return raced;
+    if (raced) {
+      logger.info(
+        { idempotencyKey: args.idempotencyKey, financialTransactionId: raced.id },
+        `Posted nothing new to the ledger for the ${args.type} event on ${args.referenceType} ${args.referenceId}, because a concurrent caller wrote financial transaction ${raced.id} for the same idempotency key while this one was still validating — that caller's posting is returned instead, so the two racing callers still produced exactly one entry in the books`,
+      );
+      return raced;
+    }
     throw e;
   }
 }

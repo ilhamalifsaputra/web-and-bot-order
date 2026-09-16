@@ -47,6 +47,7 @@ import {
   RefundStatus,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { logger } from "@app/core/logger";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
@@ -162,6 +163,38 @@ async function postingFor(refundExecutionId: number) {
 async function idrBalance(userId: number) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   return new Decimal(user.walletBalance).toString();
+}
+
+/**
+ * Everything pino writes while `fn` runs, as one string.
+ *
+ * Hooks the transport rather than spying on `logger.info`/`logger.warn`
+ * individually — the same idiom, and the same reasoning, as
+ * `payment_log_secrets.test.ts`: a spy per method only sees the methods it was
+ * told about, so a leak added through `logger.debug` or a child logger would
+ * walk straight past it. Everything goes through this one stream.
+ *
+ * Captures the structured metadata as well as the message sentence, because a
+ * secret in the metadata object is just as leaked as one interpolated into the
+ * prose.
+ */
+async function captureLogs(fn: () => Promise<void>): Promise<string> {
+  let captured = "";
+  const stream = logger as unknown as { [k: symbol]: unknown };
+  const streamSym = Object.getOwnPropertySymbols(stream).find((s) => s.toString().includes("stream"));
+  const original = streamSym ? stream[streamSym] : undefined;
+  const sink = {
+    write: (chunk: string) => {
+      captured += chunk;
+    },
+  };
+  if (streamSym) (stream as Record<symbol, unknown>)[streamSym] = sink;
+  try {
+    await fn();
+  } finally {
+    if (streamSym) (stream as Record<symbol, unknown>)[streamSym] = original;
+  }
+  return captured;
 }
 
 // ── 1. WALLET payout ───────────────────────────────────────────────────────
@@ -717,13 +750,25 @@ describe("executeRefund — audit trail", () => {
     const order = await makeDeliveredOrder();
     const refund = await makeProcessingRefund(order.id, "2.00");
 
-    const execution = await executeRefund(prisma, {
-      refundId: refund.id,
-      method: RefundExecutionMethod.MANUAL_TRANSFER,
-      amount: "2.00",
-      proofFileId: "AgACAgQAAxkBAAIT-secret-file-id",
-      executedBy: ADMIN_ID,
+    // Captured, not just called: M9 added developer log lines to this path (the
+    // ledger posting, and the payout line itself), and the pino stream is the
+    // one place the proof file id could reach that the audit/ledger assertions
+    // below would never see.
+    let execution!: Awaited<ReturnType<typeof executeRefund>>;
+    const logged = await captureLogs(async () => {
+      execution = await executeRefund(prisma, {
+        refundId: refund.id,
+        method: RefundExecutionMethod.MANUAL_TRANSFER,
+        amount: "2.00",
+        proofFileId: "AgACAgQAAxkBAAIT-secret-file-id",
+        executedBy: ADMIN_ID,
+      });
     });
+
+    // Asserted first, so the "no secret" checks below can never pass vacuously
+    // by capturing nothing at all.
+    expect(logged).toContain(order.orderCode);
+    expect(logged).not.toContain("AgACAgQAAxkBAAIT");
 
     const audits = await prisma.auditLog.findMany({
       where: { action: "refund_executed", targetId: execution.id },

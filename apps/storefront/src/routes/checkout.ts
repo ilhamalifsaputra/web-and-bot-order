@@ -1039,7 +1039,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const cb = verifyCallback(body, creds);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Neither the signature nor the body is logged: the signature is the
+      // credential this route authenticates on, and a rejected body is
+      // attacker-controlled bytes (CLAUDE.md, "Never log secrets"). The fact of
+      // the rejection is what an operator needs, and the rate limiter above
+      // bounds how many of these one source can produce.
+      logger.warn(
+        `Rejected a TokoPay payment callback because its signature did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the merchant secret in Settings no longer matches TokoPay's.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
@@ -1050,6 +1060,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // 2026-06-23).
     if (!order || order.paymentMethod !== PaymentMethod.TOKOPAY || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      logger.warn(
+        `A signed TokoPay callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no TokoPay rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+      );
       return reply.send({ status: "unmatched" });
     }
 
@@ -1136,13 +1149,23 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const cb = verifyPaydisiniCallback(body, creds);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Same reasoning as the TokoPay callback above — see the comment there
+      // for why neither the signature nor the rejected body is logged.
+      logger.warn(
+        `Rejected a PayDisini payment callback because its signature did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the API key in Settings no longer matches PayDisini's.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
     // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
     if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      logger.warn(
+        `A signed PayDisini callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no PayDisini rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+      );
       return reply.send({ status: "unmatched" });
     }
 
@@ -1253,7 +1276,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       const rawBody = (req as FastifyRequest & { rawBody?: string }).rawBody ?? "";
       const sigHeader = req.headers["x-nowpayments-sig"];
       const cb = verifyIpn(rawBody, body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
-      if (!cb) return reply.code(403).send({ status: "bad signature" });
+      if (!cb) {
+        // Same reasoning as the TokoPay callback above — see the comment there
+        // for why neither the signature nor the rejected body is logged. This
+        // route has one extra way to land here that the other two do not: the
+        // `x-nowpayments-sig` header can be missing entirely, which verifyIpn
+        // rejects exactly like a wrong one.
+        logger.warn(
+          `Rejected a NOWPayments IPN callback because its signature header was missing or did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the IPN secret in Settings no longer matches NOWPayments'.`,
+        );
+        return reply.code(403).send({ status: "bad signature" });
+      }
       // Only an EXACT "finished" status is a delivery — every other status
       // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
       // expired) is "not ready yet" and ignored, never an error.
@@ -1263,6 +1296,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
       if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
         await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        logger.warn(
+          `A signed NOWPayments IPN reported a finished payment of ${cb.amount.toString()} against reference "${cb.orderId}", but no NOWPayments USDT order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+        );
         return reply.send({ status: "unmatched" });
       }
       // Amount sanity: never deliver on a short/partial payment.

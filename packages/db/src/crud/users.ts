@@ -14,6 +14,7 @@ import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { invalidateWarmUser } from "./warmUserCache";
+import { walletSpendByCurrency, walletSpendByUser } from "./revenue";
 
 // `mode: "insensitive"` is a Postgres-only Prisma feature (uses ILIKE under
 // the hood); SQLite's `contains` was always case-insensitive by default so
@@ -364,20 +365,48 @@ export function searchUsers(db: Db, query: string, limit = 20) {
 }
 
 /**
- * How much this user has SPENT: their DELIVERED product-order totals, split
- * per transaction currency (orders predating the currency column count as
- * USDT — their snapshot unit).
+ * Every spend figure in this file is the sum of TWO legs of the same purchase
+ * (Financial Ledger M8.5): `Order.totalAmount`, which is only what the buyer
+ * owed EXTERNALLY (the checkout paths write it net of `walletUsed`), plus the
+ * wallet credit spent on that order, read from its own `order_payment`
+ * `WalletTransaction` rows. Before this, a purchase paid from wallet credit
+ * looked like a smaller purchase — and one paid entirely from credit like no
+ * purchase at all — while the ledger's `postOrderPaymentPosting` already
+ * recognised the whole sale.
+ *
+ * Funding the wallet was never counted as spend (`SPEND_KIND_FILTER`, Task 6a)
+ * precisely because the money was still the buyer's at that point; this is the
+ * other half of that same rule — spending the credit is when it stops being
+ * theirs. The two fixes only make sense together: with just the first, a
+ * wallet-funded customer's spend is understated; with just the second, it is
+ * double-counted.
+ *
+ * See `walletSpendByCurrency`/`walletSpendByUser` (crud/revenue.ts) for why the
+ * legs are grouped by the wallet row's OWN currency and why only
+ * `order_payment` rows count.
+ */
+const SPEND_WHERE = (extra: Record<string, unknown>) => ({
+  ...extra,
+  status: OrderStatus.DELIVERED,
+  ...SPEND_KIND_FILTER,
+});
+
+/**
+ * How much this user has SPENT: their DELIVERED product-order totals plus the
+ * wallet credit spent on those orders, split per transaction currency (orders
+ * predating the currency column count as USDT — their snapshot unit).
  *
  * Product orders only (`SPEND_KIND_FILTER`) — funding a wallet is not
- * spending.
+ * spending. Spending that credit is (see `SPEND_WHERE` above).
  */
 export async function userTotalSpent(
   db: Db,
   userId: number,
 ): Promise<{ idr: Decimal; usdt: Decimal }> {
+  const where = SPEND_WHERE({ userId });
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { userId, status: "DELIVERED", ...SPEND_KIND_FILTER },
+    where,
     _sum: { totalAmount: true },
   });
   let idr = new Decimal(0);
@@ -387,7 +416,8 @@ export async function userTotalSpent(
     if (g.currency === "IDR") idr = idr.plus(sum);
     else usdt = usdt.plus(sum);
   }
-  return { idr, usdt };
+  const wallet = await walletSpendByCurrency(db, where);
+  return { idr: idr.plus(wallet.idr), usdt: usdt.plus(wallet.usdt) };
 }
 
 /** Batched DELIVERED product-order totals for a page of users, split per
@@ -404,9 +434,10 @@ export async function totalSpentByUserIds(
 ): Promise<Map<number, { idr: Decimal; usdt: Decimal }>> {
   const result = new Map<number, { idr: Decimal; usdt: Decimal }>();
   if (userIds.length === 0) return result;
+  const where = SPEND_WHERE({ userId: { in: userIds } });
   const groups = await db.order.groupBy({
     by: ["userId", "currency"],
-    where: { userId: { in: userIds }, status: "DELIVERED", ...SPEND_KIND_FILTER },
+    where,
     _sum: { totalAmount: true },
   });
   for (const g of groups) {
@@ -415,6 +446,13 @@ export async function totalSpentByUserIds(
     if (g.currency === "IDR") entry.idr = entry.idr.plus(sum);
     else entry.usdt = entry.usdt.plus(sum);
     result.set(g.userId, entry);
+  }
+  // The wallet half of the same purchases, attributed to the buyer who spent
+  // the credit (M8.5). A user reached only through this half still belongs in
+  // the Map: their whole purchase was paid from credit.
+  for (const [userId, wallet] of await walletSpendByUser(db, where)) {
+    const entry = result.get(userId) ?? { idr: new Decimal(0), usdt: new Decimal(0) };
+    result.set(userId, { idr: entry.idr.plus(wallet.idr), usdt: entry.usdt.plus(wallet.usdt) });
   }
   return result;
 }
@@ -685,6 +723,102 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
 }
 
 /**
+ * One page of the real-spend side of the "sort by spend" ranking, ordered by
+ * the SAME figure the "Total Spent" column shows: gateway leg
+ * (`Order.totalAmount`) plus the IDR wallet credit spent on those same orders
+ * (Financial Ledger M8.5). Sorting on the gateway leg alone would have put a
+ * customer who pays mostly from wallet credit below one who spent less in
+ * total, directly contradicting the number rendered next to them on the same
+ * row — the exact inconsistency Task 6a fixed `rankUserIdsBySpend` for in the
+ * first place.
+ *
+ * Only the IDR leg is added, because this ranking is IDR-only by design (see
+ * `rankUserIdsBySpend`). A USDT wallet leg on an IDR order is not a shape the
+ * checkout paths produce, and blending it in would fabricate the single scalar
+ * that design exists to refuse.
+ *
+ * **Why the ranking can still be paginated without materializing the whole
+ * customer base.** `groupBy` can order by `_sum(totalAmount)` in SQL, but not
+ * by that sum plus a figure from another table, so the final ordering has to
+ * happen in JS. It only needs the right CANDIDATES to be correct, and they are
+ * bounded by the page's depth:
+ *
+ *   - `T` = the top `offset + limit` customers by gateway spend alone, ranked
+ *     and truncated in SQL.
+ *   - `W` = every customer with IDR wallet spend on a qualifying order.
+ *
+ * Adding wallet spend only ever moves a customer UP. So a customer who is not
+ * in `W` and not in `T` has at least `offset + limit` customers ranked above
+ * them under the combined figure too, and therefore cannot appear on this page.
+ * `T ∪ W` is thus a superset of the true page, and sorting it by (combined
+ * DESC, userId ASC) — a total order, so successive pages cannot duplicate or
+ * drop a row — and slicing `[offset, offset + limit)` gives exactly the right
+ * ids. `W` is bounded by how many customers have ever paid from credit, not by
+ * the customer base; deep pages read proportionally deeper, which is the one
+ * cost this correction adds over the old skip/take.
+ */
+async function rankedPageBySpend(
+  db: Db,
+  where: Prisma.UserWhereInput,
+  offset: number,
+  limit: number,
+  rankedCount: number,
+): Promise<number[]> {
+  const rankedWhere = {
+    status: OrderStatus.DELIVERED,
+    currency: "IDR",
+    ...SPEND_KIND_FILTER,
+    user: where,
+  };
+  const depth = Math.min(offset + limit, rankedCount);
+  const [byGateway, walletByUser] = await Promise.all([
+    db.order.groupBy({
+      by: ["userId"],
+      where: rankedWhere,
+      _sum: { totalAmount: true },
+      // The secondary key makes the truncation at `depth` deterministic when
+      // two customers' gateway spend ties, which is what lets the JS sort below
+      // reproduce one stable total order across pages.
+      orderBy: [{ _sum: { totalAmount: "desc" } }, { userId: "asc" }],
+      take: depth,
+    }),
+    walletSpendByUser(db, rankedWhere),
+  ]);
+
+  const combined = new Map<number, Decimal>();
+  for (const group of byGateway) combined.set(group.userId, new Decimal(group._sum.totalAmount ?? 0));
+
+  // A wallet-heavy customer can sit outside the gateway-ranked slice (in the
+  // extreme, with a gateway spend of zero), so their own gateway figure is read
+  // here rather than assumed to be in `byGateway` already.
+  const missing = [...walletByUser.keys()].filter((userId) => !combined.has(userId));
+  if (missing.length > 0) {
+    const extra = await db.order.groupBy({
+      by: ["userId"],
+      where: { ...rankedWhere, userId: { in: missing } },
+      _sum: { totalAmount: true },
+    });
+    for (const group of extra) combined.set(group.userId, new Decimal(group._sum.totalAmount ?? 0));
+  }
+
+  for (const [userId, wallet] of walletByUser) {
+    const gateway = combined.get(userId);
+    // No qualifying order for this customer means their credit was spent on
+    // something this ranking does not count (a USDT order, say) — not a row to
+    // invent here.
+    if (gateway == null) continue;
+    combined.set(userId, gateway.plus(wallet.idr));
+  }
+
+  return [...combined.entries()]
+    .sort(([leftId, leftSpend], [rightId, rightSpend]) =>
+      rightSpend.comparedTo(leftSpend) || leftId - rightId,
+    )
+    .slice(offset, offset + limit)
+    .map(([userId]) => userId);
+}
+
+/**
  * Rank a filtered set of user ids by DELIVERED-order IDR spend, descending,
  * then return the requested page of ids. A single `findMany` relation-orderBy
  * cannot sort by a child relation's `_sum`, only `_count` — this ranks via a
@@ -713,17 +847,15 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
  * around SQLite's parameter-count limit). Instead:
  *   1. Count how many matched users have >=1 DELIVERED IDR order at all
  *      (`rankedCount`) — an indexed EXISTS-style count, not a row pull.
- *   2. If the requested page overlaps the ranked (real-spend) side, pull just
- *      that slice directly from `groupBy` with `skip`/`take` — the ranking
- *      and the pagination happen in the same bounded query, filtering by the
- *      relation (`user: where`) instead of a materialized id list.
+ *   2. If the requested page overlaps the ranked (real-spend) side, take that
+ *      page from `rankedPageBySpend` below, which bounds its own reads by the
+ *      page's depth rather than by the customer base.
  *   3. If the page still needs more rows after that, pull the remainder from
  *      the zero-spend side directly via `orders: { none: {...} } }`,
  *      createdAt-desc, again with `skip`/`take` doing the pagination in SQL.
- * Every step returns at most `limit` (+ a scalar count) rows — nothing
- * unbounded is ever materialized — while producing byte-identical ordering
- * and pagination to the old implementation (see
- * `packages/db/src/crud/users.test.ts`'s boundary-page assertions).
+ * Nothing unbounded by customer-base size is ever materialized, while the
+ * ordering and pagination stay the ones
+ * `packages/db/src/crud/users.test.ts`'s boundary-page assertions pin.
  */
 async function rankUserIdsBySpend(
   db: Db,
@@ -741,15 +873,7 @@ async function rankUserIdsBySpend(
   const result: number[] = [];
 
   if (offset < rankedCount) {
-    const ranked = await db.order.groupBy({
-      by: ["userId"],
-      where: { status: OrderStatus.DELIVERED, currency: "IDR", ...SPEND_KIND_FILTER, user: where },
-      _sum: { totalAmount: true },
-      orderBy: { _sum: { totalAmount: "desc" } },
-      skip: offset,
-      take: Math.min(limit, rankedCount - offset),
-    });
-    result.push(...ranked.map((r) => r.userId));
+    result.push(...(await rankedPageBySpend(db, where, offset, limit, rankedCount)));
   }
 
   const remaining = limit - result.length;
@@ -807,7 +931,9 @@ export interface CustomersKpis {
  * settled wallet top-ups (`SPEND_KIND_FILTER`; a repeat customer is a repeat
  * BUYER, and this must agree with the per-row "RETURNING" badge, which reads
  * `orderStatsByUserIds.deliveredOrders`). `totalRevenue` is all-time (distinct
- * from Orders' "Revenue Today"), DELIVERED product orders only.
+ * from Orders' "Revenue Today"), DELIVERED product orders only, counting both
+ * legs of each sale — what was charged externally plus the wallet credit spent
+ * on it (see `SPEND_WHERE`).
  *
  * `newToday`/`activeToday` are not order-derived (they read `User.createdAt`/
  * `lastSeenAt`), so the kind filter does not apply to them.
@@ -815,12 +941,17 @@ export interface CustomersKpis {
 export async function customersKpis(db: Db): Promise<CustomersKpis> {
   const todayStart = startOfDayUtc();
   const nonAdmin = { role: { in: NON_ADMIN_ROLES } };
-  const [totalCustomers, newToday, activeToday, returningGroups, revenueGroups] = await Promise.all([
+  const customerSales = SPEND_WHERE({ user: nonAdmin });
+  const [totalCustomers, newToday, activeToday, returningGroups, revenueGroups, walletSpend] = await Promise.all([
     db.user.count({ where: nonAdmin }),
     db.user.count({ where: { ...nonAdmin, createdAt: { gte: todayStart } } }),
     db.user.count({ where: { ...nonAdmin, lastSeenAt: { gte: todayStart } } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, ...SPEND_KIND_FILTER, user: nonAdmin }, _count: { _all: true } }),
-    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, ...SPEND_KIND_FILTER, user: nonAdmin }, _sum: { totalAmount: true } }),
+    db.order.groupBy({ by: ["userId"], where: customerSales, _count: { _all: true } }),
+    db.order.groupBy({ by: ["currency"], where: customerSales, _sum: { totalAmount: true } }),
+    // The wallet half of those same sales (M8.5). `returningCustomers` needs no
+    // such term: it counts purchases, and a wallet-paid purchase is already one
+    // order row in the group above.
+    walletSpendByCurrency(db, customerSales),
   ]);
 
   const returningCustomers = returningGroups.filter((g) => g._count._all >= 2).length;
@@ -831,7 +962,13 @@ export async function customersKpis(db: Db): Promise<CustomersKpis> {
     const sum = new Decimal(g._sum.totalAmount ?? 0);
     if (g.currency === "IDR") idr = idr.plus(sum); else usdt = usdt.plus(sum);
   }
-  return { totalCustomers, newToday, activeToday, returningCustomers, totalRevenue: { idr, usdt } };
+  return {
+    totalCustomers,
+    newToday,
+    activeToday,
+    returningCustomers,
+    totalRevenue: { idr: idr.plus(walletSpend.idr), usdt: usdt.plus(walletSpend.usdt) },
+  };
 }
 
 export interface UserOrderStats {

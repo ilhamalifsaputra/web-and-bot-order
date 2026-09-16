@@ -8,6 +8,7 @@ import {
   RefundStatus,
 } from "@app/core/enums";
 import { DateTime } from "@app/core/datetime";
+import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { seedChartOfAccounts } from "./ledgerAccounts";
@@ -28,6 +29,8 @@ import {
   ordersByPeriod,
   profitByPeriod,
   profitByDay,
+  walletSpendByCurrency,
+  walletSpendByOrder,
 } from "./revenue";
 
 let db: TestDb;
@@ -1253,6 +1256,283 @@ describe("period-bucketed analytics (Task 6c)", () => {
 
     it("defaults to a 30-day series", async () => {
       expect(await profitByDay(prisma)).toHaveLength(30);
+    });
+  });
+});
+
+/*
+ * Financial Ledger M8.5 (Task 9) — wallet-spent credit is revenue.
+ *
+ * `Order.totalAmount` is what the buyer owed EXTERNALLY: the checkout path
+ * writes it net of `walletUsed`. So before this fix, an order paid entirely
+ * from wallet credit contributed ZERO to every dashboard revenue figure, while
+ * `postOrderPaymentPosting` (crud/ledgerPostings.ts) correctly credited
+ * `sales_revenue.<ccy>` with the whole sale — gateway leg AND wallet leg. The
+ * two views of the same order disagreed by exactly the credit spent.
+ *
+ * These tests pin the corrected behavior: every Order-rooted revenue figure now
+ * adds the `order_payment` wallet legs of the same orders it already sums, read
+ * from real `WalletTransaction` rows and grouped by THE ROW'S OWN currency (an
+ * order's `walletUsed` column has no currency of its own).
+ */
+describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => {
+  /**
+   * A delivered sale paid partly (or wholly) from wallet credit: `totalAmount`
+   * is the gateway leg only, and the credit spent exists as the one
+   * `order_payment` WalletTransaction row the checkout path writes
+   * (`adjustWallet(..., walletUsed.negated(), { reason: "order_payment" })` —
+   * debits are stored NEGATIVE, which is why every reader negates them).
+   */
+  async function makeWalletPaidSale(args: {
+    deliveredAt: Date;
+    /** `Order.totalAmount` — the externally-owed part, after wallet credit. */
+    gateway: string;
+    /** Credit spent, as a positive magnitude. Stored negated. */
+    walletSpend: string;
+    currency?: "IDR" | "USDT";
+    /** The wallet row's own currency. Defaults to the order's. */
+    legCurrency?: "IDR" | "USDT";
+    fxRate?: string | null;
+    status?: string;
+    kind?: string;
+    owner?: number;
+    /** The wallet row's own `createdAt`. Deliberately settable: a wallet leg is
+     *  written at CHECKOUT and the order is delivered later, so the two
+     *  timestamps genuinely differ and every bucketed series must key on the
+     *  ORDER's deliveredAt, never the wallet row's createdAt. */
+    walletRowAt?: Date;
+    /** An extra `order_refund` row, to prove it is ignored rather than netted. */
+    refundRow?: string;
+  }) {
+    const currency = args.currency ?? "IDR";
+    const owner = args.owner ?? userId;
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-wallet-${Math.random()}`,
+        userId: owner,
+        kind: args.kind ?? OrderKind.PRODUCT,
+        subtotalAmount: args.gateway,
+        totalAmount: args.gateway,
+        walletUsed: args.walletSpend,
+        currency,
+        fxRate: args.fxRate ?? (currency === "USDT" ? "16000" : null),
+        status: args.status ?? OrderStatus.DELIVERED,
+        paidAt: args.deliveredAt,
+        deliveredAt: args.deliveredAt,
+      },
+    });
+    await prisma.walletTransaction.create({
+      data: {
+        userId: owner,
+        delta: `-${args.walletSpend}`,
+        balanceAfter: "0",
+        currency: args.legCurrency ?? currency,
+        reason: "order_payment",
+        orderId: order.id,
+        createdAt: args.walletRowAt ?? args.deliveredAt,
+      },
+    });
+    if (args.refundRow) {
+      await prisma.walletTransaction.create({
+        data: {
+          userId: owner,
+          delta: args.refundRow,
+          balanceAfter: "0",
+          currency: args.legCurrency ?? currency,
+          reason: "order_refund",
+          orderId: order.id,
+          createdAt: args.walletRowAt ?? args.deliveredAt,
+        },
+      });
+    }
+    return order;
+  }
+
+  describe("walletSpendByCurrency / walletSpendByOrder — the shared helper", () => {
+    it("sums several orders' legs in one bulk read, keeping each currency in its own bucket", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "10000", walletSpend: "4000" });
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "0", walletSpend: "6000" });
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "2", walletSpend: "3", currency: "USDT" });
+
+      const where = { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT };
+      const total = await walletSpendByCurrency(prisma, where);
+      expect(total.idr.toString()).toBe("10000");
+      expect(total.usdt.toString()).toBe("3");
+
+      const perOrder = await walletSpendByOrder(prisma, where);
+      expect(perOrder.size).toBe(3);
+      expect([...perOrder.values()].map((v) => v.idr.toString()).sort()).toEqual(["0", "4000", "6000"]);
+    });
+
+    it("reports nothing for an order with no wallet leg, and nothing at all for an empty set", async () => {
+      const now = new Date();
+      await prisma.order.create({
+        data: {
+          orderCode: `ORD-cash-${Math.random()}`, userId,
+          subtotalAmount: "54000", totalAmount: "54000", currency: "IDR",
+          status: OrderStatus.DELIVERED, deliveredAt: now,
+        },
+      });
+
+      const where = { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT };
+      expect((await walletSpendByOrder(prisma, where)).size).toBe(0);
+      const total = await walletSpendByCurrency(prisma, where);
+      expect(total.idr.toString()).toBe("0");
+      expect(total.usdt.toString()).toBe("0");
+      // A world with no orders at all must not throw or invent a figure either.
+      await prisma.walletTransaction.deleteMany();
+      await prisma.order.deleteMany();
+      expect((await walletSpendByCurrency(prisma, where)).idr.toString()).toBe("0");
+    });
+
+    it("counts only `order_payment` legs — a wallet refund release is a separate event, not a discount on the sale", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "1000", walletSpend: "5000", refundRow: "5000" });
+      await prisma.walletTransaction.create({
+        data: {
+          userId, delta: "500000", balanceAfter: "500000",
+          currency: "IDR", reason: "wallet_topup", orderId: null, createdAt: now,
+        },
+      });
+
+      const total = await walletSpendByCurrency(prisma, { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT });
+      expect(total.idr.toString()).toBe("5000");
+    });
+
+    it("obeys the caller's own order clause: a cancelled order's credit is not revenue", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "1000", walletSpend: "5000", status: OrderStatus.CANCELLED });
+
+      const total = await walletSpendByCurrency(prisma, { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT });
+      expect(total.idr.toString()).toBe("0");
+    });
+  });
+
+  describe("the single-window revenue figures", () => {
+    it("revenueSummary counts the gateway leg AND the credit spent, as one sale", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "20000", walletSpend: "34000" });
+
+      const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+      expect(result.revenue_idr.toString()).toBe("54000");
+      // Still ONE sale: adding the wallet leg must not double-count the order.
+      expect(result.orders).toBe(1);
+    });
+
+    it("revenueSummary counts an order paid ENTIRELY from credit, which used to report zero", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "0", walletSpend: "54000" });
+
+      const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+      expect(result.revenue_idr.toString()).toBe("54000");
+      expect(result.orders).toBe(1);
+    });
+
+    it("keeps each leg in the currency the wallet row itself carries, never the order's", async () => {
+      const now = new Date();
+      // A USDT-settled order whose credit was spent in USDT.
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "2", walletSpend: "3", currency: "USDT" });
+      // A USDT-settled order whose credit was spent in IDR — `createOrder*`
+      // debits IDR credit BEFORE the IDR→USDT conversion, so this is a real
+      // shape, and `postOrderPaymentPosting` credits `sales_revenue.idr` for it.
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "1", walletSpend: "16000", currency: "USDT", legCurrency: "IDR" });
+
+      const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+      expect(result.revenue_usdt.toString()).toBe("6");
+      expect(result.revenue_idr.toString()).toBe("16000");
+    });
+
+    it("botOverallStats' lifetime shop revenue counts the credit spent", async () => {
+      await makeWalletPaidSale({ deliveredAt: new Date(), gateway: "20000", walletSpend: "34000" });
+
+      const stats = await botOverallStats(prisma);
+      expect(stats.revenue_idr.toString()).toBe("54000");
+    });
+
+    it("grossSalesForNetSales counts the credit spent, including on a sale later refunded in full", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "20000", walletSpend: "34000", status: OrderStatus.REFUNDED });
+
+      const gross = await grossSalesForNetSales(prisma, new Date(now.getTime() - 60_000));
+      expect(gross.idr.toString()).toBe("54000");
+      // ...and `revenueSummary`, DELIVERED-only, still does not see that order.
+      expect((await revenueSummary(prisma, new Date(now.getTime() - 60_000))).revenue_idr.toString()).toBe("0");
+    });
+
+    it("still ignores a settled wallet TOP-UP order — funding a wallet is not a sale at either leg", async () => {
+      const now = new Date();
+      await prisma.order.create({
+        data: {
+          orderCode: `TOPUP-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP,
+          subtotalAmount: "100000", totalAmount: "100000", currency: "IDR",
+          status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now,
+        },
+      });
+
+      const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+      expect(result.revenue_idr.toString()).toBe("0");
+      expect(result.orders).toBe(0);
+    });
+  });
+
+  describe("the bucketed series", () => {
+    it("revenueByDay buckets the credit on the ORDER's delivered day, not the wallet row's own createdAt", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      // Checkout (and therefore the wallet debit) happened two days before
+      // delivery. An implementation keyed on the WalletTransaction's own
+      // createdAt would put this sale's credit on the wrong day.
+      await makeWalletPaidSale({
+        deliveredAt: todayUtc.plus({ hours: 5 }).toJSDate(),
+        gateway: "20000",
+        walletSpend: "34000",
+        walletRowAt: todayUtc.minus({ days: 2 }).toJSDate(),
+      });
+
+      const days = await revenueByDay(prisma, 3);
+      expect(days).toHaveLength(3);
+      expect(days[0]!.revenue_idr).toBe("0");
+      expect(days[1]!.revenue_idr).toBe("0");
+      expect(days[2]).toMatchObject({ revenue_idr: "54000", revenue_usdt: "0", orders: 1 });
+    });
+
+    it("revenueByDay keeps a USDT wallet leg out of the IDR bucket", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "2", walletSpend: "3", currency: "USDT" });
+
+      const days = await revenueByDay(prisma, 1);
+      expect(days[0]).toMatchObject({ revenue_idr: "0", revenue_usdt: "5", orders: 1 });
+    });
+
+    it("combinedRevenueByDay converts a USDT wallet leg through THAT order's own fxRate", async () => {
+      const now = new Date();
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "2", walletSpend: "3", currency: "USDT", fxRate: "16000" });
+      await makeWalletPaidSale({ deliveredAt: now, gateway: "1000", walletSpend: "4000" });
+
+      const days = await combinedRevenueByDay(prisma, 1);
+      // (2 + 3) USDT at 16,000 + (1,000 + 4,000) IDR.
+      expect(days[0]!.revenueIdrEquiv).toBe("85000");
+    });
+
+    it("revenueByPeriod counts the credit spent in the order's own calendar period, per currency and blended", async () => {
+      const thisMonth = DateTime.utc().startOf("month").plus({ hours: 6 });
+      await makeWalletPaidSale({
+        deliveredAt: thisMonth.toJSDate(),
+        gateway: "20000",
+        walletSpend: "34000",
+        walletRowAt: thisMonth.minus({ days: 40 }).toJSDate(),
+      });
+      await makeWalletPaidSale({ deliveredAt: thisMonth.toJSDate(), gateway: "2", walletSpend: "3", currency: "USDT", fxRate: "16000" });
+
+      const rows = await revenueByPeriod(prisma, "month", 2);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ revenue_idr: "0", revenue_usdt: "0", revenueIdrEquiv: "0" });
+      expect(rows[1]).toMatchObject({
+        revenue_idr: "54000",
+        revenue_usdt: "5",
+        revenueIdrEquiv: new Decimal("54000").plus(new Decimal("5").times("16000")).toString(),
+        orders: 2,
+      });
     });
   });
 });

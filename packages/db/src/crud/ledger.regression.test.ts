@@ -781,30 +781,30 @@ describe("scenario 6 — a wallet top-up, then a product order paid with that cr
     expect(countIn(await ordersByStatusSince(prisma, since), OrderStatus.DELIVERED)).toBe(1);
     expect((await shopFulfilmentStats(prisma)).deliveredOrders).toBe(1);
 
-    // KNOWN, PRE-EXISTING GAP — pinned here deliberately, NOT a change this
-    // milestone made and NOT something this test file is asserting is right.
+    // THE GAP THIS SCENARIO ONCE PINNED, NOW CLOSED (Financial Ledger M8.5).
     //
     // Every Order-rooted sales figure sums `Order.totalAmount`, which
     // `createOrderDirect` writes NET of `walletUsed` (orders.ts: `totalAmount =
-    // afterDiscount - walletUsed + cents`) — it is what the buyer owed
-    // EXTERNALLY. The ledger, correctly, recognises the whole sale
-    // (`gatewayLeg + walletSpend`). So the wallet-paid portion of a sale is
-    // revenue in the books and is NOT revenue on the dashboard, and the two
-    // views of the same order legitimately disagree by exactly `walletUsed`.
+    // afterDiscount - walletUsed + cents`) — it is only what the buyer owed
+    // EXTERNALLY. The ledger has always recognised the whole sale
+    // (`gatewayLeg + walletSpend`), so until M8.5 the wallet-paid portion of a
+    // sale was revenue in the books and NOT revenue on the dashboard, and the
+    // two views of one order disagreed by exactly `walletUsed`. An order paid
+    // entirely from credit showed as zero revenue.
     //
-    // That is the gap: `docs/sales-metrics-contract.md`'s Wallet Funding row
-    // says a top-up "becomes revenue only when the credit is spent on a product
-    // order", and in the LEDGER it does — but no dashboard figure ever picks it
-    // up. Asserted as the arithmetic identity it is, so the day someone closes
-    // the gap this test fails loudly and points at the decision rather than
-    // silently going green on a different number.
-    expect(revenue.revenue_idr.toString()).toBe(gatewayLeg.toString());
+    // `docs/sales-metrics-contract.md`'s Wallet Funding row says a top-up
+    // "becomes revenue only when the credit is spent on a product order" — the
+    // dashboard now honours that too, by adding the order's `order_payment`
+    // wallet legs to the same figure (`walletSpendByCurrency`, crud/revenue.ts).
+    // Asserted as the identity it is: the dashboard and the books agree on this
+    // sale to the rupiah, and a regression in either direction fails here.
+    expect(revenue.revenue_idr.toString()).toBe(gatewayLeg.plus(walletSpend).toString());
     expect((await getAccountBalance(prisma, "sales_revenue.idr")).toString()).toBe(
       gatewayLeg.plus(walletSpend).toString(),
     );
     expect(
       (await getAccountBalance(prisma, "sales_revenue.idr")).minus(revenue.revenue_idr).toString(),
-    ).toBe(walletSpend.toString());
+    ).toBe("0");
 
     // ── the drift detector, one last time ──
     await expectBooksReconcile();

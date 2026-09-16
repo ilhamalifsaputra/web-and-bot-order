@@ -101,6 +101,154 @@ function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decima
   return isUsdt && fxRate != null ? idrAmount.div(fxRate) : idrAmount;
 }
 
+/**
+ * Wallet credit spent on one order, split per currency — the second half of
+ * what that sale was worth.
+ *
+ * Both fields are POSITIVE magnitudes. Non-IDR wallet rows fall into `usdt`,
+ * mirroring `salesRevenueByCurrency`'s own two-bucket convention.
+ */
+export interface WalletSpend {
+  idr: Decimal;
+  usdt: Decimal;
+}
+
+const emptyWalletSpend = (): WalletSpend => ({ idr: new Decimal(0), usdt: new Decimal(0) });
+
+/** The one `WalletTransaction.reason` that means "credit spent buying this
+ *  order" — written by the checkout paths in crud/orders.ts and read by
+ *  `postOrderPaymentPosting` to decide what revenue to recognise. Spelled once
+ *  so this module and the ledger can never read two different reason codes. */
+const ORDER_PAYMENT_REASON = "order_payment";
+
+/**
+ * Wallet credit spent on each order matching `orderWhere`, per order, per
+ * currency (Financial Ledger M8.5 — the F-1 fix).
+ *
+ * **Why every revenue figure needs this.** `Order.totalAmount` is what the
+ * buyer owed EXTERNALLY: the checkout paths write it net of `walletUsed`
+ * (`totalAmount = afterDiscount - walletUsed + cents`). Summing it alone
+ * therefore reports only the gateway leg of a sale, and an order paid entirely
+ * from wallet credit reports as ZERO revenue — while
+ * `postOrderPaymentPosting` (crud/ledgerPostings.ts) correctly credits
+ * `sales_revenue.<ccy>` with the whole sale, gateway leg AND wallet leg. The
+ * credit was already recorded as a LIABILITY when the buyer funded the wallet;
+ * spending it on a product is the moment that money becomes the shop's, which
+ * is exactly why the top-up itself is not revenue (`ORDER_KIND_SALES_FILTER`)
+ * and this is.
+ *
+ * Grouped by the `WalletTransaction` row's OWN currency, never `Order.walletUsed`
+ * (a bare number whose currency depends on which checkout path spent it) and
+ * never `Order.currency` — an IDR leg on a USDT-settled order is a real shape
+ * (`createOrder*` debits IDR credit BEFORE the IDR→USDT conversion, while
+ * `applyUsdtWalletToOrder` debits USDT credit after it), and the ledger books
+ * each leg to its own currency's revenue account. See `postOrderPaymentPosting`
+ * and `reconcileFinances` for the same reasoning stated at their own call
+ * sites.
+ *
+ * Only `order_payment` rows count. An `order_refund` release is a separate
+ * event with its own posting, so netting it in here would quietly turn a refund
+ * into a discount on the original sale — the same rule the ledger applies.
+ *
+ * A currency group that nets to zero or less is skipped rather than subtracted,
+ * mirroring `postOrderPaymentPosting`'s own "not a payment, nothing to post"
+ * branch exactly. (Unreachable through the app — `order_payment` rows are only
+ * ever debits — but the two must agree in the cases the app cannot produce too,
+ * or the dashboard and the books would disagree precisely where someone is
+ * investigating why.)
+ *
+ * **Wallet-first, so neither query has to materialize the order table.** The
+ * `WalletTransaction` table has no Prisma relation to `Order` (the column is a
+ * bare `order_id` with no FK — see schema.prisma), so the order set cannot be
+ * expressed as a relation filter. Reading the legs first and then asking which
+ * of THOSE orders match `orderWhere` keeps both queries bounded by the number
+ * of wallet-paid orders, instead of sending an `IN (...)` list of every
+ * delivered order in history for the lifetime callers. Callers pass the SAME
+ * `where` object their own order query uses, so the two can't scope differently.
+ */
+async function walletSpendLegs(
+  db: Db,
+  orderWhere: Record<string, unknown>,
+): Promise<Array<{ orderId: number; userId: number; spend: WalletSpend }>> {
+  const groups = await db.walletTransaction.groupBy({
+    by: ["orderId", "userId", "currency"],
+    where: { reason: ORDER_PAYMENT_REASON, orderId: { not: null } },
+    _sum: { delta: true },
+  });
+  if (groups.length === 0) return [];
+
+  const candidateIds = [...new Set(groups.map((g) => g.orderId!))];
+  const qualifying = new Set(
+    (await db.order.findMany({ where: { ...orderWhere, id: { in: candidateIds } }, select: { id: true } })).map(
+      (o) => o.id,
+    ),
+  );
+
+  const byOrder = new Map<number, { orderId: number; userId: number; spend: WalletSpend }>();
+  for (const group of groups) {
+    const orderId = group.orderId;
+    if (orderId == null || !qualifying.has(orderId)) continue;
+    // Wallet debits are stored negative; the amount spent is their magnitude.
+    const spent = new Decimal(group._sum.delta ?? 0).negated();
+    if (!spent.greaterThan(0)) continue;
+    const row = byOrder.get(orderId) ?? { orderId, userId: group.userId, spend: emptyWalletSpend() };
+    if (group.currency === "IDR") row.spend.idr = row.spend.idr.plus(spent);
+    else row.spend.usdt = row.spend.usdt.plus(spent);
+    byOrder.set(orderId, row);
+  }
+  return [...byOrder.values()];
+}
+
+/** Total wallet credit spent across every order matching `orderWhere`, per
+ *  currency — the figure an unbucketed revenue/spend total adds to its
+ *  `Order.totalAmount` sum. See `walletSpendLegs` for what counts and why. */
+export async function walletSpendByCurrency(
+  db: Db,
+  orderWhere: Record<string, unknown>,
+): Promise<WalletSpend> {
+  const total = emptyWalletSpend();
+  for (const leg of await walletSpendLegs(db, orderWhere)) {
+    total.idr = total.idr.plus(leg.spend.idr);
+    total.usdt = total.usdt.plus(leg.spend.usdt);
+  }
+  return total;
+}
+
+/**
+ * The same wallet spend, keyed by order id — what a day/period-bucketed series
+ * needs. A wallet leg has no `deliveredAt` of its own (its `createdAt` is the
+ * CHECKOUT instant, which can fall days before delivery), so it belongs in the
+ * bucket of the ORDER it paid for. Keying by order id lets each caller reuse
+ * the `deliveredAt` it has already read for that order rather than inventing a
+ * second, weaker rule.
+ */
+export async function walletSpendByOrder(
+  db: Db,
+  orderWhere: Record<string, unknown>,
+): Promise<Map<number, WalletSpend>> {
+  const byOrder = new Map<number, WalletSpend>();
+  for (const leg of await walletSpendLegs(db, orderWhere)) byOrder.set(leg.orderId, leg.spend);
+  return byOrder;
+}
+
+/** The same wallet spend, accumulated per buyer — for the customer-spend
+ *  figures in crud/users.ts, which ask the same question one row per customer.
+ *  The wallet row's `userId` is the buyer's own (a buyer only ever spends their
+ *  own credit), so no join back to the order is needed to attribute it. */
+export async function walletSpendByUser(
+  db: Db,
+  orderWhere: Record<string, unknown>,
+): Promise<Map<number, WalletSpend>> {
+  const byUser = new Map<number, WalletSpend>();
+  for (const leg of await walletSpendLegs(db, orderWhere)) {
+    const acc = byUser.get(leg.userId) ?? emptyWalletSpend();
+    acc.idr = acc.idr.plus(leg.spend.idr);
+    acc.usdt = acc.usdt.plus(leg.spend.usdt);
+    byUser.set(leg.userId, acc);
+  }
+  return byUser;
+}
+
 /** Sold-order totals split per transaction currency (plan.md §15.8 — reports
  * keep currencies apart instead of pretending one unit). Orders predating the
  * currency column count as USDT (their snapshot currency).
@@ -115,15 +263,22 @@ function idrToBucketCurrency(idrAmount: Decimal, isUsdt: boolean, fxRate: Decima
  * sale that was later refunded) has to say so in its own argument list, where
  * it is reviewable, instead of smuggling a `status` key through `extraWhere`.
  * It defaults to DELIVERED alone, so every other caller is delivered-only
- * exactly as before. */
+ * exactly as before.
+ *
+ * The wallet leg is ADDED to the `totalAmount` sum, never substituted for it
+ * (Financial Ledger M8.5) — the two are the two halves of one sale. It is read
+ * over the identical `where` clause, so no order can be in one half and not the
+ * other. `orders` is untouched: a wallet-paid order is one sale, already
+ * counted by the groupBy. */
 async function salesRevenueByCurrency(
   db: Db,
   extraWhere: Record<string, unknown> = {},
   statuses: readonly OrderStatus[] = [OrderStatus.DELIVERED],
 ): Promise<{ idr: Decimal; usdt: Decimal; orders: number }> {
+  const where = { ...extraWhere, status: { in: [...statuses] }, ...ORDER_KIND_SALES_FILTER };
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { ...extraWhere, status: { in: [...statuses] }, ...ORDER_KIND_SALES_FILTER },
+    where,
     _sum: { totalAmount: true },
     _count: { _all: true },
   });
@@ -136,7 +291,8 @@ async function salesRevenueByCurrency(
     else usdt = usdt.plus(sum);
     orders += g._count._all;
   }
-  return { idr, usdt, orders };
+  const walletSpend = await walletSpendByCurrency(db, where);
+  return { idr: idr.plus(walletSpend.idr), usdt: usdt.plus(walletSpend.usdt), orders };
 }
 
 /**
@@ -259,10 +415,15 @@ export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
   const since = addDays(now, -(days - 1));
   since.setUTCHours(0, 0, 0, 0);
 
+  const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
-    select: { deliveredAt: true, totalAmount: true, currency: true },
+    where,
+    select: { id: true, deliveredAt: true, totalAmount: true, currency: true },
   });
+  // Each order's wallet leg, added to ITS OWN order's day — a wallet row's
+  // `createdAt` is the checkout instant and can fall days before delivery, so
+  // bucketing on it would misattribute the credit (M8.5).
+  const walletSpend = await walletSpendByOrder(db, where);
 
   const buckets = new Map<string, { idr: Decimal; usdt: Decimal; orders: number }>();
   for (let i = 0; i < days; i++) {
@@ -276,6 +437,11 @@ export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
     if (!b) continue; // outside the window (shouldn't happen)
     if (o.currency === "IDR") b.idr = b.idr.plus(o.totalAmount);
     else b.usdt = b.usdt.plus(o.totalAmount);
+    const wallet = walletSpend.get(o.id);
+    if (wallet) {
+      b.idr = b.idr.plus(wallet.idr);
+      b.usdt = b.usdt.plus(wallet.usdt);
+    }
     b.orders += 1;
   }
   return [...buckets.entries()].map(([day, b]) => ({
@@ -541,10 +707,12 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
   const since = addDays(now, -(days - 1));
   since.setUTCHours(0, 0, 0, 0);
 
+  const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
-    select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+    where,
+    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
   });
+  const walletSpend = await walletSpendByOrder(db, where);
 
   const buckets = new Map<string, Decimal>();
   for (let i = 0; i < days; i++) {
@@ -558,7 +726,16 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
     const idrEquiv = o.currency === "USDT" && o.fxRate != null
       ? new Decimal(o.totalAmount).times(o.fxRate)
       : new Decimal(o.totalAmount);
-    buckets.set(key, current.plus(idrEquiv));
+    // The wallet leg blends by ITS OWN currency, not the order's: an IDR leg on
+    // a USDT order passes through unconverted, a USDT leg converts through that
+    // order's own fxRate snapshot — and an fxRate-less USDT leg is counted
+    // unconverted, the same pre-existing wart the gateway leg above carries, so
+    // the two halves of one sale can never be blended by two different rules.
+    const wallet = walletSpend.get(o.id);
+    const walletIdrEquiv = wallet
+      ? wallet.idr.plus(o.fxRate != null ? wallet.usdt.times(o.fxRate) : wallet.usdt)
+      : new Decimal(0);
+    buckets.set(key, current.plus(idrEquiv).plus(walletIdrEquiv));
   }
   return [...buckets.entries()].map(([day, total]) => ({ day, revenueIdrEquiv: q4(total).toString() }));
 }
@@ -814,10 +991,12 @@ export async function revenueByPeriod(
 ): Promise<PeriodRevenue[]> {
   const { since, labels } = periodWindow(granularity, count);
 
+  const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
-    select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+    where,
+    select: { id: true, deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
   });
+  const walletSpend = await walletSpendByOrder(db, where);
 
   const buckets = seedPeriods(labels, () => ({
     idr: new Decimal(0),
@@ -839,6 +1018,16 @@ export async function revenueByPeriod(
       // fxRate-less USDT order (counted unconverted rather than dropped), so
       // the Day and period-granularity combined series can never disagree.
       b.idrEquiv = b.idrEquiv.plus(o.fxRate != null ? total.times(o.fxRate) : total);
+    }
+    // The order's wallet leg, bucketed by the SAME deliveredAt and split by the
+    // wallet row's own currency — combinedRevenueByDay's rule verbatim (M8.5).
+    const wallet = walletSpend.get(o.id);
+    if (wallet) {
+      b.idr = b.idr.plus(wallet.idr);
+      b.usdt = b.usdt.plus(wallet.usdt);
+      b.idrEquiv = b.idrEquiv
+        .plus(wallet.idr)
+        .plus(o.fxRate != null ? wallet.usdt.times(o.fxRate) : wallet.usdt);
     }
     b.orders += 1;
   }

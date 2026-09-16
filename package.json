@@ -23,6 +23,7 @@
     "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
     "binance-probe": "tsx scripts/binance-probe.ts",
     "diag-reconcile-drift": "tsx scripts/diag-reconcile-drift.ts",
+    "parity-check-kind-filter": "tsx scripts/parity-check-kind-filter.ts",
     "check-migration-drift": "tsx scripts/check-migration-drift.ts",
     "check-migration-timestamps": "tsx scripts/check-migration-timestamps.ts",
     "check-migration-rebuild-quoting": "tsx scripts/check-migration-rebuild-quoting.ts",

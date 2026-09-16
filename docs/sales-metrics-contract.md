@@ -23,11 +23,16 @@ Written at Financial Ledger milestone M7, against the code as of commit
 references, and every claim below was verified against the live code rather
 than carried over from an earlier investigation.
 
+Revised at milestone M8.5 for the wallet-spend correction — see [Two legs of
+one sale](#two-legs-of-one-sale-gateway--wallet-credit) and [What changed and
+why](#what-changed-and-why-for-shops-with-wallet-top-up-history).
+
 ---
 
 ## Table of contents
 
 - [Conventions used throughout](#conventions-used-throughout)
+  - [Two legs of one sale: gateway + wallet credit](#two-legs-of-one-sale-gateway--wallet-credit)
 - [Revenue and sales](#revenue-and-sales)
 - [Bucketed series (Day / Week / Month / Year)](#bucketed-series-day--week--month--year)
 - [Order counts](#order-counts)
@@ -74,6 +79,51 @@ doc comment:
 3. **Deliberately kind-agnostic account-activity signals** —
    `orderStatsByUserIds.totalOrders`/`.lastOrderAt`, `orderCountByUserIds`.
 
+### Two legs of one sale: gateway + wallet credit
+
+**Every `Order`-rooted money figure is the sum of TWO legs**, and reading only
+the first is the bug M8.5 fixed:
+
+1. **The gateway leg** — `Order.totalAmount`. This is what the buyer owed
+   **externally**: the checkout paths write it net of `walletUsed`
+   (`totalAmount = afterDiscount − walletUsed + cents`). An order paid entirely
+   from wallet credit has `totalAmount = 0`.
+2. **The wallet leg** — the credit spent on that order, read from its own
+   `order_payment` `WalletTransaction` rows (`walletSpendByCurrency` /
+   `walletSpendByOrder` / `walletSpendByUser`, `packages/db/src/crud/revenue.ts`).
+
+The double-entry ledger has always recognised both: `postOrderPaymentPosting`
+(`crud/ledgerPostings.ts`) credits `sales_revenue.<ccy>` for the gateway leg
+*and* debits `wallet_liability.<ccy>` against the same revenue account for the
+credit spent. Until M8.5 no dashboard figure picked up the second leg, so the
+books and the dashboard disagreed by exactly the credit spent, and a fully
+credit-paid sale showed as **zero revenue**.
+
+This is the other half of the `kind: PRODUCT` rule above, not a contradiction of
+it: funding a wallet is not revenue because the money is still the buyer's;
+spending that credit on a product is the moment it stops being theirs. **Only
+both fixes together are right** — with just the first, revenue is understated by
+the wallet-checkout volume; with just the second, the same rupiah is counted
+twice.
+
+Rules the wallet leg follows everywhere, because the ledger follows them:
+
+- **Grouped by the `WalletTransaction` row's OWN currency** — never
+  `Order.walletUsed` (a bare number whose currency depends on which checkout
+  path spent it) and never `Order.currency`. An IDR leg on a USDT-settled order
+  is a real shape (`createOrder*` debits IDR credit *before* the IDR→USDT
+  conversion; `applyUsdtWalletToOrder` debits USDT credit *after* it), and it
+  lands in the IDR bucket, exactly as `sales_revenue.idr` receives it.
+- **Only `reason: "order_payment"` rows count.** An `order_refund` release is a
+  separate event with its own posting; netting it in here would turn a refund
+  into a discount on the original sale.
+- **A currency group that nets to zero or less contributes nothing**, mirroring
+  `postOrderPaymentPosting`'s "not a payment, nothing to post" branch.
+- **In a bucketed series, a wallet leg belongs to its ORDER's `deliveredAt`,
+  never the wallet row's own `createdAt`** — the debit happens at checkout,
+  which can fall days before delivery.
+- **Order COUNTS are untouched.** A wallet-paid order is one sale either way.
+
 **Currency.** IDR and USDT are kept in separate buckets everywhere. Summing
 `Order.totalAmount` across currencies would add a USDT order's small decimal
 straight into the Rupiah figure. Orders predating the `currency` column count
@@ -98,8 +148,11 @@ Every row below names its boundary explicitly. Do not assume.
 purpose:
 
 - **`Order`-rooted** metrics (all revenue/sales figures) sum
-  `Order.totalAmount`, which is already **net of** `bulkDiscountAmount` and
-  `discountAmount` — what the shop actually charged.
+  `Order.totalAmount` — already **net of** `bulkDiscountAmount` and
+  `discountAmount` — **plus the wallet credit spent on those same orders** (see
+  [Two legs of one sale](#two-legs-of-one-sale-gateway--wallet-credit)).
+  Together that is what the shop actually charged. Wallet credit is a payment
+  method, not a discount, so it never reduces the figure.
 - **`OrderItem`-rooted** metrics (profit, margin) must prorate the order-level
   discount down to each line, because order-level discounts live only on the
   `Order` row and are never written back to `OrderItem.unitPrice`. That is
@@ -133,7 +186,7 @@ Sales Today" remains an open, purely cosmetic, zero-data-risk option.
 
 | | |
 |---|---|
-| **Business definition** | How much the shop sold today (and yesterday) — the money value of product orders delivered in that window, before any refunds are taken off. |
+| **Business definition** | How much the shop sold today (and yesterday) — the full money value of product orders delivered in that window (what was charged externally **plus** any wallet credit spent on them), before any refunds are taken off. |
 | **Source of truth** | `revenueSummary` — `packages/db/src/crud/revenue.ts`, via the shared `salesRevenueByCurrency` helper. Surfaced at `GET /api/dashboard/kpis` (`revenue`) and `GET /api/orders/kpis` (`revenueToday`). |
 | **Included states** | `Order.status = DELIVERED` only. |
 | **Excluded states** | Everything else, including `REFUNDED`. A fully refunded order leaves `DELIVERED` (`executeRefund` moves it to `REFUNDED`) and therefore drops out of this figure entirely — that is intentional for a *gross delivered* number, and it is exactly why Net Sales needs its own separate basis (below). `PARTIALLY_DELIVERED` is not counted. |
@@ -141,8 +194,9 @@ Sales Today" remains an open, purely cosmetic, zero-data-risk option.
 | **Currency** | IDR and USDT kept strictly separate. Never blended. The API additionally echoes the USDT figure under a `usd` key (1 USDT ≈ 1 USD, the same number under a second label) — it is not a second, independently computed figure. |
 | **Refund treatment** | **Not refund-aware.** This is a gross figure. A partial refund leaves the order `DELIVERED` and does not reduce it; a full refund removes the order from it entirely (see above). Use Net Sales for the refund-aware number. |
 | **Discount treatment** | Net of discounts — sums `Order.totalAmount`, which is post-`bulkDiscountAmount`/`discountAmount`. |
+| **Wallet credit** | Counted, as the second leg of the same sale (M8.5) — `salesRevenueByCurrency` adds `walletSpendByCurrency` over its own `where` clause. A sale paid entirely from credit used to report zero here. |
 | **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere). The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can legitimately disagree. Both windows are right-anchored at "now" rather than at a fixed close, so the gap is **not** a flat 7 hours: it's up to 7 hours' worth of orders before 17:00 UTC (when the Jakarta date has not yet rolled), widening to up to 17 hours' worth between 17:00 and 23:59 UTC (once it has). |
-| **Aggregation** | `SUM(Order.totalAmount)` grouped by currency over `deliveredAt ∈ [since, until]`, plus the order count behind it. "Yesterday" is bounded at the same clock time as now (`yesterdaySameClock`) so a mid-day comparison is like-for-like, not today-so-far against a whole day. |
+| **Aggregation** | `SUM(Order.totalAmount)` grouped by currency over `deliveredAt ∈ [since, until]`, plus the `order_payment` wallet legs of those same orders, plus the order count behind it (which the wallet leg never changes). "Yesterday" is bounded at the same clock time as now (`yesterdaySameClock`) so a mid-day comparison is like-for-like, not today-so-far against a whole day. |
 | **Trend %** | `(today − yesterday) / yesterday × 100`, 1dp, `null` when yesterday was zero (no division by zero, and no "∞%"). |
 
 `revenueSummary().orders` is a count of **sales**, not of all delivered order
@@ -177,6 +231,7 @@ as `countDelivered()`.
 | **Currency** | Per currency, subtracted per currency. Never blended, and never cross-subtracted (an IDR refund never reduces the USDT figure). |
 | **Refund treatment** | This is the one KPI that is fully refund-aware. |
 | **Discount treatment** | Net of discounts on the gross side (`Order.totalAmount`). |
+| **Wallet credit** | Counted on the gross side, same as Revenue Today (both go through `salesRevenueByCurrency`). A refund paid back *to* a wallet is a `RefundExecution`, counted on the refund side — the two are never confused, because the gross side reads `order_payment` rows only. |
 | **Timezone** | ⚠️ Jakarta-local midnight, same route boundary as the two above. |
 | **Aggregation** | Plain `Decimal` subtraction. **Deliberately not clamped at zero**: a refund can legitimately be for an order sold on an earlier day, so "more refunded today than sold today" is a real negative signal an operator needs to see, not an error to hide behind a 0. |
 
@@ -252,6 +307,7 @@ reviewable at its single call site.
 | **Kind filter** | `revenue_idr`/`revenue_usdt`: `kind: PRODUCT` (Task 6a fix) — this is a "total revenue" figure shown to buyers, so a top-up must not inflate it. `items_sold`: no filter, structurally immune (aggregates `OrderItem.quantity`). `total_users`: `COUNT(User)`, not order-derived at all. |
 | **Currency** | Separate IDR/USDT, rendered by the bot's own `mixedAmount` formatter. |
 | **Refund / discount** | Not refund-aware; net of discounts (`Order.totalAmount`). |
+| **Wallet credit** | Counted, via `salesRevenueByCurrency` (M8.5). |
 | **Timezone** | None — lifetime, unwindowed. |
 | **Aggregation** | Lifetime sums/counts. |
 
@@ -300,6 +356,7 @@ source-of-truth definition, not evidence it's dashboard-visible.
 | **Refund treatment** | `refundsByDay` is the refund series (**not currently charted — no production caller**, see above); the others are gross and not refund-aware. There is deliberately **no** `netSalesByDay` — Net Sales shipped as a today-only KPI and a charted version was never asked for. |
 | **Currency** | Per currency, except `combinedRevenueByDay` (see below). |
 | **Discount** | `Order.totalAmount` (net) for revenue/orders/combined; prorated per line for profit. |
+| **Wallet credit** | `revenueByDay` and `combinedRevenueByDay` add each order's `order_payment` wallet legs **into the bucket of that order's own `deliveredAt`** (M8.5) — never the wallet row's `createdAt`, which is the checkout instant and can fall days earlier. `ordersByDay` is a count and is unaffected; `profitByDay` is `OrderItem`-rooted and derives revenue from `unitPrice`, which was never net of wallet credit. |
 
 ### Calendar-period series (Week / Month / Year)
 
@@ -312,6 +369,7 @@ source-of-truth definition, not evidence it's dashboard-visible.
 | **Window** | The last `count` periods, oldest→newest, **including the period in progress** — matching `revenueByDay`'s own convention (its window ends with today, not yesterday). |
 | **Default `count`** | `week: 12`, `month: 12`, `year: 5` (`DEFAULT_PERIOD_COUNT`). **These are a UI readability choice, not a data-correctness matter** — they set the default width of the chart window only, never which rows are real. 12 weeks ≈ a quarter; 12 months makes seasonality visible and puts this December next to last December; 5 years reads a multi-year trend without an axis of mostly pre-launch years. A shop younger than the window shows real zeros (zero-filled, never interpolated) for the years before it existed. |
 | **Included states / kind** | Identical to the Day series: `DELIVERED` + `kind: PRODUCT` for revenue/orders; `OrderItem`-rooted and structurally immune for profit. |
+| **Wallet credit** | Identical to the Day series too: `revenueByPeriod` adds each order's wallet legs to the period its `deliveredAt` falls in, per currency and in the `revenueIdrEquiv` blend. |
 | **Field naming** | The bucket label field is called `day` on `PeriodRevenue`/`PeriodOrderCounts`/`PeriodProfit`, not `period` — deliberately, so every granularity flows through the existing `{day, value}` chart point type and `XAxis dataKey="day"` with no per-granularity branching. |
 | **Known scaling ceiling** | Each of the three issues **one** `findMany` covering the whole window (no per-bucket queries), with no `take`. At `year: 5` that is a genuinely unbounded row fetch — `profitByPeriod` most of all, since its rows carry a joined `product.costPrice` — re-issued every 30s by `useAnalytics.ts`'s `refetchInterval` for as long as an admin leaves the Year view open. **Not a correctness bug** (no `take` means no silent truncation), but a real ceiling, accepted rather than fixed at M6. The fix, if it ever matters, is a raw `date_trunc` `GROUP BY` — `revenue.sql-crosscheck.test.ts` already sets the precedent. |
 
@@ -353,7 +411,7 @@ currently distinguish them. Recorded, not fixed.
 | | |
 |---|---|
 | **Business definition** | Both currencies expressed as one IDR-equivalent total, for an operator who explicitly opts in to a single line. |
-| **Rule** | IDR orders pass through unconverted. USDT orders convert via **that order's own `fxRate` snapshot**, stored on the `Order` row at payment time. |
+| **Rule** | IDR orders pass through unconverted. USDT orders convert via **that order's own `fxRate` snapshot**, stored on the `Order` row at payment time. Each wallet leg blends by **its own** currency through that same snapshot — an IDR leg on a USDT order passes through unconverted, so the two halves of one sale are never blended by two different rules. |
 | **Why this is safe** | The rate is a **per-order snapshot, never a live rate**, so a past day's or past period's combined total never moves when today's exchange rate changes. A report you printed last month still says the same thing today. Summing raw currency amounts (or re-converting historical orders at today's rate) would produce a number that silently changes under the reader. |
 | **Why it is legitimate here specifically** | It operates on `Order.totalAmount`, which genuinely follows `Order.currency`. The same multiplication applied to `OrderItem.unitPrice` would be a bug — `unitPrice` is *always* catalog-central IDR regardless of settlement currency, and a past bug that multiplied it by `fxRate` inflated USDT-paid orders' reported revenue by roughly the exchange rate. That is why every `OrderItem`-derived figure routes through `orderItemRevenueIdr`. |
 | **Opt-in only** | Every other revenue figure in this system is per-currency. This is the single exception and it exists behind a filter the user clicks. |
@@ -457,25 +515,42 @@ is drawn deliberately per field rather than per function.
 
 ### Product-only — "what has this customer bought"
 
+All of the money rows below count **both legs of each purchase** — the gateway
+total and the wallet credit spent on it (M8.5). Spending credit *is* spending;
+funding the wallet was never counted, precisely so this moment can be.
+
 | Function | Business definition | States | Kind | Currency | Timezone | Aggregation |
 |---|---|---|---|---|---|---|
-| `userTotalSpent` | How much one customer has spent with the shop, ever. | `DELIVERED` | `SPEND_KIND_FILTER` (PRODUCT) | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by currency |
-| `totalSpentByUserIds` | The same figure, batched for a page of customers (one `groupBy`, not the N+1 `userTotalSpent` has when called per row). | `DELIVERED` | PRODUCT | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by (userId, currency). **Users with no delivered product order are absent from the returned Map** — callers must default to zero on a miss, which is also where a top-up-only customer now lands. |
+| `userTotalSpent` | How much one customer has spent with the shop, ever. | `DELIVERED` | `SPEND_KIND_FILTER` (PRODUCT) | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by currency, **plus** `walletSpendByCurrency` over the same clause |
+| `totalSpentByUserIds` | The same figure, batched for a page of customers (one `groupBy`, not the N+1 `userTotalSpent` has when called per row). | `DELIVERED` | PRODUCT | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by (userId, currency), **plus** `walletSpendByUser` over the same clause. **Users with no delivered product order are absent from the returned Map** — callers must default to zero on a miss, which is also where a top-up-only customer now lands. A customer whose purchases were paid entirely from credit *is* present, with their real figure. |
 | `orderStatsByUserIds.deliveredOrders` | How many real purchases this customer has completed — drives the per-row "RETURNING" badge (≥ 2). | `DELIVERED` | PRODUCT | n/a | Lifetime | `COUNT(*)` per user. Must match `customersKpis.returningCustomers`, or a customer with two top-ups and no purchase would wear a "Returning" badge on a page whose own KPI refused to count them. |
 | `customersKpis.returningCustomers` | How many customers have bought at least twice. | `DELIVERED` | PRODUCT | n/a | Lifetime | `GROUP BY userId`, keep `count ≥ 2`. Non-admin users only. |
-| `customersKpis.totalRevenue` | All-time revenue from customers (distinct from the Orders page's "Revenue Today"). | `DELIVERED` | PRODUCT | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by currency, non-admin users only. |
-| `rankUserIdsBySpend` (private) | The ordering behind the Customers page's "sort by spend". | `DELIVERED` | PRODUCT | **IDR only** — see note | n/a | `groupBy(userId)` ordered by `SUM(totalAmount) DESC`, paginated in SQL; users with no ranked spend are appended `createdAt`-desc. |
+| `customersKpis.totalRevenue` | All-time revenue from customers (distinct from the Orders page's "Revenue Today"). | `DELIVERED` | PRODUCT | IDR/USDT separate | Lifetime | `SUM(totalAmount)` grouped by currency **plus** the wallet legs of those orders, non-admin users only. |
+| `rankUserIdsBySpend` (private) | The ordering behind the Customers page's "sort by spend". | `DELIVERED` | PRODUCT | **IDR only** — see note | n/a | `rankedPageBySpend`: candidates are the top `offset + limit` by gateway spend (ranked and truncated in SQL) plus every customer with IDR wallet spend, sorted on the combined figure by (spend DESC, userId ASC); users with no ranked spend are appended `createdAt`-desc. |
 
 `rankUserIdsBySpend` was fixed **beyond** the Task 6a brief's enumerated list,
 and correctly so: with "Total Spent" now product-only, a ranking still sorted
 by top-up-inflated spend would have ordered customers inconsistently with the
-figure displayed next to them on the same row.
+figure displayed next to them on the same row. M8.5 kept that property for the
+same reason — the ranking adds the IDR wallet leg because the column it sorts
+now shows it, so a customer who pays mostly from credit sorts where their own
+"Total Spent" cell says they should.
+
+> **Why the ranking can still be paginated.** `groupBy` can order by
+> `_sum(totalAmount)` in SQL but not by that sum plus a figure from another
+> table, so the final sort happens in JS over candidates rather than over the
+> customer base. Adding wallet spend only ever moves a customer **up**, so any
+> customer outside both the top `offset + limit` by gateway spend and the set of
+> wallet spenders cannot reach this page — making those two sets a provable
+> superset of it. The cost is that deep pages read proportionally deeper; the
+> alternative (ranking on a figure the page does not display) was rejected.
 
 > **Pre-existing, and deliberate by design — not a bug to fix:**
-> `rankUserIdsBySpend` ranks on `currency: "IDR"` orders only. A customer who
-> has only ever paid in USDT ranks as a zero-spender and is sorted into the
+> `rankUserIdsBySpend` ranks on `currency: "IDR"` orders only (and, since M8.5,
+> the IDR wallet legs of those orders — still IDR only). A customer who has only
+> ever paid in USDT ranks as a zero-spender and is sorted into the
 > `createdAt`-desc tail, even though their "Total Spent" cell correctly shows a
-> USDT figure. The function's own doc comment (`users.ts:693-698`) states why:
+> USDT figure. The function's own doc comment states why:
 > spend is inherently two numbers (IDR, USDT), and blending them into one
 > ranking scalar would fabricate a single figure — exactly what
 > `CurrencyStack` exists to avoid doing on the display side. **Do not resolve
@@ -510,6 +585,7 @@ revenue KPIs — see the next section.
 | **Status in the product today** | There is **no aggregated "Wallet Funding" card or report on any dashboard** as of this commit. This row exists to pin the source of truth *before* one is built, not to describe a figure that ships. The existing surfaces are row-level, not aggregated: the per-user wallet timeline (`listWalletLedger`) and the admin wallet-transactions ledger page (`listAllWalletTransactions` / `countAllWalletTransactions`), all in `packages/db/src/crud/users.ts`. |
 | **Kind filter** | Not applicable — not an `Order` aggregate. |
 | **Why this matters** | **This is the headline fix of the entire Financial Ledger project.** Before Task 6a, a wallet top-up was counted as a product sale in thirteen separate call points — the dashboard's Revenue Today, the Reports page's funnel and charts, the customer's "Total Spent", the Customers page KPIs, the bot's customer-facing and admin dashboards, and the storefront home page. A buyer moving their own money into their own wallet inflated the shop's reported revenue, and then inflated it a second time when they actually spent it. Wallet funding is a **liability** (`wallet_liability.<ccy>`), not revenue. It becomes revenue only when the credit is spent on a product order. |
+| **When the credit is spent** | **As of M8.5 the dashboard honours that last sentence too.** Between Task 6a and M8.5 it honoured only half of it: the top-up stopped counting, but the spend never started, because every Order-rooted figure summed `Order.totalAmount` — which is net of `walletUsed`. The ledger was right throughout; the dashboard now agrees with it. See [Two legs of one sale](#two-legs-of-one-sale-gateway--wallet-credit). |
 
 ### Cash Position
 
@@ -652,6 +728,12 @@ by renaming `startOfDayUtc` without changing its callers or vice versa.
 One row per figure the system computes. "Timezone" is the day/period boundary
 that figure is bucketed on.
 
+**Every money row below counts both legs of a sale** — `Order.totalAmount` plus
+the wallet credit spent on those orders (M8.5). The exceptions are the ones that
+are not `Order`-rooted at all: the profit and top-product figures derive from
+`OrderItem.unitPrice`, which was never net of wallet credit, and the refund
+figures read `RefundExecution`. Counts are counts.
+
 | Metric | Source function | File | Currency handling | Kind filter | Refund-aware? | Timezone convention |
 |---|---|---|---|---|---|---|
 | Revenue Today / Yesterday (= Gross Sales) | `revenueSummary` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate (+ `usd` alias of the USDT figure) | `PRODUCT` | No — gross | ⚠️ Jakarta-local midnight (`startOfDayUtc`) |
@@ -678,7 +760,7 @@ that figure is bucketed on.
 | Customers KPI row (`newToday`, `activeToday`) | `customersKpis` | `packages/db/src/crud/users.ts` | n/a | n/a (reads `User.createdAt`/`lastSeenAt`) | n/a | ⚠️ Jakarta-local midnight |
 | Customers "Orders" / "Last Order" columns | `orderStatsByUserIds.totalOrders` / `.lastOrderAt` | `packages/db/src/crud/users.ts` | n/a | **None — all kinds, deliberate** | No | Lifetime |
 | "RETURNING" badge | `orderStatsByUserIds.deliveredOrders` | `packages/db/src/crud/users.ts` | n/a | `PRODUCT` | No | Lifetime |
-| Customers sort-by-spend ordering | `rankUserIdsBySpend` (private) | `packages/db/src/crud/users.ts` | **IDR-only ranking** (pre-existing, deliberate — see note above, not a bug) | `PRODUCT` | No | Lifetime |
+| Customers sort-by-spend ordering | `rankUserIdsBySpend` (private) | `packages/db/src/crud/users.ts` | **IDR-only ranking**, gateway + IDR wallet legs (IDR-only is pre-existing and deliberate — see note above, not a bug) | `PRODUCT` | No | Lifetime |
 | Storefront home fulfilment stats | `shopFulfilmentStats` | `packages/db/src/crud/orders.ts` | n/a | `PRODUCT` | No | Lifetime |
 | Bot customer dashboard stats | `botOverallStats` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate; `items_sold` immune; `total_users` not order-derived | `PRODUCT` on revenue | No | Lifetime |
 | Bot admin dashboard "today's revenue/orders" | `revenueSummary` | `packages/db/src/crud/revenue.ts`, called from `apps/order-bot/src/handlers/admin.ts` | IDR/USDT separate | `PRODUCT` | No | **True UTC midnight** — differs from the web admin's same-named figure |
@@ -751,12 +833,74 @@ with and without its `kind: OrderKind.PRODUCT` clause; the difference is
 exactly the settled `WALLET_TOPUP` volume in that window. M8's parity report
 does this systematically, with real numbers.
 
+### M8.5: and the other direction — credit SPENT is revenue
+
+> **If your customers pay for anything with wallet credit, your Revenue and
+> Customer-spend figures will be HIGHER after this update than they were before.
+> This is the same bug fix from the other end. No sale is counted twice.**
+
+**What was wrong.** `Order.totalAmount` records what the buyer owed
+*externally*, after any wallet credit was applied. Every revenue figure summed
+that column alone, so a Rp54,000 sale paid with Rp34,000 of credit reported as
+Rp20,000, and a sale paid entirely from credit reported as **nothing at all** —
+the order was delivered, the product was handed over, and the dashboard showed
+zero. Meanwhile the double-entry ledger recognised the full Rp54,000, because
+`postOrderPaymentPosting` books both legs. The books and the dashboard
+disagreed, by exactly the credit spent, for the shop's whole operating history.
+
+**What is right.** A sale is worth what the buyer paid for it, whichever pocket
+it came from. The wallet was funded earlier and recorded as money the shop
+*owed* (`wallet_liability`); spending it on a product is the moment that money
+becomes the shop's, and it is recognised then — once.
+
+**Why this is not double counting.** The top-up itself is excluded (Task 6a,
+above). These two corrections are halves of one rule: the money is counted at
+exactly one moment in its life, and this is that moment. Fixing only the first
+half — which is where the dashboard sat between Task 6a and here — *understated*
+revenue by the wallet-checkout volume.
+
+**Which figures moved up**, and by exactly the credit spent in each window:
+
+- Dashboard "Revenue Today"/"Revenue Yesterday" and "Net Sales Today", and the
+  Orders-page "Revenue Today"
+- The Sales Analytics chart at every granularity, and the Reports page's
+  revenue charts
+- Each customer's "Total Spent", the Customers page's `totalRevenue` KPI, and
+  the order the Customers page sorts by when sorting on spend
+- The bot's customer-facing shop stats, and the bot's own admin dashboard
+  "today's revenue"
+
+**Which figures did NOT move**, deliberately:
+
+- **Every order count.** A wallet-paid order was always one order, and still is.
+- **Profit, margin and top-products figures.** They are `OrderItem`-rooted and
+  derive revenue from `unitPrice × quantity`, which was never reduced by wallet
+  credit — so they were already counting the whole sale. (Profit therefore did
+  not silently change its relationship to revenue in the process; it was revenue
+  that was understated relative to profit before, not the reverse.)
+- **Refunds Today.** Rooted at `RefundExecution`. A refund paid back *into* a
+  wallet is a payout, not a negative sale.
+
+**Audit trail.**
+
+| Commit | Subject | What it changed |
+|---|---|---|
+| `5d755c5c` | `fix(db): count wallet-spent credit as revenue, like the ledger already does` | `walletSpendByCurrency`/`walletSpendByOrder`/`walletSpendByUser` in `revenue.ts`, wired additively into `salesRevenueByCurrency` (and so `revenueSummary`, `botOverallStats`, `grossSalesForNetSales`), `revenueByDay`, `combinedRevenueByDay`, `revenueByPeriod`; `users.ts`'s `userTotalSpent`, `totalSpentByUserIds`, `customersKpis.totalRevenue` and the spend ranking (`rankedPageBySpend`). Task 8's scenario 6 flips from pinning the gap to proving the two views agree. |
+| `cd34f9ab` | `test(scripts): keep the parity check honest after the wallet-spend fix` | The parity script's replicated "old" queries carry the wallet leg on both sides (or its `drift` column would have shown a permanent false positive equal to the wallet volume — verified by mutation), plus a dedicated exact reconciliation for this fix: current figure − pre-M8.5 `totalAmount`-only figure == the `order_payment` volume, per currency, to the rupiah. |
+
+An auditor can reproduce this delta for any window by summing
+`Order.totalAmount` alone over the same clause and comparing: the difference is
+exactly the `order_payment` `WalletTransaction` volume for those orders, per
+currency. The `ledger.regression.test.ts` scenario 6 assertion states the same
+identity against the ledger's own `sales_revenue.idr` balance.
+
 ---
 
 ## Open items deliberately not fixed here
 
 Recorded so a future milestone can act on them with full context. **None of
-these is a fix this document performs** — M7 is documentation-only.
+these is a fix this document performs** — M7 was documentation-only, and the
+M8.5 revision above documents a fix made in code, it does not make one here.
 
 1. **The three-way day-boundary inconsistency.** Documented above. Needs its
    own explicitly-scoped milestone with its own before/after numbers. Must not
@@ -773,9 +917,10 @@ these is a fix this document performs** — M7 is documentation-only.
    "sales, all costs unknown" draw the same gap.
 5. **fxRate-less USDT orders are counted unconverted** in the combined blend
    rather than dropped. Pre-existing; now reachable at more granularities.
-6. **`rankUserIdsBySpend` ranks on IDR-only spend**, so a USDT-only buyer sorts
-   as a zero-spender despite a correct non-zero "Total Spent" cell. This is
-   **deliberate by the function's own doc comment** (`users.ts:693-698`):
+6. **`rankUserIdsBySpend` ranks on IDR-only spend** (gateway plus IDR wallet
+   legs since M8.5), so a USDT-only buyer sorts as a zero-spender despite a
+   correct non-zero "Total Spent" cell. This is
+   **deliberate by the function's own doc comment**:
    blending IDR and USDT spend into one ranking scalar would fabricate a
    figure, the same reasoning `CurrencyStack` encodes on the display side.
    Not an open bug to fix — recorded so a future pass doesn't "fix" it by
@@ -800,4 +945,5 @@ these is a fix this document performs** — M7 is documentation-only.
 
 ---
 
-*Financial Ledger M7. Verified against commit `7e20b1eb`.*
+*Financial Ledger M7, verified against commit `7e20b1eb`; revised at M8.5 for
+the wallet-spend correction (`5d755c5c`, `cd34f9ab`).*

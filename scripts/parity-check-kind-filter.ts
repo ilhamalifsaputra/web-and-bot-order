@@ -86,6 +86,13 @@
  * Read-only: it issues nothing but `groupBy`/`count`/`findMany`. Exit 0 when
  * every metric reconciles exactly, 1 otherwise.
  *
+ * It deliberately does NOT follow `reconcileLedger.ts`'s one-query-per-check
+ * discipline — every metric costs three old-shaped queries plus the current
+ * function's own, because reading each clause separately is what makes the
+ * replication reviewable line by line against the code it mirrors. That is the
+ * right trade for a hand-run audit and would be the wrong one for the 6-hourly
+ * cron, which is why this lives in `scripts/` rather than in `crud/`.
+ *
  * `parity-check-kind-filter.test.ts` runs this same `runParityCheck` against a
  * seeded fixture, so the tool is exercised by the regular suite rather than
  * only by hand — the precedent `revenue.sql-crosscheck.test.ts` sets for a
@@ -132,8 +139,8 @@ export interface ParityRow {
   delta: string;
   /** The old clause restricted to `WALLET_TOPUP`: what the delta should be. */
   attributed: string;
-  /** How `attributed` was derived. Everything is `sum` except the one
-   *  non-additive distinct count. */
+  /** How `attributed` was derived: `additive` for every SUM/COUNT(*) metric,
+   *  `set-difference` for the one COUNT(DISTINCT) that cannot use the identity. */
   attributionBasis: "additive" | "set-difference";
   /** `delta - attributed`. Must be zero. */
   residual: string;
@@ -210,7 +217,7 @@ async function countsByCurrency(db: Db, where: Record<string, unknown>) {
     if (group.currency === "IDR") idr += group._count._all;
     else usdt += group._count._all;
   }
-  return { idr, usdt, total: idr + usdt };
+  return { idr, usdt };
 }
 
 /**

@@ -77,6 +77,11 @@ describe("finalizeOrderPayment — PaymentChoice widening (PAYDISINI/NOWPAYMENTS
   beforeEach(async () => {
     await resetDb(prisma);
     sample = await buildSampleData(prisma);
+    // M11: the fixture SKU costs Rp5, which converts to 0.0 USDT at the 16000
+    // rate these cases use — and finalizeOrderPayment now refuses to put a
+    // nothing-to-collect total on a gateway. Price it realistically; every
+    // assertion below is about which fields get stamped, not about the amount.
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
     const created = await createOrderFromCart(prisma, { user: sample.user });
     orderId = created!.id;
@@ -165,6 +170,10 @@ describe("finalizeOrderPayment — BYBIT vs BYBIT_BSC collision-avoidance is sco
   beforeEach(async () => {
     await resetDb(prisma);
     sample = await buildSampleData(prisma);
+    // M11: see the sibling describe above — Rp5 converts to 0.0 USDT at this
+    // rate, which finalizeOrderPayment now refuses. The collision-avoidance
+    // behaviour under test is unaffected by the size of the amount.
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
   });
 
   async function makeOrder() {

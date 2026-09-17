@@ -29,13 +29,15 @@ import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, TOKOPAY_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 
-/** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
-export const TOKOPAY_MIN_AMOUNT_KEY = "tokopay_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { TOKOPAY_MIN_AMOUNT_KEY } from "./_minAmount";
 
 /** Read TokoPay gateway credentials from Settings; null = the IDR/QRIS path is off. */
 export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmount: Decimal | null }) | null> {

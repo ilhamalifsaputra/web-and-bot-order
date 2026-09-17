@@ -28,7 +28,7 @@ import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, BYBIT_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
@@ -45,8 +45,10 @@ export const BYBIT_API_KEY_KEY = "bybit_api_key";
 export const BYBIT_API_SECRET_KEY = "bybit_api_secret";
 // On/off toggle (web admin). Default ON: only the literal "false" disables.
 export const BYBIT_ENABLED_KEY = "bybit_enabled";
-// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
-export const BYBIT_MIN_AMOUNT_KEY = "bybit_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { BYBIT_MIN_AMOUNT_KEY } from "./_minAmount";
 
 export interface BybitConfig {
   /** True only when uid + apiKey + apiSecret are all present. */

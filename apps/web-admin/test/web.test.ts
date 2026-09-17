@@ -34,6 +34,7 @@ import {
   assignTicket,
   listTicketMessages,
   setSetting,
+  MIN_ORDER_AMOUNT_IDR_KEY,
   getSetting,
   getDecryptedSetting,
   deleteSetting,
@@ -162,6 +163,16 @@ beforeEach(async () => {
   };
   // Existing suites model a CONFIGURED deploy — keep the first-run gate open.
   await setSetting(prisma, "setup_completed", "true");
+  // This seed's SKU costs Rp5.00, two orders of magnitude under
+  // `min_order_amount_idr`'s real default of Rp1.000 (packages/db/src/crud/
+  // orderMinimums.ts, M11), so leaving that default in force would make every
+  // order built here unfinalizable on every gateway — for a reason none of
+  // these tests are about. Written as an explicit "0" rather than left unset,
+  // because unset is what SELECTS the default: this seed declares a shop with
+  // no minimum, it does not bypass one. Same choice as the shared fixture in
+  // tests/helpers/sampleData.ts; the guard has its own coverage in
+  // packages/db/src/crud/orderMinimums.test.ts.
+  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
 });
 
 // ---- helpers --------------------------------------------------------------

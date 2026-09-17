@@ -24,6 +24,7 @@ export * from "./crud/binance_internal";
 export * from "./crud/bybit_deposit";
 export * from "./crud/bybit_bsc_deposit";
 export * from "./crud/broadcasts";
+export * from "./crud/orderMinimums";
 export * from "./crud/pricing";
 export * from "./crud/tokopay";
 export * from "./crud/digiflazz";

@@ -27,13 +27,15 @@ import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, NOWPAYMENTS_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
-/** Minimum-payment-amount note shown at checkout (USDT) — blank = no note. */
-export const NOWPAYMENTS_MIN_AMOUNT_KEY = "nowpayments_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { NOWPAYMENTS_MIN_AMOUNT_KEY } from "./_minAmount";
 
 /** Read NOWPayments gateway credentials from Settings; null = the USDT path is off. */
 export async function getNowpaymentsCreds(db: Db): Promise<(NowpaymentsCreds & { minAmount: Decimal | null }) | null> {

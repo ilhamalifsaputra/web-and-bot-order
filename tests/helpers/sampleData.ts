@@ -15,6 +15,8 @@ import {
   bulkAddStock,
   createVoucher,
   seedChartOfAccounts,
+  setSetting,
+  MIN_ORDER_AMOUNT_IDR_KEY,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { ProductType, VoucherType } from "@app/core/enums";
@@ -53,6 +55,16 @@ export async function buildSampleData(prisma: PrismaClient) {
     usageLimit: 100,
     minPurchase: "3",
   });
+  // The sample shop has NO shop-wide minimum order amount. Its product costs
+  // Rp5.00 — two orders of magnitude under `min_order_amount_idr`'s real default
+  // of Rp1.000 (crud/orderMinimums.ts, M11) — so leaving that default in force
+  // here would make every fixture-built order unfinalizable on every gateway,
+  // for a reason none of those tests are about. Written as an explicit "0"
+  // rather than left unset, because unset is what SELECTS the default: this is
+  // the fixture declaring a configuration, not bypassing one. The guard itself
+  // is covered by packages/db/src/crud/orderMinimums.test.ts, which sets real
+  // minimums, and any test that wants a minimum in force can set one too.
+  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
   // `product` is the Denomination/SKU (id used by the order/stock flow);
   // `parentProduct` is the mid-tier Product wrapper (the row the bot's flat
   // list shows and whose picker collapses to this single denomination).

@@ -43,7 +43,7 @@ import { adjustWallet } from "./users";
 import { postOrderWalletCreditPosting } from "./ledgerPostings";
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, BINANCE_INTERNAL_MIN_AMOUNT_KEY } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
@@ -60,8 +60,10 @@ export const BINANCE_API_KEY_KEY = "binance_api_key";
 export const BINANCE_API_SECRET_KEY = "binance_api_secret";
 // On/off toggle (web admin). Default ON: only the literal "false" disables.
 export const BINANCE_INTERNAL_ENABLED_KEY = "binance_internal_enabled";
-// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
-export const BINANCE_INTERNAL_MIN_AMOUNT_KEY = "binance_internal_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { BINANCE_INTERNAL_MIN_AMOUNT_KEY } from "./_minAmount";
 
 export interface BinanceInternalConfig {
   /** True only when receiveUid + apiKey + apiSecret are all present. */

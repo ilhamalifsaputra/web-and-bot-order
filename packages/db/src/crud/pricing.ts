@@ -20,6 +20,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
 import { getSetting, setSetting } from "./settings";
+import { assertOrderTotalClearsRailMinimum } from "./orderMinimums";
 import { getOrder } from "./orders";
 
 /** Settings key: Rupiah per 1 USDT (e.g. "16000"), set in web-admin. */
@@ -141,6 +142,18 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   const baseIdr = new Decimal(order.totalAmount).minus(order.uniqueCents);
 
   if (choice.currency === OrderCurrency.IDR) {
+    const idrTotal = quantizeMoney(baseIdr, 0);
+    // M11 / audit P0-1. Runs BEFORE the update below, so a rejected order keeps
+    // the exact shape its creator left it in — nothing is stamped, no payment
+    // method, no expiry, no reference — and the caller can show the buyer an
+    // error or offer a different rail without a half-finalized row behind it.
+    // WALLET is exempt inside the guard itself (see orderMinimums.ts).
+    await assertOrderTotalClearsRailMinimum(db, {
+      method: choice.method ?? PaymentMethod.TOKOPAY,
+      currency: OrderCurrency.IDR,
+      idrAmount: idrTotal,
+      railAmount: idrTotal,
+    });
     await db.order.update({
       where: { id: orderId },
       data: {
@@ -148,7 +161,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
         fxRate: null,
         paymentMethod: choice.method ?? PaymentMethod.TOKOPAY,
         uniqueCents: new Decimal(0),
-        totalAmount: quantizeMoney(baseIdr, 0),
+        totalAmount: idrTotal,
       },
     });
     return getOrder(db, orderId);
@@ -160,6 +173,19 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   }
   const method = choice.method ?? PaymentMethod.BINANCE_INTERNAL;
   const usdt = usdtFromIdr(baseIdr, rate);
+  // M11 / audit P0-1, the USDT half. Placed here, immediately after the
+  // conversion and before ANY gateway-specific state is derived (unique cents,
+  // paymentRef, the payment window, the Bybit collision-avoidance loop), so a
+  // too-small total costs nothing and mutates nothing. `usdt` excludes the
+  // unique cents on purpose: the cents are matching noise added on top, so the
+  // amount the rail is really being asked for is never less than this figure.
+  // WALLET is exempt inside the guard itself (see orderMinimums.ts).
+  await assertOrderTotalClearsRailMinimum(db, {
+    method,
+    currency: OrderCurrency.USDT,
+    idrAmount: baseIdr,
+    railAmount: usdt,
+  });
   // WALLET orders are pure ledger entries — there is no on-chain/gateway
   // transfer to disambiguate, so unique cents (which would otherwise leave a
   // nonzero remainder even when wallet credit fully covers the order) never

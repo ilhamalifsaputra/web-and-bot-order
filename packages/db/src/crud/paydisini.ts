@@ -26,13 +26,15 @@ import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting, getDecryptedSetting } from "./settings";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, PAYDISINI_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { getPendingPaymentAttempt, confirmPaymentAttempt } from "./payments";
 import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
-/** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
-export const PAYDISINI_MIN_AMOUNT_KEY = "paydisini_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { PAYDISINI_MIN_AMOUNT_KEY } from "./_minAmount";
 
 /** Read PayDisini gateway credentials from Settings; null = the QRIS/e-wallet path is off. */
 export async function getPaydisiniCreds(db: Db): Promise<(PaydisiniCreds & { minAmount: Decimal | null }) | null> {

@@ -202,6 +202,8 @@
   "error.field_invalid_select": "Please choose one of the listed options.",
   "error.generic": "⚠ Something went wrong. Please try again or contact support.",
   "error.generic_ref": "⚠ Something went wrong (ref: {ref}). Please try again, or contact support with this code.",
+  "error.amount_below_rail_minimum": "That total is below the minimum this payment method accepts ({min} {currency}). Add more items, or choose a different payment method.",
+  "error.amount_too_small_for_rail": "That total is too small to charge through this payment method — converted to {currency} there would be nothing left to pay. Please choose a different payment method.",
   "error.insufficient_wallet": "Insufficient wallet balance.",
   "error.invalid_discount_fixed_value": "Fixed discount amount must not be negative.",
   "error.invalid_discount_percent": "Discount percent must be greater than 0 and at most 100.",

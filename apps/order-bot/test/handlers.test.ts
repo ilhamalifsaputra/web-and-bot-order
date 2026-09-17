@@ -122,6 +122,20 @@ function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
 }
 
+/**
+ * Price the shared fixture SKU realistically before checking it out on a
+ * crypto rail. Its Rp5.00 price converts to 0.0 USDT at the 16000 rate these
+ * tests use, and since M11 (crud/orderMinimums.ts) finalizeOrderPayment
+ * refuses to put a nothing-to-collect total on a gateway. Every caller below
+ * asserts on which fields were stamped or which audit row was written, never
+ * on the amount — which is also why the Binance-Internal ledger test further
+ * down already builds a higher-priced product of its own rather than reuse
+ * this fixture.
+ */
+async function priceFixtureForUsdtRail() {
+  await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
+}
+
 function adminCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   return makeCtx({
     from: { id: 999, username: "boss" },
@@ -2958,6 +2972,7 @@ describe("checkout handlers", () => {
     await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
     await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx, sink } = customerCtx();
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
 
@@ -3089,6 +3104,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowBybit(ctx, sample.product.id, 1);
 
@@ -3105,6 +3121,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
     await setSetting(prisma, BYBIT_BSC_ENABLED_KEY, "true");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
 
@@ -3119,6 +3136,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "ak");
     await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
 

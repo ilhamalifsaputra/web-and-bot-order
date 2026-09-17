@@ -34,7 +34,7 @@ import { enqueueOrderPipelineFailed, enqueueAdminOverpaid } from "./notification
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
@@ -50,8 +50,10 @@ export const BYBIT_BSC_DEPOSIT_ADDRESS_KEY = "bybit_bsc_deposit_address";
 // On/off toggle (web admin), independent of Internal Transfer's. Default ON:
 // only the literal "false" disables.
 export const BYBIT_BSC_ENABLED_KEY = "bybit_bsc_enabled";
-// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
-export const BYBIT_BSC_MIN_AMOUNT_KEY = "bybit_bsc_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
 
 export interface BybitBscConfig {
   /** True only when depositAddress + apiKey + apiSecret are all present. */

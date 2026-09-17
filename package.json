@@ -19,6 +19,7 @@
     "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
     "backfill-encrypt-stock-credentials": "tsx scripts/backfill-encrypt-stock-credentials.ts",
     "backfill-encrypt-settings-secrets": "tsx scripts/backfill-encrypt-settings-secrets.ts",
+    "backfill-ledger-history": "tsx scripts/backfill-ledger-history.ts",
     "images:backfill": "tsx scripts/backfill-webp.ts",
     "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
     "binance-probe": "tsx scripts/binance-probe.ts",

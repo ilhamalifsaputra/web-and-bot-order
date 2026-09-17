@@ -627,6 +627,45 @@ describe("backfillLedgerHistory — refund payouts older than the ledger itself"
   });
 });
 
+describe("backfillLedgerHistory — a wallet movement whose reason implies an order, but has none", () => {
+  it("reports it as needing a human decision, rather than silently never examining it", async () => {
+    // Every real writer of a `referral`/`underpaid_refund`/`unfulfilled_credit`/
+    // `order_refund` movement attaches an order — `adjustWallet` called directly
+    // with one of those reasons and no `orderId` is a shape no production path
+    // produces, matching this suite's own "written around the application"
+    // precedent for the refund-payout case above. Category 5's own paging query
+    // filters `orderId: { not: null }` for this exact reason, so without this
+    // report the row would be invisible everywhere: not examined, not posted,
+    // not even listed as unprocessable.
+    const { transactionId } = await adjustWallet(prisma, sample.user.id, "1.00", {
+      reason: "referral",
+    });
+
+    const report = await backfillLedgerHistory(prisma);
+
+    expect(report.orderlessOrderMovements).toHaveLength(1);
+    expect(report.orderlessOrderMovements[0]).toEqual({ id: transactionId, reason: "referral" });
+    expect(report.orderlessOrderMovementsCount).toBe(1);
+    // Not counted anywhere a category could have posted it — proving it was
+    // genuinely never examined, not merely posted zero times.
+    expect(categoryOf(report, "referral_commission").examined).toBe(0);
+    expect(formatBackfillReport(report)).toContain("INVESTIGATE");
+  });
+
+  it("reports none when an order-rooted movement actually has an order", async () => {
+    const order = await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    // Same reason as the positive case above, but shaped the way every real
+    // writer shapes it — with the order attached — to prove the check does not
+    // false-positive on ordinary, in-shape history.
+    await adjustWallet(prisma, sample.user.id, "1.00", { reason: "referral", orderId: order.id });
+
+    const report = await backfillLedgerHistory(prisma);
+
+    expect(report.orderlessOrderMovements).toEqual([]);
+    expect(report.orderlessOrderMovementsCount).toBe(0);
+  });
+});
+
 // ── 4. Rows it refuses to guess at ─────────────────────────────────────────
 
 describe("backfillLedgerHistory — rows it refuses to guess at", () => {

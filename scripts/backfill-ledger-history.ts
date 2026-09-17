@@ -170,8 +170,27 @@ export interface BackfillReport {
    * build's own first commit, so no payout can predate the ledger. A non-empty
    * list is something to investigate — a restored dump, or a row written around
    * the application — not something this script quietly backfills differently.
+   *
+   * Capped at 100 rows so a truly pathological database cannot make this
+   * report unbounded; `refundPayoutsPredatingLedgerCount` carries the TRUE
+   * total, since a capped list would otherwise understate how bad the finding
+   * is in the one report whose entire purpose is "this should be impossible".
    */
   refundPayoutsPredatingLedger: Array<{ id: number; createdAt: Date }>;
+  refundPayoutsPredatingLedgerCount: number;
+  /**
+   * Wallet movements whose reason implies an order (`referral`,
+   * `underpaid_refund`, `unfulfilled_credit`, `order_refund`) but whose
+   * `orderId` is null. No current writer produces this shape — every call
+   * site for these four reasons passes an `orderId` — so a non-empty list
+   * here is a hand-written or restored-dump row, not something the four
+   * categories above silently skipped: their own paging queries filter on
+   * `orderId: { not: null }` for exactly these reasons (see `movementsPage`),
+   * so a row like this would otherwise never be examined OR reported by
+   * anything in this script.
+   */
+  orderlessOrderMovements: Array<{ id: number; reason: string }>;
+  orderlessOrderMovementsCount: number;
   categories: CategoryResult[];
   totals: {
     examined: number;
@@ -482,15 +501,36 @@ export async function backfillLedgerHistory(
   }
 
   const cutoverBefore = await ledgerCutover(db);
+  const refundPayoutsPredatingLedgerWhere = { status: RefundExecutionStatus.COMPLETED, createdAt: { lt: cutoverBefore! } };
   const refundPayoutsPredatingLedger =
     cutoverBefore === null
       ? []
       : await db.refundExecution.findMany({
-          where: { status: RefundExecutionStatus.COMPLETED, createdAt: { lt: cutoverBefore } },
+          where: refundPayoutsPredatingLedgerWhere,
           select: { id: true, createdAt: true },
           orderBy: { id: "asc" },
           take: 100,
         });
+  const refundPayoutsPredatingLedgerCount =
+    cutoverBefore === null ? 0 : await db.refundExecution.count({ where: refundPayoutsPredatingLedgerWhere });
+
+  // Must list exactly the reasons categories 5, 6a, 6b and 7 below page with
+  // `withOrder: true` — those queries filter `orderId: { not: null }`, so a
+  // row of one of these reasons with a null orderId is invisible to every
+  // category and needs its own check to be reported at all.
+  const orderlessOrderMovementsWhere = {
+    reason: { in: ["referral", "underpaid_refund", "unfulfilled_credit", "order_refund"] },
+    orderId: null,
+  };
+  const orderlessOrderMovements = await db.walletTransaction.findMany({
+    where: orderlessOrderMovementsWhere,
+    select: { id: true, reason: true },
+    orderBy: { id: "asc" },
+    take: 100,
+  });
+  const orderlessOrderMovementsCount = await db.walletTransaction.count({
+    where: orderlessOrderMovementsWhere,
+  });
 
   // Every FinancialTransaction id at or below this existed before the run, so
   // anything above it is a posting this run wrote. Read once; see `runCategory`.
@@ -793,6 +833,9 @@ export async function backfillLedgerHistory(
     cutoverBefore,
     cutoverAfter: await ledgerCutover(db),
     refundPayoutsPredatingLedger,
+    refundPayoutsPredatingLedgerCount,
+    orderlessOrderMovements,
+    orderlessOrderMovementsCount,
     categories,
     totals,
   };
@@ -846,16 +889,39 @@ export function formatBackfillReport(report: BackfillReport): string {
   }
   lines.push("");
 
-  if (report.refundPayoutsPredatingLedger.length > 0) {
+  if (report.refundPayoutsPredatingLedgerCount > 0) {
+    const shown = report.refundPayoutsPredatingLedger.length;
+    const countClause =
+      report.refundPayoutsPredatingLedgerCount > shown
+        ? `${report.refundPayoutsPredatingLedgerCount} completed refund payout(s) (showing the first ${shown})`
+        : `${report.refundPayoutsPredatingLedgerCount} completed refund payout(s)`;
     lines.push(
-      `INVESTIGATE: ${report.refundPayoutsPredatingLedger.length} completed refund payout(s) were ` +
-        "recorded BEFORE the ledger's earliest posting. RefundExecution was introduced alongside " +
-        "the ledger itself, so this should be impossible — it suggests a restored dump or rows " +
-        "written around the application. They were posted like any other payout; confirm each one " +
-        "really happened:",
+      `INVESTIGATE: ${countClause} were recorded BEFORE the ledger's earliest posting. ` +
+        "RefundExecution was introduced alongside the ledger itself, so this should be impossible " +
+        "— it suggests a restored dump or rows written around the application. They were posted " +
+        "like any other payout; confirm each one really happened:",
     );
     for (const payout of report.refundPayoutsPredatingLedger) {
       lines.push(`  refund payout #${payout.id}, recorded ${payout.createdAt.toISOString()}`);
+    }
+    lines.push("");
+  }
+
+  if (report.orderlessOrderMovementsCount > 0) {
+    const shown = report.orderlessOrderMovements.length;
+    const countClause =
+      report.orderlessOrderMovementsCount > shown
+        ? `${report.orderlessOrderMovementsCount} wallet movement(s) (showing the first ${shown})`
+        : `${report.orderlessOrderMovementsCount} wallet movement(s)`;
+    lines.push(
+      `INVESTIGATE: ${countClause} carry a reason that should always name an order (referral, ` +
+        "underpaid_refund, unfulfilled_credit or order_refund) but have no order attached. No " +
+        "code path in this repo writes that shape, and none of this run's categories can see " +
+        "them either — they were NOT examined, NOT posted and NOT counted as unprocessable " +
+        "above. This needs a human decision before anything is booked for them:",
+    );
+    for (const movement of report.orderlessOrderMovements) {
+      lines.push(`  wallet movement #${movement.id} (${movement.reason})`);
     }
     lines.push("");
   }
@@ -910,7 +976,13 @@ async function main() {
   console.log(formatBackfillReport(report));
   // Non-zero when something was left unprocessed, so a run wired into anything
   // that checks exit codes cannot quietly report a partial backfill as done.
-  process.exit(report.totals.unprocessable > 0 ? 1 : 0);
+  // Set on `exitCode` and left to fall off the end (matching
+  // scripts/seed-chart-of-accounts.ts), not a bare `process.exit`: this report
+  // is the run's audit trail, and when stdout is redirected to a file rather
+  // than a TTY, Node's write can still be in flight when `process.exit` tears
+  // the process down, truncating it.
+  process.exitCode = report.totals.unprocessable > 0 ? 1 : 0;
+  await prisma.$disconnect();
 }
 
 // Guarded so `main()` only runs when this file is executed directly, not when
@@ -920,8 +992,9 @@ async function main() {
 const isMainModule =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
-  main().catch((err: unknown) => {
+  main().catch(async (err: unknown) => {
     console.error(err instanceof Error ? err.message : String(err));
+    await prisma.$disconnect().catch(() => {});
     process.exit(1);
   });
 }

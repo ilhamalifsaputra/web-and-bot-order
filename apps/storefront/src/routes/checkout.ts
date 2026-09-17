@@ -1374,7 +1374,19 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // secret field exists yet) — apiKey doubles as the signing secret here,
     // matching verifyCallback's own doc comment in @app/core/suppliers/digiflazz.
     const cb = verifyDigiflazzCallback(creds.apiKey, body);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
+      // neither the signature nor the body is logged (CLAUDE.md, "Never log
+      // secrets"), and the pre-existing `webhookRateLimited` check above already
+      // bounds how many of these one source can produce. This route's signing
+      // secret is Digiflazz's own API key rather than a separate webhook
+      // secret, so a sudden run of these usually means that key was rotated in
+      // Settings without updating it here.
+      logger.warn(
+        `Rejected a Digiflazz delivery callback because its signature did not verify — no order was looked up and nothing was delivered. A steady stream against valid order codes is someone probing the callback; a sudden start after a deploy usually means the Digiflazz API key in Settings no longer matches the one Digiflazz is signing with.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
 
     const order = await getOrderByCode(prisma, cb.refId);
     if (!order) {

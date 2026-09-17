@@ -621,7 +621,7 @@ async function findWalletLedgerDrift(
     // shop owes its buyers, and the two records of that same money disagree.
     logger.error(
       { accountCode, currency },
-      `Buyers' wallet balances no longer agree with the ledger in ${currency}: the "${accountCode}" control account stands at ${ledgerTotal.toString()} while the balances buyers actually hold — ${usersTotal.toString()} spendable, plus ${inFlight.toString()} already spent on orders that have not settled yet — come to ${expected.toString()}, a difference of ${difference.toString()}. One of the two is wrong about money the shop owes real people, so this needs reconciling by hand before either figure is reported anywhere. Until the historical backfill has run, a standing difference here is expected and simply measures the wallet credit that pre-dates the ledger.`,
+      `Buyers' wallet balances no longer agree with the ledger in ${currency}: the "${accountCode}" control account stands at ${ledgerTotal.toString()} while the balances buyers actually hold — ${usersTotal.toString()} spendable, plus ${inFlight.toString()} already spent on orders that have not settled yet — come to ${expected.toString()}, a difference of ${difference.toString()}. This line cannot tell apart the shop's two possible causes: either this is the known, expected gap from wallet credit that pre-dates the ledger and simply has not been backfilled (M10) yet, or one of the two figures above is genuinely wrong about money the shop owes real people. Confirm which before treating this as a new incident — if the historical backfill has already run, it is the latter, and needs reconciling by hand.`,
     );
     findings.push({
       type: ReconciliationFindingType.WALLET_LEDGER_DRIFT,

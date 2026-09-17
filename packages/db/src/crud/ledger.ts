@@ -371,25 +371,43 @@ export async function postFinancialTransaction(
     return alreadyPosted;
   }
 
+  // Computed here (not just below, where the write itself needs it) because the
+  // validation catch below also depends on it: whether a refusal has actually
+  // lost money or merely aborted a still-open transaction turns on the same
+  // question `write` asks — does this call own its transaction, or is it
+  // nested inside a caller's.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+
   let prepared: PreparedEntry[];
   try {
     prepared = await prepareEntries(db, args.entries);
     assertBalancedPerCurrency(prepared);
   } catch (e) {
-    // Every rejection reason is a caller bug (an unbalanced pair of legs, an
-    // account code that does not exist, a currency that disagrees with its
-    // account), and the caller is always a settlement path that has ALREADY
-    // moved real money by the time it asks for a posting — so a refusal here is
-    // never silent, whatever the caller does with the throw.
-    //
     // `error.ledger_account_not_found` is additionally caught and logged by
     // `postOrSkipMissingAccount` (./ledgerPostings.ts) one layer up. That
     // overlap is deliberate rather than a duplicate: this line records that the
     // ledger service itself refused the posting and carries the error, while
     // that one names the business event and what an admin has to do about it.
+    //
+    // The consequence clause forks on two things a blanket "money already
+    // moved, hand-post an entry" sentence gets wrong on real paths: (a) not
+    // every rejection here is a validation failure — `prepareEntries` reads the
+    // chart of accounts first, so a connection reset or timeout lands in this
+    // same catch and is not a caller bug; (b) when this call is nested inside a
+    // caller's own transaction (executeRefund's payout, for one), throwing here
+    // aborts that whole transaction — including whatever money movement it had
+    // already made — so nothing was actually kept, and hand-posting an entry
+    // would fabricate one for a payout that never happened. Only the
+    // owns-its-own-transaction case has genuinely persisted money to reconcile.
+    const isValidation = e instanceof ValidationError;
+    const consequence = ownsTransaction
+      ? "the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected"
+      : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
     logger.error(
       { err: e, idempotencyKey: args.idempotencyKey },
-      `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it did not pass validation, and wrote nothing at all — the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected`,
+      isValidation
+        ? `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it did not pass validation, and wrote nothing at all — ${consequence}`
+        : `Failed to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because reading the chart of accounts for it failed, and wrote nothing at all — ${consequence}`,
     );
     throw e;
   }
@@ -427,7 +445,7 @@ export async function postFinancialTransaction(
   // A `Tx` has no `$transaction` (Prisma strips it from the interactive
   // transaction client), so its presence is what distinguishes the bare client
   // from a caller-owned transaction. Same check as ./users.ts's `adjustWallet`.
-  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+  // (Computed above, before the validation catch, which needs it too.)
   try {
     const posted = ownsTransaction ? await db.$transaction(write) : await write(db);
     // Says "wrote", not "committed", and adds the caveat below when the caller

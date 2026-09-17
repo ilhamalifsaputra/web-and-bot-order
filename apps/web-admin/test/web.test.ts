@@ -43,6 +43,7 @@ import {
   markUnderpaid,
   recordUnmatchedTx,
   listAuditLogs,
+  USD_IDR_RATE_UPDATED_AT_KEY,
   setUserRole,
   setUserBanned,
   BINANCE_UID_KEY,
@@ -5614,6 +5615,42 @@ describe("settings: USDT rate from the market", () => {
   it("refresh rejects bad CSRF", async () => {
     const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
+  });
+
+  // M12 / audit P0-2: a hand-typed rate is just as much a re-confirmation of
+  // the rate's freshness as a market refresh is, so it must stamp the same key
+  // — otherwise a shop running on a manually-set rate would have every USDT
+  // order refused once the TTL elapsed after its last automatic refresh.
+  it("a manual rate edit stamps usd_idr_rate_updated_at and still audits the change", async () => {
+    await setSetting(prisma, "usd_idr_rate_updated_at", new Date(Date.now() - 86_400_000).toISOString());
+    const before = Date.now();
+
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "16750",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16750");
+
+    const stamp = await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY);
+    expect(Date.parse(stamp!)).toBeGreaterThanOrEqual(before - 1_000);
+
+    // The audit trail for this field must read exactly as it did before the
+    // stamping branch existed — a shop admin still sees what was changed.
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("usd_idr_rate"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).toBe('Changed setting "usd_idr_rate" to "16750".');
+  });
+
+  it("clearing the rate by hand does not claim the (now absent) rate was just confirmed", async () => {
+    const stale = new Date(Date.now() - 86_400_000).toISOString();
+    await setSetting(prisma, "usd_idr_rate_updated_at", stale);
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("");
+    expect(await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY)).toBe(stale);
   });
 });
 

@@ -13,6 +13,8 @@ import {
   deleteSetting,
   logAdminAction,
   refreshUsdIdrRate,
+  setUsdIdrRate,
+  USD_IDR_RATE_KEY,
   getBybitPollHealth,
   getBybitBscPollHealth,
   resolveBybitConfig,
@@ -343,6 +345,27 @@ async function applyFieldEdit(
       }
       throw e;
     }
+  } else if (key === USD_IDR_RATE_KEY && value !== "") {
+    // M12 / audit P0-2: typing a rate by hand is a re-confirmation of it, so it
+    // must stamp `usd_idr_rate_updated_at` exactly like a market refresh does,
+    // or a shop that sets its rate manually would have every USDT order refused
+    // once the TTL elapsed. `setUsdIdrRate` is the one sanctioned mutator that
+    // writes the value and that stamp together (crud/pricing.ts).
+    //
+    // A cleared rate (value === "") deliberately falls through to the plain
+    // write below: an absent rate is not a confirmed-fresh one, and clearing it
+    // already disables the USDT path entirely (`getUsdIdrRate` returns null).
+    //
+    // This is the ENCRYPTED_SETTING_KEYS branch's shape, not the
+    // public_channel_id one's: the field needs a different setter, not
+    // different validation or a different audit line. Everything below — the
+    // displayValue, the `setting_set` audit entry, the reply — stays shared, so
+    // this field's audit trail cannot drift from every other field's.
+    //
+    // Deliberately NO value validation here: web-admin's rate field stays free
+    // text exactly as it was. Sanity bounds are M13's job
+    // (`fx_rate_min`/`fx_rate_max`/`fx_rate_max_delta_pct`).
+    await setUsdIdrRate(prisma, value);
   } else {
     await setSetting(prisma, key, value);
   }

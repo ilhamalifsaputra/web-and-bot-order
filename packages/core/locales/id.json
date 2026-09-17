@@ -205,6 +205,7 @@
   "error.generic_ref": "⚠ Terjadi kesalahan (ref: {ref}). Coba lagi, atau hubungi support dengan kode ini.",
   "error.amount_below_rail_minimum": "Total itu di bawah minimum yang diterima metode pembayaran ini ({min} {currency}). Tambah barang, atau pilih metode pembayaran lain.",
   "error.amount_too_small_for_rail": "Total itu terlalu kecil untuk ditagih lewat metode pembayaran ini — setelah dikonversi ke {currency} tidak ada sisa yang bisa dibayar. Silakan pilih metode pembayaran lain.",
+  "error.fx_quote_expired": "Kurs yang dipakai sudah kedaluwarsa. Silakan kembali dan pilih metode pembayaran lagi untuk mendapat kurs terbaru, atau bayar dengan Rupiah.",
   "error.insufficient_wallet": "Saldo dompet tidak cukup.",
   "error.invalid_discount_fixed_value": "Jumlah diskon tetap tidak boleh negatif.",
   "error.invalid_discount_percent": "Persentase diskon harus lebih dari 0 dan maksimal 100.",

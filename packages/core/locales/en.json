@@ -205,6 +205,7 @@
   "error.generic_ref": "⚠ Something went wrong (ref: {ref}). Please try again, or contact support with this code.",
   "error.amount_below_rail_minimum": "That total is below the minimum this payment method accepts ({min} {currency}). Add more items, or choose a different payment method.",
   "error.amount_too_small_for_rail": "That total is too small to charge through this payment method — converted to {currency} there would be nothing left to pay. Please choose a different payment method.",
+  "error.fx_quote_expired": "The exchange rate quote has expired. Please go back and choose your payment method again to get a fresh quote, or pay in Rupiah instead.",
   "error.insufficient_wallet": "Insufficient wallet balance.",
   "error.invalid_discount_fixed_value": "Fixed discount amount must not be negative.",
   "error.invalid_discount_percent": "Discount percent must be greater than 0 and at most 100.",

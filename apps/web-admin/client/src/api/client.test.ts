@@ -22,6 +22,26 @@ describe("apiGet", () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, text: async () => "{}" })));
     await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
   });
+
+  // Reproduces the bug: fetch() follows a 303 session/setup redirect (see
+  // plugins/auth.ts and plugins/setupGate.ts) automatically, landing on a
+  // 200 OK HTML page — res.ok is true, but res.json() throws a raw
+  // SyntaxError. This is defense-in-depth for that (now server-fixed) case
+  // and any other 2xx-non-JSON edge case.
+  it("throws a clean error instead of a raw SyntaxError when a 2xx response isn't JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => {
+          throw new SyntaxError('Unexpected token \'<\', "<!doctype "... is not valid JSON');
+        },
+      })),
+    );
+    await expect(apiGet("/api/settings")).rejects.toThrow(
+      "/api/settings returned an unexpected response. Reload the page and try again.",
+    );
+  });
 });
 
 describe("apiPost", () => {

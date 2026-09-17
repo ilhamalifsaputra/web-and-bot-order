@@ -54,10 +54,10 @@ function get(url: string, withCookie: string | null) {
 }
 
 describe("GET /api/dashboard/kpis", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/kpis", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("returns today's revenue, profit, order funnel, and pending actions", async () => {
@@ -79,9 +79,9 @@ describe("GET /api/dashboard/kpis", () => {
 });
 
 describe("GET /api/dashboard/operations", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/operations", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("reports the operation-center counts", async () => {
@@ -125,9 +125,9 @@ describe("GET /api/dashboard/operations", () => {
 });
 
 describe("GET /api/dashboard/inventory", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/inventory", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("lists denominations at or below the threshold", async () => {
@@ -143,9 +143,9 @@ describe("GET /api/dashboard/inventory", () => {
 });
 
 describe("GET /api/dashboard/expirations", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/expirations", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("lists order items whose warranty expires within the window", async () => {
@@ -166,9 +166,9 @@ describe("GET /api/dashboard/expirations", () => {
 });
 
 describe("GET /api/dashboard/orders/recent", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/orders/recent", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("returns the newest orders first", async () => {
@@ -182,9 +182,9 @@ describe("GET /api/dashboard/orders/recent", () => {
 });
 
 describe("GET /api/dashboard/health", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/health", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("reports the bot token-present flag and an unmonitored status for unhealthed providers", async () => {
@@ -419,9 +419,9 @@ describe("GET /api/dashboard/health", () => {
 });
 
 describe("GET /api/dashboard/top-products", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/top-products", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("returns delivered products ranked by units sold", async () => {
@@ -439,9 +439,9 @@ describe("GET /api/dashboard/top-products", () => {
 });
 
 describe("GET /api/dashboard/analytics", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/analytics", null);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 
   it("defaults to a 7-day IDR revenue series", async () => {

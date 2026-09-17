@@ -52,10 +52,26 @@ async function throwForResponse(res: Response, path: string): Promise<never> {
   throw new Error(data.error ?? `${path} responded ${res.status}`);
 }
 
+/** Shared success-path guard for every helper below: `res.ok` doesn't
+ * guarantee a JSON body — most commonly, `fetch()` silently follows a 303
+ * session/setup redirect (see plugins/auth.ts and plugins/setupGate.ts) and
+ * lands on a 200 OK HTML page. Parsing that as JSON throws a raw, unreadable
+ * `SyntaxError` straight at the admin; this turns it into one clear message
+ * instead. The server-side fix (both hooks now answer `/api/*` with a JSON
+ * error, never a redirect) should mean this never fires — this is
+ * defense-in-depth for any other 2xx-non-JSON edge case. */
+async function parseJsonOrThrow<T>(res: Response, path: string): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new Error(`${path} returned an unexpected response. Reload the page and try again.`);
+  }
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
   if (!res.ok) return throwForResponse(res, path);
-  return res.json() as Promise<T>;
+  return parseJsonOrThrow<T>(res, path);
 }
 
 /** Everything `apiPost` can be asked to do beyond "POST this body". Both are
@@ -96,7 +112,7 @@ export async function apiPost<T>(path: string, body: unknown, options?: PostOpti
   });
   options?.onResponse?.(res.status);
   if (!res.ok) return throwForResponse(res, path);
-  return res.json() as Promise<T>;
+  return parseJsonOrThrow<T>(res, path);
 }
 
 export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
@@ -107,7 +123,7 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) return throwForResponse(res, path);
-  return res.json() as Promise<T>;
+  return parseJsonOrThrow<T>(res, path);
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
@@ -117,7 +133,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
     headers: { "X-CSRF-Token": csrfToken() },
   });
   if (!res.ok) return throwForResponse(res, path);
-  return res.json() as Promise<T>;
+  return parseJsonOrThrow<T>(res, path);
 }
 
 /**

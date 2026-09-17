@@ -17,6 +17,14 @@ const setupGate: FastifyPluginAsync = async (app) => {
     const path = (req.url.split("?")[0] || req.url) ?? "/";
     if (isExcluded(path)) return;
     if (await setupNeeded(prisma)) {
+      // `/api/*` calls are JSON fetch()es, not page navigations — a 303 here
+      // gets silently followed to the HTML /setup wizard (200 OK), which then
+      // fails client-side JSON parsing (same class of bug as currentAdmin's
+      // /login redirect — see apps/web-admin/src/plugins/auth.ts). Give those
+      // a JSON error instead; real page navigations still get the redirect.
+      if (path.startsWith("/api/")) {
+        return reply.code(409).send({ error: "Setup is not complete." });
+      }
       return reply.code(303).redirect("/setup");
     }
   });

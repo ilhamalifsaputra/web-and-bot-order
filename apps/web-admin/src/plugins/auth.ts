@@ -96,10 +96,30 @@ export function canMutate(role: WebRole, rawPath: string): boolean {
   return underAny(path, OPS_PREFIXES) && !underAny(path, CONFIG_PREFIXES);
 }
 
-/** preHandler: reject unauthenticated requests with a 303 redirect to /login. */
+/** The message shown to an admin whose session was missing/expired at the
+ * moment of an `/api/*` call — see currentAdmin below for why this can't
+ * just redirect like a page navigation does. */
+export const SESSION_EXPIRED_MESSAGE = "Your session has expired. Reload the page and log in again.";
+
+/**
+ * preHandler: reject unauthenticated requests.
+ *
+ * `/api/*` calls are JSON `fetch()`s, not page navigations — `fetch` follows
+ * a 303 automatically and lands on the HTML `/login` page with `res.ok`
+ * true, so the client's `res.json()` throws a raw, unreadable SyntaxError
+ * instead of a clean error (see apps/web-admin/client/src/api/client.ts).
+ * Those get a JSON 401 instead. Real page navigations (spaShell.ts's
+ * `GET /*`, and the few non-`/api` POST routes like /setup/restart or the
+ * branding uploads that still render/redirect a page) keep the 303 to
+ * /login, since that's exactly what a browser navigation needs.
+ */
 export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
   const data = await optionalAdmin(req);
   if (!data) {
+    const path = (req.url.split("?")[0] || req.url) ?? "/";
+    if (path.startsWith("/api/")) {
+      return reply.code(401).send({ error: SESSION_EXPIRED_MESSAGE });
+    }
     return reply.code(303).redirect("/login");
   }
   req.admin = data;

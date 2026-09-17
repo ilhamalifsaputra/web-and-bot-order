@@ -653,9 +653,25 @@ not an allowance:
   **floored at zero**. This term exists to explain a shortfall the ledger has
   not caught up with; letting it go negative would let it explain away credit
   that appeared from nowhere, which is precisely the drift being hunted.
-- A settled order whose posting was *erased* also lands here, and is reported
-  by `findMissingOrderPostings` instead — the same root cause named once, by
-  the check that can point at the order.
+- A settled, **DELIVERED** order whose posting was *erased* also lands here,
+  and is reported by `findMissingOrderPostings` instead — the same root cause
+  named once, by the check that can point at the order.
+- **Known gap (found during M10's review, not fixed — `findMissingOrderPostings`
+  is out of this milestone's scope): a settled order that is NOT DELIVERED has
+  no check that can name it at all.** `findMissingOrderPostings` filters
+  `status: DELIVERED`, so a settled-but-`PROCESSING`/`CANCELLED` order (the
+  MANUAL branch of `settlePaidOrder` can leave one at `PROCESSING` with
+  `paidAt` set) with a missing `order:{id}:payment` posting is invisible to
+  it. `WALLET_LEDGER_DRIFT` does not catch it either — the opposite, in fact:
+  `inFlightWalletHolds` treats "no posting exists" as *in flight* and nets
+  that order's wallet debits OUT of expected `wallet_liability`, so a missing
+  posting on a settled-but-not-DELIVERED order makes this check **more**
+  forgiving, not less. A clean `reconcileLedger` run is therefore **necessary
+  but not sufficient** evidence that every settlement was posted — this is
+  exactly why M10's own backfill script filters on `paidAt != null OR status
+  = DELIVERED` (wider than this check) rather than trusting this check to
+  grade its own completeness. A future milestone should widen
+  `findMissingOrderPostings` to match.
 
 **Two further expected behaviors, both documented rather than suppressed:**
 

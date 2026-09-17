@@ -105,6 +105,8 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)
   NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT, // admin DM (gateway says paid but sent no transaction id — needs a human before the order auto-cancels)
   NotificationEvent.ADMIN_DIGIFLAZZ_RESYNC_ABORTED, // admin DM (hourly Digiflazz catalog resync tripped its own blast-radius circuit breaker and wrote nothing — needs a human to check the supplier connection)
+  NotificationEvent.ADMIN_FX_RATE_REJECTED, // admin DM (the hourly market-rate refresh fetched a USD/IDR rate outside the sanity band — the saved rate stands, but the source needs checking)
+  NotificationEvent.ADMIN_FX_RATE_STALE, // admin DM (the saved USD/IDR rate aged past fx_rate_max_age_hours, so the whole USDT rail is now hidden shop-wide)
   NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (any rail's top-up settled, wallet credited — enqueued once by settleWalletTopup)
   NotificationEvent.TICKET_CLOSED_DM, // buyer DM (Task 2: an admin closed the buyer's support ticket)
 ]);

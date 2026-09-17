@@ -246,6 +246,88 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/tidak mengembalikan data harga/i);
   });
 
+  // M13 / audit P0-3. The two FX alerts are deliberately distinct events with
+  // distinct wording: one says "nothing broke yet, go check the rate source",
+  // the other says "USDT is off right now". Reading the wrong one would send an
+  // admin looking for a problem that either does not exist or is worse than
+  // they think, so each test pins the sentence that tells them apart.
+  it("renders ADMIN_FX_RATE_REJECTED with the deviation figures and the rate still in effect", () => {
+    const out = render("ADMIN_FX_RATE_REJECTED", {
+      reason: "delta_too_large",
+      market: "17500",
+      rate: "17500",
+      saved: "16200",
+      consecutive_failures: 3,
+      last_known: "16200",
+      delta_pct: "8.02",
+      max_delta_pct: "5",
+    });
+    expect(out).toContain("8.02%");
+    expect(out).toContain("16200");
+    expect(out).toContain("17500");
+    expect(out).toContain("3"); // the failure streak
+    expect(out).toMatch(/still in effect/i);
+    expect(out).toMatch(/masih dipakai/i); // Indonesian line
+  });
+
+  it("names the bound for a band rejection and never claims a deviation it did not measure", () => {
+    const out = render("ADMIN_FX_RATE_REJECTED", {
+      reason: "above_max",
+      market: "16200000",
+      rate: "16200000",
+      saved: null,
+      consecutive_failures: 1,
+      max: "40000",
+    });
+    expect(out).toContain("40000");
+    expect(out).toMatch(/above the maximum/i);
+    expect(out).not.toMatch(/% away from the saved/i);
+    // A shop that has never saved a rate must not be told it is pricing off one.
+    expect(out).toMatch(/no saved rate/i);
+  });
+
+  it("falls back to a reason-free sentence for a rate that is not a usable number", () => {
+    const out = render("ADMIN_FX_RATE_REJECTED", {
+      reason: "not_positive",
+      market: "16.2",
+      rate: "0",
+      saved: "16000",
+      consecutive_failures: 1,
+    });
+    expect(out).toMatch(/not a usable price/i);
+    expect(out).not.toMatch(/below the minimum|above the maximum/i);
+  });
+
+  it("HTML-escapes ADMIN_FX_RATE_REJECTED interpolated values", () => {
+    const out = render("ADMIN_FX_RATE_REJECTED", {
+      reason: "below_min",
+      market: "<script>alert(1)</script>",
+      rate: "<b>5000</b>",
+      saved: "16000",
+      consecutive_failures: 1,
+      min: "8000",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>5000</b>");
+    expect(out).toContain("&lt;b&gt;5000&lt;/b&gt;");
+  });
+
+  it("renders ADMIN_FX_RATE_STALE leading with the consequence, not the cause", () => {
+    const out = render("ADMIN_FX_RATE_STALE", {
+      confirmed_at: "2026-09-14T00:00:00.000Z",
+      age_hours: "72.4",
+      max_age_hours: "48",
+    });
+    expect(out).toMatch(/USDT payments are switched off/i);
+    expect(out).toContain("2026-09-14T00:00:00.000Z");
+    expect(out).toContain("72.4");
+    expect(out).toContain("48");
+    // Rupiah must be named as unaffected — otherwise an admin reads this as a
+    // total checkout outage and panics.
+    expect(out).toMatch(/Rupiah payments are unaffected/i);
+    expect(out).toMatch(/dimatikan/i); // Indonesian line
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

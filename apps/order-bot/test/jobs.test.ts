@@ -1,7 +1,8 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Decimal } from "@app/core/money";
 import {
   prisma,
   createOrderDirect,
@@ -17,6 +18,9 @@ import {
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
   POLL_HEALTH_KEYS,
+  setFxRateFetcher,
+  USD_IDR_RATE_KEY,
+  USD_IDR_RATE_UPDATED_AT_KEY,
 } from "@app/db";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
@@ -85,6 +89,7 @@ import {
   outboxDispatcherPollWatchdog,
   scheduleOutboxDispatcherWatchdog,
   runDigiflazzCatalogSyncTick,
+  runFxRefreshTick,
   reconcileLedgerJob,
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
@@ -2366,5 +2371,85 @@ describe("reconcileLedgerJob", () => {
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+/**
+ * M13 / audit P0-3 — the hourly FX tick's own side of the contract.
+ * `refreshUsdIdrRate`, `validateUsdIdrRate` and `alertIfUsdIdrRateStale` all
+ * have their own suites (packages/db/src/crud/pricing.test.ts,
+ * packages/core/src/core.test.ts); what is tested HERE is only what the cron
+ * adds: that a rejected refresh reaches every admin through the outbox (this
+ * job holds no bot `Api`, so a direct send was never an option), that the
+ * staleness check still runs when the refresh itself failed — the very case
+ * that produces staleness — and that neither failure takes down the tick.
+ */
+describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const rejectedDms = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED } });
+  const staleDms = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_FX_RATE_STALE } });
+
+  afterEach(() => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+  });
+
+  it("DMs every admin when the market answers with a rate outside the sanity band", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    await expect(runFxRefreshTick()).resolves.toBeUndefined();
+
+    const rows = await rejectedDms();
+    // ADMIN_IDS is "999,1000" (test/setup-db.ts) — this category tells every
+    // admin, like the Digiflazz circuit-breaker alert it is modelled on.
+    expect(
+      rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b),
+    ).toEqual([999, 1000]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.reason).toBe("delta_too_large");
+    expect(payload.saved).toBe("16000"); // the rate still pricing orders
+    expect(payload.consecutive_failures).toBe(1);
+    // …and nothing was saved.
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+
+  it("says nothing to anyone when the refresh succeeds", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await expect(runFxRefreshTick()).resolves.toBeUndefined();
+    expect(await rejectedDms()).toHaveLength(0);
+    expect(await staleDms()).toHaveLength(0);
+  });
+
+  it("still checks staleness when the fetch itself threw — that is exactly how a rate goes stale", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    setFxRateFetcher(async () => {
+      throw new Error("rate service unreachable");
+    });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await expect(runFxRefreshTick()).resolves.toBeUndefined();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await staleDms()).length).toBe(2); // one per admin
+  });
+
+  it("tells the admins about a staleness episode exactly once, however many ticks run", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    setFxRateFetcher(async () => {
+      throw new Error("rate service unreachable");
+    });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      for (let tick = 0; tick < 4; tick++) await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await staleDms()).length).toBe(2); // still one per admin, not four
   });
 });

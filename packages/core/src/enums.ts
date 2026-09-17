@@ -641,6 +641,37 @@ export const NotificationEvent = {
   // sharp_changes/considered_rows (plain counts only, never a SKU/price
   // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
   ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin DM (not a channel post): the hourly market-rate refresh
+  // (`refreshUsdIdrRate`, scheduled by `scheduleFxRefresh`) fetched a
+  // USD→IDR rate that failed `validateUsdIdrRate`'s sanity band — outside
+  // `fx_rate_min`/`fx_rate_max`, or more than `fx_rate_max_delta_pct` away
+  // from the rate already saved (M13 / audit P0-3). The saved rate and its
+  // freshness stamp were left exactly as they were, so nothing mispriced;
+  // this DM exists because that refusal is otherwise silent and the NEXT
+  // hourly tick would refuse the same garbage again, forever, while the saved
+  // rate quietly aged out. Same "malformed upstream response, circuit breaker
+  // held, a human must check the source" category as
+  // ADMIN_DIGIFLAZZ_RESYNC_ABORTED above. payload carries `chat_id` plus
+  // reason/market/rate/saved (+ the reason's own figures: min, max,
+  // last_known, delta_pct, max_delta_pct) and consecutive_failures — plain
+  // money figures only, never a URL or credential. NOT order-scoped
+  // (orderId: null): no order is involved, the rate is shop-wide.
+  ADMIN_FX_RATE_REJECTED: "ADMIN_FX_RATE_REJECTED",
+  // Admin DM (not a channel post): the saved `usd_idr_rate` has not been
+  // confirmed against the market for longer than `fx_rate_max_age_hours`
+  // (default 48h), so `getUsdIdrRate` now reports no rate at all and the
+  // WHOLE USDT rail is hidden shop-wide — checkout stops offering it, USDT
+  // prices stop being shown (M13 / audit P0-3). Deliberately a DIFFERENT
+  // event from ADMIN_FX_RATE_REJECTED above even though the two often share a
+  // root cause: the remedy is different (there, the rate SOURCE is suspect;
+  // here, the shop is already losing USDT sales and the fix is to refresh or
+  // re-enter a rate), and one alert must not be mistaken for the other.
+  // Enqueued at most ONCE per staleness episode, keyed off the stamp it is
+  // complaining about (`fx_stale_alerted_for`) — an hourly cron would
+  // otherwise DM every admin 24 times a day for as long as nobody looked.
+  // payload carries `chat_id` plus confirmed_at/age_hours/max_age_hours.
+  // NOT order-scoped (orderId: null).
+  ADMIN_FX_RATE_STALE: "ADMIN_FX_RATE_STALE",
   // Admin/support-group DM (fan-out — one row per resolved target, same
   // per-recipient shape as ADMIN_MANUAL_ORDER_QUEUED/ADMIN_STALE_PAYMENT):
   // forwards a newly-opened support ticket for triage. Enqueued from the

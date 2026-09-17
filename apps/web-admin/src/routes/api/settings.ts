@@ -5,6 +5,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
+import type { FxRateRejection } from "@app/core/fx";
 import {
   prisma,
   listAllSettings,
@@ -55,6 +56,16 @@ const EDITABLE: Record<string, string> = {
   usd_idr_rate: "USDT rate (IDR per 1 USDT)",
   usd_idr_rate_auto: "Auto-update USDT rate",
   usd_idr_rate_rounding: "Rate rounding",
+  // M13 / audit P0-3. Plain free-text numeric fields, same shape as
+  // `usd_idr_rate_rounding` right above: no validation branch in
+  // `applyFieldEdit`, because every reader already treats a blank/unusable
+  // value as "this check is off" rather than failing. A typo must cost the
+  // shop a disabled safety check, never a pricing outage.
+  fx_rate_min: "USDT rate sanity floor (IDR per 1 USDT)",
+  fx_rate_max: "USDT rate sanity ceiling (IDR per 1 USDT)",
+  fx_rate_max_delta_pct: "Max USDT rate move per update (%)",
+  fx_rate_max_age_hours: "Hide USDT payments if the rate is older than (hours)",
+  usdt_spread_bps: "USDT spread (basis points, 100 = 1%)",
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "TokoPay enabled",
@@ -168,6 +179,38 @@ function customEmojiMapProblem(value: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * The sentence shown to the admin who pressed "Update now" when the market's
+ * answer failed the sanity band (M13 / audit P0-3). Separate from
+ * `describeFxRejection`'s developer-facing log line on purpose: this one names
+ * the Settings field they would go and change, and leads with the fact that
+ * nothing broke — the previous rate is still pricing orders.
+ */
+function fxRejectionMessage(reason: FxRateRejection, rate: Decimal, market: Decimal): string {
+  const tail = "The previously saved rate is still in effect, so nothing was mispriced.";
+  switch (reason.reason) {
+    case "not_a_number":
+    case "not_positive":
+      return `The rate service answered ${market.toString()}, which isn't a usable rate. ${tail}`;
+    case "below_min":
+      return (
+        `The rate service answered Rp${market.toString()} per USDT, below the Rp${reason.min.toString()} sanity floor. ` +
+        `Check the rate service, or lower "USDT rate sanity floor" if this is genuinely the market now. ${tail}`
+      );
+    case "above_max":
+      return (
+        `The rate service answered Rp${market.toString()} per USDT, above the Rp${reason.max.toString()} sanity ceiling. ` +
+        `Check the rate service, or raise "USDT rate sanity ceiling" if this is genuinely the market now. ${tail}`
+      );
+    case "delta_too_large":
+      return (
+        `Rp${rate.toString()} per USDT is ${reason.deltaPct.toDecimalPlaces(2).toString()}% away from the saved ` +
+        `Rp${reason.lastKnown.toString()}, more than the ${reason.maxDeltaPct.toString()}% one update is allowed to move it. ` +
+        `If the market really moved this far, raise "Max USDT rate move per update" or type the new rate by hand. ${tail}`
+      );
+  }
 }
 
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
@@ -641,6 +684,30 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       const r = await refreshUsdIdrRate(prisma, { force: true });
       if (r.status === "updated") {
         await logAdminAction(prisma, { adminId: req.admin!.userId, action: "setting_set", targetType: "setting", details: `Refreshed the USDT rate from the market to Rp${r.rate.toString()}.` });
+      }
+      if (r.status === "rejected") {
+        // M13 / audit P0-3. Deliberately NO admin DM here, unlike the hourly
+        // cron's own handling of the same outcome: the admin who pressed this
+        // button is reading the answer right now, and DMing every admin about
+        // a failure one of them just triggered on purpose would train them to
+        // ignore the alert that matters — the unattended one. The refusal is
+        // still audited (an admin pressed a rate button and the rate did not
+        // move; a support investigation needs to see that) and still counted
+        // in `fx_refresh_failures`, so a streak is a streak however it was
+        // triggered.
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "setting_set",
+          targetType: "setting",
+          details:
+            `Tried to refresh the USDT rate from the market and it was refused as implausible ` +
+            `(the market said Rp${r.market.toString()}). The previous rate is still in effect.`,
+        });
+        return reply.code(422).send({
+          ok: false,
+          status: r.status,
+          error: fxRejectionMessage(r.reason, r.rate, r.market),
+        });
       }
       return reply.send({
         ok: true,

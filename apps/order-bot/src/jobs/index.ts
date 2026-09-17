@@ -47,6 +47,9 @@ import {
   BROADCAST_STALE_CLAIM_MS,
   failBroadcast,
   refreshUsdIdrRate,
+  alertIfUsdIdrRateStale,
+  getUsdIdrRate,
+  enqueueAdminFxRateRejected,
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
   runStorageCleanup,
@@ -1521,14 +1524,67 @@ export async function cleanupExpiredBotSessionsJob(): Promise<void> {
  * immediately so a fresh install gets a rate without waiting for the hour.
  */
 export function scheduleFxRefresh(): Cron {
-  const run = () =>
-    refreshUsdIdrRate(prisma)
-      .then((r) => {
-        if (r.status === "disabled") logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
-      })
-      .catch((err) => logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate"));
-  void run();
-  return new Cron("5 * * * *", { protect: true }, run);
+  void runFxRefreshTick();
+  return new Cron("5 * * * *", { protect: true }, runFxRefreshTick);
+}
+
+/**
+ * One hourly FX tick: try to re-confirm `usd_idr_rate` against the market,
+ * then — whatever that attempt did — check whether the saved rate has aged
+ * past `fx_rate_max_age_hours` and the USDT rail is now off shop-wide.
+ *
+ * Exported so the tick can be exercised directly in tests without a live cron,
+ * same as `runDigiflazzCatalogSyncTick` below.
+ *
+ * The staleness check runs even when the refresh threw or was disabled, and
+ * that is the point: those are precisely the states that PRODUCE staleness. It
+ * lives here rather than inside `getUsdIdrRate` because `getUsdIdrRate` runs on
+ * every catalogue render and every checkout — it has to stay a cheap,
+ * side-effect-free read, and alerting from it would mean a DM per page view.
+ * Once an hour is ample for a horizon measured in days.
+ *
+ * Alerting goes through the outbox (`enqueueAdminFxRateRejected`,
+ * `alertIfUsdIdrRateStale`), never a direct `api.sendMessage`: this job holds
+ * no bot `Api` on purpose, because it must keep running on a web-only boot
+ * (§16.3). The two failures are also kept isolated from each other — a
+ * throwing refresh must not skip the staleness check, and a failing enqueue
+ * must not take down the tick.
+ */
+export async function runFxRefreshTick(): Promise<void> {
+  try {
+    const r = await refreshUsdIdrRate(prisma);
+    if (r.status === "disabled") {
+      logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
+    } else if (r.status === "rejected") {
+      // refreshUsdIdrRate has already logged which check failed and by how
+      // much; this is the part it deliberately leaves to its caller, because
+      // the admin panel's own refresh button answers its admin on screen and
+      // must not also DM everyone. Nobody is watching this one.
+      await enqueueAdminFxRateRejected(prisma, {
+        reason: r.reason.reason,
+        market: r.market,
+        rate: r.rate,
+        saved: await getUsdIdrRate(prisma, { allowStale: true }),
+        consecutiveFailures: r.consecutiveFailures,
+        ...(r.reason.reason === "below_min" ? { min: r.reason.min } : {}),
+        ...(r.reason.reason === "above_max" ? { max: r.reason.max } : {}),
+        ...(r.reason.reason === "delta_too_large"
+          ? { lastKnown: r.reason.lastKnown, deltaPct: r.reason.deltaPct.toDecimalPlaces(2), maxDeltaPct: r.reason.maxDeltaPct }
+          : {}),
+      });
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate");
+  }
+
+  try {
+    await alertIfUsdIdrRateStale(prisma);
+  } catch (err) {
+    logger.error(
+      { err },
+      "Could not check whether the saved USD/IDR rate has gone stale — admins may not have been told that the USDT payment rail is switched off",
+    );
+  }
 }
 
 /**

@@ -176,7 +176,7 @@
   "checkout.qris_instructions": "🧾 <b>Order {code}</b>\nScan the QR below with any QRIS app (GoPay, OVO, DANA, bank).\n\n🧮 Subtotal: {subtotal}\n➕ QRIS admin fee: {fee}\n💵 Total to pay: <b>{amount}</b>\n⏳ Pay before: {expiry}\n\nDelivery is automatic once your payment is confirmed.",
   "checkout.min_amount_note": "ℹ️ Minimum payment for this method: {min}.",
   "checkout.no_method_for_total": "This total is below the minimum every available payment method accepts. Add more items, or buy a larger package.",
-  "checkout.payment_unavailable": "Payments aren't available right now — the shop hasn't finished setting up. Please try again later.",
+  "checkout.payment_unavailable": "This payment method isn't available right now. Please try a different payment method, or come back a little later.",
   "checkout.rail_changed_toast": "Payment method updated for this order.",
   "checkout.refresh_delivered_toast": "✅ Payment confirmed!",
   "checkout.copy_note_btn": "📋 Copy Unique Code",

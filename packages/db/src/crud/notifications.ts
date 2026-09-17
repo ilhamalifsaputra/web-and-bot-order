@@ -326,6 +326,102 @@ export async function enqueueAdminDigiflazzResyncAborted(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that the hourly market-rate
+ * refresh fetched a USD→IDR rate that failed `validateUsdIdrRate`'s sanity
+ * band, so nothing was saved (M13 / audit P0-3). Same fan-out-per-admin,
+ * no-`Api`-needed shape as `enqueueAdminDigiflazzResyncAborted` above, and for
+ * the same structural reason: `scheduleFxRefresh` deliberately holds no bot
+ * `Api` (it must keep running on a web-only boot), so its alerting cannot be a
+ * direct `sendMessage` and has to go through the outbox.
+ *
+ * `reason` mirrors `FxRateRejection`'s own discriminant (packages/core/src/
+ * fx.ts) — kept as an equivalent inline union here rather than imported,
+ * matching this file's existing plain-object-args style for `enqueueAdmin*`
+ * functions. The reason-specific figures are omitted rather than zeroed when
+ * they do not apply, so the template can tell "not applicable" apart from
+ * "zero", exactly as the Digiflazz payload does.
+ *
+ * `saved` is the rate STILL IN EFFECT (null on a shop that has never saved
+ * one), not the rejected figure — an admin reading this DM needs to know what
+ * orders are being priced with right now, which is the first thing they would
+ * otherwise go and look up. Not order-scoped (`orderId: null`): the rate is
+ * shop-wide. No-op if no admin is resolved.
+ */
+export async function enqueueAdminFxRateRejected(
+  db: Db,
+  args: {
+    reason: "not_a_number" | "not_positive" | "below_min" | "above_max" | "delta_too_large";
+    /** The raw figure the market source returned. */
+    market: Decimal.Value;
+    /** What it became after the spread and rounding — the figure actually judged. */
+    rate: Decimal.Value;
+    /** The rate still in effect, or null if the shop has never saved one. */
+    saved: Decimal.Value | null;
+    /** How many refreshes in a row have now failed, including this one. */
+    consecutiveFailures: number;
+    min?: Decimal.Value;
+    max?: Decimal.Value;
+    lastKnown?: Decimal.Value;
+    deltaPct?: Decimal.Value;
+    maxDeltaPct?: Decimal.Value;
+  },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_FX_RATE_REJECTED,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          reason: args.reason,
+          market: String(args.market),
+          rate: String(args.rate),
+          saved: args.saved == null ? null : String(args.saved),
+          consecutive_failures: args.consecutiveFailures,
+          ...(args.min == null ? {} : { min: String(args.min) }),
+          ...(args.max == null ? {} : { max: String(args.max) }),
+          ...(args.lastKnown == null ? {} : { last_known: String(args.lastKnown) }),
+          ...(args.deltaPct == null ? {} : { delta_pct: String(args.deltaPct) }),
+          ...(args.maxDeltaPct == null ? {} : { max_delta_pct: String(args.maxDeltaPct) }),
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue one admin DM per resolved admin alerting that the saved
+ * `usd_idr_rate` aged past `fx_rate_max_age_hours` and the whole USDT rail is
+ * now hidden shop-wide (M13 / audit P0-3).
+ *
+ * Deliberately NOT deduped here, unlike `enqueueAdminUnconfirmablePayment`:
+ * the "only once per staleness episode" rule lives in the caller
+ * (`alertIfUsdIdrRateStale`, crud/pricing.ts), keyed off the freshness stamp
+ * being complained about, because the episode — not the row — is what must be
+ * deduplicated, and a new episode after a refresh genuinely deserves a new DM.
+ * Not order-scoped (`orderId: null`). No-op if no admin is resolved.
+ */
+export async function enqueueAdminFxRateStale(
+  db: Db,
+  args: { confirmedAt: Date; ageHours: Decimal.Value; maxAgeHours: Decimal.Value },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_FX_RATE_STALE,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          confirmed_at: args.confirmedAt.toISOString(),
+          age_hours: String(args.ageHours),
+          max_age_hours: String(args.maxAgeHours),
+        }),
+      },
+    });
+  }
+}
+
+/**
  * Tell every admin that an order's payment may have succeeded at the gateway
  * while nothing in the system can confirm it — so a human can settle it before
  * the payment window closes and the order auto-cancels with the buyer's money

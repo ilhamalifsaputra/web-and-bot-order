@@ -19,7 +19,21 @@ import {
   USD_IDR_RATE_UPDATED_AT_KEY,
   FX_QUOTE_TTL_MINUTES_KEY,
   DEFAULT_FX_QUOTE_TTL_MINUTES,
+  FX_RATE_MIN_KEY,
+  FX_RATE_MAX_KEY,
+  FX_RATE_MAX_DELTA_PCT_KEY,
+  FX_RATE_MAX_AGE_HOURS_KEY,
+  DEFAULT_FX_RATE_MAX_AGE_HOURS,
+  FX_REFRESH_FAILURES_KEY,
+  FX_STALE_ALERTED_FOR_KEY,
+  USDT_SPREAD_BPS_KEY,
+  getUsdIdrRate,
+  usdIdrRateStaleness,
+  alertIfUsdIdrRateStale,
 } from "./pricing";
+import { NotificationEvent } from "@app/core/enums";
+import { enqueueAdminFxRateRejected } from "./notifications";
+import { ADMIN_IDS_KEY } from "./admins";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -71,6 +85,348 @@ describe("refreshUsdIdrRate (market rate + rounding — plan.md §15.8)", () => 
     });
     await expect(refreshUsdIdrRate(prisma, { force: true })).rejects.toThrow();
     expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+});
+
+// ---- M13 / audit P0-3: the sanity band, the failure counter, the spread -----
+
+describe("refreshUsdIdrRate — refuses a rate outside the sanity band", () => {
+  /** Every piece of state a rejected refresh must leave exactly as it was. */
+  async function savedRateState() {
+    return {
+      rate: await getSetting(prisma, USD_IDR_RATE_KEY),
+      stampedAt: await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY),
+    };
+  }
+
+  it("rejects a rate below fx_rate_min without saving it or re-stamping freshness", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    // Wide enough to take the deviation check out of the picture — this case is
+    // about the floor, and an unrelated check firing first would prove nothing.
+    await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "99");
+    const stamp = new Date(Date.now() - 3_600_000).toISOString();
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, stamp);
+    setFxRateFetcher(async () => new Decimal("5000"));
+    const before = await savedRateState();
+
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+
+    expect(r.status).toBe("rejected");
+    if (r.status !== "rejected") throw new Error("unreachable");
+    expect(r.reason.reason).toBe("below_min");
+    expect(r.market.toString()).toBe("5000");
+    expect(await savedRateState()).toEqual(before);
+  });
+
+  // The commonest real shape of a broken source: it starts answering in
+  // thousands of Rupiah. Rp16,2 per USDT rounds to 0 at the default Rp100
+  // step, which used to throw an opaque `error.generic` out of the cron.
+  it("rejects a figure that rounds away to zero instead of throwing", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    const before = await savedRateState();
+    setFxRateFetcher(async () => new Decimal("16.2"));
+
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+
+    expect(r.status).toBe("rejected");
+    if (r.status !== "rejected") throw new Error("unreachable");
+    expect(r.reason.reason).toBe("not_positive");
+    expect(await savedRateState()).toEqual(before);
+  });
+
+  it("rejects a rate above fx_rate_max", async () => {
+    setFxRateFetcher(async () => new Decimal("16200000"));
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+    expect(r.status).toBe("rejected");
+    if (r.status !== "rejected") throw new Error("unreachable");
+    expect(r.reason.reason).toBe("above_max");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBeNull();
+  });
+
+  it("rejects a jump larger than fx_rate_max_delta_pct away from the saved rate", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    setFxRateFetcher(async () => new Decimal("17500")); // +8.02%
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+    expect(r.status).toBe("rejected");
+    if (r.status !== "rejected") throw new Error("unreachable");
+    expect(r.reason.reason).toBe("delta_too_large");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16200");
+  });
+
+  it("accepts the same jump once fx_rate_max_delta_pct is widened", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "10");
+    setFxRateFetcher(async () => new Decimal("17500"));
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("17500");
+  });
+
+  it("judges the ROUNDED rate, not the raw market figure", async () => {
+    // fx_rate_max 16200 with a market figure of 16150: the raw number is inside
+    // the band, the Rp100-rounded 16200 that would actually be SAVED is exactly
+    // on it. Rounding the other way (16249 → 16200) must not smuggle an
+    // out-of-band figure past the check either.
+    await setSetting(prisma, FX_RATE_MAX_KEY, "16200");
+    setFxRateFetcher(async () => new Decimal("16150"));
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16200");
+
+    await setSetting(prisma, FX_RATE_MAX_KEY, "16100");
+    setFxRateFetcher(async () => new Decimal("16150")); // rounds UP to 16200
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("rejected");
+  });
+
+  it("a blank or unusable bound turns that check off rather than rejecting everything", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    setFxRateFetcher(async () => new Decimal("99999999"));
+    for (const max of ["", "0", "-1", "abc"]) {
+      await setSetting(prisma, FX_RATE_MAX_KEY, max);
+      await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, max);
+      await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+      const r = await refreshUsdIdrRate(prisma, { force: true });
+      expect(r.status, `max ${JSON.stringify(max)} should disable the check`).toBe("updated");
+    }
+  });
+
+  it("counts consecutive failures and clears the count on the next good refresh", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    setFxRateFetcher(async () => new Decimal("5000"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("1");
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("2");
+
+    setFxRateFetcher(async () => new Decimal("16500"));
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("0");
+  });
+
+  it("an 'unchanged' refresh also clears the failure count — the source is working again", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    await setSetting(prisma, FX_REFRESH_FAILURES_KEY, "7");
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("unchanged");
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("0");
+  });
+
+  it("reports the failure count on the rejection itself, so the caller can say how long this has run", async () => {
+    await setSetting(prisma, FX_REFRESH_FAILURES_KEY, "4");
+    setFxRateFetcher(async () => new Decimal("5000"));
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+    if (r.status !== "rejected") throw new Error("expected a rejection");
+    expect(r.consecutiveFailures).toBe(5);
+  });
+});
+
+describe("usdt_spread_bps — the protective spread on the saved rate", () => {
+  it("shaves the market rate down BEFORE rounding, so the saved rate is lower", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+
+    // 200 bps = 2% off 16000 → 15680 → rounded to the Rp100 step → 15700.
+    // Rounding the already-shaved figure (not shaving the rounded one) is what
+    // makes the saved rate a clean multiple of the step.
+    await setSetting(prisma, USDT_SPREAD_BPS_KEY, "200");
+    await setSetting(prisma, USD_IDR_RATE_KEY, "");
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+    expect(r.status).toBe("updated");
+    if (r.status !== "updated") throw new Error("unreachable");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("15700");
+    // The raw market figure is still reported untouched — the spread is the
+    // shop's margin, not a correction to what the market said.
+    expect(r.market.toString()).toBe("16000");
+  });
+
+  it("a lower saved rate means the buyer sends MORE USDT — the safe direction for the shop", async () => {
+    const withoutSpread = usdtFromIdr(new Decimal("1600000"), new Decimal("16000"));
+    const withSpread = usdtFromIdr(new Decimal("1600000"), new Decimal("15700"));
+    expect(withSpread.greaterThan(withoutSpread)).toBe(true);
+  });
+
+  it("defaults to no spread at all", async () => {
+    expect(await getSetting(prisma, USDT_SPREAD_BPS_KEY)).toBeNull();
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+});
+
+// ---- M13 / audit P0-3: the staleness kill-switch for the whole USDT rail ----
+
+describe("getUsdIdrRate — hides the USDT rail once the saved rate is too old", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  beforeEach(async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+  });
+
+  it("returns the rate while it is inside fx_rate_max_age_hours", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(2));
+    expect((await getUsdIdrRate(prisma))?.toString()).toBe("16000");
+    expect(await usdIdrRateStaleness(prisma)).toBeNull();
+  });
+
+  it("returns null once the rate is older than the default 48h", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(Number(DEFAULT_FX_RATE_MAX_AGE_HOURS) + 1));
+    expect(await getUsdIdrRate(prisma)).toBeNull();
+    const stale = await usdIdrRateStaleness(prisma);
+    expect(stale).not.toBeNull();
+    expect(stale!.maxAgeHours.toString()).toBe(DEFAULT_FX_RATE_MAX_AGE_HOURS);
+    expect(stale!.ageHours.greaterThan(48)).toBe(true);
+  });
+
+  it("honors a custom fx_rate_max_age_hours", async () => {
+    await setSetting(prisma, FX_RATE_MAX_AGE_HOURS_KEY, "6");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(8));
+    expect(await getUsdIdrRate(prisma)).toBeNull();
+    await setSetting(prisma, FX_RATE_MAX_AGE_HOURS_KEY, "24");
+    expect((await getUsdIdrRate(prisma))?.toString()).toBe("16000");
+  });
+
+  // Same deploy-safety grace M12's quote TTL already documents: a shop that has
+  // never written the stamp has an UNKNOWN freshness, not a stale one, and must
+  // not have its USDT rail switched off on that basis alone.
+  it("treats a missing or unreadable stamp as freshness unknown, never as stale", async () => {
+    expect(await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY)).toBeNull();
+    expect((await getUsdIdrRate(prisma))?.toString()).toBe("16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, "not a timestamp");
+    expect((await getUsdIdrRate(prisma))?.toString()).toBe("16000");
+  });
+
+  it("a blank or non-positive fx_rate_max_age_hours turns the kill-switch off", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(24 * 365));
+    for (const age of ["", "0", "-5", "abc"]) {
+      await setSetting(prisma, FX_RATE_MAX_AGE_HOURS_KEY, age);
+      expect((await getUsdIdrRate(prisma))?.toString(), `age ${JSON.stringify(age)}`).toBe("16000");
+    }
+  });
+
+  // referrals.ts converts an already-PAID IDR order's total into the USDT
+  // wallet to pay a commission. Dropping that commission on the floor because
+  // nobody pressed "update rate" for two days would be a silent money loss for
+  // the referrer, and unlike a checkout there is nothing to retry later.
+  it("allowStale re-admits the saved rate for callers that are not pricing anything", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(24 * 30));
+    expect(await getUsdIdrRate(prisma)).toBeNull();
+    expect((await getUsdIdrRate(prisma, { allowStale: true }))?.toString()).toBe("16000");
+  });
+});
+
+describe("alertIfUsdIdrRateStale — one admin DM per staleness episode, not per tick", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+
+  async function staleDmCount() {
+    return prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_FX_RATE_STALE } });
+  }
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await buildSampleData(prisma);
+    await setSetting(prisma, ADMIN_IDS_KEY, "4001,4002");
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+  });
+
+  it("says nothing while the rate is fresh", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    expect(await staleDmCount()).toBe(0);
+  });
+
+  it("alerts once, then stays quiet on every later tick of the same episode", async () => {
+    const stamp = hoursAgo(72);
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, stamp);
+
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    const first = await staleDmCount();
+    expect(first).toBeGreaterThan(0);
+
+    for (let tick = 0; tick < 5; tick++) {
+      expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    }
+    expect(await staleDmCount()).toBe(first);
+  });
+
+  it("alerts again for a NEW episode after the rate was refreshed in between", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    const afterFirst = await staleDmCount();
+
+    // An admin refreshes; the rail comes back; later it goes stale again off a
+    // DIFFERENT stamp, which is a genuinely new outage worth telling them about.
+    setFxRateFetcher(async () => new Decimal("16243.7"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(100));
+
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await staleDmCount()).toBeGreaterThan(afterFirst);
+  });
+
+  it("a successful refresh clears the episode marker even if nobody reads it again", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    await alertIfUsdIdrRateStale(prisma);
+    expect(await getSetting(prisma, FX_STALE_ALERTED_FOR_KEY)).toBeTruthy();
+    setFxRateFetcher(async () => new Decimal("16243.7"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, FX_STALE_ALERTED_FOR_KEY)).toBe("");
+  });
+});
+
+describe("enqueueAdminFxRateRejected — the DM a rejected refresh sends", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await buildSampleData(prisma);
+    await setSetting(prisma, ADMIN_IDS_KEY, "4001,4002");
+  });
+
+  it("carries the reason, both figures, the rate still in effect and the failure streak", async () => {
+    await enqueueAdminFxRateRejected(prisma, {
+      reason: "delta_too_large",
+      market: new Decimal("17500"),
+      rate: new Decimal("17500"),
+      saved: new Decimal("16200"),
+      consecutiveFailures: 3,
+      lastKnown: new Decimal("16200"),
+      deltaPct: new Decimal("8.02"),
+      maxDeltaPct: new Decimal("5"),
+    });
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      reason: "delta_too_large",
+      market: "17500",
+      saved: "16200",
+      consecutive_failures: 3,
+      last_known: "16200",
+      delta_pct: "8.02",
+      max_delta_pct: "5",
+    });
+    expect(payload.chat_id).toBeTruthy();
+    // Figures that do not apply to this reason are omitted, never zeroed —
+    // same rule as ADMIN_DIGIFLAZZ_RESYNC_ABORTED's payload.
+    expect("min" in payload).toBe(false);
+    expect("max" in payload).toBe(false);
+  });
+
+  it("reports 'no saved rate' rather than inventing one when the shop has never had a rate", async () => {
+    await enqueueAdminFxRateRejected(prisma, {
+      reason: "above_max",
+      market: new Decimal("16200000"),
+      rate: new Decimal("16200000"),
+      saved: null,
+      consecutiveFailures: 1,
+      max: new Decimal("40000"),
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED },
+    });
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.saved).toBeNull();
+    expect(payload.max).toBe("40000");
   });
 });
 

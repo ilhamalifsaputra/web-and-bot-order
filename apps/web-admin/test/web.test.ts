@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -5651,6 +5651,49 @@ describe("settings: USDT rate from the market", () => {
     expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "usd_idr_rate")).toBe("");
     expect(await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY)).toBe(stale);
+  });
+
+  // M13 / audit P0-3. The manual button deliberately gets NO admin DM on a
+  // rejection — the admin who pressed it is reading the answer on screen, and
+  // DMing every admin about a failure one of them triggered on purpose is
+  // exactly how an alert channel becomes noise. What it does get: a specific,
+  // actionable error naming the check that failed, and an audit entry, because
+  // "I pressed update and the rate did not move" is a real support question.
+  it("a rate outside the sanity band is refused with a specific reason, the old rate stands, and no admin is DMed", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    await setSetting(prisma, "usd_idr_rate_updated_at", new Date().toISOString());
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { status: string; error: string };
+    expect(body.status).toBe("rejected");
+    expect(body.error).toContain("%");
+    expect(body.error).toContain("16000");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16000");
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED } }),
+    ).toBe(0);
+
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => (l.details ?? "").includes("refused as implausible"));
+    expect(entry).toBeTruthy();
+  });
+
+  it("the sanity-band fields are editable from the settings page", async () => {
+    for (const [key, value] of [
+      ["fx_rate_min", "9000"],
+      ["fx_rate_max", "30000"],
+      ["fx_rate_max_delta_pct", "8"],
+      ["fx_rate_max_age_hours", "24"],
+      ["usdt_spread_bps", "150"],
+    ] as const) {
+      const res = await post("/api/settings/edit", seed.cookie, { csrf_token: seed.csrf, key, value });
+      expect(res.statusCode, `${key} should be editable`).toBe(200);
+      expect(await getSetting(prisma, key)).toBe(value);
+    }
   });
 });
 

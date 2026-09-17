@@ -75,8 +75,16 @@ export async function maybePayReferralCommission(
   // Commission base in USDT (the wallet currency).
   let baseUsdt = new Decimal(order.totalAmount);
   if ((order.currency ?? OrderCurrency.USDT) === OrderCurrency.IDR) {
+    // `allowStale`: this is not a quote — the order is already settled and the
+    // buyer has paid. All that is needed is a conversion factor to pay the
+    // referrer's commission into the USDT wallet. Letting M13's staleness
+    // kill-switch null this out would drop the commission on the floor
+    // permanently (the branch below logs and returns; nothing retries it
+    // later), turning an ops problem with the rate refresh into a silent money
+    // loss for a customer who did nothing wrong. A slightly old rate on a
+    // percentage-of-order commission is by far the smaller error.
     const rate =
-      order.fxRate != null ? new Decimal(order.fxRate) : await getUsdIdrRate(db);
+      order.fxRate != null ? new Decimal(order.fxRate) : await getUsdIdrRate(db, { allowStale: true });
     if (!rate || rate.lessThanOrEqualTo(0)) {
       logger.warn(
         `Skipping referral commission for order ${order.orderCode} — it's an IDR order but no USD/IDR exchange rate is available to convert it to the USDT wallet`,

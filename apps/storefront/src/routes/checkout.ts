@@ -43,6 +43,9 @@ import {
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
   completeOrderWithWalletCredit,
+  settleFullyDiscountedOrder,
+  orderHasNothingLeftToCollect,
+  orderTotalClearsRailMinimum,
   createOrderDirect,
   finalizeOrderPayment,
   getUsdIdrRate,
@@ -311,6 +314,53 @@ async function computeTotals(
  * ad-hoc denomination instead of the buyer's cart, with no cart read at all.
  * That is what makes `POST /api/v1/topup/preview` (routes/apiTopup.ts) a
  * parameter on this one implementation rather than a second, drifting one. */
+/** The six gateway rails, with the currency each one settles in. */
+const GATEWAY_RAILS = [
+  [PaymentMethod.TOKOPAY, OrderCurrency.IDR],
+  [PaymentMethod.PAYDISINI, OrderCurrency.IDR],
+  [PaymentMethod.BINANCE_INTERNAL, OrderCurrency.USDT],
+  [PaymentMethod.BYBIT, OrderCurrency.USDT],
+  [PaymentMethod.BYBIT_BSC, OrderCurrency.USDT],
+  [PaymentMethod.NOWPAYMENTS, OrderCurrency.USDT],
+] as const;
+
+/**
+ * Which rails a cart totalling `total` could actually be finalized on, keyed by
+ * PaymentMethod (M11). Reads `orderTotalClearsRailMinimum` — the SAME helper
+ * the finalize-time guard throws from — so this page can never offer a method
+ * that would be refused the moment the buyer picked it.
+ *
+ * Two deliberate non-filters:
+ *  - A total of zero clears nothing, yet needs no rail at all: such an order is
+ *    settled from the shop's own books whichever method is submitted
+ *    (`settleFullyDiscountedOrder`). Filtering there would hide every option
+ *    and strand a buyer whose voucher covered their whole cart — a guest most
+ *    of all, since the wallet rows are never offered to one.
+ *  - A missing exchange rate leaves the USDT rails' answer to their existing
+ *    `haveRate` gate rather than judging them against an amount we cannot
+ *    convert.
+ */
+async function railsClearingTheTotal(
+  total: Decimal,
+  fxRate: Awaited<ReturnType<typeof getUsdIdrRate>>,
+): Promise<Record<string, boolean>> {
+  const out: Record<string, boolean> = {};
+  const nothingToCollect = !total.greaterThan(0);
+  for (const [method, currency] of GATEWAY_RAILS) {
+    if (nothingToCollect || (currency === OrderCurrency.USDT && !fxRate)) {
+      out[method] = true;
+      continue;
+    }
+    out[method] = await orderTotalClearsRailMinimum(prisma, {
+      method,
+      currency,
+      idrAmount: total,
+      railAmount: currency === OrderCurrency.IDR ? total : usdtFromIdr(total, fxRate!),
+    });
+  }
+  return out;
+}
+
 export async function checkoutView(
   req: FastifyRequest,
   customer: Customer | null,
@@ -329,6 +379,7 @@ export async function checkoutView(
     getNowpaymentsCreds(prisma),
   ]);
   const haveRate = Boolean(fxRate);
+  const clears = await railsClearingTheTotal(totals.total, fxRate);
   return {
     items_empty: totals.empty,
     // Per-item data (Task 6): the SPA's checkout info-collection step needs
@@ -357,12 +408,12 @@ export async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    binance_enabled: haveRate && binance.enabled,
-    bybit_enabled: haveRate && bybit.enabled,
-    bybit_bsc_enabled: haveRate && bybitBsc.enabled,
-    idr_enabled: Boolean(tokopay),
-    paydisini_enabled: Boolean(paydisini),
-    nowpayments_enabled: haveRate && Boolean(nowpayments),
+    binance_enabled: haveRate && binance.enabled && clears[PaymentMethod.BINANCE_INTERNAL],
+    bybit_enabled: haveRate && bybit.enabled && clears[PaymentMethod.BYBIT],
+    bybit_bsc_enabled: haveRate && bybitBsc.enabled && clears[PaymentMethod.BYBIT_BSC],
+    idr_enabled: Boolean(tokopay) && clears[PaymentMethod.TOKOPAY],
+    paydisini_enabled: Boolean(paydisini) && clears[PaymentMethod.PAYDISINI],
+    nowpayments_enabled: haveRate && Boolean(nowpayments) && clears[PaymentMethod.NOWPAYMENTS],
     wallet_idr: customer ? new Decimal(customer.user.walletBalance).toString() : "0",
     wallet_usdt: customer ? new Decimal(customer.user.walletBalanceUsdt).toString() : "0",
     // Balance payment methods are only ever offered to signed-in buyers — a
@@ -629,6 +680,13 @@ export async function performCheckout(
       customerData: customerDataJson,
     });
     if (!created) throw new ValidationError("error.generic");
+    // A voucher or bulk rule can cover the whole cart, leaving nothing for the
+    // rail the buyer picked to collect (M11). Settle it from the shop's own
+    // books instead of opening a gateway payment for Rp0 — the buyer still
+    // gets a paid, delivered order, which is what they are owed.
+    if (orderHasNothingLeftToCollect(created)) {
+      return (await settleFullyDiscountedOrder(tx, created.id)).order;
+    }
     return finalizeOrderPayment(tx, created.id, choice);
   });
   return { orderCode: order!.orderCode };
@@ -741,6 +799,10 @@ export async function performDirectCheckout(
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
     if (!created) throw new ValidationError("error.generic");
+    // Same zero-total routing as performCheckout above — see its comment.
+    if (orderHasNothingLeftToCollect(created)) {
+      return (await settleFullyDiscountedOrder(tx, created.id)).order;
+    }
     return finalizeOrderPayment(tx, created.id, choice);
   });
   return { orderCode: order!.orderCode };

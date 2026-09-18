@@ -35,12 +35,13 @@ import {
   FX_QUOTE_TTL_MINUTES_KEY,
   DEFAULT_FX_QUOTE_TTL_MINUTES,
 } from "@app/db";
-import { OrderStatus, PaymentMethod, VoucherType } from "@app/core/enums";
+import { DeliveryType, OrderStatus, PaymentMethod, VoucherType } from "@app/core/enums";
 import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
 let denomId: number;
+let manualDenomId: number;
 let userId: number;
 let cookie: string;
 let csrf: string;
@@ -97,6 +98,21 @@ beforeAll(async () => {
   // redemption rule rather than on anything this file is about.
   await createVoucher(prisma, { code: "FREE100", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
   await createVoucher(prisma, { code: "FREE100B", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
+  await createVoucher(prisma, { code: "FREE100C", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
+  await createVoucher(prisma, { code: "FREE100D", type: VoucherType.PERCENT, value: "100", usageLimit: 100 });
+
+  // A hand-fulfilled SKU: its paid orders stop at PROCESSING until an admin
+  // types and sends the account, which is the state the pay page used to render
+  // as "closed". No stock rows — a manual SKU has none by definition.
+  const manualDenom = await createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual 1 Month",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: DENOM_PRICE,
+    deliveryType: DeliveryType.MANUAL,
+  });
+  manualDenomId = manualDenom.id;
 
   const u = await prisma.user.create({
     data: {
@@ -158,6 +174,69 @@ describe("POST /api/v1/checkout — a cart a discount alone reduced to Rp0", () 
     expect(order.paidAt).not.toBeNull();
     // Nothing moved, so nothing was booked against the buyer's credit.
     expect(await prisma.walletTransaction.count({ where: { userId } })).toBe(0);
+  });
+
+  // Whole-branch review A3: the reply's `pay_url` used to be the pay page for
+  // every gateway checkout, including one that had already been settled —
+  // handing the buyer a payment screen for an order nobody owes anything on,
+  // where the countdown is the order's creation-time window and the only real
+  // action is "cancel". The wallet-credit branch of this same route has always
+  // answered `/account/orders/<code>`; a fully-discounted order is in exactly
+  // that position and now answers the same way.
+  it("answers with the order page, not the pay page — there is nothing left to pay", async () => {
+    await addToCart(prisma, userId, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "qris", voucher_code: "FREE100C" },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.pay_url).toBe(`/account/orders/${body.order_code}`);
+  });
+
+  it("still answers with the pay page when there IS something to collect", async () => {
+    await addToCart(prisma, userId, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.pay_url).toBe(`/checkout/${body.order_code}/pay`);
+  });
+
+  // Whole-branch review A3, second half: a hand-fulfilled SKU's settled order
+  // stops at PROCESSING, which payState's catch-all read as "closed" — so the
+  // pay page told a buyer whose voucher had just bought them a manual SKU that
+  // "This order is closed." It is the most alive an order gets: paid, waiting
+  // for an admin to type and send the account.
+  it("a settled MANUAL SKU order polls as a live 'confirming', never as 'closed'", async () => {
+    await addToCart(prisma, userId, manualDenomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "qris", voucher_code: "FREE100D" },
+    });
+    expect(res.statusCode).toBe(201);
+    const code = res.json().order_code;
+    const order = await prisma.order.findFirstOrThrow({ where: { orderCode: code } });
+    expect(order.status).toBe(OrderStatus.PROCESSING);
+
+    const poll = await app.inject({
+      method: "GET",
+      url: `/api/v1/orders/${code}/status`,
+      headers: { cookie },
+    });
+    expect(poll.statusCode).toBe(200);
+    expect(poll.json().state).toBe("confirming");
   });
 
   it("does the same for an IDR rail (the routing is per-total, not per-method)", async () => {

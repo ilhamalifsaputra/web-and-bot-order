@@ -529,6 +529,14 @@ export function payState(order: OrderRow) {
   if (
     order.status === OrderStatus.PENDING_VERIFICATION ||
     order.status === OrderStatus.PAID ||
+    // A MANUAL / MANUAL_WITH_INFO SKU's paid order waits here for an admin to
+    // hand-type and send the account (PAID → PROCESSING → DELIVERED). It is the
+    // most alive an order gets, and it used to fall into the "closed" catch-all
+    // below — so a buyer who had just paid for a hand-fulfilled SKU, or whose
+    // voucher covered one entirely, was shown "This order is closed." The
+    // "Payment received — finishing up your order…" copy this state renders is
+    // exactly what is happening.
+    order.status === OrderStatus.PROCESSING ||
     // Bybit BSC in-flight states (deposit seen / confirming on-chain / fully
     // confirmed) — without these, a live Bybit BSC order would fall into the
     // "closed" catch-all below and render as dead the moment a deposit is
@@ -614,13 +622,20 @@ async function resolveGatewayPaymentChoice(method: string): Promise<GatewayPayme
  * /checkout (routes/apiCheckout.ts) calls. Throws ValidationError
  * (unavailable method, too many pending orders, generic failure) exactly as
  * the former inline HTML-route code used to.
+ *
+ * `settledWithoutGateway` reports which of the two outcomes happened, because
+ * they need different next screens: a normal order is waiting to be paid and
+ * belongs on the pay page, while a fully-discounted one is already paid and
+ * (for an auto SKU) delivered, and belongs on the order page like the
+ * wallet-credit siblings below. Sending a settled order to the pay page showed
+ * the buyer a payment screen for an order nobody owes anything on.
  */
 export async function performCheckout(
   customer: Customer,
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
-): Promise<{ orderCode: string }> {
+): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
   // Fail fast on an over-cap cart BEFORE even opening the write transaction
@@ -699,11 +714,11 @@ export async function performCheckout(
     // books instead of opening a gateway payment for Rp0 — the buyer still
     // gets a paid, delivered order, which is what they are owed.
     if (orderHasNothingLeftToCollect(created)) {
-      return (await settleFullyDiscountedOrder(tx, created.id)).order;
+      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
     }
-    return finalizeOrderPayment(tx, created.id, choice);
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
   });
-  return { orderCode: order!.orderCode };
+  return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
 /**
@@ -792,7 +807,7 @@ export async function performDirectCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
-): Promise<{ orderCode: string }> {
+): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
   const order = await prisma.$transaction(async (tx) => {
@@ -813,13 +828,14 @@ export async function performDirectCheckout(
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
     if (!created) throw new ValidationError("error.generic");
-    // Same zero-total routing as performCheckout above — see its comment.
+    // Same zero-total routing as performCheckout above — see its comment,
+    // including why the caller is told which branch ran.
     if (orderHasNothingLeftToCollect(created)) {
-      return (await settleFullyDiscountedOrder(tx, created.id)).order;
+      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
     }
-    return finalizeOrderPayment(tx, created.id, choice);
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
   });
-  return { orderCode: order!.orderCode };
+  return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
 /**

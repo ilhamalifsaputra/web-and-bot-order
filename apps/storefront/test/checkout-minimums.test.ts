@@ -294,6 +294,57 @@ describe("GET /api/v1/checkout — payment methods the total cannot clear are no
     expect(body.bybit_enabled).toBe(false);
   });
 
+  // Whole-branch review A5: with every flag false the page cannot tell "this
+  // shop has no working gateway" from "your order is too cheap for the ones it
+  // has", and it showed contact-support copy for both. Only the second is
+  // something the buyer can act on, so the server says which it is.
+  it("reports below_all_minimums when a live gateway was hidden only by a minimum", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "100000");
+    await addToCart(prisma, userId, denomId, 1);
+
+    const body = (await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } })).json();
+    expect(body.below_all_minimums).toBe(true);
+  });
+
+  it("does NOT report below_all_minimums when at least one method is still offered", async () => {
+    await setSetting(prisma, TOKOPAY_MIN_AMOUNT_KEY, "100000"); // hides QRIS only
+    await addToCart(prisma, userId, denomId, 1);
+
+    const body = (await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } })).json();
+    expect(body.idr_enabled).toBe(false);
+    expect(body.bybit_enabled).toBe(true);
+    expect(body.below_all_minimums).toBe(false);
+  });
+
+  it("does NOT report below_all_minimums when no gateway is configured at all — the total is not the problem", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "100000");
+    await setSetting(prisma, "tokopay_merchant_id", "");
+    await setSetting(prisma, "bybit_uid", "");
+    await addToCart(prisma, userId, denomId, 1);
+    try {
+      const body = (await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } })).json();
+      expect(body.idr_enabled).toBe(false);
+      expect(body.bybit_enabled).toBe(false);
+      expect(body.below_all_minimums).toBe(false);
+    } finally {
+      await setSetting(prisma, "tokopay_merchant_id", "M-TEST");
+      await setSetting(prisma, "bybit_uid", "123456789");
+    }
+  });
+
+  it("does NOT report below_all_minimums on a Rp0 total — it is never filtered", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "100000");
+    await addToCart(prisma, userId, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "FREE100" },
+    });
+    expect(res.json().below_all_minimums).toBe(false);
+  });
+
   it("a Rp0 total is not filtered — it needs no rail, and the buyer must still be able to submit", async () => {
     await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "100000");
     await addToCart(prisma, userId, denomId, 1);

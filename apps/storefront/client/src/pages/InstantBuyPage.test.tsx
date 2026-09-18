@@ -115,6 +115,7 @@ const checkoutData: CheckoutData = {
   wallet_idr_enabled: true,
   wallet_usdt_enabled: true,
   is_guest: false,
+  below_all_minimums: false,
 };
 
 /** Every cart endpoint this page must never touch again (final-review N2).

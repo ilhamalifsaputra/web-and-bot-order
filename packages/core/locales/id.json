@@ -872,6 +872,7 @@
   "web.pay_method_elsewhere": "Selesaikan pembayaran pesanan ini di tempat kamu memulainya (bot Telegram kami).",
   "web.pay_method_unavailable": "Metode bayar itu lagi tidak tersedia — pilih yang lain ya.",
   "web.pay_min_amount_note": "Minimum pembayaran untuk metode ini: {min}.",
+  "web.pay_below_minimum_all": "Total pesanan ini masih di bawah minimum semua metode pembayaran di toko ini. Tambah jumlah atau nominalnya, nanti metode pembayarannya muncul.",
   "web.pay_none_available_prefix": "Belum ada metode pembayaran yang tersedia saat ini. Coba lagi nanti atau",
   "web.pay_none_available_link": "hubungi admin",
   "web.pay_none_available_suffix": " ya.",

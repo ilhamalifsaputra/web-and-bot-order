@@ -872,6 +872,7 @@
   "web.pay_method_elsewhere": "Finish paying for this order where you started it (in our Telegram bot).",
   "web.pay_method_unavailable": "That payment method isn't available right now — pick another one.",
   "web.pay_min_amount_note": "Minimum payment for this method: {min}.",
+  "web.pay_below_minimum_all": "This order's total is below the minimum for every payment method this shop accepts. Increase the quantity or amount and the methods will appear.",
   "web.pay_none_available_prefix": "No payment methods are available right now. Please check back soon or",
   "web.pay_none_available_link": "contact support",
   "web.pay_none_available_suffix": ".",

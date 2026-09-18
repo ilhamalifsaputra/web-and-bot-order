@@ -394,6 +394,21 @@ export async function checkoutView(
   const usdtRailsOfferable =
     haveRate && (!totals.total.greaterThan(0) || (await usdIdrQuoteIsFresh(prisma)));
   const clears = await railsClearingTheTotal(totals.total, fxRate);
+  // "Is this rail switched on and usable at all", before the minimums have a say.
+  // Kept separate from the flags below so the page can tell the buyer WHICH of
+  // two very different things happened: a shop with no working gateway (nothing
+  // they can do but wait or ask), or a total under every gateway's floor (which
+  // they fix by buying a little more). One "no payment methods, contact support"
+  // message for both was wrong half the time.
+  const railLive: Record<string, boolean> = {
+    [PaymentMethod.TOKOPAY]: Boolean(tokopay),
+    [PaymentMethod.PAYDISINI]: Boolean(paydisini),
+    [PaymentMethod.BINANCE_INTERNAL]: usdtRailsOfferable && binance.enabled,
+    [PaymentMethod.BYBIT]: usdtRailsOfferable && bybit.enabled,
+    [PaymentMethod.BYBIT_BSC]: usdtRailsOfferable && bybitBsc.enabled,
+    [PaymentMethod.NOWPAYMENTS]: usdtRailsOfferable && Boolean(nowpayments),
+  };
+  const offered = (method: string) => railLive[method]! && clears[method]!;
   return {
     items_empty: totals.empty,
     // Per-item data (Task 6): the SPA's checkout info-collection step needs
@@ -422,12 +437,21 @@ export async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    binance_enabled: usdtRailsOfferable && binance.enabled && clears[PaymentMethod.BINANCE_INTERNAL],
-    bybit_enabled: usdtRailsOfferable && bybit.enabled && clears[PaymentMethod.BYBIT],
-    bybit_bsc_enabled: usdtRailsOfferable && bybitBsc.enabled && clears[PaymentMethod.BYBIT_BSC],
-    idr_enabled: Boolean(tokopay) && clears[PaymentMethod.TOKOPAY],
-    paydisini_enabled: Boolean(paydisini) && clears[PaymentMethod.PAYDISINI],
-    nowpayments_enabled: usdtRailsOfferable && Boolean(nowpayments) && clears[PaymentMethod.NOWPAYMENTS],
+    binance_enabled: offered(PaymentMethod.BINANCE_INTERNAL),
+    bybit_enabled: offered(PaymentMethod.BYBIT),
+    bybit_bsc_enabled: offered(PaymentMethod.BYBIT_BSC),
+    idr_enabled: offered(PaymentMethod.TOKOPAY),
+    paydisini_enabled: offered(PaymentMethod.PAYDISINI),
+    nowpayments_enabled: offered(PaymentMethod.NOWPAYMENTS),
+    // Every working gateway was filtered out by a minimum, and only by that:
+    // there IS a live rail, the cart is simply too cheap for it. The buyer can
+    // act on this, so the page says so instead of sending them to support. False
+    // when no rail is live in the first place (nothing to do with the total) and
+    // on a zero total (never filtered at all — see railsClearingTheTotal).
+    below_all_minimums:
+      totals.total.greaterThan(0) &&
+      GATEWAY_RAILS.some(([method]) => railLive[method]) &&
+      !GATEWAY_RAILS.some(([method]) => offered(method)),
     wallet_idr: customer ? new Decimal(customer.user.walletBalance).toString() : "0",
     wallet_usdt: customer ? new Decimal(customer.user.walletBalanceUsdt).toString() : "0",
     // Balance payment methods are only ever offered to signed-in buyers — a

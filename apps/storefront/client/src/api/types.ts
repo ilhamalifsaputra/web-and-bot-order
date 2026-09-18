@@ -295,6 +295,12 @@ export interface CheckoutData {
   /** True for an anonymous visitor: the checkout collects a contact email and
    * the order is placed against a synthetic guest account (guest checkout). */
   is_guest: boolean;
+  /** True when this shop HAS a working gateway but every one of them was
+   * filtered out because the total is under its minimum. Distinguishes the one
+   * cause the buyer can actually fix (buy a bit more) from the one they cannot
+   * (no gateway configured, or the exchange rate is unusable), which the
+   * `*_enabled` flags alone cannot tell apart — they are false for both. */
+  below_all_minimums: boolean;
 }
 
 /** 201 response of POST /api/v1/checkout (order created). */

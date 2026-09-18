@@ -51,6 +51,7 @@ const checkoutData: CheckoutData = {
   wallet_idr_enabled: true,
   wallet_usdt_enabled: true,
   is_guest: false,
+  below_all_minimums: false,
 };
 
 function renderCheckout(respond: (path: string) => unknown) {

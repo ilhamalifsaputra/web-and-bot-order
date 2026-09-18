@@ -341,13 +341,24 @@ export default function PaymentMethodSelector({
         {!anyMethodEnabled(data) && !idrWalletSufficient && !usdtWalletSufficient && (
           <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
             <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-            <p>
-              {t("web.pay_none_available_prefix")}{" "}
-              <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
-                {t("web.pay_none_available_link")}
-              </Link>
-              {t("web.pay_none_available_suffix")}
-            </p>
+            {/* Two causes look identical in the `*_enabled` flags — they are
+                false for both — but they need opposite messages. When the shop
+                has a working gateway and the order is merely too cheap for it
+                (`below_all_minimums`), the buyer fixes this themselves by buying
+                a little more, and telling them to contact support sends them to
+                ask a question the shop cannot answer either. The support wording
+                stays for the case it was written for: no usable gateway at all. */}
+            {data.below_all_minimums ? (
+              <p>{t("web.pay_below_minimum_all")}</p>
+            ) : (
+              <p>
+                {t("web.pay_none_available_prefix")}{" "}
+                <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
+                  {t("web.pay_none_available_link")}
+                </Link>
+                {t("web.pay_none_available_suffix")}
+              </p>
+            )}
           </div>
         )}
       </div>

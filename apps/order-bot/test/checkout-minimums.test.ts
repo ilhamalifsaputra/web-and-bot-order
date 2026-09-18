@@ -10,6 +10,9 @@ import {
   MIN_ORDER_AMOUNT_IDR_KEY,
   TOKOPAY_MIN_AMOUNT_KEY,
   BYBIT_MIN_AMOUNT_KEY,
+  USD_IDR_RATE_UPDATED_AT_KEY,
+  FX_QUOTE_TTL_MINUTES_KEY,
+  DEFAULT_FX_QUOTE_TTL_MINUTES,
 } from "@app/db";
 import { OrderStatus, PaymentMethod, VoucherType } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
@@ -171,5 +174,51 @@ describe("showOrderConfirmation — rails the order total cannot clear are not o
     await checkout.showUsdtMethods(ctx, sample.product.id, 1);
     const data = buttons(sink);
     expect(data.some((d) => d.startsWith("v1:payb:"))).toBe(false);
+  });
+});
+
+/**
+ * Whole-branch review A2: the same "never offer what the guard would refuse"
+ * rule, applied to the OTHER thing that refuses a USDT finalize — M12's quote
+ * TTL. `fx_rate_max_age_hours` (48h) is what makes the rate read as null and
+ * takes the USDT screens away; `fx_quote_ttl_minutes` (60m) refuses the
+ * finalize. Between the two, the bot used to show every USDT button and answer
+ * every tap with `error.fx_quote_expired`.
+ *
+ * The rate stays a live, non-null Rp16.000 throughout: what these cases move is
+ * only its freshness stamp, which is exactly the window the bug lived in.
+ */
+describe("showOrderConfirmation — USDT rails are hidden once the rate's quote lifetime has passed", () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+  it("hides USDT but keeps QRIS when the stamp is older than the default TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 5));
+    const { ctx, sink } = customerCtx();
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 1);
+    const data = buttons(sink);
+    expect(data.some((d) => d.startsWith("v1:usdt:"))).toBe(false);
+    expect(data.some((d) => d.startsWith("v1:payq:"))).toBe(true);
+  });
+
+  it("keeps USDT when the stamp is inside the TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(5));
+    const { ctx, sink } = customerCtx();
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 1);
+    expect(buttons(sink).some((d) => d.startsWith("v1:usdt:"))).toBe(true);
+  });
+
+  it("widening fx_quote_ttl_minutes past the stamp's age brings the USDT rails back", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, "300");
+    const { ctx, sink } = customerCtx();
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 1);
+    expect(buttons(sink).some((d) => d.startsWith("v1:usdt:"))).toBe(true);
+  });
+
+  it("hides the individual USDT methods too, not just the submenu button", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
+    const { ctx, sink } = customerCtx();
+    await checkout.showUsdtMethods(ctx, sample.product.id, 1);
+    expect(buttons(sink).some((d) => d.startsWith("v1:payb:"))).toBe(false);
   });
 });

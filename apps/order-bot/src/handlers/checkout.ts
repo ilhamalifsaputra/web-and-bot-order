@@ -59,6 +59,7 @@ import {
   completeOrderWithWalletCredit,
   settleFullyDiscountedOrder,
   orderTotalClearsRailMinimum,
+  usdIdrQuoteIsFresh,
   enqueueNotification,
   claimGatewaySlot,
   commitGatewayResult,
@@ -141,6 +142,16 @@ interface OfferableRails {
  * A total of zero is never filtered: such an order needs no rail at all (it is
  * settled from the shop's own books), and `orderConfirmKb` has already
  * collapsed the screen to its single Complete Order button by then anyway.
+ *
+ * The USDT rails carry a THIRD condition beyond "configured" and "clears the
+ * minimum": the saved exchange rate must still be inside its quote lifetime
+ * (`usdIdrQuoteIsFresh`, the same read `finalizeOrderPayment`'s
+ * `assertFxQuoteIsFresh` throws from). A rate is only null here once
+ * `fx_rate_max_age_hours` has passed — two days by default — so between the
+ * one-hour quote TTL and that outer horizon a shop whose auto-update had died
+ * used to advertise every USDT button and refuse every single tap with
+ * `error.fx_quote_expired`. Hiding them instead gives the buyer the same
+ * "pay in Rupiah" screen an expired rate already produces, one lever earlier.
  */
 async function offerableRails(total: Decimal, rate: Decimal | null): Promise<OfferableRails> {
   const [binanceCfg, bybitCfg, bybitBscCfg, tokopay, paydisini, nowpayments] = await Promise.all([
@@ -152,6 +163,10 @@ async function offerableRails(total: Decimal, rate: Decimal | null): Promise<Off
     getNowpaymentsCreds(prisma),
   ]);
   const usdtTotal = rate ? usdtFromIdr(total, rate) : null;
+  // A zero total never reaches finalizeOrderPayment, so no freshness check can
+  // refuse it — same non-filter as `clears` applies to the minimums below.
+  const usdtOfferable =
+    rate !== null && (!total.greaterThan(0) || (await usdIdrQuoteIsFresh(prisma)));
   const clears = async (method: string, currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT) => {
     if (!total.greaterThan(0)) return true;
     if (currency === OrderCurrency.USDT && !usdtTotal) return true;
@@ -163,12 +178,12 @@ async function offerableRails(total: Decimal, rate: Decimal | null): Promise<Off
     });
   };
   const rails = {
-    binance: binanceCfg.enabled && rate !== null && (await clears(PaymentMethod.BINANCE_INTERNAL, OrderCurrency.USDT)),
-    bybit: bybitCfg.enabled && rate !== null && (await clears(PaymentMethod.BYBIT, OrderCurrency.USDT)),
-    bybitBsc: bybitBscCfg.enabled && rate !== null && (await clears(PaymentMethod.BYBIT_BSC, OrderCurrency.USDT)),
+    binance: binanceCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BINANCE_INTERNAL, OrderCurrency.USDT)),
+    bybit: bybitCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BYBIT, OrderCurrency.USDT)),
+    bybitBsc: bybitBscCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BYBIT_BSC, OrderCurrency.USDT)),
     tokopay: tokopay != null && (await clears(PaymentMethod.TOKOPAY, OrderCurrency.IDR)),
     paydisini: paydisini != null && (await clears(PaymentMethod.PAYDISINI, OrderCurrency.IDR)),
-    nowpayments: nowpayments != null && rate !== null && (await clears(PaymentMethod.NOWPAYMENTS, OrderCurrency.USDT)),
+    nowpayments: nowpayments != null && usdtOfferable && (await clears(PaymentMethod.NOWPAYMENTS, OrderCurrency.USDT)),
   };
   return { ...rails, any: Object.values(rails).some(Boolean) };
 }

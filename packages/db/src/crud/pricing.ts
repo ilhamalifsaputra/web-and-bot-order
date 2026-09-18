@@ -479,8 +479,8 @@ export async function alertIfUsdIdrRateStale(db: Db): Promise<boolean> {
 }
 
 /**
- * Refuse to convert an order at a rate the shop has not confirmed lately
- * (M12 / audit P0-2).
+ * How far past {@link FX_QUOTE_TTL_MINUTES_KEY} the saved rate is, or null when
+ * it is still inside the quote lifetime (M12 / audit P0-2).
  *
  * What this actually guards. `finalizeOrderPayment` never reads `usd_idr_rate`
  * itself — it snapshots whatever rate its caller passed, and every real caller
@@ -498,31 +498,75 @@ export async function alertIfUsdIdrRateStale(db: Db): Promise<boolean> {
  * has no stamp, and rejecting them would be a self-inflicted checkout outage
  * with no actual staleness behind it. The stamp appears the first time the rate
  * is refreshed or edited, and the guard becomes real from then on.
+ *
+ * Pure read, no side effects, and cheap enough for the checkout page: the
+ * throwing guard ({@link assertFxQuoteIsFresh}) and the predicate the rail
+ * lists call ({@link usdIdrQuoteIsFresh}) are both thin wrappers over this, so
+ * "which rails are offered" and "which rails finalize" cannot drift apart. Same
+ * one-implementation-two-wrappers shape as `railMinimumFailure` in
+ * `orderMinimums.ts`, and for exactly the same reason: M11 learned that a
+ * checkout list re-deriving a guard's rule by hand ends up disagreeing with it.
  */
-async function assertFxQuoteIsFresh(db: Db): Promise<void> {
+export async function usdIdrQuoteStaleness(
+  db: Db,
+): Promise<{ confirmedAt: Date; ttlMinutes: Decimal } | null> {
   const stampedAt = await getSetting(db, USD_IDR_RATE_UPDATED_AT_KEY);
-  if (!stampedAt) return; // freshness unknown — see the grace note above
+  if (!stampedAt) return null; // freshness unknown — see the grace note above
   const confirmedAt = new Date(stampedAt);
   // An unreadable stamp is no more proof of staleness than a missing one.
-  if (Number.isNaN(confirmedAt.getTime())) return;
+  if (Number.isNaN(confirmedAt.getTime())) return null;
 
   const raw = (await getSetting(db, FX_QUOTE_TTL_MINUTES_KEY)) ?? DEFAULT_FX_QUOTE_TTL_MINUTES;
   let ttlMinutes: Decimal;
   try {
     ttlMinutes = new Decimal(raw.trim() === "" ? "0" : raw);
   } catch {
-    return; // free-text setting: an unusable TTL means no TTL, never an outage
+    return null; // free-text setting: an unusable TTL means no TTL, never an outage
   }
-  if (!ttlMinutes.isFinite() || ttlMinutes.lessThanOrEqualTo(0)) return;
+  if (!ttlMinutes.isFinite() || ttlMinutes.lessThanOrEqualTo(0)) return null;
 
   const expiresAt = addMinutes(confirmedAt, ttlMinutes.toNumber());
-  if (expiresAt.getTime() > Date.now()) return;
+  if (expiresAt.getTime() > Date.now()) return null;
+  return { confirmedAt, ttlMinutes };
+}
 
+/**
+ * Can a USDT order be priced at the saved rate right now? The question the
+ * checkout rail lists ask — the bot's `offerableRails` and the storefront's
+ * `checkoutView` — so that a USDT rail is never advertised to a buyer whose tap
+ * {@link assertFxQuoteIsFresh} is about to refuse with
+ * `error.fx_quote_expired`.
+ *
+ * Without this, a shop whose auto-update dies spends the whole window between
+ * the quote TTL (an hour by default) and `fx_rate_max_age_hours` (two days)
+ * showing every USDT button and refusing every one of them, which reads to the
+ * buyer as a broken shop rather than as "pay in Rupiah instead".
+ *
+ * Both callers exempt a ZERO total from this, exactly as they already exempt it
+ * from the rail minimums: a nothing-left-to-collect order is settled from the
+ * shop's own books (`settleFullyDiscountedOrder`) and never reaches
+ * `finalizeOrderPayment` at all, so no freshness check can refuse it and
+ * hiding its buttons would strand a buyer whose voucher covered their cart.
+ */
+export async function usdIdrQuoteIsFresh(db: Db): Promise<boolean> {
+  return (await usdIdrQuoteStaleness(db)) === null;
+}
+
+/**
+ * Refuse to convert an order at a rate the shop has not confirmed lately
+ * (M12 / audit P0-2) — the enforcing half of {@link usdIdrQuoteStaleness},
+ * whose doc comment explains what is being guarded and why a missing stamp is
+ * let through.
+ */
+async function assertFxQuoteIsFresh(db: Db): Promise<void> {
+  const stale = await usdIdrQuoteStaleness(db);
+  if (!stale) return;
   logger.warn(
-    `Refusing to price an order in USDT: the saved USD/IDR rate was last confirmed at ${confirmedAt.toISOString()}, ` +
-      `which is older than the ${ttlMinutes.toString()}-minute quote lifetime (${FX_QUOTE_TTL_MINUTES_KEY}). ` +
+    `Refusing to price an order in USDT: the saved USD/IDR rate was last confirmed at ${stale.confirmedAt.toISOString()}, ` +
+      `which is older than the ${stale.ttlMinutes.toString()}-minute quote lifetime (${FX_QUOTE_TTL_MINUTES_KEY}). ` +
       `The market auto-update (${USD_IDR_RATE_AUTO_KEY}) is either switched off or failing, so every USDT checkout ` +
-      `will keep being refused until an admin refreshes or re-enters the rate.`,
+      `will keep being refused until an admin refreshes or re-enters the rate. Checkout has already stopped offering ` +
+      `the USDT rails for the same reason, so reaching this guard means a buyer was holding a screen rendered before the quote expired.`,
   );
   throw new ValidationError("error.fx_quote_expired");
 }

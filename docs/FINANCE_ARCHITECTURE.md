@@ -314,6 +314,23 @@ the minimum-order guard below it.
 
 It never blocks an IDR order.
 
+**The checkout rail lists consult it too.** `assertFxQuoteIsFresh` and the
+predicate `usdIdrQuoteIsFresh` are both thin wrappers over one read,
+`usdIdrQuoteStaleness` — the same one-implementation-two-wrappers shape
+`railMinimumFailure` has in `orderMinimums.ts`, and for the same reason. The
+bot's `offerableRails` and the storefront's `checkoutView` call the predicate, so
+a USDT rail is never advertised to a buyer whose tap the guard is about to
+refuse. Before that, a shop whose auto-update died spent the whole window between
+the quote TTL (an hour) and `fx_rate_max_age_hours` (two days) showing every USDT
+button and refusing every one of them — which reads as a broken shop rather than
+as "pay in Rupiah instead".
+
+Both lists exempt a **zero total**, exactly as they already exempt it from the
+rail minimums: a nothing-left-to-collect order is settled from the shop's own
+books (`settleFullyDiscountedOrder`) and never reaches `finalizeOrderPayment`, so
+no freshness check can refuse it, and hiding its options would strand a buyer
+whose voucher covered their cart.
+
 ### Guard 3b — `fx_rate_max_age_hours`: hide the whole USDT rail (default 48 **hours**)
 
 `usdIdrRateStaleness` (`pricing.ts:375`) is a pure, side-effect-free read of the
@@ -354,7 +371,7 @@ use it:
 | Reads | `usd_idr_rate_updated_at` | `usd_idr_rate_updated_at` (same stamp) |
 | Enforced in | `assertFxQuoteIsFresh` → `finalizeOrderPayment` | `usdIdrRateStaleness` → `getUsdIdrRate` |
 | Blast radius | **One order at a time** | **The whole USDT rail, shop-wide** |
-| Symptom | `error.fx_quote_expired` at checkout finalize | USDT simply stops being offered or displayed anywhere |
+| Symptom | The USDT rails stop being offered; a tap on a screen rendered before it expired gets `error.fx_quote_expired` | USDT stops being offered **or displayed** anywhere (no USDT prices either) |
 | Admin-editable in web-admin | Yes | Yes |
 
 They are layered on purpose: a shop whose auto-update dies at 09:00 starts
@@ -904,7 +921,7 @@ check is off"**, never "reject everything".
 | `fx_rate_min` | `8000` | IDR per USDT | Sanity floor. Refuses a refresh below it. | Yes |
 | `fx_rate_max` | `40000` | IDR per USDT | Sanity ceiling. Refuses a refresh above it. | Yes |
 | `fx_rate_max_delta_pct` | `5` | percent | Max move one refresh may make from the saved rate. | Yes |
-| `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | Yes |
+| `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, checkout stops offering the USDT rails and `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | Yes |
 | `fx_rate_max_age_hours` | `48` | **hours** | Past it, `getUsdIdrRate` returns null and the **whole USDT rail** is hidden. | Yes |
 | `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed refresh. | No (internal) |
 | `fx_stale_alerted_for` | — | ISO timestamp | Which staleness episode admins were already DMed about. | No (internal) |

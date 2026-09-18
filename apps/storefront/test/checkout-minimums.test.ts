@@ -22,6 +22,7 @@ import {
   prisma,
   initDb,
   setSetting,
+  deleteSetting,
   createCatalogProduct,
   createDenomination,
   createVoucher,
@@ -30,6 +31,9 @@ import {
   MIN_ORDER_AMOUNT_IDR_KEY,
   TOKOPAY_MIN_AMOUNT_KEY,
   BYBIT_MIN_AMOUNT_KEY,
+  USD_IDR_RATE_UPDATED_AT_KEY,
+  FX_QUOTE_TTL_MINUTES_KEY,
+  DEFAULT_FX_QUOTE_TTL_MINUTES,
 } from "@app/db";
 import { OrderStatus, PaymentMethod, VoucherType } from "@app/core/enums";
 import { hashPassword } from "@app/core/password";
@@ -118,6 +122,12 @@ beforeEach(async () => {
   await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
   await setSetting(prisma, TOKOPAY_MIN_AMOUNT_KEY, "");
   await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "");
+  // Deleted, not blanked: no freshness stamp at all is "freshness unknown",
+  // which the FX quote guard lets through, so the minimum cases below are
+  // unaffected by it — while the TTL itself stays at its documented default so
+  // the freshness cases further down can lean on that default.
+  await deleteSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY);
+  await deleteSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY);
 });
 
 describe("POST /api/v1/checkout — a cart a discount alone reduced to Rp0", () => {
@@ -219,6 +229,67 @@ describe("GET /api/v1/checkout — payment methods the total cannot clear are no
     const body = res.json();
     expect(body.total).toBe("0");
     expect(body.idr_enabled).toBe(true);
+    expect(body.bybit_enabled).toBe(true);
+  });
+});
+
+/**
+ * Whole-branch review A2: the same "never offer what the guard would refuse"
+ * rule applied to M12's quote TTL rather than M11's minimums.
+ * `fx_rate_max_age_hours` (48h) is what makes the saved rate read as null and
+ * takes the USDT options away; `fx_quote_ttl_minutes` (60m) refuses the
+ * finalize. Between the two, this page offered every USDT method and had each
+ * one refused with `error.fx_quote_expired` the moment it was submitted.
+ *
+ * The rate stays a live, non-null Rp16.000 throughout — only its freshness
+ * stamp moves, which is exactly the window the bug lived in.
+ */
+describe("GET /api/v1/checkout — USDT methods are hidden once the rate's quote lifetime has passed", () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+  const view = async () =>
+    (await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } })).json();
+
+  it("hides the USDT rails but keeps the IDR one when the stamp is older than the default TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 5));
+    await addToCart(prisma, userId, denomId, 1);
+
+    const body = await view();
+    expect(body.bybit_enabled).toBe(false);
+    expect(body.idr_enabled).toBe(true);
+    // The rate itself is still live — this is the TTL, not the 48-hour horizon.
+    expect(body.total_usdt).not.toBeNull();
+  });
+
+  it("keeps the USDT rails when the stamp is inside the TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(5));
+    await addToCart(prisma, userId, denomId, 1);
+
+    expect((await view()).bybit_enabled).toBe(true);
+  });
+
+  it("widening fx_quote_ttl_minutes past the stamp's age brings the USDT rails back", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
+    await addToCart(prisma, userId, denomId, 1);
+    expect((await view()).bybit_enabled).toBe(false);
+
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, "300");
+    expect((await view()).bybit_enabled).toBe(true);
+  });
+
+  it("a Rp0 total keeps its USDT option however stale the quote is — it never reaches the guard", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(60 * 24));
+    await addToCart(prisma, userId, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "FREE100" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.total).toBe("0");
     expect(body.bybit_enabled).toBe(true);
   });
 });

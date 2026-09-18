@@ -6,7 +6,7 @@ import { PaymentMethod } from "@app/core/enums";
 import { usdtFromIdr, computeUniqueCents } from "@app/core/formatters";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { addToCart, createOrderFromCart } from "@app/db";
+import { addToCart, createOrderFromCart, bulkAddStock } from "@app/db";
 import { getSetting, setSetting, __clearSettingsCacheForTests } from "./settings";
 import {
   refreshUsdIdrRate,
@@ -29,6 +29,7 @@ import {
   USDT_SPREAD_BPS_KEY,
   getUsdIdrRate,
   usdIdrRateStaleness,
+  usdIdrQuoteIsFresh,
   alertIfUsdIdrRateStale,
 } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
@@ -584,6 +585,57 @@ describe("finalizeOrderPayment — refuses to convert at a rate nobody has confi
     await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(60 * 24 * 30));
     const order = await finalizeOrderPayment(prisma, orderId, { currency: "IDR" });
     expect(order!.currency).toBe("IDR");
+  });
+
+  /**
+   * Whole-branch review A2: the checkout rail lists (the bot's `offerableRails`,
+   * the storefront's `checkoutView`) hide their USDT options by asking
+   * `usdIdrQuoteIsFresh`. It has to answer the same question the guard above
+   * enforces for every input, or a list and a guard drift apart again — M11's
+   * lesson, re-learned. Asserted as a PAIR per case rather than separately, so
+   * neither side can be changed without the other.
+   */
+  it("usdIdrQuoteIsFresh agrees with the guard on every input the guard sees", async () => {
+    // One order per case, and the fixture ships 5 stock items.
+    await bulkAddStock(
+      prisma,
+      sample.product.id,
+      Array.from({ length: 12 }, (_, i) => `ttlcase${i}@example.com:pwd`),
+    );
+    const guardAccepts = async () => {
+      await addToCart(prisma, sample.user.id, sample.product.id, 1);
+      const fresh = (await createOrderFromCart(prisma, { user: sample.user }))!;
+      try {
+        await finalizeOrderPayment(prisma, fresh.id, { currency: "USDT", rate: "16000" });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const cases: Array<{ stamp: string | null; ttl: string | null; fresh: boolean }> = [
+      { stamp: null, ttl: null, fresh: true }, // no stamp: freshness unknown, allowed
+      { stamp: "not a timestamp", ttl: null, fresh: true }, // unreadable: likewise
+      { stamp: minutesAgo(5), ttl: null, fresh: true },
+      { stamp: minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 5), ttl: null, fresh: false },
+      { stamp: minutesAgo(30), ttl: "10", fresh: false },
+      { stamp: minutesAgo(30), ttl: "120", fresh: true },
+      { stamp: minutesAgo(60 * 24 * 30), ttl: "", fresh: true }, // unusable TTL = no TTL
+      { stamp: minutesAgo(60 * 24 * 30), ttl: "0", fresh: true },
+      { stamp: minutesAgo(60 * 24 * 30), ttl: "abc", fresh: true },
+    ];
+
+    for (const c of cases) {
+      const label = `stamp ${JSON.stringify(c.stamp)} / ttl ${JSON.stringify(c.ttl)}`;
+      if (c.stamp === null) await prisma.setting.deleteMany({ where: { key: USD_IDR_RATE_UPDATED_AT_KEY } });
+      else await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, c.stamp);
+      if (c.ttl === null) await prisma.setting.deleteMany({ where: { key: FX_QUOTE_TTL_MINUTES_KEY } });
+      else await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, c.ttl);
+      __clearSettingsCacheForTests(prisma);
+
+      expect(await usdIdrQuoteIsFresh(prisma), `predicate, ${label}`).toBe(c.fresh);
+      expect(await guardAccepts(), `guard, ${label}`).toBe(c.fresh);
+    }
   });
 });
 

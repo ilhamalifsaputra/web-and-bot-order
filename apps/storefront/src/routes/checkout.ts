@@ -46,6 +46,7 @@ import {
   settleFullyDiscountedOrder,
   orderHasNothingLeftToCollect,
   orderTotalClearsRailMinimum,
+  usdIdrQuoteIsFresh,
   createOrderDirect,
   finalizeOrderPayment,
   getUsdIdrRate,
@@ -379,6 +380,19 @@ export async function checkoutView(
     getNowpaymentsCreds(prisma),
   ]);
   const haveRate = Boolean(fxRate);
+  // Third condition on every USDT rail, beyond "configured" and "clears the
+  // minimum": the saved rate must still be inside its quote lifetime, read
+  // through the same helper `finalizeOrderPayment`'s guard throws from. `fxRate`
+  // only goes null once `fx_rate_max_age_hours` has passed (two days by
+  // default), so between the one-hour quote TTL and that horizon the page used
+  // to offer every USDT method and have each one refused with
+  // `error.fx_quote_expired` the moment it was submitted.
+  //
+  // Zero total exempt for the same reason railsClearingTheTotal exempts it: a
+  // nothing-left-to-collect cart is settled from the shop's own books and never
+  // reaches the guard, so hiding its options would strand the buyer.
+  const usdtRailsOfferable =
+    haveRate && (!totals.total.greaterThan(0) || (await usdIdrQuoteIsFresh(prisma)));
   const clears = await railsClearingTheTotal(totals.total, fxRate);
   return {
     items_empty: totals.empty,
@@ -408,12 +422,12 @@ export async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    binance_enabled: haveRate && binance.enabled && clears[PaymentMethod.BINANCE_INTERNAL],
-    bybit_enabled: haveRate && bybit.enabled && clears[PaymentMethod.BYBIT],
-    bybit_bsc_enabled: haveRate && bybitBsc.enabled && clears[PaymentMethod.BYBIT_BSC],
+    binance_enabled: usdtRailsOfferable && binance.enabled && clears[PaymentMethod.BINANCE_INTERNAL],
+    bybit_enabled: usdtRailsOfferable && bybit.enabled && clears[PaymentMethod.BYBIT],
+    bybit_bsc_enabled: usdtRailsOfferable && bybitBsc.enabled && clears[PaymentMethod.BYBIT_BSC],
     idr_enabled: Boolean(tokopay) && clears[PaymentMethod.TOKOPAY],
     paydisini_enabled: Boolean(paydisini) && clears[PaymentMethod.PAYDISINI],
-    nowpayments_enabled: haveRate && Boolean(nowpayments) && clears[PaymentMethod.NOWPAYMENTS],
+    nowpayments_enabled: usdtRailsOfferable && Boolean(nowpayments) && clears[PaymentMethod.NOWPAYMENTS],
     wallet_idr: customer ? new Decimal(customer.user.walletBalance).toString() : "0",
     wallet_usdt: customer ? new Decimal(customer.user.walletBalanceUsdt).toString() : "0",
     // Balance payment methods are only ever offered to signed-in buyers — a

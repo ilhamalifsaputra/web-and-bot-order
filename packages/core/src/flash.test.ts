@@ -68,6 +68,46 @@ describe("flashPrice", () => {
   });
 });
 
+describe("whole-Rupiah read guard", () => {
+  // Write time quantizes Denomination.price/resellerPrice to 4dp (createDenomination
+  // / updateDenomination in packages/db/src/crud/catalog.ts) — deliberately wider
+  // than the rail, for admin data entry. Nothing stops a 4dp row (or a hand-edited
+  // one) reaching pricing, and every consumer downstream assumes whole Rupiah.
+  it("floors a fractional base price to whole Rupiah, half-up", () => {
+    const noSale = { flashDiscountPercent: null, flashStartsAt: null, flashEndsAt: null };
+    expect(effectiveUnitPrice(sku({ price: "8900.37", ...noSale }), false, DURING).toString()).toBe("8900");
+    expect(effectiveUnitPrice(sku({ price: "8900.5", ...noSale }), false, DURING).toString()).toBe("8901");
+    expect(effectiveUnitPrice(sku({ price: "8900.6", ...noSale }), false, DURING).toString()).toBe("8901");
+  });
+
+  it("floors a fractional resellerPrice too — it is a price like any other", () => {
+    const noSale = { flashDiscountPercent: null, flashStartsAt: null, flashEndsAt: null };
+    const d = sku({ price: "10000", resellerPrice: "8450.62", ...noSale });
+    expect(effectiveUnitPrice(d, true, DURING).toString()).toBe("8451");
+    // The everyone price is untouched by the reseller column.
+    expect(effectiveUnitPrice(d, false, DURING).toString()).toBe("10000");
+  });
+
+  it("discounts the whole-Rupiah price, not the fractional stored one", () => {
+    // 10000.6 -> 10001 -> 50% -> 5000.5 -> 5001. Discounting the stored figure
+    // first would give 5000.3 -> 5000, i.e. a different price for the same SKU
+    // depending on which end got rounded.
+    const half = sku({ price: "10000.6", flashDiscountPercent: "50" });
+    expect(flashPrice(half, DURING)!.toString()).toBe("5001");
+    expect(effectiveUnitPrice(half, false, DURING).toString()).toBe("5001");
+  });
+
+  it("returns a whole number on every branch, flash or not, reseller or not", () => {
+    const fractional = sku({ price: "8900.37", resellerPrice: "8450.62", flashDiscountPercent: "33.33" });
+    for (const isReseller of [false, true]) {
+      for (const now of [DURING, END]) {
+        expect(effectiveUnitPrice(fractional, isReseller, now).isInteger()).toBe(true);
+      }
+    }
+    expect(flashPrice(fractional, DURING)!.isInteger()).toBe(true);
+  });
+});
+
 /**
  * Run `body` with the process timezone set to `tz`, restoring whatever the
  * box was running under afterwards (undefined included — deleting the key is

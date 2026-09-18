@@ -81,6 +81,12 @@ export async function resetDb(prisma: PrismaClient) {
   __clearSettingsCacheForTests(prisma);
   await prisma.idempotencyRecord.deleteMany();
   await prisma.notificationOutbox.deleteMany();
+  // StockReplacement (Financial Ledger M18) points at an OrderItem, two
+  // StockItems, a Refund and a SupportTicket, ALL onDelete: Restrict — a
+  // replacement record is an audit record of a delivered-goods correction, so
+  // it has to go before any of those five, which is why it leads this list
+  // rather than sitting beside the refund rows further down.
+  await prisma.stockReplacement.deleteMany();
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();
   await prisma.review.deleteMany();

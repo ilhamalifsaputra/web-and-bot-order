@@ -3326,8 +3326,8 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
   });
 
   it("v1:walletm:usdt with ample balance fully covers the order despite USDT rounding (regression: no gateway remainder)", async () => {
-    // Rate 2.6 makes usdtFromIdr(5.00) round to 1.9 USDT; the old preview left
-    // a ~Rp0.06 remainder so the order never read as fully covered (dead-end).
+    // Rate 2.6 makes usdtFromIdr(5.00) round up to 1.93 USDT; the old preview
+    // left a stray remainder so the order never read as fully covered (dead-end).
     await adjustWallet(prisma, sample.user.id, "19", { currency: "USDT", reason: "admin_adjust" });
     await setSetting(prisma, "usd_idr_rate", "2.6");
     const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:usdt:${sample.product.id}:1` });

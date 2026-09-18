@@ -100,7 +100,7 @@ export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
 
 /**
  * Create a direct order, then stamp it as a USDT/Bybit deposit payment: the
- * central-IDR total converts once at `rate` (rounded 0.1) + unique cents, with
+ * central-IDR total converts once at `rate` (rounded up to the next 0.01) + unique cents, with
  * the Bybit auto-confirm payment window. No transfer note (internal transfers
  * carry none).
  */

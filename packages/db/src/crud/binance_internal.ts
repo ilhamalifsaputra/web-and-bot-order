@@ -125,7 +125,7 @@ export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInter
 
 /**
  * Create a direct order, then stamp it as a USDT/Binance-Internal payment:
- * the central-IDR total converts once at `rate` (rounded 0.1) + unique cents,
+ * the central-IDR total converts once at `rate` (rounded up to the next 0.01) + unique cents,
  * with a unique transfer note and the short auto-confirm window (plan.md §15.4).
  */
 export async function createInternalOrder(

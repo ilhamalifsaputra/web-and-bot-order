@@ -143,7 +143,7 @@ export async function resolveBybitBscTrackerConfig(db: Db): Promise<BybitBscTrac
 
 /**
  * Create a direct order, then stamp it as a USDT/Bybit BSC deposit payment:
- * the central-IDR total converts once at `rate` (rounded 0.1) + unique
+ * the central-IDR total converts once at `rate` (rounded up to the next 0.01) + unique
  * cents, with the BSC auto-confirm payment window. No transfer note (BEP20
  * carries none).
  */

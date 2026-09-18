@@ -3,7 +3,7 @@ import { money, fmtMoney, moneyEq, Decimal } from "./money";
 import { t } from "./i18n";
 import { fetchUsdIdrMarketRate, roundRateToStep, validateUsdIdrRate, applyUsdtSpread } from "./fx";
 import { OrderStatus, UserRole, NotificationEvent, langCode } from "./enums";
-import { computeUniqueCents } from "./formatters";
+import { computeUniqueCents, usdtFromIdr } from "./formatters";
 
 describe("money", () => {
   it("quantizes to 4 dp", () => {
@@ -47,6 +47,100 @@ describe("computeUniqueCents (M-9 disambiguation offset)", () => {
       const spread = computeUniqueCents(id + 1).minus(computeUniqueCents(id)).abs();
       expect(spread.gt(new Decimal("0.001"))).toBe(true); // > AMOUNT_TOLERANCE
     }
+  });
+
+  // M13 / P2-1 required regression. The test above only compares two offsets on
+  // the SAME base; `usdtFromIdr`'s step is what decides whether two DIFFERENT
+  // bases can collapse into each other's offset range, and that step just moved
+  // from 0.1 half-up to 0.01 ceil. The offset range (0.002 … 0.098) is now
+  // WIDER than the gap between adjacent bases, which it never was before — so
+  // the margin has to be argued from the totals, not from the offsets.
+  //
+  // The argument: a base is k/100 and an offset is 2m/1000, so every producible
+  // total is (10k + 2m)/1000 — always an EVEN multiple of 0.001. Two distinct
+  // totals are therefore at least 0.002 apart, which is still strictly greater
+  // than AMOUNT_TOLERANCE (0.001, apps/order-bot/src/payments/
+  // amountMatching.ts), so the matchers' `|received − total| <= 0.001` window
+  // can never contain two candidates. Hard-coded here rather than imported,
+  // matching the sibling test above — core must not import from apps/.
+  it("CLOSES THE GAP AT THE NEW 0.01 STEP: every producible total is > AMOUNT_TOLERANCE from every other", () => {
+    const AMOUNT_TOLERANCE = new Decimal("0.001"); // apps/order-bot/.../amountMatching.ts
+    const rate = new Decimal("16000");
+    const totals: Decimal[] = [];
+    // A sweep of real Rupiah totals whose conversions land on adjacent cents,
+    // each with every one of the 49 offset buckets on top.
+    for (const idr of ["44500", "44600", "44700", "8900", "9000", "700", "800"]) {
+      for (let id = 0; id < 49; id++) {
+        totals.push(usdtFromIdr(idr, rate).plus(computeUniqueCents(id)));
+      }
+    }
+    const sorted = [...totals].sort((a, b) => a.comparedTo(b));
+    let minDistinctGap: Decimal | null = null;
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i]!.minus(sorted[i - 1]!);
+      if (gap.isZero()) continue; // the same total produced twice — see below
+      if (!minDistinctGap || gap.lessThan(minDistinctGap)) minDistinctGap = gap;
+    }
+    expect(minDistinctGap).not.toBeNull();
+    expect(minDistinctGap!.greaterThan(AMOUNT_TOLERANCE)).toBe(true);
+    expect(minDistinctGap!.equals(new Decimal("0.002"))).toBe(true);
+  });
+
+  // The other half of the same change, stated so it is not mistaken for a bug.
+  // Two DIFFERENT Rupiah totals CAN now produce the identical USDT total (base
+  // 2.79 + 0.012 equals base 2.80 + 0.002), which the old 0.1 step made
+  // impossible because the whole offset range fitted inside one step. Exact
+  // collisions are not what AMOUNT_TOLERANCE guards — `finalizeOrderPayment`'s
+  // own Bybit/Bybit-BSC loop re-rolls the offset until no OTHER pending order
+  // on the same rail shares the total, comparing the final totals themselves.
+  // This only makes that loop work a little harder, never wrong.
+  it("documents that two different bases can now share a total, which the collision loop is what handles", () => {
+    const rate = new Decimal("16000");
+    const lower = usdtFromIdr("44500", rate); // 2.78125 → 2.79
+    const upper = usdtFromIdr("44600", rate); // 2.7875  → 2.79
+    expect(lower.toString()).toBe("2.79");
+    expect(upper.toString()).toBe("2.79");
+    // Bases one cent apart, with the offset range spanning ~0.096, overlap.
+    const stepApart = usdtFromIdr("44700", rate); // 2.79375 → 2.80
+    expect(stepApart.minus(lower).equals(new Decimal("0.01"))).toBe(true);
+    expect(computeUniqueCents(5).greaterThan(stepApart.minus(lower))).toBe(true);
+  });
+});
+
+/**
+ * P2-1 (user-confirmed pricing policy). `usdtFromIdr` rounds to the next CENT,
+ * always upwards — never half-up to the nearest tenth. Two properties matter
+ * and both are money-critical: the shop never undercharges on a conversion,
+ * and no positive Rupiah amount converts away to nothing.
+ */
+describe("usdtFromIdr (step 0.01, always rounded up — P2-1)", () => {
+  it("rounds up to the next cent, never to the nearest one", () => {
+    // 44.500/16.000 = 2.78125 — half-up at 2dp would be 2.78.
+    expect(usdtFromIdr("44500", "16000").toString()).toBe("2.79");
+    // 8.900/16.000 = 0.55625 — half-up at 2dp would be 0.56 too; use a value
+    // where the two rules genuinely differ to make the direction load-bearing.
+    expect(usdtFromIdr("8900", "16000").toString()).toBe("0.56");
+    expect(usdtFromIdr("44400", "16000").toString()).toBe("2.78"); // 2.775 → up, not 2.77
+    expect(usdtFromIdr("44100", "16000").toString()).toBe("2.76"); // 2.75625 → up, not 2.76-by-luck
+  });
+
+  it("leaves an exact figure exactly as it is — ceiling only bites on a remainder", () => {
+    expect(usdtFromIdr("40000", "16000").toString()).toBe("2.5");
+    expect(usdtFromIdr("32000", "16000").toString()).toBe("2");
+    expect(usdtFromIdr("0", "16000").toString()).toBe("0");
+  });
+
+  // The behaviour change with the widest blast radius: under the old 0.1
+  // half-up step a small Rupiah total converted to 0.0 USDT, which is why
+  // `orderMinimums.ts` exists and why `railMinimumFailure` has a
+  // `nothing_to_collect` backstop. Ceiling makes that unreachable for any
+  // positive amount — the backstop stays (it still catches a zero or negative
+  // total) but it is no longer the case it was written for.
+  it("never rounds a positive amount away to nothing", () => {
+    expect(usdtFromIdr("700", "16000").toString()).toBe("0.05");
+    expect(usdtFromIdr("100", "16000").toString()).toBe("0.01");
+    expect(usdtFromIdr("1", "16000").toString()).toBe("0.01");
+    expect(usdtFromIdr("5", "16000").greaterThan(0)).toBe(true);
   });
 });
 

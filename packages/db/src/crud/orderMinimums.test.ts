@@ -211,15 +211,38 @@ describe("finalizeOrderPayment — rejects a gateway-bound total below the rail 
     });
   });
 
-  it("USDT: a Rupiah total that converts to 0.0 is refused even with every minimum cleared", async () => {
+  // This case used to be "Rp5 converts to 0.0 USDT, so the backstop fires".
+  // M13 / P2-1 changed `usdtFromIdr` to round UP to the next cent, so no
+  // positive Rupiah total converts away to nothing any more and that scenario
+  // is unreachable — the fixture's Rp5 now converts to 0.01 and is accepted.
+  // Both halves are pinned here so nobody "restores" the old expectation by
+  // reading the module doc alone.
+  it("USDT: a tiny Rupiah total is now accepted with every minimum cleared, because it no longer rounds to 0.0", async () => {
     await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
-    await expect(
-      finalizeOrderPayment(prisma, orderId, {
-        currency: OrderCurrency.USDT,
-        rate: "16000",
+    const order = await finalizeOrderPayment(prisma, orderId, {
+      currency: OrderCurrency.USDT,
+      rate: "16000",
+      method: PaymentMethod.BYBIT_BSC,
+    });
+    expect(order!.currency).toBe(OrderCurrency.USDT);
+    // Rp5 / 16.000 = 0.0003125, ceilinged to one cent.
+    expect(new Decimal(order!.totalAmount).minus(order!.uniqueCents).toString()).toBe("0.01");
+  });
+
+  it("USDT: the nothing-to-collect backstop still fires on a genuinely zero rail total", async () => {
+    // What the backstop now guards: a total that really is zero, not one that
+    // rounded away. Asserted through the shared predicate rather than through
+    // `finalizeOrderPayment`, because a zero-value order is routed to the
+    // wallet-settlement path before it can reach the finalize guard (M11).
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    expect(
+      await orderTotalClearsRailMinimum(prisma, {
         method: PaymentMethod.BYBIT_BSC,
+        currency: OrderCurrency.USDT,
+        idrAmount: "0",
+        railAmount: "0",
       }),
-    ).rejects.toMatchObject({ key: "error.amount_too_small_for_rail" });
+    ).toBe(false);
   });
 
   it("a total AT the minimum is accepted (the floor is inclusive)", async () => {
@@ -250,9 +273,11 @@ describe("finalizeOrderPayment — rejects a gateway-bound total below the rail 
         method: PaymentMethod.WALLET,
       });
       expect(usdt!.paymentMethod).toBe(PaymentMethod.WALLET);
-      // Rp5 converts to 0.0 USDT — the "nothing to collect" backstop must not
-      // fire for a wallet payment either.
-      expect(new Decimal(usdt!.totalAmount).isZero()).toBe(true);
+      // Rp5 converts to 0.01 USDT (M13 / P2-1 — it was 0.0 under the old
+      // 0.1-half-up step). WALLET carries no unique cents, so the total is the
+      // converted figure exactly, and no minimum of any kind may touch it.
+      expect(new Decimal(usdt!.totalAmount).toString()).toBe("0.01");
+      expect(new Decimal(usdt!.uniqueCents).isZero()).toBe(true);
     } finally {
       config.USE_UNIQUE_CENTS = original;
     }

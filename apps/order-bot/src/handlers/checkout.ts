@@ -398,10 +398,10 @@ async function computeConfirmation(
     subtotal = new Decimal(0);
   } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate && subtotal.greaterThan(0)) {
     // The USDT amount the crud layer (finalizeOrderPayment) will actually
-    // charge — usdtFromIdr rounds to 0.1 USDT, and the WALLET method carries
-    // no unique cents, so covering this exact figure zeroes the order. Compare
-    // the balance against it (not against the IDR subtotal converted back),
-    // which is what left a stray Rp-remainder before.
+    // charge — usdtFromIdr rounds UP to the next 0.01 USDT, and the WALLET
+    // method carries no unique cents, so covering this exact figure zeroes the
+    // order. Compare the balance against it (not against the IDR subtotal
+    // converted back), which is what left a stray Rp-remainder before.
     const usdtTotal = usdtFromIdr(subtotal, rate);
     if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
       walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {

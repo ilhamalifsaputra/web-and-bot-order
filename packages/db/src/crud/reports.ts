@@ -11,6 +11,27 @@ import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
+/**
+ * `usdtFromIdr` as it behaved BEFORE M13 / P2-1: the nearest 0.1, half-up.
+ *
+ * Needed by `reconcileFinances` alone, and only because that check re-derives
+ * what a USDT order's total should be and compares it against the total that
+ * was actually stored. Orders finalized before the rounding policy changed
+ * carry the old figure and are not drift — they are correctly priced under the
+ * rule that was in force when they were priced. Without this exemption the
+ * first reconciliation run after the change would report the shop's ENTIRE
+ * USDT order history as drift, and an alert that fires on every past order is
+ * the alert an admin learns to ignore.
+ *
+ * Deliberately a frozen local copy rather than a parameter on `usdtFromIdr`:
+ * nothing may ever PRICE anything with this again. It exists to recognise
+ * history, not to produce it, and a future reader must not be able to reach it
+ * from the pricing path.
+ */
+function legacyUsdtFromIdr(idr: Decimal.Value, rate: Decimal.Value): Decimal {
+  return new Decimal(idr).div(rate).toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
+}
+
 export interface ReconcileFindings {
   order_drift: Array<{ order_id: number; order_code: string; expected: string; actual: string }>;
   voucher_drift: Array<{ voucher_id: number; code: string; recorded_used: number; actual_orders: number }>;
@@ -68,7 +89,12 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     // Subtotals are stored in the central price unit (IDR post-cutover; the
     // pre-cutover snapshot unit before). The CHARGED total depends on the
     // pay-time choice (plan.md §15.1): a USDT order with an fxRate snapshot is
-    // round(base/rate, 0.1) + cents; an IDR order is the whole-Rupiah base.
+    // ceil(base/rate, 0.01) + cents; an IDR order is the whole-Rupiah base.
+    // (M13 / P2-1 changed that step from a half-up 0.1. This expression reads
+    // the rule out of `usdtFromIdr`, so it followed automatically — but an order
+    // finalized BEFORE the change carries the old figure, so the derivation is
+    // done BOTH ways below and a match on either one clears the order. See
+    // `legacyUsdtFromIdr`.)
     //
     // Each wallet leg is subtracted in ITS OWN currency and at the right point
     // in the conversion: an IDR leg comes off the central-IDR base BEFORE the
@@ -77,11 +103,17 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     // applyUsdtWalletToOrder spends it). Written this way the expression is
     // correct for either leg, both, or neither.
     let expected: Decimal;
+    // What the same order would total if it had been priced under the
+    // PREVIOUS rounding policy. Null for anything the policy never touched.
+    let legacyExpected: Decimal | null = null;
     if (o.currency === "USDT" && o.fxRate != null) {
       const baseIdr = Decimal.max(new Decimal(0), afterDisc.minus(walletIdr));
-      let afterWallet = usdtFromIdr(baseIdr, o.fxRate).minus(walletUsdt);
-      if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
-      expected = q4(afterWallet.plus(o.uniqueCents));
+      const convert = (converted: Decimal) => {
+        const afterWallet = converted.minus(walletUsdt);
+        return q4((afterWallet.lessThan(0) ? new Decimal(0) : afterWallet).plus(o.uniqueCents));
+      };
+      expected = convert(usdtFromIdr(baseIdr, o.fxRate));
+      legacyExpected = convert(legacyUsdtFromIdr(baseIdr, o.fxRate));
     } else if (o.currency === "IDR") {
       let afterWallet = afterDisc.minus(walletIdr);
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
@@ -91,7 +123,14 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = q4(afterWallet.plus(o.uniqueCents));
     }
-    if (expected.minus(o.totalAmount).abs().greaterThan("0.0001")) {
+    const matches = (candidate: Decimal) => candidate.minus(o.totalAmount).abs().lessThanOrEqualTo("0.0001");
+    // M13 / P2-1: a USDT order matching the PREVIOUS rounding policy exactly is
+    // correctly priced history, not drift (see `legacyUsdtFromIdr`). The
+    // exemption is an exact match on the legacy figure, not a widened
+    // tolerance — an order that is 0.1 off for any OTHER reason still gets
+    // reported, and the figure reported is always the CURRENT rule's, because
+    // that is the only one this code considers correct.
+    if (!matches(expected) && !(legacyExpected != null && matches(legacyExpected))) {
       findings.order_drift.push({
         order_id: o.id,
         order_code: o.orderCode,

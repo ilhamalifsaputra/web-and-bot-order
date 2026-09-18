@@ -350,6 +350,77 @@ describe("reconcileFinances", () => {
     });
   });
 
+  // M13 / P2-1. `usdtFromIdr`'s step moved from 0.1 half-up to 0.01 ceil, and
+  // this check re-derives what a USDT order's total SHOULD be. Every order
+  // finalized before that change carries a total rounded the old way, so a
+  // naive re-derivation reports the whole USDT history as drift — a
+  // reconciliation report that cries wolf on every past order is worse than no
+  // report, because it is the one an admin stops reading.
+  it("does not report a USDT order priced under the previous rounding policy as drift", async () => {
+    // Rp44.500 at 16.000: 2.78125 → 2.8 under the old rule, 2.79 under the new.
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-USDT-OLD-ROUNDING",
+        userId,
+        subtotalAmount: "44500",
+        totalAmount: "2.8",
+        currency: "USDT",
+        fxRate: "16000",
+        status: "DELIVERED",
+        kind: "PRODUCT",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    expect(findings.order_drift.map((f) => f.order_code)).not.toContain("ORD-USDT-OLD-ROUNDING");
+  });
+
+  it("still reports a USDT order whose total matches NEITHER rounding rule", async () => {
+    // Neither 2.79 (new) nor 2.8 (old) — this is real drift and must survive
+    // the historical-rounding tolerance above.
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-USDT-REAL-DRIFT",
+        userId,
+        subtotalAmount: "44500",
+        totalAmount: "1.5",
+        currency: "USDT",
+        fxRate: "16000",
+        status: "DELIVERED",
+        kind: "PRODUCT",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    const entry = findings.order_drift.find((f) => f.order_code === "ORD-USDT-REAL-DRIFT");
+    expect(entry).toBeTruthy();
+    // The figure reported is the CURRENT rule's, never the legacy one — the
+    // legacy value is only ever an exemption, never something we claim is right.
+    expect(entry!.expected).toBe("2.79");
+    expect(entry!.actual).toBe("1.5");
+  });
+
+  it("reports a USDT order priced under the CURRENT rule as clean", async () => {
+    await prisma.order.create({
+      data: {
+        orderCode: "ORD-USDT-NEW-ROUNDING",
+        userId,
+        subtotalAmount: "44500",
+        totalAmount: "2.79",
+        currency: "USDT",
+        fxRate: "16000",
+        status: "DELIVERED",
+        kind: "PRODUCT",
+      },
+    });
+
+    const findings = await reconcileFinances(prisma);
+
+    expect(findings.order_drift.map((f) => f.order_code)).not.toContain("ORD-USDT-NEW-ROUNDING");
+  });
+
   it("leaves voucher_drift and negative_wallets unaffected by WALLET_TOPUP orders", async () => {
     // Create a WALLET_TOPUP order
     await prisma.order.create({

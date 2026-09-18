@@ -1,7 +1,7 @@
 /**
  * Central-IDR price model (plan.md §15): Product.price holds Rupiah — the one
  * source of truth — and the USDT figure is DERIVED from the admin-set
- * `usd_idr_rate` setting, rounded to the nearest 0.1. The transaction currency
+ * `usd_idr_rate` setting, rounded UP to the next 0.01. The transaction currency
  * is chosen at PAY time (USDT → Binance, IDR → TokoPay) and snapshotted on the
  * order together with the fx rate, so later rate edits never rewrite history.
  */
@@ -551,7 +551,7 @@ export type PaymentChoice =
  * the TOTAL once (never per item — §15.7 #1):
  *  - IDR  → whole-Rupiah total, unique cents stripped (QRIS confirms by
  *           callback, not by amount matching), method TOKOPAY.
- *  - USDT → totalAmount = round(idr/rate, 0.1) + unique cents (kept: the
+ *  - USDT → totalAmount = ceil(idr/rate, 0.01) + unique cents (kept: the
  *           Binance poller's amount fallback needs distinct totals), fxRate
  *           snapshot, a unique paymentRef + the short internal payment window
  *           for the auto-confirm path.

@@ -817,8 +817,8 @@ export async function enqueueBuyerOrderReadyEmail(
       unitPrice: Decimal;
       /** The whole line's money, computed by the CALLER — not something this
        * layer or the renderer may re-derive as `unitPrice * quantity`. On a
-       * currency-converted order `unitPrice` has already been rounded to the
-       * nearest 0.1 USDT, so scaling it by the quantity would scale that
+       * currency-converted order `unitPrice` has already been rounded UP to
+       * the next 0.01 USDT, so scaling it by the quantity would scale that
        * rounding error too and print a line total contradicting the subtotal
        * right below it. See the call site in crud/orders.ts. */
       lineTotal: Decimal;

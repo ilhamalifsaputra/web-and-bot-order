@@ -3,8 +3,15 @@
  *
  * Two real failure modes this closes, both previously unguarded:
  *  - A Rupiah total small enough that the IDR→USDT conversion rounds it away
- *    entirely (`usdtFromIdr(700, 16000)` is `0.0`), so a crypto rail would be
- *    asked to collect nothing and the order could never be matched or paid.
+ *    entirely, so a crypto rail would be asked to collect nothing and the order
+ *    could never be matched or paid. NOTE (M13 / P2-1): this case is no longer
+ *    REACHABLE for a positive Rupiah total. `usdtFromIdr` used to round to the
+ *    nearest 0.1 half-up, which turned Rp700 at a 16.000 rate into `0.0`; it
+ *    now rounds UP to the next cent, so the same total is `0.05` and any
+ *    positive amount is at least `0.01`. `railMinimumFailure`'s
+ *    `nothing_to_collect` backstop stays — it still catches a zero or negative
+ *    rail amount, which is a real state (a fully discounted order) — but it is
+ *    no longer the rounding case it was written for.
  *  - A total below a gateway's OWN documented minimum, which the gateway then
  *    rejects out of band, leaving the buyer on a payment screen that can never
  *    succeed.
@@ -24,9 +31,20 @@
  * The comparison is deliberately done in each minimum's OWN currency rather
  * than converting everything to one of them: the shop-wide minimum is a Rupiah
  * figure and an order's central-IDR total is a Rupiah figure, so comparing
- * those two needs no exchange rate and cannot be weakened by `usdtFromIdr`'s
- * rounding step (rounding a Rp100 minimum into USDT would yield `0.0`, i.e. no
- * minimum at all — the very bug this module exists to prevent).
+ * those two needs no exchange rate and cannot be distorted by `usdtFromIdr`'s
+ * rounding step at all.
+ *
+ * That reasoning survived M13's change to the rounding rule, but its worked
+ * example did not, so here is the current one. Under the old 0.1-half-up step a
+ * Rp100 minimum converted to `0.0` — no minimum whatsoever, the very bug this
+ * module exists to prevent. Under the new 0.01-ceil step it converts to `0.01`,
+ * which is not nothing but is not Rp100 either: at a 16.000 rate `0.01` USDT is
+ * Rp160, so converting the FLOOR would silently make it 60% stricter than the
+ * figure the admin typed, and at a different rate it would be something else
+ * again. Either direction is a floor that does not mean what it says.
+ * Comparing each figure in its own currency is what keeps the number an admin
+ * entered the number that is enforced, whatever the rounding rule happens to
+ * be.
  *
  * `PaymentMethod.WALLET` has no minimum of any kind and is never checked: a
  * wallet payment is an internal ledger movement, there is no rail with a floor
@@ -192,10 +210,16 @@ export async function railMinimumFailure(
   }
 
   // Backstop, independent of every setting: we will not ask a gateway to
-  // collect nothing. On a USDT rail this is the "Rp700 becomes 0.0 USDT" case —
-  // the Rupiah amount is real but rounds away in the rail's own currency, so
-  // there is no amount for the buyer to send or for the amount-matching pollers
-  // to recognise. Reachable only when an admin has cleared both the rail's own
+  // collect nothing. This was written for the "Rp700 becomes 0.0 USDT" case — a
+  // real Rupiah amount rounding away in the rail's own currency, leaving nothing
+  // for the buyer to send or the amount-matching pollers to recognise. M13's
+  // move to a 0.01 CEIL step closed that case off (any positive Rupiah total is
+  // now at least 0.01 USDT), so what this now catches is a total that is
+  // genuinely zero or negative — a fully discounted or fully wallet-covered
+  // order that reached here instead of the zero-value short-circuit. Keep it:
+  // the check costs nothing and the day the rounding rule changes again is not
+  // the day to discover it was the only thing standing between a gateway and a
+  // zero charge. Reachable only when an admin has cleared both the rail's own
   // minimum and the shop-wide one; with either in force the check above catches
   // it first, and with a more specific figure to report.
   if (!railAmount.greaterThan(0)) return { reason: "nothing_to_collect", currency: args.currency };

@@ -583,9 +583,16 @@ model StockItem {
 
   // Relation field kept as `product` for source-compat; it resolves to a
   // Denomination (the SKU). Renamed to `denomination` in Phase 5 cleanup.
-  product    Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  order      Order?       @relation(fields: [orderId], references: [id], onUpdate: NoAction)
-  orderItems OrderItem[]
+  product                Denomination       @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order                  Order?             @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  orderItems             OrderItem[]
+  // Two roles, so two back-references (naming follows this schema's existing
+  // `<plural>As<Role>` convention for multi-role relations: User's
+  // `referralsAsReferee`/`referralsAsReferrer`, `ticketsAsUser`/
+  // `ticketsAsAdmin`). "AsOriginal" = this row was the bad credential someone
+  // complained about; "AsNew" = this row was handed over to replace one.
+  replacementsAsOriginal StockReplacement[] @relation("ReplacementOriginal")
+  replacementsAsNew      StockReplacement[] @relation("ReplacementNew")
 
   @@index([status], map: "ix_stock_items_status")
   @@index([productId], map: "ix_stock_items_product_id")
@@ -806,12 +813,16 @@ model OrderItem {
   // are the order's financial detail — deleting an Order must never silently
   // erase them. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order       Order        @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  order             Order              @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
   // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
-  product     Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
-  stockItem   StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
-  refundItems RefundItem[]
-  adminTasks  AdminTask[]
+  product           Denomination       @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  stockItem         StockItem?         @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  refundItems       RefundItem[]
+  adminTasks        AdminTask[]
+  /// Replacement requests raised against this purchased unit (Financial Ledger
+  /// M18). An array, not a single row: a replacement credential can itself turn
+  /// out bad, so the same unit may be replaced more than once.
+  stockReplacements StockReplacement[]
 
   @@index([orderId], map: "ix_order_items_order_id")
   @@index([productId], map: "ix_order_items_product_id")
@@ -896,15 +907,19 @@ model Refund {
   // financial-audit record — deleting the Order it refunds must never
   // silently erase it. No code path hard-deletes an Order today; this is a
   // schema-level guardrail against ever adding one.
-  order      Order             @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
-  items      RefundItem[]
-  adminTasks AdminTask[]
+  order             Order              @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  items             RefundItem[]
+  adminTasks        AdminTask[]
   /// The actual payout attempts for this Refund (Financial Ledger M1). A
   /// Refund reaching COMPLETED is record-keeping only and moves no money —
   /// see this model's `status` doc comment above; a RefundExecution row is
   /// where a payout is actually recorded. One-to-many because a failed
   /// attempt does not reopen the Refund, so a second attempt is a new row.
-  executions RefundExecution[]
+  executions        RefundExecution[]
+  /// The stock-replacement requests that ended in THIS refund instead of a
+  /// replacement credential (Financial Ledger M18) — i.e. rows whose status is
+  /// REFUNDED_INSTEAD. Empty for every refund raised for any other reason.
+  stockReplacements StockReplacement[]
 
   @@index([orderId], map: "ix_refunds_order_id")
   @@index([status], map: "ix_refunds_status")
@@ -1438,17 +1453,21 @@ model SupportTicket {
   /// lastStatusChangeAt + the FK.
   closedAt           DateTime? @map("closed_at")
 
-  user            User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  admin           User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  user              User               @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  admin             User?              @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   // Same "who acted, not who this row is about" reasoning as TicketAdmin
   // above (and AdminTask.assignee / Review.repliedByAdmin) — NoAction on
   // delete, not Restrict: losing the assigner pointer if that admin's User
   // row were ever removed is not the same category of data loss as losing
   // the order/customer this ticket is about.
-  assignedByAdmin User?           @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  order           Order?          @relation(fields: [orderId], references: [id], onUpdate: NoAction)
-  product         Product?        @relation(fields: [productId], references: [id], onUpdate: NoAction)
-  messages        TicketMessage[]
+  assignedByAdmin   User?              @relation("TicketAssignedBy", fields: [assignedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  order             Order?             @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  product           Product?           @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  messages          TicketMessage[]
+  /// Stock-replacement requests that arrived on this ticket (Financial Ledger
+  /// M18). Empty for tickets that never led to one, and a replacement recorded
+  /// from another channel has no ticket at all.
+  stockReplacements StockReplacement[]
 
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
@@ -2260,4 +2279,107 @@ model SettlementTransaction {
 
   @@index([settlementId], map: "ix_settlement_tx_settlement_id")
   @@map("settlement_transactions")
+}
+
+/// One buyer complaint that a DELIVERED credential is bad, and what was done
+/// about it (Financial Ledger M18 — schema only; the `replaceStockItem` service
+/// is M19 and the admin UI is M20, so nothing writes this table yet).
+///
+/// Per-unit by construction, with no new granularity mechanism needed: this
+/// schema already stores a bulk purchase as one `OrderItem` ROW PER UNIT rather
+/// than a `quantity`-carrying shared row, so "unit #3 of 5 is dead" is already
+/// addressable as a single `orderItemId`. That is the same fact `RefundItem`'s
+/// own doc comment leans on ("buy 3 Netflix accounts, one turns out dead"), and
+/// it is why this model points at an `OrderItem` rather than at an `Order` plus
+/// a unit index.
+///
+/// `originalStockItemId` will always be a SOLD row, which is exactly why this
+/// table exists as a separate record instead of being expressed by mutating the
+/// stock row. `markStockDead`/`bulkMarkStockDead` (packages/db/src/crud/
+/// stock.ts) deliberately REFUSE to touch a SOLD row — "a delivered credential
+/// is never altered" — and that refusal is not to be loosened for this feature.
+/// M19's service gets its OWN narrow, audited path to record a replacement; the
+/// delivered row's history stays intact and the swap is described HERE, by a
+/// row that names both sides.
+///
+/// `replacementStockItemId`, `refundId` and `supportTicketId` are all nullable
+/// because they describe three genuinely independent outcomes/origins rather
+/// than one required chain:
+///  - a request in REQUESTED/AWAITING_STOCK has no replacement yet, and one
+///    that ends REFUNDED_INSTEAD never will (its `refundId` is set instead);
+///  - `refundId` is only set on the refund-fallback branch, which will be the
+///    FIRST production caller of `createRefund`/`createRefundItem` — that
+///    infrastructure has zero production call sites as of this milestone;
+///  - `supportTicketId` links the ticket the complaint arrived on, but an admin
+///    may also record a replacement from a Telegram DM or a phone call that
+///    never became a ticket.
+model StockReplacement {
+  id                     Int       @id @default(autoincrement())
+  /// The specific purchased UNIT being complained about — see this model's doc
+  /// comment for why one OrderItem row IS one unit here.
+  orderItemId            Int       @map("order_item_id")
+  /// The bad credential that was actually delivered. A SOLD row, always, and it
+  /// is never mutated or deleted to express this — that is this table's job.
+  originalStockItemId    Int       @map("original_stock_item_id")
+  /// The credential handed over as the replacement. Null until one is issued,
+  /// and null forever for a request that ended REFUNDED_INSTEAD / CANCELLED /
+  /// FAILED.
+  replacementStockItemId Int?      @map("replacement_stock_item_id")
+  /// Set only on the refund-fallback branch (status REFUNDED_INSTEAD), when no
+  /// replacement stock could be issued and the buyer was given their money back
+  /// instead. Null on every other path.
+  refundId               Int?      @map("refund_id")
+  /// The support ticket the complaint arrived on, when it arrived on one. Null
+  /// for a replacement an admin recorded from any other channel.
+  supportTicketId        Int?      @map("support_ticket_id")
+  /// Free-text admin-typed explanation of what was wrong with the delivered
+  /// credential ("password changed by owner", "account banned within 24h") —
+  /// same precedent as `Refund.reason` and `Order.rejectionReason`, both
+  /// deliberately free String rather than a constrained value set.
+  reason                 String
+  /// REQUESTED | AWAITING_STOCK | COMPLETED | REFUNDED_INSTEAD | CANCELLED |
+  /// FAILED (StockReplacementStatus, @app/core/enums). String, not a native
+  /// Prisma enum, matching every other lifecycle-status column in this schema
+  /// (`Order.status`, `Refund.status`, `OrderItem.status`). The state machine
+  /// that governs these transitions is M19's job and does not exist yet.
+  status                 String    @default("REQUESTED")
+  /// User.id of the admin who opened this request. Required: replacing a
+  /// delivered credential is a state change that must always be attributable
+  /// (CLAUDE.md's audit rule). No FK relation is declared, matching this
+  /// schema's existing convention for admin-attribution columns (see
+  /// `RefundExecution.executedBy`, `Settlement.createdBy`,
+  /// `DetectionOverride.createdBy`).
+  requestedBy            Int       @map("requested_by")
+  /// Set when this request reaches a terminal status (COMPLETED,
+  /// REFUNDED_INSTEAD, CANCELLED, FAILED) — mirrors `Refund.processedAt` /
+  /// `RefundExecution.executedAt`'s nullable-until-terminal pattern, and is NOT
+  /// the same as `createdAt` below.
+  resolvedAt             DateTime? @map("resolved_at")
+  /// Free-text admin notes about the handling itself, distinct from `reason`
+  /// (what was wrong) — same split as `Refund.reason` vs `RefundItem.reason`.
+  notes                  String?
+  createdAt              DateTime  @default(now()) @map("created_at")
+
+  // Restrict/NoAction throughout (Infra-5 policy, security audit 2026-06-23):
+  // a replacement record is an audit record of a delivered-goods correction, so
+  // nothing it points at may be deleted out from under it — not the order line
+  // it corrects, not either credential, not the refund that stood in for a
+  // replacement, not the ticket it came in on. This matches RefundItem's and
+  // SettlementTransaction's existing policy rather than the looser Cascade some
+  // non-financial detail tables use.
+  orderItem     OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  original      StockItem      @relation("ReplacementOriginal", fields: [originalStockItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  replacement   StockItem?     @relation("ReplacementNew", fields: [replacementStockItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  refund        Refund?        @relation(fields: [refundId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  supportTicket SupportTicket? @relation(fields: [supportTicketId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orderItemId], map: "ix_stock_replacements_order_item")
+  // The "has this delivered credential already been replaced once?" lookup M19
+  // needs before issuing another, and the same index-every-FK-column convention
+  // RefundItem follows for both of its FKs.
+  @@index([originalStockItemId], map: "ix_stock_replacements_original_stock")
+  // The admin queue's "what is still open" read (same reason `Refund` and
+  // `Order` both carry a plain status index).
+  @@index([status], map: "ix_stock_replacements_status")
+  @@map("stock_replacements")
 }

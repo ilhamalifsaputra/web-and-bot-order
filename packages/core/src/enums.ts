@@ -1079,3 +1079,60 @@ export const ReconciliationSeverity = {
 export type ReconciliationSeverity =
   (typeof ReconciliationSeverity)[keyof typeof ReconciliationSeverity];
 export const zReconciliationSeverity = z.nativeEnum(ReconciliationSeverity);
+
+/**
+ * `StockReplacement.status` (Financial Ledger M18) — where a "the credential
+ * you delivered me is bad" complaint has got to. String, not a native Prisma
+ * enum, matching every other lifecycle-status column in this schema
+ * (`Order.status`, `Refund.status`, `Payment.status`).
+ *
+ * - REQUESTED — an admin has recorded the complaint against one purchased unit.
+ *   The opening state; `StockReplacement.status`'s column default.
+ * - AWAITING_STOCK — the complaint is accepted but there is no AVAILABLE
+ *   credential for that SKU to hand over yet. Distinct from REQUESTED because
+ *   it says the hold-up is supply, not triage, which is what makes it the
+ *   status a restock should be able to unblock.
+ * - COMPLETED — a replacement credential was issued
+ *   (`replacementStockItemId` is set).
+ * - REFUNDED_INSTEAD — no replacement was issued and the buyer got their money
+ *   back (`refundId` is set). A distinct terminal value rather than a flag on
+ *   COMPLETED: "the buyer holds a working account" and "the buyer holds their
+ *   money" are different outcomes, and only one of them consumed stock.
+ * - CANCELLED — withdrawn before resolution (the buyer recovered access, the
+ *   complaint turned out to be user error).
+ * - FAILED — the shop could neither replace nor refund. Kept separate from
+ *   CANCELLED so an unresolved complaint can never be filed away as a
+ *   deliberate withdrawal.
+ *
+ * COMPLETED, REFUNDED_INSTEAD, CANCELLED and FAILED are all TERMINAL: nothing
+ * transitions out of them, and each is what sets `resolvedAt`. REQUESTED and
+ * AWAITING_STOCK are the only non-terminal values. The transition table itself
+ * (a `LEGAL_TRANSITIONS`-shaped map alongside `REFUND_LEGAL_TRANSITIONS` /
+ * `PAYMENT_LEGAL_TRANSITIONS`) belongs with the `replaceStockItem` service in
+ * M19 and deliberately does not exist yet — this milestone is schema only.
+ */
+export const StockReplacementStatus = {
+  REQUESTED: "REQUESTED",
+  AWAITING_STOCK: "AWAITING_STOCK",
+  COMPLETED: "COMPLETED",
+  REFUNDED_INSTEAD: "REFUNDED_INSTEAD",
+  CANCELLED: "CANCELLED",
+  FAILED: "FAILED",
+} as const;
+export type StockReplacementStatus =
+  (typeof StockReplacementStatus)[keyof typeof StockReplacementStatus];
+export const zStockReplacementStatus = z.nativeEnum(StockReplacementStatus);
+
+/**
+ * The four terminal `StockReplacementStatus` values — the ones that set
+ * `StockReplacement.resolvedAt` and that nothing transitions out of. Exported
+ * as data (not re-derived by each caller) so M19's transition table and any
+ * "still open" admin query agree on one list, the same way
+ * `IN_FLIGHT_ORDER_ITEM_STATUSES` serves `deriveOrderStatusFromItems`.
+ */
+export const TERMINAL_STOCK_REPLACEMENT_STATUSES: readonly StockReplacementStatus[] = [
+  StockReplacementStatus.COMPLETED,
+  StockReplacementStatus.REFUNDED_INSTEAD,
+  StockReplacementStatus.CANCELLED,
+  StockReplacementStatus.FAILED,
+] as const;

@@ -974,14 +974,18 @@ async function main() {
   const report = await backfillLedgerHistory(prisma, { batchSize: args.batchSize });
   console.log("");
   console.log(formatBackfillReport(report));
-  // Non-zero when something was left unprocessed, so a run wired into anything
-  // that checks exit codes cannot quietly report a partial backfill as done.
+  // Non-zero when something was left unprocessed — a row a category examined and
+  // could not post, OR a wallet movement no category's query can see at all
+  // (`orderlessOrderMovementsCount`, which the report deliberately does not count
+  // as "unprocessable") — so a run wired into anything that checks exit codes
+  // cannot quietly report a partial backfill as done.
   // Set on `exitCode` and left to fall off the end (matching
   // scripts/seed-chart-of-accounts.ts), not a bare `process.exit`: this report
   // is the run's audit trail, and when stdout is redirected to a file rather
   // than a TTY, Node's write can still be in flight when `process.exit` tears
   // the process down, truncating it.
-  process.exitCode = report.totals.unprocessable > 0 ? 1 : 0;
+  process.exitCode =
+    report.totals.unprocessable > 0 || report.orderlessOrderMovementsCount > 0 ? 1 : 0;
   await prisma.$disconnect();
 }
 

@@ -343,15 +343,29 @@ export async function postFinancialTransaction(
   db: Db,
   args: PostFinancialTransactionArgs,
 ): Promise<FinancialTransaction> {
+  // Computed first because both refusal logs below fork their consequence
+  // clause on it: whether a refusal has actually lost money or merely aborted a
+  // still-open transaction turns on whether this call owns its transaction or
+  // is nested inside a caller's.
+  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
+
   if (args.idempotencyKey.trim() === "") {
     // A blank key is not "no key" — it is a key every other blank-key caller
     // shares, so the second such posting would be handed an unrelated
     // transaction as its own idempotent replay and would silently skip writing
     // real money.
+    //
+    // Unlike `error.ledger_account_not_found`, this error is NOT swallowed by
+    // `postOrSkipMissingAccount`, so a nested call's caller transaction aborts
+    // with it — "the event needs a manual entry" is only true when this call
+    // owns its own transaction and the money has therefore already moved.
     const e = new ValidationError("error.ledger_idempotency_key_required");
+    const consequence = ownsTransaction
+      ? "the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected"
+      : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
     logger.error(
       { err: e },
-      `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it arrived with a blank idempotency key, and wrote nothing at all — a blank key is shared by every other caller that leaves it blank, so accepting it would eventually hand one event's posting back to an unrelated one as its own replay. Whichever posting site built this key is the bug; the event itself still needs a manual entry.`,
+      `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it arrived with a blank idempotency key, and wrote nothing at all — a blank key is shared by every other caller that leaves it blank, so accepting it would eventually hand one event's posting back to an unrelated one as its own replay. Whichever posting site built this key is the bug; ${consequence}.`,
     );
     throw e;
   }
@@ -372,13 +386,6 @@ export async function postFinancialTransaction(
     );
     return alreadyPosted;
   }
-
-  // Computed here (not just below, where the write itself needs it) because the
-  // validation catch below also depends on it: whether a refusal has actually
-  // lost money or merely aborted a still-open transaction turns on the same
-  // question `write` asks — does this call own its transaction, or is it
-  // nested inside a caller's.
-  const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
 
   let prepared: PreparedEntry[];
   try {

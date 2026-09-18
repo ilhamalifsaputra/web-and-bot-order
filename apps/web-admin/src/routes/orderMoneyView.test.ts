@@ -56,7 +56,9 @@ describe("orderMoneyView", () => {
     });
     expect(view.currency).toBe("USDT");
     // Items total converts via the catalog fx snapshot — never "Rp3".
-    expect(view.itemsTotal.toString()).toBe("3.4");
+    // 54.000 / 16.000 = 3.375 -> ceil to 3.38 (M13 / P2-1: was "3.4" under the
+    // old 0.1-half-up step).
+    expect(view.itemsTotal.toString()).toBe("3.38");
     // totalAmount/uniqueCents are already USDT-native — must NOT be re-converted.
     expect(view.totalToPay.toString()).toBe("3.426");
     expect(view.amountMarker?.toString()).toBe("0.026");

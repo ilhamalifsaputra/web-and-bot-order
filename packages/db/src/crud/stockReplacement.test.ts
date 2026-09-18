@@ -27,6 +27,7 @@ import { approveOrder, attachPaymentProof, createOrderDirect, getOrder } from ".
 import { bulkAddStock } from "./stock";
 import {
   STOCK_REPLACEMENT_LEGAL_TRANSITIONS,
+  listStockReplacementsForOrder,
   refundInsteadOfReplace,
   replaceStockItem,
   retryReplacementAllocation,
@@ -421,6 +422,86 @@ describe("retryReplacementAllocation", () => {
     await expect(
       retryReplacementAllocation(prisma, { stockReplacementId: replacement.id, executedBy: adminId }),
     ).rejects.toThrow(ValidationError);
+  });
+});
+
+describe("listStockReplacementsForOrder", () => {
+  it("returns nothing for an order no unit of which was ever complained about", async () => {
+    const { order } = await makeDeliveredOrder(2);
+    expect(await listStockReplacementsForOrder(prisma, order.id)).toEqual([]);
+  });
+
+  it("returns every unit's requests oldest-first, and only this order's", async () => {
+    const mine = await makeDeliveredOrder(2);
+    const first = await replaceStockItem(prisma, {
+      orderItemId: mine.items[0]!.id,
+      reason: "unit one is dead",
+      executedBy: adminId,
+    });
+    const second = await replaceStockItem(prisma, {
+      orderItemId: mine.items[1]!.id,
+      reason: "unit two is dead too",
+      executedBy: adminId,
+    });
+    // A second order's request must not leak into the first order's list.
+    // `makeDeliveredOrder` drains the SKU's spares, so top it back up first or
+    // this second order can't be checked out at all.
+    await restock(1);
+    const other = await makeDeliveredOrder(1);
+    await replaceStockItem(prisma, {
+      orderItemId: other.items[0]!.id,
+      reason: "someone else's problem",
+      executedBy: adminId,
+    });
+
+    const rows = await listStockReplacementsForOrder(prisma, mine.order.id);
+
+    expect(rows.map((r) => r.id)).toEqual([first.replacement.id, second.replacement.id]);
+    expect(rows.map((r) => r.orderItemId)).toEqual([mine.items[0]!.id, mine.items[1]!.id]);
+    expect(rows[0]!.status).toBe(StockReplacementStatus.AWAITING_STOCK);
+    expect(rows[0]!.reason).toBe("unit one is dead");
+    expect(rows[0]!.refund).toBeNull();
+  });
+
+  it("attaches the refund a REFUNDED_INSTEAD request paid out, so a reader can show the amount", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "nothing to replace it with",
+      executedBy: adminId,
+    });
+    const { refund } = await refundInsteadOfReplace(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    const rows = await listStockReplacementsForOrder(prisma, order.id);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe(StockReplacementStatus.REFUNDED_INSTEAD);
+    expect(rows[0]!.resolvedAt).not.toBeNull();
+    expect(rows[0]!.refund!.id).toBe(refund.id);
+    expect(new Decimal(rows[0]!.refund!.amount).equals(new Decimal(items[0]!.unitPrice))).toBe(true);
+    expect(rows[0]!.refund!.currency).toBe(order.currency);
+  });
+
+  it("names the replacement credential a COMPLETED request handed over, but never the credential itself", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    await restock(1);
+    const { replacement, replacementStockItem } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+
+    const rows = await listStockReplacementsForOrder(prisma, order.id);
+
+    expect(rows[0]!.status).toBe(StockReplacementStatus.COMPLETED);
+    expect(rows[0]!.replacementStockItemId).toBe(replacementStockItem!.id);
+    expect(rows[0]!.id).toBe(replacement.id);
+    // A reader gets ids and money, never the account itself — the delivered
+    // credential reaches the buyer through the outbox and nowhere else.
+    expect(JSON.stringify(rows)).not.toContain("@example.com");
   });
 });
 

@@ -8,6 +8,7 @@ import { CardRow } from "../components/shared/CardRow";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { TicketStatusBadge } from "../components/shared/TicketStatusBadge";
 import { TicketPriorityBadge } from "../components/shared/TicketPriorityBadge";
+import { OrderUnitsCard, type OrderUnitsData } from "../components/orders/OrderUnitsCard";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -142,6 +143,28 @@ function useAdmins() {
   });
 }
 
+/**
+ * The linked order's admin detail, for the per-unit replacement list (M20).
+ *
+ * Deliberately the SAME query key and route the order detail page uses, so the
+ * two share one cache entry: opening this page after the order page costs no
+ * second request, and a replacement opened from either surface invalidates both.
+ * `ticket.order` (from the ticket route) carries only a summary — it has no
+ * per-unit stock row, no delivered flag and no replacement history, which is
+ * everything the card needs.
+ *
+ * GET /api/orders/:orderId is gated to non-readonly roles (blockReadonlyReads),
+ * so for a readonly admin this query simply fails and the card is not rendered
+ * — the rest of the ticket page is unaffected.
+ */
+function useLinkedOrderUnits(orderId: number | null) {
+  return useQuery<OrderUnitsData>({
+    queryKey: ["order", String(orderId)],
+    queryFn: () => apiGet<OrderUnitsData>(`/api/orders/${orderId}`),
+    enabled: orderId !== null,
+  });
+}
+
 /** Up to `max` Telegram photo `file_id`s parsed from a CSV column — shared by
  * the ticket's own attachments and each thread message's. */
 function parsePhotoIds(csv: string | null, max = 3): string[] {
@@ -159,6 +182,7 @@ export function TicketDetailPage() {
   const qc = useQueryClient();
   const { data, isError } = useTicket(ticketId ?? "");
   const { data: adminsData } = useAdmins();
+  const { data: linkedOrder } = useLinkedOrderUnits(data?.ticket.orderId ?? null);
   const [reply, setReply] = useState("");
   const [internal, setInternal] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
@@ -417,6 +441,25 @@ export function TicketDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* The linked order's per-unit list (M20) — the same card the order
+          detail page renders, so a complaint about one dead account is
+          resolved against that UNIT from inside the ticket, and the request it
+          opens records this ticket. Full width rather than inside the grid
+          above: it is a table with row actions, not a summary panel. */}
+      {ticket.order && linkedOrder && (
+        <div className="mb-6">
+          <OrderUnitsCard
+            orderId={String(ticket.order.id)}
+            units={linkedOrder.order.items}
+            replacements={linkedOrder.stockReplacements}
+            isDelivered={linkedOrder.isDelivered}
+            title={`Units of Order ${ticket.order.orderCode}`}
+            showCredentials={false}
+            supportTicketId={ticket.id}
+          />
+        </div>
+      )}
 
       {/* Assignment — Task 3: surfaces assignedAt/assignedBy (Task 1)
           alongside the working-admin (adminId) picker. Posts to the same

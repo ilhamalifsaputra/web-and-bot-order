@@ -3,8 +3,8 @@ import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { OrderUnitsCard, type StockReplacementRow } from "../components/orders/OrderUnitsCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
@@ -116,6 +116,11 @@ interface OrderDetailData {
   customerDataFields: CustomerDataField[];
   /** The buyer's answers, one map per unit. */
   customerData: CustomerDataUnit[];
+  /** Every "this account is dead" request ever opened against a unit of this
+   * order (M20). Empty for the overwhelming majority of orders. `optional`
+   * only because older cached/mocked responses predate the field — the live
+   * route always sends at least `[]`. */
+  stockReplacements?: StockReplacementRow[];
 }
 
 function useOrderDetail(orderId: string) {
@@ -223,6 +228,7 @@ export function OrderDetailPage() {
   }
 
   const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, customerDataFields, customerData } = data;
+  const stockReplacements = data.stockReplacements ?? [];
   const isWalletTopup = order.kind === "WALLET_TOPUP";
   // A top-up never reserves a stockItem/credentials to resend — there's
   // nothing here for the outbox's account-credentials DM to attach.
@@ -368,36 +374,22 @@ export function OrderDetailPage() {
 
       {/* Items table — a wallet top-up has zero OrderItem rows by design (it
           credits the buyer's wallet balance, not a SKU), so the table is
-          replaced with a plain note instead of an empty product grid. */}
+          replaced with a plain note instead of an empty product grid.
+          Everything else (including the per-unit replacement actions M20 added)
+          lives in OrderUnitsCard, shared with the support ticket page. */}
       {isWalletTopup ? (
         <EmptyState
           title="No items — this is a wallet top-up"
           description={`This order credited the buyer's wallet balance directly (${order.currency}); it never had products to deliver.`}
         />
       ) : (
-        <Card>
-          <CardHeader><CardTitle as="h2">Items ({order.items.length})</CardTitle></CardHeader>
-          <CardContent>
-            <DataTable
-              nested
-              columns={[
-                { key: "product", header: "Product", render: item => <span className="block max-w-[240px] truncate text-sm" title={item.product.name}>{item.product.name}</span> },
-                { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
-                { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
-                ...(isManualOrder
-                  ? []
-                  // Credentials are email:password blobs an admin must read in
-                  // full, so they wrap instead of truncating. TableCell is
-                  // whitespace-nowrap by default, hence the explicit override —
-                  // without it break-all has nothing to act on.
-                  : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
-              ]}
-              data={order.items}
-              keyExtractor={item => item.id}
-              empty={<EmptyState title="No items" />}
-            />
-          </CardContent>
-        </Card>
+        <OrderUnitsCard
+          orderId={orderId ?? ""}
+          units={order.items}
+          replacements={stockReplacements}
+          isDelivered={isDelivered}
+          showCredentials={!isManualOrder}
+        />
       )}
 
       {/* Buyer-submitted custom checkout info (manual_with_info orders only) */}

@@ -26,7 +26,9 @@ import {
   countDelivered,
   countCancelled,
   customerLabel,
+  listStockReplacementsForOrder,
   type OrderFilter,
+  type StockReplacementWithRefund,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
@@ -125,6 +127,44 @@ function serializeMoneyView(mv: ReturnType<typeof orderMoneyView>) {
   };
 }
 
+/**
+ * One replacement request as the order-detail page reads it (M20).
+ *
+ * Deliberately not the DB row spread verbatim: `notes` (the admin's private
+ * handling notes) and `requestedBy` are not rendered by any surface yet and
+ * stay server-side, and the two StockItem ids come across as ids only — a
+ * credential itself reaches the buyer through the notification outbox and
+ * appears in this response only in the Items table's own `credentials` field,
+ * which is already gated to non-readonly roles.
+ *
+ * `requestedAt`/`resolvedAt` follow this file's existing convention of sending
+ * a pre-formatted display string in the shop's TIMEZONE beside the raw ISO
+ * value, so the client never formats a UTC timestamp in the browser's own zone.
+ */
+function serializeStockReplacement(row: StockReplacementWithRefund) {
+  return {
+    id: row.id,
+    orderItemId: row.orderItemId,
+    status: row.status,
+    reason: row.reason,
+    originalStockItemId: row.originalStockItemId,
+    replacementStockItemId: row.replacementStockItemId,
+    supportTicketId: row.supportTicketId,
+    requestedAt: row.createdAt,
+    requestedAtDisplay: displayDateTime(row.createdAt),
+    resolvedAt: row.resolvedAt,
+    resolvedAtDisplay: displayDateTime(row.resolvedAt),
+    refund: row.refund
+      ? {
+          id: row.refund.id,
+          amount: row.refund.amount.toString(),
+          currency: row.refund.currency,
+          status: row.refund.status,
+        }
+      : null,
+  };
+}
+
 export default async function ordersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/orders", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
@@ -201,6 +241,11 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // fields (customerDataFields.length === 0 ⇒ nothing to render).
     const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
     const customerData = parseCustomerData(order.customerData);
+    // Every replacement request ever opened against any unit of this order
+    // (M20) — the Items table needs it to know which units already have one
+    // open (so it doesn't offer an action that would only be refused) and to
+    // show what each earlier request resolved to.
+    const stockReplacements = await listStockReplacementsForOrder(prisma, orderId);
     return reply.send({
       order: { ...order, createdAtDisplay: displayDateTime(order.createdAt) },
       money: serializeMoneyView(orderMoneyView(order)),
@@ -210,6 +255,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       ...computeOrderEligibility(order.status, order.user.telegramId),
       customerDataFields,
       customerData,
+      stockReplacements: stockReplacements.map(serializeStockReplacement),
     });
   });
 

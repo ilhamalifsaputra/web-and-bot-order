@@ -82,6 +82,39 @@ import { enqueueOrderDeliveredDm } from "./notifications";
 import { createRefund, createRefundItem, executeRefund, transitionRefundStatus } from "./refunds";
 import { allocateOneAvailableStock } from "./stock";
 
+/** What `listStockReplacementsForOrder` hands back per request: the row itself
+ *  plus the refund that stood in for a replacement, when one did. */
+export type StockReplacementWithRefund = StockReplacement & {
+  refund: { id: number; amount: Decimal; currency: string; status: string } | null;
+};
+
+/**
+ * Every replacement request ever opened against any unit of one order, oldest
+ * first — the read side of this table, for an admin surface that has to say
+ * what happened to each unit (M20's order-detail and ticket-detail per-unit
+ * lists).
+ *
+ * The three mutators above are still the only WRITERS; this is a plain read and
+ * changes nothing. It selects the refund rather than making the caller re-read
+ * it, because "what did this request resolve to" is answered by either
+ * `replacementStockItemId` (a credential) or that refund (an amount), and a
+ * caller holding only the id would have to go looking for the second half.
+ *
+ * Neither credential is included, by design: the row's two StockItem ids say
+ * which accounts were involved, and the account itself only ever reaches the
+ * buyer through the notification outbox (see this file's module comment).
+ */
+export async function listStockReplacementsForOrder(
+  db: Db,
+  orderId: number,
+): Promise<StockReplacementWithRefund[]> {
+  return db.stockReplacement.findMany({
+    where: { orderItem: { orderId } },
+    orderBy: { id: "asc" },
+    include: { refund: { select: { id: true, amount: true, currency: true, status: true } } },
+  });
+}
+
 /**
  * Legal `StockReplacement.status` transitions — same lookup-table shape as
  * `REFUND_LEGAL_TRANSITIONS` (crud/refunds.ts) and `LEGAL_TRANSITIONS`

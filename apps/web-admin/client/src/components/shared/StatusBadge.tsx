@@ -83,6 +83,14 @@ const TONE: Record<string, Tone> = {
   IN_PROGRESS: "neutral",
   ESCALATED: "danger",
   COMPLETED: "success",
+  // StockReplacementStatus (M20's per-unit replacement column). COMPLETED,
+  // CANCELLED and FAILED already have the right tone above; AWAITING_STOCK is
+  // the one that needs an admin to come back to it, so it takes the same
+  // warning tone every other "waiting on someone" status here has, and
+  // REFUNDED_INSTEAD is settled money, matching REFUNDED's neutral.
+  AWAITING_STOCK: "warning",
+  REFUNDED_INSTEAD: "neutral",
+  REQUESTED: "warning",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

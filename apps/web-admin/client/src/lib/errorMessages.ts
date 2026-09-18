@@ -25,6 +25,32 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "That user isn't an admin and can't be assigned tasks.",
   "error.rate_limited":
     "You're doing that too quickly — wait a minute and try again.",
+  // Account/stock replacement (M20's per-unit actions on the Items table).
+  // Every one of these comes from the service's own guards
+  // (packages/db/src/crud/stockReplacement.ts), so the wording explains what
+  // an admin should do instead rather than restating the key.
+  "error.stock_replacement_order_not_delivered":
+    "Nothing has been handed to the buyer for this order yet, so there's no account to replace — deliver or cancel it instead.",
+  "error.stock_replacement_item_not_sold":
+    "This unit holds no delivered stock account to replace. Hand-fulfilled orders and units already refunded can't be replaced.",
+  "error.stock_replacement_already_open":
+    "This unit already has an open replacement request — resolve that one (retry it, or refund the unit) instead of opening a second.",
+  "error.stock_replacement_not_awaiting_stock":
+    "This request is no longer waiting on stock — it may have just been resolved by someone else. Refresh the page.",
+  "error.stock_replacement_not_found":
+    "That replacement request could not be found.",
+  "error.stock_replacement_nothing_to_refund":
+    "This unit works out to nothing refundable (it was fully discounted), so there's no payout to make.",
+  "error.illegal_stock_replacement_status_transition":
+    "This replacement request's status just changed — refresh the page and try again.",
+  // Reachable from the "Refund instead" fallback, which pays out through the
+  // shared Refund path (crud/refunds.ts's executeRefund).
+  "error.refund_exceeds_refundable_amount":
+    "This order has less left to refund than this unit is worth — most of it was paid from wallet balance, which this payout can't return. Refund it from the order's own refund flow instead.",
+  "error.refund_exceeds_item_subtotal":
+    "This unit has already been refunded as much as it was paid for.",
+  "error.refund_execution_proof_required":
+    "A manual transfer needs proof of the transfer before it can be recorded.",
 };
 
 /** Looks up a known `ValidationError` key and returns a readable English

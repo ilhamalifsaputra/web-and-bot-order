@@ -355,7 +355,7 @@ use it:
 | Enforced in | `assertFxQuoteIsFresh` → `finalizeOrderPayment` | `usdIdrRateStaleness` → `getUsdIdrRate` |
 | Blast radius | **One order at a time** | **The whole USDT rail, shop-wide** |
 | Symptom | `error.fx_quote_expired` at checkout finalize | USDT simply stops being offered or displayed anywhere |
-| Admin-editable in web-admin | **No** (not in `EDITABLE`) | Yes |
+| Admin-editable in web-admin | Yes | Yes |
 
 They are layered on purpose: a shop whose auto-update dies at 09:00 starts
 refusing USDT conversions an hour later (quote TTL) and stops advertising USDT
@@ -877,12 +877,14 @@ to throw rather than adding defensive handling for an unreachable case — but i
 is a real, deliberate change in risk profile, recorded as an accepted trade-off
 rather than an oversight.
 
-**5. Two settings have documented defaults but no web-admin field.**
-`fx_quote_ttl_minutes` and `min_order_amount_idr` are absent from `EDITABLE`
-(`apps/web-admin/src/routes/api/settings.ts:48`). They are read from the
-settings table with their documented defaults and can only be changed by a
-direct database write or a seed script. Every other FX/minimum setting in the
-table below *is* admin-editable.
+**5. ~~Two settings have documented defaults but no web-admin field.~~ Closed.**
+`fx_quote_ttl_minutes` and `min_order_amount_idr` were absent from `EDITABLE`
+(`apps/web-admin/src/routes/api/settings.ts`), so they could only be changed by a
+direct database write or a seed script. Both are now editable fields, and the
+whole FX group — the spread, the three sanity-band figures and both staleness
+levers — is rendered in the "Exchange Rates" card next to the rate itself rather
+than falling through to "Other Settings". Every setting in the table below is now
+either admin-editable or explicitly internal.
 
 ---
 
@@ -902,11 +904,11 @@ check is off"**, never "reject everything".
 | `fx_rate_min` | `8000` | IDR per USDT | Sanity floor. Refuses a refresh below it. | Yes |
 | `fx_rate_max` | `40000` | IDR per USDT | Sanity ceiling. Refuses a refresh above it. | Yes |
 | `fx_rate_max_delta_pct` | `5` | percent | Max move one refresh may make from the saved rate. | Yes |
-| `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | **No** |
+| `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | Yes |
 | `fx_rate_max_age_hours` | `48` | **hours** | Past it, `getUsdIdrRate` returns null and the **whole USDT rail** is hidden. | Yes |
 | `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed refresh. | No (internal) |
 | `fx_stale_alerted_for` | — | ISO timestamp | Which staleness episode admins were already DMed about. | No (internal) |
-| `min_order_amount_idr` | `1000` | IDR | Shop-wide minimum for any rail without its own override. | **No** |
+| `min_order_amount_idr` | `1000` | IDR | Shop-wide minimum for any rail without its own override. Only a MISSING row takes the default; a blank one means "no shop-wide minimum". | Yes |
 | `<rail>_min_amount` | unset | rail's own currency | Per-rail override: `tokopay_`, `paydisini_`, `nowpayments_`, `bybit_`, `bybit_bsc_`, `binance_internal_`. | Yes |
 
 Key/default constants live in `packages/db/src/crud/pricing.ts` (FX) and

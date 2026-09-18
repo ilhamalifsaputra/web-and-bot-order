@@ -44,10 +44,21 @@ export const DEFAULT_RATE_ROUNDING = "100";
  * number did not move, because fetching the live rate and finding it identical
  * is a genuine re-confirmation that the saved figure is still current.
  *
- * Written ONLY through {@link setUsdIdrRate} and {@link refreshUsdIdrRate}, so
- * a rate can never be saved without its freshness claim being updated in the
- * same breath. Read by {@link finalizeOrderPayment}'s USDT branch to refuse
- * converting an order at a rate nobody has confirmed in a long time.
+ * This stamp itself is written ONLY through {@link setUsdIdrRate} and
+ * {@link refreshUsdIdrRate}, so no code path can move the rate through the
+ * sanctioned mutator without updating the freshness claim in the same breath.
+ * Read by {@link finalizeOrderPayment}'s USDT branch to refuse converting an
+ * order at a rate nobody has confirmed in a long time.
+ *
+ * One path does write `usd_idr_rate` WITHOUT a stamp, and it is deliberate:
+ * `scripts/convert-prices-to-idr.ts` seeds the rate with a bare `setSetting`
+ * during the one-off central-IDR conversion, before any of this existed. That
+ * leaves a rate with no stamp at all, which is the "freshness unknown" state
+ * both {@link assertFxQuoteIsFresh} and {@link usdIdrRateStaleness} let through
+ * on purpose — see their grace notes. So the invariant is not "every saved rate
+ * carries a fresh stamp"; it is "a stamp, once present, is never stale-by-
+ * omission". Any NEW writer of `usd_idr_rate` must go through
+ * {@link setUsdIdrRate}.
  *
  * NOTE for M13 (`fx_rate_min`/`fx_rate_max`/`fx_rate_max_delta_pct`): this key
  * ALREADY EXISTS as of M12 — reuse it, do not re-add it or redefine what it

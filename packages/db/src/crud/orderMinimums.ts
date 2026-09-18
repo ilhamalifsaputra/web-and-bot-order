@@ -70,9 +70,17 @@ import {
  * Settings key: the shop-wide minimum order total in Rupiah, applied to any
  * rail that has no `<rail>_min_amount` of its own. Free text in web-admin, so
  * it follows this repo's existing convention for such values
- * (`parseMinAmount`): absent or blank means "use the documented default";
- * anything that parses to a non-positive or non-numeric value means "no
- * shop-wide minimum", leaving only the per-rail overrides in force.
+ * (`parseMinAmount`). The three cases are genuinely different, and only the
+ * first one reaches the default:
+ *  - ABSENT (no settings row at all, i.e. a shop that has never touched the
+ *    field) means "use {@link DEFAULT_MIN_ORDER_AMOUNT_IDR}".
+ *  - BLANK — a row holding `""`, which is what saving the web-admin field
+ *    empty writes — means "no shop-wide minimum", exactly like an explicit
+ *    "0". `parseMinAmount` returns null for both, and
+ *    {@link getShopMinOrderAmountIdr} only substitutes the default for a
+ *    MISSING row (`?? default`), never for a blank one.
+ *  - NON-NUMERIC or non-positive likewise means "no shop-wide minimum",
+ *    leaving only the per-rail overrides in force.
  */
 export const MIN_ORDER_AMOUNT_IDR_KEY = "min_order_amount_idr";
 

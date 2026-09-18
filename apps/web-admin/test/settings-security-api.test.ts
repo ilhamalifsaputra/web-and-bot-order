@@ -10,7 +10,7 @@ vi.mock("@app/core/mailer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@app/core/mailer")>()),
   verifySmtp: vi.fn(),
 }));
-import { prisma, initDb, upsertUser, setSetting, getSetting, setFxRateFetcher } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, getSetting, setFxRateFetcher, getShopMinOrderAmountIdr } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import {
   makeSession,
@@ -155,6 +155,27 @@ describe("POST /api/settings/edit", () => {
       expect(res.statusCode).toBe(200);
       expect(await getSetting(prisma, key)).toBe("true");
     }
+  });
+
+  // Whole-branch review A1: both keys had a documented default and a reader in
+  // packages/db, but no field here, so the only way to change either was a
+  // direct database write (FINANCE_ARCHITECTURE known gap 5).
+  it("accepts fx_quote_ttl_minutes and min_order_amount_idr as plain free-text figures", async () => {
+    for (const [key, value] of [
+      ["fx_quote_ttl_minutes", "180"],
+      ["min_order_amount_idr", "5000"],
+    ] as const) {
+      const res = await postJson("/api/settings/edit", cookie, csrf, { key, value });
+      expect(res.statusCode).toBe(200);
+      expect(await getSetting(prisma, key)).toBe(value);
+    }
+  });
+
+  it("saving min_order_amount_idr blank turns the shop-wide minimum off rather than restoring its default", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "min_order_amount_idr", value: "" });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "min_order_amount_idr")).toBe("");
+    expect(await getShopMinOrderAmountIdr(prisma)).toBeNull();
   });
 
   it("treats an empty smtp_pass submission as a no-op (never overwrites a saved secret)", async () => {

@@ -79,10 +79,21 @@ const JOIN_GATE_KEYS = new Set([
   "join_gate_group_id",
 ]);
 
+// The rate itself, plus every lever that decides whether a fetched rate is
+// trusted and how long a saved one stays usable. The M13 sanity-band keys and
+// the quote TTL used to fall through to "Other Settings", which put the three
+// figures that can silently switch the whole USDT rail off somewhere nobody
+// looking at the rate would find them.
 const FX_KEYS = new Set([
   "usd_idr_rate",
   "usd_idr_rate_auto",
   "usd_idr_rate_rounding",
+  "usdt_spread_bps",
+  "fx_rate_min",
+  "fx_rate_max",
+  "fx_rate_max_delta_pct",
+  "fx_quote_ttl_minutes",
+  "fx_rate_max_age_hours",
 ]);
 
 const SMTP_KEYS = new Set([
@@ -229,6 +240,18 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   usd_idr_rate: "Rupiah per 1 USDT, used to price USDT gateways in IDR.",
   usd_idr_rate_auto: "Automatically refresh the rate from the market instead of setting it by hand.",
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
+  usdt_spread_bps:
+    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. Keep it well under the maximum move below.",
+  fx_rate_min: "Refuses an auto-fetched rate below this — catches a rate source that starts answering in the wrong unit. Blank turns the check off.",
+  fx_rate_max: "Refuses an auto-fetched rate above this — catches a rate source returning a placeholder. Blank turns the check off.",
+  fx_rate_max_delta_pct:
+    "How far one refresh may move the saved rate. The spread above counts as part of that move, so a spread larger than this percentage gets every refresh refused — and a refused refresh saves nothing, so it never clears on its own.",
+  fx_quote_ttl_minutes:
+    "Refuses one USDT checkout at a time once the saved rate has gone this long without being refreshed or re-typed. Blank or 0 turns the check off.",
+  fx_rate_max_age_hours:
+    "Hides USDT payments shop-wide once the saved rate has gone this long without being refreshed or re-typed — the outer limit, measured in hours. Blank or 0 turns the check off.",
+  min_order_amount_idr:
+    "Smallest order total customers can check out with, on any payment method that has no minimum of its own. Blank turns it off and leaves only the per-method minimums.",
   tokopay_merchant_id: "Your TokoPay merchant account identifier.",
   tokopay_secret: "Signs requests to TokoPay — never shown once saved.",
   tokopay_min_amount: "Minimum order total customers can pay via TokoPay.",

@@ -68,6 +68,99 @@ describe("flashPrice", () => {
   });
 });
 
+/**
+ * Run `body` with the process timezone set to `tz`, restoring whatever the
+ * box was running under afterwards (undefined included — deleting the key is
+ * not the same as setting it to the string "undefined").
+ *
+ * There is no global TZ convention in this suite to reuse (tests/helpers has
+ * none, and vitest.config.ts sets no TZ), so the switch is scoped to the
+ * cases that need it rather than imposed on the whole file. Node honours a
+ * mid-process `process.env.TZ` assignment for every Date created afterwards,
+ * which is what makes this observable at all.
+ */
+function withTz<T>(tz: string, body: () => T): T {
+  const previous = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+/** +14: the earliest local calendar day on earth. */
+const TZ_AHEAD = "Pacific/Kiritimati";
+/** -12: the latest. Paired with TZ_AHEAD these straddle the date line, so any
+ * comparison that leaked into local calendar fields would disagree between
+ * them for at least one of the instants below. */
+const TZ_BEHIND = "Etc/GMT+12";
+
+describe("flash windows are timezone-independent", () => {
+  // Guard for the guard: if the TZ switch ever stopped taking effect (a Node
+  // change, a bundler freezing the zone at load, a stray global TZ), every
+  // assertion below would keep passing while proving nothing. This case fails
+  // loudly in that situation.
+  it("the TZ switch really does move the local clock across the date line", () => {
+    const ahead = withTz(TZ_AHEAD, () => new Date("2026-07-20T15:00:00Z").toString());
+    const behind = withTz(TZ_BEHIND, () => new Date("2026-07-20T15:00:00Z").toString());
+    expect(ahead).not.toBe(behind);
+    // Not just a different hour — a different local calendar date (21st vs 20th).
+    expect(withTz(TZ_AHEAD, () => new Date("2026-07-20T15:00:00Z").getDate())).toBe(21);
+    expect(withTz(TZ_BEHIND, () => new Date("2026-07-20T15:00:00Z").getDate())).toBe(20);
+  });
+
+  it("gives the same verdict for the same instant under either extreme", () => {
+    // `now < flashStartsAt || now >= flashEndsAt` compares two Date objects,
+    // which JS resolves through valueOf() — the UTC epoch millisecond. TZ only
+    // reaches Date FORMATTING (toString/getHours/getDate, as above), never
+    // relational comparison, so the window verdict cannot depend on where the
+    // server thinks it is.
+    for (const tz of [TZ_AHEAD, TZ_BEHIND]) {
+      withTz(tz, () => {
+        expect(activeFlashPercent(sku(), DURING)?.toString()).toBe("20");
+        expect(activeFlashPercent(sku(), START)?.toString()).toBe("20");
+        expect(activeFlashPercent(sku(), new Date("2026-07-20T09:59:59Z"))).toBeNull();
+        expect(activeFlashPercent(sku(), END)).toBeNull();
+        expect(isFlashActive(sku(), DURING)).toBe(true);
+        expect(isFlashActive(sku(), END)).toBe(false);
+      });
+    }
+  });
+
+  it("holds for a window that straddles midnight UTC, where the two zones disagree about the day", () => {
+    // 22:00Z–02:00Z: under +14 the whole sale sits on the NEXT local day, under
+    // -12 on the PREVIOUS one. A comparison done on local calendar fields would
+    // place `now` outside the window in at least one of them.
+    const overnight = sku({
+      flashStartsAt: new Date("2026-07-20T22:00:00Z"),
+      flashEndsAt: new Date("2026-07-21T02:00:00Z"),
+    });
+    const inside = new Date("2026-07-21T00:30:00Z");
+    const before = new Date("2026-07-20T21:59:59Z");
+    const after = new Date("2026-07-21T02:00:00Z");
+    for (const tz of [TZ_AHEAD, TZ_BEHIND]) {
+      withTz(tz, () => {
+        expect(isFlashActive(overnight, inside)).toBe(true);
+        expect(isFlashActive(overnight, before)).toBe(false);
+        expect(isFlashActive(overnight, after)).toBe(false);
+      });
+    }
+  });
+
+  it("prices a live sale identically under either extreme", () => {
+    for (const tz of [TZ_AHEAD, TZ_BEHIND]) {
+      withTz(tz, () => {
+        expect(flashPrice(sku(), DURING)!.toString()).toBe("8000");
+        expect(flashPrice(sku(), END)).toBeNull();
+        expect(effectiveUnitPrice(sku(), false, DURING).toString()).toBe("8000");
+        expect(effectiveUnitPrice(sku(), false, END).toString()).toBe("10000");
+      });
+    }
+  });
+});
+
 describe("effectiveUnitPrice", () => {
   it("without a flash sale, behaves exactly like the old inline rule", () => {
     const plain = sku({ flashDiscountPercent: null, resellerPrice: "7000" });

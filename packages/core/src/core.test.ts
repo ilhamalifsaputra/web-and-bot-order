@@ -115,13 +115,23 @@ describe("computeUniqueCents (M-9 disambiguation offset)", () => {
  */
 describe("usdtFromIdr (step 0.01, always rounded up — P2-1)", () => {
   it("rounds up to the next cent, never to the nearest one", () => {
-    // 44.500/16.000 = 2.78125 — half-up at 2dp would be 2.78.
+    // The vectors that make the DIRECTION load-bearing: a remainder under half
+    // a cent, which half-up rounds DOWN (undercharging the shop) and ceiling
+    // rounds up. Without at least one of these the test passes just as happily
+    // against ROUND_HALF_UP and pins nothing.
+    expect(usdtFromIdr("44336", "16000").toString()).toBe("2.78"); // 2.771 — half-up: 2.77
+    expect(usdtFromIdr("832", "16000").toString()).toBe("0.06"); //   0.052 — half-up: 0.05
+    expect(usdtFromIdr("16016", "16000").toString()).toBe("1.01"); // 1.001 — half-up: 1.00
+    expect(usdtFromIdr("44504", "16000").toString()).toBe("2.79"); // 2.7815 — half-up: 2.78
+    // 44.500/16.000 = 2.78125 — also discriminating (half-up at 2dp is 2.78).
     expect(usdtFromIdr("44500", "16000").toString()).toBe("2.79");
-    // 8.900/16.000 = 0.55625 — half-up at 2dp would be 0.56 too; use a value
-    // where the two rules genuinely differ to make the direction load-bearing.
+    // The three below land on the SAME figure under either rule — 0.55625,
+    // 2.775 and 2.75625 all round UP under half-up too. They are kept because
+    // they are the worked examples quoted elsewhere in this repo (Rp8.900 in
+    // particular), NOT because they say anything about the rounding direction.
     expect(usdtFromIdr("8900", "16000").toString()).toBe("0.56");
-    expect(usdtFromIdr("44400", "16000").toString()).toBe("2.78"); // 2.775 → up, not 2.77
-    expect(usdtFromIdr("44100", "16000").toString()).toBe("2.76"); // 2.75625 → up, not 2.76-by-luck
+    expect(usdtFromIdr("44400", "16000").toString()).toBe("2.78");
+    expect(usdtFromIdr("44100", "16000").toString()).toBe("2.76");
   });
 
   it("leaves an exact figure exactly as it is — ceiling only bites on a remainder", () => {

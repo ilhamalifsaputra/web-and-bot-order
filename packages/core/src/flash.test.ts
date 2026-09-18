@@ -73,14 +73,17 @@ describe("whole-Rupiah read guard", () => {
   // / updateDenomination in packages/db/src/crud/catalog.ts) — deliberately wider
   // than the rail, for admin data entry. Nothing stops a 4dp row (or a hand-edited
   // one) reaching pricing, and every consumer downstream assumes whole Rupiah.
-  it("floors a fractional base price to whole Rupiah, half-up", () => {
+  // "Rounds", not "floors": 8900.5 and 8900.6 both come out as 8901 below, so
+  // the rule being pinned here is half-up to whole Rupiah. The old name said
+  // floors, which the very assertions under it contradict.
+  it("rounds a fractional base price to whole Rupiah, half-up", () => {
     const noSale = { flashDiscountPercent: null, flashStartsAt: null, flashEndsAt: null };
     expect(effectiveUnitPrice(sku({ price: "8900.37", ...noSale }), false, DURING).toString()).toBe("8900");
     expect(effectiveUnitPrice(sku({ price: "8900.5", ...noSale }), false, DURING).toString()).toBe("8901");
     expect(effectiveUnitPrice(sku({ price: "8900.6", ...noSale }), false, DURING).toString()).toBe("8901");
   });
 
-  it("floors a fractional resellerPrice too — it is a price like any other", () => {
+  it("rounds a fractional resellerPrice too — it is a price like any other", () => {
     const noSale = { flashDiscountPercent: null, flashStartsAt: null, flashEndsAt: null };
     const d = sku({ price: "10000", resellerPrice: "8450.62", ...noSale });
     expect(effectiveUnitPrice(d, true, DURING).toString()).toBe("8451");

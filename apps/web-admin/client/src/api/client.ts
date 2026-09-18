@@ -20,7 +20,13 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
     const data = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(data.error ?? `${path} failed ${res.status}`);
   }
-  return res.json() as Promise<T>;
+  // Same guard as apiGet/apiPost/apiPatch/apiDelete below: `/setup/restart`
+  // (this function's only caller, SetupDonePage.tsx) sits behind
+  // `currentAdmin` on a non-`/api` path, so an expired session still 303s to
+  // /login and `fetch` follows it — without this, `res.ok` would be true and
+  // `res.json()` would throw the same raw SyntaxError this whole branch
+  // exists to prevent.
+  return parseJsonOrThrow<T>(res, path);
 }
 
 /** The literal 403 body both `csrfCheck` (plugins/auth.ts) and the multipart

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { apiGet, apiPost, apiPatch, apiDelete, logout } from "./client";
+import { apiGet, apiPost, apiPatch, apiDelete, publicPost, logout } from "./client";
 
 beforeEach(() => {
   document.head.insertAdjacentHTML("beforeend", '<meta name="csrf-token" content="test-token">');
@@ -148,6 +148,34 @@ describe("apiDelete", () => {
     );
     await expect(apiDelete("/api/catalog/denominations/10")).rejects.toThrow(
       "Cannot delete a denomination with order history.",
+    );
+  });
+});
+
+// apiGet's own test above ("throws a clean error instead of a raw
+// SyntaxError...") reproduces the bug for one helper; every other JSON
+// helper shares the exact same `parseJsonOrThrow` guard on its success path
+// (see client.ts), so a regression in any single one of them should fail a
+// test too, not just apiGet's.
+describe("parseJsonOrThrow guard, shared by every JSON helper", () => {
+  const nonJsonRes = () => ({
+    ok: true,
+    json: async () => {
+      throw new SyntaxError('Unexpected token \'<\', "<!doctype "... is not valid JSON');
+    },
+  });
+
+  const cases: [name: string, path: string, call: (path: string) => Promise<unknown>][] = [
+    ["apiPost", "/api/settings", (path) => apiPost(path, {})],
+    ["apiPatch", "/api/settings", (path) => apiPatch(path, {})],
+    ["apiDelete", "/api/settings", (path) => apiDelete(path)],
+    ["publicPost", "/setup/restart", (path) => publicPost(path, {})],
+  ];
+
+  it.each(cases)("%s throws a clean error instead of a raw SyntaxError on a non-JSON 2xx body", async (_name, path, call) => {
+    vi.stubGlobal("fetch", vi.fn(async () => nonJsonRes()));
+    await expect(call(path)).rejects.toThrow(
+      `${path} returned an unexpected response. Reload the page and try again.`,
     );
   });
 });

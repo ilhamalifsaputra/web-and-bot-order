@@ -89,6 +89,7 @@ import {
 import { registerOutboxNudge } from "@app/core/nudge";
 import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { canMutate } from "../src/plugins/auth";
+import { SETUP_INCOMPLETE_MESSAGE } from "../src/plugins/setupGate";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
 const COOKIE = config.WEB_COOKIE_NAME;
@@ -321,6 +322,46 @@ describe("auth", () => {
     const res = await get("/api/dashboard/kpis", null);
     expect(res.statusCode).toBe(401);
     expect(res.headers.location).toBeUndefined();
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
+  });
+
+  // The export/download links on ReportsPage/SupportPage/UsersPage/StockPage/
+  // StockProductPage are real `<a href="/api/...">` navigations, not fetch()
+  // calls — a browser tab has no way to recover from a raw JSON error body,
+  // so those still need the 303 like any other page load. `Sec-Fetch-Mode:
+  // navigate` is how real browsers tag this kind of request.
+  it("anon /api/* real browser navigation (Sec-Fetch-Mode: navigate) still gets the 303, not JSON", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/stock/export",
+      headers: { "sec-fetch-mode": "navigate" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  // Older browsers that omit Sec-Fetch-Mode entirely still send an
+  // HTML-accepting Accept header on a real navigation — the fallback signal.
+  it("anon /api/* navigation-like Accept header (no Sec-Fetch-Mode) also gets the 303", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/stock/export",
+      headers: { accept: "text/html,application/xhtml+xml" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  // A fetch()/XHR call is never tagged Sec-Fetch-Mode: navigate, even if it
+  // happens to hit the same /api/* export path some other way — it must keep
+  // getting the JSON 401, not a redirect fetch() would silently follow.
+  it("anon /api/* call with Sec-Fetch-Mode: cors (a fetch, not a navigation) still gets JSON 401", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/stock/export",
+      headers: { "sec-fetch-mode": "cors" },
+    });
+    expect(res.statusCode).toBe(401);
     expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
@@ -918,7 +959,7 @@ describe("orders", () => {
     expect(audit.length).toBe(1);
   });
 
-  it("credit-balance requires auth (anon → /login)", async () => {
+  it("credit-balance requires auth (anon → 401)", async () => {
     const orderId = await makePendingOrder();
     const res = await post(`/api/orders/${orderId}/credit-balance`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(401);
@@ -5752,7 +5793,7 @@ describe("payments", () => {
     expect(logs.some((l) => l.action === "tx_credit_balance")).toBe(true);
   });
 
-  it("credit requires auth (anon → /login)", async () => {
+  it("credit requires auth (anon → 401)", async () => {
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX2", amount: "5.00" });
@@ -5928,7 +5969,7 @@ describe("payments", () => {
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX3" } }))!.outcome).toBe("dismissed");
   });
 
-  it("dismiss requires auth (anon → /login)", async () => {
+  it("dismiss requires auth (anon → 401)", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX4", amount: "1.00" });
     const res = await post("/api/payments/dismiss", null, { csrf_token: "x", binance_tx_id: "DTX4" });
     expect(res.statusCode).toBe(401);
@@ -6918,7 +6959,7 @@ describe("first-run setup gate", () => {
     await deleteSetting(prisma, "setup_completed"); // seeded admin has no password
     const apiRes = await app.inject({ method: "GET", url: "/api/dashboard/kpis" });
     expect(apiRes.statusCode).toBe(409);
-    expect(apiRes.json()).toEqual({ error: "Setup is not complete." });
+    expect(apiRes.json()).toEqual({ error: SETUP_INCOMPLETE_MESSAGE });
 
     const pageRes = await app.inject({ method: "GET", url: "/" });
     expect(pageRes.statusCode).toBe(303);

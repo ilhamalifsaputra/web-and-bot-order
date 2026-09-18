@@ -178,6 +178,34 @@ describe("ImageUploadField", () => {
     expect(reloadSpy).toHaveBeenCalledOnce();
   });
 
+  // Reproduces the bug: an expired session makes the server 303-redirect this
+  // XHR to the HTML /login page, landing here as a 200 OK with an HTML body
+  // instead of `{ url }` JSON — the un-guarded JSON.parse used to throw a
+  // raw SyntaxError straight into uploadError (the same bug class as
+  // client.ts's parseJsonOrThrow, just reached via an XHR upload instead of
+  // fetch).
+  it("shows a clear session-expired message instead of a raw JSON parse error when the 2xx body isn't JSON", async () => {
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+    });
+    const { onUploaded } = renderField();
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(200, "<!doctype html><html>...login page...</html>");
+
+    await waitFor(() =>
+      expect(screen.getByText(/session may have expired/i)).toBeInTheDocument(),
+    );
+    expect(onUploaded).not.toHaveBeenCalled();
+    // The pending file/preview are preserved (not cleared) so the admin can
+    // retry after reloading, same as any other upload failure.
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /reload/i }));
+    expect(reloadSpy).toHaveBeenCalledOnce();
+  });
+
   it("shows a brief checkmark after a successful upload when showSuccessCheckmark is set", async () => {
     const { onUploaded } = renderField({ showSuccessCheckmark: true });
     const user = await pickFile();

@@ -156,6 +156,13 @@ export default function OrderDetailPage() {
   const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
   const showVoucher = Boolean(order.discount) && order.discount !== "0";
+  // Wallet credit is a reduction like the two above it, and it was the one row
+  // missing from this stack: an order paid from the balance printed a subtotal
+  // and its discounts above a Total that was lower by the whole credit, with
+  // nothing on the page accounting for the difference. The server now derives
+  // these figures so they reconcile exactly — see
+  // apps/storefront/src/routes/buyerOrderSummary.ts.
+  const showWallet = Boolean(order.wallet_credit) && order.wallet_credit !== "0";
   const qty = order.items.length;
   const fields = order.customer_data_fields;
 
@@ -285,6 +292,11 @@ export default function OrderDetailPage() {
         {showVoucher && (
           <div className="flex justify-between py-1 text-grass-dark">
             <span>{t("web.voucher_discount")}</span> <span>−{formatIdr(order.discount)}</span>
+          </div>
+        )}
+        {showWallet && (
+          <div className="flex justify-between py-1 text-grass-dark">
+            <span>{t("web.wallet_credit_row")}</span> <span>−{formatIdr(order.wallet_credit)}</span>
           </div>
         )}
         <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">

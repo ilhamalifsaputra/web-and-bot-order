@@ -878,6 +878,7 @@
   "web.bulk_discount": "Quantity deal",
   "web.bulk_hint": "Buy {qty}+ and save {percent}%",
   "web.voucher_discount": "Voucher",
+  "web.wallet_credit_row": "Wallet credit",
   "web.place_order": "Place order & pay",
   "web.back_to_cart": "Back to cart",
   "web.pay_title": "Payment",

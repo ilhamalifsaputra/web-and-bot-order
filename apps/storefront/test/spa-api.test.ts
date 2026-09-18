@@ -54,8 +54,10 @@ import {
   setFlashSale,
   clearFlashSale,
   createPasswordResetToken,
+  adjustWallet,
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { hashPassword } from "@app/core/password";
 import { TICKET_DIR } from "../src/lib/ticketAttachments";
@@ -1552,6 +1554,47 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
       await clearCart(prisma, buyerId);
       await deleteSetting(prisma, "tokopay_merchant_id");
       await deleteSetting(prisma, "tokopay_secret");
+    }
+  });
+
+  // The buyer's own order page prints Subtotal / Quantity deal / Voucher /
+  // Total stacked on top of each other, so they have to reconcile — the same
+  // standard `enqueueBuyerOrderReadyEmailIfGuest` (packages/db/src/crud/orders.ts)
+  // holds its receipt to. Wallet credit was missing from that stack entirely,
+  // so every order paid (even partly) from the balance printed a hole the size
+  // of the credit: this cart's page showed 80.000 − 20.000 − 30.000 above a
+  // Total of Rp0, contradicting itself by the full Rp30.000.
+  it("GET /account/orders/:code prints a summary that reconciles, wallet credit included", async () => {
+    await createVoucher(prisma, { code: "RECON50", type: VoucherType.PERCENT, value: "50" });
+    await upsertBulkPricing(prisma, { denominationId: denomId, minQuantity: 2, discountPercent: "25" });
+    try {
+      await clearCart(prisma, buyerId);
+      await addToCart(prisma, buyerId, denomId, 2); // 2 × 40000 = 80000 gross
+      // 80000 − 25% bulk (20000) = 60000; the voucher takes 50% of THAT
+      // (30000), leaving 30000 for the balance to cover in full.
+      await adjustWallet(prisma, buyerId, "30000", { reason: "recon_test_topup" });
+      const placed = await placeOrder("wallet_idr", { voucher_code: "RECON50" });
+      expect(placed.statusCode).toBe(201);
+      const code = placed.json().order_code as string;
+
+      const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${code}`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const o = res.json().order;
+      expect(o.subtotal).toBe("80000");
+      expect(o.bulk_discount).toBe("20000");
+      expect(o.discount).toBe("30000");
+      expect(o.wallet_credit).toBe("30000");
+      expect(o.total).toBe("0");
+      // The identity the stacked rows assert to the reader, to the rupiah.
+      const reconciled = new Decimal(o.subtotal)
+        .minus(o.bulk_discount)
+        .minus(o.discount)
+        .minus(o.wallet_credit)
+        .plus(o.amount_marker);
+      expect(reconciled.toString()).toBe(o.total);
+    } finally {
+      await deleteBulkPricing(prisma, denomId);
+      await clearCart(prisma, buyerId);
     }
   });
 

@@ -21,6 +21,7 @@ import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { buyerOrderSummary } from "./buyerOrderSummary";
 import {
   parseTicketMultipart,
   parseNewTicketMultipart,
@@ -244,13 +245,16 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // manual_with_info fields), so the client renders nothing extra for them.
     const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
     const customerData = parseCustomerData(order.customerData);
+    const money = buyerOrderSummary(order);
     return reply.send({
       order: {
         code: order.orderCode,
         status: order.status,
-        subtotal: order.subtotalAmount.toString(),
-        discount: order.discountAmount.toString(),
-        bulk_discount: order.bulkDiscountAmount.toString(),
+        subtotal: money.subtotal.toString(),
+        discount: money.discount.toString(),
+        bulk_discount: money.bulkDiscount.toString(),
+        wallet_credit: money.walletCredit.toString(),
+        amount_marker: money.amountMarker.toString(),
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
         customer_data_fields: customerDataFields,

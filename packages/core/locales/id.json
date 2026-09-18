@@ -878,6 +878,7 @@
   "web.bulk_discount": "Diskon kuantitas",
   "web.bulk_hint": "Beli {qty}+ hemat {percent}%",
   "web.voucher_discount": "Voucher",
+  "web.wallet_credit_row": "Kredit saldo",
   "web.place_order": "Buat pesanan & bayar",
   "web.back_to_cart": "Kembali ke keranjang",
   "web.pay_title": "Pembayaran",

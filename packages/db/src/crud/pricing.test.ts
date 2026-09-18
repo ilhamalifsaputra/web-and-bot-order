@@ -26,11 +26,13 @@ import {
   DEFAULT_FX_RATE_MAX_AGE_HOURS,
   FX_REFRESH_FAILURES_KEY,
   FX_STALE_ALERTED_FOR_KEY,
+  FX_REJECTED_ALERTED_FOR_KEY,
   USDT_SPREAD_BPS_KEY,
   getUsdIdrRate,
   usdIdrRateStaleness,
   usdIdrQuoteIsFresh,
   alertIfUsdIdrRateStale,
+  alertIfFxRateRejected,
 } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
 import { enqueueAdminFxRateRejected } from "./notifications";
@@ -428,6 +430,119 @@ describe("enqueueAdminFxRateRejected — the DM a rejected refresh sends", () =>
     const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
     expect(payload.saved).toBeNull();
     expect(payload.max).toBe("40000");
+  });
+});
+
+/**
+ * Whole-branch review A4: the rejection alert had no dedupe, so a market source
+ * stuck in one failure mode DMed every admin on every hourly tick — 48 identical
+ * messages over a weekend, which is how an alert stops being read. Mirrors
+ * `alertIfUsdIdrRateStale`'s episode marker exactly.
+ */
+describe("alertIfFxRateRejected — one admin DM per rejection episode, not per tick", () => {
+  async function rejectedDmCount() {
+    return prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED } });
+  }
+
+  const belowMin = (n: number) => ({
+    reason: { reason: "below_min", min: new Decimal("8000") } as const,
+    market: new Decimal("20"),
+    rate: new Decimal("0"),
+    consecutiveFailures: n,
+  });
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await buildSampleData(prisma);
+    await setSetting(prisma, ADMIN_IDS_KEY, "4001,4002");
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+  });
+
+  it("alerts on the first refusal, then stays quiet on every later tick of the same episode", async () => {
+    expect(await alertIfFxRateRejected(prisma, belowMin(1))).toBe(true);
+    const first = await rejectedDmCount();
+    expect(first).toBeGreaterThan(0);
+
+    for (let tick = 2; tick <= 6; tick++) {
+      expect(await alertIfFxRateRejected(prisma, belowMin(tick))).toBe(false);
+    }
+    expect(await rejectedDmCount()).toBe(first);
+  });
+
+  it("alerts again when the source changes failure mode — that is genuinely new news", async () => {
+    await alertIfFxRateRejected(prisma, belowMin(1));
+    const afterFirst = await rejectedDmCount();
+
+    expect(
+      await alertIfFxRateRejected(prisma, {
+        reason: {
+          reason: "delta_too_large",
+          lastKnown: new Decimal("16000"),
+          deltaPct: new Decimal("9.4"),
+          maxDeltaPct: new Decimal("5"),
+        },
+        market: new Decimal("17500"),
+        rate: new Decimal("17500"),
+        consecutiveFailures: 2,
+      }),
+    ).toBe(true);
+    expect(await rejectedDmCount()).toBeGreaterThan(afterFirst);
+  });
+
+  it("re-arms after a confirmed refresh, so a LATER episode gets its own DM", async () => {
+    await alertIfFxRateRejected(prisma, belowMin(1));
+    const afterFirst = await rejectedDmCount();
+
+    setFxRateFetcher(async () => new Decimal("16243.7"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, FX_REJECTED_ALERTED_FOR_KEY)).toBe("");
+
+    expect(await alertIfFxRateRejected(prisma, belowMin(1))).toBe(true);
+    expect(await rejectedDmCount()).toBeGreaterThan(afterFirst);
+  });
+
+  it("re-arms when an ADMIN fixes the rate by hand, and stops the streak counter lying", async () => {
+    await setSetting(prisma, FX_REFRESH_FAILURES_KEY, "7");
+    await alertIfFxRateRejected(prisma, belowMin(7));
+    expect(await getSetting(prisma, FX_REJECTED_ALERTED_FOR_KEY)).toBe("below_min");
+
+    // The documented fix for a refresh the sanity band keeps refusing: type the
+    // rate in. That ends the streak as surely as a market refresh would.
+    await setUsdIdrRate(prisma, "16500");
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("0");
+    expect(await getSetting(prisma, FX_REJECTED_ALERTED_FOR_KEY)).toBe("");
+    expect(await getSetting(prisma, FX_STALE_ALERTED_FOR_KEY)).toBe("");
+
+    const afterFirst = await rejectedDmCount();
+    expect(await alertIfFxRateRejected(prisma, belowMin(1))).toBe(true);
+    expect(await rejectedDmCount()).toBeGreaterThan(afterFirst);
+  });
+
+  it("carries the same payload the job used to build inline", async () => {
+    await alertIfFxRateRejected(prisma, {
+      reason: {
+        reason: "delta_too_large",
+        lastKnown: new Decimal("16200"),
+        deltaPct: new Decimal("8.0234"),
+        maxDeltaPct: new Decimal("5"),
+      },
+      market: new Decimal("17500"),
+      rate: new Decimal("17500"),
+      consecutiveFailures: 3,
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED },
+    });
+    expect(JSON.parse(row!.payloadJson)).toMatchObject({
+      reason: "delta_too_large",
+      market: "17500",
+      rate: "17500",
+      saved: "16000", // the rate still pricing orders, read with allowStale
+      consecutive_failures: 3,
+      last_known: "16200",
+      delta_pct: "8.02", // rounded to 2dp for the DM, as the job did
+      max_delta_pct: "5",
+    });
   });
 });
 

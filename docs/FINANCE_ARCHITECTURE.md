@@ -249,6 +249,23 @@ Default is `"0"` — no spread, so nothing changes for a shop that never sets it
 A blank, zero, negative or unparseable value is a no-op, and so is a value of
 10000 or more (which would zero or invert the rate).
 
+**It applies to the automatic refresh only.** `applyUsdtSpread` is reached from
+`refreshUsdIdrRate` and nowhere else, so a rate an admin types into web-admin is
+saved exactly as typed. A shop that sets its rate by hand is not quietly getting a
+spread on top — it is getting none, and has to build its margin into the figure it
+types.
+
+**A spread larger than `fx_rate_max_delta_pct` deadlocks the refresh** (review
+D10). The figure the delta check judges is the post-spread one, compared against
+whatever is saved. Raise the spread above the cap — or hand-type the raw market
+figure — and the saved rate no longer carries that spread, so the next refresh is
+refused for moving too far. A refusal saves nothing, so the tick after that
+compares the same two numbers and is refused again: it never converges, and the
+rate simply ages until `fx_rate_max_age_hours` hides the USDT rail. Keep the
+spread comfortably under the cap. The two ways out are widening the cap (or
+narrowing the spread), or hand-typing the already-spread figure, which a refresh
+then reproduces with a zero delta.
+
 ### Guard 3 — the freshness stamp, and its two writers
 
 Both staleness mechanisms below read the **same** setting:
@@ -417,14 +434,34 @@ Two outbox events (`NotificationEvent`, `packages/core/src/enums.ts:659` and
 
 | Event | Enqueued by | Fires when |
 | --- | --- | --- |
-| `ADMIN_FX_RATE_REJECTED` | `enqueueAdminFxRateRejected` (`crud/notifications.ts:350`), called from `runFxRefreshTick` (`jobs/index.ts:1563`) | The hourly refresh got a rate the sanity band refused. Payload carries the reason, the market figure, the post-spread/rounding figure, the still-saved rate and the consecutive-failure count. |
+| `ADMIN_FX_RATE_REJECTED` | `enqueueAdminFxRateRejected` (`crud/notifications.ts:350`), called from `alertIfFxRateRejected` (`pricing.ts`, itself called from `runFxRefreshTick`) | The hourly refresh got a rate the sanity band refused. Payload carries the reason, the market figure, the post-spread/rounding figure, the still-saved rate and the consecutive-failure count. |
 | `ADMIN_FX_RATE_STALE` | `enqueueAdminFxRateStale` (`crud/notifications.ts:404`), called from `alertIfUsdIdrRateStale` (`pricing.ts:448`, itself called from `runFxRefreshTick`) | The saved rate aged past `fx_rate_max_age_hours`, so the USDT rail is now hidden shop-wide. |
 
-`alertIfUsdIdrRateStale` fires **once per staleness episode**, not once per
-hourly tick. The episode key is the freshness stamp itself, remembered in
-`fx_stale_alerted_for`; a later refresh clears that marker and writes a new
-stamp, so a subsequent staleness episode is a genuinely different outage and
-gets its own DM.
+**Both alerts fire once per EPISODE, not once per hourly tick**, each through its
+own marker in the settings table:
+
+- `alertIfUsdIdrRateStale`'s episode key is the freshness stamp itself,
+  remembered in `fx_stale_alerted_for`. A later refresh clears that marker and
+  writes a new stamp, so a subsequent staleness episode is a genuinely different
+  outage and gets its own DM.
+- `alertIfFxRateRejected`'s episode key is the rejection's **reason**, remembered
+  in `fx_rejected_alerted_for`. A source stuck in one failure mode produces the
+  same reason every hour with no new information in it, so only the first gets a
+  DM (whose `consecutive_failures` figure says how long the streak has run). A
+  reason that *changes* — below the floor one hour, past the delta cap the next —
+  is different news and gets its own DM. The figures deliberately stay out of the
+  key, or a drifting source would make every tick a fresh "episode".
+
+Both markers are re-armed by `clearFxFailureState`, which runs whenever a rate is
+confirmed — by a market refresh **or by an admin typing it in** (`setUsdIdrRate`).
+The manual path matters: typing the rate in is the remedy the rejection DM
+recommends, so it has to end the streak (`fx_refresh_failures` back to `"0"`) as
+well as the episode, or the next DM would quote a failure count from a run that
+was already over.
+
+web-admin's own "update now" button never alerts at all — the admin who pressed it
+is reading the refusal on screen — and therefore never marks an episode as
+told-about, so it cannot silence the cron.
 
 The staleness check runs even when the refresh threw or was disabled — those are
 precisely the states that *produce* staleness — and the two failure paths are
@@ -917,14 +954,15 @@ check is off"**, never "reject everything".
 | `usd_idr_rate_auto` | on | `"false"` = off | Turns the hourly market refresh off. The admin's "update now" button bypasses it. | Yes |
 | `usd_idr_rate_rounding` | `100` | IDR | Step the fetched rate is rounded to (after spread). | Yes |
 | `usd_idr_rate_updated_at` | — | ISO timestamp | Freshness stamp. Written only by `setUsdIdrRate` / `stampUsdIdrRateConfirmed`. | No (internal) |
-| `usdt_spread_bps` | `0` | basis points | Shaves the market rate *down* → buyer sends more USDT (protective). | Yes |
+| `usdt_spread_bps` | `0` | basis points | Shaves the market rate *down* → buyer sends more USDT (protective). Automatic refresh only; never applied to a hand-typed rate. Keep it under `fx_rate_max_delta_pct`. | Yes |
 | `fx_rate_min` | `8000` | IDR per USDT | Sanity floor. Refuses a refresh below it. | Yes |
 | `fx_rate_max` | `40000` | IDR per USDT | Sanity ceiling. Refuses a refresh above it. | Yes |
 | `fx_rate_max_delta_pct` | `5` | percent | Max move one refresh may make from the saved rate. | Yes |
 | `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, checkout stops offering the USDT rails and `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | Yes |
 | `fx_rate_max_age_hours` | `48` | **hours** | Past it, `getUsdIdrRate` returns null and the **whole USDT rail** is hidden. | Yes |
-| `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed refresh. | No (internal) |
+| `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed rate — a refresh or a hand-typed one. | No (internal) |
 | `fx_stale_alerted_for` | — | ISO timestamp | Which staleness episode admins were already DMed about. | No (internal) |
+| `fx_rejected_alerted_for` | — | rejection reason | Which rejection episode admins were already DMed about. | No (internal) |
 | `min_order_amount_idr` | `1000` | IDR | Shop-wide minimum for any rail without its own override. Only a MISSING row takes the default; a blank one means "no shop-wide minimum". | Yes |
 | `<rail>_min_amount` | unset | rail's own currency | Per-rail override: `tokopay_`, `paydisini_`, `nowpayments_`, `bybit_`, `bybit_bsc_`, `binance_internal_`. | Yes |
 

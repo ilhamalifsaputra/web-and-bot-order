@@ -48,8 +48,7 @@ import {
   failBroadcast,
   refreshUsdIdrRate,
   alertIfUsdIdrRateStale,
-  getUsdIdrRate,
-  enqueueAdminFxRateRejected,
+  alertIfFxRateRejected,
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
   runStorageCleanup,
@@ -1543,12 +1542,15 @@ export function scheduleFxRefresh(): Cron {
  * side-effect-free read, and alerting from it would mean a DM per page view.
  * Once an hour is ample for a horizon measured in days.
  *
- * Alerting goes through the outbox (`enqueueAdminFxRateRejected`,
+ * Alerting goes through the outbox (`alertIfFxRateRejected`,
  * `alertIfUsdIdrRateStale`), never a direct `api.sendMessage`: this job holds
  * no bot `Api` on purpose, because it must keep running on a web-only boot
- * (§16.3). The two failures are also kept isolated from each other — a
- * throwing refresh must not skip the staleness check, and a failing enqueue
- * must not take down the tick.
+ * (§16.3). Both alerts fire once per EPISODE rather than once per tick, each
+ * through its own marker in the settings table, re-armed by the next confirmed
+ * rate — so a source stuck in one failure mode does not turn into an hourly DM
+ * to every admin for as long as it stays stuck. The two failures are also kept
+ * isolated from each other — a throwing refresh must not skip the staleness
+ * check, and a failing enqueue must not take down the tick.
  */
 export async function runFxRefreshTick(): Promise<void> {
   try {
@@ -1560,17 +1562,17 @@ export async function runFxRefreshTick(): Promise<void> {
       // much; this is the part it deliberately leaves to its caller, because
       // the admin panel's own refresh button answers its admin on screen and
       // must not also DM everyone. Nobody is watching this one.
-      await enqueueAdminFxRateRejected(prisma, {
-        reason: r.reason.reason,
+      //
+      // Once per EPISODE, not once per tick: `alertIfFxRateRejected` owns the
+      // dedupe marker and the payload, the same way `alertIfUsdIdrRateStale`
+      // below owns the staleness one. Building the payload here as well would
+      // have put the DM's contents in the job and the "have they been told
+      // already" rule in crud, which is how the two drift apart.
+      await alertIfFxRateRejected(prisma, {
+        reason: r.reason,
         market: r.market,
         rate: r.rate,
-        saved: await getUsdIdrRate(prisma, { allowStale: true }),
         consecutiveFailures: r.consecutiveFailures,
-        ...(r.reason.reason === "below_min" ? { min: r.reason.min } : {}),
-        ...(r.reason.reason === "above_max" ? { max: r.reason.max } : {}),
-        ...(r.reason.reason === "delta_too_large"
-          ? { lastKnown: r.reason.lastKnown, deltaPct: r.reason.deltaPct.toDecimalPlaces(2), maxDeltaPct: r.reason.maxDeltaPct }
-          : {}),
       });
     }
   } catch (err) {

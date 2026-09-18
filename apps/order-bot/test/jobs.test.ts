@@ -2452,4 +2452,47 @@ describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => 
     }
     expect((await staleDms()).length).toBe(2); // still one per admin, not four
   });
+
+  // Whole-branch review A4: the rejection alert is the sibling of the staleness
+  // one above and now dedupes the same way. A misconfigured rate source is a
+  // standing condition, not an event, so repeating its DM hourly for days only
+  // teaches the admins to ignore the category.
+  it("tells the admins about a rejection episode exactly once, however many ticks run", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      for (let tick = 0; tick < 4; tick++) await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await rejectedDms()).length).toBe(2); // one per admin, not eight
+    // The streak itself is still counted — the single DM's figure is what tells
+    // an admin how long this has been going on.
+    expect(await getSetting(prisma, "fx_refresh_failures")).toBe("4");
+  });
+
+  it("re-arms after a good tick, so a second episode gets its own DM", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      setFxRateFetcher(async () => new Decimal("17500"));
+      await runFxRefreshTick();
+      expect((await rejectedDms()).length).toBe(2);
+
+      // A tick the market answers plausibly ends the episode…
+      setFxRateFetcher(async () => new Decimal("16100"));
+      await runFxRefreshTick();
+
+      // …so the next bad answer is a new one and is reported again.
+      setFxRateFetcher(async () => new Decimal("19000"));
+      await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await rejectedDms()).length).toBe(4);
+  });
 });

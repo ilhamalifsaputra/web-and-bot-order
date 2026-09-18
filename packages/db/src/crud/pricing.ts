@@ -28,7 +28,7 @@ import type { Db } from "./_types";
 import { getSetting, setSetting } from "./settings";
 import { assertOrderTotalClearsRailMinimum } from "./orderMinimums";
 import { getOrder } from "./orders";
-import { enqueueAdminFxRateStale } from "./notifications";
+import { enqueueAdminFxRateStale, enqueueAdminFxRateRejected } from "./notifications";
 
 /** Settings key: Rupiah per 1 USDT (e.g. "16000"), set in web-admin. */
 export const USD_IDR_RATE_KEY = "usd_idr_rate";
@@ -95,7 +95,22 @@ export const DEFAULT_FX_RATE_MIN = "8000";
 export const FX_RATE_MAX_KEY = "fx_rate_max";
 /** Documented default for {@link FX_RATE_MAX_KEY}: Rp40.000 per USDT. */
 export const DEFAULT_FX_RATE_MAX = "40000";
-/** How far one refresh may move the saved rate, in percent. */
+/**
+ * How far one refresh may move the saved rate, in percent.
+ *
+ * Interacts with {@link USDT_SPREAD_BPS_KEY}, and the interaction is a trap
+ * worth stating (whole-branch review D10/A4). The figure judged against this cap
+ * is the POST-spread, post-rounding rate, compared against whatever is saved. So
+ * if the spread exceeds this percentage and the saved rate does not already
+ * carry that spread — right after it was raised, or after an admin typed the raw
+ * market figure in — the very first refresh is refused for moving too far. And
+ * because a refusal saves nothing, the next tick compares the same new rate
+ * against the same un-spread saved one and is refused again: the shop never
+ * converges, and the rate simply ages until `fx_rate_max_age_hours` hides the
+ * USDT rail. Keep the spread comfortably under this cap. The two ways out are to
+ * widen the cap (or narrow the spread), or to hand-type the already-spread
+ * figure, which a refresh then reproduces with a zero delta.
+ */
 export const FX_RATE_MAX_DELTA_PCT_KEY = "fx_rate_max_delta_pct";
 /** Documented default for {@link FX_RATE_MAX_DELTA_PCT_KEY}: 5%. */
 export const DEFAULT_FX_RATE_MAX_DELTA_PCT = "5";
@@ -124,6 +139,17 @@ export const DEFAULT_FX_RATE_MAX_AGE_HOURS = "48";
  * tweak. See `applyUsdtSpread`'s own comment for why lowering the rate is the
  * protective direction. Default {@link DEFAULT_USDT_SPREAD_BPS} = no spread,
  * so nothing changes for a shop that never sets it.
+ *
+ * Two things this spread is NOT (whole-branch review A4):
+ *  - It applies ONLY to the automatic market refresh, which is the only path
+ *    that runs {@link applyUsdtSpread}. A rate an admin types into web-admin is
+ *    saved exactly as typed ({@link setUsdIdrRate} does not touch it), so a shop
+ *    that sets its rate by hand is not quietly getting a spread on top — it is
+ *    getting none at all, and has to build its margin into the figure it types.
+ *  - It is not free of the sanity band. Because the spread moves the figure that
+ *    band judges, a spread larger than {@link FX_RATE_MAX_DELTA_PCT_KEY} makes
+ *    every refresh get refused, permanently — see that key's own comment for
+ *    why it never self-corrects.
  */
 export const USDT_SPREAD_BPS_KEY = "usdt_spread_bps";
 /** Documented default for {@link USDT_SPREAD_BPS_KEY}: no spread at all. */
@@ -148,6 +174,25 @@ export const FX_REFRESH_FAILURES_KEY = "fx_refresh_failures";
  * that cycle produces a different stamp. Cleared by every successful refresh.
  */
 export const FX_STALE_ALERTED_FOR_KEY = "fx_stale_alerted_for";
+
+/**
+ * Settings key: which REJECTION episode the shop's admins have already been
+ * DMed about. Internal bookkeeping for {@link alertIfFxRateRejected}, never an
+ * admin-editable field — the exact counterpart of
+ * {@link FX_STALE_ALERTED_FOR_KEY} for the other FX failure mode, and cleared by
+ * the same {@link clearFxFailureState}.
+ *
+ * The episode key is the rejection's REASON, not its figures. A source stuck in
+ * one failure mode produces the same reason every hour, and after the first DM
+ * there is no new information in the next one — the sentence, the settings to go
+ * and check and the action to take are identical, and an hourly repeat of it for
+ * days is how an alert stops being read. A reason that CHANGES (the source went
+ * from answering below the floor to jumping past the delta cap) is genuinely
+ * different news and gets its own DM. The figures deliberately do not enter the
+ * key: a drifting market source would otherwise make every tick a fresh
+ * "episode" and defeat the whole mechanism.
+ */
+export const FX_REJECTED_ALERTED_FOR_KEY = "fx_rejected_alerted_for";
 
 // Swappable market-rate fetcher so tests never hit the network.
 let fxFetcher: () => Promise<Decimal> = () => fetchUsdIdrMarketRate();
@@ -174,6 +219,13 @@ export function setFxRateFetcher(fn: () => Promise<Decimal>): void {
 export async function setUsdIdrRate(db: Db, rate: Decimal.Value): Promise<void> {
   await setSetting(db, USD_IDR_RATE_KEY, String(rate));
   await stampUsdIdrRateConfirmed(db);
+  // An admin typing the rate in by hand is the documented fix for BOTH FX
+  // failure modes — a refresh the sanity band keeps refusing, and a rate that
+  // aged out — so it ends whatever episode was in progress, exactly as a
+  // confirmed market refresh does. Without this, an admin who corrected the
+  // rate themselves left `fx_refresh_failures` reading "7 in a row" for a
+  // streak that was over, which is the figure the rejection DM quotes.
+  await clearFxFailureState(db);
 }
 
 /**
@@ -241,15 +293,17 @@ async function countFxRefreshFailure(db: Db): Promise<number> {
 }
 
 /**
- * A refresh confirmed a rate against the market, so the shop is out of both
- * failure modes at once: the streak of refused fetches is over, and whatever
- * staleness episode the admins were told about has ended. Clearing the episode
- * marker here (rather than waiting for the next staleness check) is what lets
- * a LATER episode raise a fresh DM instead of being swallowed as a repeat.
+ * A rate was confirmed — by a market refresh, or by an admin typing it in — so
+ * the shop is out of every FX failure mode at once: the streak of refused
+ * fetches is over, and neither the staleness episode nor the rejection episode
+ * the admins were told about is still running. Clearing both episode markers
+ * here (rather than waiting for the next check) is what lets a LATER episode
+ * raise a fresh DM instead of being swallowed as a repeat.
  */
 async function clearFxFailureState(db: Db): Promise<void> {
   await setSetting(db, FX_REFRESH_FAILURES_KEY, "0");
   await setSetting(db, FX_STALE_ALERTED_FOR_KEY, "");
+  await setSetting(db, FX_REJECTED_ALERTED_FOR_KEY, "");
 }
 
 /**
@@ -475,6 +529,60 @@ export async function alertIfUsdIdrRateStale(db: Db): Promise<boolean> {
     maxAgeHours: stale.maxAgeHours,
   });
   await setSetting(db, FX_STALE_ALERTED_FOR_KEY, episode);
+  return true;
+}
+
+/**
+ * Tell every admin, ONCE per rejection episode, that the market refresh keeps
+ * being refused by the sanity band. Returns whether it actually enqueued
+ * anything.
+ *
+ * The exact sibling of {@link alertIfUsdIdrRateStale}, deliberately: same
+ * outbox fan-out, same "marker written only after the enqueue succeeded", same
+ * re-arm through {@link clearFxFailureState} on the next confirmed rate. It is
+ * called from the hourly `runFxRefreshTick`, which is the only unattended
+ * caller. web-admin's own "update now" button does NOT call it — the admin who
+ * pressed it is reading the refusal on screen, and DMing everyone about a
+ * failure one of them just triggered on purpose is how the alert that matters
+ * (the unattended one) gets trained away. That also means a manual attempt
+ * never marks an episode as told-about, so it cannot silence the cron.
+ *
+ * Before this, every hourly tick of the same stuck source sent a fresh DM to
+ * every admin — a source misconfigured on a Friday was 48 identical messages by
+ * Monday. The `consecutiveFailures` figure carried in the one DM that is sent
+ * still says how long the streak has been running.
+ */
+export async function alertIfFxRateRejected(
+  db: Db,
+  rejection: {
+    reason: FxRateRejection;
+    /** The raw figure the market source returned. */
+    market: Decimal;
+    /** What it became after the spread and rounding — the figure actually judged. */
+    rate: Decimal;
+    consecutiveFailures: number;
+  },
+): Promise<boolean> {
+  const episode = rejection.reason.reason;
+  if ((await getSetting(db, FX_REJECTED_ALERTED_FOR_KEY)) === episode) return false;
+
+  const reason = rejection.reason;
+  await enqueueAdminFxRateRejected(db, {
+    reason: reason.reason,
+    market: rejection.market,
+    rate: rejection.rate,
+    // What orders are being priced with right now — the first thing an admin
+    // reading this would otherwise go and look up. `allowStale` because the
+    // whole point of the DM is that this rate is not being re-confirmed.
+    saved: await getUsdIdrRate(db, { allowStale: true }),
+    consecutiveFailures: rejection.consecutiveFailures,
+    ...(reason.reason === "below_min" ? { min: reason.min } : {}),
+    ...(reason.reason === "above_max" ? { max: reason.max } : {}),
+    ...(reason.reason === "delta_too_large"
+      ? { lastKnown: reason.lastKnown, deltaPct: reason.deltaPct.toDecimalPlaces(2), maxDeltaPct: reason.maxDeltaPct }
+      : {}),
+  });
+  await setSetting(db, FX_REJECTED_ALERTED_FOR_KEY, episode);
   return true;
 }
 

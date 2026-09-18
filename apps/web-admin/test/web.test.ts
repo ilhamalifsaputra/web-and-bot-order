@@ -5682,6 +5682,27 @@ describe("settings: USDT rate from the market", () => {
     expect(entry).toBeTruthy();
   });
 
+  // Whole-branch review A4. Typing the rate in is the documented remedy for a
+  // refresh the sanity band keeps refusing (the rejection DM says so), so it has
+  // to end the episode: otherwise the streak counter the next DM quotes keeps
+  // climbing from a run that is over, and the dedupe marker keeps suppressing a
+  // genuinely new failure.
+  it("typing the rate in by hand ends the refusal streak and re-arms the rejection alert", async () => {
+    await setSetting(prisma, "fx_refresh_failures", "7");
+    await setSetting(prisma, "fx_rejected_alerted_for", "delta_too_large");
+    await setSetting(prisma, "fx_stale_alerted_for", new Date().toISOString());
+
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "16500",
+    });
+    expect(res.statusCode).toBe(200);
+
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16500");
+    expect(await getSetting(prisma, "fx_refresh_failures")).toBe("0");
+    expect(await getSetting(prisma, "fx_rejected_alerted_for")).toBe("");
+    expect(await getSetting(prisma, "fx_stale_alerted_for")).toBe("");
+  });
+
   it("the sanity-band fields are editable from the settings page", async () => {
     for (const [key, value] of [
       ["fx_rate_min", "9000"],

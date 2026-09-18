@@ -1959,12 +1959,12 @@ model DetectionIssue {
 // (FinancialTransaction.reversalOfId). Every FK here is Restrict/NoAction for
 // the same Infra-5 reason the rest of this schema's financial-audit rows are.
 //
-// M1 SCOPE: these tables, their enums (@app/core/enums) and the
-// chart-of-accounts seed (scripts/seed-chart-of-accounts.ts) only. NOTHING
-// posts to this ledger yet — there is no posting service, and no payment,
-// order or refund code path writes a FinancialTransaction or LedgerEntry. Do
-// not assume a balance read off these tables is complete until that wiring
-// lands in a later milestone.
+// ~~M1 SCOPE: NOTHING posts to this ledger yet.~~ Stale as of M2/M3: the
+// posting service (packages/db/src/crud/ledger.ts) and its callers
+// (packages/db/src/crud/ledgerPostings.ts, called from every real order,
+// payment, wallet and refund code path) have existed since those milestones.
+// A balance read off these tables is complete with respect to production
+// traffic, not just what tests posted.
 // ---------------------------------------------------------------------------
 
 /// One row of the chart of accounts — the fixed set of buckets every
@@ -2019,8 +2019,11 @@ model LedgerAccount {
 /// unique key the ledger would silently double-count real money. It is unique
 /// across the whole table (not scoped to a reference) so the caller has to
 /// construct a key that names the specific event, not just the row it hangs off
-/// — the convention, for the posting service to enforce, is
-/// `<type>:<referenceType>:<referenceId>[:<discriminator>]`.
+/// it. The posting service enforces uniqueness and non-blankness only — it does
+/// not enforce a shape. `ledgerPostings.ts` (the actual sole caller today) uses
+/// `order:{orderId}:payment`, `order:{orderId}:topup`, `wallet:{walletTransactionId}`
+/// and `refund_execution:{refundExecutionId}`, chosen so each is disjoint from
+/// the others without needing a shared prefix.
 ///
 /// `referenceType`/`referenceId` are an intentionally UNTYPED back-pointer
 /// ("order" | "payment" | "refund_execution" | "wallet_topup" | "manual"), not
@@ -2095,9 +2098,11 @@ model FinancialTransaction {
 ///      existing currency-snapshot convention (Payment.currency,
 ///      Refund.currency).
 /// Postgres cannot express #2 (a cross-row aggregate) and this schema does not
-/// use CHECK constraints for #1/#3 either; the posting service is the only
-/// writer, and it is where these are checked. Do not assume they hold of
-/// arbitrary rows — that service does not exist yet in this milestone.
+/// use CHECK constraints for #1/#3 either; `postFinancialTransaction`
+/// (packages/db/src/crud/ledger.ts) is the ledger's only writer and is where
+/// these are checked before the first INSERT. They hold of every row this
+/// service wrote (which is every row in this table — nothing else writes
+/// here); they are not enforced at the database level.
 model LedgerEntry {
   id                     Int      @id @default(autoincrement())
   financialTransactionId Int      @map("financial_transaction_id")

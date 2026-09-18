@@ -9,7 +9,8 @@
  * corruption of the ledger's own foundation.
  *
  * Deliberately NOT covered here: anything posting a FinancialTransaction or
- * LedgerEntry. No posting service exists in this milestone.
+ * LedgerEntry — that's `postFinancialTransaction`'s own test file,
+ * `ledger.test.ts`. This file is the chart of accounts alone.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";

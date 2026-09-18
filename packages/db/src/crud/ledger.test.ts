@@ -18,9 +18,11 @@
  * only ever tested sequentially proves nothing about two webhook deliveries
  * landing in the same millisecond.
  *
- * Deliberately NOT covered here: reversal transactions, any order/payment/
- * wallet/refund wiring, and any caching of the chart of accounts — none of
- * that exists in this milestone (later milestones own it).
+ * Deliberately NOT covered here: real order/payment/wallet/refund call sites
+ * (that's `ledger_postings.test.ts`, exercising the same posting service
+ * against real settlement paths). Reversal transactions and any caching of
+ * the chart of accounts genuinely do not exist anywhere in this branch as of
+ * M20 — no milestone ended up needing either.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -67,9 +69,10 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
-  // `resetDb` (tests/helpers/sampleData.ts) does not touch the ledger tables,
-  // so clear them here. Children first: LedgerEntry → FinancialTransaction and
-  // → LedgerAccount are both onDelete: Restrict (Infra-5 policy).
+  // This file never calls `resetDb` (tests/helpers/sampleData.ts) — it does
+  // touch the ledger tables since M3, but only this file's own manual cleanup
+  // runs here. Children first: LedgerEntry → FinancialTransaction and →
+  // LedgerAccount are both onDelete: Restrict (Infra-5 policy).
   await prisma.ledgerEntry.deleteMany();
   await prisma.financialTransaction.deleteMany();
   await prisma.ledgerAccount.deleteMany();
@@ -149,8 +152,9 @@ describe("postFinancialTransaction — happy path", () => {
       idempotencyKey: "ORDER_PAYMENT:payment:41",
       description: "Buyer paid order ORD-1 through the gateway.",
       occurredAt: OCCURRED_AT.toISOString(),
-      // A REVERSAL's back-pointer is a later milestone's business; a normal
-      // posting must never set one.
+      // A REVERSAL's back-pointer: no code anywhere in this branch posts one
+      // yet (no reversal helper was ever built — see ledger.ts's own doc
+      // comment), but a normal posting must never set one regardless.
       reversalOfId: null,
     });
     // `postedAt` is when the row was written here, `occurredAt` when the money

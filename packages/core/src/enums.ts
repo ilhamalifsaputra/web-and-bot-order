@@ -906,13 +906,16 @@ export const zAdminTaskStatus = z.nativeEnum(AdminTaskStatus);
  * Prisma enum, matching every other classification column in this schema.
  *
  * ASSET/EXPENSE accounts increase on DEBIT; LIABILITY/REVENUE/EQUITY accounts
- * increase on CREDIT. CLEARING is a normal-balance-agnostic transit account:
- * money that has left the buyer but has not yet landed in a `cash.*` account
- * (a gateway holding a settlement, a refund approved but not yet paid out)
- * sits there so it is never double-counted as cash on hand. A CLEARING
- * account is expected to trend back toward zero; a persistent balance on one
- * is the signal that something never settled, which is the whole reason this
- * type exists as its own classification rather than being filed under ASSET.
+ * increase on CREDIT. CLEARING is meant as a normal-balance-agnostic transit
+ * classification for money that has left the buyer but not yet landed in
+ * `cash.*` — but the actual chart of accounts (`ledgerAccounts.ts`'s own doc
+ * comment explains this in full) deliberately types NEITHER real clearing
+ * account as CLEARING: `provider_clearing.*` is ASSET and `refund_clearing.*`
+ * is LIABILITY, specifically because a trial balance can only close if each
+ * side is classified by its actual normal balance, and CLEARING would force a
+ * report to guess a sign. This value is therefore currently unused by any
+ * seeded account — read `ledgerAccounts.ts` before adding a new account typed
+ * CLEARING, since the chart's own reasoning argues against it in most cases.
  */
 export const LedgerAccountType = {
   ASSET: "ASSET",
@@ -930,8 +933,8 @@ export const zLedgerAccountType = z.nativeEnum(LedgerAccountType);
  * double-entry a single ledger line sits on. `LedgerEntry.amount` is ALWAYS
  * stored positive; this column carries the sign. A balanced
  * FinancialTransaction's DEBIT entries and CREDIT entries sum to the same
- * total per currency, which is the invariant the ledger posting service
- * (a later milestone) enforces — nothing in this milestone posts entries yet.
+ * total per currency, which is the invariant `postFinancialTransaction`
+ * (packages/db/src/crud/ledger.ts, since M2) enforces before the first INSERT.
  */
 export const LedgerDirection = {
   DEBIT: "DEBIT",

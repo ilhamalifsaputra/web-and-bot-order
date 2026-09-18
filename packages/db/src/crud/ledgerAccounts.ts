@@ -8,10 +8,11 @@
  * code refers to, precisely so this seed can run against a fresh database and
  * an already-seeded one and leave posting code working either way.
  *
- * Deliberately NOT in this file: anything that posts to the ledger. There is
- * no FinancialTransaction/LedgerEntry writer anywhere yet — that posting
- * service is a later milestone. This file only installs the buckets it will
- * eventually post into.
+ * Deliberately NOT in this file: anything that posts to the ledger — that's
+ * `packages/db/src/crud/ledger.ts`'s `postFinancialTransaction` (the ledger's
+ * only writer, since M2) and its callers in `ledgerPostings.ts` (wired to
+ * every real order/payment/wallet/refund path since M3). This file only
+ * installs the buckets they post into.
  */
 import { LedgerAccountType, OrderCurrency } from "@app/core/enums";
 import type { Db } from "./_types";

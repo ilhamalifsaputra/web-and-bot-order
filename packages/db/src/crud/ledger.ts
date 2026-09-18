@@ -85,11 +85,11 @@ export interface PostFinancialTransactionArgs {
   referenceType: string;
   referenceId: number;
   /**
-   * Caller-derived and globally unique — the retry guard. The convention this
-   * service expects (FinancialTransaction's doc comment) is
-   * `<type>:<referenceType>:<referenceId>[:<discriminator>]`. Posting the same
-   * key twice returns the first posting instead of creating a second one or
-   * throwing.
+   * Caller-derived and globally unique — the retry guard. This service only
+   * enforces uniqueness and non-blankness, never a shape (see
+   * FinancialTransaction's own doc comment for the actual keys
+   * `ledgerPostings.ts` derives). Posting the same key twice returns the
+   * first posting instead of creating a second one or throwing.
    */
   idempotencyKey: string;
   /**
@@ -391,20 +391,30 @@ export async function postFinancialTransaction(
     // ledger service itself refused the posting and carries the error, while
     // that one names the business event and what an admin has to do about it.
     //
-    // The consequence clause forks on two things a blanket "money already
+    // The consequence clause forks on three things a blanket "money already
     // moved, hand-post an entry" sentence gets wrong on real paths: (a) not
     // every rejection here is a validation failure — `prepareEntries` reads the
     // chart of accounts first, so a connection reset or timeout lands in this
     // same catch and is not a caller bug; (b) when this call is nested inside a
     // caller's own transaction (executeRefund's payout, for one), throwing here
-    // aborts that whole transaction — including whatever money movement it had
-    // already made — so nothing was actually kept, and hand-posting an entry
-    // would fabricate one for a payout that never happened. Only the
-    // owns-its-own-transaction case has genuinely persisted money to reconcile.
+    // NORMALLY aborts that whole transaction — including whatever money
+    // movement it had already made — so nothing was actually kept, and
+    // hand-posting an entry would fabricate one for a payout that never
+    // happened; (c) the one exception to (b): `error.ledger_account_not_found`
+    // specifically is caught and SWALLOWED one layer up by
+    // `postOrSkipMissingAccount` (./ledgerPostings.ts), which is exactly what
+    // makes the overlap noted above deliberate — that catch does not rethrow,
+    // so the caller's transaction is still healthy and its own money movement
+    // DOES commit even though this call is nested. A blanket "nothing needs a
+    // manual entry" for every nested case would be false for that one, most
+    // common failure (an unseeded chart of accounts).
     const isValidation = e instanceof ValidationError;
+    const isMissingAccount = e instanceof ValidationError && e.key === "error.ledger_account_not_found";
     const consequence = ownsTransaction
       ? "the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected"
-      : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
+      : isMissingAccount
+        ? "this call was nested inside the caller's own transaction — if that caller swallows a missing ledger account and continues (see postOrSkipMissingAccount), its own money movement still committed and needs a manual entry once the account is seeded; if it does not, its transaction rolled back with this one and nothing needs a manual entry"
+        : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
     logger.error(
       { err: e, idempotencyKey: args.idempotencyKey },
       isValidation

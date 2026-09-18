@@ -58,7 +58,21 @@
  * apps/web-admin/src/routes/orderMoneyView.ts has the same one) — mixing the two
  * scales inside the derivation below would turn it into confident nonsense
  * instead of the honest passthrough it is today, so a non-IDR order keeps
- * exactly the figures it has always been shown, unchanged.
+ * exactly the central-IDR figures it has always been shown, unchanged.
+ *
+ * The ONE exception, and the reason it is an exception: `walletUsed` on a USDT
+ * order is a USDT figure, and the page prints the wallet row with `formatIdr`.
+ * So the open gap above — IDR figures shown at IDR scale on a page that also
+ * shows a USDT total — was, for this row only, an IDR label on a USDT number:
+ * a buyer who spent 30 USDT of credit was shown "−Rp30.000", off by the whole
+ * exchange rate. It is suppressed for a non-IDR order rather than converted or
+ * relabelled. Hiding a row the buyer can still check in their own balance
+ * history is incomplete; printing a figure ~16.000× wrong is a support ticket
+ * and a plausible refund dispute. Converting it here would mean deriving a
+ * Rupiah wallet figure from a USDT column and printing it beside a USDT total —
+ * the confident nonsense the paragraph above refuses. Showing it properly needs
+ * the page to format per-currency, which is the L-1 gap itself and is not one
+ * row's fix to make.
  */
 import { Decimal } from "@app/core/money";
 import { OrderCurrency } from "@app/core/enums";
@@ -82,11 +96,10 @@ export interface BuyerOrderSummary {
   bulkDiscount: Decimal;
   /** The voucher row — derived for an IDR order (see the module comment). */
   discount: Decimal;
+  /** Balance spent, in Rupiah. Zero for a non-IDR order, where the stored
+   * figure is USDT and the page has no way to say so — see the module comment's
+   * "ONE exception" paragraph. */
   walletCredit: Decimal;
-  /** The unique-cents payment marker. Always zero on an IDR order (the IDR
-   * branch of `finalizeOrderPayment` strips it), printed for completeness so
-   * the identity holds without a currency special case in the client. */
-  amountMarker: Decimal;
 }
 
 const ZERO = new Decimal(0);
@@ -94,19 +107,40 @@ const ZERO = new Decimal(0);
 export function buyerOrderSummary(order: BuyerOrderSummaryInput): BuyerOrderSummary {
   const subtotal = new Decimal(order.subtotalAmount);
   const bulkDiscount = new Decimal(order.bulkDiscountAmount);
-  const walletCredit = new Decimal(order.walletUsed);
-  const amountMarker = new Decimal(order.uniqueCents);
+  // The unique-cents payment marker. Only ever nonzero on a USDT order (the IDR
+  // branch of `finalizeOrderPayment` strips it), and needed here purely to get
+  // back to the figure the discounts were computed against. It used to be
+  // returned and sent to the client as `amount_marker` "so the identity holds
+  // without a currency special case"; no client code ever read it, and it could
+  // not have helped — the only orders where it is nonzero are exactly the
+  // non-IDR ones this function does not derive for.
+  const marker = new Decimal(order.uniqueCents);
 
   // A converted order's figures are on two different scales — left alone on
-  // purpose, see the module comment's last paragraph.
-  if (order.currency !== OrderCurrency.IDR && order.fxRate) {
-    return { subtotal, bulkDiscount, discount: new Decimal(order.discountAmount), walletCredit, amountMarker };
+  // purpose, see the module comment's last two paragraphs.
+  //
+  // Gated on the CURRENCY alone. This used to also require `order.fxRate`,
+  // which inverted the intent: the only writer of `currency = "USDT"` is
+  // `finalizeOrderPayment`'s USDT branch, which stamps `fxRate` in the same
+  // update, so the extra condition never changed the outcome — but had a
+  // USDT-stamped order without a snapshot ever existed, the guard would have
+  // sent precisely that order into the IDR derivation below and subtracted
+  // Rupiah discounts from a USDT total. A currency the derivation does not
+  // understand is reason enough not to derive.
+  if (order.currency !== OrderCurrency.IDR) {
+    return {
+      subtotal,
+      bulkDiscount,
+      discount: new Decimal(order.discountAmount),
+      walletCredit: ZERO,
+    };
   }
 
   // What the buyer was actually asked for, with the matching marker taken back
   // off: the one figure that is exact by construction, because
   // `finalizeOrderPayment` built `totalAmount` from it.
-  const net = new Decimal(order.totalAmount).minus(amountMarker);
+  const walletCredit = new Decimal(order.walletUsed);
+  const net = new Decimal(order.totalAmount).minus(marker);
   // Every reduction between the subtotal and that figure, at once — so a
   // reduction this page has no row for can never silently vanish (which is how
   // wallet credit went unprinted in the first place). `Decimal.max` is
@@ -116,5 +150,5 @@ export function buyerOrderSummary(order: BuyerOrderSummaryInput): BuyerOrderSumm
   const reductions = Decimal.max(ZERO, subtotal.minus(net).minus(walletCredit));
   // Anything the quantity-deal row cannot account for lands on the voucher row.
   const discount = Decimal.max(ZERO, reductions.minus(bulkDiscount));
-  return { subtotal, bulkDiscount, discount, walletCredit, amountMarker };
+  return { subtotal, bulkDiscount, discount, walletCredit };
 }

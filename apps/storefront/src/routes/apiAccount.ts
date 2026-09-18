@@ -254,7 +254,6 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         discount: money.discount.toString(),
         bulk_discount: money.bulkDiscount.toString(),
         wallet_credit: money.walletCredit.toString(),
-        amount_marker: money.amountMarker.toString(),
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
         customer_data_fields: customerDataFields,

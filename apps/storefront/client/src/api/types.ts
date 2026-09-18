@@ -506,13 +506,12 @@ export interface OrderDetailData {
     subtotal: string;
     discount: string;
     bulk_discount: string;
-    /** Balance spent on this order. Its own row in the summary: while it went
-     * unprinted, a wallet-paid order's stacked figures were short by the whole
-     * credit (see apps/storefront/src/routes/buyerOrderSummary.ts). */
+    /** Balance spent on this order, in Rupiah. Its own row in the summary: while
+     * it went unprinted, a wallet-paid order's stacked figures were short by the
+     * whole credit. "0" on a non-IDR order, whose stored figure is USDT and
+     * would be printed as Rupiah here (see
+     * apps/storefront/src/routes/buyerOrderSummary.ts). */
     wallet_credit: string;
-    /** The unique-cents payment marker — always "0" on an IDR order, printed so
-     * the rows reconcile without a currency special case here. */
-    amount_marker: string;
     total: string;
     created_at_display: string;
     /** Parsed manual_with_info field spec — [] for auto/manual orders. */

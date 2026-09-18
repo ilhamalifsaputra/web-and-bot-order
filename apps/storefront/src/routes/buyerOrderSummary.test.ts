@@ -13,14 +13,17 @@ const base: BuyerOrderSummaryInput = {
   totalAmount: "80000",
 };
 
-/** The identity the stacked rows assert to whoever reads the page. */
+/** The identity the stacked rows assert to whoever reads the page. The
+ * unique-cents term comes from the input, not from a returned field: the summary
+ * no longer emits one (nothing on the page ever rendered it), and an IDR order —
+ * the only kind this identity is claimed for — has none anyway. */
 function reconciles(order: BuyerOrderSummaryInput): boolean {
   const s = buyerOrderSummary(order);
   return s.subtotal
     .minus(s.bulkDiscount)
     .minus(s.discount)
     .minus(s.walletCredit)
-    .plus(s.amountMarker)
+    .plus(new Decimal(order.uniqueCents))
     .equals(new Decimal(order.totalAmount));
 }
 
@@ -31,7 +34,6 @@ describe("buyerOrderSummary", () => {
     expect(s.bulkDiscount.toString()).toBe("0");
     expect(s.discount.toString()).toBe("0");
     expect(s.walletCredit.toString()).toBe("0");
-    expect(s.amountMarker.toString()).toBe("0");
     expect(reconciles(base)).toBe(true);
   });
 
@@ -93,7 +95,7 @@ describe("buyerOrderSummary", () => {
     expect(s.bulkDiscount.toString()).toBe("20000");
   });
 
-  it("leaves a USDT order exactly as it was — the documented L-1 gap, not this function's job", () => {
+  it("leaves a USDT order's central-IDR figures exactly as they were — the documented L-1 gap, not this function's job", () => {
     const order: BuyerOrderSummaryInput = {
       currency: "USDT",
       fxRate: "16000",
@@ -109,18 +111,50 @@ describe("buyerOrderSummary", () => {
     // mixing of the two scales.
     expect(s.subtotal.toString()).toBe("45000");
     expect(s.discount.toString()).toBe("9000");
-    expect(s.amountMarker.toString()).toBe("0.026");
   });
 
-  it("still derives for an order stamped USDT with no fx snapshot at all — its amounts never left central IDR", () => {
+  /**
+   * Whole-branch review A6. `walletUsed` is stored in the ORDER's currency, and
+   * the page prints that row with `formatIdr`, so a USDT order's wallet row was
+   * a USDT figure wearing a Rupiah label — "−Rp30.000" for 30 USDT of credit,
+   * wrong by the whole exchange rate. Suppressed rather than converted: see the
+   * module comment for why hiding beats misprinting here.
+   */
+  it("emits no wallet row for a USDT order — the stored figure is USDT and the page prints Rupiah", () => {
+    const order: BuyerOrderSummaryInput = {
+      currency: "USDT",
+      fxRate: "16000",
+      subtotalAmount: "480000",
+      bulkDiscountAmount: "0",
+      discountAmount: "0",
+      walletUsed: "30", // 30 USDT, not Rp30
+      uniqueCents: "0",
+      totalAmount: "0",
+    };
+    expect(buyerOrderSummary(order).walletCredit.toString()).toBe("0");
+  });
+
+  /**
+   * Whole-branch review A6, second half. The non-IDR branch used to be gated on
+   * `currency !== "IDR" && fxRate`, so a USDT-stamped order with no snapshot
+   * fell through to the IDR derivation — subtracting Rupiah discounts from a
+   * USDT total, the one case where deriving is most wrong. Nothing produces that
+   * row today (`finalizeOrderPayment` stamps the currency and the rate in one
+   * update), which is exactly why the guard has to be the currency alone: the
+   * derivation's precondition is "these figures are all Rupiah", and a currency
+   * it does not understand fails that whether or not a rate came with it.
+   */
+  it("does NOT derive for an order stamped USDT with no fx snapshot — an unknown currency is reason enough", () => {
     const order: BuyerOrderSummaryInput = {
       ...base,
       currency: "USDT",
       fxRate: null,
+      discountAmount: "9000",
       walletUsed: "5000",
       totalAmount: "75000",
     };
-    expect(buyerOrderSummary(order).walletCredit.toString()).toBe("5000");
-    expect(reconciles(order)).toBe(true);
+    const s = buyerOrderSummary(order);
+    expect(s.discount.toString()).toBe("9000"); // passed through, not derived
+    expect(s.walletCredit.toString()).toBe("0");
   });
 });

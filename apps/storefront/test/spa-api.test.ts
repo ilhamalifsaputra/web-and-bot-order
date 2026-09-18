@@ -1585,12 +1585,14 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
       expect(o.discount).toBe("30000");
       expect(o.wallet_credit).toBe("30000");
       expect(o.total).toBe("0");
-      // The identity the stacked rows assert to the reader, to the rupiah.
+      // The identity the stacked rows assert to the reader, to the rupiah. No
+      // unique-cents term: an IDR order has none (finalizeOrderPayment's IDR
+      // branch strips them), and the `amount_marker` field that used to carry
+      // the figure is gone — nothing on the page ever rendered it.
       const reconciled = new Decimal(o.subtotal)
         .minus(o.bulk_discount)
         .minus(o.discount)
-        .minus(o.wallet_credit)
-        .plus(o.amount_marker);
+        .minus(o.wallet_credit);
       expect(reconciled.toString()).toBe(o.total);
     } finally {
       await deleteBulkPricing(prisma, denomId);

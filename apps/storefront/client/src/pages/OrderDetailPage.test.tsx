@@ -54,7 +54,6 @@ const baseOrder: OrderDetailData["order"] = {
   discount: "0",
   bulk_discount: "0",
   wallet_credit: "0",
-  amount_marker: "0",
   total: "158000",
   created_at_display: "2026-07-01 10:00",
   customer_data_fields: [],

@@ -884,16 +884,6 @@ settings table with their documented defaults and can only be changed by a
 direct database write or a seed script. Every other FX/minimum setting in the
 table below *is* admin-editable.
 
-**6. Two in-code doc comments are stale and should be corrected when their
-files are next touched** (this document is doc-only and does not edit code):
-
-- `packages/db/src/crud/ledgerPostings.ts:51` still describes rail settlement/fee
-  postings as "the next task". The rails were wired, and the fee postings were
-  deliberately never built (see gap 1) — so this line now promises something
-  that does not exist.
-- `packages/db/src/crud/ledger.ts:35` still says "**No wiring.** No order,
-  payment, wallet or refund code path calls this yet". All four now do.
-
 ---
 
 ## Settings reference

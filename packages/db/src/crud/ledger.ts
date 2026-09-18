@@ -32,9 +32,11 @@
  *   `@@unique([reversalOfId])` — so a reversal helper also owes a
  *   one-reversal-per-transaction guard, which is a decision better made by the
  *   milestone that first needs it than guessed at here.
- * - **No wiring.** No order, payment, wallet or refund code path calls this yet;
- *   that is the next milestone. A balance read off these tables today is
- *   therefore complete only with respect to what tests posted.
+ * - ~~No wiring.~~ Stale as of M3: `ledgerPostings.ts`'s eight posting
+ *   functions now call `postFinancialTransaction` from every real order,
+ *   payment, wallet and refund code path. A balance read off these tables is
+ *   complete with respect to production traffic since that milestone landed,
+ *   not just what tests posted.
  * - **No chart-of-accounts cache.** Each call batch-fetches the accounts it
  *   names. The chart is 15 rows and nothing hot calls this, so a cache would
  *   only add a staleness failure mode (a newly seeded account looking unknown)

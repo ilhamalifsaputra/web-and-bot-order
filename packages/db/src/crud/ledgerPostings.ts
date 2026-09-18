@@ -47,11 +47,15 @@
  *    A retried webhook or a double-tapped admin button re-derives the same key
  *    and `postFinancialTransaction` returns the first posting.
  *
- * Deliberately NOT here: the six payment-rail handlers' settlement/fee postings
- * and `Payment.providerTransactionId/fee/netAmount` (the next task), and any
- * reversal helper (`crud/ledger.ts`' doc comment explains why the milestone that
- * first needs one should own it). Every posting below is an independent
- * `FinancialTransaction` with its own entries, not a mirror of another one.
+ * Deliberately NOT here: a FEE posting for any rail. `Payment.providerTransactionId`
+ * is wired (each rail handler stamps its own gateway transaction id), but
+ * `Payment.fee` stays null — none of this shop's six gateways reports a real fee
+ * figure, so there is no fee amount to post and never has been; this is not a
+ * follow-up task, it is the correct state for as long as that stays true. Also
+ * deliberately absent: any reversal helper (`crud/ledger.ts`'s doc comment
+ * explains why the milestone that first needs one should own it). Every posting
+ * below is an independent `FinancialTransaction` with its own entries, not a
+ * mirror of another one.
  */
 import {
   FinancialTransactionType,

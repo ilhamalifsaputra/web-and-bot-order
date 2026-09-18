@@ -159,6 +159,36 @@ export function classifyTx(
  * short of EVERY candidate beyond tolerance yields no hits here — see
  * `matchUnderpaidByAmount` for the mirrored short-side search memo-less rails
  * use to flag underpaid instead of silently leaving it unmatched.
+ *
+ * WHAT THIS FUNCTION DOES NOT SCOPE, AND WHY THAT'S FINE (M15 / audit P1-1):
+ * read on its own, `orders` here is compared by amount alone, with no rail,
+ * account or on-chain check — but by the time any caller reaches this
+ * function, `orders` has already been narrowed by all three of those, so
+ * amount is genuinely the only remaining question. Every real caller applies
+ * the same three filters, just in different files:
+ *  - RAIL/ACCOUNT: each rail's own pending-order query scopes to its own
+ *    `paymentMethod` before this function ever sees the list —
+ *    `listPendingInternalOrders` (`packages/db/src/crud/binance_internal.ts`,
+ *    `paymentMethod: BINANCE_INTERNAL`), `listPendingBybitOrders`
+ *    (`packages/db/src/crud/bybit_deposit.ts`, `paymentMethod: BYBIT`),
+ *    `listPendingBybitBscOrders` (`packages/db/src/crud/bybit_bsc_deposit.ts`,
+ *    `paymentMethod: BYBIT_BSC`). A BYBIT deposit is therefore compared only
+ *    against BYBIT orders, never against a BYBIT_BSC order that happens to
+ *    share the same total (`pricing.ts`'s own collision-avoidance loop scopes
+ *    the SAME way — see its `paymentMethod: method` filter).
+ *  - ON-CHAIN ADDRESS/NETWORK (BSC only — the other two rails have no
+ *    on-chain identity to check): `bybitBscDeposit.ts`'s own deposit
+ *    normalizer discards a deposit outright before it can reach this
+ *    function at all — a wrong chain or a deposit to any address other than
+ *    the configured one returns `null` and is dropped (see that file's
+ *    `chain !== cfg.chain.toUpperCase()` / `depositAddress` comparison).
+ *  - TIME WINDOW: all three `listPending*Orders` queries above also filter
+ *    `expiresAt: { gt: now }` — an expired order is never a candidate here,
+ *    regardless of amount.
+ * So a genuine collision at this layer means: same rail, same account/chain,
+ * both still within their payment window, and the amounts coincide — exactly
+ * the case `computeUniqueCents` and this function's own tie-refusal exist to
+ * handle, not a gap in scope.
  */
 export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
   tx: { amount: Decimal.Value },

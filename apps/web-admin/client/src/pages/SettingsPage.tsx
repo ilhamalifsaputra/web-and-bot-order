@@ -450,74 +450,89 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selec
           </div>
         )}
         {editing && (
-          <div className="mt-2 flex flex-col gap-1.5">
-            <div className="flex flex-wrap gap-2 items-center">
-              {selectOptions ? (
-                <Select value={value} onValueChange={setValue}>
-                  <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
-                    <SelectValue placeholder="Select a type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectOptions.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  type={field.secret ? "password" : "text"}
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !validationError) setConfirmOpen(true);
-                    if (e.key === "Escape") cancelEditing();
-                  }}
-                  aria-label={field.label}
-                  aria-invalid={validationError ? true : undefined}
-                  autoFocus
-                  className="w-full max-w-sm"
-                  // Reported bug: filling in a secret field (e.g. Digiflazz
-                  // API key) here was landing in the page's own "Search
-                  // settings…" box instead. Root cause: this is a generic
-                  // setting value, not a real account credential, but
-                  // rendering it as `type="password"` with no autoComplete
-                  // hint and no <form> boundary makes Chrome's native
-                  // password manager treat it as a login field — it pairs
-                  // the field with the NEAREST PRECEDING text input on the
-                  // page as a guessed "username" (here, SettingsSearch's own
-                  // search box) and offers to autofill this admin's saved
-                  // /login credentials into both. "new-password" is the
-                  // standard signal that stops Chrome from treating a
-                  // password-shaped input as a saved-login target; plain
-                  // "off" for the non-secret case is just hygiene (a
-                  // markup-type/value field has no business being
-                  // autofilled either).
-                  autoComplete={field.secret ? "new-password" : "off"}
-                />
-              )}
-              {field.secret && (
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`Copy ${field.label}`}
-                  onClick={() => void copyValue()}
-                  disabled={!value}
-                >
-                  {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
+          // Chrome's password manager pairs a bare type="password" input with
+          // the NEAREST PRECEDING text input on the page as a guessed
+          // "username" — on this page, that's SettingsSearch's own "Search
+          // settings…" box, which renders before the field list in DOM
+          // order. autoComplete hints alone don't reliably stop this; a
+          // <form> boundary scopes Chrome's search to inside this tiny form
+          // instead of all the way up to SettingsSearch. Since this is the
+          // first real <form> around these buttons, they'd otherwise become
+          // native submit buttons by HTML's own default (Button never sets
+          // one) — every button below gets an explicit type="button", and
+          // onSubmit is a preventDefault backstop alongside the existing
+          // onKeyDown Enter handling.
+          <form onSubmit={(e) => e.preventDefault()} autoComplete="off">
+            <div className="mt-2 flex flex-col gap-1.5">
+              <div className="flex flex-wrap gap-2 items-center">
+                {selectOptions ? (
+                  <Select value={value} onValueChange={setValue}>
+                    <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
+                      <SelectValue placeholder="Select a type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectOptions.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    type={field.secret ? "password" : "text"}
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !validationError) setConfirmOpen(true);
+                      if (e.key === "Escape") cancelEditing();
+                    }}
+                    aria-label={field.label}
+                    aria-invalid={validationError ? true : undefined}
+                    autoFocus
+                    className="w-full max-w-sm"
+                    // Reported bug: filling in a secret field (e.g. Digiflazz
+                    // API key) here was landing in the page's own "Search
+                    // settings…" box instead. Root cause: this is a generic
+                    // setting value, not a real account credential, but
+                    // rendering it as `type="password"` with no autoComplete
+                    // hint and no <form> boundary makes Chrome's native
+                    // password manager treat it as a login field — it pairs
+                    // the field with the NEAREST PRECEDING text input on the
+                    // page as a guessed "username" (here, SettingsSearch's own
+                    // search box) and offers to autofill this admin's saved
+                    // /login credentials into both. "new-password" is the
+                    // standard signal that stops Chrome from treating a
+                    // password-shaped input as a saved-login target; plain
+                    // "off" for the non-secret case is just hygiene (a
+                    // markup-type/value field has no business being
+                    // autofilled either).
+                    autoComplete={field.secret ? "new-password" : "off"}
+                  />
+                )}
+                {field.secret && (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Copy ${field.label}`}
+                    onClick={() => void copyValue()}
+                    disabled={!value}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
+                <Button type="button" size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
+                  <Save className="h-4 w-4" />
+                  Save
                 </Button>
-              )}
-              <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
-                <Save className="h-4 w-4" />
-                Save
-              </Button>
-              <Button size="sm" variant="ghost" onClick={cancelEditing}>
-                Cancel
-              </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelEditing}>
+                  Cancel
+                </Button>
+              </div>
+              {validationError && <p className="text-sm text-rust">{validationError}</p>}
             </div>
-            {validationError && <p className="text-sm text-rust">{validationError}</p>}
-          </div>
+          </form>
         )}
       </div>
       {/* Rendered unconditionally (not inside `editing && …`) — save()

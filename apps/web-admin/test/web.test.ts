@@ -2672,10 +2672,10 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
       expect(res.statusCode).toBe(400);
     });
 
-    it("rejects missing auth (anon -> 303 /login)", async () => {
+    it("rejects missing auth (anon → 401)", async () => {
       const res = await postJson(`/api/catalog/denominations/bulk-active`, null, "x", { ids: [seed.productId], active: false });
-      expect(res.statusCode).toBe(303);
-      expect(res.headers.location).toBe("/login");
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     });
 
     it("rejects bad CSRF with 403", async () => {
@@ -3588,11 +3588,11 @@ describe("stock", () => {
       expect(res.statusCode).toBe(404);
     });
 
-    it("rejects missing auth (anon -> 303 /login)", async () => {
+    it("rejects missing auth (anon → 401)", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await post(`/api/stock/item/${item.id}/reveal`, null, { csrf_token: "x" });
-      expect(res.statusCode).toBe(303);
-      expect(res.headers.location).toBe("/login");
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     });
 
     it("rejects bad CSRF with 403", async () => {
@@ -3932,11 +3932,11 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(audit).toBeNull();
     });
 
-    it("rejects missing auth (anon -> 303 /login)", async () => {
+    it("rejects missing auth (anon → 401)", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/delete`, null, "x", {});
-      expect(res.statusCode).toBe(303);
-      expect(res.headers.location).toBe("/login");
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     });
 
     it("rejects bad CSRF with 403", async () => {

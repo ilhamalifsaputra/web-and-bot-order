@@ -118,10 +118,10 @@ describe("GET /api/admin-tasks/assignees", () => {
     expect(body.admins.map((a) => a.id)).not.toContain(customerId);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/admin-tasks/assignees", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -181,10 +181,10 @@ describe("GET /api/admin-tasks", () => {
     expect(body.items[0]!.assignedTo).toBeNull();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/admin-tasks", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -218,11 +218,11 @@ describe("POST /api/admin-tasks/:taskId/assign", () => {
     expect(res.statusCode).toBe(422);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const task = await makeTask();
     const res = await postJson(`/api/admin-tasks/${task.id}/assign`, null, csrf, { from: "PENDING", assignedTo: adminId });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -248,10 +248,11 @@ describe("POST /api/admin-tasks/:taskId/start", () => {
     expect(res.statusCode).toBe(422);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const task = await makeTask();
     const res = await postJson(`/api/admin-tasks/${task.id}/start`, null, csrf, { from: "ASSIGNED" });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -273,10 +274,11 @@ describe("POST /api/admin-tasks/:taskId/complete", () => {
     expect(updated.completedAt).not.toBeNull();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const task = await makeTask();
     const res = await postJson(`/api/admin-tasks/${task.id}/complete`, null, csrf, { from: "IN_PROGRESS" });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -296,10 +298,11 @@ describe("POST /api/admin-tasks/:taskId/escalate", () => {
     expect(updated.assignedTo).toBeNull();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const task = await makeTask();
     const res = await postJson(`/api/admin-tasks/${task.id}/escalate`, null, csrf, { from: "PENDING" });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {

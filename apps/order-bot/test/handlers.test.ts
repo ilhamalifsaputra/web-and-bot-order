@@ -3350,6 +3350,13 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
   });
 
   it("confirmation closing line is the default payment prompt when no credit is applied", async () => {
+    // A payment prompt only makes sense when some rail can collect the total.
+    // The fixture's Rp5 price is under the shop-wide minimum and no gateway is
+    // configured by default, so give the order a live IDR rail and a total that
+    // clears it (the bubble says "no method for this total" otherwise).
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "5000" } });
+    await setSetting(prisma, "tokopay_merchant_id", "M-TEST");
+    await setSetting(prisma, "tokopay_secret", "S-TEST");
     const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:back:${sample.product.id}:1` });
     await routeCallback(ctx);
 

@@ -383,6 +383,7 @@ describe("drainBatch routes both FX alerts as admin DMs, never public posts (M13
       max: "40000",
     });
     await enqueueAdminFxRateStale(prisma, {
+      stage: "max_age",
       confirmedAt: new Date("2026-09-14T00:00:00.000Z"),
       ageHours: "72.4",
       maxAgeHours: "48",

@@ -247,7 +247,7 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   fx_rate_max_delta_pct:
     "How far one refresh may move the saved rate. The spread above counts as part of that move, so a spread larger than this percentage gets every refresh refused — and a refused refresh saves nothing, so it never clears on its own.",
   fx_quote_ttl_minutes:
-    "Refuses one USDT checkout at a time once the saved rate has gone this long without being refreshed or re-typed. Blank or 0 turns the check off.",
+    "Stops offering USDT payment methods once the saved rate has gone this long without being refreshed or re-typed, and refuses any USDT order submitted anyway. USDT prices are still shown. Every admin is DMed when it trips. Keep it at a few times the hourly update interval so one missed update does not switch USDT off; blank or 0 turns the check off.",
   fx_rate_max_age_hours:
     "Hides USDT payments shop-wide once the saved rate has gone this long without being refreshed or re-typed — the outer limit, measured in hours. Blank or 0 turns the check off.",
   min_order_amount_idr:

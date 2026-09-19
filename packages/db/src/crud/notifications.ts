@@ -391,19 +391,34 @@ export async function enqueueAdminFxRateRejected(
 
 /**
  * Enqueue one admin DM per resolved admin alerting that the saved
- * `usd_idr_rate` aged past `fx_rate_max_age_hours` and the whole USDT rail is
- * now hidden shop-wide (M13 / audit P0-3).
+ * `usd_idr_rate` has gone unconfirmed long enough to cost the shop USDT sales
+ * (M13 / audit P0-3, widened by whole-branch review D7).
+ *
+ * `stage` says WHICH threshold was crossed, because the consequence differs and
+ * the DM leads with the consequence: `quote_ttl` means checkout has stopped
+ * offering the USDT rails while USDT prices are still shown, `max_age` means
+ * USDT is gone from the shop entirely. The template renders one of two messages
+ * off it, and treats a payload with no `stage` at all as `max_age` — rows
+ * enqueued before this field existed can still be sitting in the outbox.
  *
  * Deliberately NOT deduped here, unlike `enqueueAdminUnconfirmablePayment`:
  * the "only once per staleness episode" rule lives in the caller
- * (`alertIfUsdIdrRateStale`, crud/pricing.ts), keyed off the freshness stamp
- * being complained about, because the episode — not the row — is what must be
- * deduplicated, and a new episode after a refresh genuinely deserves a new DM.
+ * (`alertIfUsdIdrRateStale`, crud/pricing.ts), keyed off the freshness stamp and
+ * stage being complained about, because the episode — not the row — is what must
+ * be deduplicated, and a new episode after a refresh genuinely deserves a new DM.
  * Not order-scoped (`orderId: null`). No-op if no admin is resolved.
  */
 export async function enqueueAdminFxRateStale(
   db: Db,
-  args: { confirmedAt: Date; ageHours: Decimal.Value; maxAgeHours: Decimal.Value },
+  args: {
+    stage: "quote_ttl" | "max_age";
+    confirmedAt: Date;
+    ageHours: Decimal.Value;
+    /** The `fx_rate_max_age_hours` limit — the `max_age` stage only. */
+    maxAgeHours?: Decimal.Value;
+    /** The `fx_quote_ttl_minutes` lifetime — the `quote_ttl` stage only. */
+    ttlMinutes?: Decimal.Value;
+  },
 ): Promise<void> {
   for (const adminId of await resolveAdminIds(db)) {
     await db.notificationOutbox.create({
@@ -412,9 +427,11 @@ export async function enqueueAdminFxRateStale(
         orderId: null,
         payloadJson: JSON.stringify({
           chat_id: adminId,
+          stage: args.stage,
           confirmed_at: args.confirmedAt.toISOString(),
           age_hours: String(args.ageHours),
-          max_age_hours: String(args.maxAgeHours),
+          ...(args.maxAgeHours == null ? {} : { max_age_hours: String(args.maxAgeHours) }),
+          ...(args.ttlMinutes == null ? {} : { ttl_minutes: String(args.ttlMinutes) }),
         }),
       },
     });

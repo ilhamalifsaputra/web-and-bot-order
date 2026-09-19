@@ -367,7 +367,7 @@ describe("GET /api/v1/checkout — payment methods the total cannot clear are no
  * Whole-branch review A2: the same "never offer what the guard would refuse"
  * rule applied to M12's quote TTL rather than M11's minimums.
  * `fx_rate_max_age_hours` (48h) is what makes the saved rate read as null and
- * takes the USDT options away; `fx_quote_ttl_minutes` (60m) refuses the
+ * takes the USDT options away; `fx_quote_ttl_minutes` (180m) refuses the
  * finalize. Between the two, this page offered every USDT method and had each
  * one refused with `error.fx_quote_expired` the moment it was submitted.
  *
@@ -399,11 +399,16 @@ describe("GET /api/v1/checkout — USDT methods are hidden once the rate's quote
   });
 
   it("widening fx_quote_ttl_minutes past the stamp's age brings the USDT rails back", async () => {
-    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
+    // Derived from the default rather than a literal: an age that is stale under
+    // one default and fresh under the next makes this case pass for the wrong
+    // reason, which is what the 120-minute figure it used to carry started doing
+    // the moment the default moved to 180.
+    const staleBy = Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 60;
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(staleBy));
     await addToCart(prisma, userId, denomId, 1);
     expect((await view()).bybit_enabled).toBe(false);
 
-    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, "300");
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, String(staleBy + 60));
     expect((await view()).bybit_enabled).toBe(true);
   });
 

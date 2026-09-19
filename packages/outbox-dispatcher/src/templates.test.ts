@@ -328,6 +328,38 @@ describe("notifier templates.render", () => {
     expect(out).toMatch(/dimatikan/i); // Indonesian line
   });
 
+  // Whole-branch review D7: the same event now covers the earlier threshold too,
+  // and the two must not share wording. At the quote TTL the shop still DISPLAYS
+  // USDT prices, so a message claiming USDT is switched off would send an admin
+  // to look at their own shop, see USDT prices, and file the alert as a false
+  // alarm.
+  it("renders the quote-TTL stage of ADMIN_FX_RATE_STALE as 'not offered', not 'switched off'", () => {
+    const out = render("ADMIN_FX_RATE_STALE", {
+      stage: "quote_ttl",
+      confirmed_at: "2026-09-19T00:00:00.000Z",
+      age_hours: "3.5",
+      ttl_minutes: "180",
+    });
+    expect(out).toMatch(/not being offered/i);
+    expect(out).not.toMatch(/switched off/i);
+    expect(out).toContain("2026-09-19T00:00:00.000Z");
+    expect(out).toContain("180");
+    expect(out).toMatch(/still see USDT prices/i);
+    expect(out).toMatch(/Rupiah payments are unaffected/i);
+    expect(out).toMatch(/tidak ditawarkan/i); // Indonesian line
+  });
+
+  // Rows enqueued before `stage` existed can still be sitting in the outbox when
+  // this deploys, and they meant the outer horizon.
+  it("renders a stage-less ADMIN_FX_RATE_STALE payload as the max-age message", () => {
+    const out = render("ADMIN_FX_RATE_STALE", {
+      confirmed_at: "2026-09-14T00:00:00.000Z",
+      age_hours: "72.4",
+      max_age_hours: "48",
+    });
+    expect(out).toMatch(/USDT payments are switched off/i);
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

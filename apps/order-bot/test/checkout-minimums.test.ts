@@ -181,7 +181,7 @@ describe("showOrderConfirmation — rails the order total cannot clear are not o
  * Whole-branch review A2: the same "never offer what the guard would refuse"
  * rule, applied to the OTHER thing that refuses a USDT finalize — M12's quote
  * TTL. `fx_rate_max_age_hours` (48h) is what makes the rate read as null and
- * takes the USDT screens away; `fx_quote_ttl_minutes` (60m) refuses the
+ * takes the USDT screens away; `fx_quote_ttl_minutes` (180m) refuses the
  * finalize. Between the two, the bot used to show every USDT button and answer
  * every tap with `error.fx_quote_expired`.
  *
@@ -208,15 +208,18 @@ describe("showOrderConfirmation — USDT rails are hidden once the rate's quote 
   });
 
   it("widening fx_quote_ttl_minutes past the stamp's age brings the USDT rails back", async () => {
-    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
-    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, "300");
+    // Derived from the default, not a literal: a 120-minute stamp was stale
+    // under the old 60-minute default and is fresh under today's 180, so a
+    // literal here stops discriminating the moment the default moves again.
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 60));
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, String(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 120));
     const { ctx, sink } = customerCtx();
     await checkout.showOrderConfirmation(ctx, sample.product.id, 1);
     expect(buttons(sink).some((d) => d.startsWith("v1:usdt:"))).toBe(true);
   });
 
   it("hides the individual USDT methods too, not just the submenu button", async () => {
-    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(120));
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 5));
     const { ctx, sink } = customerCtx();
     await checkout.showUsdtMethods(ctx, sample.product.id, 1);
     expect(buttons(sink).some((d) => d.startsWith("v1:payb:"))).toBe(false);

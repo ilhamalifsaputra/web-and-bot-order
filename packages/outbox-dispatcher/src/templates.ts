@@ -216,11 +216,19 @@ interface AdminFxRateRejectedPayload {
   max_delta_pct?: unknown;
 }
 
-/** M13 / audit P0-3 — the saved rate aged out and the USDT rail is now off. */
+/**
+ * M13 / audit P0-3 — the saved rate stopped being confirmed. `stage` says which
+ * threshold it crossed (whole-branch review D7): `"quote_ttl"` = no USDT rail is
+ * offered any more but prices still show USDT, `"max_age"` = USDT is gone
+ * shop-wide. Absent means `"max_age"`, which is all this event used to mean, so
+ * a row enqueued before the field existed still renders correctly.
+ */
 interface AdminFxRateStalePayload {
+  stage?: unknown;
   confirmed_at?: unknown;
   age_hours?: unknown;
   max_age_hours?: unknown;
+  ttl_minutes?: unknown;
 }
 
 /** Return the message body for an outbox event, or "" to skip. */
@@ -506,14 +514,37 @@ export function render(
     );
   }
   if (event === NotificationEvent.ADMIN_FX_RATE_STALE) {
-    // Admin DM: the saved rate aged past fx_rate_max_age_hours, so the USDT
-    // rail is now hidden shop-wide (M13). Unlike the rejection DM above this
-    // is not a warning about something that MIGHT go wrong — it has already
-    // happened and the shop is losing USDT sales right now, so the message
-    // leads with the consequence, not the cause.
+    // Admin DM: the saved rate went unconfirmed long enough to cost the shop
+    // USDT sales (M13). Unlike the rejection DM above this is not a warning
+    // about something that MIGHT go wrong — it has already happened and the
+    // shop is losing USDT sales right now, so the message leads with the
+    // consequence, not the cause.
     const confirmedAt = escape(String(payload.confirmed_at ?? ""));
     const ageHours = escape(String(payload.age_hours ?? ""));
     const maxAgeHours = escape(String(payload.max_age_hours ?? ""));
+    // Two thresholds, two different consequences (whole-branch review D7). The
+    // earlier one takes USDT off the checkout screens while prices still show a
+    // USDT figure, so its message must not claim USDT is gone: an admin who
+    // looks at the shop and still sees USDT prices would read the alert as a
+    // false alarm and stop trusting the category. A payload with no `stage` is
+    // the max-age wording, which is the only thing this event used to mean.
+    if (payload.stage === "quote_ttl") {
+      const ttlMinutes = escape(String(payload.ttl_minutes ?? ""));
+      return (
+        `⚠️ <b>USDT checkout is not being offered — the saved USD/IDR rate has stopped being refreshed</b>\n` +
+        `Last confirmed: <code>${confirmedAt}</code> (about ${ageHours}h ago), past the ${ttlMinutes}-minute quote lifetime.\n` +
+        `Customers still see USDT prices, but no USDT payment option is offered and any USDT order is refused; Rupiah payments are unaffected. ` +
+        `The hourly automatic update has missed at least three tries, so this will not fix itself.\n` +
+        `Fix it in Settings: press "Update now" on the USDT rate, or type a rate by hand. ` +
+        `If it is left alone, USDT prices disappear from the shop too once the rate passes its maximum age.\n\n` +
+        `⚠️ <b>Checkout USDT tidak ditawarkan — kurs USD/IDR tersimpan berhenti diperbarui</b>\n` +
+        `Terakhir dikonfirmasi: <code>${confirmedAt}</code> (sekitar ${ageHours} jam lalu), melewati masa berlaku kuotasi ${ttlMinutes} menit.\n` +
+        `Pelanggan masih melihat harga USDT, tapi tidak ada pilihan pembayaran USDT dan setiap pesanan USDT ditolak; pembayaran Rupiah tidak terpengaruh. ` +
+        `Pembaruan otomatis tiap jam sudah gagal minimal tiga kali, jadi ini tidak akan beres sendiri.\n` +
+        `Perbaiki di Pengaturan: tekan "Update now" pada kurs USDT, atau isi kursnya manual. ` +
+        `Kalau dibiarkan, harga USDT juga akan hilang dari toko begitu kurs melewati umur maksimalnya.`
+      );
+    }
     return (
       `⛔ <b>USDT payments are switched off — the saved USD/IDR rate is too old</b>\n` +
       `Last confirmed: <code>${confirmedAt}</code> (about ${ageHours}h ago), past the ${maxAgeHours}h limit.\n` +

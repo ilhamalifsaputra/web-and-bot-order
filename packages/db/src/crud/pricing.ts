@@ -74,8 +74,22 @@ export const USD_IDR_RATE_UPDATED_AT_KEY = "usd_idr_rate_updated_at";
  * A typo must not become a shop-wide checkout outage.
  */
 export const FX_QUOTE_TTL_MINUTES_KEY = "fx_quote_ttl_minutes";
-/** Documented default for {@link FX_QUOTE_TTL_MINUTES_KEY}: one hour. */
-export const DEFAULT_FX_QUOTE_TTL_MINUTES = "60";
+/**
+ * Documented default for {@link FX_QUOTE_TTL_MINUTES_KEY}: three hours.
+ *
+ * Three times the market refresh's own period, not equal to it (whole-branch
+ * review D7). The refresh is an hourly cron (`scheduleFxRefresh`, `"5 * * * *"`),
+ * so a 60-minute TTL meant ONE missed tick — a redeploy landing on the wrong
+ * minute, a rate source blipping, a slow fetch — expired the quote and took the
+ * USDT rails off every checkout screen until the next tick happened to succeed.
+ * That is a shop-wide loss of a payment method as the routine cost of a single
+ * transient failure, which is not what this lever is for: it exists to catch a
+ * rate that has genuinely STOPPED being confirmed. Three ticks have to fail in a
+ * row before it fires, and by then something is actually wrong — which is also
+ * when {@link alertIfUsdIdrRateStale} now DMs the admins, rather than leaving
+ * them to find out at `fx_rate_max_age_hours` two days later.
+ */
+export const DEFAULT_FX_QUOTE_TTL_MINUTES = "180";
 
 /**
  * The sanity band a fetched market rate has to land inside before it is
@@ -166,12 +180,16 @@ export const DEFAULT_USDT_SPREAD_BPS = "0";
 export const FX_REFRESH_FAILURES_KEY = "fx_refresh_failures";
 
 /**
- * Settings key: which freshness stamp the shop's admins have already been
- * DMed about being stale. Internal bookkeeping for
- * {@link alertIfUsdIdrRateStale}, never an admin-editable field: it makes the
- * staleness alert fire once per EPISODE rather than once per hourly tick,
- * while still firing again after a refresh-then-go-stale-again cycle, because
- * that cycle produces a different stamp. Cleared by every successful refresh.
+ * Settings key: which staleness episode the shop's admins have already been
+ * DMed about. Internal bookkeeping for {@link alertIfUsdIdrRateStale}, never an
+ * admin-editable field: it makes the staleness alert fire once per EPISODE
+ * rather than once per hourly tick, while still firing again after a
+ * refresh-then-go-stale-again cycle, because that cycle produces a different
+ * stamp. Cleared by every successful refresh.
+ *
+ * The value is {@link stalenessEpisodeKey}'s output — the freshness stamp,
+ * qualified by which threshold was crossed, because the two thresholds are two
+ * different pieces of news about one stamp (see that function).
  */
 export const FX_STALE_ALERTED_FOR_KEY = "fx_stale_alerted_for";
 
@@ -493,40 +511,108 @@ export async function getUsdIdrRate(db: Db, opts: { allowStale?: boolean } = {})
 }
 
 /**
- * Tell every admin, ONCE per staleness episode, that the saved rate aged out
- * and the USDT rail is now off shop-wide (M13 / audit P0-3). Returns whether
- * it actually enqueued anything.
+ * Which staleness threshold the saved rate has crossed, or null while it is
+ * inside both (whole-branch review D7).
+ *
+ * Two thresholds, reported worst-first. `max_age`
+ * ({@link FX_RATE_MAX_AGE_HOURS_KEY}) means USDT is gone shop-wide — no prices,
+ * no rails. `quote_ttl` ({@link FX_QUOTE_TTL_MINUTES_KEY}) means the rate is
+ * still displayed but no USDT rail is offered any more and any tap on a
+ * previously-rendered one is refused. Nobody was told about that stage before:
+ * the alert only fired at the outer horizon, so a shop could spend up to two
+ * days advertising USDT prices it would not accept USDT for, with no DM in
+ * sight. Reporting `max_age` first matters because both are true once the outer
+ * horizon passes, and the one that describes the shop's actual state is the
+ * worse one.
+ */
+export async function usdIdrStalenessToAlert(db: Db): Promise<
+  | { stage: "max_age"; confirmedAt: Date; ageHours: Decimal; maxAgeHours: Decimal }
+  | { stage: "quote_ttl"; confirmedAt: Date; ageHours: Decimal; ttlMinutes: Decimal }
+  | null
+> {
+  const outer = await usdIdrRateStaleness(db);
+  if (outer) return { stage: "max_age", ...outer };
+  const quote = await usdIdrQuoteStaleness(db);
+  if (!quote) return null;
+  return {
+    stage: "quote_ttl",
+    confirmedAt: quote.confirmedAt,
+    ageHours: new Decimal(Date.now() - quote.confirmedAt.getTime()).dividedBy(3_600_000),
+    ttlMinutes: quote.ttlMinutes,
+  };
+}
+
+/**
+ * The value {@link FX_STALE_ALERTED_FOR_KEY} holds for one alerted episode.
+ *
+ * The stamp alone is not enough now that there are two thresholds: an outage
+ * that crosses the quote TTL and then, hours later, the outer horizon is two
+ * genuinely different pieces of news about the same stamp — the second one says
+ * USDT prices have disappeared as well — so each has to be able to raise its own
+ * DM. Qualifying the key by stage is what allows that while still collapsing
+ * every repeat tick of one stage into one DM.
+ *
+ * `max_age` deliberately keys off the BARE stamp, which is exactly what this
+ * marker held before the quote-TTL stage existed. A shop that is mid-outage when
+ * this ships must not be DMed a second time about an episode it was already told
+ * about.
+ */
+function stalenessEpisodeKey(stage: "max_age" | "quote_ttl", confirmedAt: Date): string {
+  return stage === "max_age" ? confirmedAt.toISOString() : `${confirmedAt.toISOString()}|${stage}`;
+}
+
+/**
+ * Tell every admin, ONCE per staleness episode and per threshold crossed, that
+ * the saved rate has gone unconfirmed long enough to cost the shop USDT sales
+ * (M13 / audit P0-3, widened to the quote TTL by whole-branch review D7).
+ * Returns whether it actually enqueued anything.
  *
  * Called from the hourly `scheduleFxRefresh` tick, not from
  * {@link getUsdIdrRate}: that function runs on every catalogue render, and an
  * alert there would be both a side effect in a hot read path and an
  * unbounded DM firehose. Once an hour is as often as this needs checking —
- * the horizon it guards is measured in days.
+ * the sooner of the two thresholds is three hours by default.
  *
- * The episode key is the freshness stamp itself. Alerting on a stamp marks
- * that stamp as told-about; every later tick of the same outage sees the same
- * stamp and stays quiet. A refresh clears the marker
- * ({@link clearFxFailureState}) AND writes a new stamp, so if the rate later
- * goes stale again that is a different stamp and a genuinely new outage, and
- * it gets its own DM.
+ * The episode key is the freshness stamp, qualified by stage
+ * ({@link stalenessEpisodeKey}). Alerting marks that stamp+stage as told-about;
+ * every later tick of the same stage sees the same key and stays quiet. A refresh
+ * clears the marker ({@link clearFxFailureState}) AND writes a new stamp, so if
+ * the rate later goes stale again that is a different stamp and a genuinely new
+ * outage, and it gets its own DM.
  */
 export async function alertIfUsdIdrRateStale(db: Db): Promise<boolean> {
-  const stale = await usdIdrRateStaleness(db);
+  const stale = await usdIdrStalenessToAlert(db);
   if (!stale) return false;
 
-  const episode = stale.confirmedAt.toISOString();
+  const episode = stalenessEpisodeKey(stale.stage, stale.confirmedAt);
   if ((await getSetting(db, FX_STALE_ALERTED_FOR_KEY)) === episode) return false;
 
-  logger.error(
-    `The saved USD/IDR rate has not been confirmed since ${episode}, about ${stale.ageHours.toDecimalPlaces(1).toString()} hours ago, ` +
-      `which is past the ${stale.maxAgeHours.toString()}-hour limit in ${FX_RATE_MAX_AGE_HOURS_KEY}. ` +
-      `The USDT payment rail is now hidden shop-wide: customers are shown Rupiah only and cannot pay in USDT until an admin ` +
-      `refreshes or re-enters the rate. Every admin has been sent one alert about this; they will not be sent another until the rate is refreshed.`,
-  );
+  const stamp = stale.confirmedAt.toISOString();
+  const ageHours = stale.ageHours.toDecimalPlaces(1);
+  if (stale.stage === "max_age") {
+    logger.error(
+      `The saved USD/IDR rate has not been confirmed since ${stamp}, about ${ageHours.toString()} hours ago, ` +
+        `which is past the ${stale.maxAgeHours.toString()}-hour limit in ${FX_RATE_MAX_AGE_HOURS_KEY}. ` +
+        `The USDT payment rail is now hidden shop-wide: customers are shown Rupiah only and cannot pay in USDT until an admin ` +
+        `refreshes or re-enters the rate. Every admin has been sent one alert about this; they will not be sent another until the rate is refreshed.`,
+    );
+  } else {
+    logger.warn(
+      `The saved USD/IDR rate has not been confirmed since ${stamp}, about ${ageHours.toString()} hours ago, ` +
+        `which is past the ${stale.ttlMinutes.toString()}-minute quote lifetime in ${FX_QUOTE_TTL_MINUTES_KEY}. ` +
+        `Checkout has stopped offering the USDT rails and any order finalized on one is refused, so the shop is losing USDT sales ` +
+        `right now even though USDT prices are still displayed. The hourly market refresh (${USD_IDR_RATE_AUTO_KEY}) has missed at ` +
+        `least three ticks, so this is no longer a transient failure. Every admin has been sent one alert; the next one comes only if ` +
+        `the rate also passes ${FX_RATE_MAX_AGE_HOURS_KEY}, at which point USDT disappears from the shop entirely.`,
+    );
+  }
   await enqueueAdminFxRateStale(db, {
+    stage: stale.stage,
     confirmedAt: stale.confirmedAt,
-    ageHours: stale.ageHours.toDecimalPlaces(1),
-    maxAgeHours: stale.maxAgeHours,
+    ageHours,
+    ...(stale.stage === "max_age"
+      ? { maxAgeHours: stale.maxAgeHours }
+      : { ttlMinutes: stale.ttlMinutes }),
   });
   await setSetting(db, FX_STALE_ALERTED_FOR_KEY, episode);
   return true;

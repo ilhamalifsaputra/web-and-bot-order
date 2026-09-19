@@ -308,7 +308,7 @@ field is free text, and parsing there would turn a typo into a 500 instead of
 the saved-as-typed behaviour every caller has today. Value validation is the
 sanity band's job, at refresh time.
 
-### Guard 3a — `fx_quote_ttl_minutes`: refuse ONE order (default 60 **minutes**)
+### Guard 3a — `fx_quote_ttl_minutes`: stop offering USDT (default 180 **minutes**)
 
 `assertFxQuoteIsFresh` (`pricing.ts:491`, module-private) is called from
 `finalizeOrderPayment`'s USDT branch at `pricing.ts:605`. If the stamp is older
@@ -338,9 +338,23 @@ predicate `usdIdrQuoteIsFresh` are both thin wrappers over one read,
 bot's `offerableRails` and the storefront's `checkoutView` call the predicate, so
 a USDT rail is never advertised to a buyer whose tap the guard is about to
 refuse. Before that, a shop whose auto-update died spent the whole window between
-the quote TTL (an hour) and `fx_rate_max_age_hours` (two days) showing every USDT
-button and refusing every one of them — which reads as a broken shop rather than
-as "pay in Rupiah instead".
+the quote TTL and `fx_rate_max_age_hours` (two days) showing every USDT button
+and refusing every one of them — which reads as a broken shop rather than as
+"pay in Rupiah instead". So the practical effect of this lever is not "one order
+is refused"; it is **no USDT rail is offered at all**, with the throw reserved
+for a screen rendered before the quote expired.
+
+**Why the default is 180 minutes, not 60** (whole-branch review D7). The market
+refresh is an hourly cron (`scheduleFxRefresh`, `"5 * * * *"`), so a 60-minute TTL
+was exactly one tick: a single missed tick — a redeploy landing on the wrong
+minute, a blip at the rate source, a slow fetch — took USDT off every checkout
+screen shop-wide until some later tick happened to succeed. Paying for one
+transient failure with a payment method is not what this lever is for. At three
+ticks, it fires only once the refresh has genuinely stopped working — which is
+also the moment the admins are now DMed about it (Guard 4).
+
+**Admins are alerted when it trips.** `alertIfUsdIdrRateStale` fires at *both*
+thresholds now, not just the outer one — see Guard 4.
 
 Both lists exempt a **zero total**, exactly as they already exempt it from the
 rail minimums: a nothing-left-to-collect order is settled from the shop's own
@@ -384,16 +398,18 @@ use it:
 | | `fx_quote_ttl_minutes` | `fx_rate_max_age_hours` |
 | --- | --- | --- |
 | Unit | **Minutes** | **Hours** |
-| Default | `60` | `48` |
+| Default | `180` (3× the hourly refresh) | `48` |
 | Reads | `usd_idr_rate_updated_at` | `usd_idr_rate_updated_at` (same stamp) |
 | Enforced in | `assertFxQuoteIsFresh` → `finalizeOrderPayment` | `usdIdrRateStaleness` → `getUsdIdrRate` |
-| Blast radius | **One order at a time** | **The whole USDT rail, shop-wide** |
+| Blast radius | Every USDT rail stops being offered; prices still show USDT | **The whole USDT rail, shop-wide** |
 | Symptom | The USDT rails stop being offered; a tap on a screen rendered before it expired gets `error.fx_quote_expired` | USDT stops being offered **or displayed** anywhere (no USDT prices either) |
+| Admin DM | `ADMIN_FX_RATE_STALE`, `stage: "quote_ttl"` | `ADMIN_FX_RATE_STALE`, `stage: "max_age"` |
 | Admin-editable in web-admin | Yes | Yes |
 
-They are layered on purpose: a shop whose auto-update dies at 09:00 starts
-refusing USDT conversions an hour later (quote TTL) and stops advertising USDT
-two days later (max age).
+They are layered on purpose: a shop whose auto-update dies at 09:00 stops
+offering USDT three hours later (quote TTL) and stops advertising USDT two days
+later (max age). Each threshold raises its own DM, so the second one is not the
+first the admins hear about it.
 
 ### Deploy-safety grace: a missing stamp is not a stale one
 
@@ -435,15 +451,21 @@ Two outbox events (`NotificationEvent`, `packages/core/src/enums.ts:659` and
 | Event | Enqueued by | Fires when |
 | --- | --- | --- |
 | `ADMIN_FX_RATE_REJECTED` | `enqueueAdminFxRateRejected` (`crud/notifications.ts:350`), called from `alertIfFxRateRejected` (`pricing.ts`, itself called from `runFxRefreshTick`) | The hourly refresh got a rate the sanity band refused. Payload carries the reason, the market figure, the post-spread/rounding figure, the still-saved rate and the consecutive-failure count. |
-| `ADMIN_FX_RATE_STALE` | `enqueueAdminFxRateStale` (`crud/notifications.ts:404`), called from `alertIfUsdIdrRateStale` (`pricing.ts:448`, itself called from `runFxRefreshTick`) | The saved rate aged past `fx_rate_max_age_hours`, so the USDT rail is now hidden shop-wide. |
+| `ADMIN_FX_RATE_STALE` | `enqueueAdminFxRateStale` (`crud/notifications.ts`), called from `alertIfUsdIdrRateStale` (`pricing.ts`, itself called from `runFxRefreshTick`) | The saved rate crossed **either** staleness threshold. `stage: "quote_ttl"` = past `fx_quote_ttl_minutes`, so no USDT rail is offered any more (prices still shown); `stage: "max_age"` = past `fx_rate_max_age_hours`, so USDT is hidden shop-wide. The two render different messages, because the consequence an admin must act on differs. |
 
 **Both alerts fire once per EPISODE, not once per hourly tick**, each through its
 own marker in the settings table:
 
-- `alertIfUsdIdrRateStale`'s episode key is the freshness stamp itself,
-  remembered in `fx_stale_alerted_for`. A later refresh clears that marker and
-  writes a new stamp, so a subsequent staleness episode is a genuinely different
-  outage and gets its own DM.
+- `alertIfUsdIdrRateStale`'s episode key is the freshness stamp, **qualified by
+  which threshold was crossed**, remembered in `fx_stale_alerted_for`. One
+  outage that crosses the quote TTL and then, hours later, the outer horizon is
+  two different pieces of news about one stamp — the second says USDT prices have
+  gone as well — so each raises its own DM while every repeat tick of one stage
+  stays quiet. The `max_age` stage keys off the bare stamp, exactly what this
+  marker held before the quote-TTL stage existed, so a shop mid-outage when that
+  shipped is not DMed twice about an episode it was already told about. A later
+  refresh clears the marker and writes a new stamp, so a subsequent staleness
+  episode is a genuinely different outage and gets its own DM.
 - `alertIfFxRateRejected`'s episode key is the rejection's **reason**, remembered
   in `fx_rejected_alerted_for`. A source stuck in one failure mode produces the
   same reason every hour with no new information in it, so only the first gets a
@@ -1046,10 +1068,10 @@ check is off"**, never "reject everything".
 | `fx_rate_min` | `8000` | IDR per USDT | Sanity floor. Refuses a refresh below it. | Yes |
 | `fx_rate_max` | `40000` | IDR per USDT | Sanity ceiling. Refuses a refresh above it. | Yes |
 | `fx_rate_max_delta_pct` | `5` | percent | Max move one refresh may make from the saved rate. | Yes |
-| `fx_quote_ttl_minutes` | `60` | **minutes** | Past it, checkout stops offering the USDT rails and `finalizeOrderPayment` refuses **one order** with `error.fx_quote_expired`. | Yes |
+| `fx_quote_ttl_minutes` | `180` | **minutes** | Past it, checkout stops offering the USDT rails, `finalizeOrderPayment` refuses an order submitted anyway with `error.fx_quote_expired`, and every admin is DMed once. Three times the hourly refresh, so one missed tick cannot switch USDT off. | Yes |
 | `fx_rate_max_age_hours` | `48` | **hours** | Past it, `getUsdIdrRate` returns null and the **whole USDT rail** is hidden. | Yes |
 | `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed rate — a refresh or a hand-typed one. | No (internal) |
-| `fx_stale_alerted_for` | — | ISO timestamp | Which staleness episode admins were already DMed about. | No (internal) |
+| `fx_stale_alerted_for` | — | ISO timestamp, `\|quote_ttl`-suffixed for the earlier stage | Which staleness episode and threshold admins were already DMed about. | No (internal) |
 | `fx_rejected_alerted_for` | — | rejection reason | Which rejection episode admins were already DMed about. | No (internal) |
 | `min_order_amount_idr` | `1000` | IDR | Shop-wide minimum for any rail without its own override. Only a MISSING row takes the default; a blank one means "no shop-wide minimum". | Yes |
 | `<rail>_min_amount` | unset | rail's own currency | Per-rail override: `tokopay_`, `paydisini_`, `nowpayments_`, `bybit_`, `bybit_bsc_`, `binance_internal_`. | Yes |

@@ -375,6 +375,117 @@ describe("alertIfUsdIdrRateStale — one admin DM per staleness episode, not per
   });
 });
 
+/**
+ * Whole-branch review D7 — the alert fires at the QUOTE TTL, not only at the
+ * 48-hour horizon.
+ *
+ * Before this, a shop whose refresh died went quiet in the worst possible way:
+ * every USDT rail vanished from checkout the moment the quote TTL passed, and
+ * nobody was told for up to two days — until `fx_rate_max_age_hours` finally
+ * took the prices down too and raised the only DM this event had. The earlier
+ * threshold is where an admin can still act cheaply, so it gets its own alert,
+ * with its own wording: USDT prices are still on display at that point, and a
+ * DM claiming USDT is switched off would read as a false alarm.
+ */
+describe("alertIfUsdIdrRateStale — both staleness thresholds raise their own DM", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+
+  const staleDms = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_FX_RATE_STALE } });
+  const stages = async () =>
+    (await staleDms()).map((r) => (JSON.parse(r.payloadJson) as { stage?: string }).stage);
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await buildSampleData(prisma);
+    await setSetting(prisma, ADMIN_IDS_KEY, "4001,4002");
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+  });
+
+  // The value itself, not just the mechanism: the whole reason the default moved
+  // from 60 to 180 is that the refresh cron runs hourly, so 60 meant a single
+  // missed tick cost the shop its USDT rails.
+  it("one missed hourly refresh does not expire the quote at the default TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(65));
+    expect(await usdIdrQuoteIsFresh(prisma)).toBe(true);
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    expect(await staleDms()).toHaveLength(0);
+  });
+
+  it("alerts at the quote TTL, hours before the outer horizon", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 30));
+    // Nothing near the 48-hour horizon — the rate is still live and displayed.
+    expect(await usdIdrRateStaleness(prisma)).toBeNull();
+    expect(await getUsdIdrRate(prisma)).not.toBeNull();
+
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await stages()).toEqual(["quote_ttl", "quote_ttl"]); // one per admin
+    const payload = JSON.parse((await staleDms())[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.ttl_minutes).toBe(DEFAULT_FX_QUOTE_TTL_MINUTES);
+    expect(payload.max_age_hours).toBeUndefined();
+  });
+
+  it("stays quiet on every later tick of the same quote-TTL episode", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, minutesAgo(Number(DEFAULT_FX_QUOTE_TTL_MINUTES) + 30));
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    for (let tick = 0; tick < 4; tick++) {
+      expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    }
+    expect(await staleDms()).toHaveLength(2);
+  });
+
+  it("escalates: the same stamp crossing the outer horizon is new news and DMs again", async () => {
+    const stamp = hoursAgo(5);
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, stamp);
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await stages()).toEqual(["quote_ttl", "quote_ttl"]);
+
+    // Narrowing the horizon stands in for hours passing. The STAMP must not
+    // move: a new stamp would be a different episode by definition, and what is
+    // under test is one outage crossing a second threshold.
+    await setSetting(prisma, FX_RATE_MAX_AGE_HOURS_KEY, "4");
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await stages()).toEqual(["quote_ttl", "quote_ttl", "max_age", "max_age"]);
+
+    // …and that second stage then goes quiet too.
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    expect(await staleDms()).toHaveLength(4);
+  });
+
+  // The stage never escalates backwards: once USDT is gone shop-wide, the DM has
+  // to describe THAT, not the milder symptom that is also technically true.
+  it("reports the worse stage when both thresholds are passed", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await stages()).toEqual(["max_age", "max_age"]);
+    expect(await getUsdIdrRate(prisma)).toBeNull();
+  });
+
+  // Back-compat of the marker's own format: `fx_stale_alerted_for` held a bare
+  // ISO stamp before stages existed, and the max-age stage still keys off one,
+  // so a shop that was mid-outage when this shipped is not DMed a second time
+  // about an episode it was already told about.
+  it("honours a pre-existing bare-stamp marker for the outer horizon", async () => {
+    const stamp = hoursAgo(72);
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, stamp);
+    await setSetting(prisma, FX_STALE_ALERTED_FOR_KEY, stamp);
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+    expect(await staleDms()).toHaveLength(0);
+  });
+
+  it("an unusable TTL leaves only the outer horizon, exactly as an unusable horizon leaves only the TTL", async () => {
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(5));
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, ""); // the check is off
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(false);
+
+    await setSetting(prisma, FX_QUOTE_TTL_MINUTES_KEY, DEFAULT_FX_QUOTE_TTL_MINUTES);
+    await setSetting(prisma, FX_RATE_MAX_AGE_HOURS_KEY, "abc"); // and so is this one
+    expect(await alertIfUsdIdrRateStale(prisma)).toBe(true);
+    expect(await stages()).toEqual(["quote_ttl", "quote_ttl"]);
+  });
+});
+
 describe("enqueueAdminFxRateRejected — the DM a rejected refresh sends", () => {
   beforeEach(async () => {
     await resetDb(prisma);

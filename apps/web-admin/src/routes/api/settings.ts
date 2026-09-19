@@ -71,7 +71,7 @@ const EDITABLE: Record<string, string> = {
   // database write (FINANCE_ARCHITECTURE known gap 5). Same free-text shape as
   // the M13 block above — `assertFxQuoteIsFresh` and `getShopMinOrderAmountIdr`
   // both already read an unusable value as "this check is off".
-  fx_quote_ttl_minutes: "Refuse a USDT checkout if the rate is older than (minutes)",
+  fx_quote_ttl_minutes: "Stop offering USDT checkout if the rate is older than (minutes)",
   min_order_amount_idr: "Shop-wide minimum order total (IDR)",
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",

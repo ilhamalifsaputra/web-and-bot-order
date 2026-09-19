@@ -33,7 +33,7 @@ export function GamesPage() {
       await apiPost(`/api/games/${id}/edit`, { isActive });
       await invalidateGames();
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update the game."));
+      toast.error(describeError(e, "Failed to update the game."));
     } finally {
       setToggling((s) => {
         const n = new Set(s);

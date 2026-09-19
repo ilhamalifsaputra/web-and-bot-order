@@ -905,7 +905,7 @@ export function SettingsPage() {
       URL.revokeObjectURL(url);
       toast.success(`Exported ${Object.keys(result.fields).length} settings.`);
     } catch (err) {
-      toast.error(describeError(err instanceof Error ? err.message : "Export failed"));
+      toast.error(describeError(err, "Export failed"));
     }
   }
 

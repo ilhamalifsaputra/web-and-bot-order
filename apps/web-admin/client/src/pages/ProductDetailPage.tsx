@@ -235,7 +235,7 @@ export function ProductDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
       toast.success("Denomination deleted.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete denomination."));
+      toast.error(describeError(e, "Failed to delete denomination."));
     }
   }
 
@@ -259,7 +259,7 @@ export function ProductDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
       toast.success(`${count} denomination(s) ${active ? "activated" : "deactivated"}.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update denominations."));
+      toast.error(describeError(e, "Failed to update denominations."));
     } finally {
       setBulkActing(false);
     }

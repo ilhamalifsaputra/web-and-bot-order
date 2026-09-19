@@ -250,7 +250,7 @@ export function TicketDetailPage() {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       toast.success("Ticket assigned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const close = useMutation({
@@ -259,7 +259,7 @@ export function TicketDetailPage() {
       toast.success("Ticket closed.");
       navigate("/support");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const setPriority = useMutation({
@@ -268,7 +268,7 @@ export function TicketDetailPage() {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       toast.success("Priority updated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const setCategory = useMutation({
@@ -277,7 +277,7 @@ export function TicketDetailPage() {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       toast.success("Category updated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const resolve = useMutation({
@@ -286,7 +286,7 @@ export function TicketDetailPage() {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       toast.success("Ticket marked resolved.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const reopen = useMutation({
@@ -295,7 +295,7 @@ export function TicketDetailPage() {
       void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
       toast.success("Ticket reopened.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;

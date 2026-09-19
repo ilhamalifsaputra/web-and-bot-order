@@ -102,7 +102,7 @@ export function GameDetailPage() {
       });
       await invalidate();
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update the mapping."));
+      toast.error(describeError(e, "Failed to update the mapping."));
     } finally {
       setTogglingMapping((s) => {
         const n = new Set(s);
@@ -118,7 +118,7 @@ export function GameDetailPage() {
       await invalidate();
       toast.success(`Removed the ${providerLabel(mapping.provider)} mapping.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete the mapping."));
+      toast.error(describeError(e, "Failed to delete the mapping."));
     }
   }
 

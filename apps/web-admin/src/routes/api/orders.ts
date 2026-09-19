@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OrderStatus, OrderKind, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -312,7 +313,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -407,7 +408,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -436,7 +437,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }
@@ -466,7 +467,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -521,7 +522,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }

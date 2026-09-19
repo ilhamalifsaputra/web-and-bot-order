@@ -43,6 +43,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { prisma, creditOverpaymentToBalance } from "@app/db";
 import { csrfProtect } from "../../plugins/auth";
@@ -75,7 +76,7 @@ export default async function orderOverpaymentsApiRoutes(app: FastifyInstance): 
         return reply.send({ ok: true, credited: credited.toString(), currency });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }

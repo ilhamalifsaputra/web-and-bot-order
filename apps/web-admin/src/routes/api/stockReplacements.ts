@@ -39,6 +39,7 @@
 import type { FastifyInstance } from "fastify";
 import { RefundExecutionMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -168,7 +169,7 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
         });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }
@@ -211,7 +212,7 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
         });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }
@@ -268,7 +269,7 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
         });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }

@@ -206,31 +206,31 @@ export function OrderDetailPage() {
   const approve = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/approve`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const reject = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/reject`, { reason: rejectReason }),
     onSuccess: () => { refresh(); setRejectReason(""); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const creditBalance = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/credit-balance`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const resend = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/resend`, {}),
     onSuccess: () => { setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const fulfill = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/fulfill`, { content: fulfillContent }),
     onSuccess: () => { refresh(); setFulfillContent(""); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   /** Hand the buyer back what they overpaid (task F2).
@@ -252,7 +252,7 @@ export function OrderDetailPage() {
         `Returned ${formatCurrencyDisplay(res.credited, res.currency as "IDR" | "USDT" | "USD")} to the buyer's wallet balance.`,
       );
     },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   if (isError) {

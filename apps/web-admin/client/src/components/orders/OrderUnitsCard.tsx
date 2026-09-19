@@ -249,7 +249,7 @@ export function OrderUnitsCard({
       // once can see which reason each rejection gave rather than a count.
       for (const failure of new Set(failures)) toast.error(failure);
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const retry = useMutation({
@@ -268,7 +268,7 @@ export function OrderUnitsCard({
         );
       } else toast.warning("Still nothing in stock for that account — the buyer is still waiting.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const refund = useMutation({
@@ -283,7 +283,7 @@ export function OrderUnitsCard({
         `Refunded ${formatCurrencyDisplay(res.refunded, res.currency)} to the buyer's wallet balance.`,
       );
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   function openReportDialog(orderItemIds: number[]) {

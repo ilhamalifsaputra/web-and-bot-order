@@ -198,6 +198,46 @@ describe("POST /api/settlements", () => {
     await expectNothingRecorded();
   });
 
+  // P2: the same refusal, read as the panel reads it. This key's copy is "does
+  // not add up: {netAmount} net plus {feeAmount} fee is not {grossAmount} gross
+  // {currency}" — four figures the service already attaches to the error and
+  // this route used to drop, leaving the admin with a bare `error.` key and no
+  // way to tell which of the three numbers they mistyped. `errorBody`
+  // (@app/core/errorBody) is what puts them on the wire.
+  it("sends the figures the refusal's own copy names, so the panel can print them", async () => {
+    const res = await post("/api/settlements", { ...batchBody, netAmount: "900000" });
+
+    expect(res.json()).toEqual({
+      error: "error.settlement_amounts_inconsistent",
+      error_args: {
+        netAmount: "900000",
+        feeAmount: "23500",
+        grossAmount: "1000000",
+        currency: "IDR",
+      },
+    });
+  });
+
+  // The other half of the contract: a body only grows `error_args` when the
+  // sentence asked for something. `error.settlement_provider_unknown` names
+  // `{provider}` and gets it; a placeholder-free key must stay a one-field body,
+  // or every response reader and `toEqual` in this suite has to account for a
+  // constant empty object.
+  it("adds nothing to a refusal whose copy quotes no figure", async () => {
+    const named = await post("/api/settlements", { ...batchBody, provider: "A_MAN_WITH_A_BRIEFCASE" });
+    expect(named.json()).toEqual({
+      error: "error.settlement_provider_unknown",
+      error_args: { provider: "A_MAN_WITH_A_BRIEFCASE" },
+    });
+
+    // `error.settlement_amount_not_a_number` reads "The settlement amount in
+    // {field} is not a valid, finite number" — so it too names one figure, and
+    // the truly placeholder-free case is the route's own pre-service 400s, which
+    // send an English sentence rather than a key at all.
+    const missingDate = await post("/api/settlements", { ...batchBody, settlementDate: "" });
+    expect(Object.keys(missingDate.json() as object)).toEqual(["error"]);
+  });
+
   it("422s a non-finite amount rather than letting it reach a money column", async () => {
     for (const bad of ["NaN", "Infinity", "one million"]) {
       const res = await post("/api/settlements", { ...batchBody, grossAmount: bad });

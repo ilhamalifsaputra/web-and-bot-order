@@ -93,6 +93,86 @@ describe("apiPost", () => {
   });
 });
 
+// P2: the figures a refusal's copy names travel with it, so `describeError` can
+// print them. `message` stays the bare key — pages compare it (`=== "error.x"`)
+// and `describeError` looks it up — and the args ride alongside.
+describe("error_args", () => {
+  it("carries a refusal's figures on the thrown error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        text: async () =>
+          JSON.stringify({
+            error: "error.cannot_deliver_out_of_stock",
+            error_args: { product: "Mobile Legends Diamonds" },
+          }),
+      })),
+    );
+    const err = await apiPost("/api/payments/order/501/deliver", {}).catch((e: unknown) => e);
+    expect((err as Error).message).toBe("error.cannot_deliver_out_of_stock");
+    expect((err as { errorArgs?: unknown }).errorArgs).toEqual({ product: "Mobile Legends Diamonds" });
+  });
+
+  it("leaves errorArgs undefined when the response carries none", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ error: "error.order_not_underpaid" }),
+      })),
+    );
+    const err = await apiPost("/api/payments/order/501/deliver", {}).catch((e: unknown) => e);
+    expect((err as { errorArgs?: unknown }).errorArgs).toBeUndefined();
+  });
+
+  it("ignores an error_args that is not a flat map, so a foreign body cannot reach the DOM", async () => {
+    for (const hostile of [["min", 5], "min=5", { min: { nested: 5 } }, null]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: false,
+          status: 422,
+          text: async () => JSON.stringify({ error: "error.cart_too_large", error_args: hostile }),
+        })),
+      );
+      const err = await apiPost("/api/anything", {}).catch((e: unknown) => e);
+      expect((err as { errorArgs?: unknown }).errorArgs).toBeUndefined();
+    }
+  });
+
+  it("accepts a number or boolean as a figure, stringified", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ error: "error.cart_too_large", error_args: { limit: 50 } }),
+      })),
+    );
+    const err = await apiPost("/api/anything", {}).catch((e: unknown) => e);
+    expect((err as { errorArgs?: unknown }).errorArgs).toEqual({ limit: "50" });
+  });
+
+  it("carries them through apiGet, apiPatch and apiDelete too", async () => {
+    const body = JSON.stringify({
+      error: "error.text_too_long",
+      error_args: { max: "500" },
+    });
+    for (const call of [
+      () => apiGet("/api/anything"),
+      () => apiPatch("/api/anything", {}),
+      () => apiDelete("/api/anything"),
+    ]) {
+      vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 422, text: async () => body })));
+      const err = await call().catch((e: unknown) => e);
+      expect((err as { errorArgs?: unknown }).errorArgs).toEqual({ max: "500" });
+    }
+  });
+});
+
 describe("apiPatch", () => {
   it("attaches the CSRF token as an X-CSRF-Token header and sends PATCH", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({ ok: true }) }));

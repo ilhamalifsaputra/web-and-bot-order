@@ -144,7 +144,7 @@ export function SettlementsPage() {
         );
       }
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const canSubmit =

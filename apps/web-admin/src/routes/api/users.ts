@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { UserRole } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import {
   prisma,
   getUser,
@@ -327,7 +328,7 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
         return balance;
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true, newBalance: newBalance.toString() });

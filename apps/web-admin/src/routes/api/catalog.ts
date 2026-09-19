@@ -40,6 +40,7 @@ import { Decimal } from "@app/core/money";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType, CategoryGroup } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { zAdditionalFields } from "@app/core/deliveryFields";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
@@ -950,7 +951,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     try {
       await upsertBulkPricing(prisma, { denominationId: id, minQuantity, discountPercent });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     await logAdminAction(prisma, {

@@ -37,6 +37,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { prisma, listSettlements, recordSettlement, type SettlementLineInput } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -183,7 +184,7 @@ export default async function settlementsApiRoutes(app: FastifyInstance): Promis
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }

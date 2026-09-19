@@ -6,6 +6,59 @@ function csrfToken(): string {
 }
 
 /**
+ * An API failure, as every helper in this file throws it.
+ *
+ * `message` stays exactly what it always was — the server's i18n key when it sent
+ * one, a developer-facing "<path> responded <status>" otherwise — because pages
+ * compare it (`=== "error.order_not_processing"`) and `describeError` looks it up.
+ */
+export interface ApiError extends Error {
+  /**
+   * The figures the message's `{placeholder}`s name, from the response's
+   * `error_args` (whole-branch review F4a; P2 on this surface).
+   *
+   * Much of this shop's refusal copy quotes a number or a name — "{product} has
+   * no stock reserved", "{refundable} {currency} is still refundable", "does not
+   * add up: {netAmount} net plus {feeAmount} fee" — and the routes used to send
+   * the key alone, so an admin was told a refusal happened and nothing about
+   * which figure caused it. Carrying the args here, rather than asking each
+   * message to live without them, is what makes every such key (including ones
+   * added later) render for real. Undefined when the server sent none: that is
+   * the path that must stay byte-identical for the many messages naming no
+   * figure.
+   */
+  errorArgs?: Record<string, string>;
+}
+
+/**
+ * `error_args` off a response body, accepted only as a flat map of strings.
+ *
+ * A body that isn't ours (a proxy's error page, a tampered response) must not be
+ * able to hand a page something a substitution would stringify straight into the
+ * DOM, so anything else — an array, a nested object, a bare string — is read as
+ * "no args", which renders the message unchanged.
+ */
+function readErrorArgs(data: unknown): Record<string, string> | undefined {
+  const raw = (data as { error_args?: unknown } | null | undefined)?.error_args;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string") out[name] = value;
+    else if (typeof value === "number" || typeof value === "boolean") out[name] = String(value);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The Error a failed call rejects with: the server's key (or a generic
+ * "<path> responded <status>") plus the figures its copy names. */
+function apiError(message: string, data: unknown): ApiError {
+  const err = new Error(message) as ApiError;
+  const args = readErrorArgs(data);
+  if (args) err.errorArgs = args;
+  return err;
+}
+
+/**
  * POST without a CSRF token — for unauthenticated setup wizard endpoints
  * (no admin session exists yet; the setup routes explicitly carry no CSRF).
  */
@@ -18,7 +71,7 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
-    throw new Error(data.error ?? `${path} failed ${res.status}`);
+    throw apiError(data.error ?? `${path} failed ${res.status}`, data);
   }
   return res.json() as Promise<T>;
 }
@@ -49,7 +102,7 @@ async function throwForResponse(res: Response, path: string): Promise<never> {
   } catch {
     // Not JSON — fall through to the generic message below.
   }
-  throw new Error(data.error ?? `${path} responded ${res.status}`);
+  throw apiError(data.error ?? `${path} responded ${res.status}`, data);
 }
 
 export async function apiGet<T>(path: string): Promise<T> {

@@ -164,13 +164,17 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
     const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
     const admin = await getUserByTelegramId(tx, adminTg);
+    const adminId = requireAdminId(admin);
     await logAdminAction(tx, {
-      adminId: requireAdminId(admin),
+      adminId,
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
       details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
     });
+    // Same transaction as the insert: stock, subscriber DMs and the optional
+    // broadcast commit or roll back together.
+    await afterStockAdded(tx, productId, n, adminId);
     return { added: n, dedupSkipped: skipped };
   });
 
@@ -183,10 +187,6 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     t(ctx, "admin.stock_added", { count: added, skipped: skippedCount + dedupSkipped }),
     akb.backToAdminKb(lang),
   );
-  // Subscriber DMs + (when the SKU has broadcastOnRestock) the all-customer
-  // broadcast, both via the outbox.
-  const admin = await getUserByTelegramId(prisma, adminTg);
-  await afterStockAdded(prisma, productId, added, requireAdminId(admin));
 }
 
 // ===========================================================================

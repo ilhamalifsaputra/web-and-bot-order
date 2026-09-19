@@ -1193,12 +1193,17 @@ export function enqueueRestockSubscriberNotifications(db: Db, denominationId: nu
  * its audit row. No-op unless `added > 0`.
  */
 export async function afterStockAdded(
-  db: PrismaClient,
+  db: Db,
   denominationId: number,
   added: number,
   adminId: number,
 ): Promise<{ subscribersQueued: number; broadcastQueued: number }> {
   if (added <= 0) return { subscribersQueued: 0, broadcastQueued: 0 };
+  // Given a bare client, keep the steps atomic; given a tx, join it (call this
+  // inside the same transaction as bulkAddStock so stock and DMs commit together).
+  if ("$transaction" in db) {
+    return db.$transaction((tx) => afterStockAdded(tx, denominationId, added, adminId));
+  }
   const subscribersQueued = await enqueueRestockSubscriberNotifications(db, denominationId);
   let broadcastQueued = 0;
   const denom = await db.denomination.findUnique({

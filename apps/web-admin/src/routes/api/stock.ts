@@ -131,7 +131,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(available),
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),
-        String(waiting[d.id] ?? 0),
+        // Same rule as the admin UI: blank unless out of stock with requests.
+        available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
         stockStatusLabel(available),
       ]);
     }
@@ -230,7 +231,13 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
 
     let added: number, skipped: number;
     try {
-      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+      ({ added, skipped } = await prisma.$transaction(async (tx) => {
+        const res = await bulkAddStock(tx, productId, creds);
+        // Same transaction as the insert: stock, subscriber DMs and the optional
+        // broadcast commit or roll back together. Web only enqueues outbox rows.
+        await afterStockAdded(tx, productId, res.added, req.admin!.userId);
+        return res;
+      }));
     } catch (e) {
       if (e instanceof CredentialKeyConfigError) {
         logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
@@ -248,11 +255,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     logger.info(
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
-
-    // Subscriber DMs + (when the SKU has broadcastOnRestock) the all-customer
-    // broadcast. The web NEVER sends Telegram itself; this only enqueues
-    // outbox rows for the notifier/bot to deliver.
-    await afterStockAdded(prisma, productId, added, req.admin!.userId);
 
     const message =
       skipped > 0

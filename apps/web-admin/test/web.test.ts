@@ -4088,6 +4088,36 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.body).toContain(denom!.name);
     });
 
+    it("blanks the Restock Requests cell unless the SKU is out of stock and has requests", async () => {
+      const cat = await createCategory(prisma, `CsvReqCat${counter++}`);
+      const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CsvReqProd", description: "x" });
+      const mk = (name: string) =>
+        createDenomination(prisma, {
+          productId: parent.id,
+          name,
+          type: ProductType.SHARED,
+          durationLabel: name,
+          price: "5.00",
+          description: "x",
+        });
+      const outWith = await mk("OutWithReq");
+      const inWith = await mk("InWithReq");
+      await prisma.stockItem.create({ data: { productId: inWith.id, credentials: "x@e.com:p", status: "AVAILABLE" } });
+      for (const d of [outWith, inWith]) {
+        const u = await prisma.user.create({
+          data: { telegramId: BigInt(920_000_000 + counter++), referralCode: `csvreq${counter}` },
+        });
+        await prisma.restockSubscription.create({ data: { userId: u.id, productId: d.id } });
+      }
+
+      const res = await get("/api/stock/export", seed.cookie);
+      const rows = res.body.split("\r\n");
+      const cells = (name: string) => rows.find((r) => r.startsWith(`${name},`))!.split(",");
+      // Header order: ..., Sold(7), Restock Requests(8), Status(9)
+      expect(cells("OutWithReq")[8]).toBe("1");
+      expect(cells("InWithReq")[8]).toBe("");
+    });
+
     it("includes the catalog price in rupiah and dollars when a rate is set", async () => {
       await setSetting(prisma, "usd_idr_rate", "16000");
       const denom = await createDenomination(prisma, {

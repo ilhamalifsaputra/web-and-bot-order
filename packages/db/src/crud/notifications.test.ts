@@ -48,6 +48,7 @@ import {
 } from "./notifications";
 import { addAdminIdToDb } from "./admins";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
+import { bulkAddStock } from "./stock";
 import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
 import { setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
@@ -2080,6 +2081,43 @@ describe("enqueueRestockSubscriberNotifications / afterStockAdded", () => {
     ).rejects.toThrow("boom");
 
     expect(await subEvents(Number(u.telegramId))).toHaveLength(0);
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(1);
+  });
+
+  it("afterStockAdded joins the caller's transaction: stock, subscriber rows and deletions commit together", async () => {
+    const denom = await seedSku();
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+
+    await prisma.$transaction(async (tx) => {
+      const { added } = await bulkAddStock(tx, denom.id, [`joined${Math.random()}@x.com:pw`]);
+      await afterStockAdded(tx, denom.id, added, admin.id);
+    });
+
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(1);
+    expect(await subEvents(Number(u.telegramId))).toHaveLength(1);
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(0);
+  });
+
+  it("rolls the stock add back when the notification step throws inside the same transaction", async () => {
+    const denom = await seedSku(true);
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        const { added } = await bulkAddStock(tx, denom.id, [`rollback${Math.random()}@x.com:pw`]);
+        // Simulate the outbox write failing after the stock insert.
+        tx.notificationOutbox.createMany = (() => {
+          throw new Error("outbox write failed");
+        }) as never;
+        await afterStockAdded(tx, denom.id, added, admin.id);
+      }),
+    ).rejects.toThrow("outbox write failed");
+
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(0);
     expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(1);
   });
 

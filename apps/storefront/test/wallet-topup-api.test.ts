@@ -17,6 +17,7 @@ import {
   addToCart,
   WALLET_TOPUP_MIN_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
+  BYBIT_MIN_AMOUNT_KEY,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { hashPassword } from "@app/core/password";
@@ -114,6 +115,44 @@ describe("GET /api/v1/wallet/topup", () => {
       min_usdt: null,
       max_usdt: null,
     });
+  });
+
+  // Whole-branch review F3 (part 2). The form has to know each rail's own floor
+  // to stop offering a rail the finalize-time guard would refuse, and the figure
+  // it needs is denominated in the currency the BUYER TYPES — which for a USDT
+  // rail judged by the shop-wide Rupiah floor is not the figure in the settings
+  // row at all.
+  it("reports each rail's floor in the currency the buyer types, converting the shop-wide Rupiah floor for the USDT rails", async () => {
+    await makeUser("wtfloors", "wtfloors-pw-123", "WTFLOORS");
+    const { cookie } = await loginAs("wtfloors", "wtfloors-pw-123");
+    const res = await app.inject({ method: "GET", url: "/api/v1/wallet/topup", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    // No per-rail `<rail>_min_amount` is set in this file, so every rail falls
+    // back to the shop-wide `min_order_amount_idr` default of Rp1.000. An IDR
+    // rail is judged against that figure directly; a USDT rail is judged on
+    // `amount × 16000`, so the smallest USDT amount that clears Rp1.000 is
+    // 1000/16000 = 0.0625, rounded UP to the cent so the form never advertises a
+    // figure the guard then refuses.
+    expect(res.json().rail_min).toEqual({
+      qris: "1000",
+      paydisini: "1000",
+      binance: "0.07",
+      bybit: "0.07",
+      bybit_bsc: "0.07",
+      nowpayments: "0.07",
+    });
+  });
+
+  it("reports a rail's OWN minimum untouched when one is set — it is already in that rail's settlement currency", async () => {
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "50");
+    try {
+      await makeUser("wtrailmin", "wtrailmin-pw-123", "WTRAILMIN");
+      const { cookie } = await loginAs("wtrailmin", "wtrailmin-pw-123");
+      const res = await app.inject({ method: "GET", url: "/api/v1/wallet/topup", headers: { cookie } });
+      expect(res.json().rail_min).toMatchObject({ bybit: "50", binance: "0.07" });
+    } finally {
+      await deleteSetting(prisma, BYBIT_MIN_AMOUNT_KEY);
+    }
   });
 });
 
@@ -246,6 +285,28 @@ describe("POST /api/v1/wallet/topup — validation matrix", () => {
       expect(res.json()).toEqual({ error: "error.wallet_topup_above_max" });
     } finally {
       await deleteSetting(prisma, WALLET_TOPUP_MAX_AMOUNT_IDR_KEY);
+    }
+  });
+
+  // Whole-branch review F3 (part 2). `finalizeWalletTopupPayment` now refuses a
+  // USDT top-up below the chosen rail's own floor, and the route has to hand that
+  // refusal to the buyer as the top-up-specific i18n key — not as a 500, and not
+  // as product checkout's "add more items" wording. The rail's own minimum is
+  // already USDT, so 25 USDT against a 50 USDT floor is refused whatever the
+  // exchange rate happens to be.
+  it("surfaces the rail-minimum refusal of a USDT top-up as a clean 400 with the top-up wording, and creates no order", async () => {
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "50");
+    try {
+      const before = await prisma.order.count();
+      const res = await post({ currency: "USDT", amount: "25", method: "bybit" });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe("error.wallet_topup_below_rail_minimum");
+      // The guard runs before any gateway state is derived and inside the
+      // route's transaction, so the order shell it would have created is rolled
+      // back rather than left as an unpayable pending row.
+      expect(await prisma.order.count()).toBe(before);
+    } finally {
+      await deleteSetting(prisma, BYBIT_MIN_AMOUNT_KEY);
     }
   });
 

@@ -72,7 +72,7 @@ const USDT_METHODS: MethodOption[] = [
  * eight near-identical `{page.x_enabled && ...}` blocks (there's no fee-note
  * variance here to justify the longer form; per-method icons are looked up
  * separately via iconFor()). */
-function methodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
+function configuredMethodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
   const enabledMap: Record<string, boolean> =
     currency === "IDR"
       ? { qris: data.idr_enabled, paydisini: data.paydisini_enabled }
@@ -84,6 +84,34 @@ function methodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
         };
   const list = currency === "IDR" ? IDR_METHODS : USDT_METHODS;
   return list.filter((m) => enabledMap[m.value]);
+}
+
+/**
+ * Which configured rails the typed amount can actually be paid through
+ * (whole-branch review F3).
+ *
+ * `finalizeWalletTopupPayment` refuses a top-up below the chosen rail's floor, so
+ * offering such a rail turns a fixable "type a bigger number" into a failed
+ * submission on the next screen. The floors come from the server
+ * (`data.rail_min`, already in the currency being typed) rather than being
+ * re-derived here — see the field's own comment in api/types.ts.
+ *
+ * An amount that is blank or not a positive number filters NOTHING: there is no
+ * figure to judge yet, and emptying the input must not make the whole picker
+ * vanish. Same reason `railsClearingTheTotal` (routes/checkout.ts) exempts a zero
+ * total. A rail with a null floor has nothing to clear and always survives.
+ *
+ * Client-side UX only, like every other check on this form: the create call
+ * re-runs the real guard.
+ */
+function offeredMethodsFor(data: WalletTopupData, currency: Currency, amount: string): MethodOption[] {
+  const configured = configuredMethodsFor(data, currency);
+  const typed = Number(amount);
+  if (!amount.trim() || !Number.isFinite(typed) || typed <= 0) return configured;
+  return configured.filter((m) => {
+    const floor = data.rail_min?.[m.value];
+    return !floor || typed >= Number(floor);
+  });
 }
 
 /** Server-configured min/max for `currency`, formatted for display — a plain
@@ -172,14 +200,22 @@ export default function WalletTopupPage() {
   const [method, setMethod] = useState<string | null>(null);
   const [submitErrorKey, setSubmitErrorKey] = useState<string | null>(null);
 
-  // Re-pick the default method whenever the currency (or the enabled-gateway
-  // payload) changes, mirroring CheckoutPage's defaultMethod cascade: first
-  // enabled option wins, cleared to null when the switch leaves none enabled.
+  // Re-pick the default method whenever the currency, the enabled-gateway
+  // payload, or the amount changes, mirroring CheckoutPage's defaultMethod
+  // cascade: first offered option wins, cleared to null when nothing is offered.
+  //
+  // A selection the buyer made themselves is KEPT while it is still offered
+  // (whole-branch review F3): the amount is in this dependency list so a rail
+  // that stops accepting the typed figure gets dropped, and resetting to the
+  // first row on every keystroke would silently move a deliberate choice back to
+  // QRIS as the buyer finished typing.
   useEffect(() => {
     if (!data) return;
-    const options = methodsFor(data, currency);
-    setMethod(options[0]?.value ?? null);
-  }, [data, currency]);
+    const options = offeredMethodsFor(data, currency, amount);
+    setMethod((current) =>
+      current && options.some((m) => m.value === current) ? current : (options[0]?.value ?? null),
+    );
+  }, [data, currency, amount]);
 
   const submitMutation = useMutation({
     mutationFn: () =>
@@ -216,7 +252,14 @@ export default function WalletTopupPage() {
     );
   }
 
-  const options = methodsFor(data, currency);
+  const options = offeredMethodsFor(data, currency, amount);
+  // The shop HAS a working gateway for this currency and the amount is simply
+  // under every one of their floors. Two causes look identical in an empty
+  // picker and need opposite messages — the same distinction
+  // PaymentMethodSelector.tsx draws with `below_all_minimums` on the product
+  // checkout page. "Check back soon" would leave a buyer waiting for something
+  // that will never change, when all they have to do is type a larger amount.
+  const belowEveryRailMinimum = options.length === 0 && configuredMethodsFor(data, currency).length > 0;
   const hint = limitsHint(data, currency);
   const valid = amountValid(data, currency, amount);
   const submitBlocked = !valid || !method;
@@ -282,7 +325,11 @@ export default function WalletTopupPage() {
             {options.length === 0 && (
               <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
                 <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-                <p>{t("web.wallet_topup_none_available")}</p>
+                <p>
+                  {belowEveryRailMinimum
+                    ? t("web.wallet_topup_below_rail_minimum_all")
+                    : t("web.wallet_topup_none_available")}
+                </p>
               </div>
             )}
           </div>

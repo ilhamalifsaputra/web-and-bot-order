@@ -833,6 +833,7 @@
   "web.wallet_topup_method_label": "How would you like to pay?",
   "web.wallet_topup_submit": "Top up now",
   "web.wallet_topup_none_available": "No payment methods are available for this currency right now — please check back soon.",
+  "web.wallet_topup_below_rail_minimum_all": "That amount is below the minimum every payment method for this currency accepts. Enter a larger amount and the methods will appear.",
   "web.wallet_topup_range_hint": "Between {min} and {max}.",
   "web.wallet_topup_min_hint": "Minimum {min}.",
   "web.wallet_topup_max_hint": "Maximum {max}.",

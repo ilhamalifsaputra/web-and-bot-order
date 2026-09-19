@@ -410,6 +410,18 @@ export interface WalletTopupData {
   max_idr: string | null;
   min_usdt: string | null;
   max_usdt: string | null;
+  /**
+   * The smallest amount each gateway rail will accept, keyed by the same method
+   * token the POST body uses, **already denominated in the currency the buyer
+   * types** (whole-branch review F3). null = that rail has no floor to clear, so
+   * any amount clears it.
+   *
+   * Separate from `min_idr`/`min_usdt`, which are the shop's own top-up bounds:
+   * these are the RAILS' floors, and the two are independently configured. The
+   * form must respect both — it advertises whichever binds and stops offering a
+   * rail the amount cannot be paid through.
+   */
+  rail_min: Record<string, string | null>;
   wallet_idr: string;
   wallet_usdt: string;
 }

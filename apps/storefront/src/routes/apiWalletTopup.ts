@@ -72,6 +72,58 @@ async function loadOwnedTopup(code: string, customer: Customer) {
   return order;
 }
 
+/**
+ * The client's method token for each rail, and the currency that rail settles
+ * in. Single source of truth for both halves of the top-up form's gateway list:
+ * the `<token>_enabled` flags the GET already served, and the per-rail floors
+ * added by whole-branch review F3.
+ *
+ * The tokens are the SPA's, not `PaymentMethod`'s — `WalletTopupPage.tsx` and the
+ * POST body below both speak "qris"/"binance"/…, so the floors have to be keyed
+ * the same way or the page would have to maintain a second mapping to read them.
+ */
+const TOPUP_RAILS = [
+  ["qris", PaymentMethod.TOKOPAY, "IDR"],
+  ["paydisini", PaymentMethod.PAYDISINI, "IDR"],
+  ["binance", PaymentMethod.BINANCE_INTERNAL, "USDT"],
+  ["bybit", PaymentMethod.BYBIT, "USDT"],
+  ["bybit_bsc", PaymentMethod.BYBIT_BSC, "USDT"],
+  ["nowpayments", PaymentMethod.NOWPAYMENTS, "USDT"],
+] as const satisfies readonly (readonly [string, WalletTopupMethod, "IDR" | "USDT"])[];
+
+/**
+ * The smallest amount each rail will accept, **in the currency the buyer types**,
+ * keyed by the SPA's method token. null = that rail has no floor to clear (or, for
+ * a USDT rail with no usable exchange rate, no floor this server can express —
+ * those rails are already switched off by the same missing rate, so the page never
+ * consults their entry).
+ *
+ * This is what lets the top-up form stop offering a rail that
+ * `finalizeWalletTopupPayment`'s guard would refuse the moment it was picked —
+ * the storefront twin of what `offeredTopupRails` does in the bot and of
+ * `railsClearingTheTotal` on the product checkout page. The figure is
+ * deliberately resolved SERVER-side through `resolveWalletTopupRailFloor` rather
+ * than derived in the page from the raw settings: for a USDT rail judged by the
+ * shop-wide Rupiah floor the two are different numbers, and re-deriving the
+ * conversion (and its round-UP direction) in the client is how the page would end
+ * up advertising a figure the guard then refuses.
+ */
+async function railFloors(fxRate: Decimal | null): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {};
+  for (const [token, method, currency] of TOPUP_RAILS) {
+    if (currency === "USDT" && !fxRate) {
+      out[token] = null;
+      continue;
+    }
+    const floor = await resolveWalletTopupRailFloor(prisma, {
+      method,
+      ...(currency === "IDR" ? ({ currency: "IDR" } as const) : ({ currency: "USDT", rate: fxRate! } as const)),
+    });
+    out[token] = floor ? floor.toString() : null;
+  }
+  return out;
+}
+
 const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
   // ---- Gateway availability + limits + current balances ----
   app.get("/wallet/topup", async (req, reply) => {
@@ -101,6 +153,10 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       max_idr: limits.maxIdr ? limits.maxIdr.toString() : null,
       min_usdt: limits.minUsdt ? limits.minUsdt.toString() : null,
       max_usdt: limits.maxUsdt ? limits.maxUsdt.toString() : null,
+      // Per-rail floors (F3): what each gateway itself will accept, so the form
+      // can drop a rail the typed amount cannot be paid through instead of
+      // offering it and having the create call refuse it.
+      rail_min: await railFloors(fxRate),
       wallet_idr: new Decimal(customer.user.walletBalance).toString(),
       wallet_usdt: new Decimal(customer.user.walletBalanceUsdt).toString(),
     });

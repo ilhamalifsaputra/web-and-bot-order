@@ -833,6 +833,7 @@
   "web.wallet_topup_method_label": "Mau bayar pakai apa?",
   "web.wallet_topup_submit": "Top up sekarang",
   "web.wallet_topup_none_available": "Belum ada metode pembayaran untuk mata uang ini saat ini — coba lagi nanti ya.",
+  "web.wallet_topup_below_rail_minimum_all": "Jumlah itu masih di bawah minimum semua metode pembayaran untuk mata uang ini. Masukkan jumlah yang lebih besar, nanti metode pembayarannya muncul.",
   "web.wallet_topup_range_hint": "Antara {min} dan {max}.",
   "web.wallet_topup_min_hint": "Minimum {min}.",
   "web.wallet_topup_max_hint": "Maksimum {max}.",

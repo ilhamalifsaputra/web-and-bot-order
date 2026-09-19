@@ -112,6 +112,29 @@ recognised as correctly-priced history instead of being reported as drift on
 every past order. That snapshot is an exact-match exemption, never a widened
 tolerance, and is unreachable from any pricing path.
 
+**That exemption is dated** (review D8). It applies only to orders created before
+`usdt_rounding_ceil_since`, the settings row recording when this shop's rounding
+changed. It used to be open-ended, so a total landing on the old 0.1 figure was
+excused *forever* — including on an order created today, long after anything
+could legitimately produce that figure. A present-day 0.1-shaped total is a bug
+in whatever wrote it, and it was the single class of USDT mispricing this report
+could not see: the only figures it accepted without deriving them were the ones
+it should have been most suspicious of.
+
+The boundary is exclusive at the top: an order created at exactly that instant is
+judged by the current rule, because the cutoff names the moment the new rule took
+effect and the first order of the new era is the one most worth checking.
+
+An **absent, blank or unparseable** value exempts nothing. That is the strict
+direction on purpose — the permissive reading would quietly restore the
+open-ended exemption this key exists to remove — and it is why the value is
+seeded rather than defaulted in code: migration
+`20260919120000_seed_usdt_rounding_ceil_since` writes `NOW()` (i.e. the deploy
+instant, which for every existing shop *is* when the new rule started pricing
+orders) with `ON CONFLICT DO NOTHING`. A hardcoded date could not be right for
+two shops deploying on different days, and being wrong in the early direction
+reports a shop's whole USDT history as drift.
+
 ### Two consequences that needed explicit handling
 
 **1. No positive Rupiah amount converts to 0.0 USDT any more.**
@@ -1100,6 +1123,7 @@ check is off"**, never "reject everything".
 | `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed rate — a refresh or a hand-typed one. | No (internal) |
 | `fx_stale_alerted_for` | — | ISO timestamp, `\|quote_ttl`-suffixed for the earlier stage | Which staleness episode and threshold admins were already DMed about. | No (internal) |
 | `fx_rejected_alerted_for` | — | rejection reason | Which rejection episode admins were already DMed about. | No (internal) |
+| `usdt_rounding_ceil_since` | deploy instant, seeded by migration | ISO timestamp | End date of `reconcileFinances`' pre-M13 rounding exemption. Blank/unparseable/absent = exempt nothing. Not a pricing lever. | Yes |
 | `min_order_amount_idr` | `1000` | IDR | Shop-wide minimum for any rail without its own override. Only a MISSING row takes the default; a blank one means "no shop-wide minimum". | Yes |
 | `<rail>_min_amount` | unset | rail's own currency | Per-rail override: `tokopay_`, `paydisini_`, `nowpayments_`, `bybit_`, `bybit_bsc_`, `binance_internal_`. | Yes |
 

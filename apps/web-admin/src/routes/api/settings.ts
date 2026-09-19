@@ -66,6 +66,14 @@ const EDITABLE: Record<string, string> = {
   fx_rate_max_delta_pct: "Max USDT rate move per update (%)",
   fx_rate_max_age_hours: "Hide USDT payments if the rate is older than (hours)",
   usdt_spread_bps: "USDT spread (basis points, 100 = 1%)",
+  // D8. Not a pricing lever at all — the only reader is `reconcileFinances`,
+  // which uses it to tell a USDT total rounded the old way (0.1 half-up) apart
+  // from one that is simply wrong. It lives with the FX fields because that is
+  // where an admin looking at USDT rounding will look, and it is free text for
+  // the same reason as the block above: a typo must cost the shop a check it
+  // stops trusting, never a pricing outage. Seeded to the deploy instant by
+  // migration, so an admin normally never touches it.
+  usdt_rounding_ceil_since: "USDT rounding changed at (ISO timestamp, reconciliation only)",
   // The last two settings the pricing/FX system reads that had a documented
   // default but no field here, so the only way to change either was a direct
   // database write (FINANCE_ARCHITECTURE known gap 5). Same free-text shape as

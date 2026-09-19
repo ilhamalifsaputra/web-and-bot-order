@@ -3,7 +3,16 @@ import type { PrismaClient } from "@prisma/client";
 import { OrderKind } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatus, ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
+import {
+  ordersByStatus,
+  ordersByStatusSince,
+  manualMatchQueueCounts,
+  listCombinedLedger,
+  recentOrders,
+  reconcileFinances,
+  USDT_ROUNDING_CEIL_SINCE_KEY,
+} from "./reports";
+import { setSetting, __clearSettingsCacheForTests } from "./settings";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -29,6 +38,12 @@ beforeEach(async () => {
   await prisma.processedTokopayTx.deleteMany();
   await prisma.processedPaydisiniTx.deleteMany();
   await prisma.processedNowpaymentsTx.deleteMany();
+  // D8 gave the legacy-rounding exemption a dated cutoff read from settings, so
+  // a leftover row would silently decide a later test's outcome. The cache has
+  // to go with the rows: `getSetting` holds a 30s per-client cache, and wiping
+  // the table behind it leaves it serving values for rows that no longer exist.
+  await prisma.setting.deleteMany();
+  __clearSettingsCacheForTests(prisma);
 
   const user = await prisma.user.create({
     data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
@@ -357,6 +372,9 @@ describe("reconcileFinances", () => {
   // reconciliation report that cries wolf on every past order is worse than no
   // report, because it is the one an admin stops reading.
   it("does not report a USDT order priced under the previous rounding policy as drift", async () => {
+    // The exemption is now dated (D8), so this order has to be on the historical
+    // side of the cutoff for it to apply at all.
+    await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, new Date().toISOString());
     // Rp44.500 at 16.000: 2.78125 → 2.8 under the old rule, 2.79 under the new.
     await prisma.order.create({
       data: {
@@ -368,6 +386,7 @@ describe("reconcileFinances", () => {
         fxRate: "16000",
         status: "DELIVERED",
         kind: "PRODUCT",
+        createdAt: new Date(Date.now() - 86_400_000),
       },
     });
 
@@ -419,6 +438,118 @@ describe("reconcileFinances", () => {
     const findings = await reconcileFinances(prisma);
 
     expect(findings.order_drift.map((f) => f.order_code)).not.toContain("ORD-USDT-NEW-ROUNDING");
+  });
+
+  /**
+   * Whole-branch review D8 — the legacy-rounding exemption needed an end date.
+   *
+   * It was open-ended: ANY USDT order whose total happened to land on the old
+   * 0.1-half-up figure was excused forever, including one created today, long
+   * after `usdtFromIdr` stopped producing that figure. A total that shape on a
+   * present-day order is not history, it is a bug in whatever wrote it — and it
+   * was the one category of pricing bug this report could never see.
+   * `usdt_rounding_ceil_since` closes it: before the cutoff is history, on or
+   * after it is drift.
+   */
+  describe("usdt_rounding_ceil_since — the legacy-rounding exemption has an end date (D8)", () => {
+    // Rp44.500 at 16.000 is 2.78125: 2.8 under the old rule, 2.79 under the new.
+    // Every order below is that same order, moved around the cutoff.
+    const legacyShapedOrder = (orderCode: string, createdAt: Date) =>
+      prisma.order.create({
+        data: {
+          orderCode,
+          userId,
+          subtotalAmount: "44500",
+          totalAmount: "2.8",
+          currency: "USDT",
+          fxRate: "16000",
+          status: "DELIVERED",
+          kind: "PRODUCT",
+          createdAt,
+        },
+      });
+
+    it("exempts an order created before the cutoff", async () => {
+      await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, "2026-09-18T00:00:00.000Z");
+      await legacyShapedOrder("ORD-BEFORE-CUTOFF", new Date("2026-09-17T23:59:59.000Z"));
+
+      const findings = await reconcileFinances(prisma);
+
+      expect(findings.order_drift.map((f) => f.order_code)).not.toContain("ORD-BEFORE-CUTOFF");
+    });
+
+    it("reports the same total on an order created after the cutoff, against the current rule", async () => {
+      await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, "2026-09-18T00:00:00.000Z");
+      await legacyShapedOrder("ORD-AFTER-CUTOFF", new Date("2026-09-18T00:00:01.000Z"));
+
+      const findings = await reconcileFinances(prisma);
+
+      const entry = findings.order_drift.find((f) => f.order_code === "ORD-AFTER-CUTOFF");
+      expect(entry).toBeTruthy();
+      // The figure reported is the current rule's, exactly as for any other
+      // drift: the legacy value was only ever an exemption, never a claim.
+      expect(entry!.expected).toBe("2.79");
+      expect(entry!.actual).toBe("2.8");
+    });
+
+    it("treats an order created exactly AT the cutoff as new pricing, not history", async () => {
+      // The cutoff is the instant the new rule took effect, so the instant
+      // itself belongs to the new rule. Picking the other boundary would exempt
+      // the first order of the new era, which is the one most worth checking.
+      await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, "2026-09-18T00:00:00.000Z");
+      await legacyShapedOrder("ORD-AT-CUTOFF", new Date("2026-09-18T00:00:00.000Z"));
+
+      const findings = await reconcileFinances(prisma);
+
+      expect(findings.order_drift.map((f) => f.order_code)).toContain("ORD-AT-CUTOFF");
+    });
+
+    it("exempts nothing when no cutoff is configured", async () => {
+      // An unset cutoff means this shop has never recorded when its rounding
+      // changed, so no order can be shown to predate the change and none is
+      // excused. Deliberately the strict direction: the alternative is a shop
+      // that silently keeps the old open-ended exemption forever.
+      await legacyShapedOrder("ORD-NO-CUTOFF", new Date("2020-01-01T00:00:00.000Z"));
+
+      const findings = await reconcileFinances(prisma);
+
+      expect(findings.order_drift.map((f) => f.order_code)).toContain("ORD-NO-CUTOFF");
+    });
+
+    it("exempts nothing when the cutoff is blank or unparseable", async () => {
+      for (const junk of ["", "   ", "not a date", "yesterday"]) {
+        await prisma.order.deleteMany();
+        await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, junk);
+        await legacyShapedOrder("ORD-JUNK-CUTOFF", new Date("2020-01-01T00:00:00.000Z"));
+
+        const findings = await reconcileFinances(prisma);
+
+        expect(
+          findings.order_drift.map((f) => f.order_code),
+          `cutoff ${JSON.stringify(junk)} should exempt nothing`,
+        ).toContain("ORD-JUNK-CUTOFF");
+      }
+    });
+
+    it("leaves an IDR order alone — the cutoff only ever gated a USDT conversion", async () => {
+      await setSetting(prisma, USDT_ROUNDING_CEIL_SINCE_KEY, "2026-09-18T00:00:00.000Z");
+      await prisma.order.create({
+        data: {
+          orderCode: "ORD-IDR-AFTER-CUTOFF",
+          userId,
+          subtotalAmount: "44500",
+          totalAmount: "44500",
+          currency: "IDR",
+          status: "DELIVERED",
+          kind: "PRODUCT",
+          createdAt: new Date("2026-09-19T00:00:00.000Z"),
+        },
+      });
+
+      const findings = await reconcileFinances(prisma);
+
+      expect(findings.order_drift.map((f) => f.order_code)).not.toContain("ORD-IDR-AFTER-CUTOFF");
+    });
   });
 
   it("leaves voucher_drift and negative_wallets unaffected by WALLET_TOPUP orders", async () => {

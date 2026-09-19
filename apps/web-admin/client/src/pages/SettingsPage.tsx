@@ -89,6 +89,7 @@ const FX_KEYS = new Set([
   "usd_idr_rate_auto",
   "usd_idr_rate_rounding",
   "usdt_spread_bps",
+  "usdt_rounding_ceil_since",
   "fx_rate_min",
   "fx_rate_max",
   "fx_rate_max_delta_pct",
@@ -242,6 +243,8 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
   usdt_spread_bps:
     "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
+  usdt_rounding_ceil_since:
+    "When this shop started rounding USDT amounts up to the cent instead of to the nearest 0.1. It does not affect prices at all — the six-hourly finance check uses it to tell an older order priced the old way apart from one that is genuinely wrong. It is filled in for you at upgrade time; only change it if that date is wrong. Empty means the check assumes every order was priced the current way.",
   fx_rate_min: "Refuses an auto-fetched rate below this — catches a rate source that starts answering in the wrong unit. Blank turns the check off.",
   fx_rate_max: "Refuses an auto-fetched rate above this — catches a rate source returning a placeholder. Blank turns the check off.",
   fx_rate_max_delta_pct:

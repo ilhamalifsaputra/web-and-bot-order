@@ -1123,13 +1123,19 @@ export function countUserOrders(db: Db, userId: number) {
  * Site-wide fulfilment figures for the storefront home: how many orders have
  * actually been delivered and how many distinct customers have bought. Real
  * numbers replace the old hard-coded "10.000+" stats so the page stays honest.
+ *
+ * Product orders only: a settled wallet top-up is a DELIVERED order row too
+ * (`settleWalletTopup`, ./wallet_topup.ts), and neither claim on the page
+ * survives counting one — a deposit delivered nothing, and someone who has
+ * only ever funded a balance has not bought anything yet.
  */
 export async function shopFulfilmentStats(
   db: Db,
 ): Promise<{ deliveredOrders: number; customers: number }> {
+  const salesWhere = { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT };
   const [deliveredOrders, buyers] = await Promise.all([
-    db.order.count({ where: { status: OrderStatus.DELIVERED } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED } }),
+    db.order.count({ where: salesWhere }),
+    db.order.groupBy({ by: ["userId"], where: salesWhere }),
   ]);
   return { deliveredOrders, customers: buyers.length };
 }
@@ -1226,9 +1232,14 @@ export function countAwaitingManualFulfillment(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PROCESSING } });
 }
 
-/** Orders successfully delivered — the Orders page KPI's "Delivered" count. */
+/** Orders successfully delivered — the Orders page KPI's "Delivered" count.
+ * Product orders only, so it agrees with the "Revenue Today" figure beside it
+ * (crud/revenue.ts): a settled wallet top-up is a DELIVERED order row
+ * (`settleWalletTopup`) that delivered no goods. The queue counts above
+ * (pending/processing/underpaid/cancelled) deliberately stay all-kinds —
+ * they drive admin work, and a stuck or voided top-up still needs attention. */
 export function countDelivered(db: Db): Promise<number> {
-  return db.order.count({ where: { status: OrderStatus.DELIVERED } });
+  return db.order.count({ where: { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT } });
 }
 
 /** Orders voided (admin-cancelled or rejected) — folded together for the

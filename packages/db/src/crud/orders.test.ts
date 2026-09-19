@@ -11,6 +11,7 @@ import {
   countExpiredPending,
   countDelivered,
   countCancelled,
+  shopFulfilmentStats,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
@@ -128,6 +129,22 @@ describe("order status counts", () => {
     await makeOrder("DELIVERED");
     await makeOrder("PROCESSING");
     expect(await countDelivered(prisma)).toBe(2);
+  });
+
+  // A settled wallet top-up is a DELIVERED order row too (settleWalletTopup),
+  // but it is not a sale — the Orders page's "Delivered" KPI sits next to
+  // "Revenue Today", which counts product orders only, so both must agree.
+  it("countDelivered and shopFulfilmentStats exclude settled wallet top-ups", async () => {
+    await makeOrder("DELIVERED");
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+    expect(await countDelivered(prisma)).toBe(1);
+    expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 1, customers: 1 });
+  });
+
+  it("shopFulfilmentStats counts no customers for a buyer who has only ever topped up", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+    expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 0, customers: 0 });
   });
 
   // The Orders page KPI's "Cancelled" card folds REJECTED in with CANCELLED —

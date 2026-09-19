@@ -151,18 +151,32 @@ export interface StatusCount {
 }
 
 /** Order counts grouped by status (the funnel). */
+/**
+ * Order counts grouped by status — the Reports page's funnel. Product orders
+ * only, like every other figure on that page: a settled wallet top-up is a
+ * DELIVERED order row (`settleWalletTopup`, ./wallet_topup.ts), so counting
+ * one put deposits in a sales funnel. Top-up orders are still listed in full
+ * on the Orders page and in `listUnifiedLedger`'s kind-filtered view.
+ */
 export async function ordersByStatus(db: Db): Promise<StatusCount[]> {
-  const grouped = await db.order.groupBy({ by: ["status"], _count: { _all: true } });
+  const grouped = await db.order.groupBy({
+    by: ["status"],
+    where: { kind: OrderKind.PRODUCT },
+    _count: { _all: true },
+  });
   return grouped
     .map((g) => ({ status: g.status, count: g._count._all }))
     .sort((a, b) => b.count - a.count);
 }
 
-/** Order counts grouped by status, restricted to orders created since `since` — the dashboard's "today" funnel. */
+/** Order counts grouped by status, restricted to orders created since `since` —
+ * the dashboard's "today" funnel. Product orders only, for the same reason as
+ * `ordersByStatus` above, and so this funnel agrees with the "Revenue Today"
+ * figure on the same dashboard card (crud/revenue.ts). */
 export async function ordersByStatusSince(db: Db, since: Date): Promise<StatusCount[]> {
   const grouped = await db.order.groupBy({
     by: ["status"],
-    where: { createdAt: { gte: since } },
+    where: { createdAt: { gte: since }, kind: OrderKind.PRODUCT },
     _count: { _all: true },
   });
   return grouped

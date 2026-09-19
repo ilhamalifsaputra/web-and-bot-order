@@ -7,6 +7,7 @@ import {
   getUser,
   getUserByTelegramId,
   searchUsers,
+  userTotalSpent,
   totalSpentByUserIds,
   orderCountByUserIds,
   setUserRole,
@@ -22,7 +23,7 @@ import {
   countAllWalletTransactions,
 } from "./users";
 import { primeWarmUser, peekWarmUser } from "./warmUserCache";
-import { UserRole } from "@app/core/enums";
+import { OrderKind, UserRole } from "@app/core/enums";
 import { startOfDayUtc } from "@app/core/datetime";
 
 /** Minimal DELIVERED order for KPI/spend-ranking fixtures. */
@@ -39,6 +40,32 @@ function makeOrder(
       totalAmount: args.amount,
       currency: args.currency ?? "IDR",
       status: args.status ?? "DELIVERED",
+      ...(args.createdAt ? { createdAt: args.createdAt } : {}),
+    },
+  });
+}
+
+/**
+ * A settled wallet top-up, exactly as `settleWalletTopup`
+ * (./wallet_topup.ts) writes it: kind WALLET_TOPUP, status DELIVERED, no
+ * OrderItem rows. Funding a balance is not spending and not an order the
+ * customer placed for goods, so no spend figure or Customers-page KPI may
+ * count it.
+ */
+function makeTopup(
+  prisma: PrismaClient,
+  userId: number,
+  args: { amount: string; currency?: "IDR" | "USDT"; createdAt?: Date },
+) {
+  return prisma.order.create({
+    data: {
+      orderCode: `TOP-${userId}-${Math.random()}`,
+      userId,
+      kind: OrderKind.WALLET_TOPUP,
+      subtotalAmount: args.amount,
+      totalAmount: args.amount,
+      currency: args.currency ?? "IDR",
+      status: "DELIVERED",
       ...(args.createdAt ? { createdAt: args.createdAt } : {}),
     },
   });
@@ -801,5 +828,95 @@ describe("listAllWalletTransactions / countAllWalletTransactions", () => {
     expect(await countAllWalletTransactions(prisma, { reason: "wallet_topup" })).toBe(4);
     const filtered = await listAllWalletTransactions(prisma, { reason: "wallet_topup", limit: 3, offset: 3 });
     expect(filtered).toHaveLength(1);
+  });
+});
+
+describe("wallet-top-up exclusion (customer spend and Customers-page KPIs)", () => {
+  it("userTotalSpent and totalSpentByUserIds count product orders only", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9910, username: "topup_spender", fullName: null });
+    await makeOrder(prisma, user.id, { amount: "20000", currency: "IDR" });
+    await makeOrder(prisma, user.id, { amount: "4", currency: "USDT" });
+    // Deposits far larger than the purchases — a leak would be unmistakable.
+    await makeTopup(prisma, user.id, { amount: "1000000", currency: "IDR" });
+    await makeTopup(prisma, user.id, { amount: "250", currency: "USDT" });
+
+    const single = await userTotalSpent(prisma, user.id);
+    expect(single.idr.toString()).toBe("20000");
+    expect(single.usdt.toString()).toBe("4");
+
+    const batched = await totalSpentByUserIds(prisma, [user.id]);
+    expect(batched.get(user.id)!.idr.toString()).toBe("20000");
+    expect(batched.get(user.id)!.usdt.toString()).toBe("4");
+  });
+
+  it("a customer whose only DELIVERED orders are top-ups reports zero spend and is absent from the batched map", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9911, username: "topup_only", fullName: null });
+    await makeTopup(prisma, user.id, { amount: "750000", currency: "IDR" });
+
+    const single = await userTotalSpent(prisma, user.id);
+    expect(single.idr.toString()).toBe("0");
+    expect(single.usdt.toString()).toBe("0");
+    expect((await totalSpentByUserIds(prisma, [user.id])).has(user.id)).toBe(false);
+  });
+
+  it("customersKpis totalRevenue ignores top-ups", async () => {
+    const before = await customersKpis(prisma);
+
+    const customer = await upsertUser(prisma, { telegramId: 9912, username: "topup_kpi_revenue", fullName: null });
+    await makeOrder(prisma, customer.id, { amount: "15000", currency: "IDR" });
+    await makeTopup(prisma, customer.id, { amount: "2000000", currency: "IDR" });
+    await makeTopup(prisma, customer.id, { amount: "500", currency: "USDT" });
+
+    const after = await customersKpis(prisma);
+    expect(after.totalRevenue.idr.minus(before.totalRevenue.idr).toString()).toBe("15000");
+    expect(after.totalRevenue.usdt.minus(before.totalRevenue.usdt).toString()).toBe("0");
+  });
+
+  it("customersKpis returningCustomers needs two DELIVERED product orders — top-ups do not qualify a customer", async () => {
+    const before = await customersKpis(prisma);
+
+    // One real purchase plus three deposits: four DELIVERED order rows, but
+    // this customer has come back for goods exactly once.
+    const oneSale = await upsertUser(prisma, { telegramId: 9913, username: "topup_kpi_one_sale", fullName: null });
+    await makeOrder(prisma, oneSale.id, { amount: "1000" });
+    for (const amount of ["1000", "2000", "3000"]) {
+      await makeTopup(prisma, oneSale.id, { amount });
+    }
+
+    expect((await customersKpis(prisma)).returningCustomers).toBe(before.returningCustomers);
+
+    // A second genuine purchase is what makes them returning.
+    await makeOrder(prisma, oneSale.id, { amount: "1000" });
+    expect((await customersKpis(prisma)).returningCustomers).toBe(before.returningCustomers + 1);
+  });
+
+  it("orderStatsByUserIds and orderCountByUserIds skip top-ups in the count, the delivered count, and lastOrderAt", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9914, username: "topup_stats", fullName: null });
+    await makeOrder(prisma, user.id, { amount: "1000", createdAt: new Date("2024-01-01T00:00:00Z") });
+    await makeOrder(prisma, user.id, { amount: "1000", status: "PENDING_PAYMENT", createdAt: new Date("2024-02-01T00:00:00Z") });
+    // The most recent row in the table by a year — but it is a deposit, so
+    // the Customers page's "Last Order" column must not move to it.
+    await makeTopup(prisma, user.id, { amount: "1000", createdAt: new Date("2025-06-01T00:00:00Z") });
+
+    const stats = (await orderStatsByUserIds(prisma, [user.id])).get(user.id)!;
+    expect(stats.totalOrders).toBe(2);
+    expect(stats.deliveredOrders).toBe(1);
+    expect(stats.lastOrderAt?.toISOString()).toBe(new Date("2024-02-01T00:00:00Z").toISOString());
+
+    expect((await orderCountByUserIds(prisma, [user.id])).get(user.id)).toBe(2);
+  });
+
+  it("the Customers page's spend ranking treats a top-up-only customer as a zero-spender", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 9915, username: "rank_real_buyer", fullName: null });
+    await makeOrder(prisma, buyer.id, { amount: "5000", currency: "IDR" });
+
+    const depositor = await upsertUser(prisma, { telegramId: 9916, username: "rank_topup_only", fullName: null });
+    await makeTopup(prisma, depositor.id, { amount: "9000000", currency: "IDR" });
+
+    // Ranked by spend, the Rp9m of deposits must not outrank a Rp5,000 sale:
+    // zero-spenders sort after every ranked buyer (newest-first among
+    // themselves), so the real buyer comes first.
+    const ranked = await listUsers(prisma, { ids: [buyer.id, depositor.id], sort: "spend", limit: 10 });
+    expect(ranked.map((u) => u.id)).toEqual([buyer.id, depositor.id]);
   });
 });

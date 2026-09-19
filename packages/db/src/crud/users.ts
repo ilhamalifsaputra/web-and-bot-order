@@ -4,7 +4,7 @@
  */
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { UserRole, Language, OrderStatus } from "@app/core/enums";
+import { UserRole, Language, OrderKind, OrderStatus } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -23,6 +23,20 @@ const likeContains = (q: string) => ({ contains: q, mode: "insensitive" as const
 /** Admins are managed on the separate Admins page — the Customers page's list,
  * filters, and KPIs never include role=ADMIN, filtered or not. */
 const NON_ADMIN_ROLES = [UserRole.CUSTOMER, UserRole.RESELLER];
+
+/**
+ * Every per-customer spend/order figure in this file counts product orders
+ * only. A settled wallet top-up is also an `Order` row with status DELIVERED
+ * (`settleWalletTopup`, ./wallet_topup.ts), so without this a Rp1,000,000
+ * deposit showed up as Rp1,000,000 of customer spend and as an order the
+ * customer had placed — and was counted again as spend once that balance paid
+ * for something real. Funding a balance is not buying anything; the wallet
+ * ledger (`listWalletLedger`) is where a deposit is reported.
+ *
+ * Matches `listUserOrders`/`countUserOrders` (./orders.ts), which already
+ * scope the customer's own order history this way.
+ */
+const PRODUCT_ORDERS_ONLY = { kind: OrderKind.PRODUCT } as const;
 
 /** Every User column except `passwordHash` and `email` — the general-purpose
  * projection for `getUser`/`listUsers`, used by web-admin's Customers page and
@@ -313,15 +327,16 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   return db.user.findMany({ where: { OR: or }, take: limit, select: SEARCH_USER_SELECT });
 }
 
-/** This user's DELIVERED-order totals, split per transaction currency (orders
- * predating the currency column count as USDT — their snapshot unit). */
+/** This user's DELIVERED product-order totals, split per transaction currency
+ * (orders predating the currency column count as USDT — their snapshot unit).
+ * Wallet top-ups are excluded — see PRODUCT_ORDERS_ONLY. */
 export async function userTotalSpent(
   db: Db,
   userId: number,
 ): Promise<{ idr: Decimal; usdt: Decimal }> {
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { userId, status: "DELIVERED" },
+    where: { userId, status: OrderStatus.DELIVERED, ...PRODUCT_ORDERS_ONLY },
     _sum: { totalAmount: true },
   });
   let idr = new Decimal(0);
@@ -334,12 +349,13 @@ export async function userTotalSpent(
   return { idr, usdt };
 }
 
-/** Batched DELIVERED-order totals for a page of users, split per transaction
- * currency (orders predating the currency column count as USDT — their
- * snapshot unit). One `groupBy` for the whole page instead of one query per
- * row (the N+1 pattern `userTotalSpent` has when called per-row). Users with
- * no DELIVERED orders are absent from the returned Map — callers should
- * default to `{ idr: new Decimal(0), usdt: new Decimal(0) }` on a miss. */
+/** Batched DELIVERED product-order totals for a page of users, split per
+ * transaction currency (orders predating the currency column count as USDT —
+ * their snapshot unit). One `groupBy` for the whole page instead of one query
+ * per row (the N+1 pattern `userTotalSpent` has when called per-row). Users
+ * with no DELIVERED product orders are absent from the returned Map — callers
+ * should default to `{ idr: new Decimal(0), usdt: new Decimal(0) }` on a
+ * miss. Wallet top-ups are excluded — see PRODUCT_ORDERS_ONLY. */
 export async function totalSpentByUserIds(
   db: Db,
   userIds: number[],
@@ -348,7 +364,7 @@ export async function totalSpentByUserIds(
   if (userIds.length === 0) return result;
   const groups = await db.order.groupBy({
     by: ["userId", "currency"],
-    where: { userId: { in: userIds }, status: "DELIVERED" },
+    where: { userId: { in: userIds }, status: OrderStatus.DELIVERED, ...PRODUCT_ORDERS_ONLY },
     _sum: { totalAmount: true },
   });
   for (const g of groups) {
@@ -361,15 +377,16 @@ export async function totalSpentByUserIds(
   return result;
 }
 
-/** Lifetime order count per user (any status), batched for a page of users —
- * same batching shape as totalSpentByUserIds. Users with zero orders are
- * absent from the returned Map. */
+/** Lifetime product-order count per user (any status), batched for a page of
+ * users — same batching shape as totalSpentByUserIds. Users with zero product
+ * orders are absent from the returned Map. Wallet top-ups are excluded — see
+ * PRODUCT_ORDERS_ONLY. */
 export async function orderCountByUserIds(db: Db, userIds: number[]): Promise<Map<number, number>> {
   const result = new Map<number, number>();
   if (userIds.length === 0) return result;
   const groups = await db.order.groupBy({
     by: ["userId"],
-    where: { userId: { in: userIds } },
+    where: { userId: { in: userIds }, ...PRODUCT_ORDERS_ONLY },
     _count: { _all: true },
   });
   for (const g of groups) result.set(g.userId, g._count._all);
@@ -651,7 +668,7 @@ async function rankUserIdsBySpend(
   if (limit <= 0) return [];
 
   const hasDeliveredIdrOrder: Prisma.UserWhereInput = {
-    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR" } },
+    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR", ...PRODUCT_ORDERS_ONLY } },
   };
   const rankedCount = await db.user.count({ where: { ...where, ...hasDeliveredIdrOrder } });
 
@@ -660,7 +677,7 @@ async function rankUserIdsBySpend(
   if (offset < rankedCount) {
     const ranked = await db.order.groupBy({
       by: ["userId"],
-      where: { status: OrderStatus.DELIVERED, currency: "IDR", user: where },
+      where: { status: OrderStatus.DELIVERED, currency: "IDR", ...PRODUCT_ORDERS_ONLY, user: where },
       _sum: { totalAmount: true },
       orderBy: { _sum: { totalAmount: "desc" } },
       skip: offset,
@@ -672,7 +689,7 @@ async function rankUserIdsBySpend(
   const remaining = limit - result.length;
   if (remaining > 0) {
     const zeroSpenders = await db.user.findMany({
-      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR" } } },
+      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR", ...PRODUCT_ORDERS_ONLY } } },
       select: { id: true },
       orderBy: { createdAt: "desc" },
       skip: Math.max(0, offset - rankedCount),
@@ -719,9 +736,11 @@ export interface CustomersKpis {
 
 /**
  * Customers page KPI row. All figures are non-admin only.
- * `returningCustomers` counts users with >=2 DELIVERED orders — a user with 1
- * DELIVERED + 3 PENDING does not count. `totalRevenue` is all-time (distinct
- * from Orders' "Revenue Today"), DELIVERED-only.
+ * `returningCustomers` counts users with >=2 DELIVERED product orders — a
+ * user with 1 DELIVERED + 3 PENDING does not count, and neither does one
+ * whose extra DELIVERED rows are wallet top-ups. `totalRevenue` is all-time
+ * (distinct from Orders' "Revenue Today"), DELIVERED product orders only —
+ * see PRODUCT_ORDERS_ONLY.
  */
 export async function customersKpis(db: Db): Promise<CustomersKpis> {
   const todayStart = startOfDayUtc();
@@ -730,8 +749,8 @@ export async function customersKpis(db: Db): Promise<CustomersKpis> {
     db.user.count({ where: nonAdmin }),
     db.user.count({ where: { ...nonAdmin, createdAt: { gte: todayStart } } }),
     db.user.count({ where: { ...nonAdmin, lastSeenAt: { gte: todayStart } } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _count: { _all: true } }),
-    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _sum: { totalAmount: true } }),
+    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, ...PRODUCT_ORDERS_ONLY, user: nonAdmin }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, ...PRODUCT_ORDERS_ONLY, user: nonAdmin }, _sum: { totalAmount: true } }),
   ]);
 
   const returningCustomers = returningGroups.filter((g) => g._count._all >= 2).length;
@@ -755,16 +774,22 @@ export interface UserOrderStats {
  * Batched per-user order stats for a page of users — exactly 3 `groupBy`
  * calls total for the whole page (never one query per user), mirroring
  * `totalSpentByUserIds`'s existing batching discipline. Users with zero
- * orders are absent from the returned Map.
+ * product orders are absent from the returned Map.
+ *
+ * Product orders only (see PRODUCT_ORDERS_ONLY): every one of these three
+ * figures is shown on the Customers page beside "Total Spent", so a deposit
+ * counted here would put a customer's "Orders" above the order history their
+ * detail page lists (`listUserOrders`, which has always been product-only)
+ * and could move "Last Order" to a day they bought nothing.
  */
 export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Map<number, UserOrderStats>> {
   const result = new Map<number, UserOrderStats>();
   if (userIds.length === 0) return result;
 
   const [counts, lastOrders, delivered] = await Promise.all([
-    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _count: { _all: true } }),
-    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _max: { createdAt: true } }),
-    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, status: OrderStatus.DELIVERED }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, ...PRODUCT_ORDERS_ONLY }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, ...PRODUCT_ORDERS_ONLY }, _max: { createdAt: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, status: OrderStatus.DELIVERED, ...PRODUCT_ORDERS_ONLY }, _count: { _all: true } }),
   ]);
   const lastMap = new Map(lastOrders.map((r) => [r.userId, r._max.createdAt]));
   const deliveredMap = new Map(delivered.map((r) => [r.userId, r._count._all]));

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
+import { OrderKind } from "@app/core/enums";
+import { ordersByStatus, ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, recentOrders, reconcileFinances } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -51,6 +52,49 @@ describe("ordersByStatusSince", () => {
 
     const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
     expect(result).toEqual([{ status: "PENDING_PAYMENT", count: 1 }]);
+  });
+
+  // The dashboard's "Orders Today" funnel sits on the same card as "Revenue
+  // Today", which counts product orders only (crud/revenue.ts) — a settled
+  // wallet top-up landing in the DELIVERED bucket made the card contradict
+  // itself, reporting a delivered order that had earned nothing.
+  it("excludes wallet top-ups from every status bucket", async () => {
+    const now = new Date();
+    await prisma.order.create({
+      data: { orderCode: `ORD-sale-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", createdAt: now },
+    });
+    await prisma.order.create({
+      data: { orderCode: `TOP-done-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", createdAt: now },
+    });
+    await prisma.order.create({
+      data: { orderCode: `TOP-open-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "1", totalAmount: "1", status: "PENDING_PAYMENT", createdAt: now },
+    });
+
+    expect(await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000))).toEqual([
+      { status: "DELIVERED", count: 1 },
+    ]);
+  });
+});
+
+describe("ordersByStatus", () => {
+  it("counts every status all-time, product orders only", async () => {
+    await prisma.order.create({
+      data: { orderCode: `ORD-d-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-c-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", status: "CANCELLED" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `TOP-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED" },
+    });
+
+    expect(await ordersByStatus(prisma)).toEqual(
+      expect.arrayContaining([
+        { status: "DELIVERED", count: 1 },
+        { status: "CANCELLED", count: 1 },
+      ]),
+    );
+    expect(await ordersByStatus(prisma)).toHaveLength(2);
   });
 });
 

@@ -340,6 +340,15 @@ const GATEWAY_RAILS = [
  *  - A missing exchange rate leaves the USDT rails' answer to their existing
  *    `haveRate` gate rather than judging them against an amount we cannot
  *    convert.
+ *
+ * Not affected by whole-branch review D6, and worth saying so because the bot's
+ * equivalent needed checking: `total` is the full cart total, and it is also the
+ * full amount every gateway rail here will be asked for. The storefront never
+ * combines wallet credit with a gateway — `performCheckout` and
+ * `performDirectCheckout` deliberately pass no `walletAmount`, and the SPA
+ * exposes credit only as an all-or-nothing method of its own that settles
+ * without a gateway. So there is no credit that could lower the amount to
+ * collect between this list and the finalize-time guard.
  */
 async function railsClearingTheTotal(
   total: Decimal,

@@ -546,6 +546,42 @@ The guard runs before any row is written, so a rejected order keeps the exact
 shape its creator left it in — no payment method, no expiry, no reference
 pointing at a gateway that was never going to accept it.
 
+### On a USDT rail, the floor is judged after the buyer's credit
+
+Every USDT caller — `createInternalOrder`, `createBybitOrder`,
+`createBybitBscOrder` and the bot's NOWPayments handler — calls
+`finalizeOrderPayment` and then spends the buyer's USDT credit on the finalized
+total with `applyUsdtWalletToOrder` (`crud/orders.ts`). The minimum guard sits
+between those two steps, so judging the pre-credit total would put the guard on
+the wrong side of the only figure that matters: what the gateway is actually
+asked for. A buyer whose credit covered all but a sliver of the order got that
+order finalized against a rail that then refused the sliver out of band — the
+very failure this guard exists to prevent (whole-branch review D6).
+
+`PaymentChoice.walletAmount` (`pricing.ts`) carries the credit the caller is
+about to spend, and the USDT branch subtracts it from **both** figures the guard
+compares, each in its own currency: the rail amount loses the credit itself, and
+the central-IDR amount loses `credit × rate`, because the shop-wide floor is a
+Rupiah figure. Omitted or zero, every figure is exactly what it was before.
+
+Two boundaries of that behaviour, both deliberate:
+
+- The credit is clamped **to the payable total only**, never to the buyer's
+  balance. An unaffordable request is `applyUsdtWalletToOrder`'s
+  `error.insufficient_wallet` to raise; pre-empting it here with
+  "that total is too small" would name the wrong problem.
+- A credit that covers the whole converted total **exempts** the order, like a
+  zero total: there is no rail amount left to floor. An order that is zero for
+  any other reason still meets the `nothing_to_collect` backstop.
+
+The two checkout rail lists do not need the same treatment, and each for its own
+reason. The bot's `offerableRails` is already handed the subtotal *after* credit
+(the bot's credit is all-or-nothing, so that figure is either the full subtotal
+or exactly zero, and zero is never filtered). The storefront never combines
+credit with a gateway at all — `performCheckout`/`performDirectCheckout` pass no
+`walletAmount`, and the SPA offers credit only as an all-or-nothing method that
+settles without a gateway.
+
 Failures are typed (`RailMinimumFailure`, `:183`) and surface as:
 
 - `error.amount_below_rail_minimum` (carries `min` and `currency`)

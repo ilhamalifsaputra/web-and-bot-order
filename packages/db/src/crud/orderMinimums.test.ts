@@ -283,3 +283,102 @@ describe("finalizeOrderPayment — rejects a gateway-bound total below the rail 
     }
   });
 });
+
+/**
+ * Whole-branch review D6 — the guard runs against what is LEFT TO COLLECT.
+ *
+ * Every USDT caller (`createInternalOrder`, `createBybitOrder`,
+ * `createBybitBscOrder`, the bot's NOWPayments handler) finalizes the order and
+ * THEN spends the buyer's USDT credit on it with `applyUsdtWalletToOrder`. The
+ * minimum guard used to sit in between, judging the total before the credit —
+ * so an order whose credit left a sliver behind was finalized against a rail
+ * that then refused that sliver out of band, and the buyer was parked on a
+ * payment screen that could never succeed. Exactly the failure M11 exists to
+ * prevent, reintroduced by the ordering.
+ *
+ * `finalizeOrderPayment` is called directly here, with `walletAmount` in the
+ * choice, because that is the seam under test: the credit is not spent by these
+ * cases at all, so no balance needs seeding.
+ */
+describe("finalizeOrderPayment — the USDT minimum is judged after the buyer's credit, not before", () => {
+  let sample: SampleData;
+  let orderId: number;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    __clearSettingsCacheForTests(prisma);
+    sample = await buildSampleData(prisma);
+    // Rp160.000 at the Rp16.000 rate every case below uses = a round 10 USDT,
+    // so each expectation is arithmetic a reader can check without a calculator.
+    await prisma.denomination.update({
+      where: { id: sample.product.id },
+      data: { price: "160000" },
+    });
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    orderId = (await createOrderFromCart(prisma, { user: sample.user }))!.id;
+  });
+
+  const finalizeUsdt = (walletAmount?: string) =>
+    finalizeOrderPayment(prisma, orderId, {
+      currency: OrderCurrency.USDT,
+      rate: "16000",
+      method: PaymentMethod.BYBIT,
+      ...(walletAmount === undefined ? {} : { walletAmount }),
+    });
+
+  it("refuses a rail whose USDT minimum only the pre-credit total cleared", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "5");
+    // 10 USDT clears a 5 USDT floor; 10 − 6 = 4 USDT does not, and 4 is all the
+    // gateway would ever be asked for.
+    const before = await paymentFieldsOf(orderId);
+    await expect(finalizeUsdt("6")).rejects.toMatchObject({
+      key: "error.amount_below_rail_minimum",
+      formatArgs: { min: "5", currency: OrderCurrency.USDT },
+    });
+    expect(await paymentFieldsOf(orderId)).toEqual(before);
+  });
+
+  it("refuses against the shop-wide RUPIAH floor too, at the credit's own Rupiah equivalent", async () => {
+    // The shop-wide minimum is a Rupiah figure, so the credit has to be
+    // converted back to be comparable: 6 USDT × Rp16.000 = Rp96.000 off a
+    // Rp160.000 order leaves Rp64.000, under the Rp100.000 floor.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "100000");
+    await expect(finalizeUsdt("6")).rejects.toMatchObject({
+      key: "error.amount_below_rail_minimum",
+      formatArgs: { min: "100000", currency: OrderCurrency.IDR },
+    });
+    // …and the same order with no credit at all still clears it.
+    const order = await finalizeUsdt();
+    expect(order!.currency).toBe(OrderCurrency.USDT);
+  });
+
+  it("accepts a credit that leaves enough behind, and does not itself spend it", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "5");
+    const order = await finalizeUsdt("2"); // 10 − 2 = 8, still over the floor
+    expect(order!.currency).toBe(OrderCurrency.USDT);
+    // Spending the credit is `applyUsdtWalletToOrder`'s job, which the caller
+    // runs next: the total stamped here is still the full converted figure.
+    expect(new Decimal(order!.totalAmount).minus(order!.uniqueCents).toString()).toBe("10");
+    expect(new Decimal(order!.walletUsed).isZero()).toBe(true);
+  });
+
+  it("exempts an order the credit covers entirely — there is no rail amount to floor", async () => {
+    // Deliberately a floor nothing could clear: a fully covered order needs no
+    // rail, the same exemption a zero total already gets.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "1000000");
+    const order = await finalizeUsdt("10");
+    expect(order!.currency).toBe(OrderCurrency.USDT);
+  });
+
+  it("never lets a credit weaken the IDR rail's own floor", async () => {
+    // The IDR branch takes no credit: `createOrderFromCart` spends Rupiah credit
+    // BEFORE the order is created, so by the time the guard runs the total is
+    // already net of it and there is nothing left to subtract.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "200000");
+    await expect(
+      finalizeOrderPayment(prisma, orderId, { currency: OrderCurrency.IDR }),
+    ).rejects.toMatchObject({ key: "error.amount_below_rail_minimum" });
+  });
+});

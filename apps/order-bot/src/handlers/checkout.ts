@@ -148,10 +148,21 @@ interface OfferableRails {
  * (`usdIdrQuoteIsFresh`, the same read `finalizeOrderPayment`'s
  * `assertFxQuoteIsFresh` throws from). A rate is only null here once
  * `fx_rate_max_age_hours` has passed — two days by default — so between the
- * one-hour quote TTL and that outer horizon a shop whose auto-update had died
- * used to advertise every USDT button and refuse every single tap with
+ * quote TTL and that outer horizon a shop whose auto-update had died used to
+ * advertise every USDT button and refuse every single tap with
  * `error.fx_quote_expired`. Hiding them instead gives the buyer the same
  * "pay in Rupiah" screen an expired rate already produces, one lever earlier.
+ *
+ * `total` is the subtotal AFTER any wallet credit (`computeConfirmation`
+ * subtracts it before returning), which is what keeps this list on the same side
+ * of whole-branch review D6 as the finalize-time guard: both judge what is left
+ * to collect, not the total before the credit. The bot's credit is
+ * all-or-nothing — `toggleWalletCredit` refuses a balance that does not cover
+ * the whole order — so `total` here is either the full subtotal or exactly zero,
+ * and zero is the case this function never filters anyway. The narrow gap that
+ * remains is a confirmation bubble rendered before the balance moved, and it is
+ * closed at the other end: `finalizeOrderPayment` now runs the minimum against
+ * the post-credit remainder (see `PaymentChoice.walletAmount`, crud/pricing.ts).
  */
 async function offerableRails(total: Decimal, rate: Decimal | null): Promise<OfferableRails> {
   const [binanceCfg, bybitCfg, bybitBscCfg, tokopay, paydisini, nowpayments] = await Promise.all([
@@ -1175,6 +1186,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
         currency: OrderCurrency.USDT,
         rate,
         method: PaymentMethod.NOWPAYMENTS,
+        // The credit the next line is about to spend, so the rail-minimum guard
+        // inside judges what NOWPayments will really be invoiced for rather than
+        // the total before the credit (whole-branch review D6).
+        ...(useWalletUsdt ? { walletAmount: user.walletBalanceUsdt } : {}),
       });
       if (useWalletUsdt) await applyUsdtWalletToOrder(tx, created.id, user.walletBalanceUsdt);
       return useWalletUsdt ? getOrder(tx, created.id) : finalized;

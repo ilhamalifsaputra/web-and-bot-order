@@ -156,6 +156,11 @@ export async function createInternalOrder(
     currency: OrderCurrency.USDT,
     rate,
     method: PaymentMethod.BINANCE_INTERNAL,
+    // The credit this order is about to spend, so the rail-minimum guard inside
+    // judges what the gateway will really be asked for rather than the total
+    // before the credit (whole-branch review D6). Passed unclamped; the spend
+    // itself is still `applyUsdtWalletToOrder`'s, two lines down.
+    walletAmount,
   });
   // Spend the USDT credit balance against the finalized USDT total (no-op when
   // walletAmount is unset). Re-read so callers see the updated walletUsed/total.

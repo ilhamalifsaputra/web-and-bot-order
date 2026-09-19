@@ -692,6 +692,31 @@ export type PaymentChoice =
       currency: typeof OrderCurrency.USDT;
       rate: Decimal.Value;
       /**
+       * How much USDT credit the caller is about to spend on this order with
+       * `applyUsdtWalletToOrder` (orders.ts), which every USDT caller runs
+       * immediately after this function and inside the same transaction.
+       *
+       * It exists for ONE reason (whole-branch review D6): the rail-minimum
+       * guard below has to judge what the gateway will really be asked for,
+       * which is the converted total MINUS this credit. Judged before the
+       * credit, a buyer whose balance covers all but a sliver of the order gets
+       * an order finalized against a rail that then refuses the sliver out of
+       * band, leaving them on a payment screen that can never succeed — the
+       * exact failure M11's guard exists to prevent, reintroduced by doing the
+       * two steps in this order.
+       *
+       * Pass the same figure `applyUsdtWalletToOrder` will be passed, unclamped;
+       * this function applies the identical "clamped to the payable total" rule
+       * and nothing else. In particular it does NOT clamp to the buyer's
+       * balance: an unaffordable request is `applyUsdtWalletToOrder`'s
+       * `error.insufficient_wallet` to raise, and pre-empting it here with a
+       * "that total is too small" error would name the wrong problem.
+       *
+       * Omitted/null/zero = no credit, and then every figure below is exactly
+       * what it was before this existed.
+       */
+      walletAmount?: Decimal.Value | null;
+      /**
        * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
        * via Bybit Internal Transfer UID, matched by unique amount), BYBIT_BSC
        * (auto-confirm via on-chain BSC deposit, also matched by unique
@@ -775,12 +800,32 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   // unique cents on purpose: the cents are matching noise added on top, so the
   // amount the rail is really being asked for is never less than this figure.
   // WALLET is exempt inside the guard itself (see orderMinimums.ts).
-  await assertOrderTotalClearsRailMinimum(db, {
-    method,
-    currency: OrderCurrency.USDT,
-    idrAmount: baseIdr,
-    railAmount: usdt,
-  });
+  //
+  // What the guard is handed is what is LEFT TO COLLECT after the buyer's USDT
+  // credit (whole-branch review D6 — see `PaymentChoice.walletAmount`). Both
+  // figures shrink together, each in its own currency: the credit is USDT, so
+  // its Rupiah equivalent is `credit × rate`, which is what the shop-wide
+  // Rupiah floor has to be compared against. With no credit the two figures are
+  // byte-identical to what they always were.
+  const creditRequested = Decimal.max(new Decimal(0), new Decimal(choice.walletAmount ?? 0));
+  const credit = Decimal.min(creditRequested, usdt);
+  const railUsdt = usdt.minus(credit);
+  const railIdr = credit.greaterThan(0)
+    ? Decimal.max(new Decimal(0), baseIdr.minus(credit.times(rate)))
+    : baseIdr;
+  // A credit that covers the whole converted total leaves the rail nothing to
+  // clear, so there is no floor to test — the same exemption the checkout rail
+  // lists and `settleFullyDiscountedOrder` already make for a total of zero.
+  // Deliberately narrow: an order that is zero for any OTHER reason still meets
+  // the `nothing_to_collect` backstop, exactly as before.
+  if (!(credit.greaterThan(0) && !railUsdt.greaterThan(0))) {
+    await assertOrderTotalClearsRailMinimum(db, {
+      method,
+      currency: OrderCurrency.USDT,
+      idrAmount: railIdr,
+      railAmount: railUsdt,
+    });
+  }
   // WALLET orders are pure ledger entries — there is no on-chain/gateway
   // transfer to disambiguate, so unique cents (which would otherwise leave a
   // nonzero remainder even when wallet credit fully covers the order) never

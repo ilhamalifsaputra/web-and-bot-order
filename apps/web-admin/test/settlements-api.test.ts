@@ -298,10 +298,10 @@ describe("POST /api/settlements", () => {
     await expectNothingRecorded();
   });
 
-  it("redirects an unauthenticated request to the login page", async () => {
+  it("rejects an unauthenticated request with a JSON 401", async () => {
     const res = await app.inject({ method: "POST", url: "/api/settlements", payload: batchBody });
 
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
     await expectNothingRecorded();
   });
 });
@@ -416,8 +416,8 @@ describe("GET /api/settlements", () => {
     expect((paged.json() as { hasNext: boolean }).hasNext).toBe(false);
   });
 
-  it("redirects an unauthenticated read to the login page", async () => {
+  it("rejects an unauthenticated read with a JSON 401", async () => {
     const res = await app.inject({ method: "GET", url: "/api/settlements" });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
   });
 });

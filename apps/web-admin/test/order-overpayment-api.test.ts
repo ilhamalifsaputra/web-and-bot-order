@@ -304,7 +304,7 @@ describe("POST /api/orders/:orderId/credit-overpayment", () => {
     expect((await buyerBalance()).isZero()).toBe(true);
   });
 
-  it("redirects an unauthenticated request to the login page", async () => {
+  it("rejects an unauthenticated request with a JSON 401", async () => {
     const order = await overpaidOrder("3");
 
     const res = await app.inject({
@@ -313,7 +313,7 @@ describe("POST /api/orders/:orderId/credit-overpayment", () => {
       payload: {},
     });
 
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
     expect((await buyerBalance()).isZero()).toBe(true);
   });
 });

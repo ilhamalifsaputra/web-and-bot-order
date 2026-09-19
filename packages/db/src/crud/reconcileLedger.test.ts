@@ -5,7 +5,7 @@
  * `FinancialTransaction`/`LedgerEntry` rows M3 and M4 write for them.
  *
  * What makes this file worth its runtime is that every check here is a
- * NEGATIVE-by-default one: on healthy books all four return nothing, so a check
+ * NEGATIVE-by-default one: on healthy books all five return nothing, so a check
  * that is silently broken looks exactly like a check that is silently passing.
  * Each check therefore gets both branches — a healthy fixture asserted to
  * produce NO finding, and a deliberately damaged one asserted to produce
@@ -59,6 +59,7 @@ import {
   executeRefund,
   getOrder,
   postFinancialTransaction,
+  postOrderPaymentPosting,
   reconcileLedger,
   rejectOrder,
   settleWalletTopup,
@@ -225,6 +226,102 @@ const ofType = (findings: LedgerReconciliationFinding[], type: string) =>
 
 const missing = (findings: LedgerReconciliationFinding[]) =>
   ofType(findings, ReconciliationFindingType.LEDGER_POSTING_MISSING);
+
+const amountMismatches = (findings: LedgerReconciliationFinding[]) =>
+  ofType(findings, ReconciliationFindingType.ORDER_POSTING_AMOUNT_MISMATCH);
+
+// ── 0. ORDER_POSTING_AMOUNT_MISMATCH — underpaid, delivered anyway ─────────
+
+/**
+ * The one order check that is not a presence check (whole-branch review decision
+ * D2).
+ *
+ * Its damaged fixture is a historical posting: an order a rail flagged short and
+ * an admin delivered anyway, whose posting books the FULL total as owed by the
+ * gateway. That was the shape every such order got before D2 landed, so this
+ * check exists to make those rows findable — which is also why it is the only
+ * WARNING-severity finding here. Built by erasing the corrected posting and
+ * re-posting the old shape by hand, because no code path produces it any more.
+ */
+describe("reconcileLedger — ORDER_POSTING_AMOUNT_MISMATCH", () => {
+  /** A DELIVERED order with a rail record saying only `received` arrived. */
+  async function makeUnderpaidDeliveredOrder(received: string) {
+    const order = await makeDeliveredOrder();
+    await setPaidAt(order.id, AFTER_ANCHOR);
+    await prisma.processedBinanceTx.create({
+      data: {
+        binanceTxId: `UNDERPAID-${order.id}`,
+        orderId: order.id,
+        outcome: "underpaid",
+        amount: received,
+      },
+    });
+    return order;
+  }
+
+  it("reports nothing when the posting books only what actually arrived", async () => {
+    await anchorLedger();
+    const order = await makeUnderpaidDeliveredOrder("2.0000");
+    // Re-post the order under the current rules now that the shortfall row
+    // exists, which is what a live `deliverUnderpaidOrder` would have produced.
+    await erasePosting(`order:${order.id}:payment`);
+    await postOrderPaymentPosting(prisma, order, AFTER_ANCHOR);
+
+    const findings = await reconcileLedger(prisma);
+
+    expect(amountMismatches(findings)).toEqual([]);
+    expect(missing(findings)).toEqual([]);
+  });
+
+  it("reports an order whose posting books the full total as owed by the gateway", async () => {
+    await anchorLedger();
+    const order = await makeUnderpaidDeliveredOrder("2.0000");
+    const total = new Decimal(order.totalAmount);
+    // The posting `makeDeliveredOrder` already made predates the shortfall row,
+    // so it books the whole total — exactly the pre-D2 shape.
+
+    const findings = await reconcileLedger(prisma);
+
+    const found = amountMismatches(findings);
+    expect(found).toHaveLength(1);
+    expect({
+      entity: found[0]!.entity,
+      entityId: found[0]!.entityId,
+      expected: found[0]!.expected,
+      actual: found[0]!.actual,
+      difference: found[0]!.difference,
+      currency: found[0]!.currency,
+      severity: found[0]!.severity,
+    }).toEqual({
+      entity: "order",
+      entityId: String(order.id),
+      expected: "2",
+      actual: total.toString(),
+      difference: new Decimal("2").minus(total).toString(),
+      currency: "IDR",
+      // WARNING, not CRITICAL: the money is right and the split between
+      // receivable and absorbed cost is wrong. A CRITICAL here would page an
+      // admin about documented pre-cutover history every six hours.
+      severity: ReconciliationSeverity.WARNING,
+    });
+    expect(found[0]!.reference).toContain("payment_shortfall.idr");
+    // And it is NOT also reported as missing — the posting exists.
+    expect(missing(findings)).toEqual([]);
+  });
+
+  it("reports nothing for an ordinary order with no shortfall record at all", async () => {
+    await anchorLedger();
+    const order = await makeDeliveredOrder();
+    await setPaidAt(order.id, AFTER_ANCHOR);
+
+    const findings = await reconcileLedger(prisma);
+
+    // No rail ever flagged this one, so there is no second figure to compare
+    // against and the check must stay silent rather than compare the order's
+    // total against itself.
+    expect(amountMismatches(findings)).toEqual([]);
+  });
+});
 
 // ── 1. LEDGER_POSTING_MISSING — orders ─────────────────────────────────────
 

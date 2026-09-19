@@ -699,7 +699,7 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
 export async function reconcileLedgerJob(api: Api): Promise<void> {
   const findings = await reconcileLedger(prisma);
   if (findings.length === 0) {
-    // Deliberately narrower than "the books balance". This run checks four
+    // Deliberately narrower than "the books balance". This run checks five
     // specific things, each within a boundary, and an operator reading a clean
     // line has to know which: a silent "everything matched" would let a shop
     // whose entire history predates the ledger's first posting — where the
@@ -707,7 +707,7 @@ export async function reconcileLedgerJob(api: Api): Promise<void> {
     // `reconcileLedger` logs each skip on its own line; this says what was
     // actually compared.
     logger.info(
-      "Ledger reconciliation finished with no findings. What it checked: every settled order and completed refund payout dated at or after the ledger's earliest posting has a posting under its own idempotency key; each currency's wallet-liability control account agrees with the balances buyers hold plus the checkout holds still outstanding; no two payments claim the same provider transaction id; and every posted payout's ledger entries record the amount that was actually paid out. It did NOT check anything dated before that earliest posting (pre-ledger history, which the M10 backfill script owns, not this job) or any payout carrying no execution timestamp, and it does not verify that the ledger as a whole balances. Any check skipped for those reasons logged its own line during this run.",
+      "Ledger reconciliation finished with no findings. What it checked: every settled order and completed refund payout dated at or after the ledger's earliest posting has a posting under its own idempotency key; each currency's wallet-liability control account agrees with the balances buyers hold plus the checkout holds still outstanding; no two payments claim the same provider transaction id; every posted payout's ledger entries record the amount that was actually paid out; and every order a rail flagged short but an admin delivered anyway books only what actually arrived as owed by the gateway, with the rest as an absorbed shortfall. It did NOT check anything dated before that earliest posting (pre-ledger history, which the M10 backfill script owns, not this job) or any payout carrying no execution timestamp, and it does not verify that the ledger as a whole balances. Any check skipped for those reasons logged its own line during this run.",
     );
     return;
   }
@@ -717,13 +717,27 @@ export async function reconcileLedgerJob(api: Api): Promise<void> {
   const walletDrift = counts[ReconciliationFindingType.WALLET_LEDGER_DRIFT] ?? 0;
   const duplicatePayments = counts[ReconciliationFindingType.DUPLICATE_PROVIDER_TRANSACTION] ?? 0;
   const refundMismatches = counts[ReconciliationFindingType.REFUND_AMOUNT_MISMATCH] ?? 0;
+  const orderAmountMismatches = counts[ReconciliationFindingType.ORDER_POSTING_AMOUNT_MISMATCH] ?? 0;
 
+  // The severity claim forks on that last count, because it is the one finding
+  // type that does NOT mean the money may be wrong: an underpaid-but-delivered
+  // order whose posting books the full total has the right money and the wrong
+  // split between what a gateway owes and what the shop absorbed. Saying "the
+  // books and the money may genuinely disagree" of those would page an admin
+  // about documented pre-cutover history as though it were an incident.
+  const seriousCount = missingPostings + walletDrift + duplicatePayments + refundMismatches;
   logger.warn(
     `Ledger reconciliation found drift — ${missingPostings} settled event(s) with no ledger posting, ` +
       `${walletDrift} wallet balance total(s) disagreeing with their control account, ` +
-      `${duplicatePayments} duplicated provider transaction(s), and ` +
-      `${refundMismatches} refund payout(s) whose posted amount differs from what was paid. ` +
-      `Every one of these means the books and the money may genuinely disagree, so each needs manual review ` +
+      `${duplicatePayments} duplicated provider transaction(s), ` +
+      `${refundMismatches} refund payout(s) whose posted amount differs from what was paid, and ` +
+      `${orderAmountMismatches} underpaid-but-delivered order(s) booking the full order total as owed by the gateway rather than only what arrived. ` +
+      (seriousCount > 0
+        ? `Each of the first four kinds means the books and the money may genuinely disagree, so each needs manual review. `
+        : ``) +
+      (orderAmountMismatches > 0
+        ? `The last kind does not: that money is right, and only the split between the receivable and the shortfall the shop absorbed is wrong — the expected shape for any such order settled before that split shipped. `
+        : ``) +
       `(see audit log for details)`,
   );
 
@@ -735,8 +749,9 @@ export async function reconcileLedgerJob(api: Api): Promise<void> {
     details:
       `Ledger reconciliation found ${missingPostings} settled events with no ledger record, ` +
       `${walletDrift} wallet balance totals that disagree with the ledger, ` +
-      `${duplicatePayments} duplicated provider transactions, and ` +
-      `${refundMismatches} refunds whose recorded amount differs from what was paid out.`,
+      `${duplicatePayments} duplicated provider transactions, ` +
+      `${refundMismatches} refunds whose recorded amount differs from what was paid out, and ` +
+      `${orderAmountMismatches} orders delivered despite a short payment whose bookkeeping still treats the whole total as money a gateway owes us.`,
   });
 
   if (adminIds().length) {
@@ -748,6 +763,7 @@ export async function reconcileLedgerJob(api: Api): Promise<void> {
           `wallet balance drift: ${walletDrift}\n` +
           `duplicate provider transactions: ${duplicatePayments}\n` +
           `refund amount mismatches: ${refundMismatches}\n` +
+          `underpaid orders booked at their full total: ${orderAmountMismatches}\n` +
           "See audit log for full details.",
       );
     } catch (err) {

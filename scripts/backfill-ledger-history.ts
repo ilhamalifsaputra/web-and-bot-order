@@ -696,6 +696,18 @@ export async function backfillLedgerHistory(
   // ── 1. Order payments ────────────────────────────────────────────────────
   // FIRST, always: three later categories branch on whether this posting
   // exists. See this file's "Order is load-bearing" note.
+  //
+  // An order a rail flagged short and an admin delivered anyway posts the
+  // three-leg shape (`Dr provider_clearing` received + `Dr payment_shortfall`
+  // absorbed / `Cr sales_revenue` total) rather than booking the whole total as
+  // a receivable. That needs nothing here: `postOrderPaymentPosting` reads the
+  // rail's own shortfall row itself (`underpaidSplit`, crud/ledgerPostings.ts),
+  // precisely so this script and the live settlement paths cannot post the same
+  // order two different ways. Note it changes what a RE-RUN can fix: an order
+  // already posted at the full total keeps that posting, because the idempotency
+  // key is unchanged — `reconcileLedger` reports those as
+  // ORDER_POSTING_AMOUNT_MISMATCH and each needs
+  // `reverseFinancialTransaction` before it can be re-posted.
   await run(() =>
     runCategory<HistoricalOrder>(
       {

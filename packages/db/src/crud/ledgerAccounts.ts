@@ -52,6 +52,20 @@ export interface ChartOfAccountsEntry {
  * `Dr referral_expense.usdt / Cr wallet_liability.usdt` (crud/ledgerPostings.ts),
  * which recognises the cost and the obligation exactly once each.
  *
+ * `payment_shortfall.*` is an EXPENSE for the same reason, and it exists because
+ * an admin can choose to deliver an UNDERPAID order anyway
+ * (`deliverUnderpaidOrder`, crud/binance_internal.ts — "operator absorbed the
+ * shortfall"). The shop earned the full sale it chose to honour, so revenue is the
+ * order's whole total; but only what actually arrived is a receivable from the
+ * gateway, and the difference is a cost the shop decided to bear. Without this
+ * account the posting had to claim the gateway was holding money it never
+ * collected, overstating `provider_clearing.*` by every shortfall ever waved
+ * through. It is NOT `adjustment.*` (EQUITY): this is an operating cost of a
+ * specific sale, not the shop moving its own equity around, and lumping it in with
+ * hand-made wallet corrections would make both unreadable. Both currencies exist
+ * because all three crypto rails and all three QRIS rails can flag an
+ * underpayment, in USDT and IDR respectively.
+ *
  * The `*_clearing` accounts are what make money-in-transit expressible at all:
  * funds a gateway has taken from the buyer but not yet paid out to us sit in
  * `provider_clearing.*` rather than being counted as `cash.*`, and an approved
@@ -176,6 +190,21 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
     name: "Refund Clearing (USDT)",
     // Credit-normal: money owed to the buyer. See the doc comment above.
     type: LedgerAccountType.LIABILITY,
+    currency: OrderCurrency.USDT,
+  },
+  {
+    code: "payment_shortfall.idr",
+    name: "Absorbed Payment Shortfall (IDR)",
+    // Debit-normal: a cost the shop chose to bear, the same shape as
+    // `payment_fee.*` and `referral_expense.usdt`. See the doc comment above.
+    type: LedgerAccountType.EXPENSE,
+    currency: OrderCurrency.IDR,
+  },
+  {
+    code: "payment_shortfall.usdt",
+    name: "Absorbed Payment Shortfall (USDT)",
+    // Debit-normal: see `payment_shortfall.idr` above.
+    type: LedgerAccountType.EXPENSE,
     currency: OrderCurrency.USDT,
   },
   {

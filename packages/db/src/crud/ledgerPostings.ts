@@ -75,6 +75,7 @@ import { logger } from "@app/core/logger";
 import { Decimal, ZERO } from "@app/core/money";
 import type { FinancialTransaction } from "@prisma/client";
 import type { Db } from "./_types";
+import { findUnderpaidReceived } from "./_underpaid";
 import {
   postFinancialTransaction,
   type LedgerEntryInput,
@@ -289,6 +290,57 @@ async function readWalletMovement(
   };
 }
 
+/** How an order's external total splits between money that arrived and money the
+ *  shop absorbed. `shortfall` is zero for every order but an underpaid one that
+ *  was delivered anyway. */
+interface UnderpaidSplit {
+  received: Decimal;
+  shortfall: Decimal;
+}
+
+/**
+ * Split an order's external total into what a rail actually collected and what
+ * the shop absorbed by delivering an UNDERPAID order anyway.
+ *
+ * `deliverUnderpaidOrder` (crud/binance_internal.ts) is the only path that
+ * reaches here with a shortfall: it moves the order UNDERPAID →
+ * PENDING_VERIFICATION and hands it to `approveOrder`, whose posting call is
+ * this one. Nothing else can — `UNDERPAID`'s only non-terminal outgoing edge in
+ * `LEGAL_TRANSITIONS` is that one (`crud/orderStatus.ts`), and every rail's
+ * top-up-a-short-payment search matches PENDING orders only, so an order cannot
+ * be flagged short and then quietly paid in full.
+ *
+ * Read from the rail's own shortfall row (`findUnderpaidReceived`) rather than
+ * taken as an argument, and read HERE rather than at the call site, for the
+ * reason this file exists: the split is part of the account mapping, and
+ * `approveOrder`, `settlePaidOrder`'s manual branch and
+ * `scripts/backfill-ledger-history.ts` all post through this function. A
+ * `receivedAmount` parameter would have to be threaded through `approveOrder`'s
+ * signature and re-derived by the backfill, which is two more places for the
+ * figure to be computed differently.
+ *
+ * Both edges are deliberate:
+ *
+ * - **No row** (the overwhelming majority of orders) → the whole total arrived.
+ *   The lookup is three indexed `findFirst`s on the shortfall tables, paid once
+ *   per settled order, which is not a hot path.
+ * - **A row recording AT OR ABOVE the total** → no shortfall. That is an
+ *   overpayment or a stale row, and neither is a loss to book; `received` is
+ *   clamped to the total so the posting can never claim the gateway collected
+ *   more than the order asked for. A negative recorded amount is clamped to zero
+ *   for the same reason, since a rail cannot have collected less than nothing.
+ */
+async function underpaidSplit(
+  db: Db,
+  order: PostableOrder,
+  externalTotal: Decimal,
+): Promise<UnderpaidSplit> {
+  const recorded = await findUnderpaidReceived(db, order.id);
+  if (recorded === null) return { received: externalTotal, shortfall: ZERO };
+  const received = Decimal.min(Decimal.max(ZERO, q4(recorded)), externalTotal);
+  return { received, shortfall: q4(externalTotal.minus(received)) };
+}
+
 /**
  * An order's payment, at the moment it settles: the shop has earned the order's
  * value, and the buyer has paid it through some combination of a payment gateway
@@ -301,6 +353,18 @@ async function readWalletMovement(
  *   it is already net of any `walletUsed` — and it sits in `provider_clearing`
  *   rather than `cash` because the gateway has collected it but not yet paid it
  *   out to the shop (see `CHART_OF_ACCOUNTS`' doc comment).
+ * - **Absorbed-shortfall leg**, on an UNDERPAID order an admin delivered anyway:
+ *   the gateway leg is reduced to what actually ARRIVED and the difference is
+ *   debited to `payment_shortfall.<ccy>` (EXPENSE), so the three legs read
+ *   `Dr provider_clearing` (received) + `Dr payment_shortfall` (shortfall) /
+ *   `Cr sales_revenue` (the full total). Revenue is deliberately unchanged —
+ *   the shop earned the sale it chose to honour, and the shortfall is the cost
+ *   of honouring it, not a discount on the price. Booking the full total as
+ *   `provider_clearing` (as this function did before the whole-branch review's
+ *   decision D2) claimed the gateway was holding money it never collected, which
+ *   overstates the receivable by every shortfall ever waved through and leaves
+ *   the loss nowhere. See `underpaidSplit` for which path can reach this and why
+ *   nothing else can.
  * - **Wallet leg(s)**: `Dr wallet_liability.<ccy> / Cr sales_revenue.<ccy>` for
  *   the credit the buyer spent at checkout. Spending credit discharges the
  *   shop's obligation to the buyer, which is a DEBIT to a credit-normal
@@ -329,15 +393,39 @@ export async function postOrderPaymentPosting(
 
   const gatewayAmount = q4(new Decimal(order.totalAmount));
   if (gatewayAmount.greaterThan(0)) {
-    entries.push(
-      ...pair(
-        `provider_clearing.${suffix(order.currency)}`,
-        `sales_revenue.${suffix(order.currency)}`,
-        gatewayAmount,
-        order.currency,
-      ),
-    );
-    described.push(`${gatewayAmount.toString()} ${order.currency} collected by the payment gateway`);
+    // How much of the external total actually arrived, and what the shop ate.
+    // Zero on every ordinary order — `underpaidSplit` only looks anything up
+    // when a rail recorded a shortfall against this order.
+    const { received, shortfall } = await underpaidSplit(db, order, gatewayAmount);
+    const revenueAccount = `sales_revenue.${suffix(order.currency)}`;
+    if (received.greaterThan(0)) {
+      entries.push({
+        accountCode: `provider_clearing.${suffix(order.currency)}`,
+        direction: LedgerDirection.DEBIT,
+        amount: received,
+        currency: order.currency,
+      });
+      described.push(`${received.toString()} ${order.currency} collected by the payment gateway`);
+    }
+    if (shortfall.greaterThan(0)) {
+      entries.push({
+        accountCode: `payment_shortfall.${suffix(order.currency)}`,
+        direction: LedgerDirection.DEBIT,
+        amount: shortfall,
+        currency: order.currency,
+      });
+      described.push(
+        `${shortfall.toString()} ${order.currency} of shortfall absorbed by the shop, which delivered the order anyway`,
+      );
+    }
+    // Revenue is the order's WHOLE total either way: the shop earned the sale it
+    // chose to honour, and a shortfall is a cost of honouring it, not a discount.
+    entries.push({
+      accountCode: revenueAccount,
+      direction: LedgerDirection.CREDIT,
+      amount: gatewayAmount,
+      currency: order.currency,
+    });
   }
 
   const walletLegs = await db.walletTransaction.findMany({

@@ -217,7 +217,10 @@ interface CandidateOrder {
 }
 
 /**
- * Settled orders that should carry a ledger posting but do not.
+ * Settled orders that should carry a ledger posting but do not — plus, for the
+ * one shape where presence is not enough, orders whose posting exists and books
+ * the wrong amount (`findUnderpaidPostingAmountMismatches`, called per page so
+ * its reads stay bounded by the page rather than by history).
  *
  * Two shapes of settled order, each with its own key: a PRODUCT order that
  * reached DELIVERED posts `order:{id}:payment` (from `approveOrder`, or from
@@ -333,6 +336,14 @@ async function findMissingOrderPostings(
       chargeable.map((entry) => entry.key),
     );
 
+    findings.push(
+      ...(await findUnderpaidPostingAmountMismatches(
+        db,
+        chargeable.filter((entry) => posted.has(entry.key)),
+        detectedAt,
+      )),
+    );
+
     for (const { order, key } of chargeable) {
       if (posted.has(key)) continue;
       findings.push({
@@ -352,6 +363,162 @@ async function findMissingOrderPostings(
     }
 
     if (rows.length < pageSize) break;
+  }
+  return findings;
+}
+
+/**
+ * Settled orders whose posting EXISTS but books the wrong amount as owed by the
+ * gateway — the amount check a presence check cannot make.
+ *
+ * Scoped to one case, deliberately: an order a rail flagged short and an admin
+ * delivered anyway (`deliverUnderpaidOrder`). That is the only shape where the
+ * order's own `totalAmount` and the amount a gateway actually holds legitimately
+ * differ, so it is the only shape where there is a second figure to compare
+ * against. Every other settled order's posting books its own `totalAmount`, which
+ * is the row the posting was built from — comparing a value against itself is the
+ * tautology this file refuses to ship as a check.
+ *
+ * `provider_clearing.<ccy>`'s DEBIT is what is compared, not the posting's total
+ * debits. The corrected posting splits the same total across three legs (`Dr
+ * provider_clearing` received + `Dr payment_shortfall` shortfall / `Cr
+ * sales_revenue` total), so its debit TOTAL is identical to the old two-leg
+ * shape's — a total-versus-total comparison would see nothing at all. The
+ * receivable leg is the figure that changed and the figure that can be wrong.
+ *
+ * **WARNING, not CRITICAL, and it is the first finding here to be so.** Every
+ * other check compares two records of the same money, so a disagreement means one
+ * of them is wrong about how much the shop has. This one means the money is right
+ * — the buyer paid what they paid and the order was delivered — while the split
+ * between "a gateway owes us this" and "the shop absorbed this" is wrong. That
+ * overstates the receivable and hides an operating cost, which is worth
+ * understanding and is not an incident. It is also the severity that keeps the
+ * cutover honest: postings made before decision D2 landed all have this shape, so
+ * a CRITICAL here would page an admin about documented history every six hours.
+ *
+ * Bulk-read like everything else in this file, and bounded by the caller's page:
+ * three reads of the rails' shortfall tables, one read of the two
+ * `provider_clearing` account ids, one posting lookup and one `groupBy`. Orders
+ * with no shortfall row — almost all of them — cost nothing beyond the first three.
+ */
+async function findUnderpaidPostingAmountMismatches(
+  db: Db,
+  postedOrders: ReadonlyArray<{ order: CandidateOrder; key: string }>,
+  detectedAt: Date,
+): Promise<LedgerReconciliationFinding[]> {
+  // WALLET_TOPUP orders are excluded: a short top-up is never settled at all
+  // (`creditUnderpaidTopupAnyway` cancels it and credits what arrived, posting
+  // its own event), so there is no ORDER_PAYMENT of theirs to compare.
+  const products = postedOrders.filter(
+    (entry) => entry.order.kind !== OrderKind.WALLET_TOPUP,
+  );
+  if (products.length === 0) return [];
+  const orderIds = products.map((entry) => entry.order.id);
+
+  // The same three tables, and the same precedence between them, as
+  // `findUnderpaidReceived` (crud/_underpaid.ts) — read in bulk here rather than
+  // by calling it per order, which would be the per-row await this file forbids.
+  // Precedence is applied by filling each map only where it is still empty.
+  const received = new Map<number, Decimal>();
+  const [binance, bybit, qris] = await Promise.all([
+    db.processedBinanceTx.findMany({
+      where: { orderId: { in: orderIds }, outcome: "underpaid", amount: { not: null } },
+      select: { orderId: true, amount: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    db.processedBybitTx.findMany({
+      where: { orderId: { in: orderIds }, outcome: "underpaid", amount: { not: null } },
+      select: { orderId: true, amount: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    // No `not: null` filter on this one: `receivedAmount` is a non-nullable
+    // column here, unlike the two crypto rails' `amount`.
+    db.qrisUnderpaidTx.findMany({
+      where: { orderId: { in: orderIds } },
+      select: { orderId: true, receivedAmount: true },
+    }),
+  ]);
+  for (const row of binance) {
+    // `orderBy: createdAt desc` plus "first write wins" reproduces
+    // `findUnderpaidReceived`'s `findFirst` on the newest row per order.
+    if (row.orderId != null && row.amount != null && !received.has(row.orderId)) {
+      received.set(row.orderId, money(row.amount));
+    }
+  }
+  for (const row of bybit) {
+    if (row.orderId != null && row.amount != null && !received.has(row.orderId)) {
+      received.set(row.orderId, money(row.amount));
+    }
+  }
+  for (const row of qris) {
+    if (!received.has(row.orderId)) received.set(row.orderId, money(row.receivedAmount));
+  }
+
+  const underpaid = products.filter((entry) => received.has(entry.order.id));
+  if (underpaid.length === 0) return [];
+
+  const clearingAccounts = await db.ledgerAccount.findMany({
+    where: { code: { in: [OrderCurrency.IDR, OrderCurrency.USDT].map((c) => `provider_clearing.${suffix(c)}`) } },
+    select: { id: true },
+  });
+  if (clearingAccounts.length === 0) {
+    // No chart of accounts in this environment. Skipped rather than reported as a
+    // mismatch against a zero that was never posted — `findWalletLedgerDrift`
+    // makes the same distinction, and for the same reason.
+    logger.error(
+      `Could not check whether underpaid-but-delivered orders booked the right receivable, because no "provider_clearing" account exists in this database. No findings are being reported for that check — there is nothing to compare against, which almost always means the chart of accounts was never seeded here; run "pnpm seed-chart-of-accounts".`,
+    );
+    return [];
+  }
+  const clearingAccountIds = clearingAccounts.map((account) => account.id);
+
+  const postings = await db.financialTransaction.findMany({
+    where: { idempotencyKey: { in: underpaid.map((entry) => entry.key) } },
+    select: { id: true, idempotencyKey: true },
+  });
+  if (postings.length === 0) return [];
+  const postedClearing = new Map<number, Decimal>();
+  const debitSums = await db.ledgerEntry.groupBy({
+    by: ["financialTransactionId"],
+    where: {
+      financialTransactionId: { in: postings.map((posting) => posting.id) },
+      direction: LedgerDirection.DEBIT,
+      accountId: { in: clearingAccountIds },
+    },
+    _sum: { amount: true },
+  });
+  for (const row of debitSums) {
+    postedClearing.set(row.financialTransactionId, sumOrZero(row._sum.amount?.toString()));
+  }
+
+  const byKey = new Map(underpaid.map((entry) => [entry.key, entry.order] as const));
+  const findings: LedgerReconciliationFinding[] = [];
+  for (const posting of postings) {
+    const order = byKey.get(posting.idempotencyKey);
+    if (!order) continue;
+    // Clamped exactly as `underpaidSplit` (crud/ledgerPostings.ts) clamps it, so
+    // this check and the posting it checks agree on what "received" means: an
+    // amount above the order's own total is an overpayment, not a bigger
+    // receivable, and a negative recorded amount is not a collection at all.
+    const arrived = Decimal.min(
+      Decimal.max(ZERO, money(received.get(order.id)!)),
+      order.totalAmount,
+    );
+    const booked = postedClearing.get(posting.id) ?? ZERO;
+    if (moneyEq(arrived, booked)) continue;
+    const difference = money(arrived.minus(booked));
+    findings.push({
+      type: ReconciliationFindingType.ORDER_POSTING_AMOUNT_MISMATCH,
+      entity: "order",
+      entityId: String(order.id),
+      expected: arrived.toString(),
+      actual: booked.toString(),
+      difference: difference.toString(),
+      currency: order.currency,
+      reference: `Order ${order.orderCode} was delivered after a rail recorded only ${arrived.toString()} ${order.currency} of its ${order.totalAmount.toString()} ${order.currency} total as received, but its ledger posting books ${booked.toString()} ${order.currency} as owed by the gateway — the difference belongs in "payment_shortfall.${suffix(order.currency)}" as a shortfall the shop absorbed`,
+      severity: ReconciliationSeverity.WARNING,
+      detectedAt,
+    });
   }
   return findings;
 }
@@ -729,7 +896,7 @@ async function findWalletLedgerDrift(
     // The one check in this file whose finding is logged individually, and the
     // only one where that is affordable: it produces at most one finding per
     // currency, so the log stays bounded however badly the books have drifted.
-    // The other three are reported by count in `reconcileLedgerJob`'s own
+    // The other four are reported by count in `reconcileLedgerJob`'s own
     // summary line (apps/order-bot/src/jobs/index.ts) because each can return a
     // finding per order, payment or payout — and listing those here would mean
     // either an unbounded log or a truncated id dump, which docs/LOGGING.md
@@ -811,7 +978,7 @@ async function findDuplicateProviderTransactions(
  * Run every ledger reconciliation check and return what drifted.
  *
  * An empty array means the books agree with the rows they describe, as far as
- * these four checks can see — it does NOT mean nothing was checked, and it is
+ * these five checks can see — it does NOT mean nothing was checked, and it is
  * the expected result of most runs. Reads only; see this file's module comment
  * for why it must stay that way.
  *

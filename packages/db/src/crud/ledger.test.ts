@@ -609,7 +609,7 @@ describe("trialBalance", () => {
     const rows = await trialBalance(prisma, OrderCurrency.IDR);
 
     const idrCodes = CHART_OF_ACCOUNTS.filter((a) => a.currency === OrderCurrency.IDR).map((a) => a.code).sort();
-    expect(idrCodes).toHaveLength(7);
+    expect(idrCodes).toHaveLength(8);
     expect(rows.map((r) => r.accountCode).sort()).toEqual(idrCodes);
     // No USDT account may appear, however much was posted to one.
     expect(rows.some((r) => r.currency !== OrderCurrency.IDR)).toBe(false);
@@ -651,7 +651,7 @@ describe("trialBalance", () => {
     const rows = await trialBalance(prisma, OrderCurrency.IDR);
 
     expect(rows.map((r) => r.accountCode)).not.toContain("refund_clearing.idr");
-    expect(rows).toHaveLength(6);
+    expect(rows).toHaveLength(7);
   });
 
   it("returns an empty list for a currency with no accounts", async () => {

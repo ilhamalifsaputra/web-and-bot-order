@@ -1051,12 +1051,27 @@ export const zSettlementStatus = z.nativeEnum(SettlementStatus);
  * - REFUND_AMOUNT_MISMATCH — a `RefundExecution.amount` disagrees with the
  *   amount its own posted `FinancialTransaction` recorded, i.e. the buyer was
  *   paid one figure and the books say another.
+ * - ORDER_POSTING_AMOUNT_MISMATCH — a settled order's posting exists but books a
+ *   different amount as owed by the gateway than the rail recorded as received.
+ *   The only softer finding of the five (WARNING, not CRITICAL): the money is
+ *   right and the split between receivable and absorbed cost is wrong. See its
+ *   own comment below.
  */
 export const ReconciliationFindingType = {
   LEDGER_POSTING_MISSING: "LEDGER_POSTING_MISSING",
   WALLET_LEDGER_DRIFT: "WALLET_LEDGER_DRIFT",
   DUPLICATE_PROVIDER_TRANSACTION: "DUPLICATE_PROVIDER_TRANSACTION",
   REFUND_AMOUNT_MISMATCH: "REFUND_AMOUNT_MISMATCH",
+  /**
+   * A settled order HAS its ledger posting, but that posting books a different
+   * amount as owed by the gateway than the rail recorded as received. Reported
+   * only for orders a rail flagged short and an admin delivered anyway
+   * (`deliverUnderpaidOrder`), which is the one case where the two can differ:
+   * `provider_clearing` must hold what actually arrived, with the absorbed
+   * shortfall in `payment_shortfall`. Distinct from LEDGER_POSTING_MISSING
+   * because the event IS recorded — a presence check cannot see this at all.
+   */
+  ORDER_POSTING_AMOUNT_MISMATCH: "ORDER_POSTING_AMOUNT_MISMATCH",
 } as const;
 export type ReconciliationFindingType =
   (typeof ReconciliationFindingType)[keyof typeof ReconciliationFindingType];

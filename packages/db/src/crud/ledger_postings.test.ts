@@ -54,6 +54,7 @@ import {
   createWalletTopupOrder,
   creditOrderToBalance,
   creditUnderpaidTopupAnyway,
+  deliverUnderpaidOrder,
   getAccountBalance,
   getOrder,
   markOrderUnderpaid,
@@ -1045,5 +1046,140 @@ describe("provider settlement posting (postSettlementPosting)", () => {
 
     await expect(postSettlementPosting(prisma, settlement)).resolves.toBeNull();
     expect(await allPostings()).toHaveLength(0);
+  });
+});
+
+// ── 9. Underpaid, delivered anyway ─────────────────────────────────────────
+
+/**
+ * An UNDERPAID order an admin chose to deliver (whole-branch review decision D2).
+ *
+ * The failure this pins is invisible to a balance check: before D2 the posting
+ * booked the order's FULL total as `provider_clearing`, so the books claimed a
+ * gateway was holding money it had never collected, the shortfall the operator
+ * absorbed appeared nowhere, and the trial balance still balanced perfectly.
+ */
+describe("underpaid order delivered anyway (deliverUnderpaidOrder)", () => {
+  /** Put a settled-shaped order into UNDERPAID with a rail record of what arrived. */
+  async function makeUnderpaidOrder(receivedAmount: string) {
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+    await prisma.processedBinanceTx.create({
+      data: {
+        binanceTxId: `UNDERPAID-${order.id}`,
+        orderId: order.id,
+        outcome: "underpaid",
+        amount: receivedAmount,
+      },
+    });
+    return order;
+  }
+
+  it("debits provider_clearing for what arrived and payment_shortfall for the rest", async () => {
+    const order = await makeUnderpaidOrder("3.0000");
+    // Derived, never hardcoded: the sample product's total carries this shop's
+    // unique-cents marker, so the shortfall is whatever the total really is
+    // minus the 3.00 that arrived.
+    const total = new Decimal(order.totalAmount);
+    const shortfall = total.minus("3");
+    expect(shortfall.greaterThan(0)).toBe(true);
+
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    const posting = await postingByKey(`order:${order.id}:payment`);
+    expect(posting.type).toBe(FinancialTransactionType.ORDER_PAYMENT);
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: "3", currency: "IDR" },
+      { code: "payment_shortfall.idr", direction: "DEBIT", amount: shortfall.toString(), currency: "IDR" },
+      // Revenue is the WHOLE total: the shop earned the sale it chose to honour,
+      // and the shortfall is the cost of honouring it, not a discount.
+      { code: "sales_revenue.idr", direction: "CREDIT", amount: total.toString(), currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
+
+    // The receivable now states only what a gateway can actually pay out, which
+    // is the whole point — it used to read the full order total.
+    expect((await getAccountBalance(prisma, "provider_clearing.idr")).toString()).toBe("3");
+    expect((await getAccountBalance(prisma, "payment_shortfall.idr")).toString()).toBe(shortfall.toString());
+    expect((await getAccountBalance(prisma, "sales_revenue.idr")).toString()).toBe(total.toString());
+    // The absorbed cost is an EXPENSE, so it reads positive on a debit — not an
+    // equity movement and not negative revenue.
+    expect(posting.description).toContain("absorbed by the shop");
+  });
+
+  it("books the whole total as absorbed when the rail recorded nothing received", async () => {
+    const order = await makeUnderpaidOrder("0.0000");
+    const total = new Decimal(order.totalAmount).toString();
+
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    // No receivable leg at all: entry amounts are strictly positive, and there is
+    // genuinely no gateway holding anything.
+    const posting = await postingByKey(`order:${order.id}:payment`);
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "payment_shortfall.idr", direction: "DEBIT", amount: total, currency: "IDR" },
+      { code: "sales_revenue.idr", direction: "CREDIT", amount: total, currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
+  });
+
+  it("clamps a recorded amount above the order total, so no posting overstates the receivable", async () => {
+    // Called directly rather than through `deliverUnderpaidOrder`: a rail would
+    // not flag an over-payment as UNDERPAID, so this is the defensive clamp in
+    // `underpaidSplit` rather than a reachable business case. It matters because a
+    // stale or mis-written shortfall row must never inflate the receivable.
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    await prisma.processedBinanceTx.create({
+      data: {
+        binanceTxId: `OVER-${order.id}`,
+        orderId: order.id,
+        outcome: "underpaid",
+        amount: "9.0000",
+      },
+    });
+
+    await postOrderPaymentPosting(prisma, order, new Date());
+
+    const total = new Decimal(order.totalAmount).toString();
+    const posting = await postingByKey(`order:${order.id}:payment`);
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: total, currency: "IDR" },
+      { code: "sales_revenue.idr", direction: "CREDIT", amount: total, currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
+  });
+
+  it("leaves the wallet leg alone: only the external total is split", async () => {
+    await fundIdrWallet("10.00");
+    const order = await makeOrderAwaitingVerification({
+      productId: sample.product.id,
+      walletAmount: "2.00", // of a 5.00 order → 3.00 owed externally
+    });
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.UNDERPAID } });
+    await prisma.processedBinanceTx.create({
+      data: {
+        binanceTxId: `UNDERPAID-${order.id}`,
+        orderId: order.id,
+        outcome: "underpaid",
+        amount: "1.0000", // only 1.00 of the external total arrived
+      },
+    });
+
+    await deliverUnderpaidOrder(prisma, { orderId: order.id, adminId: ADMIN_ID });
+
+    // The shortfall is measured against the EXTERNAL total (already net of
+    // `walletUsed`), never against the order's gross value — the buyer's own
+    // credit was really spent and is not a shortfall.
+    const external = new Decimal(order.totalAmount);
+    const shortfall = external.minus("1");
+    const posting = await postingByKey(`order:${order.id}:payment`);
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: "1", currency: "IDR" },
+      { code: "payment_shortfall.idr", direction: "DEBIT", amount: shortfall.toString(), currency: "IDR" },
+      { code: "sales_revenue.idr", direction: "CREDIT", amount: external.toString(), currency: "IDR" },
+      { code: "wallet_liability.idr", direction: "DEBIT", amount: "2", currency: "IDR" },
+      { code: "sales_revenue.idr", direction: "CREDIT", amount: "2", currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
   });
 });

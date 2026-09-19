@@ -536,27 +536,19 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
 type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
 
-/** The amount actually received for an UNDERPAID order, regardless of which
- *  amount-matching rail flagged it. Binance Internal writes its ledger row to
- *  `processedBinanceTx`; Bybit AND Bybit BSC share `processedBybitTx` (one
- *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment);
- *  the three QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share
- *  `qrisUnderpaidTx`, written by `markOrderUnderpaid` (crud/orderStatus.ts).
- *  Checks all three; at most one will ever have a matching row for a given
- *  order. Each candidate is tested on its own nullable amount column rather
- *  than falling through on the row as a whole, so a row that exists but
- *  records no amount cannot mask a later table that does record one. */
-export async function findUnderpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const [binance, bybit, qris] = await Promise.all([
-    db.processedBinanceTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
-    db.processedBybitTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
-    db.qrisUnderpaidTx.findFirst({ where: { orderId } }),
-  ]);
-  if (binance?.amount != null) return new Decimal(binance.amount);
-  if (bybit?.amount != null) return new Decimal(bybit.amount);
-  if (qris?.receivedAmount != null) return new Decimal(qris.receivedAmount);
-  return null;
-}
+/**
+ * The amount actually received for an UNDERPAID order, regardless of which
+ * amount-matching rail flagged it.
+ *
+ * MOVED to `./_underpaid` and re-exported here unchanged, so every existing
+ * importer (`binance_internal.ts`, `wallet_topup.ts`, this module's tests,
+ * `@app/db`) keeps working. It had to become a leaf module because
+ * `ledgerPostings.ts` now reads the same figure — to split an
+ * underpaid-but-delivered order's posting between the receivable and the
+ * shortfall the shop absorbed — and this file already imports that one. See
+ * `_underpaid.ts`'s own comment for the import cycle that avoids.
+ */
+export { findUnderpaidReceived } from "./_underpaid";
 
 export async function createOrderFromCart(
   db: Db,

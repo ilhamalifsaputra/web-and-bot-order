@@ -36,9 +36,9 @@ beforeEach(async () => {
 });
 
 describe("CHART_OF_ACCOUNTS", () => {
-  it("declares 15 accounts with unique codes", () => {
-    expect(CHART_OF_ACCOUNTS).toHaveLength(15);
-    expect(new Set(CHART_OF_ACCOUNTS.map((a) => a.code)).size).toBe(15);
+  it("declares 17 accounts with unique codes", () => {
+    expect(CHART_OF_ACCOUNTS).toHaveLength(17);
+    expect(new Set(CHART_OF_ACCOUNTS.map((a) => a.code)).size).toBe(17);
   });
 
   it("only uses known LedgerAccountType and OrderCurrency values", () => {
@@ -89,12 +89,12 @@ describe("CHART_OF_ACCOUNTS", () => {
 });
 
 describe("seedChartOfAccounts", () => {
-  it("creates exactly 15 accounts on a fresh database", async () => {
+  it("creates exactly 17 accounts on a fresh database", async () => {
     const result = await seedChartOfAccounts(prisma);
 
     // A clean bootstrap: nothing diverged and nothing outside the chart.
-    expect(result).toEqual({ accountCount: 15, diverged: [], notInChart: [] });
-    expect(await prisma.ledgerAccount.count()).toBe(15);
+    expect(result).toEqual({ accountCount: 17, diverged: [], notInChart: [] });
+    expect(await prisma.ledgerAccount.count()).toBe(17);
   });
 
   it("stores each account's code, name, type and currency exactly as declared", async () => {
@@ -117,13 +117,13 @@ describe("seedChartOfAccounts", () => {
     // Must not throw — the upsert-on-`code` is what makes the re-run a no-op
     // rather than a unique-constraint violation on ix_ledger_accounts_code.
     await expect(seedChartOfAccounts(prisma)).resolves.toEqual({
-      accountCount: 15,
+      accountCount: 17,
       diverged: [],
       notInChart: [],
     });
 
     const after = await prisma.ledgerAccount.findMany({ orderBy: { code: "asc" } });
-    expect(after).toHaveLength(15);
+    expect(after).toHaveLength(17);
     // Same ids, not just the same count: posting code resolves accounts by
     // `code`, but a re-seed that deleted and recreated rows would orphan any
     // LedgerEntry.accountId already pointing at them.

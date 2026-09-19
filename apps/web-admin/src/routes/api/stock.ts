@@ -26,7 +26,7 @@ import {
   setStockNote,
   restockSubscriberCounts,
   logAdminAction,
-  enqueueRestockBroadcast,
+  afterStockAdded,
   updateDenomination,
   revealStockCredentials,
 } from "@app/db";
@@ -115,7 +115,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       "Available",
       "Reserved",
       "Sold",
-      "Waiting",
+      "Restock Requests",
       "Status",
     ];
     let csv = csvRow(header);
@@ -249,26 +249,10 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
 
-    // Broadcast to ALL non-banned customers, separate from and in addition
-    // to the RestockSubscription opt-in DM — only when the admin turned the
-    // per-product flag on. The web NEVER sends Telegram itself; this just
-    // enqueues rows for the notifier/bot to deliver.
-    if (added > 0 && product.broadcastOnRestock) {
-      const stockCount = await countAvailableStock(prisma, productId);
-      const fullName = `${product.product.name} - ${product.name}`;
-      const notified = await enqueueRestockBroadcast(prisma, {
-        productName: fullName,
-        stockCount,
-        createdById: req.admin!.userId,
-      });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "restock_broadcast",
-        targetType: "product",
-        targetId: productId,
-        details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
-      });
-    }
+    // Subscriber DMs + (when the SKU has broadcastOnRestock) the all-customer
+    // broadcast. The web NEVER sends Telegram itself; this only enqueues
+    // outbox rows for the notifier/bot to deliver.
+    await afterStockAdded(prisma, productId, added, req.admin!.userId);
 
     const message =
       skipped > 0

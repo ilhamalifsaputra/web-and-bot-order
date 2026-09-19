@@ -556,7 +556,7 @@ describe("admin conversations", () => {
     expect(audit?.details).toContain("Netflix Premium - 1 Month");
   });
 
-  it("stockUpload: restock-subscriber DM also names both the product type and the denomination", async () => {
+  it("stockUpload: restock-subscriber DM is queued in the outbox and names both the product type and the denomination", async () => {
     await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { name: "Netflix Premium" } });
     await prisma.denomination.update({ where: { id: sample.product.id }, data: { name: "1 Month" } });
     const subscriber = await upsertUser(prisma, { telegramId: 555, username: "waiter", fullName: "Waiter" });
@@ -567,7 +567,10 @@ describe("admin conversations", () => {
     const conv = new FakeConversation([msg(sink, { text: "new1@x.com:pw1\nnew2@x.com:pw2" })]);
     await stockUploadConversation(conv.asMyConversation(), entry);
 
-    expect(sentIncludes(sink, "Netflix Premium - 1 Month")).toBe(true);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: "RESTOCK_SUBSCRIBER_NOTIFIED" } });
+    const mine = rows.filter((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 555);
+    expect(mine).toHaveLength(1);
+    expect(JSON.parse(mine[0]!.payloadJson).product_name).toBe("Netflix Premium - 1 Month");
     expect(await prisma.restockSubscription.count({ where: { userId: subscriber.id } })).toBe(0);
   });
 

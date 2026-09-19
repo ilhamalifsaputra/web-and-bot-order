@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
+import { formatRestockRequests } from "@/lib/restockRequests";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -604,7 +606,7 @@ export function ProductDetailPage() {
               { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
               { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
               { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
-              { key: "waiting", header: "Waiting", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{stat?.waiting ?? 0}</span>; } },
+              { key: "waiting", header: <RestockRequestsHeader />, render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{formatRestockRequests(stat?.waiting, stat?.available)}</span>; } },
               {
                 key: "active",
                 header: "Active",

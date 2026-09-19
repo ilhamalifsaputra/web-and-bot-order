@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
+import { formatRestockRequests } from "@/lib/restockRequests";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -516,7 +518,9 @@ export function StockProductPage() {
         <span className="text-ink-soft">Product: <span className="text-ink">{product.product?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Category: <span className="text-ink">{product.product?.category?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{statusCounts.available}</span></span>
-        <span className="text-ink-soft">Waiting: <span className="text-ink">{waiting}</span></span>
+        <span className="text-ink-soft">
+          <RestockRequestsHeader />: <span className="text-ink">{formatRestockRequests(waiting, statusCounts.available)}</span>
+        </span>
       </div>
 
       {/* Bulk add */}

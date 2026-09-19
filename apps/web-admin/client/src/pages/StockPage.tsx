@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
+import { formatRestockRequests } from "@/lib/restockRequests";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -259,15 +261,12 @@ export function StockPage() {
               },
               {
                 key: "waiting",
-                header: "Waiting",
-                render: (row) => {
-                  const wait = data?.waiting[String(row.id)] ?? 0;
-                  return (
-                    <span className="text-sm text-ink-soft">
-                      {wait > 0 ? wait : "—"}
-                    </span>
-                  );
-                },
+                header: <RestockRequestsHeader />,
+                render: (row) => (
+                  <span className="text-sm text-ink-soft">
+                    {formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)}
+                  </span>
+                ),
               },
               {
                 key: "stock",

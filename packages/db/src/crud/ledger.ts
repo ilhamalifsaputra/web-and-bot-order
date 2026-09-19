@@ -139,6 +139,14 @@ const CREDIT_NORMAL_TYPES: readonly string[] = [
   LedgerAccountType.EQUITY,
 ];
 
+/**
+ * Every `LedgerAccount.type` this service can assign a balance sign to — the
+ * union of the two lists above, spelled as that union rather than as a third
+ * hand-kept list so a type added to one of them cannot be accepted on write and
+ * then rejected on read (or the reverse).
+ */
+const KNOWN_ACCOUNT_TYPES: readonly string[] = [...DEBIT_NORMAL_TYPES, ...CREDIT_NORMAL_TYPES];
+
 /** Recognised `LedgerEntry.direction` values. */
 const VALID_DIRECTIONS: readonly string[] = [LedgerDirection.DEBIT, LedgerDirection.CREDIT];
 
@@ -242,6 +250,16 @@ function assertBalancedPerCurrency(entries: readonly PreparedEntry[]): void {
  * Accounts are batch-fetched in ONE query keyed by `code: { in: [...] }` rather
  * than looked up per entry: a posting with a dozen legs would otherwise cost a
  * dozen round trips inside the critical path of a payment webhook.
+ *
+ * Five things are checked, and the account's own row supplies three of them —
+ * which is why the `select` reads `isActive` and `type` as well as `currency`.
+ * The account must exist, must not be RETIRED, and must carry a `type` this
+ * service can assign a balance sign to; the entry's direction must be recognised
+ * and its currency must match the account's. The retirement and type checks are
+ * the two that used to be missing: both were enforced only on the READ side
+ * (`trialBalance` omits retired accounts, `signedBalance` throws on an unknown
+ * type), which meant a posting could be committed and then turn out to be
+ * unreportable — an entry the books hold but cannot show.
  */
 async function prepareEntries(db: Db, entries: readonly LedgerEntryInput[]): Promise<PreparedEntry[]> {
   if (entries.length === 0) {
@@ -258,7 +276,7 @@ async function prepareEntries(db: Db, entries: readonly LedgerEntryInput[]): Pro
   const codes = [...new Set(entries.map((entry) => entry.accountCode))];
   const accounts = await db.ledgerAccount.findMany({
     where: { code: { in: codes } },
-    select: { id: true, code: true, currency: true },
+    select: { id: true, code: true, currency: true, type: true, isActive: true },
   });
   const byCode = new Map(accounts.map((account) => [account.code, account] as const));
 
@@ -268,6 +286,32 @@ async function prepareEntries(db: Db, entries: readonly LedgerEntryInput[]): Pro
       // Not an internal error: posting sites name accounts as string constants,
       // so a typo or a chart-of-accounts row that was never seeded lands here.
       throw new ValidationError("error.ledger_account_not_found", { accountCode: entry.accountCode });
+    }
+    if (!account.isActive) {
+      // `isActive: false` means an operator deliberately took this account out of
+      // the books' current picture — `trialBalance` already omits it. Until now
+      // nothing stopped a posting site still naming it, which produced the worst
+      // of both worlds: the entry was written and counted by
+      // `getAccountBalance`, but the account it landed on was invisible in the
+      // trial balance, so the posting silently stopped adding up to the reported
+      // cash position. Retirement has to mean retired on the write side too, or
+      // it is only a display filter.
+      throw new ValidationError("error.ledger_account_retired", {
+        accountCode: entry.accountCode,
+      });
+    }
+    if (!KNOWN_ACCOUNT_TYPES.includes(account.type)) {
+      // Checked HERE, at write time, even though `signedBalance` checks the same
+      // thing when a balance is read. `type` is a free String column, so a row
+      // seeded by an older chart, restored from a dump, or edited by hand can
+      // carry a value no reader can assign a sign to — and catching it only on
+      // read means the posting is already committed by the time anyone finds
+      // out, leaving an entry that cannot be reported at all. Refusing the write
+      // keeps "every entry in this table can be read back" true.
+      throw new ValidationError("error.ledger_account_type_unknown", {
+        accountCode: entry.accountCode,
+        accountType: String(account.type),
+      });
     }
     if (!VALID_DIRECTIONS.includes(entry.direction)) {
       // The one bad input the balance check cannot catch by itself: an

@@ -236,6 +236,7 @@
   "error.ledger_entries_empty": "Pencatatan ledger harus memiliki minimal satu entri.",
   "error.ledger_amount_invalid": "Setiap jumlah entri ledger harus berupa angka yang valid, terbatas, dan lebih besar dari nol.",
   "error.ledger_direction_invalid": "Entri ledger untuk akun {accountCode} memiliki arah yang tidak valid ({direction}) — harus DEBIT atau CREDIT.",
+  "error.ledger_account_retired": "Akun ledger {accountCode} sudah dinonaktifkan, sehingga tidak ada pencatatan baru yang boleh masuk ke akun tersebut.",
   "error.ledger_account_not_found": "Akun ledger {accountCode} tidak ada di bagan akun.",
   "error.ledger_currency_mismatch": "Mata uang entri ledger ini ({entryCurrency}) tidak sama dengan mata uang akun {accountCode} ({accountCurrency}).",
   "error.ledger_unbalanced": "Pencatatan ledger ini tidak seimbang dalam {currency} — total debit {debitTotal} sedangkan total kredit {creditTotal}.",

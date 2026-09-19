@@ -690,12 +690,24 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
  * only, swallowed failure), not the HTML/every-admin shape the payment-rail
  * watchdogs use: this is financial-drift reporting an admin reviews, not a
  * rail outage that needs everyone woken up.
+ *
+ * A clean run says what it compared, not that the books balance — see the
+ * no-findings branch. `reconcileLedger` is a set of bounded checks inside a
+ * cutover boundary, and on an un-backfilled shop the largest of them do not run
+ * at all, so "no findings" and "reconciled" are not the same statement.
  */
 export async function reconcileLedgerJob(api: Api): Promise<void> {
   const findings = await reconcileLedger(prisma);
   if (findings.length === 0) {
+    // Deliberately narrower than "the books balance". This run checks four
+    // specific things, each within a boundary, and an operator reading a clean
+    // line has to know which: a silent "everything matched" would let a shop
+    // whose entire history predates the ledger's first posting — where the
+    // missing-posting checks do not run at all — read as fully reconciled.
+    // `reconcileLedger` logs each skip on its own line; this says what was
+    // actually compared.
     logger.info(
-      "Ledger reconciliation finished — every settled order, wallet balance, payment and refund payout matched the double-entry ledger, no drift found",
+      "Ledger reconciliation finished with no findings. What it checked: every settled order and completed refund payout dated at or after the ledger's earliest posting has a posting under its own idempotency key; each currency's wallet-liability control account agrees with the balances buyers hold plus the checkout holds still outstanding; no two payments claim the same provider transaction id; and every posted payout's ledger entries record the amount that was actually paid out. It did NOT check anything dated before that earliest posting (pre-ledger history, which the M10 backfill script owns, not this job) or any payout carrying no execution timestamp, and it does not verify that the ledger as a whole balances. Any check skipped for those reasons logged its own line during this run.",
     );
     return;
   }

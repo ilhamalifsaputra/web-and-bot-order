@@ -326,6 +326,69 @@ describe("postFinancialTransaction — entry validation", () => {
     expect(await ledgerCounts()).toEqual({ transactions: 0, entries: 0 });
   });
 
+  it("rejects a posting to a RETIRED account, not just hides it from the trial balance", async () => {
+    // `isActive` used to be enforced on the read side only: `trialBalance` omitted
+    // a retired account while this service happily kept posting to it. That is the
+    // worst of both worlds — the entries are written and counted by
+    // `getAccountBalance`, but land on an account the trial balance does not show,
+    // so the posting silently stops adding up to the reported cash position
+    // (whole-branch review C6).
+    await prisma.ledgerAccount.update({
+      where: { code: "cash.idr" },
+      data: { isActive: false },
+    });
+
+    await expect(
+      postFinancialTransaction(
+        prisma,
+        postArgs([dr("cash.idr", "100", "IDR"), cr("sales_revenue.idr", "100", "IDR")]),
+      ),
+    ).rejects.toMatchObject({
+      name: "ValidationError",
+      key: "error.ledger_account_retired",
+      formatArgs: { accountCode: "cash.idr" },
+    });
+    expect(await ledgerCounts()).toEqual({ transactions: 0, entries: 0 });
+  });
+
+  it("rejects a posting to an account whose type no reader can assign a sign to", async () => {
+    // `type` is a free String column, so a row from an older chart, a restored
+    // dump or a hand edit can carry a value `signedBalance` throws on. Checked at
+    // WRITE time now: catching it only on read meant the entry was already
+    // committed by the time anyone found out, leaving the books holding a row
+    // that cannot be reported at all (whole-branch review C6).
+    await prisma.ledgerAccount.update({
+      where: { code: "cash.idr" },
+      data: { type: "PETTY_CASH" },
+    });
+
+    await expect(
+      postFinancialTransaction(
+        prisma,
+        postArgs([dr("cash.idr", "100", "IDR"), cr("sales_revenue.idr", "100", "IDR")]),
+      ),
+    ).rejects.toMatchObject({
+      name: "ValidationError",
+      key: "error.ledger_account_type_unknown",
+      formatArgs: { accountCode: "cash.idr", accountType: "PETTY_CASH" },
+    });
+    expect(await ledgerCounts()).toEqual({ transactions: 0, entries: 0 });
+  });
+
+  it("still accepts every type the balance readers understand", async () => {
+    // The write-side check must be exactly the union of the two normal-balance
+    // lists, not a narrower hand-kept copy — a posting this service accepts has to
+    // be one `signedBalance` can read back, and vice versa. `adjustment.idr` is
+    // EQUITY and `referral_expense.usdt` is EXPENSE, so between them these cover
+    // both sides of that union beyond the ASSET/REVENUE pair every other test uses.
+    const posted = await postFinancialTransaction(
+      prisma,
+      postArgs([dr("adjustment.idr", "100", "IDR"), cr("wallet_liability.idr", "100", "IDR")]),
+    );
+    expect(posted.id).toBeGreaterThan(0);
+    expect(await getAccountBalance(prisma, "adjustment.idr")).toBeTruthy();
+  });
+
   it("rejects a direction that is neither DEBIT nor CREDIT", async () => {
     // A typo'd direction is the one bad input the balance check cannot catch on
     // its own: an unrecognised direction belongs to neither sum, so 0 == 0 and

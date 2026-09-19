@@ -316,12 +316,24 @@ export async function expirePaymentAttempt(
  *   `trxId`/`binanceTxId`/`bybitTxId`), and it is the column a provider
  *   settlement report is later reconciled against, which is why it carries its
  *   own `@@unique([method, providerTransactionId])` index (see that index's
- *   reasoning in prisma/schema.prisma). A unique violation on it therefore
- *   propagates rather than being swallowed: two confirmed attempts claiming one
- *   gateway transaction is a genuine data problem, and the rails' own
- *   reclaim-on-failed-delivery paths never produce one (a prior attempt that
- *   failed rolled back before reaching this function, so its column is still
- *   null).
+ *   reasoning in prisma/schema.prisma). A unique violation on it is NOT caught
+ *   here: two confirmed attempts claiming one gateway transaction is a genuine
+ *   data problem, and the rails' own reclaim-on-failed-delivery paths never
+ *   produce one (a prior attempt that failed rolled back before reaching this
+ *   function, so its column is still null).
+ *
+ *   What happens to that violation AFTER it leaves this function is worth being
+ *   precise about, because the six rails each wrap their call in a `.catch` that
+ *   logs and carries on. That `.catch` is there for the benign race — a
+ *   concurrent poller or webhook having already confirmed the same row, which
+ *   this function reports as a `ValidationError` or a zero-row claim and which
+ *   really does leave the settlement intact. It does NOT make a failed SQL
+ *   statement survivable. Every rail calls this INSIDE its settlement
+ *   `$transaction`, and Postgres puts an interactive transaction into an aborted
+ *   state on any failed statement, so once the unique index has rejected the
+ *   write, every later statement in that transaction fails too and the whole
+ *   settlement rolls back — regardless of the `.catch`. The rails' log lines say
+ *   exactly this, and deliberately do not claim the order is unaffected.
  * - `fee` / `netAmount` — what the gateway kept and what the shop therefore
  *   expects to receive, both quantized through `parseSettlementFigure`. Only
  *   TokoPay passes them today; the other five rails report no fee figure at all

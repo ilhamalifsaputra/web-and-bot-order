@@ -178,6 +178,28 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
   },
 ];
 
+/** A stored account whose classification no longer matches `CHART_OF_ACCOUNTS`.
+ *  Both sides of each disagreement are carried, because which one is right is
+ *  exactly the question the operator has to answer. */
+export interface DivergedLedgerAccount {
+  code: string;
+  storedType: string;
+  expectedType: string;
+  storedCurrency: string;
+  expectedCurrency: string;
+}
+
+export interface SeedChartOfAccountsReport {
+  /** How many rows `CHART_OF_ACCOUNTS` defines — upserted every run. */
+  accountCount: number;
+  /** Stored rows whose `type`/`currency` disagree with the chart. Never fixed
+   *  here; see `seedChartOfAccounts`' doc comment for why. */
+  diverged: DivergedLedgerAccount[];
+  /** Codes of ACTIVE stored rows the chart no longer contains. Never retired
+   *  here; see `seedChartOfAccounts`' doc comment for why. */
+  notInChart: string[];
+}
+
 /**
  * Install (or refresh) every `CHART_OF_ACCOUNTS` row. Idempotent: each row is
  * upserted on its unique `code`, so running this against an already-seeded
@@ -208,6 +230,32 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
  * `isActive` is likewise NOT touched: an admin who retired an account should not
  * have the seed silently revive it.
  *
+ * ## What it REPORTS instead of changing
+ *
+ * Because the upsert refreshes only `name`, a database can hold rows that no
+ * longer agree with this list, and silence about them is what made the ledger's
+ * reference data drift unnoticeably. Two shapes, both now returned so
+ * `scripts/seed-chart-of-accounts.ts` can print them:
+ *
+ * - `diverged` — a row whose `type` or `currency` differs from what this list
+ *   says it should be. The upsert deliberately will not fix it (see above), so
+ *   the seed's only honest options are to report it or to hide it.
+ * - `notInChart` — an ACTIVE `ledger_accounts` row whose `code` this list no
+ *   longer contains. `referral_payable.idr` is the live example: M3 dropped it
+ *   from the chart as wrongly classified, but nothing removed or retired the row
+ *   an M1-era seed had already written, so on any database seeded before M3 it is
+ *   still active and still shows up in `trialBalance` as a real account.
+ *
+ * Neither is auto-corrected, and `notInChart` rows are deliberately NOT
+ * auto-retired, for the same reason `type` and `currency` are not auto-refreshed:
+ * retiring an account is an accounting decision about rows that may already carry
+ * posted entries, and a seed a human re-runs after every deploy must not make it
+ * behind their back. A hand-added account outside this list would also be swept
+ * up. Retire a dropped code deliberately, by setting its `isActive` to false once
+ * you have confirmed what its entries mean — after which `postFinancialTransaction`
+ * refuses new postings to it (`error.ledger_account_retired`) and `trialBalance`
+ * stops listing it, while `getAccountBalance` keeps its history readable.
+ *
  * Writes no audit-log entry — this is a system/CLI bootstrap with no acting
  * admin, and it changes reference data rather than any shop state an admin
  * would look for in the audit log (`scripts/seed-chart-of-accounts.ts` prints
@@ -221,7 +269,7 @@ export const CHART_OF_ACCOUNTS: readonly ChartOfAccountsEntry[] = [
  * CLAUDE.md's "keep every `$transaction` short" rule. Pass a `tx` as `db` if a
  * caller does need it to be atomic with surrounding work.
  */
-export async function seedChartOfAccounts(db: Db): Promise<{ accountCount: number }> {
+export async function seedChartOfAccounts(db: Db): Promise<SeedChartOfAccountsReport> {
   for (const account of CHART_OF_ACCOUNTS) {
     await db.ledgerAccount.upsert({
       where: { code: account.code },
@@ -237,5 +285,35 @@ export async function seedChartOfAccounts(db: Db): Promise<{ accountCount: numbe
     });
   }
 
-  return { accountCount: CHART_OF_ACCOUNTS.length };
+  // Read back AFTER the upserts, so a row this run created cannot be reported as
+  // diverged or unknown. One query for the whole table: the chart is reference
+  // data of a few dozen rows, not something that needs paging.
+  const stored = await db.ledgerAccount.findMany({
+    select: { code: true, type: true, currency: true, isActive: true },
+    orderBy: { code: "asc" },
+  });
+  const expected = new Map(CHART_OF_ACCOUNTS.map((account) => [account.code, account] as const));
+
+  const diverged: DivergedLedgerAccount[] = [];
+  const notInChart: string[] = [];
+  for (const row of stored) {
+    const want = expected.get(row.code);
+    if (!want) {
+      // Retired rows are not reported: whoever retired one already made the
+      // decision this list would be asking them to make.
+      if (row.isActive) notInChart.push(row.code);
+      continue;
+    }
+    if (row.type !== want.type || row.currency !== want.currency) {
+      diverged.push({
+        code: row.code,
+        storedType: row.type,
+        expectedType: want.type,
+        storedCurrency: row.currency,
+        expectedCurrency: want.currency,
+      });
+    }
+  }
+
+  return { accountCount: CHART_OF_ACCOUNTS.length, diverged, notInChart };
 }

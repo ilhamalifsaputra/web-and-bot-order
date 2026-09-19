@@ -236,6 +236,7 @@
   "error.ledger_entries_empty": "A ledger posting must have at least one entry.",
   "error.ledger_amount_invalid": "Every ledger entry amount must be a valid, finite number greater than zero.",
   "error.ledger_direction_invalid": "The ledger entry for account {accountCode} has an invalid direction ({direction}) — it must be DEBIT or CREDIT.",
+  "error.ledger_account_retired": "Ledger account {accountCode} has been retired, so nothing new may be posted to it.",
   "error.ledger_account_not_found": "Ledger account {accountCode} is not in the chart of accounts.",
   "error.ledger_currency_mismatch": "This ledger entry's currency ({entryCurrency}) does not match account {accountCode}'s own currency ({accountCurrency}).",
   "error.ledger_unbalanced": "This ledger posting does not balance in {currency} — debits total {debitTotal} but credits total {creditTotal}.",

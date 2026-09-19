@@ -92,7 +92,8 @@ describe("seedChartOfAccounts", () => {
   it("creates exactly 15 accounts on a fresh database", async () => {
     const result = await seedChartOfAccounts(prisma);
 
-    expect(result).toEqual({ accountCount: 15 });
+    // A clean bootstrap: nothing diverged and nothing outside the chart.
+    expect(result).toEqual({ accountCount: 15, diverged: [], notInChart: [] });
     expect(await prisma.ledgerAccount.count()).toBe(15);
   });
 
@@ -115,7 +116,11 @@ describe("seedChartOfAccounts", () => {
 
     // Must not throw — the upsert-on-`code` is what makes the re-run a no-op
     // rather than a unique-constraint violation on ix_ledger_accounts_code.
-    await expect(seedChartOfAccounts(prisma)).resolves.toEqual({ accountCount: 15 });
+    await expect(seedChartOfAccounts(prisma)).resolves.toEqual({
+      accountCount: 15,
+      diverged: [],
+      notInChart: [],
+    });
 
     const after = await prisma.ledgerAccount.findMany({ orderBy: { code: "asc" } });
     expect(after).toHaveLength(15);
@@ -169,5 +174,104 @@ describe("seedChartOfAccounts", () => {
       where: { code: "adjustment.usdt" },
     });
     expect(retired.isActive).toBe(false);
+  });
+});
+
+/**
+ * The seed cannot fix a diverged or dropped account (doing so would reinterpret
+ * entries already posted against it), so its only honest alternative to silence
+ * is to report it — whole-branch review C6. Before this, a database seeded by an
+ * M1-era chart kept `referral_payable.idr` active and listed in the trial balance
+ * forever, and no run said a word about it.
+ */
+describe("seedChartOfAccounts — what it reports rather than changes", () => {
+  it("reports nothing for a database it just seeded", async () => {
+    const report = await seedChartOfAccounts(prisma);
+
+    expect(report.diverged).toEqual([]);
+    expect(report.notInChart).toEqual([]);
+  });
+
+  it("reports an account whose stored type disagrees with the chart, both sides named", async () => {
+    await seedChartOfAccounts(prisma);
+    await prisma.ledgerAccount.update({
+      where: { code: "cash.idr" },
+      data: { type: LedgerAccountType.REVENUE },
+    });
+
+    const report = await seedChartOfAccounts(prisma);
+
+    expect(report.diverged).toEqual([
+      {
+        code: "cash.idr",
+        storedType: LedgerAccountType.REVENUE,
+        expectedType: LedgerAccountType.ASSET,
+        storedCurrency: OrderCurrency.IDR,
+        expectedCurrency: OrderCurrency.IDR,
+      },
+    ]);
+    // Reported, NOT corrected — the whole point.
+    const stored = await prisma.ledgerAccount.findUniqueOrThrow({ where: { code: "cash.idr" } });
+    expect(stored.type).toBe(LedgerAccountType.REVENUE);
+  });
+
+  it("reports an account whose stored currency disagrees with the chart", async () => {
+    await seedChartOfAccounts(prisma);
+    await prisma.ledgerAccount.update({
+      where: { code: "cash.idr" },
+      data: { currency: OrderCurrency.USDT },
+    });
+
+    const report = await seedChartOfAccounts(prisma);
+
+    expect(report.diverged).toHaveLength(1);
+    expect(report.diverged[0]).toMatchObject({
+      code: "cash.idr",
+      storedCurrency: OrderCurrency.USDT,
+      expectedCurrency: OrderCurrency.IDR,
+    });
+  });
+
+  it("reports an active account the chart no longer contains — the referral_payable.idr case", async () => {
+    await seedChartOfAccounts(prisma);
+    // Exactly the row an M1-era seed left behind: M3 dropped this code from
+    // CHART_OF_ACCOUNTS as wrongly classified, but nothing retired or removed the
+    // row, so it is still active and still a line in the trial balance.
+    await prisma.ledgerAccount.create({
+      data: {
+        code: "referral_payable.idr",
+        name: "Referral Commission Payable (IDR)",
+        type: LedgerAccountType.LIABILITY,
+        currency: OrderCurrency.IDR,
+      },
+    });
+
+    const report = await seedChartOfAccounts(prisma);
+
+    expect(report.notInChart).toEqual(["referral_payable.idr"]);
+    // Reported, NOT retired: retiring an account that may already carry posted
+    // entries is an accounting decision, and this seed runs after every deploy.
+    const lingering = await prisma.ledgerAccount.findUniqueOrThrow({
+      where: { code: "referral_payable.idr" },
+    });
+    expect(lingering.isActive).toBe(true);
+  });
+
+  it("does not report an unknown account that has already been retired", async () => {
+    await seedChartOfAccounts(prisma);
+    await prisma.ledgerAccount.create({
+      data: {
+        code: "referral_payable.idr",
+        name: "Referral Commission Payable (IDR)",
+        type: LedgerAccountType.LIABILITY,
+        currency: OrderCurrency.IDR,
+        isActive: false,
+      },
+    });
+
+    const report = await seedChartOfAccounts(prisma);
+
+    // Whoever retired it already made the decision this report exists to ask for.
+    expect(report.notInChart).toEqual([]);
   });
 });

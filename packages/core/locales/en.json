@@ -214,6 +214,7 @@
   "error.already_credited": "This order's payment has already been added to the buyer's credit balance.",
   "error.order_already_delivered": "This order has already been delivered.",
   "error.order_not_found": "Order not found.",
+  "error.denomination_has_stock_history": "This item has stock history and cannot be deleted; deactivate it instead.",
   "error.order_item_not_found": "Order item not found.",
   "error.order_not_processing": "This order is no longer awaiting fulfilment — it may have already been processed.",
   "error.order_not_digiflazz": "This order isn't a single-item Digiflazz-routed order, so it can't be auto-fulfilled this way.",

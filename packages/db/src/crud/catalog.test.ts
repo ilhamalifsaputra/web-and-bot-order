@@ -223,6 +223,20 @@ describe("delete product", () => {
     expect(await prisma.product.findUnique({ where: { id: p.id } })).toBeNull();
     expect(await prisma.denomination.findUnique({ where: { id: d.id } })).toBeNull();
   });
+
+  it("cascade refuses when a denomination has stock, and deletes nothing", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "CascStock");
+    const empty = await makeDenom(p.id, "1 Month", "5");
+    const stocked = await makeDenom(p.id, "3 Months", "9");
+    await bulkAddStock(prisma, stocked.id, ["cred-x"]);
+    await expect(deleteCatalogProductCascade(prisma, p.id)).rejects.toMatchObject({
+      name: "ValidationError",
+      message: "error.denomination_has_stock_history",
+    });
+    expect(await prisma.product.findUnique({ where: { id: p.id } })).not.toBeNull();
+    expect(await prisma.denomination.findUnique({ where: { id: empty.id } })).not.toBeNull();
+  });
 });
 
 describe("deleteCategory", () => {
@@ -264,6 +278,26 @@ describe("deleteDenomination", () => {
     await createOrderDirect(prisma, { user, productId: d.id, quantity: 1 });
     await expect(deleteDenomination(prisma, d.id)).rejects.toThrow(/order history/);
     expect(await prisma.denomination.findUnique({ where: { id: d.id } })).not.toBeNull();
+  });
+
+  it("refuses to delete a denomination that has stock rows", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Stocked");
+    const d = await makeDenom(p.id, "1 Month", "5");
+    await bulkAddStock(prisma, d.id, ["cred1"]);
+    const err = await deleteDenomination(prisma, d.id).catch((e) => e);
+    expect(err).toBeInstanceOf(ValidationError);
+    expect(err.message).toBe("error.denomination_has_stock_history");
+    expect(await prisma.denomination.findUnique({ where: { id: d.id } })).not.toBeNull();
+  });
+
+  it("refuses when only a soft-deleted stock row remains", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "SoftStocked");
+    const d = await makeDenom(p.id, "1 Month", "5");
+    await bulkAddStock(prisma, d.id, ["cred1"]);
+    await prisma.stockItem.updateMany({ where: { productId: d.id }, data: { deletedAt: new Date() } });
+    await expect(deleteDenomination(prisma, d.id)).rejects.toBeInstanceOf(ValidationError);
   });
 });
 

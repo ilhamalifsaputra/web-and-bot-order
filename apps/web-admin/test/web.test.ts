@@ -2651,6 +2651,29 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     });
   });
 
+  describe("DELETE /api/catalog/denominations/:id", () => {
+    it("refuses with 409 and the stock-history key when the denomination has stock", async () => {
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toEqual({ error: "error.denomination_has_stock_history" });
+      expect(await prisma.denomination.findUnique({ where: { id: seed.productId } })).not.toBeNull();
+    });
+
+    it("deletes a denomination that never held stock and audits", async () => {
+      const d = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: "Blank",
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "1.00",
+      });
+      const res = await deleteJson(`/api/catalog/denominations/${d.id}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.denomination.findUnique({ where: { id: d.id } })).toBeNull();
+      expect(await prisma.auditLog.findFirst({ where: { action: "denomination_delete", targetId: d.id } })).toBeTruthy();
+    });
+  });
+
   describe("POST /api/catalog/products/bulk-active", () => {
     it("happy path: deactivates multiple products and audits with a count", async () => {
       const other = await createCatalogProduct(prisma, { categoryId: seed.categoryId, name: "Other" });

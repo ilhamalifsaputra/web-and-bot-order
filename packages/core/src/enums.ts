@@ -563,6 +563,11 @@ export const NotificationEvent = {
   // broadcastOnRestock enabled. payload carries chat_id + product_name +
   // stock_count per recipient (one outbox row per customer).
   PRODUCT_RESTOCKED_BROADCAST: "PRODUCT_RESTOCKED_BROADCAST",
+  // Buyer DM to one customer who opted in (RestockSubscription) to be told
+  // when this SKU is back in stock. payload carries chat_id + product_name +
+  // buyer_language; the subscription is deleted in the same transaction that
+  // enqueues the row (enqueueRestockSubscriberNotifications).
+  RESTOCK_SUBSCRIBER_NOTIFIED: "RESTOCK_SUBSCRIBER_NOTIFIED",
   // Buyer DM broadcast to ALL non-banned customers with a linked Telegram
   // account, triggered by the order-bot's announceStartedFlashSales job the
   // first minute a scheduled flash sale becomes live (its flashAnnouncedAt is

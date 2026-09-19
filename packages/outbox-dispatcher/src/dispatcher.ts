@@ -100,6 +100,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ORDER_PIPELINE_FAILED, // admin DM (Bybit BSC tracking pipeline failure)
   NotificationEvent.ORDER_PROCESSING_DM, // buyer DM (manual order queued for hand-fulfilment)
   NotificationEvent.PRODUCT_RESTOCKED_BROADCAST, // buyer DM (restock broadcast, all customers)
+  NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED, // buyer DM (a customer who asked to be told when this SKU is back)
   NotificationEvent.FLASH_SALE_BROADCAST, // buyer DM (flash sale went live, all customers)
   NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
   NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)

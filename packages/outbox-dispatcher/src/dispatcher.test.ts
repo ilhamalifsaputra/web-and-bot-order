@@ -1085,6 +1085,30 @@ describe("PRODUCT_RESTOCKED_BROADCAST", () => {
   });
 });
 
+describe("RESTOCK_SUBSCRIBER_NOTIFIED", () => {
+  it("DMs the subscriber in their language, marks the row SENT", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED,
+        orderId: null,
+        payloadJson: JSON.stringify({ chat_id: 700_010, product_name: "Netflix - 1 Month", buyer_language: "id" }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).toHaveBeenCalledWith(700_010, "<b>Netflix - 1 Month</b> tersedia kembali.", {
+      parse_mode: "HTML",
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
 /**
  * Task 7: the dispatcher's EMAIL lane (owner-email-notifications feature).
  * `row.channel === "EMAIL"` rows never touch `bot.api.sendMessage` — they go

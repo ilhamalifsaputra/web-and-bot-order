@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { OrderStatus } from "@app/core/enums";
+import { OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import {
+  botOverallStats,
   revenueByDay,
   revenueSummary,
   profitSummarySince,
@@ -43,6 +44,35 @@ beforeEach(async () => {
   parentProductId = parentProduct.id;
   parentProductName = parentProduct.name;
 });
+
+/**
+ * A settled wallet top-up exactly as `settleWalletTopup`
+ * (packages/db/src/crud/wallet_topup.ts) writes it: an Order row with kind
+ * WALLET_TOPUP, status DELIVERED, `deliveredAt` stamped — and no OrderItem
+ * rows, no voucher, no stock. This is the row shape that used to read as
+ * sales revenue in every aggregate below.
+ */
+function makeSettledTopup(
+  deliveredAt: Date,
+  args: { amount?: string; currency?: "IDR" | "USDT" } = {},
+) {
+  const amount = args.amount ?? "500000";
+  const currency = args.currency ?? "IDR";
+  return prisma.order.create({
+    data: {
+      orderCode: `TOP-${Math.random()}`,
+      userId,
+      kind: OrderKind.WALLET_TOPUP,
+      subtotalAmount: amount,
+      totalAmount: amount,
+      currency,
+      ...(currency === "USDT" ? { fxRate: "16000" } : {}),
+      status: OrderStatus.DELIVERED,
+      deliveredAt,
+      paymentMethod: PaymentMethod.TOKOPAY,
+    },
+  });
+}
 
 describe("revenueByDay", () => {
   it("keeps a delivered USDT order's total out of the IDR bucket for the same day", async () => {
@@ -444,5 +474,147 @@ describe("status exclusion", () => {
 
     const profit = await profitSummarySince(prisma, since);
     expect(profit.idr).toEqual({ netProfit: "5000", marginPct: "50", excludedItemCount: 0 });
+  });
+});
+
+describe("wallet-top-up exclusion", () => {
+  it("a settled wallet top-up leaves every sales revenue/order aggregate untouched", async () => {
+    const now = new Date();
+    const since = new Date(now.getTime() - 60_000);
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+
+    const sale = await prisma.order.create({ data: { orderCode: `ORD-sale-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: sale.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const baseline = {
+      summary: await revenueSummary(prisma, since),
+      overall: await botOverallStats(prisma),
+      byDay: await revenueByDay(prisma, 1),
+      ordersPerDay: await ordersByDay(prisma, 1),
+      combined: await combinedRevenueByDay(prisma, 1),
+      profit: await profitSummarySince(prisma, since),
+      top: await topProducts(prisma, since, 5),
+      margin: await topProductsByMargin(prisma, since, 5),
+    };
+    // Sanity: the product order really is in there, so an all-zero baseline
+    // can't make the comparisons below pass vacuously.
+    expect(baseline.summary.revenue_idr.toString()).toBe("10000");
+    expect(baseline.summary.orders).toBe(1);
+
+    // Half a million rupiah of deposits, in both currencies — the amounts are
+    // deliberately far larger than the sale so any leak is unmissable.
+    await makeSettledTopup(now, { amount: "500000", currency: "IDR" });
+    await makeSettledTopup(now, { amount: "25", currency: "USDT" });
+
+    expect(await revenueSummary(prisma, since)).toEqual(baseline.summary);
+    expect(await revenueByDay(prisma, 1)).toEqual(baseline.byDay);
+    expect(await ordersByDay(prisma, 1)).toEqual(baseline.ordersPerDay);
+    expect(await combinedRevenueByDay(prisma, 1)).toEqual(baseline.combined);
+    expect(await profitSummarySince(prisma, since)).toEqual(baseline.profit);
+    expect(await topProducts(prisma, since, 5)).toEqual(baseline.top);
+    expect(await topProductsByMargin(prisma, since, 5)).toEqual(baseline.margin);
+
+    const overall = await botOverallStats(prisma);
+    expect(overall.items_sold).toBe(baseline.overall.items_sold);
+    expect(overall.revenue_idr.toString()).toBe(baseline.overall.revenue_idr.toString());
+    expect(overall.revenue_usdt.toString()).toBe(baseline.overall.revenue_usdt.toString());
+  });
+
+  it("counts a product order paid from wallet credit exactly once, and not again as the top-up that funded it", async () => {
+    const now = new Date();
+    const since = new Date(now.getTime() - 60_000);
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Wallet-paid", type: "SHARED", durationLabel: "1 Month", price: "30000", costPrice: "12000" });
+
+    // The deposit that funded the purchase, then the purchase itself: the
+    // same Rp30,000 moving twice through the same `orders` table. Only the
+    // sale is revenue — counting both was the double-count this filter fixes.
+    await makeSettledTopup(now, { amount: "30000", currency: "IDR" });
+    const sale = await prisma.order.create({
+      data: {
+        orderCode: `ORD-wallet-${Math.random()}`, userId,
+        subtotalAmount: "30000", totalAmount: "30000", walletUsed: "30000",
+        currency: "IDR", paymentMethod: PaymentMethod.WALLET,
+        status: "DELIVERED", deliveredAt: now,
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: sale.id, productId: product.id, quantity: 1, unitPrice: "30000", warrantyDaysSnapshot: 30 } });
+
+    const summary = await revenueSummary(prisma, since);
+    expect(summary.revenue_idr.toString()).toBe("30000");
+    expect(summary.orders).toBe(1);
+
+    const days = await revenueByDay(prisma, 1);
+    expect(days[0]).toMatchObject({ revenue_idr: "30000", revenue_usdt: "0", orders: 1 });
+    expect((await ordersByDay(prisma, 1))[0]).toMatchObject({ ordersIdr: 1, ordersUsdt: 0 });
+    expect((await combinedRevenueByDay(prisma, 1))[0]!.revenueIdrEquiv).toBe("30000");
+
+    // `walletUsed` is a payment method, not a discount — the sale's full
+    // Rp30,000 still counts as banked revenue (see orderItemRevenueIdr).
+    expect(await profitSummarySince(prisma, since)).toEqual({
+      idr: { netProfit: "18000", marginPct: "60", excludedItemCount: 0 },
+      usdt: null,
+    });
+  });
+});
+
+describe("daily buckets follow the shop timezone", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("files an order delivered at 18:30Z under the next day and one at 16:30Z under that day (TIMEZONE=Asia/Jakarta)", async () => {
+    // Asia/Jakarta is UTC+7: 2026-03-14T18:30Z is 01:30 on the 15th locally,
+    // 2026-03-14T16:30Z is 23:30 on the 14th. Under the old UTC bucketing
+    // both landed on "2026-03-14".
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+    const lateEvening = new Date("2026-03-14T18:30:00.000Z");
+    const afternoon = new Date("2026-03-14T16:30:00.000Z");
+
+    for (const [deliveredAt, total] of [[afternoon, "40000"], [lateEvening, "70000"]] as const) {
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-tz-${Math.random()}`, userId, subtotalAmount: total, totalAmount: total, currency: "IDR", status: "DELIVERED", deliveredAt },
+      });
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: total, warrantyDaysSnapshot: 30 } });
+    }
+    const usdtOrder = await prisma.order.create({
+      data: { orderCode: `ORD-tz-usdt-${Math.random()}`, userId, subtotalAmount: "160000", totalAmount: "10", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: lateEvening },
+    });
+    await prisma.orderItem.create({ data: { orderId: usdtOrder.id, productId: product.id, quantity: 1, unitPrice: "160000", warrantyDaysSnapshot: 30 } });
+
+    // "Now" is mid-morning on the 15th in Jakarta, so a 2-day window is
+    // exactly the 14th and the 15th.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-15T03:00:00.000Z"));
+
+    expect(await revenueByDay(prisma, 2)).toEqual([
+      { day: "2026-03-14", revenue_idr: "40000", revenue_usdt: "0", orders: 1 },
+      { day: "2026-03-15", revenue_idr: "70000", revenue_usdt: "10", orders: 2 },
+    ]);
+    expect(await ordersByDay(prisma, 2)).toEqual([
+      { day: "2026-03-14", ordersIdr: 1, ordersUsdt: 0 },
+      { day: "2026-03-15", ordersIdr: 1, ordersUsdt: 1 },
+    ]);
+    expect(await combinedRevenueByDay(prisma, 2)).toEqual([
+      { day: "2026-03-14", revenueIdrEquiv: "40000" },
+      // 70000 + 10 USDT × 16000 = 230000
+      { day: "2026-03-15", revenueIdrEquiv: "230000" },
+    ]);
+  });
+
+  it("keeps a sale made in the shop's early-morning hours in today's bucket instead of yesterday's", async () => {
+    // 2026-03-15T00:30 Jakarta = 2026-03-14T17:30Z. A single-day window must
+    // still contain it: with a UTC-midnight `since`, that order was both
+    // filtered out of the query AND keyed to the wrong day.
+    const deliveredAt = new Date("2026-03-14T17:30:00.000Z");
+    await prisma.order.create({
+      data: { orderCode: `ORD-early-${Math.random()}`, userId, subtotalAmount: "12345", totalAmount: "12345", currency: "IDR", status: "DELIVERED", deliveredAt },
+    });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-15T03:00:00.000Z"));
+
+    expect(await revenueByDay(prisma, 1)).toEqual([
+      { day: "2026-03-15", revenue_idr: "12345", revenue_usdt: "0", orders: 1 },
+    ]);
   });
 });

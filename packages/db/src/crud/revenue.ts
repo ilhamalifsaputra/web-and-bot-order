@@ -6,13 +6,30 @@
  * re-deriving "line revenue" and drifting apart — see orderItemRevenueIdr
  * below for the bug that split prevents from recurring.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderKind, OrderStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
-import { addDays } from "@app/core/datetime";
+import { dayKeyInZone, recentDayWindow } from "@app/core/datetime";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
+
+/**
+ * Every figure in this module is a SALES figure, so every order-level query
+ * here is scoped to product orders. A settled wallet top-up is also an
+ * `Order` row with status DELIVERED and `deliveredAt` stamped
+ * (`settleWalletTopup`, ./wallet_topup.ts), so without this filter a Rp500k
+ * deposit read as Rp500k of revenue — and then counted a second time when
+ * that balance paid for a real order, reporting one sale twice. A deposit is
+ * the buyer handing the shop money to hold, not the shop earning it; it
+ * belongs to the wallet ledger, which reports it on its own.
+ *
+ * The OrderItem-based helpers below (`topProducts`, `topProductsByMargin`,
+ * `profitSummarySince`, and `botOverallStats`' items_sold) need no such
+ * filter: a WALLET_TOPUP order has no OrderItem rows at all, so nothing it
+ * contributes can reach them.
+ */
+const SALES_ONLY = { kind: OrderKind.PRODUCT } as const;
 
 /**
  * IDR revenue for one delivered OrderItem line: unitPrice × quantity, minus
@@ -83,7 +100,7 @@ async function deliveredRevenueByCurrency(
 ): Promise<{ idr: Decimal; usdt: Decimal; orders: number }> {
   const groups = await db.order.groupBy({
     by: ["currency"],
-    where: { status: OrderStatus.DELIVERED, ...extraWhere },
+    where: { status: OrderStatus.DELIVERED, ...SALES_ONLY, ...extraWhere },
     _sum: { totalAmount: true },
     _count: { _all: true },
   });
@@ -129,7 +146,7 @@ export async function revenueSummary(
 }
 
 export interface DayRevenue {
-  day: string; // YYYY-MM-DD (UTC)
+  day: string; // YYYY-MM-DD in the shop's timezone (config.TIMEZONE)
   revenue_idr: string;
   revenue_usdt: string;
   orders: number;
@@ -137,8 +154,13 @@ export interface DayRevenue {
 
 /**
  * Daily delivered revenue for the last `days` days, oldest→newest, with empty
- * days filled with zero so the sparkline has no gaps. Buckets by UTC date; the
- * dashboard is single-operator so a TZ-exact daily cut isn't worth a raw query.
+ * days filled with zero so the sparkline has no gaps.
+ *
+ * Days are the shop's own calendar days (`recentDayWindow`/`dayKeyInZone`,
+ * config.TIMEZONE), matching the `startOfDayUtc` cut the dashboard's "Today"
+ * KPIs use — bucketing on the UTC date instead meant a WIB shop's chart put
+ * its 00:00–06:59 local sales on the previous bar and the window's first and
+ * last buckets were seven hours short of a local day.
  *
  * Split by `currency` (mirrors `deliveredRevenueByCurrency` above) — summing
  * `totalAmount` across orders regardless of currency would add a USDT order's
@@ -146,24 +168,20 @@ export interface DayRevenue {
  * equivalent of the "Rp3" display bug.
  */
 export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
-  const now = new Date();
-  const since = addDays(now, -(days - 1));
-  since.setUTCHours(0, 0, 0, 0);
+  const window = recentDayWindow(days);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...SALES_ONLY, deliveredAt: { gte: window.since } },
     select: { deliveredAt: true, totalAmount: true, currency: true },
   });
 
   const buckets = new Map<string, { idr: Decimal; usdt: Decimal; orders: number }>();
-  for (let i = 0; i < days; i++) {
-    const d = addDays(since, i);
-    buckets.set(d.toISOString().slice(0, 10), { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 });
+  for (const key of window.keys) {
+    buckets.set(key, { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 });
   }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const key = o.deliveredAt.toISOString().slice(0, 10);
-    const b = buckets.get(key);
+    const b = buckets.get(dayKeyInZone(o.deliveredAt));
     if (!b) continue; // outside the window (shouldn't happen)
     if (o.currency === "IDR") b.idr = b.idr.plus(o.totalAmount);
     else b.usdt = b.usdt.plus(o.totalAmount);
@@ -385,25 +403,21 @@ export interface DayOrderCounts {
 
 /** Daily delivered-order counts for the last `days` days, oldest→newest,
  * split by currency — the order-count counterpart to revenueByDay, for the
- * Sales Analytics chart's "Orders" metric. Empty days are filled with zero. */
+ * Sales Analytics chart's "Orders" metric. Empty days are filled with zero,
+ * and days are the shop's own calendar days (see revenueByDay). */
 export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> {
-  const now = new Date();
-  const since = addDays(now, -(days - 1));
-  since.setUTCHours(0, 0, 0, 0);
+  const window = recentDayWindow(days);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...SALES_ONLY, deliveredAt: { gte: window.since } },
     select: { deliveredAt: true, currency: true },
   });
 
   const buckets = new Map<string, { idr: number; usdt: number }>();
-  for (let i = 0; i < days; i++) {
-    buckets.set(addDays(since, i).toISOString().slice(0, 10), { idr: 0, usdt: 0 });
-  }
+  for (const key of window.keys) buckets.set(key, { idr: 0, usdt: 0 });
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const key = o.deliveredAt.toISOString().slice(0, 10);
-    const b = buckets.get(key);
+    const b = buckets.get(dayKeyInZone(o.deliveredAt));
     if (!b) continue;
     if (o.currency === "IDR") b.idr += 1;
     else b.usdt += 1;
@@ -425,25 +439,22 @@ export interface DayCombinedRevenue {
  * `OrderItem.unitPrice` — see orderItemRevenueIdr), so multiplying by fxRate
  * here is correct. This is the one place this function intentionally blends
  * currencies — the "Combined" filter the user explicitly opts into, as
- * opposed to revenueByDay's per-currency split.
+ * opposed to revenueByDay's per-currency split. Days are the shop's own
+ * calendar days (see revenueByDay).
  */
 export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombinedRevenue[]> {
-  const now = new Date();
-  const since = addDays(now, -(days - 1));
-  since.setUTCHours(0, 0, 0, 0);
+  const window = recentDayWindow(days);
 
   const orders = await db.order.findMany({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    where: { status: OrderStatus.DELIVERED, ...SALES_ONLY, deliveredAt: { gte: window.since } },
     select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
   });
 
   const buckets = new Map<string, Decimal>();
-  for (let i = 0; i < days; i++) {
-    buckets.set(addDays(since, i).toISOString().slice(0, 10), new Decimal(0));
-  }
+  for (const key of window.keys) buckets.set(key, new Decimal(0));
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const key = o.deliveredAt.toISOString().slice(0, 10);
+    const key = dayKeyInZone(o.deliveredAt);
     const current = buckets.get(key);
     if (!current) continue;
     const idrEquiv = o.currency === "USDT" && o.fxRate != null

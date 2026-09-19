@@ -13,6 +13,7 @@
     "./compactFormat": "./src/compactFormat.ts",
     "./customEmoji": "./src/customEmoji.ts",
     "./errors": "./src/errors.ts",
+    "./errorBody": "./src/errorBody.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",
     "./cartComposition": "./src/cartComposition.ts",

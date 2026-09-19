@@ -115,7 +115,7 @@ import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
-import { errorBody } from "../errorBody";
+import { errorBody } from "@app/core/errorBody";
 
 interface CheckAccountResponse {
   available: boolean;

@@ -38,7 +38,7 @@ import {
 import { Decimal } from "@app/core/money";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
-import { errorBody } from "../errorBody";
+import { errorBody } from "@app/core/errorBody";
 import { payView, payState } from "./checkout";
 import { originOk } from "./cart";
 

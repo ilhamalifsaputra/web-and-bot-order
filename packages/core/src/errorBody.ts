@@ -1,6 +1,15 @@
 /**
  * The JSON body a route sends when it refuses a request with an i18n key
- * (whole-branch review F4a).
+ * (whole-branch review F4a; moved here from `apps/storefront/src` by P2 so
+ * `apps/web-admin` serializes its refusals the same way instead of growing a
+ * second copy that can drift).
+ *
+ * It lives in `@app/core` rather than in either app because the two surfaces
+ * differ only in what they do with the result: the storefront runs the key
+ * through `t()` for the buyer's language, while web-admin — deliberately
+ * English-only — looks it up in `client/src/lib/errorMessages.ts`. Both need the
+ * same figures, decided the same way, or the same key quotes a number on one
+ * surface and not the other.
  *
  * ## The bug this closes
  *
@@ -16,8 +25,12 @@
  * more they needed.
  *
  * The fix belongs here rather than in each message because the failure is
- * structural: any key with a placeholder breaks on this surface, including ones
- * added later. (D9 worked around it the only way it could at the time — by
+ * structural: any key with a placeholder breaks on that surface, including ones
+ * added later. web-admin had the same hole, one step milder — its SPA has no
+ * `t()`, so an unmapped key rendered as the bare `error.some_key` and a mapped one
+ * as a hand-written English sentence that could not name the figure at all. An
+ * admin refused a payout was told neither how much was refundable nor which
+ * product ran out. (D9 worked around it the only way it could at the time — by
  * writing the wallet-top-up refusals with no placeholders at all. Those keys stay
  * placeholder-free; `locales.test.ts` pins them, and this change simply means the
  * next such message no longer has to be.)
@@ -36,7 +49,7 @@
  * `formatArgs` is a developer-facing bag — several errors carry fields their copy
  * never mentions (`error.field_required` names none at all, yet is thrown with the
  * offending field's key). Those are of no use to the page and have no business in
- * a buyer-facing response, so the args are intersected with the placeholders the
+ * a response a buyer or an admin reads, so the args are intersected with the placeholders the
  * message actually names, read from the English template. English is the right
  * side to read: `locales.test.ts` pins both languages to the SAME placeholder set,
  * so either answers the question, and English is the fallback `t()` itself uses.
@@ -51,8 +64,8 @@
  * is better missing (leaving `t()` to render the template it was given) than
  * shown as gibberish.
  */
-import type { AppError } from "@app/core/errors";
-import { t } from "@app/core/i18n";
+import type { AppError } from "./errors";
+import { t } from "./i18n";
 
 /** The `{placeholder}` names `key`'s English copy contains. */
 function placeholdersOf(key: string): Set<string> {
@@ -81,9 +94,9 @@ export interface ErrorBody {
 }
 
 /**
- * Serialize an `AppError`/`ValidationError` for the SPA: its key, and the figures
- * its copy names. Use this everywhere a storefront route catches one, so a new
- * message with a placeholder in it works without touching the route.
+ * Serialize an `AppError`/`ValidationError` for a SPA: its key, and the figures
+ * its copy names. Use this everywhere a storefront or web-admin route catches one,
+ * so a new message with a placeholder in it works without touching the route.
  */
 export function errorBody(e: AppError): ErrorBody {
   const wanted = placeholdersOf(e.key);

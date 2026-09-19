@@ -67,7 +67,7 @@ import {
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { resolveBotId, resolveBotUsername } from "../shop";
 import { constantTimeEqual } from "../auth";
-import { errorBody } from "../errorBody";
+import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

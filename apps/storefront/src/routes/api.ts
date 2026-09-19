@@ -55,7 +55,7 @@ import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
-import { errorBody } from "../errorBody";
+import { errorBody } from "@app/core/errorBody";
 
 interface CategoryJson {
   id: number;

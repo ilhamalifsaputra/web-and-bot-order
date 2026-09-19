@@ -3905,8 +3905,10 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [delId, sold.id] });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true, count: 1, skipped: 1 });
-      expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
-      expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
+      const softDeleted = (await prisma.stockItem.findUnique({ where: { id: delId } }))!;
+      expect(softDeleted.deletedAt).not.toBeNull();
+      expect(softDeleted.deletedByAdminId).toBe(seed.adminId);
+      expect((await prisma.stockItem.findUnique({ where: { id: sold.id } }))!.deletedAt).toBeNull();
       const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
       expect(audit.length).toBe(1);
       expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
@@ -3979,7 +3981,9 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
       expect(res.statusCode).toBe(200);
-      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).toBeNull();
+      const softDeleted = (await prisma.stockItem.findUnique({ where: { id: item.id } }))!;
+      expect(softDeleted.deletedAt).not.toBeNull();
+      expect(softDeleted.deletedByAdminId).toBe(seed.adminId);
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
       expect(audit).toBeTruthy();
       expect((audit!.details ?? "").includes("@")).toBe(false);
@@ -3997,7 +4001,7 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       });
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
       expect(res.statusCode).toBe(409);
-      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).not.toBeNull();
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.deletedAt).toBeNull();
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
       expect(audit).toBeNull();
     });
@@ -4013,6 +4017,17 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, "bad-token", {});
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("soft-deleted stock item", () => {
+    it("is not found for dead, delete, note and reveal (404)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      await prisma.stockItem.update({ where: { id: item.id }, data: { deletedAt: new Date() } });
+      for (const action of ["dead", "delete", "note", "reveal"]) {
+        const res = await postJson(`/api/stock/item/${item.id}/${action}`, seed.cookie, seed.csrf, { note: "x", csrf_token: seed.csrf });
+        expect(res.statusCode, action).toBe(404);
+      }
     });
   });
 

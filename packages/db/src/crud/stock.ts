@@ -42,6 +42,7 @@ export async function bulkAddStock(
   const existingRows = await db.stockItem.findMany({
     where: {
       productId,
+      deletedAt: null,
       status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
     },
     select: { credentials: true },
@@ -70,7 +71,7 @@ export async function bulkAddStock(
  */
 export async function markStockDead(db: Db, stockId: number, note: string): Promise<number> {
   const res = await db.stockItem.updateMany({
-    where: { id: stockId, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
+    where: { id: stockId, deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
     data: { status: StockStatus.DEAD, note },
   });
   return res.count;
@@ -88,40 +89,45 @@ export async function bulkMarkStockDead(
 ): Promise<number> {
   if (!ids.length) return 0;
   const res = await db.stockItem.updateMany({
-    where: { id: { in: ids }, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
+    where: { id: { in: ids }, deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
     data: { status: StockStatus.DEAD, note },
   });
   return res.count;
 }
 
 /**
- * Hard-delete the selected stock rows. Two guards keep fulfilled-order history
- * intact: SOLD rows are never removed, and any row referenced by an order item
- * is skipped (so a delivered credential can never be deleted out from under an
- * order). Returns the number actually deleted. Idempotent on an empty list.
+ * Soft-delete the selected stock rows (sets `deletedAt`/`deletedByAdminId`;
+ * the row stays for the audit trail and every read filters it out). Two
+ * guards keep fulfilled-order history intact: SOLD rows are never removed,
+ * and any row referenced by an order item is skipped (so a delivered
+ * credential can never be deleted out from under an order). Already-deleted
+ * rows are left untouched. Returns the number actually deleted. Idempotent on
+ * an empty list.
  */
-export async function bulkDeleteStock(db: Db, ids: number[]): Promise<number> {
+export async function bulkDeleteStock(db: Db, ids: number[], adminId: number): Promise<number> {
   if (!ids.length) return 0;
-  const res = await db.stockItem.deleteMany({
+  const res = await db.stockItem.updateMany({
     where: {
       id: { in: ids },
+      deletedAt: null,
       status: { not: StockStatus.SOLD },
       orderItems: { none: {} },
     },
+    data: { deletedAt: new Date(), deletedByAdminId: adminId },
   });
   return res.count;
 }
 
 /**
- * Hard-delete one stock row. Same guard as bulkDeleteStock: refuses a SOLD
- * row or one referenced by an order item (a delivered credential must
- * never be deleted out from under an order). Returns true if the row was
- * actually deleted, false if the guard rejected it or the row doesn't
- * exist.
+ * Soft-delete one stock row. Same guard as bulkDeleteStock: refuses a SOLD
+ * row, one referenced by an order item, or one already deleted. Returns true
+ * if the row was actually deleted, false if the guard rejected it or the row
+ * doesn't exist.
  */
-export async function deleteStockItem(db: Db, stockId: number): Promise<boolean> {
-  const res = await db.stockItem.deleteMany({
-    where: { id: stockId, status: { not: StockStatus.SOLD }, orderItems: { none: {} } },
+export async function deleteStockItem(db: Db, stockId: number, adminId: number): Promise<boolean> {
+  const res = await db.stockItem.updateMany({
+    where: { id: stockId, deletedAt: null, status: { not: StockStatus.SOLD }, orderItems: { none: {} } },
+    data: { deletedAt: new Date(), deletedByAdminId: adminId },
   });
   return res.count === 1;
 }
@@ -133,7 +139,7 @@ export async function deleteStockItem(db: Db, stockId: number): Promise<boolean>
  */
 export async function listAvailableCredentials(db: Db, productId: number): Promise<string[]> {
   const rows = await db.stockItem.findMany({
-    where: { productId, status: StockStatus.AVAILABLE },
+    where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
     orderBy: { id: "asc" },
     select: { credentials: true },
   });
@@ -148,14 +154,14 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
  * attribute it to. Returns null if the id doesn't exist.
  */
 export async function revealStockCredentials(db: Db, stockId: number): Promise<string | null> {
-  const item = await db.stockItem.findUnique({ where: { id: stockId }, select: { credentials: true } });
+  const item = await db.stockItem.findFirst({ where: { id: stockId, deletedAt: null }, select: { credentials: true } });
   if (!item) return null;
   return decryptCredentials(item.credentials);
 }
 
 export function listStockItemsForProduct(db: Db, productId: number, limit = 30) {
   return db.stockItem.findMany({
-    where: { productId },
+    where: { productId, deletedAt: null },
     orderBy: [{ status: "asc" }, { id: "asc" }],
     take: limit,
   });
@@ -163,7 +169,7 @@ export function listStockItemsForProduct(db: Db, productId: number, limit = 30) 
 
 export async function countAvailableStock(db: Db, productId: number): Promise<number> {
   return db.stockItem.count({
-    where: { productId, status: StockStatus.AVAILABLE },
+    where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
   });
 }
 
@@ -183,7 +189,7 @@ export async function availableStockCountsByDenomination(
 
   const rows = await db.stockItem.groupBy({
     by: ["productId"],
-    where: { productId: { in: denominationIds }, status: StockStatus.AVAILABLE },
+    where: { productId: { in: denominationIds }, deletedAt: null, status: StockStatus.AVAILABLE },
     _count: true,
   });
   for (const r of rows) {
@@ -207,13 +213,13 @@ export async function allocateOneAvailableStock(
 ) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = await db.stockItem.findFirst({
-      where: { productId, status: StockStatus.AVAILABLE },
+      where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
       orderBy: { id: "asc" },
     });
     if (!candidate) return null;
 
     const res = await db.stockItem.updateMany({
-      where: { id: candidate.id, status: StockStatus.AVAILABLE },
+      where: { id: candidate.id, deletedAt: null, status: StockStatus.AVAILABLE },
       data: {
         status: StockStatus.RESERVED,
         orderId,
@@ -228,9 +234,10 @@ export async function allocateOneAvailableStock(
   return null;
 }
 
+/** A soft-deleted row reads as not found, so route guards need no extra check. */
 export function getStockItem(db: Db, stockId: number) {
-  return db.stockItem.findUnique({
-    where: { id: stockId },
+  return db.stockItem.findFirst({
+    where: { id: stockId, deletedAt: null },
     include: { product: true },
   });
 }
@@ -245,6 +252,7 @@ export async function stockStatusCounts(
 ): Promise<Record<number, { available: number; reserved: number; sold: number; dead: number }>> {
   const rows = await db.stockItem.groupBy({
     by: ["productId", "status"],
+    where: { deletedAt: null },
     _count: { id: true },
   });
   const result: Record<
@@ -268,7 +276,7 @@ export async function stockStatusCountsForProduct(
 ): Promise<{ available: number; reserved: number; sold: number; dead: number }> {
   const rows = await db.stockItem.groupBy({
     by: ["status"],
-    where: { productId },
+    where: { productId, deletedAt: null },
     _count: { id: true },
   });
   const result = { available: 0, reserved: 0, sold: 0, dead: 0 };
@@ -287,7 +295,7 @@ export function listStockItemsForProductPage(
   opts: { limit: number; offset: number },
 ) {
   return db.stockItem.findMany({
-    where: { productId, status: { in: statuses } },
+    where: { productId, deletedAt: null, status: { in: statuses } },
     orderBy: { id: "asc" },
     take: opts.limit,
     skip: opts.offset,
@@ -301,7 +309,7 @@ export async function countStockItemsForStatuses(
   statuses: StockStatus[],
 ): Promise<number> {
   return db.stockItem.count({
-    where: { productId, status: { in: statuses } },
+    where: { productId, deletedAt: null, status: { in: statuses } },
   });
 }
 
@@ -321,7 +329,7 @@ export async function searchStockCredentials(
   query: string,
 ) {
   const rows = await db.stockItem.findMany({
-    where: { productId, status: { in: statuses } },
+    where: { productId, deletedAt: null, status: { in: statuses } },
     orderBy: { id: "asc" },
   });
   const q = query.toLowerCase();

@@ -1,5 +1,5 @@
 /**
- * Admin stock maintenance — hard-delete selected items and export the
+ * Admin stock maintenance — soft-delete selected items and export the
  * remaining (AVAILABLE) credentials for download. SOLD rows and anything tied
  * to an order item are never deleted, so fulfilled-order history stays intact.
  */
@@ -32,14 +32,18 @@ const idsFor = async (productId: number, status: string) =>
   );
 
 describe("bulkDeleteStock", () => {
-  it("hard-deletes selected AVAILABLE rows and returns the count", async () => {
+  it("soft-deletes selected AVAILABLE rows (deletedAt + deletedByAdminId) and returns the count", async () => {
     const { product } = sample;
     const ids = (await idsFor(product.id, StockStatus.AVAILABLE)).slice(0, 2);
 
-    const deleted = await bulkDeleteStock(prisma, ids);
+    const deleted = await bulkDeleteStock(prisma, ids, sample.user.id);
 
     expect(deleted).toBe(2);
-    expect(await prisma.stockItem.count({ where: { productId: product.id } })).toBe(3);
+    // Rows stay in the table (soft delete); only the live count drops.
+    expect(await prisma.stockItem.count({ where: { productId: product.id } })).toBe(5);
+    expect(await prisma.stockItem.count({ where: { productId: product.id, deletedAt: null } })).toBe(3);
+    const gone = await prisma.stockItem.findMany({ where: { id: { in: ids } } });
+    expect(gone.every((r) => r.deletedAt !== null && r.deletedByAdminId === sample.user.id)).toBe(true);
   });
 
   it("never deletes SOLD rows even when selected", async () => {
@@ -50,10 +54,10 @@ describe("bulkDeleteStock", () => {
       data: { status: StockStatus.SOLD, soldAt: new Date() },
     });
 
-    const deleted = await bulkDeleteStock(prisma, [soldId!, rest[0]!]);
+    const deleted = await bulkDeleteStock(prisma, [soldId!, rest[0]!], sample.user.id);
 
     expect(deleted).toBe(1); // only the AVAILABLE one
-    expect(await prisma.stockItem.findUnique({ where: { id: soldId } })).not.toBeNull();
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: soldId } })).deletedAt).toBeNull();
   });
 
   it("never deletes rows tied to an order item", async () => {
@@ -79,13 +83,13 @@ describe("bulkDeleteStock", () => {
     });
     expect(order.id).toBeGreaterThan(0);
 
-    const deleted = await bulkDeleteStock(prisma, [stockId!]);
+    const deleted = await bulkDeleteStock(prisma, [stockId!], sample.user.id);
 
     expect(deleted).toBe(0);
-    expect(await prisma.stockItem.findUnique({ where: { id: stockId } })).not.toBeNull();
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: stockId } })).deletedAt).toBeNull();
   });
 
-  it("deletes DEAD rows that have no order link", async () => {
+  it("soft-deletes DEAD rows that have no order link", async () => {
     const { product } = sample;
     const [deadId] = await idsFor(product.id, StockStatus.AVAILABLE);
     await prisma.stockItem.update({
@@ -93,23 +97,42 @@ describe("bulkDeleteStock", () => {
       data: { status: StockStatus.DEAD, note: "bad" },
     });
 
-    expect(await bulkDeleteStock(prisma, [deadId!])).toBe(1);
+    expect(await bulkDeleteStock(prisma, [deadId!], sample.user.id)).toBe(1);
   });
 
   it("returns 0 for an empty id list", async () => {
-    expect(await bulkDeleteStock(prisma, [])).toBe(0);
+    expect(await bulkDeleteStock(prisma, [], sample.user.id)).toBe(0);
+  });
+
+  it("does not touch an already soft-deleted row (keeps the original deletedAt)", async () => {
+    const { product } = sample;
+    const [id] = await idsFor(product.id, StockStatus.AVAILABLE);
+    expect(await bulkDeleteStock(prisma, [id!], sample.user.id)).toBe(1);
+    const first = await prisma.stockItem.findUniqueOrThrow({ where: { id } });
+    expect(await bulkDeleteStock(prisma, [id!], sample.user.id)).toBe(0);
+    const second = await prisma.stockItem.findUniqueOrThrow({ where: { id } });
+    expect(second.deletedAt).toEqual(first.deletedAt);
   });
 });
 
 describe("deleteStockItem", () => {
-  it("hard-deletes a plain AVAILABLE item and returns true", async () => {
+  it("soft-deletes a plain AVAILABLE item and returns true", async () => {
     const { product } = sample;
     const [id] = await idsFor(product.id, StockStatus.AVAILABLE);
 
-    const deleted = await deleteStockItem(prisma, id!);
+    const deleted = await deleteStockItem(prisma, id!, sample.user.id);
 
     expect(deleted).toBe(true);
-    expect(await prisma.stockItem.findUnique({ where: { id } })).toBeNull();
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id } });
+    expect(row.deletedAt).not.toBeNull();
+    expect(row.deletedByAdminId).toBe(sample.user.id);
+  });
+
+  it("returns false for an already soft-deleted item", async () => {
+    const { product } = sample;
+    const [id] = await idsFor(product.id, StockStatus.AVAILABLE);
+    expect(await deleteStockItem(prisma, id!, sample.user.id)).toBe(true);
+    expect(await deleteStockItem(prisma, id!, sample.user.id)).toBe(false);
   });
 
   it("refuses a SOLD item — returns false, row still exists", async () => {
@@ -120,10 +143,10 @@ describe("deleteStockItem", () => {
       data: { status: StockStatus.SOLD, soldAt: new Date() },
     });
 
-    const deleted = await deleteStockItem(prisma, soldId!);
+    const deleted = await deleteStockItem(prisma, soldId!, sample.user.id);
 
     expect(deleted).toBe(false);
-    expect(await prisma.stockItem.findUnique({ where: { id: soldId } })).not.toBeNull();
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: soldId } })).deletedAt).toBeNull();
   });
 
   it("refuses an item tied to an order item — returns false, row still exists", async () => {
@@ -149,14 +172,14 @@ describe("deleteStockItem", () => {
     });
     expect(order.id).toBeGreaterThan(0);
 
-    const deleted = await deleteStockItem(prisma, stockId!);
+    const deleted = await deleteStockItem(prisma, stockId!, sample.user.id);
 
     expect(deleted).toBe(false);
-    expect(await prisma.stockItem.findUnique({ where: { id: stockId } })).not.toBeNull();
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: stockId } })).deletedAt).toBeNull();
   });
 
   it("returns false for a non-existent id", async () => {
-    expect(await deleteStockItem(prisma, 999999)).toBe(false);
+    expect(await deleteStockItem(prisma, 999999, sample.user.id)).toBe(false);
   });
 });
 

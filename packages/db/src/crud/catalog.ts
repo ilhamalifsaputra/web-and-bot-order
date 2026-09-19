@@ -556,7 +556,7 @@ export async function lowStockDenominations(
   });
   const counts = await db.stockItem.groupBy({
     by: ["productId"],
-    where: { status: StockStatus.AVAILABLE },
+    where: { deletedAt: null, status: StockStatus.AVAILABLE },
     _count: { id: true },
   });
   const map = new Map<number, number>();

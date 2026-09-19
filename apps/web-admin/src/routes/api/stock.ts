@@ -321,7 +321,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true, count });
   });
 
-  // Hard-delete selected stock items (one writer, audited once). The crud guard
+  // Soft-delete selected stock items (one writer, audited once). The crud guard
   // refuses SOLD rows and anything tied to an order item, so the count returned
   // may be < the number selected.
   app.post("/api/stock/:productId/bulk-delete", { preHandler: csrfProtect }, async (req, reply) => {
@@ -330,7 +330,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
 
-    const count = await bulkDeleteStock(prisma, ids);
+    const count = await bulkDeleteStock(prisma, ids, req.admin!.userId);
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_bulk_delete",
@@ -363,7 +363,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true });
   });
 
-  // Hard-delete ONE stock item — the single-item sibling of bulk-delete above,
+  // Soft-delete ONE stock item — the single-item sibling of bulk-delete above,
   // filling a gap where only bulk selection could delete a row. Same guard as
   // bulkDeleteStock: refuses a SOLD row or one tied to an order item. Uses 409
   // (not 422) to match `.../dead` just above and this file's other
@@ -378,7 +378,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
-    const deleted = await deleteStockItem(prisma, stockId);
+    const deleted = await deleteStockItem(prisma, stockId, req.admin!.userId);
     if (!deleted) {
       return reply.code(409).send({ error: "This item has been sold or is linked to an order and cannot be deleted." });
     }

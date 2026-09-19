@@ -21,6 +21,7 @@ import {
   setFxRateFetcher,
   USD_IDR_RATE_KEY,
   USD_IDR_RATE_UPDATED_AT_KEY,
+  USD_IDR_MARKET_RATE_KEY,
 } from "@app/db";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
@@ -2397,6 +2398,9 @@ describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => 
 
   it("DMs every admin when the market answers with a rate outside the sanity band", async () => {
     await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    // D10: the deviation cap measures the market against ITS last figure; with no
+    // reference saved the cap is skipped once (the deliberate first-refresh grace).
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000");
     await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
     setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
 
@@ -2459,6 +2463,7 @@ describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => 
   // teaches the admins to ignore the category.
   it("tells the admins about a rejection episode exactly once, however many ticks run", async () => {
     await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000"); // D10: arm the delta cap
     await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
     setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
 
@@ -2476,6 +2481,7 @@ describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => 
 
   it("re-arms after a good tick, so a second episode gets its own DM", async () => {
     await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000"); // D10: arm the delta cap
     await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
     const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
     try {

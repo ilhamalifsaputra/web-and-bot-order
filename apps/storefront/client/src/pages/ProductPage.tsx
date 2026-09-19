@@ -24,6 +24,7 @@ import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -147,7 +148,7 @@ export default function ProductPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);
-  const [cartErrorKey, setCartErrorKey] = useState<string | null>(null);
+  const [cartError, setCartError] = useState<unknown>(null);
   const isDesktop = useIsDesktop();
   // The live summary card is the sticky bar's sentinel: the bar exists only to
   // stand in for the real buy controls once they've scrolled away, so it stays
@@ -182,21 +183,21 @@ export default function ProductPage() {
 
   const addMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartErrorKey(null),
+    onMutate: () => setCartError(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/cart");
     },
-    onError: (err) => setCartErrorKey((err as Error).message),
+    onError: (err) => setCartError(err),
   });
   const buyMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartErrorKey(null),
+    onMutate: () => setCartError(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/checkout");
     },
-    onError: (err) => setCartErrorKey((err as Error).message),
+    onError: (err) => setCartError(err),
   });
   const restockMutation = useMutation({
     mutationFn: (denominationId: number) => apiPost(`/api/v1/restock/${denominationId}`, {}),
@@ -384,9 +385,9 @@ export default function ProductPage() {
             )}
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
-            {cartErrorKey && (
+            {cartError !== null && (
               <Alert variant="banner" tone="error" className="mt-3 mb-0">
-                {t(cartErrorKey)}
+                {tError(cartError)}
               </Alert>
             )}
 

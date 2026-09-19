@@ -67,6 +67,7 @@ import {
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { resolveBotId, resolveBotUsername } from "../shop";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "../errorBody";
 import { originOk } from "./cart";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -296,7 +297,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       try {
         await updateOrderCustomerData(prisma, order.id, req.body?.customer_data);
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
       return reply.send({ ok: true });
@@ -449,7 +450,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       try {
         ({ message, attachments, orderCode: orderCodeInput } = await parseTicketMultipart(req));
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
     } else {
@@ -539,7 +540,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         orderCodeInput = parsed.orderCode;
         attachments = parsed.attachments;
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
     } else {
@@ -627,7 +628,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         try {
           ({ message, attachments } = await parseTicketMultipart(req));
         } catch (e) {
-          if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+          if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
           throw e;
         }
       } else {

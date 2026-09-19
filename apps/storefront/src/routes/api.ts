@@ -55,6 +55,7 @@ import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "../errorBody";
 
 interface CategoryJson {
   id: number;
@@ -674,7 +675,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
         return respond(201, withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
-          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
         }
         throw e;
       }
@@ -719,7 +720,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
       }
       throw e;
     }

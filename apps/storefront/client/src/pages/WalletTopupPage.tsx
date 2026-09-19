@@ -28,6 +28,7 @@ import { AlertTriangle, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
 import { t } from "../lib/i18n";
+import { humanError } from "../lib/errors";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
@@ -43,12 +44,9 @@ import { cn } from "../components/ui/cn";
 
 type Currency = "IDR" | "USDT";
 
-/** Same i18n-key-vs-developer-fallback split CheckoutPage.tsx's humanError
- * uses — the server's own failures arrive as i18n keys, everything else
- * (network error, unexpected status) becomes the generic apology. */
-function humanError(message: string): string {
-  return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
-}
+/* `humanError` now comes from lib/errors.ts and takes the ERROR rather than its
+ * message (whole-branch review F4a) — same i18n-key-vs-developer-fallback split
+ * as before, plus the `{placeholder}` figures the rejection carried. */
 
 interface MethodOption {
   value: string;
@@ -198,7 +196,7 @@ export default function WalletTopupPage() {
   const [currency, setCurrency] = useState<Currency>(preselect);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string | null>(null);
-  const [submitErrorKey, setSubmitErrorKey] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<unknown>(null);
 
   // Re-pick the default method whenever the currency, the enabled-gateway
   // payload, or the amount changes, mirroring CheckoutPage's defaultMethod
@@ -221,7 +219,7 @@ export default function WalletTopupPage() {
     mutationFn: () =>
       apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount, method }),
     onSuccess: (resp) => navigate(`/wallet/topup/${resp.orderCode}/pay`),
-    onError: (err) => setSubmitErrorKey((err as Error).message),
+    onError: (err) => setSubmitError(err),
   });
 
   if (!data) {
@@ -245,7 +243,7 @@ export default function WalletTopupPage() {
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
-          description={humanError((error as Error).message)}
+          description={humanError(error)}
           action={{ label: t("web.account_title"), to: "/account" }}
         />
       </>
@@ -269,9 +267,9 @@ export default function WalletTopupPage() {
     <div className="max-w-lg mx-auto">
       <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
 
-      {submitErrorKey && (
+      {submitError !== null && (
         <Alert variant="banner" tone="error">
-          {humanError(submitErrorKey)}
+          {humanError(submitError)}
         </Alert>
       )}
 

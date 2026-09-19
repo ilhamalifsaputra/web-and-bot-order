@@ -257,6 +257,47 @@ describe("POST /api/v1/checkout — a cart a discount alone reduced to Rp0", () 
   });
 });
 
+// Whole-branch review F4a. `error.amount_below_rail_minimum` reads "That total is
+// below the minimum this payment method accepts ({min} {currency})." The bot fills
+// those braces from the ValidationError's `formatArgs`; the storefront threw them
+// away, so the buyer read the placeholders verbatim. The args now travel with the
+// key in the response body, for every route in this app and every key that has
+// any — the whole point of fixing it in the API layer rather than per message.
+describe("POST /api/v1/checkout — a refusal carries the figures its wording names", () => {
+  it("answers 400 with the rail-minimum key AND the {min}/{currency} args that fill it", async () => {
+    await setSetting(prisma, TOKOPAY_MIN_AMOUNT_KEY, "100000"); // > Rp40.000
+    await addToCart(prisma, userId, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "qris" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({
+      error: "error.amount_below_rail_minimum",
+      // Strings, not Decimals or numbers: this is JSON on its way to a
+      // `{placeholder}` substitution, and the figure an admin typed is the figure
+      // the buyer must be shown.
+      error_args: { min: "100000", currency: "IDR" },
+    });
+  });
+
+  it("omits error_args entirely for a key that names no placeholder", async () => {
+    // Nothing in the cart: `error.cart_empty` is a bare sentence, so a body with
+    // an empty `error_args` object would be noise every caller has to ignore.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "qris" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error_args).toBeUndefined();
+  });
+});
+
 describe("GET /api/v1/checkout — payment methods the total cannot clear are not offered", () => {
   it("offers both rails when the total clears every minimum", async () => {
     await addToCart(prisma, userId, denomId, 1);

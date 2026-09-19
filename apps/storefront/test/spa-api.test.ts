@@ -1927,6 +1927,11 @@ describe("POST /api/v1/checkout — manual_with_info customer_data revalidation"
       payload: { method: "bybit", customer_data: [{ game_id: "player1" }, { game_id: "" }] },
     });
     expect(res.statusCode).toBe(400);
+    // Exactly `{ error }`, with no `error_args`: this refusal is thrown with the
+    // offending field's key in `formatArgs`, but its copy names no placeholder, so
+    // the body carries nothing a buyer-facing sentence could use (whole-branch
+    // review F4a — `errorBody` intersects the args with the message's own
+    // placeholders rather than forwarding the whole developer-facing bag).
     expect(res.json()).toEqual({ error: "error.field_required" });
   });
 

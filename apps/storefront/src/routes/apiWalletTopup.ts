@@ -37,6 +37,7 @@ import {
 import { Decimal } from "@app/core/money";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "../errorBody";
 import { payView, payState } from "./checkout";
 import { originOk } from "./cart";
 
@@ -232,7 +233,7 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       );
       return reply.code(201).send({ orderCode: order.orderCode });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+      if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
       throw e;
     }
   });

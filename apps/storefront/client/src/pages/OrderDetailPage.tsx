@@ -45,6 +45,7 @@ import { apiGet, apiPatch } from "../api/client";
 import type { OrderDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t, currentLang } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -100,19 +101,21 @@ export default function OrderDetailPage() {
 
   const [editMode, setEditMode] = useState(false);
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
-  const [infoErrorKey, setInfoErrorKey] = useState<string | null>(null);
+  // The rejection itself: a field error like `error.text_too_long` quotes the
+  // limit it was judged by, and that figure rides on the Error (F4a).
+  const [infoError, setInfoError] = useState<unknown>(null);
 
   const infoMutation = useMutation({
     mutationFn: (customerData: Array<Record<string, string>>) =>
       apiPatch<{ ok: boolean }>(`/api/v1/account/orders/${code}/info`, { customer_data: customerData }),
     onSuccess: () => {
       setEditMode(false);
-      setInfoErrorKey(null);
+      setInfoError(null);
       void refetch();
     },
     onError: (err) => {
       const key = (err as Error).message;
-      setInfoErrorKey(key);
+      setInfoError(err);
       void refetch();
       // The mid-edit race: the order left PROCESSING while the buyer was
       // editing (e.g. an admin fulfilled it). Editing is now locked — exit
@@ -168,13 +171,13 @@ export default function OrderDetailPage() {
 
   function startEdit(): void {
     setAnswers(Array.from({ length: qty }, (_, unitIdx) => ({ ...(order.customer_data[unitIdx] ?? {}) })));
-    setInfoErrorKey(null);
+    setInfoError(null);
     setEditMode(true);
   }
 
   function cancelEdit(): void {
     setEditMode(false);
-    setInfoErrorKey(null);
+    setInfoError(null);
   }
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
@@ -315,9 +318,9 @@ export default function OrderDetailPage() {
             )}
           </div>
 
-          {infoErrorKey && (
+          {infoError !== null && (
             <Alert variant="banner" tone="error" className="mt-3">
-              {t(infoErrorKey)}
+              {tError(infoError)}
             </Alert>
           )}
 

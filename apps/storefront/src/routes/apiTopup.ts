@@ -115,6 +115,7 @@ import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "../errorBody";
 
 interface CheckAccountResponse {
   available: boolean;
@@ -439,7 +440,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         );
       } catch (e) {
         if (e instanceof ValidationError) {
-          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
         }
         throw e;
       }
@@ -472,7 +473,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
       }
       throw e;
     }

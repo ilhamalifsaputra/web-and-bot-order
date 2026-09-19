@@ -4,7 +4,10 @@ import { Decimal } from "@app/core/money";
 import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { getSetting, setSetting, deleteSetting } from "./settings";
+import { getSetting, setSetting, deleteSetting, __clearSettingsCacheForTests } from "./settings";
+import { MIN_ORDER_AMOUNT_IDR_KEY } from "./orderMinimums";
+import { PAYDISINI_MIN_AMOUNT_KEY } from "./_minAmount";
+import { finalizeOrderPayment } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { cancelOrder, createOrderDirect } from "./orders";
@@ -287,6 +290,81 @@ describe("createWalletTopupOrder — min/max bound enforcement", () => {
       ),
     ).rejects.toMatchObject({ key: "error.wallet_topup_above_max" });
     expect(await prisma.order.count()).toBe(0);
+  });
+});
+
+/**
+ * Whole-branch review D9 — a top-up refused by the SHOP-WIDE rail minimum used
+ * to be told to add more items.
+ *
+ * `min_order_amount_idr` is a different floor from
+ * `wallet_topup_min_amount_idr` above: it is the shop's "we will not ask a
+ * gateway to collect less than this" figure, enforced inside
+ * `finalizeOrderPayment`, which an IDR top-up shares with product checkout. The
+ * floor is still shared on purpose — it is a property of the rail, not of what
+ * is being bought — but the sentence is not: a top-up buyer has no cart, so
+ * "Add more items" was the one instruction they could not follow.
+ */
+describe("createWalletTopupOrder — an IDR top-up gets top-up wording from the rail minimum (D9)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    // Well clear of the top-up's own minimum, so the failure under test is
+    // unambiguously the shop-wide rail floor and not the bound above.
+    await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY);
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+  });
+
+  it("refuses with the top-up sentence, not the product-order one, and creates no order", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "5000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      // The figure that failed is still carried, even though this key's copy
+      // does not print it — the storefront surfaces the key alone.
+      formatArgs: { min: "10000", currency: OrderCurrency.IDR },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("names a rail's OWN minimum the same way a product order does", async () => {
+    await setSetting(prisma, PAYDISINI_MIN_AMOUNT_KEY, "25000");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "5000", currency: "IDR", method: PaymentMethod.PAYDISINI }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      formatArgs: { min: "25000", currency: OrderCurrency.IDR },
+    });
+  });
+
+  it("uses the zero-amount backstop's top-up wording for a sub-Rupiah amount", async () => {
+    // With every configured floor cleared, the only check left is "we will not
+    // ask a gateway to collect nothing" — reachable here because the IDR branch
+    // quantizes to whole Rupiah, so Rp0.40 becomes Rp0.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "0.4", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_nothing_to_collect",
+      formatArgs: { currency: OrderCurrency.IDR },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("leaves a PRODUCT order's wording alone — it still has a cart to add to", async () => {
+    const order = await createOrderDirect(prisma, {
+      user: await freshUser(),
+      productId: sample.product.id,
+      quantity: 1,
+    });
+    await expect(
+      finalizeOrderPayment(prisma, order!.id, { currency: OrderCurrency.IDR, method: PaymentMethod.TOKOPAY }),
+    ).rejects.toMatchObject({ key: "error.amount_below_rail_minimum" });
   });
 });
 

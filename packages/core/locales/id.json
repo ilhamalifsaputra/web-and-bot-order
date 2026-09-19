@@ -285,6 +285,8 @@
   "error.wallet_topup_below_min": "Jumlah itu di bawah minimum untuk top up saldo.",
   "error.wallet_topup_above_max": "Jumlah itu melebihi maksimum untuk top up saldo.",
   "error.wallet_topup_invalid_method": "Metode bayar itu tidak tersedia untuk top up saldo — pilih yang lain ya.",
+  "error.wallet_topup_below_rail_minimum": "Jumlah itu di bawah minimum yang diterima metode pembayaran ini. Silakan top up dengan jumlah lebih besar, atau pilih metode pembayaran lain.",
+  "error.wallet_topup_nothing_to_collect": "Jumlah itu terlalu kecil untuk ditagih lewat metode pembayaran ini. Silakan top up dengan jumlah lebih besar.",
   "error.try_again": "⚠ Terjadi kesalahan. Coba lagi.",
   "error.voucher_already_redeemed": "Kamu sudah pernah memakai voucher ini.",
   "error.voucher_expired": "Voucher sudah kedaluwarsa.",

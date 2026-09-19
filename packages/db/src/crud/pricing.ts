@@ -13,7 +13,7 @@ import {
   applyUsdtSpread,
   type FxRateRejection,
 } from "@app/core/fx";
-import { OrderCurrency, PaymentMethod, OrderStatus } from "@app/core/enums";
+import { OrderCurrency, PaymentMethod, OrderStatus, OrderKind } from "@app/core/enums";
 import {
   usdtFromIdr,
   quantizeMoney,
@@ -913,6 +913,14 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   // The central-IDR amount before any unique-cents noise.
   const baseIdr = new Decimal(order.totalAmount).minus(order.uniqueCents);
 
+  // Which wording a rail-minimum refusal should use (whole-branch review D9).
+  // Read off the row rather than taken as an argument on purpose: an IDR wallet
+  // top-up reaches this function through `createWalletTopupOrder`, and a caller
+  // that had to remember to declare itself would eventually forget and send a
+  // top-up buyer the "add more items" sentence again. Nothing about the floor
+  // itself changes — see `RailMinimumPurpose`.
+  const minimumPurpose = order.kind === OrderKind.WALLET_TOPUP ? "wallet_topup" : "order";
+
   if (choice.currency === OrderCurrency.IDR) {
     const idrTotal = quantizeMoney(baseIdr, 0);
     // M11 / audit P0-1. Runs BEFORE the update below, so a rejected order keeps
@@ -925,6 +933,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       currency: OrderCurrency.IDR,
       idrAmount: idrTotal,
       railAmount: idrTotal,
+      purpose: minimumPurpose,
     });
     await db.order.update({
       where: { id: orderId },
@@ -982,6 +991,11 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       currency: OrderCurrency.USDT,
       idrAmount: railIdr,
       railAmount: railUsdt,
+      // No USDT top-up reaches here today (`createWalletTopupOrder` sends those
+      // to `finalizeWalletTopupPayment`, which has no rail-minimum guard of its
+      // own), but the purpose is derived from the row, so the day one does it
+      // gets the right sentence instead of the cart's.
+      purpose: minimumPurpose,
     });
   }
   // WALLET orders are pure ledger entries — there is no on-chain/gateway

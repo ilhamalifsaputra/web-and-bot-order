@@ -38,6 +38,41 @@ describe("locale parity (en ↔ id)", () => {
     }
     expect(mismatches).toEqual({});
   });
+
+  /**
+   * Whole-branch review D9. These two keys are shown to a wallet-top-up buyer
+   * refused by the shop-wide rail minimum, and the storefront reaches them
+   * through a path that carries the key alone: its API client throws
+   * `new Error(body.error)`, so the `formatArgs` the guard attached are gone by
+   * the time `t()` runs. A `{placeholder}` in either language would therefore
+   * reach the buyer as literal braces. Their product-checkout twins
+   * (`error.amount_below_rail_minimum`, `error.amount_too_small_for_rail`) are
+   * deliberately NOT listed: those surface in the bot, which does pass
+   * `formatArgs`, and naming the figure there is worth having.
+   */
+  it("the wallet-top-up rail-minimum copy names no placeholder it cannot be given", () => {
+    for (const key of ["error.wallet_topup_below_rail_minimum", "error.wallet_topup_nothing_to_collect"]) {
+      expect(en[key], `${key} missing from en`).toBeTruthy();
+      expect(placeholders(en[key]!), `${key} (en)`).toEqual([]);
+      expect(placeholders(id[key]!), `${key} (id)`).toEqual([]);
+    }
+  });
+
+  /**
+   * The same buyer must not be told to do something a top-up screen cannot do.
+   * The refusal used to be product checkout's, which ends "Add more items" —
+   * there is no cart on a top-up form, so that was the one instruction the
+   * message gave and the one thing the buyer could not follow.
+   */
+  it("the wallet-top-up copy never sends a buyer to a cart", () => {
+    const cartish = /add more items|tambah barang|keranjang|cart/i;
+    for (const [lang, table] of [["en", en], ["id", id]] as const) {
+      for (const [key, value] of Object.entries(table)) {
+        if (!key.startsWith("error.wallet_topup_")) continue;
+        expect(cartish.test(value), `${key} (${lang}) points a top-up buyer at a cart: ${value}`).toBe(false);
+      }
+    }
+  });
 });
 
 /**

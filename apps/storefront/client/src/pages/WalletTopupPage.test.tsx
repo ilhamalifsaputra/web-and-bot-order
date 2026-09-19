@@ -121,6 +121,28 @@ describe("WalletTopupPage", () => {
     expect(alert).toHaveTextContent("That amount is below the minimum for a wallet top-up.");
   });
 
+  // Whole-branch review D9. The shop-wide rail minimum refuses an IDR top-up
+  // through the same guard product checkout uses, and used to hand the buyer
+  // that flow's sentence: "Add more items, or choose a different payment
+  // method." There is no cart here. The replacement copy also has to survive
+  // this surface's plumbing, which throws `new Error(body.error)` and so loses
+  // the error's format arguments — a template with {min} in it would reach the
+  // buyer with the braces still showing.
+  it("renders the top-up rail-minimum refusal without cart wording or unfilled placeholders", async () => {
+    renderTopup(() => baseData);
+    await screen.findByRole("heading", { name: "Top up wallet" });
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "100000" } });
+    (apiPost as Mock).mockRejectedValue(new Error("error.wallet_topup_below_rail_minimum"));
+    fireEvent.click(screen.getByRole("button", { name: "Top up now" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "That amount is below the minimum this payment method accepts. Please top up a larger amount, or choose a different payment method.",
+    );
+    expect(alert).not.toHaveTextContent(/add more items/i);
+    expect(alert.textContent).not.toMatch(/\{\w+\}/);
+  });
+
   it("apologises in plain language when the failure carries no i18n key", async () => {
     renderTopup(() => baseData);
     await screen.findByRole("heading", { name: "Top up wallet" });

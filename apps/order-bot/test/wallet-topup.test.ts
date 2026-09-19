@@ -271,6 +271,27 @@ describe("payTopup* handlers (representative rails)", () => {
     expect(orders).toBe(0);
   });
 
+  // Whole-branch review D9. The shop-wide rail floor (`min_order_amount_idr`)
+  // is enforced inside `finalizeOrderPayment`, which an IDR top-up shares with
+  // product checkout — so the buyer used to be told to "add more items" on a
+  // screen with no cart, right after typing an amount they could simply have
+  // typed larger. This pins the sentence at the surface the buyer actually reads.
+  it("payTopupTokopay refused by the shop-wide rail minimum says to top up more, not to add items", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "IDR", topupAmount: "5000" } },
+    });
+    await walletTopup.payTopupTokopay(ctx);
+
+    const shown = JSON.stringify(sink);
+    expect(shown).toContain("Please top up a larger amount");
+    expect(shown).not.toMatch(/add more items/i);
+    // And nothing was created: the guard runs before finalize writes anything.
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+  });
+
   it("payTopupTokopay refuses a wrong-currency scratch (USDT) instead of creating an IDR order", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");

@@ -660,6 +660,44 @@ Failures are typed (`RailMinimumFailure`, `:183`) and surface as:
   only `currency`, because the floor it fails is "more than zero", which is not
   a configured amount — printing an invented one would misreport it)
 
+#### A wallet top-up gets its own two sentences (review D9)
+
+An IDR wallet top-up reaches this guard through `finalizeOrderPayment`'s IDR
+branch, exactly like a product order, and used to inherit that flow's copy with
+it: *"That total is below the minimum… **Add more items**, or choose a different
+payment method."* There is no cart on a top-up form, so the one instruction the
+message gave was impossible to follow, on the screen where the buyer had just
+typed a number they could simply have typed larger.
+
+`assertOrderTotalClearsRailMinimum` now takes a `purpose`
+(`RailMinimumPurpose`, defaulting to `"order"`) that selects the message pair and
+nothing else. `finalizeOrderPayment` derives it from `order.kind`, not from an
+argument: a caller that had to declare itself would eventually forget, and
+`createWalletTopupOrder` is not the sort of caller worth trusting to remember.
+The top-up pair is `error.wallet_topup_below_rail_minimum` and
+`error.wallet_topup_nothing_to_collect`.
+
+**The floor itself is still shared**, and deliberately. `min_order_amount_idr`
+is the shop's "we will not ask a gateway to collect less than this" figure — a
+property of the rail and the shop, not of what is being bought — and a top-up
+already has its own separate bound in `wallet_topup_min_amount_idr`, checked
+earlier by `createWalletTopupOrder`. A second top-up-specific rail floor would
+give a top-up two floors with nothing to say about which one an admin meant.
+
+**The top-up copy carries no placeholders**, unlike its product twin. The
+storefront surfaces a `ValidationError` as its key alone — its API client throws
+`new Error(body.error)`, dropping `formatArgs` — so a `{min}` in this copy would
+reach the buyer as literal braces. `locales.test.ts` pins that: both keys must
+stay placeholder-free in both languages, and no `error.wallet_topup_*` string may
+mention a cart. `formatArgs` is still populated on the throw, so the bot, the
+logs and the tests can see the figure that failed.
+
+Known gap, not addressed here: neither the bot's nor the storefront's top-up form
+mentions the rail floor in its min/max hint (`wallet.topup_min_hint` /
+`web.wallet_topup_min_hint` read only the top-up bounds), so a buyer can be shown
+"minimum Rp1.000" and still be refused at Rp5.000 by a Rp10.000 rail floor. The
+refusal now at least tells them what to do about it.
+
 ### The zero-value short-circuit
 
 A voucher or bulk rule can cover an order's whole price before wallet credit is

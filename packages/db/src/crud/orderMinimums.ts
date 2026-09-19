@@ -236,25 +236,73 @@ export async function railMinimumFailure(
 }
 
 /**
+ * What the buyer is paying for, which decides only which sentence they are
+ * shown — never which floor is enforced (whole-branch review D9).
+ *
+ * An IDR wallet top-up reaches this guard through `finalizeOrderPayment`'s IDR
+ * branch, exactly like a product order, and used to inherit the product-order
+ * copy with it: "That total is below the minimum... Add more items, or choose a
+ * different payment method." There is no cart and there are no items to add, so
+ * the one instruction the message gave was impossible to follow, on a screen
+ * where the buyer had just typed a number they could simply have typed larger.
+ *
+ * The FLOOR is deliberately still shared. `min_order_amount_idr` is the
+ * shop-wide "we will not ask a gateway to collect less than this" figure, which
+ * is a property of the rail and the shop, not of what is being bought — and a
+ * top-up already has its own separate bound in
+ * `wallet_topup_min_amount_idr`, checked earlier by `createWalletTopupOrder`.
+ * Splitting the rail floor as well would give a top-up two floors with nothing
+ * to say about which of them an admin meant.
+ */
+export type RailMinimumPurpose = "order" | "wallet_topup";
+
+/** The two sentences each purpose can produce: the configured-floor failure and
+ * the zero-amount backstop. Kept as one table so a future purpose cannot be
+ * added with half its copy missing — both locales carry every key here. */
+const RAIL_MINIMUM_MESSAGE_KEYS: Readonly<
+  Record<RailMinimumPurpose, { below_minimum: string; nothing_to_collect: string }>
+> = {
+  order: {
+    below_minimum: "error.amount_below_rail_minimum",
+    nothing_to_collect: "error.amount_too_small_for_rail",
+  },
+  wallet_topup: {
+    below_minimum: "error.wallet_topup_below_rail_minimum",
+    nothing_to_collect: "error.wallet_topup_nothing_to_collect",
+  },
+};
+
+/**
  * Throw when `railAmount`/`idrAmount` is below the chosen rail's floor. Called
  * by `finalizeOrderPayment` BEFORE it writes anything, so a rejected order is
  * left exactly as its creator made it — no half-finalized row with a payment
  * method, expiry or reference pointing at a gateway that was never going to
  * accept it.
+ *
+ * `purpose` chooses the wording only (see {@link RailMinimumPurpose}); it
+ * defaults to `"order"`, so every existing caller keeps the sentence it had.
  */
 export async function assertOrderTotalClearsRailMinimum(
   db: Db,
   args: {
     method?: string | null;
     currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
+    purpose?: RailMinimumPurpose;
   } & RailAmounts,
 ): Promise<void> {
   const failure = await railMinimumFailure(db, args);
   if (!failure) return;
+  const keys = RAIL_MINIMUM_MESSAGE_KEYS[args.purpose ?? "order"];
   if (failure.reason === "nothing_to_collect") {
-    throw new ValidationError("error.amount_too_small_for_rail", { currency: failure.currency });
+    throw new ValidationError(keys.nothing_to_collect, { currency: failure.currency });
   }
-  throw new ValidationError("error.amount_below_rail_minimum", {
+  // The top-up wording carries no {min}/{currency} placeholders — the
+  // storefront surfaces a ValidationError as its key alone (its API client
+  // throws `new Error(body.error)`, dropping `formatArgs`), so a top-up buyer
+  // there would read the braces verbatim. `formatArgs` is populated for both
+  // purposes regardless: the bot substitutes what its template asks for, and
+  // tests and callers can still see the figure that failed.
+  throw new ValidationError(keys.below_minimum, {
     min: failure.minimum.amount.toString(),
     currency: failure.minimum.currency,
   });

@@ -991,10 +991,10 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       currency: OrderCurrency.USDT,
       idrAmount: railIdr,
       railAmount: railUsdt,
-      // No USDT top-up reaches here today (`createWalletTopupOrder` sends those
-      // to `finalizeWalletTopupPayment`, which has no rail-minimum guard of its
-      // own), but the purpose is derived from the row, so the day one does it
-      // gets the right sentence instead of the cart's.
+      // No USDT top-up reaches here (`createWalletTopupOrder` sends those to
+      // `finalizeWalletTopupPayment`, which runs this same guard itself — see
+      // F3 there), but the purpose is derived from the row, so the day one does
+      // it gets the right sentence instead of the cart's.
       purpose: minimumPurpose,
     });
   }

@@ -25,6 +25,7 @@ import {
   countUserPendingOrders,
   createWalletTopupOrder,
   resolveWalletTopupLimits,
+  walletTopupClearsRailMinimum,
   hasPendingWalletTopupOrder,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
@@ -173,22 +174,80 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   await showTopupMethods(ctx, currency, amount!);
 }
 
+/**
+ * Which rails a top-up in `currency` can be offered on.
+ *
+ * Two questions, deliberately kept in one place so the amount prompt and the
+ * gateway picker can never disagree about them:
+ *
+ *  - CONFIGURED — does the shop have working credentials for that rail, and (for
+ *    the four USDT rails) a usable exchange rate? Unchanged behaviour.
+ *  - ACCEPTS THE AMOUNT — would `finalizeWalletTopupPayment`'s rail-minimum
+ *    guard refuse it (whole-branch review F3)? Asked only when an amount is
+ *    known, via the SAME `walletTopupClearsRailMinimum` the guard throws from, so
+ *    a button a buyer can tap is always a rail their top-up can be finalized on.
+ *    Pass `amount: null` to skip this half, which is what the amount prompt does
+ *    — there is no amount to judge yet, and the prompt only needs to know which
+ *    rails exist in order to advertise the right minimum.
+ */
+async function offeredTopupRails(
+  currency: "IDR" | "USDT",
+  amount: Decimal | null,
+): Promise<{ rate: Decimal | null; methods: WalletTopupMethod[] }> {
+  const rate = currency === "USDT" ? await currentUsdtRate() : null;
+  const configured: WalletTopupMethod[] = [];
+  if (currency === "IDR") {
+    if ((await getTokopayCreds(prisma)) != null) configured.push(PaymentMethod.TOKOPAY);
+    if ((await getPaydisiniCreds(prisma)) != null) configured.push(PaymentMethod.PAYDISINI);
+  } else if (rate !== null) {
+    if ((await resolveBinanceInternalConfig(prisma)).enabled) configured.push(PaymentMethod.BINANCE_INTERNAL);
+    if ((await resolveBybitConfig(prisma)).enabled) configured.push(PaymentMethod.BYBIT);
+    if ((await resolveBybitBscConfig(prisma)).enabled) configured.push(PaymentMethod.BYBIT_BSC);
+    if ((await getNowpaymentsCreds(prisma)) != null) configured.push(PaymentMethod.NOWPAYMENTS);
+  }
+  if (amount === null) return { rate, methods: configured };
+
+  const methods: WalletTopupMethod[] = [];
+  for (const method of configured) {
+    const query =
+      currency === "IDR"
+        ? ({ currency: "IDR", amount } as const)
+        : ({ currency: "USDT", amount, rate: rate! } as const);
+    if (await walletTopupClearsRailMinimum(prisma, { ...query, method })) methods.push(method);
+  }
+  return { rate, methods };
+}
+
 /** Amount captured -> show the gateway picker for the chosen currency. */
 async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount: Decimal): Promise<void> {
   const lang = ctx.session.lang;
-  const rate = currency === "USDT" ? await currentUsdtRate() : null;
-  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
-  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
-  const internalEnabled = (await resolveBinanceInternalConfig(prisma)).enabled && rate !== null;
-  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled && rate !== null;
-  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled && rate !== null;
-  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null && rate !== null;
+  const { methods } = await offeredTopupRails(currency, amount);
 
+  // Every configured rail refused this amount. `handleTopupAmountInput` already
+  // checks the effective minimum, so reaching here means either no rail is
+  // configured for this currency at all, or an admin raised a floor between the
+  // prompt and this tap. Say so instead of rendering a picker with nothing in
+  // it — a keyboard whose only button is "Back" reads as a bug.
+  if (methods.length === 0) {
+    await smartEdit(ctx, t(ctx, "wallet.topup_no_rail_for_amount"), ckb.topupCurrencyKb(lang));
+    return;
+  }
+
+  const offers = (method: WalletTopupMethod) => methods.includes(method);
   const amountText = currency === "IDR" ? formatIdr(amount) : formatUsdtAmount(amount);
   await smartEdit(
     ctx,
     t(ctx, "wallet.topup_choose_method", { currency, amount: amountText }),
-    ckb.topupMethodsKb(currency, lang, tokopayEnabled, paydisiniEnabled, internalEnabled, bybitEnabled, bybitBscEnabled, nowpaymentsEnabled),
+    ckb.topupMethodsKb(
+      currency,
+      lang,
+      offers(PaymentMethod.TOKOPAY),
+      offers(PaymentMethod.PAYDISINI),
+      offers(PaymentMethod.BINANCE_INTERNAL),
+      offers(PaymentMethod.BYBIT),
+      offers(PaymentMethod.BYBIT_BSC),
+      offers(PaymentMethod.NOWPAYMENTS),
+    ),
   );
 }
 

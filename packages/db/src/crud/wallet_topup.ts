@@ -29,7 +29,7 @@
  */
 import { config } from "@app/core/config";
 import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
-import { computeUniqueCents, generatePaymentRef } from "@app/core/formatters";
+import { computeUniqueCents, generatePaymentRef, quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
@@ -39,6 +39,12 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
+import {
+  assertOrderTotalClearsRailMinimum,
+  railMinimumFailure,
+  resolveRailMinimum,
+  type RailMinimumFailure,
+} from "./orderMinimums";
 import { getOrder, uniqueOrderCode, customerLabel, cancelOrder, findUnderpaidReceived } from "./orders";
 import { adjustWallet } from "./users";
 import { postUnderpaidTopupCreditPosting, postWalletTopupPosting } from "./ledgerPostings";
@@ -109,6 +115,152 @@ const USDT_TOPUP_METHODS: ReadonlySet<string> = new Set<WalletTopupUsdtMethod>([
   PaymentMethod.BYBIT_BSC,
 ]);
 
+// ---------------------------------------------------------------------------
+// Rail minimums for a top-up (whole-branch review F3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which currency a top-up is denominated in, plus the exchange rate needed to
+ * reason about it in Rupiah. The rate is REQUIRED for a USDT top-up and absent
+ * for an IDR one, because the shop-wide floor (`min_order_amount_idr`) is a
+ * Rupiah figure and a USDT amount can only be compared against it through a
+ * rate. Modelled as a union rather than an optional field so a caller cannot
+ * silently omit it and have a Rupiah floor quietly stop being enforced.
+ */
+export type WalletTopupRailQuery = { currency: "IDR" } | { currency: "USDT"; rate: Decimal.Value };
+
+/**
+ * The two figures {@link railMinimumFailure} judges a top-up of `amount` by.
+ *
+ * A product order and a top-up derive these in OPPOSITE directions, and that is
+ * the whole subtlety of this helper. A product order's cart total is central
+ * Rupiah and its USDT figure is derived from it (`usdtFromIdr`), so
+ * `finalizeOrderPayment` hands the guard `idrAmount = baseIdr` and
+ * `railAmount = usdtFromIdr(baseIdr, rate)`. A USDT top-up is the other way
+ * round: what the buyer typed ("50") ALREADY IS the USDT figure — it is what
+ * lands in their wallet and what the rail is asked to collect — so `railAmount`
+ * is the typed amount itself and the Rupiah figure is the derived one,
+ * `amount × rate`. Converting the typed amount to USDT (or comparing it against
+ * a Rupiah floor unconverted) is the same class of mistake this module's top
+ * doc-comment exists to prevent.
+ *
+ * The Rupiah equivalent is deliberately NOT quantized: it is a comparison
+ * operand, never a figure that gets stored or shown, and rounding it would move
+ * the floor by up to half a Rupiah in whichever direction the rate happened to
+ * favour.
+ *
+ * An IDR top-up's two figures are the same number, quantized to whole Rupiah
+ * exactly as `finalizeOrderPayment`'s IDR branch quantizes the total it is about
+ * to save — so the guard judges the figure that will really be charged, and a
+ * sub-Rupiah top-up meets the same `nothing_to_collect` backstop there as here.
+ */
+export function walletTopupRailAmounts(
+  args: WalletTopupRailQuery & { amount: Decimal.Value },
+): { idrAmount: Decimal; railAmount: Decimal } {
+  const amount = new Decimal(args.amount);
+  if (args.currency === "IDR") {
+    const idr = quantizeMoney(amount, 0);
+    return { idrAmount: idr, railAmount: idr };
+  }
+  const rate = new Decimal(args.rate);
+  // Same refusal `createWalletTopupOrder` and `finalizeWalletTopupPayment`
+  // already raise for an unusable rate — a top-up priced off a zero or
+  // non-finite rate has no Rupiah equivalent to judge at all.
+  if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) throw new ValidationError("error.generic");
+  return { idrAmount: amount.times(rate), railAmount: amount };
+}
+
+/** Why `method` cannot collect a top-up of `amount`, or null when it can. The
+ * same `railMinimumFailure` the finalize-time guard throws from, so a rail a
+ * top-up form offers is always a rail the top-up can be finalized on. */
+export async function walletTopupRailMinimumFailure(
+  db: Db,
+  args: WalletTopupRailQuery & { amount: Decimal.Value; method: WalletTopupMethod },
+): Promise<RailMinimumFailure | null> {
+  return railMinimumFailure(db, {
+    method: args.method,
+    currency: args.currency === "IDR" ? OrderCurrency.IDR : OrderCurrency.USDT,
+    ...walletTopupRailAmounts(args),
+  });
+}
+
+/** Predicate form of {@link walletTopupRailMinimumFailure}, for the top-up
+ * forms' rail lists. */
+export async function walletTopupClearsRailMinimum(
+  db: Db,
+  args: WalletTopupRailQuery & { amount: Decimal.Value; method: WalletTopupMethod },
+): Promise<boolean> {
+  return (await walletTopupRailMinimumFailure(db, args)) === null;
+}
+
+/**
+ * The smallest amount, **in the currency the buyer types**, that `method` will
+ * accept — or null when that rail has no floor at all.
+ *
+ * This is the figure a top-up form can show and compare a typed amount against,
+ * which is not always the figure the Settings row holds. A rail's own
+ * `<rail>_min_amount` is already denominated in the rail's settlement currency,
+ * which for a top-up is the currency being typed, so it passes through
+ * untouched. The shop-wide fallback is Rupiah, so on a USDT top-up it has to be
+ * divided by the rate — and rounded UP to the cent, because the guard compares
+ * `amount × rate` against it and a floor rounded DOWN would be a figure the form
+ * advertised and the guard then refused, which is the exact failure F4b exists
+ * to close.
+ */
+export async function resolveWalletTopupRailFloor(
+  db: Db,
+  args: WalletTopupRailQuery & { method: WalletTopupMethod },
+): Promise<Decimal | null> {
+  const currency = args.currency === "IDR" ? OrderCurrency.IDR : OrderCurrency.USDT;
+  const minimum = await resolveRailMinimum(db, { method: args.method, currency });
+  if (!minimum) return null;
+  if (minimum.currency === currency) return minimum.amount;
+  // The only mixed case that exists: a USDT top-up judged by the shop-wide
+  // Rupiah floor. (An IDR top-up is never judged by a USDT figure — both IDR
+  // rails' own minimums are Rupiah and so is the fallback.)
+  const rate = new Decimal((args as { rate: Decimal.Value }).rate);
+  if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) throw new ValidationError("error.generic");
+  return minimum.amount.dividedBy(rate).toDecimalPlaces(2, Decimal.ROUND_CEIL);
+}
+
+/**
+ * The minimum a top-up form should advertise for `currency`: the smallest amount
+ * that at least one of the `methods` offered will actually accept.
+ *
+ * `max(wallet_topup_min_amount_*, the LOWEST rail floor among the offered
+ * rails)` — the two floors answer different questions and both are real, so the
+ * binding one is whichever is higher. The rail side takes the LOWEST of the
+ * offered rails rather than the highest because the rails are alternatives: an
+ * amount one rail refuses is still payable through a cheaper-floored sibling,
+ * and the form filters the refusing rail out of its picker instead (F3). Taking
+ * the highest would tell a buyer to type more than they need.
+ *
+ * A rail with no floor of its own makes the rail side vacuous — there is an
+ * offered rail with nothing to clear — so only `wallet_topup_min_amount_*`
+ * binds. Likewise when `methods` is empty, which is what a shop with no
+ * configured gateway for that currency looks like.
+ *
+ * Returns null when neither floor exists, i.e. "no minimum to advertise".
+ */
+export async function resolveWalletTopupEffectiveMin(
+  db: Db,
+  args: WalletTopupRailQuery & { methods: readonly WalletTopupMethod[] },
+): Promise<Decimal | null> {
+  const limits = await resolveWalletTopupLimits(db);
+  const topupMin = args.currency === "IDR" ? limits.minIdr : limits.minUsdt;
+
+  let railMin: Decimal | null = null;
+  for (const method of args.methods) {
+    const floor = await resolveWalletTopupRailFloor(db, { ...args, method });
+    if (!floor) return topupMin; // an unfloored rail is offered — nothing to add
+    railMin = railMin === null ? floor : Decimal.min(railMin, floor);
+  }
+
+  if (!railMin) return topupMin;
+  if (!topupMin) return railMin;
+  return Decimal.max(topupMin, railMin);
+}
+
 /**
  * Mirrors `finalizeOrderPayment`'s USDT branch (unique-cents disambiguation
  * per method, auto-confirm payment windows, Binance Internal `paymentRef`
@@ -123,7 +275,9 @@ const USDT_TOPUP_METHODS: ReadonlySet<string> = new Set<WalletTopupUsdtMethod>([
  * the exchange rate (e.g. "top up 50 USDT" -> "top up ~0.003 USDT" at a
  * 16000 rate). `rate` is still stamped onto `fxRate` for record-keeping
  * (matching every other USDT order's snapshot convention) even though it
- * plays no role in the credited amount.
+ * plays no role in the credited amount — with one exception added by F3: the
+ * rail-minimum guard below needs it to express the typed USDT figure in the
+ * Rupiah the shop-wide floor is denominated in.
  *
  * Duplicated rather than extracted out of `finalizeOrderPayment`: pulling the
  * ~30-line disambiguation block into a shared helper risked destabilizing
@@ -151,6 +305,35 @@ async function finalizeWalletTopupPayment(
   // already the USDT figure the buyer asked to top up.
   const usdt = new Decimal(args.amount);
   const method = args.method;
+
+  // M11's rail-minimum guard, which this function never had (whole-branch review
+  // F3). `finalizeOrderPayment`'s USDT branch has enforced it since M11, but a
+  // USDT top-up does not go through that branch — so a top-up below a rail's own
+  // `<rail>_min_amount`, or below the shop-wide Rupiah floor, was handed to the
+  // gateway anyway and refused out of band, leaving the buyer on a payment
+  // screen that could never succeed. The whole reason the guard exists, missed on
+  // one of the two paths that reach a gateway.
+  //
+  // Placed here, immediately after the amount is known and BEFORE any
+  // gateway-specific state is derived (unique cents, paymentRef, the payment
+  // window, the Bybit collision-avoidance loop) and before the row is touched at
+  // all — so a refused top-up is left exactly as `createWalletTopupOrder` made
+  // it and rolls back with the caller's transaction. `usdt` excludes the unique
+  // cents on purpose, exactly as the product path does: the cents are matching
+  // noise added on top, so the amount the rail is really asked for is never less
+  // than this figure.
+  //
+  // `purpose` is derived from the row rather than hardcoded, for D9's reason: a
+  // caller that has to declare what it is finalizing eventually forgets, and
+  // that is precisely how a top-up buyer ends up being told to add more items.
+  // This function is only ever reached for a WALLET_TOPUP order today.
+  await assertOrderTotalClearsRailMinimum(db, {
+    method,
+    currency: OrderCurrency.USDT,
+    ...walletTopupRailAmounts({ currency: "USDT", rate, amount: usdt }),
+    purpose: order.kind === OrderKind.WALLET_TOPUP ? "wallet_topup" : "order",
+  });
+
   let cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
   let totalAmount = usdt.plus(cents);
 

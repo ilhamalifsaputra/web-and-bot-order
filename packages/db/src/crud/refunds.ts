@@ -232,7 +232,10 @@ export async function transitionRefundStatus(
      * `executeRefund` DOES call this, with the flag set, and that is correct
      * rather than a loophole: by the time it does, it has already moved the
      * money in the same transaction, so the claim the flag makes — "this
-     * transition alone pays nobody" — is still exactly true of the transition. */
+     * transition alone pays nobody" — is still exactly true of the transition.
+     * The AUDIT LINE, whose reader is a shop admin rather than a caller, does
+     * not repeat that distinction blindly: it checks for a recorded payout and
+     * says which of the two happened (see the `paidOut` lookup below). */
     acknowledgeNoPayout?: boolean;
   },
 ): Promise<Refund> {
@@ -263,9 +266,30 @@ export async function transitionRefundStatus(
   const refund = await db.refund.findUniqueOrThrow({ where: { id: refundId } });
   const order = await db.order.findUnique({ where: { id: refund.orderId }, select: { orderCode: true } });
 
+  // What the COMPLETED sentence may claim depends on whether a payout actually
+  // happened, and the RefundExecution rows are the only honest answer. This
+  // transition never pays anybody — that part was always true — but saying
+  // "record-keeping only" beside a real payout reads to the shop admin as "the
+  // buyer has NOT been paid", which is the opposite of the truth on the
+  // `executeRefund` path (it credits the wallet, writes the execution, and only
+  // then calls this to close the record). `executeRefund` writes its row BEFORE
+  // this call and in the same transaction, so it is already visible here.
+  const paidOut =
+    to === RefundStatus.COMPLETED
+      ? await db.refundExecution.findFirst({
+          where: { refundId, status: RefundExecutionStatus.COMPLETED },
+          orderBy: { id: "asc" },
+          select: { id: true },
+        })
+      : null;
+
   const details =
     `Refund #${refundId} for order ${order?.orderCode ?? refund.orderId} moved from ${from} to ${to}${meta ? ` (${meta})` : ""}.` +
-    (to === RefundStatus.COMPLETED ? " Record-keeping only — no payout was triggered by this transition." : "");
+    (to !== RefundStatus.COMPLETED
+      ? ""
+      : paidOut
+        ? ` The buyer has been paid — that was recorded separately as refund execution #${paidOut.id}; this transition only closed the refund record.`
+        : " Record-keeping only — no payout was triggered by this transition, and none has been recorded against this refund.");
   await logAdminAction(db, { adminId, action: "refund_status_change", targetType: "refund", targetId: refundId, details });
 
   if (to === RefundStatus.FAILED) {
@@ -706,9 +730,11 @@ export async function executeRefund(
       from: RefundStatus.PROCESSING,
       to: RefundStatus.COMPLETED,
       adminId: args.executedBy,
-      // True as stated, and not a contradiction of the sentence
-      // `transitionRefundStatus` appends for COMPLETED: the money moved a few
-      // lines above, in this transaction, not in the transition.
+      // True as stated: the money moved a few lines above, in this transaction,
+      // not in the transition. The RefundExecution row created above is already
+      // visible to `transitionRefundStatus`, so the sentence it appends for
+      // COMPLETED says the buyer HAS been paid and names that row, rather than
+      // the bare "record-keeping only" it uses for a refund nobody paid.
       acknowledgeNoPayout: true,
       meta: `payout already made: refund execution #${execution.id} paid ${amount.toString()} ${refund.currency} by ${args.method}`,
     });

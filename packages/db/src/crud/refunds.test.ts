@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { RefundStatus } from "@app/core/enums";
+import { RefundExecutionMethod, RefundExecutionStatus, RefundStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -218,6 +218,76 @@ describe("transitionRefundStatus — state machine", () => {
     const admin = await makeAdmin();
     const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
     await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: admin.id,
+      acknowledgeNoPayout: true,
+    });
+
+    const auditRows = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    const completedRow = auditRows.find((r) => (r.details ?? "").includes("PROCESSING") && (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("Record-keeping only — no payout was triggered");
+  });
+
+  it("a COMPLETED transition beside a real payout says the buyer WAS paid, and names the execution", async () => {
+    // The `executeRefund` shape: the payout is made and the RefundExecution row
+    // written BEFORE the transition closes the record, in the same transaction.
+    // The row is inserted directly here because what is under test is the
+    // sentence this function chooses, not the payout stack that produces the row
+    // (refundExecution.test.ts covers the integrated path). Telling a shop admin
+    // "record-keeping only — no payout was triggered" beside a wallet credit the
+    // buyer has already received reads as "they have NOT been paid", which is the
+    // opposite of the truth.
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    const execution = await prisma.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: RefundExecutionMethod.WALLET,
+        amount: "5.00",
+        currency: "IDR",
+        status: RefundExecutionStatus.COMPLETED,
+        executedBy: admin.id,
+        executedAt: new Date(),
+      },
+    });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: admin.id,
+      acknowledgeNoPayout: true,
+    });
+
+    const auditRows = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    const completedRow = auditRows.find((r) => (r.details ?? "").includes("PROCESSING") && (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("The buyer has been paid");
+    expect(completedRow.details).toContain(`refund execution #${execution.id}`);
+    expect(completedRow.details).not.toContain("no payout was triggered");
+  });
+
+  it("ignores a FAILED execution when wording the COMPLETED line — a bounced transfer paid nobody", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    await prisma.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: RefundExecutionMethod.MANUAL_TRANSFER,
+        amount: "5.00",
+        currency: "IDR",
+        status: RefundExecutionStatus.FAILED,
+        executedBy: admin.id,
+        executedAt: new Date(),
+      },
+    });
 
     await transitionRefundStatus(prisma, {
       refundId: refund.id,

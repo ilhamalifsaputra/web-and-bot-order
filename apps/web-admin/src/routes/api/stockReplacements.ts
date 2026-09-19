@@ -115,8 +115,22 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
       if (body.supportTicketId != null) {
         supportTicketId = idParam(String(body.supportTicketId));
         if (supportTicketId === null) return reply.code(400).send({ error: "Invalid ticket id." });
-        if (!(await getTicket(prisma, supportTicketId))) {
+        const ticket = await getTicket(prisma, supportTicketId);
+        if (!ticket) {
           return reply.code(404).send({ error: "Ticket not found." });
+        }
+        // The ticket must be about THIS order. Existence alone is not enough:
+        // `StockReplacement.supportTicketId` is what an admin later reads to see
+        // why a credential was replaced, and a request stamped with an unrelated
+        // ticket sends that reader to another buyer's complaint. Only an exact
+        // match passes — a ticket with NO order link is refused too, because
+        // there is nothing to check it against and the only caller that sends
+        // this field (the ticket detail page, which renders the unit list solely
+        // for a ticket's own linked order) never has one.
+        if (ticket.orderId !== orderId) {
+          return reply.code(400).send({
+            error: "That support ticket is not about this order, so it cannot be linked to the replacement.",
+          });
         }
       }
 
@@ -124,17 +138,18 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
       if (!unit) return reply.code(404).send({ error: "This order has no such item." });
 
       try {
-        const { replacement, replacementStockItem } = await replaceStockItem(prisma, {
+        const { replacement, replacementStockItem, buyerNotified } = await replaceStockItem(prisma, {
           orderItemId,
           reason,
           executedBy: req.admin!.userId,
           supportTicketId,
           notes,
         });
-        if (replacementStockItem) {
-          // The service enqueued the buyer's credentials DM; wake the
+        if (buyerNotified) {
+          // The service put a row in the outbox for the buyer; wake the
           // dispatcher rather than waiting out its poll interval, exactly as
-          // the /resend route does after its own enqueue.
+          // the /resend route does after its own enqueue. Nothing to wake when
+          // the buyer was unreachable — no row was written.
           nudgeOutboxDispatcher();
         }
         logger.info(
@@ -145,6 +160,11 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
           replacementId: replacement.id,
           status: replacement.status,
           credentialIssued: replacementStockItem !== null,
+          // Reported separately from `credentialIssued` on purpose: a buyer with
+          // no Telegram id and no guest email gets the new credential but no
+          // message about it, and the panel must say so rather than claim it was
+          // sent (see the service's `buyerNotified`).
+          buyerNotified,
         });
       } catch (e) {
         if (e instanceof ValidationError) {
@@ -173,20 +193,21 @@ export default async function stockReplacementApiRoutes(app: FastifyInstance): P
       }
 
       try {
-        const { replacement, replacementStockItem } = await retryReplacementAllocation(prisma, {
-          stockReplacementId: replacementId,
-          executedBy: req.admin!.userId,
-        });
-        if (replacementStockItem) nudgeOutboxDispatcher();
+        const { replacement, replacementStockItem, buyerNotified } = await retryReplacementAllocation(
+          prisma,
+          { stockReplacementId: replacementId, executedBy: req.admin!.userId },
+        );
+        if (buyerNotified) nudgeOutboxDispatcher();
         logger.info(
           replacementStockItem
-            ? `Admin ${req.admin!.userId} cleared stock replacement ${replacementId} on order ${orderId} via the web panel: a restocked account has been handed over and queued for sending to the buyer`
+            ? `Admin ${req.admin!.userId} cleared stock replacement ${replacementId} on order ${orderId} via the web panel: a restocked account has been handed over, and the buyer ${buyerNotified ? "has been queued a message about it" : "could not be told about it, having neither a Telegram id nor a guest email address"}`
             : `Admin ${req.admin!.userId} retried stock replacement ${replacementId} on order ${orderId} via the web panel, but the denomination is still out of stock, so the buyer is still waiting`,
         );
         return reply.send({
           ok: true,
           status: replacement.status,
           credentialIssued: replacementStockItem !== null,
+          buyerNotified,
         });
       } catch (e) {
         if (e instanceof ValidationError) {

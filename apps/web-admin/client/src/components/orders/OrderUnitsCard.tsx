@@ -186,6 +186,9 @@ export function OrderUnitsCard({
     mutationFn: async (args: { orderItemIds: number[]; reason: string }) => {
       let issued = 0;
       let awaiting = 0;
+      /** Of the `issued` units, how many the shop could not tell the buyer
+       *  about — see the `buyerNotified` note on the toasts below. */
+      let unannounced = 0;
       const failures: string[] = [];
       // Sequential, one request per unit: each call opens its own
       // StockReplacement and hands over its own credential, and the service
@@ -193,28 +196,46 @@ export function OrderUnitsCard({
       // would only queue behind each other with a worse failure story.
       for (const orderItemId of args.orderItemIds) {
         try {
-          const res = await apiPost<{ status: string; credentialIssued: boolean }>(
+          const res = await apiPost<{
+            status: string;
+            credentialIssued: boolean;
+            buyerNotified: boolean;
+          }>(
             `/api/orders/${orderId}/items/${orderItemId}/replace`,
             supportTicketId != null
               ? { reason: args.reason, supportTicketId }
               : { reason: args.reason },
           );
-          if (res.credentialIssued) issued += 1;
-          else awaiting += 1;
+          if (res.credentialIssued) {
+            issued += 1;
+            if (!res.buyerNotified) unannounced += 1;
+          } else awaiting += 1;
         } catch (e) {
           failures.push(describeError((e as Error).message));
         }
       }
-      return { issued, awaiting, failures };
+      return { issued, awaiting, unannounced, failures };
     },
-    onSuccess: ({ issued, awaiting, failures }) => {
+    onSuccess: ({ issued, awaiting, unannounced, failures }) => {
       refresh();
       setSelected(new Set());
-      if (issued > 0) {
+      // Two separate facts, and the toast must not merge them: the swap always
+      // happened, but a buyer with no Telegram id and no guest email address has
+      // nowhere for the shop to send the news, so the panel says "issued" for
+      // those units and leaves telling them to the admin.
+      const announced = issued - unannounced;
+      if (announced > 0) {
         toast.success(
-          issued === 1
+          announced === 1
             ? "A fresh account has been sent to the buyer."
-            : `Fresh accounts have been sent to the buyer for ${issued} units.`,
+            : `Fresh accounts have been sent to the buyer for ${announced} units.`,
+        );
+      }
+      if (unannounced > 0) {
+        toast.warning(
+          unannounced === 1
+            ? "A fresh account is on the buyer's order page, but they have no Telegram or email contact — nobody has told them, so please reach out."
+            : `Fresh accounts are on the buyer's order page for ${unannounced} units, but they have no Telegram or email contact — nobody has told them, so please reach out.`,
         );
       }
       if (awaiting > 0) {
@@ -233,11 +254,19 @@ export function OrderUnitsCard({
 
   const retry = useMutation({
     mutationFn: (replacementId: number) =>
-      apiPost<{ credentialIssued: boolean }>(`/api/orders/${orderId}/replacements/${replacementId}/retry`, {}),
+      apiPost<{ credentialIssued: boolean; buyerNotified: boolean }>(
+        `/api/orders/${orderId}/replacements/${replacementId}/retry`,
+        {},
+      ),
     onSuccess: (res) => {
       refresh();
-      if (res.credentialIssued) toast.success("A replacement account has been sent to the buyer.");
-      else toast.warning("Still nothing in stock for that account — the buyer is still waiting.");
+      if (res.credentialIssued && res.buyerNotified) {
+        toast.success("A replacement account has been sent to the buyer.");
+      } else if (res.credentialIssued) {
+        toast.warning(
+          "A replacement account is on the buyer's order page, but they have no Telegram or email contact — nobody has told them, so please reach out.",
+        );
+      } else toast.warning("Still nothing in stock for that account — the buyer is still waiting.");
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });

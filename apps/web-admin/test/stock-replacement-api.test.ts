@@ -27,7 +27,7 @@ import {
 } from "@app/db";
 import { resetDb, buildSampleData, type SampleData } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
-import { makeSession, sessionJtiKey, newJti } from "../src/auth";
+import { makeSession, sessionJtiKey, newJti, webRoleKey } from "../src/auth";
 
 const ADMIN_TG = 999;
 const COOKIE = config.WEB_COOKIE_NAME;
@@ -158,7 +158,7 @@ describe("POST /api/orders/:orderId/items/:orderItemId/replace", () => {
   it("records the support ticket the complaint arrived on when the caller names one", async () => {
     const { order, items } = await makeDeliveredOrder(1);
     const ticket = await prisma.supportTicket.create({
-      data: { userId: sample.user.id, message: "akun tidak bisa dipakai" },
+      data: { userId: sample.user.id, orderId: order.id, message: "akun tidak bisa dipakai" },
     });
 
     const res = await post(`/api/orders/${order.id}/items/${items[0]!.id}/replace`, {
@@ -169,6 +169,81 @@ describe("POST /api/orders/:orderId/items/:orderItemId/replace", () => {
     expect(res.statusCode).toBe(200);
     const request = await prisma.stockReplacement.findFirstOrThrow({ where: { orderItemId: items[0]!.id } });
     expect(request.supportTicketId).toBe(ticket.id);
+  });
+
+  it("refuses a ticket that belongs to a DIFFERENT order than the URL names", async () => {
+    const mine = await makeDeliveredOrder(1);
+    await restock(1);
+    const other = await makeDeliveredOrder(1);
+    // A real ticket, but about somebody else's purchase: stamping it onto this
+    // request would send every later reader of the replacement to the wrong
+    // complaint.
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, orderId: other.order.id, message: "another order's problem" },
+    });
+
+    const res = await post(`/api/orders/${mine.order.id}/items/${mine.items[0]!.id}/replace`, {
+      reason: "cannot log in",
+      supportTicketId: ticket.id,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/not about this order/i);
+    // Refused BEFORE anything was written — no request, and the delivered
+    // credential is still SOLD rather than retired.
+    expect(await prisma.stockReplacement.count()).toBe(0);
+    const stock = await prisma.stockItem.findUniqueOrThrow({ where: { id: mine.items[0]!.stockItemId! } });
+    expect(stock.status).toBe(StockStatus.SOLD);
+  });
+
+  it("refuses a ticket with no order link at all, rather than guessing it is about this one", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "general question, no order attached" },
+    });
+
+    const res = await post(`/api/orders/${order.id}/items/${items[0]!.id}/replace`, {
+      reason: "cannot log in",
+      supportTicketId: ticket.id,
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.stockReplacement.count()).toBe(0);
+  });
+
+  it("reports the buyer as notified when they have Telegram, and NOT when they are reachable by nobody", async () => {
+    const reachable = await makeDeliveredOrder(1);
+    await restock(1);
+    const withTelegram = await post(
+      `/api/orders/${reachable.order.id}/items/${reachable.items[0]!.id}/replace`,
+      { reason: "dead" },
+    );
+    expect(withTelegram.statusCode).toBe(200);
+    expect((withTelegram.json() as { buyerNotified: boolean }).buyerNotified).toBe(true);
+
+    // Same shop, a web buyer who never linked Telegram and left no guest email:
+    // the credential is swapped but there is no rail to tell them about it, and
+    // the panel must not claim one was used (`enqueueOrderDeliveredDm` returns
+    // silently for a null telegramId).
+    await prisma.user.update({
+      where: { id: sample.user.id },
+      data: { telegramId: null, isGuest: false, guestEmail: null },
+    });
+    // One credential for the second order to be delivered with, then one more
+    // for its replacement — `makeDeliveredOrder` drains whatever it leaves over.
+    await restock(1);
+    const unreachable = await makeDeliveredOrder(1);
+    await restock(1);
+
+    const res = await post(
+      `/api/orders/${unreachable.order.id}/items/${unreachable.items[0]!.id}/replace`,
+      { reason: "dead" },
+    );
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { credentialIssued: boolean; buyerNotified: boolean };
+    expect(body.credentialIssued).toBe(true);
+    expect(body.buyerNotified).toBe(false);
   });
 
   it("writes exactly one audit row — the service's own, never a second one from the route", async () => {
@@ -254,6 +329,7 @@ describe("POST /api/orders/:orderId/replacements/:replacementId/retry", () => {
       ok: true,
       status: StockReplacementStatus.COMPLETED,
       credentialIssued: true,
+      buyerNotified: true,
     });
     const reloaded = await prisma.stockReplacement.findUniqueOrThrow({ where: { id: replacement.id } });
     expect(reloaded.status).toBe(StockReplacementStatus.COMPLETED);
@@ -274,6 +350,7 @@ describe("POST /api/orders/:orderId/replacements/:replacementId/retry", () => {
       ok: true,
       status: StockReplacementStatus.AWAITING_STOCK,
       credentialIssued: false,
+      buyerNotified: false,
     });
   });
 
@@ -306,6 +383,27 @@ describe("POST /api/orders/:orderId/replacements/:replacementId/retry", () => {
     const res = await post(`/api/orders/${mine.order.id}/replacements/${replacement.id}/retry`);
 
     expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects a request with no CSRF token", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+    await restock(1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${order.id}/replacements/${replacement.id}/retry`,
+      payload: {},
+      cookies: { [COOKIE]: cookie },
+    });
+
+    expect(res.statusCode).toBe(403);
+    const unchanged = await prisma.stockReplacement.findUniqueOrThrow({ where: { id: replacement.id } });
+    expect(unchanged.status).toBe(StockReplacementStatus.AWAITING_STOCK);
   });
 });
 
@@ -373,6 +471,96 @@ describe("POST /api/orders/:orderId/replacements/:replacementId/refund", () => {
 
     expect(res.statusCode).toBe(400);
     expect(await prisma.refund.count()).toBe(0);
+  });
+
+  it("rejects a request with no CSRF token, before a single rupiah moves", async () => {
+    const { order, replacement } = await awaitingStockRequest();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/orders/${order.id}/replacements/${replacement.id}/refund`,
+      payload: {},
+      cookies: { [COOKIE]: cookie },
+    });
+
+    expect(res.statusCode).toBe(403);
+    expect(await prisma.refund.count()).toBe(0);
+    expect(await prisma.refundExecution.count()).toBe(0);
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(buyer.walletBalance).isZero()).toBe(true);
+  });
+});
+
+/**
+ * RBAC. All three routes sit under `/api/orders`, which is an OPS prefix
+ * (plugins/auth.ts): `super` and `support` may mutate it, `readonly` may not.
+ * That placement is the whole reason these routes are nested under the order
+ * rather than living at `/api/stock-replacements` — a new top-level prefix would
+ * default to deny and lock the support role out of a complaint it is expected to
+ * handle — so it is worth a test that the intended grant really landed rather
+ * than only the refusal.
+ *
+ * The role is resolved per request from the `web_admin_role:<telegramId>`
+ * Setting, so flipping it on the session already in hand is enough (same
+ * technique as adminTasks-api.test.ts).
+ */
+describe("RBAC on the three replacement mutations", () => {
+  const setRole = (role: string) => setSetting(prisma, webRoleKey(ADMIN_TG), role);
+
+  /** One AWAITING_STOCK request plus a restocked SKU, so every route below has
+   *  something it could legitimately do if the role were allowed to. */
+  async function ready() {
+    const { order, items } = await makeDeliveredOrder(1);
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+    await restock(1);
+    return { order, items, replacement };
+  }
+
+  it("403s a readonly admin on all three, changing nothing", async () => {
+    const { order, replacement } = await ready();
+    const secondUnit = await makeDeliveredOrder(1);
+    await setRole("readonly");
+
+    const replace = await post(`/api/orders/${secondUnit.order.id}/items/${secondUnit.items[0]!.id}/replace`, {
+      reason: "dead",
+    });
+    const retry = await post(`/api/orders/${order.id}/replacements/${replacement.id}/retry`);
+    const refund = await post(`/api/orders/${order.id}/replacements/${replacement.id}/refund`);
+
+    expect([replace.statusCode, retry.statusCode, refund.statusCode]).toEqual([403, 403, 403]);
+    // The one pre-existing request is untouched and no second one was opened.
+    expect(await prisma.stockReplacement.count()).toBe(1);
+    const unchanged = await prisma.stockReplacement.findUniqueOrThrow({ where: { id: replacement.id } });
+    expect(unchanged.status).toBe(StockReplacementStatus.AWAITING_STOCK);
+    expect(await prisma.refund.count()).toBe(0);
+    const stillSold = await prisma.stockItem.findUniqueOrThrow({ where: { id: secondUnit.items[0]!.stockItemId! } });
+    expect(stillSold.status).toBe(StockStatus.SOLD);
+  });
+
+  it("allows a support admin to replace, retry and refund — the role this feature exists for", async () => {
+    const { order, items, replacement } = await ready();
+    await setRole("support");
+
+    const retry = await post(`/api/orders/${order.id}/replacements/${replacement.id}/retry`);
+    expect(retry.statusCode).toBe(200);
+    expect((retry.json() as { credentialIssued: boolean }).credentialIssued).toBe(true);
+
+    // A fresh complaint against the credential support just handed over, then
+    // the refund fallback on it once the SKU is empty again.
+    const reopened = await post(`/api/orders/${order.id}/items/${items[0]!.id}/replace`, {
+      reason: "the replacement was dead too",
+    });
+    expect(reopened.statusCode).toBe(200);
+    const reopenedBody = reopened.json() as { replacementId: number; status: string };
+    expect(reopenedBody.status).toBe(StockReplacementStatus.AWAITING_STOCK);
+
+    const refund = await post(`/api/orders/${order.id}/replacements/${reopenedBody.replacementId}/refund`);
+    expect(refund.statusCode).toBe(200);
+    expect(await prisma.refundExecution.count()).toBe(1);
   });
 });
 

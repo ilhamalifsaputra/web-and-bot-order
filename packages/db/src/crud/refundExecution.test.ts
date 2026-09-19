@@ -231,6 +231,19 @@ describe("executeRefund — WALLET", () => {
     const settled = await prisma.refund.findUniqueOrThrow({ where: { id: refund.id } });
     expect(settled.status).toBe(RefundStatus.COMPLETED);
     expect(settled.processedAt).not.toBeNull();
+
+    // And the status-change audit row an admin reads beside this payout says the
+    // buyer WAS paid. `transitionRefundStatus` appends "record-keeping only — no
+    // payout was triggered" for a refund closed without one; printing that here,
+    // beside a wallet credit the buyer has already received, told the shop admin
+    // the opposite of the truth.
+    const statusRows = await prisma.auditLog.findMany({
+      where: { action: "refund_status_change", targetId: refund.id },
+    });
+    const completedRow = statusRows.find((r) => (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("The buyer has been paid");
+    expect(completedRow.details).toContain(`refund execution #${execution.id}`);
+    expect(completedRow.details).not.toContain("no payout was triggered");
   });
 
   it("writes one refund_execution WalletTransaction with NO orderId, and points the execution's reference at it", async () => {

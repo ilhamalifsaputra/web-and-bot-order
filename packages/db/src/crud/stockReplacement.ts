@@ -41,17 +41,35 @@
  * of what was delivered stays intact and readable; the swap is described by the
  * `StockReplacement` row, which names both sides.
  *
- * ## Redelivery reuses the real delivery rail, not a second one
+ * ## Redelivery reuses the real delivery rails, not a second one
  *
- * There is exactly one way a buyer's credentials reach them: a
- * `notification_outbox` row that the dispatcher renders by reading the order's
- * CURRENT `OrderItem.stockItem` rows live at send time — the credential itself
- * never rides in the payload (CLAUDE.md). So repointing `OrderItem.stockItemId`
- * at the new row and enqueueing `enqueueOrderDeliveredDm` IS the redelivery,
- * byte for byte the same rail web-admin's "resend credentials" button uses. No
- * Telegram call is made from here (CLAUDE.md: never send Telegram from outside
- * the bot/dispatcher), and the caller is free to nudge the dispatcher after the
+ * Every rail that tells a buyer about their order renders the credential by
+ * reading the order's CURRENT `OrderItem.stockItem` rows live at send time —
+ * the credential itself never rides in a `notification_outbox` payload, and the
+ * order page reads it live too (CLAUDE.md). So REPOINTING `OrderItem.stockItemId`
+ * at the new row is the substantive half of the redelivery; the notification is
+ * the half that tells the buyer to go and look. No Telegram or SMTP call is made
+ * from here (CLAUDE.md: never send from outside the bot/dispatcher) — a row goes
+ * in the outbox and the caller is free to nudge the dispatcher after the
  * transaction commits, exactly as the resend route does.
+ *
+ * WHICH rail depends on how this buyer can be reached, and `notifyBuyerOfRedelivery`
+ * below is the one place that decides:
+ *  - a buyer with a `telegramId` gets `enqueueOrderDeliveredDm`, byte for byte
+ *    the same row web-admin's "resend credentials" button enqueues;
+ *  - a GUEST buyer with a checkout email gets `enqueueBuyerOrderReadyEmailIfGuest`
+ *    (crud/orders.ts) — the same "your order is ready" mail their delivery sent.
+ *    It carries no credentials, only a link to the order page, which reads the
+ *    now-repointed stock row live, so for a web buyer that email IS the
+ *    equivalent redelivery;
+ *  - a buyer with NEITHER gets nothing, because there is nothing to send it
+ *    down. That case is reported honestly rather than papered over: the outcome
+ *    carries `buyerNotified: false`, and the audit line, the pino line and (via
+ *    the route) the admin's toast all say the account is waiting on the order
+ *    page but nobody has told the buyer. `enqueueOrderDeliveredDm` returns
+ *    silently for a null `telegramId`, so claiming delivery unconditionally —
+ *    as this file once did — told the admin a message had been sent when none
+ *    had been, for every web buyer.
  *
  * ## The refund fallback moves money through the existing path
  *
@@ -79,6 +97,7 @@ import type { Refund, RefundExecution, StockItem, StockReplacement } from "@pris
 import type { Db } from "./_types";
 import { logAdminAction } from "./audit";
 import { enqueueOrderDeliveredDm } from "./notifications";
+import { enqueueBuyerOrderReadyEmailIfGuest, getOrder } from "./orders";
 import { createRefund, createRefundItem, executeRefund, transitionRefundStatus } from "./refunds";
 import { allocateOneAvailableStock } from "./stock";
 
@@ -156,11 +175,27 @@ export const STOCK_REPLACEMENT_LEGAL_TRANSITIONS: Record<string, readonly string
   [StockReplacementStatus.FAILED]: [],
 };
 
+/**
+ * Which rail told the buyer about a replacement credential, or null when the
+ * shop has no way to reach them at all (no `telegramId`, and not a guest with a
+ * checkout email). See this file's "Redelivery reuses the real delivery rails"
+ * section.
+ */
+export type ReplacementNotice = "TELEGRAM_DM" | "GUEST_EMAIL" | null;
+
 /** What every mutator in this file hands back: the request row as it now
  *  stands, plus the credential handed over (null when none was issued). */
 export interface StockReplacementOutcome {
   replacement: StockReplacement;
   replacementStockItem: StockItem | null;
+  /**
+   * Whether the buyer was actually TOLD about the new credential. False both
+   * when nothing was issued and when something was issued but this buyer is
+   * reachable by nobody — the caller must not describe a replacement as "sent"
+   * on the strength of `replacementStockItem` alone, which is the bug this
+   * field exists to make impossible.
+   */
+  buyerNotified: boolean;
 }
 
 /** `refundInsteadOfReplace`'s outcome — the request plus the money records it
@@ -229,17 +264,33 @@ async function claimStockReplacementStatus(
  * so it can never silently "kill" a row that some other path already moved.
  * The note names the request, which is where the buyer's own account of what
  * was wrong lives — the credential itself is never written into it.
+ *
+ * The stamp is APPENDED, never assigned. `StockItem.note` is an admin-written
+ * field (bulk import remarks, "rotated password on 2026-08-01", a warranty
+ * note), and overwriting it would silently destroy whatever an admin had
+ * recorded about the very account now under complaint — the one row whose
+ * history a support investigation is most likely to want. Read-then-write is
+ * safe here because every caller holds the `FOR UPDATE` lock on the OrderItem
+ * that names this row and runs inside that transaction, so two replacements
+ * against one credential are serialized (and the `status: SOLD` guard turns the
+ * loser away regardless).
  */
 async function killDeliveredStockItem(
   db: Db,
   stockItemId: number,
   stockReplacementId: number,
 ): Promise<void> {
+  const existing = await db.stockItem.findUnique({
+    where: { id: stockItemId },
+    select: { note: true },
+  });
+  const stamp = `Reported bad by the buyer and taken out of use under stock replacement #${stockReplacementId}.`;
+  const previous = existing?.note?.trim();
   const res = await db.stockItem.updateMany({
     where: { id: stockItemId, status: StockStatus.SOLD },
     data: {
       status: StockStatus.DEAD,
-      note: `Reported bad by the buyer and taken out of use under stock replacement #${stockReplacementId}.`,
+      note: previous ? `${previous}\n${stamp}` : stamp,
     },
   });
   if (res.count !== 1) {
@@ -337,7 +388,12 @@ async function loadUnit(db: Db, orderItemId: number) {
           bulkDiscountAmount: true,
           totalAmount: true,
           userId: true,
-          user: { select: { telegramId: true, language: true } },
+          // `isGuest`/`guestEmail` ride along for `notifyBuyerOfRedelivery`'s
+          // cheap "is the email rail even worth a re-read" pre-check — the
+          // decision itself stays with `enqueueBuyerOrderReadyEmailIfGuest`.
+          user: {
+            select: { telegramId: true, language: true, isGuest: true, guestEmail: true },
+          },
         },
       },
       stockItem: { select: { id: true, status: true } },
@@ -348,21 +404,58 @@ async function loadUnit(db: Db, orderItemId: number) {
 }
 
 /**
+ * Tell the buyer their replacement credential is waiting, down whichever rail
+ * can actually reach them, and report which one that was — see this file's
+ * "Redelivery reuses the real delivery rails" section for why there are two and
+ * why the answer has to be reported rather than assumed.
+ *
+ * The `isGuest && guestEmail` test here is only a pre-check that saves a full
+ * order re-read for a registered buyer who has no email rail anyway; the
+ * AUTHORITATIVE guard is `enqueueBuyerOrderReadyEmailIfGuest`'s own, whose
+ * boolean return is what this function trusts. `getOrder` is re-read rather than
+ * threaded through because that email needs the whole eager-loaded order
+ * (items, product, voucher) to print a receipt that reconciles, and `loadUnit`
+ * deliberately reads only the one unit under complaint.
+ */
+async function notifyBuyerOfRedelivery(
+  db: Db,
+  item: Awaited<ReturnType<typeof loadUnit>>,
+): Promise<ReplacementNotice> {
+  if (item.order.user.telegramId != null) {
+    await enqueueOrderDeliveredDm(db, {
+      orderId: item.order.id,
+      orderCode: item.order.orderCode,
+      telegramId: item.order.user.telegramId,
+      language: item.order.user.language,
+    });
+    return "TELEGRAM_DM";
+  }
+  if (!item.order.user.isGuest || !item.order.user.guestEmail) return null;
+  const order = await getOrder(db, item.order.id);
+  if (!order) return null;
+  return (await enqueueBuyerOrderReadyEmailIfGuest(db, order)) ? "GUEST_EMAIL" : null;
+}
+
+/**
  * Try to issue a replacement credential for `item` and, if one is there, hand
- * it over for real: flip it SOLD, repoint the OrderItem at it, and enqueue the
- * buyer's credentials DM (see this file's module comment on why that enqueue IS
- * the redelivery). Returns null when the SKU has nothing AVAILABLE, which is
- * the AWAITING_STOCK outcome rather than an error.
+ * it over for real: flip it SOLD, repoint the OrderItem at it, and tell the
+ * buyer (see `notifyBuyerOfRedelivery`). Returns null when the SKU has nothing
+ * AVAILABLE, which is the AWAITING_STOCK outcome rather than an error.
  *
  * `allocateOneAvailableStock` only RESERVES a row (status + orderId +
  * reservedAt); taking it to SOLD and stamping `soldAt` is the fulfilment step
  * `approveOrder` does in its own delivery loop, and this is that same step for
  * one item.
+ *
+ * The `notice` comes back ALONGSIDE the credential rather than being inferred
+ * from it: the swap and the buyer being told are two different facts, and a
+ * caller that conflates them ends up claiming a message was sent to a buyer who
+ * has no address of any kind.
  */
 async function issueReplacementCredential(
   db: Db,
   item: Awaited<ReturnType<typeof loadUnit>>,
-): Promise<StockItem | null> {
+): Promise<{ stockItem: StockItem; notice: ReplacementNotice } | null> {
   const reserved = await allocateOneAvailableStock(db, item.productId, item.order.id);
   if (!reserved) return null;
 
@@ -371,13 +464,21 @@ async function issueReplacementCredential(
     data: { status: StockStatus.SOLD, soldAt: new Date() },
   });
   await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: sold.id } });
-  await enqueueOrderDeliveredDm(db, {
-    orderId: item.order.id,
-    orderCode: item.order.orderCode,
-    telegramId: item.order.user.telegramId,
-    language: item.order.user.language,
-  });
-  return sold;
+  const notice = await notifyBuyerOfRedelivery(db, item);
+  return { stockItem: sold, notice };
+}
+
+/**
+ * The half-sentence the admin-facing audit line ends with, given how (or
+ * whether) the buyer was told. One helper so the opener and the retry cannot
+ * describe the same three outcomes differently.
+ */
+function noticeSentence(notice: ReplacementNotice, productName: string): string {
+  if (notice === "TELEGRAM_DM") return `A fresh ${productName} was sent to them.`;
+  if (notice === "GUEST_EMAIL") {
+    return `A fresh ${productName} is on their order page and they have been emailed a link to it.`;
+  }
+  return `A fresh ${productName} is waiting on their order page, but this buyer has no Telegram and no email address on file, so nobody has told them yet — please contact them.`;
 }
 
 /**
@@ -471,7 +572,7 @@ export async function replaceStockItem(
       stockReplacementId: replacementRow.id,
       from: StockReplacementStatus.REQUESTED,
       to: issued ? StockReplacementStatus.COMPLETED : StockReplacementStatus.AWAITING_STOCK,
-      data: issued ? { replacementStockItemId: issued.id } : undefined,
+      data: issued ? { replacementStockItemId: issued.stockItem.id } : undefined,
     });
 
     await logAdminAction(tx, {
@@ -480,11 +581,15 @@ export async function replaceStockItem(
       targetType: "stock_replacement",
       targetId: replacement.id,
       details: issued
-        ? `Replaced account ${which} on order ${item.order.orderCode} — the buyer reported: ${args.reason}. The old account was retired and a fresh ${item.product.name} was sent to them.`
+        ? `Replaced account ${which} on order ${item.order.orderCode} — the buyer reported: ${args.reason}. The old account was retired. ${noticeSentence(issued.notice, item.product.name)}`
         : `Retired account ${which} on order ${item.order.orderCode} — the buyer reported: ${args.reason}. There is no spare ${item.product.name} in stock, so the buyer is waiting for a restock or a refund.`,
     });
 
-    return { replacement, replacementStockItem: issued };
+    return {
+      replacement,
+      replacementStockItem: issued?.stockItem ?? null,
+      buyerNotified: issued?.notice != null,
+    };
   };
 
   // A `Tx` has no `$transaction` (Prisma strips it from the interactive
@@ -499,10 +604,15 @@ export async function replaceStockItem(
   // buyer's own `reason` is left out for the same purpose `createRefund` leaves
   // it out of its pino line — it is unbounded admin-written text, and the audit
   // entry above already carries the admin-facing account of this.
-  if (outcome.replacementStockItem) {
+  if (outcome.replacementStockItem && outcome.buyerNotified) {
     logger.info(
       { stockReplacementId: outcome.replacement.id, orderItemId: args.orderItemId },
-      `Replaced a bad account on order item ${args.orderItemId} under stock replacement ${outcome.replacement.id}: the delivered credential is now DEAD, a fresh one is SOLD against the same order, and the buyer's credentials message has been queued for re-sending by admin ${args.executedBy}.`,
+      `Replaced a bad account on order item ${args.orderItemId} under stock replacement ${outcome.replacement.id} by admin ${args.executedBy}: the delivered credential is now DEAD, a fresh one is SOLD against the same order, and a notification telling the buyer to collect it has been queued for the dispatcher.`,
+    );
+  } else if (outcome.replacementStockItem) {
+    logger.warn(
+      { stockReplacementId: outcome.replacement.id, orderItemId: args.orderItemId },
+      `Replaced a bad account on order item ${args.orderItemId} under stock replacement ${outcome.replacement.id} by admin ${args.executedBy}, but queued NOTHING to tell the buyer: they have no Telegram id and no guest email address, so there is no rail to notify them on. The fresh credential is SOLD against the order and readable on the order page, so the swap itself is complete — but as far as the buyer knows they are still holding a dead account, and only an admin contacting them out of band closes that gap.`,
     );
   } else {
     logger.warn(
@@ -549,13 +659,15 @@ export async function retryReplacementAllocation(
 
     const item = await loadUnit(tx, existing.orderItemId);
     const issued = await issueReplacementCredential(tx, item);
-    if (!issued) return { replacement: existing, replacementStockItem: null };
+    if (!issued) {
+      return { replacement: existing, replacementStockItem: null, buyerNotified: false };
+    }
 
     const replacement = await claimStockReplacementStatus(tx, {
       stockReplacementId: existing.id,
       from: StockReplacementStatus.AWAITING_STOCK,
       to: StockReplacementStatus.COMPLETED,
-      data: { replacementStockItemId: issued.id },
+      data: { replacementStockItemId: issued.stockItem.id },
     });
 
     const { index, total } = await unitPosition(tx, item.order.id, item.id);
@@ -564,19 +676,28 @@ export async function retryReplacementAllocation(
       action: "stock_replacement_completed",
       targetType: "stock_replacement",
       targetId: replacement.id,
-      details: `Handed over the replacement account ${index} of ${total} on order ${item.order.orderCode}, now that ${item.product.name} is back in stock. It has been sent to the buyer, who had been waiting since the complaint was recorded.`,
+      details: `Handed over the replacement account ${index} of ${total} on order ${item.order.orderCode}, now that ${item.product.name} is back in stock. The buyer had been waiting since the complaint was recorded. ${noticeSentence(issued.notice, item.product.name)}`,
     });
 
-    return { replacement, replacementStockItem: issued };
+    return {
+      replacement,
+      replacementStockItem: issued.stockItem,
+      buyerNotified: issued.notice != null,
+    };
   };
 
   const ownsTransaction = "$transaction" in db && typeof db.$transaction === "function";
   const outcome = ownsTransaction ? await db.$transaction(run) : await run(db);
 
-  if (outcome.replacementStockItem) {
+  if (outcome.replacementStockItem && outcome.buyerNotified) {
     logger.info(
       { stockReplacementId: outcome.replacement.id, orderItemId: outcome.replacement.orderItemId },
-      `Cleared stock replacement ${outcome.replacement.id} from AWAITING_STOCK: a restocked credential has been sold against the original order and queued for sending, so the buyer is no longer holding a dead account for that unit.`,
+      `Cleared stock replacement ${outcome.replacement.id} from AWAITING_STOCK: a restocked credential has been sold against the original order and a notification queued for the buyer, so they are no longer holding a dead account for that unit.`,
+    );
+  } else if (outcome.replacementStockItem) {
+    logger.warn(
+      { stockReplacementId: outcome.replacement.id, orderItemId: outcome.replacement.orderItemId },
+      `Cleared stock replacement ${outcome.replacement.id} from AWAITING_STOCK with a restocked credential, but queued NOTHING to tell the buyer: they have no Telegram id and no guest email address, so there is no rail to notify them on. The buyer has been waiting since the complaint was recorded and still does not know the account is there — an admin has to contact them out of band.`,
     );
   }
   return outcome;

@@ -206,6 +206,48 @@ describe("replaceStockItem — replacement stock available", () => {
     expect(rows[0]!.details).not.toContain("=");
   });
 
+  it("APPENDS its stamp to the retired credential's note, keeping what an admin had written there", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    const originalStockId = items[0]!.stockItemId!;
+    // An admin's own note about this very account — the kind of thing a support
+    // investigation reads, and the thing an overwriting stamp would destroy.
+    await prisma.stockItem.update({
+      where: { id: originalStockId },
+      data: { note: "Password rotated on request 2026-08-01; buyer confirmed access." },
+    });
+    await restock(1);
+
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "stopped working a week later",
+      executedBy: adminId,
+    });
+
+    const original = await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } });
+    expect(original.note).toContain("Password rotated on request 2026-08-01");
+    expect(original.note).toContain(`stock replacement #${replacement.id}`);
+  });
+
+  it("stamps a bare note when the credential had none, rather than a leading blank line", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    const originalStockId = items[0]!.stockItemId!;
+    expect(
+      (await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } })).note,
+    ).toBeNull();
+    await restock(1);
+
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+
+    const original = await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } });
+    expect(original.note).toBe(
+      `Reported bad by the buyer and taken out of use under stock replacement #${replacement.id}.`,
+    );
+  });
+
   it("leaves every other unit of a bulk order completely untouched", async () => {
     const { items } = await makeDeliveredOrder(5);
     const target = items[0]!;
@@ -238,12 +280,146 @@ describe("replaceStockItem — replacement stock available", () => {
   });
 });
 
+/**
+ * Who actually gets TOLD about a replacement, and what the shop claims about it.
+ *
+ * `enqueueOrderDeliveredDm` returns silently when `telegramId` is null, so a web
+ * buyer's "redelivery" used to be a no-op that the audit line, the pino line and
+ * the admin's toast all described as sent. The three cases below are the three
+ * kinds of buyer this shop has, and each one's claim has to be true.
+ */
+describe("replaceStockItem — telling the buyer", () => {
+  /** Turn the shared sample user into a guest shopper (no Telegram, one email)
+   *  — the shape `establishGuestCustomer` produces at storefront checkout. */
+  async function makeSampleUserAGuest(guestEmail: string | null) {
+    await prisma.user.update({
+      where: { id: sample.user.id },
+      data: { telegramId: null, isGuest: true, guestEmail },
+    });
+  }
+
+  it("DMs a buyer who has Telegram, and reports them as notified", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    await restock(1);
+
+    const outcome = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+
+    expect(outcome.buyerNotified).toBe(true);
+    const queued = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.event).toBe(NotificationEvent.ORDER_DELIVERED_DM);
+  });
+
+  it("emails a GUEST buyer a link to their order page, the rail a DM cannot reach them on", async () => {
+    await makeSampleUserAGuest("guest-buyer@example.com");
+    const { order, items } = await makeDeliveredOrder(1);
+    await restock(1);
+
+    const outcome = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "account banned within 24h",
+      executedBy: adminId,
+    });
+
+    expect(outcome.buyerNotified).toBe(true);
+    const queued = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.event).toBe(NotificationEvent.BUYER_EMAIL_ORDER_READY);
+    expect(queued[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(queued[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.to).toBe("guest-buyer@example.com");
+    expect(payload.order_code).toBe(order.orderCode);
+    // The email is a summary plus a link; the credential stays on the order
+    // page, which reads the now-repointed stock row live (CLAUDE.md).
+    expect(queued[0]!.payloadJson).not.toContain("@example.com:");
+    expect(queued[0]!.payloadJson).not.toContain("spare-");
+
+    const rows = await prisma.auditLog.findMany({
+      where: { targetType: "stock_replacement", targetId: outcome.replacement.id },
+    });
+    expect(rows[0]!.details).toContain("emailed");
+  });
+
+  it("refuses to claim delivery for a buyer reachable by nobody — no Telegram, no guest email", async () => {
+    // A registered web buyer who never linked Telegram: not a guest, so the
+    // guest-email rail does not apply to them either.
+    await prisma.user.update({
+      where: { id: sample.user.id },
+      data: { telegramId: null, isGuest: false, guestEmail: null },
+    });
+    const { order, items } = await makeDeliveredOrder(1);
+    await restock(1);
+
+    const outcome = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "invalid credentials",
+      executedBy: adminId,
+    });
+
+    // The swap itself still happened — only the claim about telling them is
+    // withheld.
+    expect(outcome.replacementStockItem).not.toBeNull();
+    expect(outcome.buyerNotified).toBe(false);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(0);
+
+    const rows = await prisma.auditLog.findMany({
+      where: { targetType: "stock_replacement", targetId: outcome.replacement.id },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toContain("nobody has told them");
+    expect(rows[0]!.details).not.toContain("was sent to them");
+  });
+
+  it("does not claim delivery for a guest whose checkout left no email address", async () => {
+    await makeSampleUserAGuest(null);
+    const { order, items } = await makeDeliveredOrder(1);
+    await restock(1);
+
+    const outcome = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+
+    expect(outcome.buyerNotified).toBe(false);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(0);
+  });
+
+  it("carries the same three outcomes through retryReplacementAllocation", async () => {
+    await makeSampleUserAGuest("guest-buyer@example.com");
+    const { order, items } = await makeDeliveredOrder(1);
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "dead",
+      executedBy: adminId,
+    });
+    expect(replacement.status).toBe(StockReplacementStatus.AWAITING_STOCK);
+    // Nothing was issued, so nobody was told anything.
+    expect(await prisma.notificationOutbox.count({ where: { orderId: order.id } })).toBe(0);
+    await restock(1);
+
+    const retried = await retryReplacementAllocation(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    expect(retried.buyerNotified).toBe(true);
+    const queued = await prisma.notificationOutbox.findMany({ where: { orderId: order.id } });
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.event).toBe(NotificationEvent.BUYER_EMAIL_ORDER_READY);
+  });
+});
+
 describe("replaceStockItem — no replacement stock", () => {
   it("parks the request at AWAITING_STOCK, unresolved, with the original still DEAD", async () => {
     const { order, items } = await makeDeliveredOrder(1);
     const originalStockId = items[0]!.stockItemId!;
 
-    const { replacement, replacementStockItem } = await replaceStockItem(prisma, {
+    const { replacement, replacementStockItem, buyerNotified } = await replaceStockItem(prisma, {
       orderItemId: items[0]!.id,
       reason: "dead on arrival",
       executedBy: adminId,
@@ -253,6 +429,10 @@ describe("replaceStockItem — no replacement stock", () => {
     expect(replacement.resolvedAt).toBeNull();
     expect(replacement.replacementStockItemId).toBeNull();
     expect(replacementStockItem).toBeNull();
+    // Nothing was handed over, so there is nothing the buyer could have been
+    // told about — `buyerNotified` is about a real message, not about the
+    // request being recorded.
+    expect(buyerNotified).toBe(false);
 
     const original = await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } });
     expect(original.status).toBe(StockStatus.DEAD);

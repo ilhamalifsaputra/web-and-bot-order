@@ -1878,14 +1878,25 @@ function storefrontBase(): string | null {
  * open (widening it is a matter of relaxing this one condition, but that is
  * out of scope here). A guest with no `guestEmail` has nowhere to receive it.
  *
+ * RETURNS WHETHER IT ACTUALLY ENQUEUED ANYTHING, so a caller that has to tell
+ * an admin whether the buyer was reached can know rather than assume. The
+ * delivery call sites above ignore it — for them "guest or not" is not a
+ * decision, it is just the shape of the buyer — but the stock-replacement
+ * service (crud/stockReplacement.ts) reports the answer in its audit line, and
+ * it must be THIS function's guard that decides it rather than a second copy of
+ * the condition that could drift away from this one.
+ *
  * NO CREDENTIALS CROSS THIS BOUNDARY. Note what is NOT read off `order` here:
  * `deliveredContent`, the admin-typed manual content, and the stock items'
  * credentials. Email is unencrypted and permanent, and the outbox payload is
  * additionally visible in the admin `/outbox` panel — the buyer reads what
  * they bought on the order page, which is exactly what this email links to.
  */
-async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithIncludes): Promise<void> {
-  if (!order.user.isGuest || !order.user.guestEmail) return;
+export async function enqueueBuyerOrderReadyEmailIfGuest(
+  db: Db,
+  order: OrderWithIncludes,
+): Promise<boolean> {
+  if (!order.user.isGuest || !order.user.guestEmail) return false;
 
   const toOrderCurrency = orderCurrencyConverter(order);
   const base = storefrontBase();
@@ -1995,6 +2006,7 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
     // order code back for a session and is their only way in.
     trackUrl: base ? `${base}/track` : null,
   });
+  return true;
 }
 
 /**

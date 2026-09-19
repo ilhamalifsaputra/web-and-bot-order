@@ -5662,6 +5662,13 @@ describe("settings: USDT rate from the market", () => {
   it("a rate outside the sanity band is refused with a specific reason, the old rate stands, and no admin is DMed", async () => {
     await setSetting(prisma, "usd_idr_rate", "16000");
     await setSetting(prisma, "usd_idr_rate_updated_at", new Date().toISOString());
+    // The deviation cap is measured market-to-market since D10, against
+    // `usd_idr_market_rate` — the last PRE-spread figure a refresh accepted — and
+    // an ABSENT reference deliberately skips the cap for one refresh (the same
+    // deploy grace the freshness stamp gives a missing stamp). So this test has to
+    // establish a reference, or it exercises the grace path rather than the band
+    // and the refresh it expects to be refused is accepted.
+    await setSetting(prisma, "usd_idr_market_rate", "16000");
     setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
 
     const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });

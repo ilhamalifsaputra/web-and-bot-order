@@ -3580,6 +3580,34 @@ describe("stock", () => {
     expect(audit?.details).toContain("Netflix Premium - 1 Month");
   });
 
+  it("a web upload notifies restock subscribers through the outbox and consumes their subscriptions", async () => {
+    const cat = await createCategory(prisma, `SubCat${counter++}`);
+    const parentProduct = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Spotify", description: "x" });
+    const denom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "3 Months",
+      type: ProductType.SHARED,
+      durationLabel: "3 Months",
+      price: "5.00",
+      description: "x",
+    });
+    const tgId = BigInt(900_000_000 + counter++);
+    const sub = await prisma.user.create({ data: { telegramId: tgId, referralCode: `sub${counter}`, language: "ID" } });
+    await prisma.restockSubscription.create({ data: { userId: sub.id, productId: denom.id } });
+
+    const res = await post(`/api/stock/${denom.id}/bulk-add`, seed.cookie, {
+      csrf_token: seed.csrf,
+      credentials: `sub${counter}@e.com:p`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: "RESTOCK_SUBSCRIBER_NOTIFIED" } });
+    const mine = rows.filter((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === Number(tgId));
+    expect(mine).toHaveLength(1);
+    expect(JSON.parse(mine[0]!.payloadJson)).toMatchObject({ product_name: "Spotify - 3 Months", buyer_language: "id" });
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(0);
+  });
+
   // bulk delete / download happy paths: covered by "stock JSON API —
   // bulk-dead, bulk-delete, item note/dead, download" below.
 
@@ -4067,9 +4095,39 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers["content-disposition"]).toContain("attachment");
       expect(res.headers["content-disposition"]).toContain("stock.csv");
       expect(res.body.split("\r\n")[0]).toBe(
-        "Denomination,Product,Category,Catalog Price (IDR),Catalog Price (USD),Available,Reserved,Sold,Waiting,Status",
+        "Denomination,Product,Category,Catalog Price (IDR),Catalog Price (USD),Available,Reserved,Sold,Restock Requests,Status",
       );
       expect(res.body).toContain(denom!.name);
+    });
+
+    it("blanks the Restock Requests cell unless the SKU is out of stock and has requests", async () => {
+      const cat = await createCategory(prisma, `CsvReqCat${counter++}`);
+      const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "CsvReqProd", description: "x" });
+      const mk = (name: string) =>
+        createDenomination(prisma, {
+          productId: parent.id,
+          name,
+          type: ProductType.SHARED,
+          durationLabel: name,
+          price: "5.00",
+          description: "x",
+        });
+      const outWith = await mk("OutWithReq");
+      const inWith = await mk("InWithReq");
+      await prisma.stockItem.create({ data: { productId: inWith.id, credentials: "x@e.com:p", status: "AVAILABLE" } });
+      for (const d of [outWith, inWith]) {
+        const u = await prisma.user.create({
+          data: { telegramId: BigInt(920_000_000 + counter++), referralCode: `csvreq${counter}` },
+        });
+        await prisma.restockSubscription.create({ data: { userId: u.id, productId: d.id } });
+      }
+
+      const res = await get("/api/stock/export", seed.cookie);
+      const rows = res.body.split("\r\n");
+      const cells = (name: string) => rows.find((r) => r.startsWith(`${name},`))!.split(",");
+      // Header order: ..., Sold(7), Restock Requests(8), Status(9)
+      expect(cells("OutWithReq")[8]).toBe("1");
+      expect(cells("InWithReq")[8]).toBe("");
     });
 
     it("includes the catalog price in rupiah and dollars when a rate is set", async () => {
@@ -6403,14 +6461,22 @@ describe("reviews moderation", () => {
 // ---- restock waitlist (Tier 2 §6) -----------------------------------------
 
 describe("restock waitlist", () => {
-  it("stock API surfaces the waiting count", async () => {
-    await prisma.restockSubscription.create({ data: { userId: seed.customerId, productId: seed.productId } });
+  it("stock API surfaces the waiting count for actionable subscribers only", async () => {
+    const webOnly = await prisma.user.create({ data: { telegramId: null, referralCode: `wo${counter++}` } });
+    await prisma.restockSubscription.create({ data: { userId: webOnly.id, productId: seed.productId } });
+    const before = (JSON.parse((await get(`/api/stock/${seed.productId}`, seed.cookie)).body) as { waiting: number }).waiting;
+
+    const linked = await prisma.user.create({
+      data: { telegramId: BigInt(910_000_000 + counter++), referralCode: `ln${counter}` },
+    });
+    await prisma.restockSubscription.create({ data: { userId: linked.id, productId: seed.productId } });
+
     const list = await get("/api/stock", seed.cookie);
     expect(list.statusCode).toBe(200);
+    expect((JSON.parse(list.body) as { waiting: Record<string, number> }).waiting[seed.productId]).toBe(before + 1);
     const detail = await get(`/api/stock/${seed.productId}`, seed.cookie);
     expect(detail.statusCode).toBe(200);
-    const detailData = JSON.parse(detail.body) as { waiting: number };
-    expect(detailData.waiting).toBeGreaterThan(0);
+    expect((JSON.parse(detail.body) as { waiting: number }).waiting).toBe(before + 1);
   });
 });
 

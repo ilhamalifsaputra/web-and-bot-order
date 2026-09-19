@@ -39,6 +39,7 @@ const EVENT_LABELS: Record<string, string> = {
   ORDER_MANUAL_DELIVERED_DM: "Manual order delivered (DM)",
   ORDER_PIPELINE_FAILED: "Order pipeline failed",
   PRODUCT_RESTOCKED_BROADCAST: "Product restocked broadcast",
+  RESTOCK_SUBSCRIBER_NOTIFIED: "Restock request notified",
   FLASH_SALE_BROADCAST: "Flash sale broadcast",
   ADMIN_MANUAL_ORDER_QUEUED: "Manual order queued",
   BULK_PURCHASE_BROADCAST: "Bulk purchase broadcast",

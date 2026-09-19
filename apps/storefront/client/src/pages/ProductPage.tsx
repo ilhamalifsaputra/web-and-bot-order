@@ -126,6 +126,8 @@ function ShareRow({ productName }: { productName: string }) {
   );
 }
 
+type RestockResult = "subscribed" | "already" | "unavailable" | "needs_telegram";
+
 export default function ProductPage() {
   const { slug = "" } = useParams<{ slug: string }>();
   const navigate = useNavigate();
@@ -200,13 +202,27 @@ export default function ProductPage() {
     onError: (err) => setCartError(err),
   });
   const restockMutation = useMutation({
-    mutationFn: (denominationId: number) => apiPost(`/api/v1/restock/${denominationId}`, {}),
+    mutationFn: (denominationId: number) => apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {}),
     onError: (err) => {
       if ((err as Error & { status?: number }).status === 401) {
         navigate(`/login?next=/p/${slug}`);
       }
     },
   });
+
+  // A result belongs to the plan it was requested for — clear it on a switch.
+  const resetRestock = restockMutation.reset;
+  useEffect(() => {
+    resetRestock();
+  }, [selectedId, slug, resetRestock]);
+
+  // Restock DMs go out over Telegram, so a signed-in account without a linked
+  // Telegram can't be served — hide the button and say why instead. Anonymous
+  // visitors keep it (tapping it sends them to log in).
+  const needsTelegram = Boolean(ctx?.customer) && ctx?.customer?.telegram_linked === false;
+  const restockResult = restockMutation.data?.result;
+  const restockDone = restockResult === "subscribed" || restockResult === "already";
+  const restockFeedbackKey = restockResult ? `web.restock_${restockResult}` : null;
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -437,15 +453,24 @@ export default function ProductPage() {
             ) : (
               // Out-of-stock restock CTA (works only when logged in).
               <form id="restock-form" className="mt-3" onSubmit={(e) => e.preventDefault()}>
-                <button
-                  type="button"
-                  className="btn btn-soft"
-                  disabled={restockMutation.isPending}
-                  onClick={() => restockMutation.mutate(selected.id)}
-                >
-                  {restockMutation.isPending && <Spinner />}
-                  <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-                </button>
+                {needsTelegram ? (
+                  <p className="text-sm text-ink-soft">{t("web.restock_needs_telegram")}</p>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-soft"
+                    disabled={restockMutation.isPending || restockDone}
+                    onClick={() => restockMutation.mutate(selected.id)}
+                  >
+                    {restockMutation.isPending && <Spinner />}
+                    <Bell className="w-4 h-4" /> {t("web.notify_restock")}
+                  </button>
+                )}
+                {restockFeedbackKey && (
+                  <p role="status" className="mt-2 text-sm text-ink-soft">
+                    {t(restockFeedbackKey)}
+                  </p>
+                )}
               </form>
             )}
           </div>
@@ -571,7 +596,7 @@ export default function ProductPage() {
           view beside the image, so it needs none of this. Shared component
           (components.md "Sticky purchase bar") — Add to Cart stays in the
           in-page form only, so just `primaryAction` is passed. */}
-      {!isDesktop && !buyAreaVisible && (
+      {!isDesktop && !buyAreaVisible && (purchasable(selected) || !needsTelegram) && (
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={selected.duration_label || selected.name}
@@ -588,11 +613,11 @@ export default function ProductPage() {
               : {
                   // Nothing to buy, but the bar still carries the one action
                   // that does exist — an empty bar is wasted screen on 320px.
-                  label: t("web.notify_restock"),
+                  label: restockFeedbackKey ? t(restockFeedbackKey) : t("web.notify_restock"),
                   icon: <Bell className="w-4 h-4" />,
                   onClick: () => restockMutation.mutate(selected.id),
                   pending: restockMutation.isPending,
-                  disabled: restockMutation.isPending,
+                  disabled: restockMutation.isPending || restockDone,
                   variant: "soft",
                 }
           }

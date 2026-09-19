@@ -510,6 +510,16 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;script&gt;");
   });
 
+  it("renders RESTOCK_SUBSCRIBER_NOTIFIED in the buyer's language and HTML-escapes the name", () => {
+    expect(render("RESTOCK_SUBSCRIBER_NOTIFIED", { product_name: "Netflix - 1 Month", buyer_language: "en" })).toBe(
+      "<b>Netflix - 1 Month</b> is back in stock.",
+    );
+    expect(render("RESTOCK_SUBSCRIBER_NOTIFIED", { product_name: "Netflix - 1 Month", buyer_language: "id" })).toBe(
+      "<b>Netflix - 1 Month</b> tersedia kembali.",
+    );
+    expect(render("RESTOCK_SUBSCRIBER_NOTIFIED", { product_name: "<b>x</b>" })).toContain("&lt;b&gt;x&lt;/b&gt;");
+  });
+
   it("renders FLASH_SALE_BROADCAST with the plan, percent off, new price and end time", () => {
     const out = render("FLASH_SALE_BROADCAST", {
       product_name: "CapCut Pro",

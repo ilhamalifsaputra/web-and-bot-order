@@ -2478,6 +2478,26 @@ describe("/api/v1/account twins", () => {
       });
       expect(ok.statusCode).toBe(200);
       expect(ok.json().redirect).toBe(`/p/${productSlug}`);
+      // The shared test account has no linked Telegram, so it cannot be served.
+      expect(ok.json().result).toBe("needs_telegram");
+      expect(await prisma.restockSubscription.count({ where: { productId: denomId } })).toBe(0);
+    });
+
+    it("restock subscribe reports subscribed, already and unavailable for a Telegram-linked account", async () => {
+      const uid = await makeUser("restocklinked", "restock-pw-123", "RESTOCKLNK");
+      await prisma.user.update({ where: { id: uid }, data: { telegramId: BigInt(880_000_123) } });
+      const session = await loginAs("restocklinked", "restock-pw-123");
+      const call = (id: number) =>
+        app.inject({
+          method: "POST",
+          url: `/api/v1/restock/${id}`,
+          headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+        });
+
+      expect((await call(denomId)).json().result).toBe("subscribed");
+      expect(await prisma.restockSubscription.count({ where: { userId: uid, productId: denomId } })).toBe(1);
+      expect((await call(denomId)).json().result).toBe("already");
+      expect((await call(999_999_999)).json().result).toBe("unavailable");
     });
 
     // Migrated from the deleted account.ts (docs/REACT_STOREFRONT_MIGRATION.md

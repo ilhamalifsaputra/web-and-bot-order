@@ -281,8 +281,8 @@ async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void
     for (const adminId of adminIds()) {
       try {
         // DM each admin in THEIR own language, not a hardcoded "en" (same
-        // per-recipient lookup pattern as notifyRestockSubscribers/
-        // closeTicketAdmin in handlers/admin.ts).
+        // per-recipient lookup pattern as closeTicketAdmin in
+        // handlers/admin.ts).
         const adminUser = await getUserByTelegramId(prisma, adminId);
         const recipientLang = adminUser ? langCode(adminUser.language) : "en";
         await ctx.api.sendMessage(

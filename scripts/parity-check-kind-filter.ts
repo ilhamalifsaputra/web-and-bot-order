@@ -323,9 +323,21 @@ async function idrEquivalent(db: Db, where: Record<string, unknown>) {
         : total.plus(amount);
     const spend = walletSpend.get(row.id);
     if (spend) {
+      // The conversion condition is the gateway leg's above VERBATIM, including
+      // its `row.currency === "USDT"` half. This replica used to test
+      // `row.fxRate != null` alone, which is a different rule: the day anything
+      // stamps an fxRate on an IDR order, production would count that order's
+      // USDT wallet leg unconverted while this script multiplied it by the rate,
+      // and the parity table would report a difference that exists only in the
+      // script. A replica that "improves on" the code under comparison cannot
+      // check it. See `combinedRevenueByDay`'s own comment on this exact line.
       total = total
         .plus(spend.idr)
-        .plus(row.fxRate != null ? spend.usdt.times(row.fxRate) : spend.usdt);
+        .plus(
+          row.currency === "USDT" && row.fxRate != null
+            ? spend.usdt.times(row.fxRate)
+            : spend.usdt,
+        );
     }
   }
   return total;
@@ -908,15 +920,31 @@ async function main() {
     report.failures.length > 0 ||
     structurallyBroken ||
     (report.inconclusive && !args.allowEmpty);
-  process.exit(failed ? 1 : 0);
+  // Set on `exitCode` and left to fall off the end, NOT `process.exit(...)`:
+  // the parity table printed above is this run's whole output, and `console.log`
+  // to a redirected stdout (a file, a pipe into `tee`, a CI log collector) is
+  // asynchronous — `process.exit` tears the process down without waiting for
+  // that write to drain, so the report gets truncated exactly when someone
+  // captured it to read later. Same reasoning and same fix as
+  // scripts/backfill-ledger-history.ts and scripts/seed-chart-of-accounts.ts.
+  process.exitCode = failed ? 1 : 0;
+  await prisma.$disconnect();
 }
 
 // Guarded so `main()` only runs when this file is executed directly, not when
 // the test file imports `runParityCheck` from it — an unguarded call would open
-// a database connection and `process.exit` as a side effect of that import.
+// a database connection and set an exit code as a side effect of that import.
 // Same guard, same reason, as check-detection-engine-purity.ts.
 const isMainModule =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
-  main();
+  main().catch(async (err: unknown) => {
+    // A throw here (an unreadable --since, a database that is not there) used to
+    // surface as an unhandled rejection, which prints a stack trace and, on some
+    // Node versions, a zero exit code. Reported as a message with a non-zero exit
+    // instead, matching backfill-ledger-history.ts.
+    console.error(err instanceof Error ? err.message : String(err));
+    await prisma.$disconnect().catch(() => {});
+    process.exit(1);
+  });
 }

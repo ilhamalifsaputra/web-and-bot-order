@@ -899,6 +899,14 @@ export interface DayRefunds {
  * See `refundTotalsSince` above for why this reads COMPLETED
  * `RefundExecution.amount` bucketed on `executedAt`, and not `Refund.amount` or
  * `createdAt`.
+ *
+ * NO PRODUCTION CALLER TODAY — this is exported and covered by tests, but no
+ * route, job, bot handler or admin page reads it yet. It was built alongside
+ * `refundTotalsSince` (which the Net Sales KPI does use) so the daily series
+ * exists the moment a refunds chart is added, and its shape is pinned to
+ * `revenueByDay`'s for exactly that. Recorded here rather than left to be
+ * rediscovered: a reader tracing "where does the dashboard get its refund
+ * series" should not have to grep to learn the answer is "nowhere yet".
  */
 export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
   const now = new Date();

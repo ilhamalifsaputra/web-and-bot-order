@@ -2146,12 +2146,30 @@ model LedgerEntry {
 /// reopen or invalidate its parent Refund, so an admin can record a second
 /// attempt as a new row while the first stays readable as history.
 ///
-/// Written by `executeRefund` (packages/db/src/crud/refunds.ts), which is the
-/// only thing that creates a COMPLETED row: it pays the buyer (a wallet credit,
-/// or an out-of-band transfer evidenced by `proofFileId`), records the payout
-/// here, and posts the matching double-entry ledger event, all in one
-/// transaction. A FAILED row is the other case and is written by hand after the
-/// fact, when a transfer that really was attempted bounced.
+/// `executeRefund` (packages/db/src/crud/refunds.ts) is the ONLY thing that
+/// writes this table at all: it pays the buyer (a wallet credit, or an
+/// out-of-band transfer evidenced by `proofFileId`), records the payout here, and
+/// posts the matching double-entry ledger event, all in one transaction. It
+/// always inserts COMPLETED — see its own comment for why it never writes a
+/// PENDING row first — so COMPLETED is the only status any row in this table
+/// currently carries in production.
+///
+/// PENDING and FAILED are therefore both UNREACHABLE today, and the `status`
+/// column's default of PENDING is never taken. This used to say a FAILED row "is
+/// written by hand after the fact, when a transfer that really was attempted
+/// bounced", which described a path that does not exist: there is no crud
+/// function, no route and no admin screen that records a bounced payout, and
+/// `executeRefund` deliberately writes nothing on failure (a mid-flight error
+/// rolls the whole attempt away). The only thing that has ever written a FAILED
+/// row is a test's own `prisma.refundExecution.create`.
+///
+/// The two values stay in the enum because the read side already handles them —
+/// `reconcileLedger` and the refund reporting in crud/revenue.ts both filter on
+/// `status: COMPLETED` precisely so a non-landed attempt cannot be counted as
+/// money that moved — so whatever eventually records a bounced transfer will not
+/// have to touch those consumers. Until something does, do not read a FAILED row
+/// as evidence of a real failed payout: read it as something that wrote around
+/// the application.
 model RefundExecution {
   id          Int       @id @default(autoincrement())
   refundId    Int       @map("refund_id")

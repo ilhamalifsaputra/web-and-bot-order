@@ -638,6 +638,16 @@ export async function getAccountBalance(db: Db, accountCode: string): Promise<De
  * comparable line by line.
  *
  * Read-only, for the reconciliation milestone and for manual admin inspection.
+ *
+ * NO PRODUCTION CALLER TODAY — exported and covered by tests, but no route, job
+ * or admin page renders it yet (`reconcileLedger` uses `getAccountBalance` for
+ * the one control account it checks, not this). Noted so a reader does not assume
+ * an admin is looking at these numbers somewhere. Worth knowing before trusting
+ * them: with no SETTLEMENT posting in the system, `cash.*` only ever goes
+ * negative and `provider_clearing.*` never drains, so a trial balance rendered
+ * today would show a structurally misleading cash position — see the ledger's
+ * open design questions, not a bug in this function.
+ *
  * It does NOT assert that debits equal credits across accounts: that property is
  * true by construction, because `postFinancialTransaction` refuses to write an
  * unbalanced posting in the first place. A trial balance that does not balance

@@ -562,14 +562,24 @@ describe("scenario 3 — a partial refund on the day of the sale", () => {
     // ── the dashboard ──
     // Revenue Today is a GROSS figure and a partial refund does not touch it
     // (the order never leaves DELIVERED) — metrics contract, "Revenue Today".
-    expect((await revenueSummary(prisma, since)).revenue_idr.toString()).toBe(total.toString());
+    const revenueToday = (await revenueSummary(prisma, since)).revenue_idr;
+    const refundsToday = (await refundTotalsSince(prisma, since)).refunds_idr;
+    const netToday = (await netSalesSince(since)).idr;
+    expect(revenueToday.toString()).toBe(total.toString());
     expect((await grossSalesForNetSales(prisma, since)).idr.toString()).toBe(total.toString());
-    expect((await refundTotalsSince(prisma, since)).refunds_idr.toString()).toBe(paidBack.toString());
-    expect((await netSalesSince(since)).idr.toString()).toBe(total.minus(paidBack).toString());
+    expect(refundsToday.toString()).toBe(paidBack.toString());
+    expect(netToday.toString()).toBe(total.minus(paidBack).toString());
     // On a partial-refund day the "Revenue = Net + Refunds" identity DOES hold,
-    // because both figures count the sale exactly once. The full-refund
-    // scenario below is where it correctly breaks.
-    expect(total.toString()).toBe(total.minus(paidBack).plus(paidBack).toString());
+    // because both figures count the sale exactly once. The full-refund scenario
+    // below is where it correctly breaks.
+    //
+    // Asserted between the three figures the dashboard functions ACTUALLY
+    // returned, which is the only form of this that tests anything: the previous
+    // version compared `total` against `total.minus(paidBack).plus(paidBack)`,
+    // which is `x - a + a === x` — true for every x and a, with no call to any
+    // code under test in it, so it would have passed with all three dashboard
+    // figures wrong.
+    expect(new Decimal(netToday).plus(refundsToday).toString()).toBe(revenueToday.toString());
 
     // ── the drift detector ──
     await expectBooksReconcile();

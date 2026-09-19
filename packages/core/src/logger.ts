@@ -17,14 +17,15 @@ export const updateCtx = new AsyncLocalStorage<{ updateId?: number }>();
  * the tree (wrappers via `error`, `aggregateErrors`); `cause` is already
  * flattened by pino into message/stack only.
  */
-function stripPayload(node: unknown, seen = new Set<object>()): void {
-  if (typeof node !== "object" || node === null || seen.has(node)) return;
+function stripPayload(node: unknown, depth = 0, seen = new Set<object>()): void {
+  // Depth cap: an error may carry a large object graph (e.g. a grammY ctx).
+  if (depth > 5 || typeof node !== "object" || node === null || seen.has(node)) return;
   seen.add(node);
   // A serialized error is a fresh object we own; plain objects may be caller data.
   if (Object.getPrototypeOf(node) !== Object.prototype && "payload" in node && "method" in node) {
     delete (node as { payload?: unknown }).payload;
   }
-  for (const v of Object.values(node)) stripPayload(v, seen);
+  for (const v of Object.values(node)) stripPayload(v, depth + 1, seen);
 }
 
 /** pino's default `err` serializer minus Telegram request payloads. */

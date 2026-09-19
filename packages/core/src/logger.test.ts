@@ -49,10 +49,20 @@ describe("safeErr", () => {
     expect(JSON.stringify(safeErr(wrapper))).not.toContain("SECRET");
   });
 
-  it("redacts a payload reachable through a cause chain", () => {
+  // Guards against a future pino upgrade serializing causes structurally.
+  it("flattens a cause to text only, so the payload never appears", () => {
     const outer = new Error("outer", { cause: build() });
     const outer2 = new Error("outer2", { cause: outer });
     expect(JSON.stringify(safeErr(outer2))).not.toContain("SECRET");
+  });
+
+  it("removes a payload nested within the depth cap and survives a deep graph", () => {
+    const nested = Object.assign(new Error("a"), { ctx: { deeper: { error: build() } } });
+    expect(JSON.stringify(safeErr(nested))).not.toContain("SECRET");
+    let deep: Record<string, unknown> = {};
+    const root = Object.assign(new Error("d"), { graph: deep });
+    for (let i = 0; i < 10000; i++) deep = (deep.next = {});
+    expect(() => safeErr(root)).not.toThrow();
   });
 
   it("does not mutate the original error", () => {

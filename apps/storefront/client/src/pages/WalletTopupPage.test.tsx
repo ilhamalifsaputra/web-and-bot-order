@@ -31,6 +31,10 @@ const baseData: WalletTopupData = {
     bybit_bsc: "0.07",
     nowpayments: "0.07",
   },
+  // The server folds the top-up bound and the rail floors into one figure (F4b);
+  // in this fixture the top-up bound is the higher of the two, so it wins.
+  effective_min_idr: "50000",
+  effective_min_usdt: "5",
   wallet_idr: "0",
   wallet_usdt: "0",
 };
@@ -239,6 +243,54 @@ describe("WalletTopupPage", () => {
       await screen.findByRole("heading", { name: "Top up wallet" });
       fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "100000" } });
       expect(screen.getByText("QRIS")).toBeInTheDocument();
+    });
+  });
+
+  // Whole-branch review F4b. The hint read `min_idr`/`min_usdt` — the top-up
+  // bounds alone — so a shop whose rail floor was higher advertised a minimum the
+  // create call then refused. Both the sentence and the submit button now read the
+  // server's effective minimum.
+  describe("the advertised minimum (F4b)", () => {
+    // A shop with no top-up bound of its own, where the rail floor is the only
+    // thing binding: the old code showed no minimum at all here.
+    const railFloorOnly: WalletTopupData = {
+      ...baseData,
+      min_idr: null,
+      min_usdt: null,
+      max_idr: null,
+      max_usdt: null,
+      rail_min: { ...baseData.rail_min, qris: "10000" },
+      effective_min_idr: "10000",
+      effective_min_usdt: "0.07",
+    };
+
+    it("shows the effective minimum, not the raw top-up bound", async () => {
+      renderTopup(() => railFloorOnly);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      expect(screen.getByText("Minimum Rp10.000.")).toBeInTheDocument();
+    });
+
+    it("blocks an amount under the effective minimum even though no top-up bound is set", async () => {
+      renderTopup(() => railFloorOnly);
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      const submit = screen.getByRole("button", { name: "Top up now" });
+
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "5000" } });
+      expect(submit).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "10000" } });
+      expect(submit).not.toBeDisabled();
+    });
+
+    it("renders the range hint from the effective minimum and the configured maximum", async () => {
+      renderTopup(() => ({ ...railFloorOnly, max_idr: "5000000" }));
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      expect(screen.getByText("Between Rp10.000 and Rp5.000.000.")).toBeInTheDocument();
+    });
+
+    it("shows no minimum at all when neither bound exists", async () => {
+      renderTopup(() => ({ ...railFloorOnly, effective_min_idr: null }));
+      await screen.findByRole("heading", { name: "Top up wallet" });
+      expect(screen.queryByText(/Minimum/)).not.toBeInTheDocument();
     });
   });
 

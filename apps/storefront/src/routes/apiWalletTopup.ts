@@ -29,6 +29,7 @@ import {
   getNowpaymentsCreds,
   resolveWalletTopupLimits,
   resolveWalletTopupRailFloor,
+  resolveWalletTopupEffectiveMin,
   createWalletTopupOrder,
   type WalletTopupIdrMethod,
   type WalletTopupUsdtMethod,
@@ -125,6 +126,35 @@ async function railFloors(fxRate: Decimal | null): Promise<Record<string, string
   return out;
 }
 
+/**
+ * The minimum the form should ADVERTISE for `currency` (whole-branch review F4b):
+ * `max(wallet_topup_min_amount_*, the lowest floor among the rails on offer)`,
+ * or null when neither exists.
+ *
+ * `web.wallet_topup_min_hint` used to read `min_idr`/`min_usdt` alone, so a shop
+ * with a Rp10.000 rail floor and a Rp1.000 top-up bound printed "Minimum Rp1.000"
+ * and then refused the buyer at Rp5.000 — the form and the guard quoting different
+ * figures on consecutive screens.
+ *
+ * `enabledTokens` matters: a floor belonging to a rail this shop has not
+ * configured is not a floor this buyer can hit, and folding it in would advertise
+ * a minimum higher than anything that can actually refuse them.
+ */
+async function effectiveMin(
+  currency: "IDR" | "USDT",
+  fxRate: Decimal | null,
+  enabledTokens: ReadonlySet<string>,
+): Promise<Decimal | null> {
+  const methods = TOPUP_RAILS.filter(
+    ([token, , railCurrency]) => railCurrency === currency && enabledTokens.has(token),
+  ).map(([, method]) => method);
+  // No rate means no USDT rail is on offer, so `methods` is empty and the rail
+  // side is vacuous — the rate below is only there to satisfy the signature.
+  const query =
+    currency === "IDR" ? ({ currency: "IDR" } as const) : ({ currency: "USDT", rate: fxRate ?? 1 } as const);
+  return resolveWalletTopupEffectiveMin(prisma, { ...query, methods });
+}
+
 const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
   // ---- Gateway availability + limits + current balances ----
   app.get("/wallet/topup", async (req, reply) => {
@@ -142,14 +172,31 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       resolveWalletTopupLimits(prisma),
     ]);
     const haveRate = Boolean(fxRate);
+    const enabled: Record<string, boolean> = {
+      qris: Boolean(tokopay),
+      paydisini: Boolean(paydisini),
+      binance: haveRate && binance.enabled,
+      bybit: haveRate && bybit.enabled,
+      bybit_bsc: haveRate && bybitBsc.enabled,
+      nowpayments: haveRate && Boolean(nowpayments),
+    };
+    const enabledTokens = new Set(Object.keys(enabled).filter((token) => enabled[token]));
+    const [minIdr, minUsdt] = await Promise.all([
+      effectiveMin("IDR", fxRate, enabledTokens),
+      effectiveMin("USDT", fxRate, enabledTokens),
+    ]);
 
     return reply.send({
-      idr_enabled: Boolean(tokopay),
-      paydisini_enabled: Boolean(paydisini),
-      binance_enabled: haveRate && binance.enabled,
-      bybit_enabled: haveRate && bybit.enabled,
-      bybit_bsc_enabled: haveRate && bybitBsc.enabled,
-      nowpayments_enabled: haveRate && Boolean(nowpayments),
+      idr_enabled: enabled.qris,
+      paydisini_enabled: enabled.paydisini,
+      binance_enabled: enabled.binance,
+      bybit_enabled: enabled.bybit,
+      bybit_bsc_enabled: enabled.bybit_bsc,
+      nowpayments_enabled: enabled.nowpayments,
+      // The raw top-up bounds, as configured. `min_*` is NOT what the form
+      // advertises — see `effective_min_*` below — and is kept in the payload
+      // because it is the input that figure is derived from, which is what makes
+      // a surprising advertised minimum diagnosable from the response alone.
       min_idr: limits.minIdr ? limits.minIdr.toString() : null,
       max_idr: limits.maxIdr ? limits.maxIdr.toString() : null,
       min_usdt: limits.minUsdt ? limits.minUsdt.toString() : null,
@@ -158,6 +205,11 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       // can drop a rail the typed amount cannot be paid through instead of
       // offering it and having the create call refuse it.
       rail_min: await railFloors(fxRate),
+      // The minimum to SHOW and to validate against (F4b): the top-up bound and
+      // the rail floors fold into one figure, so the form can never advertise a
+      // number the create call would refuse.
+      effective_min_idr: minIdr ? minIdr.toString() : null,
+      effective_min_usdt: minUsdt ? minUsdt.toString() : null,
       wallet_idr: new Decimal(customer.user.walletBalance).toString(),
       wallet_usdt: new Decimal(customer.user.walletBalanceUsdt).toString(),
     });

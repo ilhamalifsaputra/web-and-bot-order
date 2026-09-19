@@ -25,6 +25,7 @@ import {
   countUserPendingOrders,
   createWalletTopupOrder,
   resolveWalletTopupLimits,
+  resolveWalletTopupEffectiveMin,
   walletTopupClearsRailMinimum,
   hasPendingWalletTopupOrder,
   resolveBinanceInternalConfig,
@@ -87,9 +88,21 @@ function fmtBound(v: Decimal, currency: "IDR" | "USDT"): string {
  * message — mirrors checkout.ts's minAmountNote (blank when neither bound is
  * configured). Client-side UX only; createWalletTopupOrder re-validates for
  * real (packages/db/src/crud/wallet_topup.ts's own doc-comment).
+ *
+ * `min` is passed in rather than read off `limits` (whole-branch review F4b): the
+ * figure to advertise is the EFFECTIVE minimum — `max(wallet_topup_min_amount_*,
+ * the lowest floor among the rails this currency can be paid through)` — and only
+ * the caller knows which rails those are. Quoting `limits` alone is what let a
+ * shop say "Minimum Rp1.000" and then refuse the buyer at Rp5.000 because a rail
+ * floor it never mentioned was Rp10.000. The MAX still comes from `limits`: it is
+ * a top-up bound only, with no rail equivalent.
  */
-function topupRangeLine(ctx: MyContext, limits: WalletTopupLimits, currency: "IDR" | "USDT"): string {
-  const min = currency === "IDR" ? limits.minIdr : limits.minUsdt;
+function topupRangeLine(
+  ctx: MyContext,
+  limits: WalletTopupLimits,
+  currency: "IDR" | "USDT",
+  min: Decimal | null,
+): string {
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
   if (min && max) return "\n\n" + t(ctx, "wallet.topup_range_hint", { min: fmtBound(min, currency), max: fmtBound(max, currency) });
   if (min) return "\n\n" + t(ctx, "wallet.topup_min_hint", { min: fmtBound(min, currency) });
@@ -124,11 +137,42 @@ export async function showWalletTopupMenu(ctx: MyContext): Promise<void> {
   await smartEdit(ctx, t(ctx, "wallet.topup_choose_currency"), ckb.topupCurrencyKb(lang));
 }
 
+/**
+ * The bounds to advertise for `currency`, and to judge a typed amount against
+ * (whole-branch review F4b).
+ *
+ * One place so the prompt, the invalid-entry re-prompt and the acceptance check
+ * can never quote or apply different figures — which is exactly how a buyer ended
+ * up reading a minimum on one screen and being refused by a different one on the
+ * next. `resolveWalletTopupEffectiveMin` is handed the rails this currency is
+ * actually offered on, since a floor belonging to a rail the shop has not
+ * configured is not a floor this buyer can hit.
+ */
+async function topupBounds(
+  currency: "IDR" | "USDT",
+): Promise<{ limits: WalletTopupLimits; min: Decimal | null }> {
+  const limits = await resolveWalletTopupLimits(prisma);
+  const { rate, methods } = await offeredTopupRails(currency, null);
+  const query =
+    currency === "IDR"
+      ? ({ currency: "IDR" } as const)
+      : // No rate means no USDT rail is offered at all, so there is no rail floor
+        // to fold in and the top-up bound stands alone. `resolveWalletTopupEffectiveMin`
+        // needs SOME rate for its signature, and with an empty `methods` list it
+        // never uses it.
+        ({ currency: "USDT", rate: rate ?? 1 } as const);
+  const min = await resolveWalletTopupEffectiveMin(prisma, { ...query, methods });
+  return { limits, min };
+}
+
 /** Currency picked -> prompt for the amount (captured as free text). */
 export async function promptTopupAmount(ctx: MyContext, currency: "IDR" | "USDT"): Promise<void> {
   const lang = ctx.session.lang;
-  const limits = await resolveWalletTopupLimits(prisma);
-  const text = t(ctx, "wallet.topup_amount_prompt", { currency, range_line: topupRangeLine(ctx, limits, currency) });
+  const { limits, min } = await topupBounds(currency);
+  const text = t(ctx, "wallet.topup_amount_prompt", {
+    currency,
+    range_line: topupRangeLine(ctx, limits, currency, min),
+  });
   await smartEdit(ctx, text, ckb.topupAmountCancelKb(lang));
   // smartEdit just cleared this — set it AFTER rendering, same ordering
   // customer.qtyInputStart uses for awaitingQtyDenomId.
@@ -146,15 +190,17 @@ export async function promptTopupAmount(ctx: MyContext, currency: "IDR" | "USDT"
 export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "USDT", rawText: string): Promise<void> {
   await consumeInput(ctx);
   const lang = ctx.session.lang;
-  const limits = await resolveWalletTopupLimits(prisma);
-  const rangeLine = topupRangeLine(ctx, limits, currency);
+  const { limits, min } = await topupBounds(currency);
+  const rangeLine = topupRangeLine(ctx, limits, currency, min);
 
   // Length cap before parsing — same defensive spirit as handleQtyTextInput's
   // digit-string checks, just guarding against a pathologically long paste
   // rather than a real amount.
   const trimmed = rawText.trim().replace(/,/g, "");
   const amount = trimmed.length <= 20 && /^\d+(\.\d+)?$/.test(trimmed) ? new Decimal(trimmed) : null;
-  const min = currency === "IDR" ? limits.minIdr : limits.minUsdt;
+  // `min` is the EFFECTIVE minimum (F4b), so an amount no configured rail would
+  // accept is refused here — on the screen the buyer can retype into — instead of
+  // being carried into a gateway picker that would have nothing in it.
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
   const valid =
     amount !== null &&

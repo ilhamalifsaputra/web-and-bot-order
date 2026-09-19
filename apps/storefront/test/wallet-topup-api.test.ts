@@ -18,6 +18,7 @@ import {
   WALLET_TOPUP_MIN_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
   BYBIT_MIN_AMOUNT_KEY,
+  TOKOPAY_MIN_AMOUNT_KEY,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { hashPassword } from "@app/core/password";
@@ -153,6 +154,74 @@ describe("GET /api/v1/wallet/topup", () => {
     } finally {
       await deleteSetting(prisma, BYBIT_MIN_AMOUNT_KEY);
     }
+  });
+
+  // Whole-branch review F4b. `web.wallet_topup_min_hint` read only
+  // `wallet_topup_min_amount_*`, so a shop could advertise "Minimum Rp1.000" and
+  // refuse the buyer at Rp5.000 because of a rail floor the hint never mentioned.
+  // The payload now carries the EFFECTIVE minimum as well: the larger of the
+  // top-up bound and the LOWEST floor among the rails this currency is offered on
+  // (lowest, because the rails are alternatives — an amount one refuses may still
+  // be payable through a cheaper-floored sibling, and F3 filters the refusing one
+  // out of the picker instead).
+  describe("the effective minimum the form advertises", () => {
+    let cookie: string;
+
+    beforeAll(async () => {
+      await makeUser("wteffmin", "wteffmin-pw-123", "WTEFFMIN");
+      ({ cookie } = await loginAs("wteffmin", "wteffmin-pw-123"));
+    });
+
+    function get() {
+      return app.inject({ method: "GET", url: "/api/v1/wallet/topup", headers: { cookie } });
+    }
+
+    it("reports the rail floor when no top-up bound is set at all", async () => {
+      // Only TokoPay is configured for IDR here, and it falls back to the
+      // shop-wide Rp1.000. `min_idr` is null — the figure to show is not the one
+      // the top-up settings hold.
+      const body = (await get()).json();
+      expect(body.min_idr).toBeNull();
+      expect(body.effective_min_idr).toBe("1000");
+    });
+
+    it("reports the top-up bound when IT is the higher of the two", async () => {
+      await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "50000");
+      try {
+        expect((await get()).json().effective_min_idr).toBe("50000");
+      } finally {
+        await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY);
+      }
+    });
+
+    it("reports the rail's own floor when THAT is the higher of the two", async () => {
+      await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "1000");
+      await setSetting(prisma, TOKOPAY_MIN_AMOUNT_KEY, "20000");
+      try {
+        expect((await get()).json().effective_min_idr).toBe("20000");
+      } finally {
+        await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY);
+        await deleteSetting(prisma, TOKOPAY_MIN_AMOUNT_KEY);
+      }
+    });
+
+    it("converts the shop-wide Rupiah floor for the USDT side, rounding up so the advertised figure really clears it", async () => {
+      // Rp1.000 at 16.000 is 0.0625 USDT; a figure rounded DOWN would be
+      // advertised and then refused.
+      expect((await get()).json().effective_min_usdt).toBe("0.07");
+    });
+
+    it("takes the LOWEST floor when two rails for the same currency disagree", async () => {
+      // Bybit is the only USDT rail configured in this file, so give it a high
+      // floor and check the figure follows it rather than the shop-wide fallback
+      // of a rail that is not on offer.
+      await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "25");
+      try {
+        expect((await get()).json().effective_min_usdt).toBe("25");
+      } finally {
+        await deleteSetting(prisma, BYBIT_MIN_AMOUNT_KEY);
+      }
+    });
   });
 });
 

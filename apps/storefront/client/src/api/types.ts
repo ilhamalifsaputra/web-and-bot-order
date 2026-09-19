@@ -422,6 +422,17 @@ export interface WalletTopupData {
    * rail the amount cannot be paid through.
    */
   rail_min: Record<string, string | null>;
+  /**
+   * The minimum the form ADVERTISES and validates against (whole-branch review
+   * F4b): `max(min_*, the lowest rail floor among the rails on offer)`, null when
+   * neither bound exists.
+   *
+   * Use this, not `min_idr`/`min_usdt`, for the hint and the client-side check.
+   * Reading the raw bound is what let the page say "Minimum Rp1.000" and then
+   * have the create call refuse Rp5.000 over a rail floor it never mentioned.
+   */
+  effective_min_idr: string | null;
+  effective_min_usdt: string | null;
   wallet_idr: string;
   wallet_usdt: string;
 }

@@ -156,6 +156,17 @@ function useAdmins() {
  * GET /api/orders/:orderId is gated to non-readonly roles (blockReadonlyReads),
  * so for a readonly admin this query simply fails and the card is not rendered
  * — the rest of the ticket page is unaffected.
+ *
+ * NOTE ON CREDENTIALS: that route returns each unit's `stockItem.credentials`,
+ * so the delivered account credentials DO arrive in this page's response even
+ * though `<OrderUnitsCard showCredentials={false} />` below never renders them.
+ * `showCredentials` is a presentation choice, not a fetch scope — the data sits
+ * in the React Query cache under the shared `["order", id]` key either way. It
+ * is not a new exposure (the same admin can read the same field on the order
+ * detail page, and the route's own RBAC is what gates access to it), but do not
+ * read `showCredentials={false}` as "this page cannot see credentials". If that
+ * ever needs to be true, the route needs a projection — hiding the column here
+ * would not achieve it.
  */
 function useLinkedOrderUnits(orderId: number | null) {
   return useQuery<OrderUnitsData>({

@@ -2078,6 +2078,11 @@ model FinancialTransaction {
 
   @@index([referenceType, referenceId], map: "ix_financial_tx_reference")
   @@index([type, occurredAt], map: "ix_financial_tx_type_occurred")
+  // Index the self-FK so "has this transaction already been reversed?" (the
+  // `reversals` back-relation) is a lookup rather than a full scan, and so the
+  // Restrict above does not have to scan the whole table on every delete.
+  // Same index-every-FK-column convention the rest of this schema follows.
+  @@index([reversalOfId], map: "ix_financial_tx_reversal_of")
   @@map("financial_transactions")
 }
 
@@ -2283,12 +2288,18 @@ model SettlementTransaction {
   payment    Payment?   @relation(fields: [paymentId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([settlementId], map: "ix_settlement_tx_settlement_id")
+  // "Which settlement line(s) settled this Payment?" — the reconciliation read
+  // in the other direction, and the index the Restrict on `payment` needs so
+  // deleting a Payment does not scan every settlement line ever recorded.
+  @@index([paymentId], map: "ix_settlement_tx_payment_id")
   @@map("settlement_transactions")
 }
 
 /// One buyer complaint that a DELIVERED credential is bad, and what was done
-/// about it (Financial Ledger M18 — schema only; the `replaceStockItem` service
-/// is M19 and the admin UI is M20, so nothing writes this table yet).
+/// about it (Financial Ledger M18 — this table; M19 — the `replaceStockItem` /
+/// `retryReplacementAllocation` / `refundInsteadOfReplace` services in
+/// packages/db/src/crud/stockReplacement.ts, which are the ONLY writers; M20 —
+/// the web-admin order/ticket UI that drives them).
 ///
 /// Per-unit by construction, with no new granularity mechanism needed: this
 /// schema already stores a bulk purchase as one `OrderItem` ROW PER UNIT rather
@@ -2303,18 +2314,18 @@ model SettlementTransaction {
 /// stock row. `markStockDead`/`bulkMarkStockDead` (packages/db/src/crud/
 /// stock.ts) deliberately REFUSE to touch a SOLD row — "a delivered credential
 /// is never altered" — and that refusal is not to be loosened for this feature.
-/// M19's service gets its OWN narrow, audited path to record a replacement; the
-/// delivered row's history stays intact and the swap is described HERE, by a
-/// row that names both sides.
+/// M19's service has its OWN narrow, audited path (`killDeliveredStockItem`) to
+/// record a replacement; the delivered row's history stays intact and the swap
+/// is described HERE, by a row that names both sides.
 ///
 /// `replacementStockItemId`, `refundId` and `supportTicketId` are all nullable
 /// because they describe three genuinely independent outcomes/origins rather
 /// than one required chain:
 ///  - a request in REQUESTED/AWAITING_STOCK has no replacement yet, and one
 ///    that ends REFUNDED_INSTEAD never will (its `refundId` is set instead);
-///  - `refundId` is only set on the refund-fallback branch, which will be the
-///    FIRST production caller of `createRefund`/`createRefundItem` — that
-///    infrastructure has zero production call sites as of this milestone;
+///  - `refundId` is only set on the refund-fallback branch
+///    (`refundInsteadOfReplace`), which is the FIRST — and still the only —
+///    production caller of `createRefund`/`createRefundItem`/`executeRefund`;
 ///  - `supportTicketId` links the ticket the complaint arrived on, but an admin
 ///    may also record a replacement from a Telegram DM or a phone call that
 ///    never became a ticket.
@@ -2346,7 +2357,8 @@ model StockReplacement {
   /// FAILED (StockReplacementStatus, @app/core/enums). String, not a native
   /// Prisma enum, matching every other lifecycle-status column in this schema
   /// (`Order.status`, `Refund.status`, `OrderItem.status`). The state machine
-  /// that governs these transitions is M19's job and does not exist yet.
+  /// that governs these transitions is `STOCK_REPLACEMENT_LEGAL_TRANSITIONS`
+  /// (packages/db/src/crud/stockReplacement.ts).
   status                 String    @default("REQUESTED")
   /// User.id of the admin who opened this request. Required: replacing a
   /// delivered credential is a state change that must always be attributable
@@ -2379,12 +2391,22 @@ model StockReplacement {
   supportTicket SupportTicket? @relation(fields: [supportTicketId], references: [id], onDelete: Restrict, onUpdate: NoAction)
 
   @@index([orderItemId], map: "ix_stock_replacements_order_item")
-  // The "has this delivered credential already been replaced once?" lookup M19
-  // needs before issuing another, and the same index-every-FK-column convention
+  // The "has this delivered credential already been replaced once?" lookup
+  // `replaceStockItem` runs before issuing another, and the same
+  // index-every-FK-column convention
   // RefundItem follows for both of its FKs.
   @@index([originalStockItemId], map: "ix_stock_replacements_original_stock")
   // The admin queue's "what is still open" read (same reason `Refund` and
   // `Order` both carry a plain status index).
   @@index([status], map: "ix_stock_replacements_status")
+  // The three nullable FKs get indexes for the same reason the two required ones
+  // do: each is read from the other side ("was this stock row ever issued as a
+  // replacement?", "which replacement did this refund stand in for?", "what
+  // replacement came in on this ticket?"), and each carries an onDelete:
+  // Restrict that Postgres otherwise enforces with a sequential scan of this
+  // table on every delete of the referenced row.
+  @@index([replacementStockItemId], map: "ix_stock_replacements_replacement_stock")
+  @@index([refundId], map: "ix_stock_replacements_refund")
+  @@index([supportTicketId], map: "ix_stock_replacements_support_ticket")
   @@map("stock_replacements")
 }

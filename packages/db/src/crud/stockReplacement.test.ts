@@ -888,3 +888,141 @@ describe("refundInsteadOfReplace", () => {
     expect(reloaded.status).toBe(StockReplacementStatus.AWAITING_STOCK);
   });
 });
+
+/**
+ * `refundableAmountForUnit`'s FX branch, driven end-to-end (whole-branch review
+ * B7). `OrderItem.unitPrice` is ALWAYS the catalog's central-IDR price and does
+ * not follow `Order.currency`, so a USDT order's unit has to come back divided
+ * by that order's own `fxRate` snapshot. Nothing else in this file exercised
+ * that divide — every other case above is an IDR order, where the branch is
+ * skipped — which left a USDT buyer being paid an IDR figure as though it were
+ * USDT (a ~16000x overpayment at a real rate) invisible to the suite.
+ *
+ * The order is converted after delivery rather than created as USDT because
+ * `createOrderDirect` mints IDR orders only; this is the same
+ * update-currency-and-fxRate-afterwards pattern `binance_internal.test.ts`'s own
+ * USDT refund test uses. The rate is a deliberately unrealistic 2.5 so the
+ * expected figures stay exact at 4dp and a reader can check the arithmetic by
+ * eye — the branch under test is a plain divide, and a 16000-ish rate would only
+ * hide it behind rounding.
+ */
+describe("refundInsteadOfReplace — a USDT order pays back in USDT", () => {
+  /** An AWAITING_STOCK request on a `quantity`-unit order re-denominated in USDT
+   *  at `fxRate`, with `totalAmount` restated in USDT the way a real USDT
+   *  checkout would have stored it (that column is `executeRefund`'s own payout
+   *  ceiling, so leaving it as rupiah would make this test pass for the wrong
+   *  reason). */
+  async function usdtAwaitingStockRequest(opts: {
+    quantity?: number;
+    voucherCode?: string;
+    fxRate: string;
+    usdtTotal: string;
+  }) {
+    const { order, items } = await makeDeliveredOrder(opts.quantity ?? 1, opts.voucherCode);
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { currency: "USDT", fxRate: opts.fxRate, totalAmount: opts.usdtTotal },
+    });
+    const { replacement } = await replaceStockItem(prisma, {
+      orderItemId: items[0]!.id,
+      reason: "no stock to replace it with",
+      executedBy: adminId,
+    });
+    expect(replacement.status).toBe(StockReplacementStatus.AWAITING_STOCK);
+    return { order, items, replacement };
+  }
+
+  it("divides the unit's rupiah price by the order's own fxRate snapshot", async () => {
+    // 1 unit at the catalog's 5.00 IDR, order fxRate 2.5 -> 2.0000 USDT.
+    const { items, replacement } = await usdtAwaitingStockRequest({ fxRate: "2.5", usdtTotal: "2" });
+    expect(new Decimal(items[0]!.unitPrice).equals(new Decimal("5"))).toBe(true);
+
+    const result = await refundInsteadOfReplace(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    expect(new Decimal(result.execution.amount).equals(new Decimal("2"))).toBe(true);
+    // Not the raw rupiah figure — the whole point of the branch.
+    expect(new Decimal(result.execution.amount).equals(new Decimal("5"))).toBe(false);
+    expect(result.execution.currency).toBe("USDT");
+    expect(result.refund.currency).toBe("USDT");
+  });
+
+  it("credits walletBalanceUsdt, leaving the buyer's rupiah balance untouched", async () => {
+    const { replacement } = await usdtAwaitingStockRequest({ fxRate: "2.5", usdtTotal: "2" });
+    const before = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+
+    await refundInsteadOfReplace(prisma, { stockReplacementId: replacement.id, executedBy: adminId });
+
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(after.walletBalanceUsdt).minus(before.walletBalanceUsdt).equals(new Decimal("2"))).toBe(true);
+    expect(new Decimal(after.walletBalance).equals(new Decimal(before.walletBalance))).toBe(true);
+  });
+
+  it("prorates the order-level discount BEFORE converting, not after", async () => {
+    // 2 x 5.00 = 10.00 IDR subtotal, 10% voucher = 1.00 off, so the unit is
+    // worth 4.50 IDR; at fxRate 2.5 that is 1.8000 USDT. Converting first and
+    // prorating after would give the same figure here only by luck of the
+    // arithmetic being linear — what this pins is that the discount is applied
+    // at all on the USDT path, which the IDR voucher test above cannot show.
+    const { replacement } = await usdtAwaitingStockRequest({
+      quantity: 2,
+      voucherCode: "SAVE10",
+      fxRate: "2.5",
+      usdtTotal: "3.6",
+    });
+
+    const result = await refundInsteadOfReplace(prisma, {
+      stockReplacementId: replacement.id,
+      executedBy: adminId,
+    });
+
+    expect(new Decimal(result.execution.amount).equals(new Decimal("1.8"))).toBe(true);
+  });
+
+  it("posts the USDT payout to the USDT side of the ledger, balanced", async () => {
+    const { replacement } = await usdtAwaitingStockRequest({ fxRate: "2.5", usdtTotal: "2" });
+
+    await refundInsteadOfReplace(prisma, { stockReplacementId: replacement.id, executedBy: adminId });
+
+    const posting = await prisma.financialTransaction.findFirstOrThrow({
+      where: { referenceType: "refund_execution" },
+    });
+    const entries = await prisma.ledgerEntry.findMany({
+      where: { financialTransactionId: posting.id },
+    });
+    expect(entries.length).toBeGreaterThan(0);
+    // Every leg in USDT — an IDR leg here would mean the payout was booked
+    // against the rupiah control account while the buyer was paid in USDT.
+    expect(entries.every((e) => e.currency === "USDT")).toBe(true);
+    const sum = (direction: string) =>
+      entries
+        .filter((e) => e.direction === direction)
+        .reduce((acc, e) => acc.plus(new Decimal(e.amount)), new Decimal(0));
+    expect(sum("DEBIT").equals(sum("CREDIT"))).toBe(true);
+    expect(sum("DEBIT").equals(new Decimal("2"))).toBe(true);
+  });
+
+  it("falls back to the rupiah figure when a USDT order carries no fxRate snapshot", async () => {
+    // The `order.fxRate != null` half of the guard. A USDT order with no rate
+    // recorded is a data defect, not a state checkout can produce — this pins
+    // that the divide is SKIPPED rather than throwing or dividing by zero, so an
+    // admin gets a refusable figure instead of a crash. The payout is then
+    // refused by `executeRefund`'s own ceiling, which is the fail-closed
+    // outcome: nothing is paid out against a rate nobody recorded.
+    const { replacement } = await usdtAwaitingStockRequest({ fxRate: "2.5", usdtTotal: "2" });
+    await prisma.order.update({
+      where: { id: (await prisma.stockReplacement.findUniqueOrThrow({
+        where: { id: replacement.id },
+        select: { orderItem: { select: { orderId: true } } },
+      })).orderItem.orderId },
+      data: { fxRate: null },
+    });
+
+    await expect(
+      refundInsteadOfReplace(prisma, { stockReplacementId: replacement.id, executedBy: adminId }),
+    ).rejects.toThrow(ValidationError);
+    expect(await prisma.refundExecution.count()).toBe(0);
+  });
+});

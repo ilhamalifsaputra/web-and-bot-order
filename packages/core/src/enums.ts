@@ -1087,7 +1087,10 @@ export const zReconciliationSeverity = z.nativeEnum(ReconciliationSeverity);
  * `StockReplacement.status` (Financial Ledger M18) — where a "the credential
  * you delivered me is bad" complaint has got to. String, not a native Prisma
  * enum, matching every other lifecycle-status column in this schema
- * (`Order.status`, `Refund.status`, `Payment.status`).
+ * (`Order.status`, `Refund.status`, `Payment.status`). Live since M19: the
+ * `replaceStockItem` / `retryReplacementAllocation` / `refundInsteadOfReplace`
+ * services (packages/db/src/crud/stockReplacement.ts) write these values, and
+ * the M20 admin UI reads them.
  *
  * - REQUESTED — an admin has recorded the complaint against one purchased unit.
  *   The opening state; `StockReplacement.status`'s column default.
@@ -1110,9 +1113,9 @@ export const zReconciliationSeverity = z.nativeEnum(ReconciliationSeverity);
  * COMPLETED, REFUNDED_INSTEAD, CANCELLED and FAILED are all TERMINAL: nothing
  * transitions out of them, and each is what sets `resolvedAt`. REQUESTED and
  * AWAITING_STOCK are the only non-terminal values. The transition table itself
- * (a `LEGAL_TRANSITIONS`-shaped map alongside `REFUND_LEGAL_TRANSITIONS` /
- * `PAYMENT_LEGAL_TRANSITIONS`) belongs with the `replaceStockItem` service in
- * M19 and deliberately does not exist yet — this milestone is schema only.
+ * is `STOCK_REPLACEMENT_LEGAL_TRANSITIONS` (packages/db/src/crud/
+ * stockReplacement.ts), a `LEGAL_TRANSITIONS`-shaped map alongside
+ * `REFUND_LEGAL_TRANSITIONS` / `PAYMENT_LEGAL_TRANSITIONS`.
  */
 export const StockReplacementStatus = {
   REQUESTED: "REQUESTED",
@@ -1129,8 +1132,8 @@ export const zStockReplacementStatus = z.nativeEnum(StockReplacementStatus);
 /**
  * The four terminal `StockReplacementStatus` values — the ones that set
  * `StockReplacement.resolvedAt` and that nothing transitions out of. Exported
- * as data (not re-derived by each caller) so M19's transition table and any
- * "still open" admin query agree on one list, the same way
+ * as data (not re-derived by each caller) so `STOCK_REPLACEMENT_LEGAL_TRANSITIONS`
+ * and any "still open" admin query agree on one list, the same way
  * `IN_FLIGHT_ORDER_ITEM_STATUSES` serves `deriveOrderStatusFromItems`.
  */
 export const TERMINAL_STOCK_REPLACEMENT_STATUSES: readonly StockReplacementStatus[] = [

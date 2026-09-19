@@ -178,10 +178,21 @@ export function classifyTx(
  *    the SAME way — see its `paymentMethod: method` filter).
  *  - ON-CHAIN ADDRESS/NETWORK (BSC only — the other two rails have no
  *    on-chain identity to check): `bybitBscDeposit.ts`'s own deposit
- *    normalizer discards a deposit outright before it can reach this
- *    function at all — a wrong chain or a deposit to any address other than
- *    the configured one returns `null` and is dropped (see that file's
- *    `chain !== cfg.chain.toUpperCase()` / `depositAddress` comparison).
+ *    normalizer (`normalizeOnchainDeposit`) discards a deposit outright
+ *    before it can reach this function at all. The CHAIN check is
+ *    unconditional — a deposit whose `chain` is not the configured one
+ *    returns `null` and is dropped. The ADDRESS check is NOT: it only
+ *    applies when Bybit actually reported an `address` on the row AND
+ *    `cfg.depositAddress` is configured (`if (address && cfg.depositAddress
+ *    && ...)`), so a deposit row the API returns with the destination
+ *    address omitted passes the chain check and reaches this function
+ *    un-address-scoped. That is deliberate — dropping every address-less row
+ *    would strand a real buyer's payment on a payload-shape quirk — and it
+ *    is why the address comparison is described as defense-in-depth in that
+ *    function's own doc comment rather than as the rail's identity gate. The
+ *    rail's actual account scope is the API credentials themselves: the
+ *    deposit list only ever contains deposits into this shop's own Bybit
+ *    account.
  *  - TIME WINDOW: all three `listPending*Orders` queries above also filter
  *    `expiresAt: { gt: now }` — an expired order is never a candidate here,
  *    regardless of amount.

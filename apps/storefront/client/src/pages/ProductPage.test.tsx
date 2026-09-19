@@ -283,6 +283,16 @@ describe("ProductPage", () => {
       expect(btn).toBeDisabled();
     });
 
+    it("shows the unavailable message from an ok:false result", async () => {
+      (apiPost as Mock).mockResolvedValue({ ok: false, result: "unavailable", redirect: "/" });
+      renderProduct("netflix-premium", () => allOut, {
+        ...context,
+        customer: { username: "budi", email: null, telegram_linked: true },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Notify me when ready/ }));
+      expect(await screen.findByRole("status")).toHaveTextContent(/aren't available for this plan/);
+    });
+
     it("says so when the account is already on the list", async () => {
       (apiPost as Mock).mockResolvedValue({ ok: true, result: "already", redirect: "/p/netflix-premium" });
       renderProduct("netflix-premium", () => allOut, {

@@ -1,6 +1,4 @@
 import { useEffect, useState } from "react";
-import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
-import { formatRestockRequests } from "@/lib/restockRequests";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -10,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -36,6 +35,7 @@ import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface DenominationRow {
   id: number;

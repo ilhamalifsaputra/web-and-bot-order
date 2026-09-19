@@ -1,6 +1,4 @@
 import { useState } from "react";
-import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
-import { formatRestockRequests } from "@/lib/restockRequests";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -22,7 +20,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "../components/shared/SearchBar";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { apiGet } from "../api/client";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface DenominationRow {
   id: number;

@@ -1,6 +1,4 @@
 import { useState } from "react";
-import { RestockRequestsHeader } from "@/components/shared/RestockRequestsHeader";
-import { formatRestockRequests } from "@/lib/restockRequests";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -11,6 +9,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -29,6 +28,7 @@ import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface StockItem {
   id: number;

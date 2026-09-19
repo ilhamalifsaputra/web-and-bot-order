@@ -255,16 +255,42 @@ saved exactly as typed. A shop that sets its rate by hand is not quietly getting
 spread on top — it is getting none, and has to build its margin into the figure it
 types.
 
-**A spread larger than `fx_rate_max_delta_pct` deadlocks the refresh** (review
-D10). The figure the delta check judges is the post-spread one, compared against
-whatever is saved. Raise the spread above the cap — or hand-type the raw market
-figure — and the saved rate no longer carries that spread, so the next refresh is
-refused for moving too far. A refusal saves nothing, so the tick after that
-compares the same two numbers and is refused again: it never converges, and the
-rate simply ages until `fx_rate_max_age_hours` hides the USDT rail. Keep the
-spread comfortably under the cap. The two ways out are widening the cap (or
-narrowing the spread), or hand-typing the already-spread figure, which a refresh
-then reproduces with a zero delta.
+**A spread can no longer deadlock the refresh** (review D10 — fixed; do not
+re-introduce the old comparison).
+
+The delta check used to judge the post-spread figure against whatever
+`usd_idr_rate` held. Raise the spread above the cap — or hand-type the raw market
+figure — and the saved rate no longer carried that spread, so the next refresh
+was refused for "moving too far" when the market had not moved at all. A refusal
+saves nothing, so the tick after that compared the same two numbers and was
+refused again: it never converged, the rate aged until `fx_rate_max_age_hours`
+hid the USDT rail, and the rejection DM blamed the market the whole way down. A
+10% spread under the 5% default cap was a permanent, self-inflicted USDT outage.
+
+The cap is now measured **market-to-market**: the raw pre-spread market figure
+against `usd_idr_market_rate`, the raw pre-spread figure of the last refresh this
+shop accepted. `validateUsdIdrRate`'s `deltaOf` parameter is what separates the
+two questions — the band judges the figure that would be SAVED (so a spread wide
+enough to push it under `fx_rate_min` is still refused), while the deviation
+check judges the market's own move. The spread now cancels out of the comparison
+at any size.
+
+`usd_idr_market_rate` is internal, not an admin field — it is a record of what
+the market said, not a lever. Three states:
+
+| State | Meaning |
+| --- | --- |
+| a usable figure | the cap is live and measures against it |
+| **absent** | no reference recorded yet, so the cap is skipped for that one refresh, which then records it. **Every existing shop is in this state on the deploy that adds the key** — the same deploy-safety grace the freshness stamp gives a missing stamp |
+| **`""`** | cleared by `setUsdIdrRate`, i.e. an admin typed a rate in. A hand-typed figure is not a market observation so it cannot become the reference, but a stale one must not be left behind either, or the next refresh would be measured against a figure from before the admin intervened. Cleared, the next refresh adopts the market afresh |
+
+That last row is what keeps the documented remedy working: typing a rate in
+un-sticks a refresh the band keeps refusing. Note the write order inside
+`refreshUsdIdrRate` — its `"updated"` branch records the new reference **after**
+calling `setUsdIdrRate`, whose clear would otherwise swallow it.
+
+**Still true:** the spread applies to the automatic refresh only, and is never
+applied to a hand-typed rate (see above).
 
 ### Guard 3 — the freshness stamp, and its two writers
 
@@ -1064,10 +1090,11 @@ check is off"**, never "reject everything".
 | `usd_idr_rate_auto` | on | `"false"` = off | Turns the hourly market refresh off. The admin's "update now" button bypasses it. | Yes |
 | `usd_idr_rate_rounding` | `100` | IDR | Step the fetched rate is rounded to (after spread). | Yes |
 | `usd_idr_rate_updated_at` | — | ISO timestamp | Freshness stamp. Written only by `setUsdIdrRate` / `stampUsdIdrRateConfirmed`. | No (internal) |
-| `usdt_spread_bps` | `0` | basis points | Shaves the market rate *down* → buyer sends more USDT (protective). Automatic refresh only; never applied to a hand-typed rate. Keep it under `fx_rate_max_delta_pct`. | Yes |
+| `usd_idr_market_rate` | — | IDR per USDT | The last PRE-spread market figure a refresh accepted: the reference `fx_rate_max_delta_pct` measures against. Absent = cap skipped once; `""` (an admin typed a rate in) = same. | No (internal) |
+| `usdt_spread_bps` | `0` | basis points | Shaves the market rate *down* → buyer sends more USDT (protective). Automatic refresh only; never applied to a hand-typed rate. No longer constrained by `fx_rate_max_delta_pct` (D10). | Yes |
 | `fx_rate_min` | `8000` | IDR per USDT | Sanity floor. Refuses a refresh below it. | Yes |
 | `fx_rate_max` | `40000` | IDR per USDT | Sanity ceiling. Refuses a refresh above it. | Yes |
-| `fx_rate_max_delta_pct` | `5` | percent | Max move one refresh may make from the saved rate. | Yes |
+| `fx_rate_max_delta_pct` | `5` | percent | Max move the MARKET may make between two accepted refreshes, measured against `usd_idr_market_rate` — not against the saved rate, so a spread of any size cannot trip it (D10). | Yes |
 | `fx_quote_ttl_minutes` | `180` | **minutes** | Past it, checkout stops offering the USDT rails, `finalizeOrderPayment` refuses an order submitted anyway with `error.fx_quote_expired`, and every admin is DMed once. Three times the hourly refresh, so one missed tick cannot switch USDT off. | Yes |
 | `fx_rate_max_age_hours` | `48` | **hours** | Past it, `getUsdIdrRate` returns null and the **whole USDT rail** is hidden. | Yes |
 | `fx_refresh_failures` | `0` | count | Consecutive sanity-band refusals. Reset by the next confirmed rate — a refresh or a hand-typed one. | No (internal) |

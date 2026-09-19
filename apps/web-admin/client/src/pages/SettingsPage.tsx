@@ -241,11 +241,11 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   usd_idr_rate_auto: "Automatically refresh the rate from the market instead of setting it by hand.",
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
   usdt_spread_bps:
-    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. Keep it well under the maximum move below.",
+    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
   fx_rate_min: "Refuses an auto-fetched rate below this — catches a rate source that starts answering in the wrong unit. Blank turns the check off.",
   fx_rate_max: "Refuses an auto-fetched rate above this — catches a rate source returning a placeholder. Blank turns the check off.",
   fx_rate_max_delta_pct:
-    "How far one refresh may move the saved rate. The spread above counts as part of that move, so a spread larger than this percentage gets every refresh refused — and a refused refresh saves nothing, so it never clears on its own.",
+    "How far the market rate may move between two accepted refreshes. It is measured market-to-market, so the spread above never counts as part of the move — a refresh is only refused when the market itself jumped this far, which usually means the rate source is misbehaving.",
   fx_quote_ttl_minutes:
     "Stops offering USDT payment methods once the saved rate has gone this long without being refreshed or re-typed, and refuses any USDT order submitted anyway. USDT prices are still shown. Every admin is DMed when it trips. Keep it at a few times the hourly update interval so one missed update does not switch USDT off; blank or 0 turns the check off.",
   fx_rate_max_age_hours:

@@ -255,6 +255,32 @@ describe("validateUsdIdrRate (sanity band + deviation cap — M13 / audit P0-3)"
     expect(d.deltaPct.toDecimalPlaces(2).toString()).toBe("8.02");
   });
 
+  // Whole-branch review D10: the band and the deviation cap judge different
+  // figures. `refreshUsdIdrRate` bands the post-spread rate it would save but
+  // measures the MARKET's move, because a post-spread figure compared against a
+  // pre-spread reference measures the spread and deadlocks the refresh.
+  it("measures the move of `deltaOf` while banding `rate`", () => {
+    // A 10% spread: the saved figure would be 14580, which is 10% off the
+    // reference and would trip a 5% cap — but the market did not move at all.
+    expect(validateUsdIdrRate(new Decimal("14580"), new Decimal("16200"), bounds, new Decimal("16200"))).toBeNull();
+    // The band still judges `rate`, not `deltaOf`: a spread wide enough to push
+    // the saved figure under the floor is refused even with a still market.
+    expect(
+      validateUsdIdrRate(new Decimal("7000"), new Decimal("16200"), bounds, new Decimal("16200"))?.reason,
+    ).toBe("below_min");
+    // …and a real market move is still caught, reporting the figure that moved.
+    const failure = validateUsdIdrRate(
+      new Decimal("15750"), // 17500 less a 10% spread — inside the band
+      new Decimal("16200"),
+      bounds,
+      new Decimal("17500"),
+    );
+    expect(failure?.reason).toBe("delta_too_large");
+    const d = failure as { subject: Decimal; deltaPct: Decimal };
+    expect(d.subject.toString()).toBe("17500");
+    expect(d.deltaPct.toDecimalPlaces(2).toString()).toBe("8.02");
+  });
+
   it("caps a move in EITHER direction, not just upwards", () => {
     expect(validateUsdIdrRate(new Decimal("14000"), new Decimal("16200"), bounds)?.reason).toBe(
       "delta_too_large",

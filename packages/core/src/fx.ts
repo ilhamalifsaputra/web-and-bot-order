@@ -58,7 +58,14 @@ export type FxRateRejection =
   | { reason: "not_positive" }
   | { reason: "below_min"; min: Decimal }
   | { reason: "above_max"; max: Decimal }
-  | { reason: "delta_too_large"; lastKnown: Decimal; deltaPct: Decimal; maxDeltaPct: Decimal };
+  | {
+      reason: "delta_too_large";
+      /** The figure whose move was measured — see `deltaOf` below. */
+      subject: Decimal;
+      lastKnown: Decimal;
+      deltaPct: Decimal;
+      maxDeltaPct: Decimal;
+    };
 
 /**
  * The configured sanity band. Each field is null when its own setting is
@@ -93,11 +100,24 @@ export interface FxRateBounds {
  * The band is INCLUSIVE at both ends: `min`/`max` are documented as sanity
  * bounds, not a precise market range, so a rate landing exactly on one is
  * inside the range an admin typed, not outside it.
+ *
+ * `deltaOf` separates the two questions this function answers. `rate` is the
+ * figure that would be SAVED, and the band judges that — a spread big enough to
+ * push the saved rate out of the plausible range has to be caught. The
+ * DEVIATION check is a different question ("did the market move further than one
+ * refresh is allowed to move it?"), so its subject can be a different figure:
+ * `refreshUsdIdrRate` passes the raw market rate, measured against the last
+ * market rate, because comparing a post-spread figure against a pre-spread
+ * reference measures the spread instead of the market — see
+ * `FX_RATE_MAX_DELTA_PCT_KEY` (crud/pricing.ts) for what that cost.
+ * Defaults to `rate`, which is the same single-figure behaviour this function
+ * always had.
  */
 export function validateUsdIdrRate(
   rate: Decimal,
   lastKnown: Decimal | null,
   bounds: FxRateBounds,
+  deltaOf: Decimal = rate,
 ): FxRateRejection | null {
   if (!rate.isFinite()) return { reason: "not_a_number" };
   if (rate.lessThanOrEqualTo(0)) return { reason: "not_positive" };
@@ -118,9 +138,9 @@ export function validateUsdIdrRate(
     maxDeltaPct.isFinite() &&
     maxDeltaPct.greaterThan(0)
   ) {
-    const deltaPct = rate.minus(lastKnown).abs().dividedBy(lastKnown).times(100);
+    const deltaPct = deltaOf.minus(lastKnown).abs().dividedBy(lastKnown).times(100);
     if (deltaPct.greaterThan(maxDeltaPct)) {
-      return { reason: "delta_too_large", lastKnown, deltaPct, maxDeltaPct };
+      return { reason: "delta_too_large", subject: deltaOf, lastKnown, deltaPct, maxDeltaPct };
     }
   }
 

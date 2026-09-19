@@ -110,20 +110,24 @@ export const FX_RATE_MAX_KEY = "fx_rate_max";
 /** Documented default for {@link FX_RATE_MAX_KEY}: Rp40.000 per USDT. */
 export const DEFAULT_FX_RATE_MAX = "40000";
 /**
- * How far one refresh may move the saved rate, in percent.
+ * How far the MARKET may move between two accepted refreshes, in percent.
  *
- * Interacts with {@link USDT_SPREAD_BPS_KEY}, and the interaction is a trap
- * worth stating (whole-branch review D10/A4). The figure judged against this cap
- * is the POST-spread, post-rounding rate, compared against whatever is saved. So
- * if the spread exceeds this percentage and the saved rate does not already
- * carry that spread — right after it was raised, or after an admin typed the raw
- * market figure in — the very first refresh is refused for moving too far. And
- * because a refusal saves nothing, the next tick compares the same new rate
- * against the same un-spread saved one and is refused again: the shop never
- * converges, and the rate simply ages until `fx_rate_max_age_hours` hides the
- * USDT rail. Keep the spread comfortably under this cap. The two ways out are to
- * widen the cap (or narrow the spread), or to hand-type the already-spread
- * figure, which a refresh then reproduces with a zero delta.
+ * Measured market-to-market, and that is the whole point (whole-branch review
+ * D10). It used to judge the POST-spread, post-rounding figure against whatever
+ * `usd_idr_rate` happened to hold, and a spread larger than this cap therefore
+ * tripped the cap on its own: the first refresh after the spread was raised (or
+ * after an admin typed the raw market figure in) was refused for "moving too
+ * far" when the market had not moved at all. Because a refusal saves nothing,
+ * the next tick compared the same new rate against the same un-spread saved one
+ * and was refused again — the shop never converged and the rate simply aged
+ * until `fx_rate_max_age_hours` hid the USDT rail. A configured spread could
+ * deadlock the refresh permanently, with a rejection DM blaming the market.
+ *
+ * The reference is now {@link USD_IDR_MARKET_RATE_KEY}, the last PRE-spread
+ * market figure a refresh accepted, so this cap only ever measures the market
+ * against itself and the spread cannot enter the comparison at any size. The
+ * spread is still not unchecked: it moves the figure that gets SAVED, and
+ * {@link FX_RATE_MIN_KEY}/{@link FX_RATE_MAX_KEY} judge that figure.
  */
 export const FX_RATE_MAX_DELTA_PCT_KEY = "fx_rate_max_delta_pct";
 /** Documented default for {@link FX_RATE_MAX_DELTA_PCT_KEY}: 5%. */
@@ -160,14 +164,44 @@ export const DEFAULT_FX_RATE_MAX_AGE_HOURS = "48";
  *    saved exactly as typed ({@link setUsdIdrRate} does not touch it), so a shop
  *    that sets its rate by hand is not quietly getting a spread on top — it is
  *    getting none at all, and has to build its margin into the figure it types.
- *  - It is not free of the sanity band. Because the spread moves the figure that
- *    band judges, a spread larger than {@link FX_RATE_MAX_DELTA_PCT_KEY} makes
- *    every refresh get refused, permanently — see that key's own comment for
- *    why it never self-corrects.
+ *  - It is not free of the sanity band. The spread moves the figure that gets
+ *    saved, so {@link FX_RATE_MIN_KEY}/{@link FX_RATE_MAX_KEY} judge the
+ *    post-spread rate and a spread large enough to push it out of the plausible
+ *    range is refused. It no longer interacts with
+ *    {@link FX_RATE_MAX_DELTA_PCT_KEY} at all: that cap is measured
+ *    market-to-market (see {@link USD_IDR_MARKET_RATE_KEY}), so a spread of any
+ *    size cannot trip its own sanity band any more. It used to, permanently.
  */
 export const USDT_SPREAD_BPS_KEY = "usdt_spread_bps";
 /** Documented default for {@link USDT_SPREAD_BPS_KEY}: no spread at all. */
 export const DEFAULT_USDT_SPREAD_BPS = "0";
+
+/**
+ * Settings key: the raw, PRE-spread market rate of the last refresh the sanity
+ * band accepted — the reference {@link FX_RATE_MAX_DELTA_PCT_KEY} measures
+ * against (whole-branch review D10). Internal bookkeeping, never an
+ * admin-editable field: it is a record of what the market said, not a lever, and
+ * an admin editing it would be editing the shop's memory of the market.
+ *
+ * Distinct from `usd_idr_rate` on purpose. That one is what orders are priced
+ * at, spread and rounding included; this one is what the market last reported.
+ * Keeping the two separate is what lets the deviation cap compare like with
+ * like.
+ *
+ * Three states, and the last two are the same deploy-safety grace the freshness
+ * stamp documents at length:
+ *  - a usable figure: the deviation cap is live and measures against it;
+ *  - ABSENT: no market reference has been recorded yet, so there is nothing to
+ *    deviate FROM and the cap is skipped for that one refresh, which then
+ *    records the reference and arms the cap from then on. Every existing shop is
+ *    in this state on the deploy that introduces the key;
+ *  - CLEARED (`""`) by {@link setUsdIdrRate}: an admin typed a rate in, which is
+ *    this system's documented remedy for a refresh the band keeps refusing. A
+ *    hand-typed figure is not a market observation, so it cannot become the
+ *    reference — clearing it instead lets the next refresh adopt the market
+ *    afresh, which is exactly what the admin asked for by intervening.
+ */
+export const USD_IDR_MARKET_RATE_KEY = "usd_idr_market_rate";
 
 /**
  * Settings key: how many market-rate refreshes in a row have been refused by
@@ -244,6 +278,17 @@ export async function setUsdIdrRate(db: Db, rate: Decimal.Value): Promise<void> 
   // rate themselves left `fx_refresh_failures` reading "7 in a row" for a
   // streak that was over, which is the figure the rejection DM quotes.
   await clearFxFailureState(db);
+  // And the market reference goes with it (D10). A hand-typed figure is not a
+  // market observation, so it must not BECOME the reference, but it must not
+  // leave a stale one behind either: the deviation cap would then measure the
+  // next market rate against a figure from before the admin intervened, which is
+  // how a refresh the admin has just fixed gets refused again. Cleared, the next
+  // refresh adopts the market afresh and re-arms the cap.
+  //
+  // NOTE for `refreshUsdIdrRate`, which reaches this function on its "updated"
+  // branch: it records the new reference AFTER calling this, so the clear here
+  // cannot swallow it. Keep that order.
+  await setSetting(db, USD_IDR_MARKET_RATE_KEY, "");
 }
 
 /**
@@ -341,11 +386,20 @@ async function clearFxFailureState(db: Db): Promise<void> {
  *
  * Sanity band (M13 / audit P0-3): between fetching and trusting, the figure
  * that would actually be SAVED — after the spread and the rounding step, not
- * the raw market number — has to clear {@link validateUsdIdrRate}. A failure
- * returns `"rejected"` rather than throwing, and changes nothing: not the
- * rate, not its freshness stamp. A refused fetch is not a confirmation of
- * anything, and re-stamping freshness off one would be the worst possible
- * outcome — a rate nobody has verified in days, wearing a fresh timestamp.
+ * the raw market number — has to clear {@link validateUsdIdrRate}'s
+ * plausibility bounds. A failure returns `"rejected"` rather than throwing, and
+ * changes nothing: not the rate, not its freshness stamp, not the market
+ * reference. A refused fetch is not a confirmation of anything, and re-stamping
+ * freshness off one would be the worst possible outcome — a rate nobody has
+ * verified in days, wearing a fresh timestamp.
+ *
+ * The DEVIATION half of that band is measured differently (whole-branch review
+ * D10): raw market rate against the last accepted raw market rate
+ * ({@link USD_IDR_MARKET_RATE_KEY}), never against the saved post-spread figure.
+ * Otherwise the spread itself counted as a market move and any spread wider than
+ * `fx_rate_max_delta_pct` deadlocked the refresh for good. Every accepted
+ * refresh records the new reference, `"unchanged"` included — the market was
+ * really fetched and really accepted in both cases.
  *
  * This function deliberately does NOT alert anyone. Its two callers differ:
  * the hourly cron has nobody watching and enqueues an admin DM, while
@@ -387,7 +441,13 @@ export async function refreshUsdIdrRate(db: Db, opts: { force?: boolean } = {}):
     }
   }
 
-  const rejection = validateUsdIdrRate(rate, previous, await fxRateBounds(db));
+  // The deviation reference: the last market figure this shop accepted, NOT the
+  // saved rate (D10 — see USD_IDR_MARKET_RATE_KEY). Absent or unreadable means
+  // there is nothing to deviate from, exactly as a first-ever fetch does, so the
+  // cap is skipped this once and armed by the reference written below.
+  const lastMarket = await numericSetting(db, USD_IDR_MARKET_RATE_KEY, "");
+
+  const rejection = validateUsdIdrRate(rate, lastMarket, await fxRateBounds(db), market);
   if (rejection) {
     const consecutiveFailures = await countFxRefreshFailure(db);
     logger.error(
@@ -404,9 +464,14 @@ export async function refreshUsdIdrRate(db: Db, opts: { force?: boolean } = {}):
   if (previous && rate.equals(previous)) {
     // Fetched, compared, still correct — a real re-confirmation of freshness.
     await stampUsdIdrRateConfirmed(db);
+    await setSetting(db, USD_IDR_MARKET_RATE_KEY, market.toString());
     return { status: "unchanged", rate, market };
   }
   await setUsdIdrRate(db, rate);
+  // AFTER setUsdIdrRate, which clears this key for the hand-typed path. This
+  // refresh is not that path: the market really answered and the answer was
+  // accepted, so it becomes the reference the next deviation check measures from.
+  await setSetting(db, USD_IDR_MARKET_RATE_KEY, market.toString());
   logger.info(
     `USD/IDR rate ${previous ? `updated from ${previous.toString()} to` : "set to"} ${rate.toString()} ` +
       `(market rate ${market.toString()}, rounded to the nearest ${step})`,
@@ -431,9 +496,13 @@ export function describeFxRejection(rejection: FxRateRejection, rate: Decimal): 
     case "above_max":
       return `${rate.toString()} is above the ${FX_RATE_MAX_KEY} ceiling of ${rejection.max.toString()}.`;
     case "delta_too_large":
+      // Both figures here are PRE-spread market rates, not the saved rate — the
+      // cap measures the market against itself (D10), so naming the saved rate
+      // would be citing a number that is not part of the comparison.
       return (
-        `${rate.toString()} is ${rejection.deltaPct.toDecimalPlaces(2).toString()}% away from the saved ` +
-        `${rejection.lastKnown.toString()}, more than the ${rejection.maxDeltaPct.toString()}% one refresh may move it (${FX_RATE_MAX_DELTA_PCT_KEY}).`
+        `the market rate ${rejection.subject.toString()} is ${rejection.deltaPct.toDecimalPlaces(2).toString()}% away from ` +
+        `the last market rate this shop accepted, ${rejection.lastKnown.toString()}, more than the ` +
+        `${rejection.maxDeltaPct.toString()}% one refresh may move it (${FX_RATE_MAX_DELTA_PCT_KEY}).`
       );
   }
 }
@@ -664,6 +733,9 @@ export async function alertIfFxRateRejected(
     consecutiveFailures: rejection.consecutiveFailures,
     ...(reason.reason === "below_min" ? { min: reason.min } : {}),
     ...(reason.reason === "above_max" ? { max: reason.max } : {}),
+    // `lastKnown` is the last MARKET rate this shop accepted, not the saved
+    // post-spread rate (D10) — the template's wording says so, because the two
+    // figures quoted have to be the two the percentage was computed from.
     ...(reason.reason === "delta_too_large"
       ? { lastKnown: reason.lastKnown, deltaPct: reason.deltaPct.toDecimalPlaces(2), maxDeltaPct: reason.maxDeltaPct }
       : {}),

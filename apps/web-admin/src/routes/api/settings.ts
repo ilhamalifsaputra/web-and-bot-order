@@ -194,8 +194,14 @@ function customEmojiMapProblem(value: string): string | null {
  * `describeFxRejection`'s developer-facing log line on purpose: this one names
  * the Settings field they would go and change, and leads with the fact that
  * nothing broke — the previous rate is still pricing orders.
+ *
+ * Every figure here is one the market reported, never the post-spread figure
+ * that would have been saved: an admin who is about to widen a bound needs the
+ * number the bound was applied to. `market` covers the plausibility bounds;
+ * `reason.subject` covers the deviation cap, which since D10 measures the market
+ * against the last market rate accepted rather than against the saved rate.
  */
-function fxRejectionMessage(reason: FxRateRejection, rate: Decimal, market: Decimal): string {
+function fxRejectionMessage(reason: FxRateRejection, market: Decimal): string {
   const tail = "The previously saved rate is still in effect, so nothing was mispriced.";
   switch (reason.reason) {
     case "not_a_number":
@@ -212,10 +218,15 @@ function fxRejectionMessage(reason: FxRateRejection, rate: Decimal, market: Deci
         `Check the rate service, or raise "USDT rate sanity ceiling" if this is genuinely the market now. ${tail}`
       );
     case "delta_too_large":
+      // Both figures quoted are PRE-spread MARKET rates, not the saved rate
+      // (whole-branch review D10): the cap measures the market against the last
+      // market figure this shop accepted. Naming the saved rate here would hand
+      // the admin two numbers whose difference is not the percentage quoted.
       return (
-        `Rp${rate.toString()} per USDT is ${reason.deltaPct.toDecimalPlaces(2).toString()}% away from the saved ` +
-        `Rp${reason.lastKnown.toString()}, more than the ${reason.maxDeltaPct.toString()}% one update is allowed to move it. ` +
-        `If the market really moved this far, raise "Max USDT rate move per update" or type the new rate by hand. ${tail}`
+        `The market rate Rp${reason.subject.toString()} per USDT is ${reason.deltaPct.toDecimalPlaces(2).toString()}% away from ` +
+        `the last market rate accepted, Rp${reason.lastKnown.toString()}, more than the ${reason.maxDeltaPct.toString()}% ` +
+        `one update is allowed to move it. If the market really moved this far, raise "Max USDT rate move per update" ` +
+        `or type the new rate by hand. ${tail}`
       );
   }
 }
@@ -713,7 +724,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
         return reply.code(422).send({
           ok: false,
           status: r.status,
-          error: fxRejectionMessage(r.reason, r.rate, r.market),
+          error: fxRejectionMessage(r.reason, r.market),
         });
       }
       return reply.send({

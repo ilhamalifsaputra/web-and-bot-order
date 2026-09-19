@@ -487,11 +487,15 @@ export function render(
       const lastKnown = escape(String(payload.last_known ?? ""));
       const deltaPct = escape(String(payload.delta_pct ?? ""));
       const maxDeltaPct = escape(String(payload.max_delta_pct ?? ""));
+      // Both figures are MARKET rates, not the saved rate: the cap measures the
+      // market against the last market figure this shop accepted (whole-branch
+      // review D10). Saying "the saved rate" here would send an admin to compare
+      // two numbers whose difference is not the percentage quoted.
       whyEn =
-        `Rp${rate} per USDT is ${deltaPct}% away from the saved Rp${lastKnown}, ` +
+        `The market rate Rp${market} per USDT is ${deltaPct}% away from the last market rate accepted, Rp${lastKnown}, ` +
         `more than the ${maxDeltaPct}% move allowed in one refresh.`;
       whyId =
-        `Rp${rate} per USDT berjarak ${deltaPct}% dari kurs tersimpan Rp${lastKnown}, ` +
+        `Kurs pasar Rp${market} per USDT berjarak ${deltaPct}% dari kurs pasar terakhir yang diterima, Rp${lastKnown}, ` +
         `melebihi batas perubahan ${maxDeltaPct}% dalam satu pembaruan.`;
     } else {
       // not_a_number / not_positive — no configured figure to cite.

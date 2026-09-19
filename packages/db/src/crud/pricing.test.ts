@@ -24,6 +24,7 @@ import {
   FX_RATE_MAX_DELTA_PCT_KEY,
   FX_RATE_MAX_AGE_HOURS_KEY,
   DEFAULT_FX_RATE_MAX_AGE_HOURS,
+  USD_IDR_MARKET_RATE_KEY,
   FX_REFRESH_FAILURES_KEY,
   FX_STALE_ALERTED_FOR_KEY,
   FX_REJECTED_ALERTED_FOR_KEY,
@@ -146,8 +147,12 @@ describe("refreshUsdIdrRate — refuses a rate outside the sanity band", () => {
     expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBeNull();
   });
 
-  it("rejects a jump larger than fx_rate_max_delta_pct away from the saved rate", async () => {
+  // The reference the cap measures from is `usd_idr_market_rate`, not the saved
+  // rate (whole-branch review D10 — see its own suite below for why), so these
+  // two cases seed it.
+  it("rejects a jump larger than fx_rate_max_delta_pct away from the last market rate", async () => {
     await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16200");
     setFxRateFetcher(async () => new Decimal("17500")); // +8.02%
     const r = await refreshUsdIdrRate(prisma, { force: true });
     expect(r.status).toBe("rejected");
@@ -158,6 +163,7 @@ describe("refreshUsdIdrRate — refuses a rate outside the sanity band", () => {
 
   it("accepts the same jump once fx_rate_max_delta_pct is widened", async () => {
     await setSetting(prisma, USD_IDR_RATE_KEY, "16200");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16200");
     await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "10");
     setFxRateFetcher(async () => new Decimal("17500"));
     expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
@@ -251,6 +257,111 @@ describe("usdt_spread_bps — the protective spread on the saved rate", () => {
     setFxRateFetcher(async () => new Decimal("16000"));
     await refreshUsdIdrRate(prisma, { force: true });
     expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+});
+
+/**
+ * Whole-branch review D10 — a configured spread must not deadlock the refresh.
+ *
+ * The deviation cap used to judge the post-spread figure against whatever
+ * `usd_idr_rate` held, so a spread wider than the cap tripped the cap by
+ * itself — and because a refusal saves nothing, every later tick compared the
+ * same two figures and was refused again. A shop that set a 10% spread under a
+ * 5% cap could never refresh its rate again, and the rejection DM blamed a
+ * market that had not moved. The cap is now measured market-to-market against
+ * `usd_idr_market_rate`.
+ */
+describe("usd_idr_market_rate — the deviation cap measures the market against itself", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, FX_RATE_MAX_DELTA_PCT_KEY, "5");
+  });
+
+  it("a spread far wider than the delta cap still refreshes, tick after tick", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000");
+    // 1000 bps = 10% — double the 5% cap, and the exact configuration that used
+    // to be unrecoverable.
+    await setSetting(prisma, USDT_SPREAD_BPS_KEY, "1000");
+
+    const first = await refreshUsdIdrRate(prisma);
+    expect(first.status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("14400"); // 16000 − 10%
+    expect(await getSetting(prisma, FX_REFRESH_FAILURES_KEY)).toBe("0");
+
+    // And it stays converged: the market has not moved, so the next tick simply
+    // re-confirms. Under the old comparison this was the deadlock — the saved
+    // 14400 vs a 16000-shaped candidate, refused forever.
+    expect((await refreshUsdIdrRate(prisma)).status).toBe("unchanged");
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("14400");
+  });
+
+  it("still refuses a real market move past the cap, and names the market figures", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("16000");
+
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%
+    const r = await refreshUsdIdrRate(prisma, { force: true });
+    expect(r.status).toBe("rejected");
+    if (r.status !== "rejected") throw new Error("unreachable");
+    expect(r.reason.reason).toBe("delta_too_large");
+    const reason = r.reason as { subject: Decimal; lastKnown: Decimal };
+    expect(reason.subject.toString()).toBe("17500");
+    expect(reason.lastKnown.toString()).toBe("16000");
+    // A refusal records nothing, so the reference still describes the last
+    // figure this shop actually accepted.
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("16000");
+  });
+
+  it("records the reference on an unchanged refresh too — the market was still fetched", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, ""); // as a hand-typed rate leaves it
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("unchanged");
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("16000");
+  });
+
+  it("skips the cap when no market reference has been recorded yet", async () => {
+    // Every existing shop is in this state on the deploy that adds the key: a
+    // saved rate, no reference. The cap cannot be measured, so it is skipped
+    // once rather than refusing a rate for deviating from nothing.
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBeNull();
+    setFxRateFetcher(async () => new Decimal("25000")); // +56%, far past the cap
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("25000");
+  });
+
+  // A hand-typed rate is this system's documented remedy for a refresh the band
+  // keeps refusing, so it has to leave the refresh able to move again. It is not
+  // a market observation, so it cannot BECOME the reference either.
+  it("a hand-typed rate clears the reference rather than becoming it", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await refreshUsdIdrRate(prisma, { force: true });
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("16000");
+
+    await setUsdIdrRate(prisma, "25000");
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("");
+
+    // …and the very next refresh is therefore not refused for a move it cannot
+    // measure, whatever the market now says.
+    setFxRateFetcher(async () => new Decimal("30000"));
+    expect((await refreshUsdIdrRate(prisma, { force: true })).status).toBe("updated");
+    expect(await getSetting(prisma, USD_IDR_MARKET_RATE_KEY)).toBe("30000");
+  });
+
+  it("an unreadable reference is no reference at all, never an outage", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    for (const junk of ["abc", "0", "-100"]) {
+      await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, junk);
+      setFxRateFetcher(async () => new Decimal("25000"));
+      expect(
+        (await refreshUsdIdrRate(prisma, { force: true })).status,
+        `reference ${JSON.stringify(junk)} should disable the cap`,
+      ).toBe("updated");
+      await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    }
   });
 });
 
@@ -588,6 +699,10 @@ describe("alertIfFxRateRejected — one admin DM per rejection episode, not per 
       await alertIfFxRateRejected(prisma, {
         reason: {
           reason: "delta_too_large",
+          // `subject` is the figure whose move was measured — the pre-spread
+          // market rate, matching `market` below (D10). With no spread set the
+          // two happen to be equal, which is why the saved rate is not here.
+          subject: new Decimal("17500"),
           lastKnown: new Decimal("16000"),
           deltaPct: new Decimal("9.4"),
           maxDeltaPct: new Decimal("5"),
@@ -633,6 +748,7 @@ describe("alertIfFxRateRejected — one admin DM per rejection episode, not per 
     await alertIfFxRateRejected(prisma, {
       reason: {
         reason: "delta_too_large",
+        subject: new Decimal("17500"), // the market figure whose move was measured (D10)
         lastKnown: new Decimal("16200"),
         deltaPct: new Decimal("8.0234"),
         maxDeltaPct: new Decimal("5"),

@@ -62,6 +62,7 @@ import {
   maybePayReferralCommission,
   postFinancialTransaction,
   postOrderPaymentPosting,
+  postOverpaymentCreditPosting,
   postSettlementPosting,
   postWalletAdjustmentPosting,
   postWalletTopupPosting,
@@ -1046,6 +1047,128 @@ describe("provider settlement posting (postSettlementPosting)", () => {
 
     await expect(postSettlementPosting(prisma, settlement)).resolves.toBeNull();
     expect(await allPostings()).toHaveLength(0);
+  });
+});
+
+// ── 8b. Overpayment credited to the balance ────────────────────────────────
+
+/**
+ * `postOverpaymentCreditPosting` (whole-branch review decision D3).
+ *
+ * Driven directly, like the settlement batch above and for the same reason: no
+ * route, command or job credits an overpayment today, so there is no business
+ * function to drive it through. What these tests pin is the account it must NOT
+ * use — booking an arrived overpayment against `adjustment.*` (EQUITY), which is
+ * what the generic wallet-adjustment path does, claims the shop funded the credit
+ * out of its own equity and leaves the cash the rail collected unrecorded.
+ */
+describe("overpayment credited to the wallet (postOverpaymentCreditPosting)", () => {
+  it("recognises the excess against provider_clearing, not equity", async () => {
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    await approveOrder(prisma, order.id, { adminId: ADMIN_ID });
+    // The admin credits the excess the rail collected above the order's total.
+    const movement = await adjustWallet(prisma, sample.user.id, "1.50", {
+      reason: "admin_adjust",
+      currency: "IDR",
+      adminId: ADMIN_ID,
+    });
+
+    const posted = await postOverpaymentCreditPosting(prisma, {
+      walletTransactionId: movement.transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      adminId: ADMIN_ID,
+      occurredAt: SETTLED_AT,
+    });
+
+    expect(posted).not.toBeNull();
+    const posting = await postingByKey(`wallet:${movement.transactionId}`);
+    expect({
+      type: posting.type,
+      referenceType: posting.referenceType,
+      referenceId: posting.referenceId,
+    }).toEqual({
+      type: FinancialTransactionType.ADJUSTMENT,
+      // Points at the ORDER, because the provider_clearing debit is a claim that
+      // a rail collected this money against that order.
+      referenceType: "order",
+      referenceId: order.id,
+    });
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "provider_clearing.idr", direction: "DEBIT", amount: "1.5", currency: "IDR" },
+      { code: "wallet_liability.idr", direction: "CREDIT", amount: "1.5", currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
+    // The account this posting exists to avoid stays untouched.
+    expect((await getAccountBalance(prisma, "adjustment.idr")).toString()).toBe("0");
+  });
+
+  it("is idempotent on the wallet movement's key", async () => {
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    const movement = await adjustWallet(prisma, sample.user.id, "1.50", {
+      reason: "admin_adjust",
+      currency: "IDR",
+      adminId: ADMIN_ID,
+    });
+    const args = {
+      walletTransactionId: movement.transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      adminId: ADMIN_ID,
+      occurredAt: SETTLED_AT,
+    };
+
+    const first = await postOverpaymentCreditPosting(prisma, args);
+    const second = await postOverpaymentCreditPosting(prisma, args);
+
+    expect(second!.id).toBe(first!.id);
+    expect((await getAccountBalance(prisma, "provider_clearing.idr")).toString()).toBe("1.5");
+  });
+
+  it("refuses a movement that took credit away, rather than booking it backwards", async () => {
+    await fundIdrWallet("10.00");
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    const movement = await adjustWallet(prisma, sample.user.id, "-1.00", {
+      reason: "admin_adjust",
+      currency: "IDR",
+      adminId: ADMIN_ID,
+    });
+
+    await expect(
+      postOverpaymentCreditPosting(prisma, {
+        walletTransactionId: movement.transactionId,
+        orderId: order.id,
+        orderCode: order.orderCode,
+        adminId: ADMIN_ID,
+        occurredAt: SETTLED_AT,
+      }),
+    ).resolves.toBeNull();
+    // A debit is not an overpayment being handed back: posting it would claim
+    // money left the gateway.
+    expect(await allPostings()).toEqual([]);
+  });
+
+  it("posts a USDT overpayment against the USDT accounts", async () => {
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    const movement = await adjustWallet(prisma, sample.user.id, "0.75", {
+      reason: "admin_adjust",
+      currency: "USDT",
+      adminId: ADMIN_ID,
+    });
+
+    const posted = await postOverpaymentCreditPosting(prisma, {
+      walletTransactionId: movement.transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      adminId: ADMIN_ID,
+      occurredAt: SETTLED_AT,
+    });
+
+    expect(await entriesOf(posted!.id)).toEqual([
+      { code: "provider_clearing.usdt", direction: "DEBIT", amount: "0.75", currency: "USDT" },
+      { code: "wallet_liability.usdt", direction: "CREDIT", amount: "0.75", currency: "USDT" },
+    ]);
+    await expectBalanced(posted!.id);
   });
 });
 

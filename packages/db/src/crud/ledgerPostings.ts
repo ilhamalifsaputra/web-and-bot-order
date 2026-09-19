@@ -772,6 +772,104 @@ export async function postUnderpaidTopupCreditPosting(
 }
 
 /**
+ * An OVERPAYMENT credited to the buyer's balance: a rail collected more than the
+ * order asked for, the order was delivered, and an admin resolved the excess by
+ * giving it to the buyer as wallet credit.
+ *
+ * `Dr provider_clearing.<ccy> / Cr wallet_liability.<ccy>` — the same pair, and
+ * the same reasoning, as `postUnderpaidTopupCreditPosting`: cash a gateway really
+ * collected became credit the shop owes the buyer. The amount comes from the
+ * `WalletTransaction` row, so it is what `adjustWallet` actually applied rather
+ * than what anyone intended to apply.
+ *
+ * The point of it existing (whole-branch review decision D3) is the account it
+ * does NOT use. Without a dedicated posting, the only way to credit an
+ * overpayment is a hand-made wallet adjustment, which books `Dr adjustment.<ccy>`
+ * (EQUITY) — a claim that the shop funded this credit out of its own equity. For
+ * an overpayment that is false twice over: the money arrived, so the asset side
+ * is understated by every excess ever credited, and the shop's equity is consumed
+ * by a payment a buyer made. The trial balance still balances; the numbers are
+ * wrong. Sharing the `admin_adjust` reason code with a genuine goodwill credit is
+ * not sharing economics.
+ *
+ * Type `ADJUSTMENT`, matching `postUnderpaidTopupCreditPosting` for the same
+ * reason: an admin resolving a stuck payment by hand. Not `WALLET_DEPOSIT` (that
+ * is a top-up settling for what it asked for) and not `REFUND` (nothing was
+ * undone — the order was delivered and stays delivered).
+ * `referenceType: "order"` points at the order whose gateway payment is being
+ * recognised, since the `provider_clearing` debit is a claim that a rail collected
+ * this money against THAT order; the admin is named in the description instead.
+ *
+ * ## NO PRODUCTION CALLER TODAY, and what each rail actually does
+ *
+ * Verified across all six rails (`binance_internal.ts`, `bybit_deposit.ts`,
+ * `bybit_bsc_deposit.ts`, `tokopay.ts`, `paydisini.ts`, `nowpayments.ts`): on an
+ * overpayment each one delivers the order, stamps `outcome: "overpaid"` on its own
+ * processed-transaction row, enqueues an `ADMIN_OVERPAID` DM carrying the excess,
+ * and logs. **None credits the excess, and none persists it as a figure** — it is
+ * derivable as the processed row's `amount` minus the order's total, except on
+ * TokoPay where the comparison is against `qrisChargeAmount(total)` because that
+ * rail's admin fee is a buyer-side surcharge.
+ *
+ * So there is no admin route, bot command or job that credits an overpayment; an
+ * admin does it today through the generic wallet-adjustment path, which cannot
+ * tell this apart from goodwill and therefore posts against equity. This function
+ * ships as the mapping to use the moment such a path exists — wire it where the
+ * credit is made, in the same transaction, instead of
+ * `postWalletAdjustmentPosting`. Giving the generic adjustment route a way to say
+ * "this is order X's overpayment" is a product decision that was not part of this
+ * one.
+ *
+ * Idempotent on `wallet:{walletTransactionId}` like every other wallet-derived
+ * posting here, so the credit is recognised once however many times the resolving
+ * call is replayed.
+ */
+export async function postOverpaymentCreditPosting(
+  db: Db,
+  args: {
+    walletTransactionId: number;
+    orderId: number;
+    orderCode: string;
+    adminId: number;
+    occurredAt: Date;
+  },
+): Promise<FinancialTransaction | null> {
+  const context = `the overpayment credited to the buyer of order ${args.orderCode}`;
+  const movement = await readWalletMovement(db, args.walletTransactionId, context);
+  if (!movement) return null;
+
+  if (!movement.increasedBalance) {
+    // A debit is not an overpayment being handed back, so there is no gateway
+    // collection to recognise and the `provider_clearing` leg would be a claim
+    // that money left the gateway. Whatever this movement is, it belongs on
+    // another posting — refused rather than booked backwards.
+    logger.error(
+      `Recorded no ledger posting for ${context} because the wallet movement took ${movement.amount.toString()} ${movement.currency} AWAY from the buyer, and an overpayment credit can only ever add to a balance. The balance still moved, so whichever path passed a debit to this posting is the bug, and the movement needs to be posted as whatever it really is. ${NOT_BY_HAND}`,
+    );
+    return null;
+  }
+
+  return postOrSkipMissingAccount(
+    db,
+    {
+      type: FinancialTransactionType.ADJUSTMENT,
+      referenceType: "order",
+      referenceId: args.orderId,
+      idempotencyKey: walletKey(args.walletTransactionId),
+      description: `Credited ${movement.amount.toString()} ${movement.currency} to the buyer of order ${args.orderCode} as wallet balance — the excess they paid above the order's total — as resolved by admin ${args.adminId}.`,
+      occurredAt: args.occurredAt,
+      entries: pair(
+        `provider_clearing.${suffix(movement.currency)}`,
+        `wallet_liability.${suffix(movement.currency)}`,
+        movement.amount,
+        movement.currency,
+      ),
+    },
+    context,
+  );
+}
+
+/**
  * An admin moving a buyer's balance by hand (`admin_adjust`) — a goodwill
  * credit, a correction, a manual debit.
  *
@@ -780,8 +878,16 @@ export async function postUnderpaidTopupCreditPosting(
  * of nothing — so the counter-account is `adjustment.<ccy>` (EQUITY): the shop is
  * deciding to owe the buyer more, or less, out of its own equity. That is what
  * makes this posting the WRONG one for any `admin_adjust` movement that real
- * money did arrive behind; see `postUnderpaidTopupCreditPosting`, which is the
- * one such case. Direction follows the movement:
+ * money did arrive behind. Two such cases have their own posting instead:
+ * `postUnderpaidTopupCreditPosting` (a top-up that arrived short, credited anyway)
+ * and `postOverpaymentCreditPosting` (a payment that arrived over, credited to the
+ * balance). Both go through `provider_clearing` because the cash exists.
+ *
+ * NOTE, honestly: an admin crediting an overpayment TODAY reaches this function,
+ * because no route hands the other one an order to point at — so equity is what an
+ * overpayment credit currently consumes. See
+ * `postOverpaymentCreditPosting`'s own doc comment for what each rail does and
+ * what is still missing. Direction follows the movement:
  *
  * - **Credit to the buyer** (`delta > 0`): `Dr adjustment / Cr wallet_liability`
  *   — the obligation grows.

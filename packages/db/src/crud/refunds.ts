@@ -460,23 +460,69 @@ export async function createRefundItem(
   return refundItem;
 }
 
+/** This repo's 4-decimal money quantization, spelled once for the reads below. */
+const q4 = (value: Decimal.Value | null | undefined): Decimal =>
+  quantizeMoney(new Decimal(value ?? 0), 4);
+
 /** The two payout methods `executeRefund` knows how to carry out. */
 const REFUND_EXECUTION_METHODS: readonly string[] = [
   RefundExecutionMethod.WALLET,
   RefundExecutionMethod.MANUAL_TRANSFER,
 ];
 
+/** What an order has already given back, broken out by the path that did it. */
+interface RefundableAmountForOrder {
+  /** `orderTotal` minus `alreadyPaidOut`; can be zero, never assumed positive. */
+  refundable: Decimal;
+  /** The sum of all three components below — the ceiling's whole deduction. */
+  alreadyPaidOut: Decimal;
+  /** COMPLETED `RefundExecution` amounts (`executeRefund`). */
+  byExecutions: Decimal;
+  /** COMPLETED `Refund` rows with no execution at all (`refundUnderpaidOrder`). */
+  byLegacyRefunds: Decimal;
+  /** `unfulfilled_credit` wallet movements (`creditOrderToBalance`). */
+  byBalanceCredit: Decimal;
+}
+
 /**
  * How much of an order's value is still refundable: its own `totalAmount` minus
- * everything already PAID OUT against it.
+ * everything already given back to the buyer against it, by ANY path.
  *
- * "Already paid out" is the sum of COMPLETED `RefundExecution` amounts across
- * every `Refund` on the order, not a stored `order.refundedAmount` — there is no
- * such column, and adding one would be a second source of truth for a figure the
- * execution rows already state exactly. PENDING executions are excluded because
- * they have not paid anyone yet, and FAILED ones because they never will: a
- * bounced bank transfer must not permanently burn refund budget, the same
- * reasoning `createRefundItem` applies to CANCELLED/FAILED refunds.
+ * "Any path" is the whole point, and it is where this used to be wrong (fixed per
+ * the whole-branch review's decision D4). There are three ways money goes back to
+ * a buyer for one order, they were built at different times, and only the first
+ * writes the rows this check originally read:
+ *
+ * 1. **COMPLETED `RefundExecution` rows** — `executeRefund`, the general payout.
+ *    PENDING executions are excluded because they have not paid anyone yet, and
+ *    FAILED ones because they never will: a bounced bank transfer must not
+ *    permanently burn refund budget, the same reasoning `createRefundItem`
+ *    applies to CANCELLED/FAILED refunds.
+ * 2. **COMPLETED `Refund` rows with NO `RefundExecution` at all** —
+ *    `refundUnderpaidOrder` (crud/binance_internal.ts), which predates the
+ *    execution model: it credits the buyer's wallet itself and writes its
+ *    already-COMPLETED `Refund` row directly, deliberately bypassing the state
+ *    machine (see its own doc comment). That row IS the payout record for that
+ *    path, so its amount has to count. Identified by the ABSENCE of executions
+ *    rather than by a reason code, which it does not carry — and that absence is
+ *    also what keeps this from double-counting case 1, whose refunds always have
+ *    one.
+ * 3. **`unfulfilled_credit` wallet movements** — `creditOrderToBalance`
+ *    (crud/orders.ts), an order the shop cannot fulfil, handed back as wallet
+ *    credit. It writes no `Refund` row at all, so neither of the two reads above
+ *    can see it, and it leaves the order CANCELLED rather than REFUNDED — a state
+ *    nothing stops a later payout being attempted against.
+ *
+ * With only case 1 counted, an order refunded through case 2 or 3 could be paid
+ * out AGAIN for its full value: a buyer whose underpayment was returned, or whose
+ * unfulfillable order was credited, would keep that money and be paid the whole
+ * total on top of it. That is not reachable through the routes shipped today —
+ * `executeRefund`'s only production caller is `refundInsteadOfReplace`
+ * (crud/stockReplacement.ts), which requires a DELIVERED order, and cases 2 and 3
+ * both leave the order UNDERPAID-resolved or CANCELLED. The guard is fixed anyway,
+ * because "unreachable" here means "no route calls it yet", and a generic admin
+ * refund route is exactly the kind of thing that gets added without re-deriving
+ * this ceiling.
  *
  * This is an ORDER-level ceiling, and it is deliberately separate from — and
  * additional to — `createRefundItem`'s per-`OrderItem` subtotal invariant. That
@@ -484,6 +530,11 @@ const REFUND_EXECUTION_METHODS: readonly string[] = [
  * refunded for more than the buyer ever paid for it, which nothing else checks:
  * a `Refund` needs no `RefundItem` rows at all (`refundUnderpaidOrder` writes
  * none), so the per-item check can be silently absent for a whole refund.
+ *
+ * Every component is read as ONE aggregate, and case 3 is scoped to the order's
+ * own `currency`: `wallet_transactions` carries its own currency and IDR and USDT
+ * are unconvertible here, so summing across them would produce a meaningless
+ * deduction rather than a conservative one.
  *
  * Known limitation, deliberate for this milestone: `Order.totalAmount` is what
  * the buyer owed EXTERNALLY and is already net of `Order.walletUsed`, so an
@@ -497,13 +548,39 @@ async function refundableAmountForOrder(
   db: Db,
   orderId: number,
   orderTotal: Decimal,
-): Promise<{ refundable: Decimal; alreadyPaidOut: Decimal }> {
-  const executed = await db.refundExecution.aggregate({
-    where: { status: RefundExecutionStatus.COMPLETED, refund: { orderId } },
-    _sum: { amount: true },
-  });
-  const alreadyPaidOut = quantizeMoney(new Decimal(executed._sum?.amount ?? 0), 4);
-  return { refundable: orderTotal.minus(alreadyPaidOut), alreadyPaidOut };
+  currency: string,
+): Promise<RefundableAmountForOrder> {
+  const [executed, legacy, credited] = await Promise.all([
+    db.refundExecution.aggregate({
+      where: { status: RefundExecutionStatus.COMPLETED, refund: { orderId } },
+      _sum: { amount: true },
+    }),
+    db.refund.aggregate({
+      where: { orderId, status: RefundStatus.COMPLETED, executions: { none: {} } },
+      _sum: { amount: true },
+    }),
+    db.walletTransaction.aggregate({
+      where: { orderId, reason: "unfulfilled_credit", currency },
+      _sum: { delta: true },
+    }),
+  ]);
+
+  const byExecutions = q4(executed._sum?.amount ?? 0);
+  const byLegacyRefunds = q4(legacy._sum?.amount ?? 0);
+  // `unfulfilled_credit` is only ever written as a credit to the buyer, but the
+  // sum is floored at zero so a hand-written negative row cannot RAISE the
+  // ceiling — a guard against over-refunding must never be loosened by the rows
+  // it reads.
+  const byBalanceCredit = Decimal.max(new Decimal(0), q4(credited._sum?.delta ?? 0));
+
+  const alreadyPaidOut = q4(byExecutions.plus(byLegacyRefunds).plus(byBalanceCredit));
+  return {
+    refundable: orderTotal.minus(alreadyPaidOut),
+    alreadyPaidOut,
+    byExecutions,
+    byLegacyRefunds,
+    byBalanceCredit,
+  };
 }
 
 /**
@@ -669,8 +746,18 @@ export async function executeRefund(
     }
 
     const orderTotal = quantizeMoney(new Decimal(order.totalAmount), 4);
-    const { refundable, alreadyPaidOut } = await refundableAmountForOrder(tx, order.id, orderTotal);
+    const budget = await refundableAmountForOrder(tx, order.id, orderTotal, order.currency);
+    const { refundable, alreadyPaidOut } = budget;
     if (amount.greaterThan(refundable)) {
+      // Logged as well as thrown, and the components are spelled out, because the
+      // two newer deductions are the ones nobody expects: a refusal that only said
+      // "already paid out 5000" against an order with no `RefundExecution` rows at
+      // all reads as a bug in this guard rather than as a refund that already
+      // happened somewhere else.
+      logger.warn(
+        { refundId: refund.id, orderId: order.id },
+        `Paid nothing out for refund #${refund.id} on order ${order.orderCode}, because the ${amount.toString()} ${refund.currency} requested is more than the ${refundable.toString()} ${refund.currency} still refundable on it. Of the order's ${orderTotal.toString()} ${refund.currency} total, ${alreadyPaidOut.toString()} has already gone back to the buyer: ${budget.byExecutions.toString()} through recorded refund payouts, ${budget.byLegacyRefunds.toString()} through the underpaid-order refund path, and ${budget.byBalanceCredit.toString()} as wallet credit for an order the shop could not fulfil. Nothing was paid and nothing was recorded.`,
+      );
       throw new ValidationError("error.refund_exceeds_refundable_amount", {
         refundable: refundable.toString(),
         currency: refund.currency,

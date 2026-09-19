@@ -707,3 +707,138 @@ describe("reconcileLedger — overall", () => {
     for (const finding of findings) expect(finding.detectedAt).toBeInstanceOf(Date);
   });
 });
+
+// ── 6. The paged order scan ────────────────────────────────────────────────
+
+/**
+ * The missing-posting scan walks orders by keyset in pages rather than reading
+ * every DELIVERED order since the cutover into one array (whole-branch review
+ * C3). After an M10 backfill the cutover sits at the shop's first sale, so that
+ * set is the shop's entire history — an unbounded allocation AND an unbounded
+ * `IN (...)` list on the two lookups derived from it.
+ *
+ * `orderScanPageSize` exists so these can force several pages from a handful of
+ * orders; production never passes it. The property that matters is that the page
+ * size changes NOTHING about the findings.
+ */
+describe("reconcileLedger — the order scan pages without changing its answer", () => {
+  /** Four DELIVERED orders, two of them with their posting erased. */
+  async function fourOrdersTwoUnposted() {
+    await anchorLedger();
+    const orders = [];
+    for (let index = 0; index < 4; index += 1) {
+      const order = await makeDeliveredOrder();
+      await setPaidAt(order.id, AFTER_ANCHOR);
+      orders.push(order);
+    }
+    await erasePosting(`order:${orders[1]!.id}:payment`);
+    await erasePosting(`order:${orders[3]!.id}:payment`);
+    return orders;
+  }
+
+  it("finds exactly the same orders whether the walk takes one page or several", async () => {
+    const orders = await fourOrdersTwoUnposted();
+    const expected = [orders[1]!.id, orders[3]!.id].map(String).sort();
+
+    const inOnePage = await reconcileLedger(prisma, { orderScanPageSize: 100 });
+    const inPagesOfOne = await reconcileLedger(prisma, { orderScanPageSize: 1 });
+    const inPagesOfTwo = await reconcileLedger(prisma, { orderScanPageSize: 2 });
+
+    for (const findings of [inOnePage, inPagesOfOne, inPagesOfTwo]) {
+      expect(missing(findings).map((finding) => finding.entityId).sort()).toEqual(expected);
+    }
+  });
+
+  it("does not drop or double-report a row at an exact page boundary", async () => {
+    const orders = await fourOrdersTwoUnposted();
+
+    // Page size 2 over 4 rows: the second page starts exactly where the first
+    // ended, which is where a `>=`-instead-of-`>` keyset bug would re-read the
+    // last row of the previous page (a duplicate finding) and an off-by-one in
+    // the other direction would skip it.
+    const findings = missing(await reconcileLedger(prisma, { orderScanPageSize: 2 }));
+
+    expect(findings).toHaveLength(2);
+    expect(new Set(findings.map((finding) => finding.entityId)).size).toBe(2);
+    expect(findings.map((finding) => finding.entityId).sort()).toEqual(
+      [orders[1]!.id, orders[3]!.id].map(String).sort(),
+    );
+  });
+
+  it("terminates on a page that comes back exactly full but has nothing after it", async () => {
+    // Two rows, page size 2: the first page is full, so the walk asks for a
+    // second one, which must come back empty and end the loop rather than
+    // re-reading the same page forever.
+    await anchorLedger();
+    const first = await makeDeliveredOrder();
+    const second = await makeDeliveredOrder();
+    await setPaidAt(first.id, AFTER_ANCHOR);
+    await setPaidAt(second.id, AFTER_ANCHOR);
+    await erasePosting(`order:${second.id}:payment`);
+
+    const findings = missing(await reconcileLedger(prisma, { orderScanPageSize: 2 }));
+
+    expect(findings.map((finding) => finding.entityId)).toEqual([String(second.id)]);
+  });
+});
+
+// ── 7. The cutover-scoped payout read ──────────────────────────────────────
+
+describe("reconcileLedger — payouts are scoped by the cutover in the query", () => {
+  it("still reports a payout executed after the cutover whose posting is missing", async () => {
+    // The scope narrowing must not have narrowed away the finding it exists to
+    // make: this is the same case the missing-refund-posting check covers above,
+    // re-asserted here because it is what a too-aggressive `executedAt` filter
+    // would silently stop reporting.
+    await anchorLedger();
+    const order = await makeDeliveredOrder();
+    await setPaidAt(order.id, AFTER_ANCHOR);
+    const refund = await makeProcessingRefund(order.id, "1.00");
+    const execution = await executeRefund(prisma, {
+      refundId: refund.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: "1.00",
+      executedBy: ADMIN_ID,
+    });
+    await erasePosting(`refund_execution:${execution.id}`);
+    await prisma.refundExecution.update({
+      where: { id: execution.id },
+      data: { executedAt: AFTER_ANCHOR },
+    });
+
+    const found = missing(await reconcileLedger(prisma)).filter(
+      (finding) => finding.entity === "refund_execution",
+    );
+
+    expect(found).toHaveLength(1);
+    expect(found[0]!.entityId).toBe(String(execution.id));
+  });
+
+  it("reports nothing for a payout executed before the cutover, as before", async () => {
+    await anchorLedger();
+    const order = await makeDeliveredOrder();
+    await setPaidAt(order.id, AFTER_ANCHOR);
+    const refund = await makeProcessingRefund(order.id, "1.00");
+    const execution = await executeRefund(prisma, {
+      refundId: refund.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: "1.00",
+      executedBy: ADMIN_ID,
+    });
+    await erasePosting(`refund_execution:${execution.id}`);
+    // Executed a month before the ledger recorded anything: pre-ledger history,
+    // M10's backfill's job, not a drift alert's. Previously this row was read
+    // and then discarded in memory; now the query never returns it, and the
+    // outcome must be identical.
+    await prisma.refundExecution.update({
+      where: { id: execution.id },
+      data: { executedAt: BEFORE_ANCHOR },
+    });
+
+    const found = missing(await reconcileLedger(prisma)).filter(
+      (finding) => finding.entity === "refund_execution",
+    );
+
+    expect(found).toEqual([]);
+  });
+});

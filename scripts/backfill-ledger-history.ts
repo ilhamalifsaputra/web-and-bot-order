@@ -118,6 +118,38 @@ const DEFAULT_BATCH_SIZE = 500;
  *  rest by count. All of them are always present in the returned object. */
 const MAX_LISTED_UNPROCESSABLE = 50;
 
+/**
+ * Every `WalletTransaction.reason` this run can account for, mapped to what
+ * accounts for it. A movement whose reason is NOT a key here is invisible to
+ * every category below — no paging query matches it — so without this map the
+ * run would examine nothing for it, post nothing for it, and report nothing
+ * about it, which reads identically to "there was nothing to post".
+ *
+ * That is not a hypothetical shape. `adjustWallet`
+ * (packages/db/src/crud/users.ts) stamps `reason: "adjust"` whenever a caller
+ * passes no reason at all, and `WALLET_TX_REASONS` lists `adjust` as a real
+ * filter value in the admin wallet ledger — so a movement nothing here handles
+ * is what a call site that forgot to name its reason leaves behind.
+ *
+ * Kept as a reason -> explanation map rather than a bare array so the report can
+ * tell an operator not just that a reason is unhandled but what the handled ones
+ * are handled BY. The five wallet-rooted categories page on their reason
+ * directly; the last three reasons are movements whose ledger event is posted
+ * from the OWNING ROW instead, which is why no movement category claims them.
+ */
+const ACCOUNTED_FOR_WALLET_REASONS: Readonly<Record<string, string>> = {
+  admin_adjust:
+    "category underpaid_topup_credit when it carries an order, admin_wallet_adjustment when it does not",
+  referral: "category referral_commission",
+  underpaid_refund: "category underpaid_order_credit",
+  unfulfilled_credit: "category unfulfilled_order_credit",
+  order_refund: "category order_hold_release",
+  order_payment:
+    "category order_payment, from the Order — a checkout wallet debit is part of that order's own revenue posting, not a separate ledger event",
+  wallet_topup: "category wallet_topup, from the Order rather than from the movement",
+  refund_execution: "category refund_payout, from the RefundExecution rather than from the movement",
+};
+
 /** One historical row this script would not post, and why. */
 export interface UnprocessableRow {
   /** Which category examined it. */
@@ -191,6 +223,32 @@ export interface BackfillReport {
    */
   orderlessOrderMovements: Array<{ id: number; reason: string }>;
   orderlessOrderMovementsCount: number;
+  /**
+   * Wallet movements whose `reason` no category in this run can see at all,
+   * grouped by reason and counted — see `ACCOUNTED_FOR_WALLET_REASONS` for why
+   * that set is enumerated rather than inferred. Grouped rather than listed
+   * row-by-row because the actionable unit is the REASON (one call site, one
+   * missing category), not the individual movement, and a legacy reason can
+   * easily cover thousands of rows.
+   *
+   * Like `orderlessOrderMovements`, these are NOT counted as `unprocessable`:
+   * nothing examined them, so calling them unprocessable would imply a category
+   * looked and declined. They do count towards the exit code.
+   */
+  unaccountedWalletReasons: Array<{ reason: string; movements: number }>;
+  /** Total movements across every reason in `unaccountedWalletReasons`. */
+  unaccountedWalletMovementsCount: number;
+  /**
+   * Set when a category's own paging query threw and the run stopped early.
+   * The report is still returned and still printed — everything posted before
+   * the failure is committed and correctly counted, and an operator needs to see
+   * that rather than a bare stack trace. A run that aborted is NEVER a success:
+   * `main()` exits non-zero on this alone, because the ledger's earliest posting
+   * has moved back over a period this run only partly described, which is the
+   * "incomplete run is worse than no run" case this file's own header warns
+   * about.
+   */
+  aborted: { category: string; message: string } | null;
   categories: CategoryResult[];
   totals: {
     examined: number;
@@ -240,6 +298,32 @@ interface CategorySpec<T> {
   post: (row: T) => Promise<PostAttempt>;
 }
 
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/**
+ * A category's paging QUERY threw (a dropped connection, a statement timeout, a
+ * column the database does not have) — as opposed to one row's posting throwing,
+ * which `runCategory` handles per row and keeps going.
+ *
+ * This carries the failing category's PARTIAL result, so the caller can fold it
+ * into the report instead of losing the counts for rows that really were posted
+ * before the read failed. Without it, a page() throw propagated all the way out
+ * of `backfillLedgerHistory` and `main()` printed only the error message — the
+ * audit trail for the postings this run had already committed was simply gone,
+ * which is the one thing a backfill's report exists to provide.
+ */
+class CategoryReadFailed extends Error {
+  constructor(
+    readonly category: string,
+    readonly partial: CategoryResult,
+    cause: unknown,
+  ) {
+    super(`reading a page of historical rows for the ${category} category failed: ${errorMessage(cause)}`);
+    this.name = "CategoryReadFailed";
+    this.cause = cause;
+  }
+}
+
 /**
  * Page through one category and post each row, counting outcomes.
  *
@@ -251,6 +335,12 @@ interface CategorySpec<T> {
  * unprocessable with its message and the walk continues — a backfill that
  * abandoned a shop's remaining history because of one malformed row would be
  * worse than one that reports it.
+ *
+ * A failure of the PAGING QUERY itself is different and does stop this category:
+ * there is no row to blame and no way to advance the keyset past it, so
+ * continuing would either loop on the same failing read or silently skip an
+ * unknown stretch of history. It is raised as `CategoryReadFailed` carrying the
+ * counts so far, which the caller reports rather than discards.
  */
 async function runCategory<T>(
   spec: CategorySpec<T>,
@@ -269,7 +359,17 @@ async function runCategory<T>(
   let afterId = 0;
   let pages = 0;
   for (;;) {
-    const rows = await spec.page(afterId, args.batchSize);
+    let rows: T[];
+    try {
+      rows = await spec.page(afterId, args.batchSize);
+    } catch (e) {
+      args.log(
+        `  ${spec.category}: reading the next page of historical rows failed — ${errorMessage(e)}. ` +
+          `Stopping here. The ${result.posted} posting(s) this category already made are committed ` +
+          `and are in the report below; the rest of this category's history was not examined.`,
+      );
+      throw new CategoryReadFailed(spec.category, result, e);
+    }
     if (rows.length === 0) break;
     pages += 1;
 
@@ -282,9 +382,7 @@ async function runCategory<T>(
       try {
         attempt = await spec.post(row);
       } catch (e) {
-        attempt = cannot(
-          `posting it raised an error: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        attempt = cannot(`posting it raised an error: ${errorMessage(e)}`);
       }
 
       if (attempt.kind === "unprocessable") {
@@ -532,6 +630,25 @@ export async function backfillLedgerHistory(
     where: orderlessOrderMovementsWhere,
   });
 
+  // Grouped by reason rather than listed per row — see
+  // `unaccountedWalletReasons`. Unbounded on purpose and safe to be: the group
+  // count is at most the number of DISTINCT reasons in the table, which is a
+  // handful of string literals, not a row count.
+  const unaccountedGroups = await db.walletTransaction.groupBy({
+    by: ["reason"],
+    where: { reason: { notIn: Object.keys(ACCOUNTED_FOR_WALLET_REASONS) } },
+    _count: { _all: true },
+  });
+  const unaccountedWalletReasons = unaccountedGroups
+    .map((group) => ({ reason: group.reason, movements: group._count._all }))
+    // Biggest first so the reason costing the most history leads, ties by name
+    // so two runs over the same database print the same order.
+    .sort((a, b) => b.movements - a.movements || a.reason.localeCompare(b.reason));
+  const unaccountedWalletMovementsCount = unaccountedWalletReasons.reduce(
+    (sum, group) => sum + group.movements,
+    0,
+  );
+
   // Every FinancialTransaction id at or below this existed before the run, so
   // anything above it is a posting this run wrote. Read once; see `runCategory`.
   const watermark = (await db.financialTransaction.aggregate({ _max: { id: true } }))._max.id ?? 0;
@@ -543,12 +660,44 @@ export async function backfillLedgerHistory(
   );
 
   const categories: CategoryResult[] = [];
+  let aborted: BackfillReport["aborted"] = null;
+
+  /**
+   * Run one category, unless an earlier one already aborted the run.
+   *
+   * A `CategoryReadFailed` stops the remaining categories but does NOT propagate:
+   * its partial counts are folded into `categories` and the run falls through to
+   * build and return the report, so the caller still prints the audit trail for
+   * everything that was posted. Every other error is genuinely unexpected and
+   * still propagates (the missing-chart-of-accounts refusal above is one, and it
+   * must stay fatal).
+   *
+   * The remaining categories are skipped rather than attempted, because the order
+   * they run in is load-bearing — see this file's "Order is load-bearing" note.
+   * Carrying on past a category that only partly ran would let a later wallet
+   * category branch on an `order_payment` posting that this run was interrupted
+   * before making, and book a real sale against the wrong account.
+   */
+  const run = async (start: () => Promise<CategoryResult>): Promise<void> => {
+    if (aborted !== null) return;
+    try {
+      categories.push(await start());
+    } catch (err) {
+      if (!(err instanceof CategoryReadFailed)) throw err;
+      categories.push(err.partial);
+      aborted = { category: err.category, message: err.message };
+      log(
+        `Stopping after ${err.category}: the remaining categories are skipped because the order ` +
+          `they run in is load-bearing. The report below covers what was posted.`,
+      );
+    }
+  };
 
   // ── 1. Order payments ────────────────────────────────────────────────────
   // FIRST, always: three later categories branch on whether this posting
   // exists. See this file's "Order is load-bearing" note.
-  categories.push(
-    await runCategory<HistoricalOrder>(
+  await run(() =>
+    runCategory<HistoricalOrder>(
       {
         category: "order_payment",
         describes: "a product order's payment, recognised as revenue when it settled",
@@ -567,8 +716,8 @@ export async function backfillLedgerHistory(
   );
 
   // ── 2. Wallet top-ups ────────────────────────────────────────────────────
-  categories.push(
-    await runCategory<HistoricalOrder>(
+  await run(() =>
+    runCategory<HistoricalOrder>(
       {
         category: "wallet_topup",
         describes: "a wallet top-up that settled in full, becoming credit the shop owes the buyer",
@@ -591,8 +740,8 @@ export async function backfillLedgerHistory(
   // (`creditUnderpaidTopupAnyway`), and only ever against a WALLET_TOPUP order.
   // That is the discriminator against category 4, whose two call sites attach
   // no order at all.
-  categories.push(
-    await runCategory<HistoricalMovement>(
+  await run(() =>
+    runCategory<HistoricalMovement>(
       {
         category: "underpaid_topup_credit",
         describes: "a top-up whose money arrived short, credited to the buyer anyway",
@@ -633,8 +782,8 @@ export async function backfillLedgerHistory(
   );
 
   // ── 4. Hand-made wallet adjustments ──────────────────────────────────────
-  categories.push(
-    await runCategory<HistoricalMovement>(
+  await run(() =>
+    runCategory<HistoricalMovement>(
       {
         category: "admin_wallet_adjustment",
         describes: "an admin moving a buyer's balance by hand, out of the shop's own equity",
@@ -664,8 +813,8 @@ export async function backfillLedgerHistory(
   );
 
   // ── 5. Referral commissions ──────────────────────────────────────────────
-  categories.push(
-    await runCategory<HistoricalMovement>(
+  await run(() =>
+    runCategory<HistoricalMovement>(
       {
         category: "referral_commission",
         describes: "a referral commission paid into the referrer's wallet",
@@ -708,8 +857,8 @@ export async function backfillLedgerHistory(
       "an order the shop could not fulfil, its payment handed back as wallet credit",
     ],
   ] as const) {
-    categories.push(
-      await runCategory<HistoricalMovement>(
+    await run(() =>
+      runCategory<HistoricalMovement>(
         {
           category,
           describes,
@@ -740,8 +889,8 @@ export async function backfillLedgerHistory(
   // nothing to reverse. `postOrderHoldReleasePosting` decides that itself from
   // the order's own posting history — which is why this category hands it every
   // release rather than trying to pre-filter them here.
-  categories.push(
-    await runCategory<HistoricalMovement>(
+  await run(() =>
+    runCategory<HistoricalMovement>(
       {
         category: "order_hold_release",
         describes:
@@ -773,8 +922,8 @@ export async function backfillLedgerHistory(
   // category runs anyway, because it is also the repair path for a payout whose
   // posting was skipped at the time for a chart-of-accounts row that had not
   // been seeded yet.
-  categories.push(
-    await runCategory<HistoricalPayout>(
+  await run(() =>
+    runCategory<HistoricalPayout>(
       {
         category: "refund_payout",
         describes: "a refund actually paid out, into the buyer's wallet or out of the shop's funds",
@@ -836,6 +985,9 @@ export async function backfillLedgerHistory(
     refundPayoutsPredatingLedgerCount,
     orderlessOrderMovements,
     orderlessOrderMovementsCount,
+    unaccountedWalletReasons,
+    unaccountedWalletMovementsCount,
+    aborted,
     categories,
     totals,
   };
@@ -846,6 +998,20 @@ export function formatBackfillReport(report: BackfillReport): string {
   const lines: string[] = [];
   lines.push("Historical ledger backfill (Financial Ledger M10)");
   lines.push("");
+  // First, before the numbers: every figure below describes a PARTIAL run, and a
+  // reader who scrolled straight to the totals must not take them for a complete
+  // picture of the shop's history.
+  if (report.aborted !== null) {
+    lines.push(
+      `RUN DID NOT FINISH — ${report.aborted.message}. The categories after ` +
+        `${report.aborted.category} were not run at all, and ${report.aborted.category} itself only ` +
+        "got as far as the counts below. Every posting already made is committed and this tool is " +
+        "safe to re-run: fix the cause and run it again, and it will continue from here. Until then " +
+        "the ledger's earliest posting has moved back over a period these books only partly " +
+        "describe, so treat any reconciliation finding as this run's incompleteness first.",
+    );
+    lines.push("");
+  }
   lines.push(`Started:  ${report.startedAt.toISOString()}`);
   lines.push(`Finished: ${report.finishedAt.toISOString()}`);
   lines.push(
@@ -926,6 +1092,25 @@ export function formatBackfillReport(report: BackfillReport): string {
     lines.push("");
   }
 
+  if (report.unaccountedWalletMovementsCount > 0) {
+    lines.push(
+      `INVESTIGATE: ${report.unaccountedWalletMovementsCount} wallet movement(s) carry a reason no ` +
+        `category in this run can see, so they were NOT examined, NOT posted and NOT counted as ` +
+        `"could not process" below — the ledger simply says nothing about them:`,
+    );
+    for (const group of report.unaccountedWalletReasons) {
+      lines.push(`  reason "${group.reason}": ${group.movements} movement(s)`);
+    }
+    lines.push(
+      `  The reasons this run DOES account for are: ${Object.keys(ACCOUNTED_FOR_WALLET_REASONS).join(", ")}. ` +
+        'Note that `adjustWallet` stamps "adjust" when a caller passes no reason at all, so a bare ' +
+        '"adjust" here usually means a call site that never named its reason rather than a legacy row. ' +
+        "Decide per reason what the movement means and either give it a category above or confirm it " +
+        "is not a financial event, then re-run.",
+    );
+    lines.push("");
+  }
+
   const unprocessable = report.categories.flatMap((category) => category.unprocessable);
   if (unprocessable.length > 0) {
     lines.push(
@@ -975,17 +1160,25 @@ async function main() {
   console.log("");
   console.log(formatBackfillReport(report));
   // Non-zero when something was left unprocessed — a row a category examined and
-  // could not post, OR a wallet movement no category's query can see at all
-  // (`orderlessOrderMovementsCount`, which the report deliberately does not count
-  // as "unprocessable") — so a run wired into anything that checks exit codes
-  // cannot quietly report a partial backfill as done.
+  // could not post; a wallet movement whose reason implies an order but has none
+  // (`orderlessOrderMovementsCount`); a wallet movement whose reason no category
+  // can see at all (`unaccountedWalletMovementsCount`); or a category whose
+  // paging query failed and cut the run short (`aborted`). The last three are
+  // deliberately NOT counted as "unprocessable" in the report — nothing examined
+  // them — so each has to be named here or a run wired into anything that checks
+  // exit codes would quietly report a partial backfill as done.
   // Set on `exitCode` and left to fall off the end (matching
   // scripts/seed-chart-of-accounts.ts), not a bare `process.exit`: this report
   // is the run's audit trail, and when stdout is redirected to a file rather
   // than a TTY, Node's write can still be in flight when `process.exit` tears
   // the process down, truncating it.
   process.exitCode =
-    report.totals.unprocessable > 0 || report.orderlessOrderMovementsCount > 0 ? 1 : 0;
+    report.totals.unprocessable > 0 ||
+    report.orderlessOrderMovementsCount > 0 ||
+    report.unaccountedWalletMovementsCount > 0 ||
+    report.aborted !== null
+      ? 1
+      : 0;
   await prisma.$disconnect();
 }
 

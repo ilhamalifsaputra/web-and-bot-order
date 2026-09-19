@@ -10,6 +10,7 @@ import { OrderStatus, OrderKind, RefundExecutionStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays, DateTime } from "@app/core/datetime";
+import { idChunks } from "./_idChunks";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -173,10 +174,19 @@ const ORDER_PAYMENT_REASON = "order_payment";
  *     bound anything by): fall back to reading every `order_payment` leg first
  *     and then asking which of THOSE orders match `orderWhere`. Wallet-first
  *     because the wallet-paid set is the smaller of the two — but it is still a
- *     lifetime-wide read of a table with no index on `reason`, and its
- *     `IN (...)` list grows with wallet-paid order volume. That is a known,
- *     accepted scaling ceiling, recorded in docs/sales-metrics-contract.md's
- *     open items alongside the other lifetime reads.
+ *     lifetime-wide read of a table with no index on `reason`. That remains a
+ *     known, accepted scaling ceiling, recorded in
+ *     docs/sales-metrics-contract.md's open items alongside the other lifetime
+ *     reads.
+ *
+ * BOTH shapes chunk their `IN (...)` list (`idChunks`, `_idChunks.ts`). Neither
+ * list is bounded by anything this code chose — one is "every order in the
+ * caller's window", the other "every wallet-paid order ever" — so a year view
+ * over a busy shop, or a lifetime total, would otherwise blow past Postgres's
+ * 65535 bind-parameter ceiling and fail the whole read with a protocol error
+ * rather than merely being slow. Chunking is exactly result-preserving here:
+ * `foldWalletGroups` nets per (order, currency) and every row of a given order
+ * carries that order's id, so no group can straddle two chunks.
  *
  * Callers on either path pass the SAME `where` object their own order query
  * uses, so the two halves of a figure can never scope differently.
@@ -188,14 +198,25 @@ async function walletSpendLegs(
 ): Promise<Array<{ orderId: number; userId: number; spend: WalletSpend }>> {
   if (boundOrderIds !== undefined) {
     if (boundOrderIds.length === 0) return [];
+    // Chunked, not one `IN (...)` over the whole window: `boundOrderIds` is
+    // every order in the caller's window, so a year view over a busy shop can
+    // exceed Postgres's 65535 bind-parameter ceiling and fail the whole
+    // dashboard read with a protocol error. See `_idChunks.ts` for why chunking
+    // is result-preserving here — `foldWalletGroups` nets per (order, currency)
+    // group and a given order's rows all carry that order's id, so no group can
+    // straddle two chunks.
     // Assigned to a local rather than passed inline: Prisma's `groupBy` infers
     // its result shape from the contextual type, and feeding it straight into a
     // parameter position makes it try to satisfy that parameter instead.
-    const bounded = await db.walletTransaction.groupBy({
-      by: ["orderId", "userId", "currency"],
-      where: { reason: ORDER_PAYMENT_REASON, orderId: { in: [...boundOrderIds] } },
-      _sum: { delta: true },
-    });
+    const bounded: WalletLegGroup[] = [];
+    for (const chunk of idChunks(boundOrderIds)) {
+      const page = await db.walletTransaction.groupBy({
+        by: ["orderId", "userId", "currency"],
+        where: { reason: ORDER_PAYMENT_REASON, orderId: { in: chunk } },
+        _sum: { delta: true },
+      });
+      bounded.push(...page);
+    }
     return foldWalletGroups(bounded, null);
   }
 
@@ -206,13 +227,29 @@ async function walletSpendLegs(
   });
   if (groups.length === 0) return [];
 
+  // Same ceiling on the other side of the fallback path: this list is every
+  // wallet-paid order in the shop's whole history, which is the larger of the
+  // two id lists this function can build.
   const candidateIds = [...new Set(groups.map((g) => g.orderId!))];
-  const qualifying = new Set(
-    (await db.order.findMany({ where: { ...orderWhere, id: { in: candidateIds } }, select: { id: true } })).map(
-      (o) => o.id,
-    ),
-  );
+  const qualifying = new Set<number>();
+  for (const chunk of idChunks(candidateIds)) {
+    for (const order of await db.order.findMany({
+      where: { ...orderWhere, id: { in: chunk } },
+      select: { id: true },
+    })) {
+      qualifying.add(order.id);
+    }
+  }
   return foldWalletGroups(groups, qualifying);
+}
+
+/** One `groupBy` row `walletSpendLegs` folds — named so the chunked accumulator
+ *  above has a type to collect into. */
+interface WalletLegGroup {
+  orderId: number | null;
+  userId: number;
+  currency: string;
+  _sum: { delta: unknown };
 }
 
 /** The arithmetic both `walletSpendLegs` query shapes share: net each
@@ -221,7 +258,7 @@ async function walletSpendLegs(
  *  `null` when the query was already restricted to qualifying ids and every row
  *  read is therefore in scope by construction. */
 function foldWalletGroups(
-  groups: ReadonlyArray<{ orderId: number | null; userId: number; currency: string; _sum: { delta: unknown } }>,
+  groups: ReadonlyArray<WalletLegGroup>,
   qualifying: ReadonlySet<number> | null,
 ): Array<{ orderId: number; userId: number; spend: WalletSpend }> {
   const byOrder = new Map<number, { orderId: number; userId: number; spend: WalletSpend }>();

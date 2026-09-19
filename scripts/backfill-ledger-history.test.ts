@@ -666,6 +666,192 @@ describe("backfillLedgerHistory — a wallet movement whose reason implies an or
   });
 });
 
+describe("backfillLedgerHistory — a wallet movement whose reason no category handles", () => {
+  it('reports a bare "adjust" movement, the reason adjustWallet stamps when a caller names none', async () => {
+    // Not a hand-crafted shape: `adjustWallet` defaults `reason` to "adjust", and
+    // `WALLET_TX_REASONS` lists it as a real admin-ledger filter value, so this
+    // is what any call site that omits its reason leaves in the table. No
+    // category's paging query matches it, so before this report the movement was
+    // invisible everywhere — not examined, not posted, not unprocessable, and
+    // therefore indistinguishable from "there was nothing to post".
+    const { transactionId } = await adjustWallet(prisma, sample.user.id, "1.00", {});
+    const movement = await prisma.walletTransaction.findUniqueOrThrow({ where: { id: transactionId } });
+    expect(movement.reason).toBe("adjust");
+
+    const report = await backfillLedgerHistory(prisma);
+
+    expect(report.unaccountedWalletReasons).toEqual([{ reason: "adjust", movements: 1 }]);
+    expect(report.unaccountedWalletMovementsCount).toBe(1);
+    // Genuinely never examined by anything — not merely posted zero times — and
+    // deliberately not folded into `unprocessable`, which means "a category
+    // looked at this row and declined it".
+    expect(report.totals.examined).toBe(0);
+    expect(report.totals.unprocessable).toBe(0);
+  });
+
+  it("groups by reason with a count, biggest first, rather than listing every row", async () => {
+    await adjustWallet(prisma, sample.user.id, "1.00", { reason: "legacy_promo_credit" });
+    await adjustWallet(prisma, sample.user.id, "1.00", {});
+    await adjustWallet(prisma, sample.user.id, "1.00", {});
+    await adjustWallet(prisma, sample.user.id, "1.00", {});
+
+    const report = await backfillLedgerHistory(prisma);
+
+    expect(report.unaccountedWalletReasons).toEqual([
+      { reason: "adjust", movements: 3 },
+      { reason: "legacy_promo_credit", movements: 1 },
+    ]);
+    expect(report.unaccountedWalletMovementsCount).toBe(4);
+  });
+
+  it("reports none for a history whose every movement reason a category accounts for", async () => {
+    // One movement of each reason a category claims, including the three whose
+    // ledger event is posted from the owning row rather than from the movement
+    // (order_payment, wallet_topup, refund_execution) — those must not be
+    // reported as unhandled just because no movement category pages them.
+    const order = await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    for (const reason of [
+      "admin_adjust",
+      "referral",
+      "underpaid_refund",
+      "unfulfilled_credit",
+      "order_refund",
+      "order_payment",
+      "wallet_topup",
+      "refund_execution",
+    ]) {
+      await adjustWallet(prisma, sample.user.id, "1.00", { reason, orderId: order.id, adminId: ADMIN_ID });
+    }
+
+    const report = await backfillLedgerHistory(prisma);
+
+    expect(report.unaccountedWalletReasons).toEqual([]);
+    expect(report.unaccountedWalletMovementsCount).toBe(0);
+  });
+
+  it("names the reason and what IS handled in the printed report", async () => {
+    await adjustWallet(prisma, sample.user.id, "1.00", { reason: "legacy_promo_credit" });
+
+    const text = formatBackfillReport(await backfillLedgerHistory(prisma));
+
+    expect(text).toContain("legacy_promo_credit");
+    expect(text).toContain("INVESTIGATE");
+    // The operator has to be told what the handled set is, or "no category can
+    // see this" is not actionable.
+    expect(text).toContain("admin_adjust");
+  });
+});
+
+describe("backfillLedgerHistory — a category's paging query fails mid-run", () => {
+  /**
+   * A `Db` whose `walletTransaction.findMany` throws once the given reason is
+   * paged. Everything else is the real client, so the categories before the
+   * failure do real work and their counts are real — which is the whole point:
+   * the report has to survive the throw carrying those counts.
+   */
+  function dbWhoseWalletPagingFails(failOnReason: string) {
+    return new Proxy(prisma, {
+      get(target, property, receiver) {
+        if (property !== "walletTransaction") return Reflect.get(target, property, receiver);
+        const real = target.walletTransaction;
+        return new Proxy(real, {
+          get(walletTarget, walletProperty, walletReceiver) {
+            if (walletProperty !== "findMany") {
+              return Reflect.get(walletTarget, walletProperty, walletReceiver);
+            }
+            return async (args: { where?: { reason?: { in?: string[] } } }) => {
+              // Only the CATEGORY's paging query, which asks for exactly one
+              // reason. The pre-flight `orderlessOrderMovements` check asks for
+              // four at once and must be left alone — failing it would abort the
+              // run before any category ran, which is a different thing.
+              const reasons = args?.where?.reason?.in;
+              if (reasons?.length === 1 && reasons[0] === failOnReason) {
+                throw new Error("connection terminated unexpectedly");
+              }
+              return (real.findMany as (a: unknown) => Promise<unknown>)(args);
+            };
+          },
+        });
+      },
+    }) as unknown as typeof prisma;
+  }
+
+  it("still returns the report, with the categories that ran before the failure intact", async () => {
+    await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    await eraseLedger();
+    await backDateHistory();
+
+    // `referral` is category 5's reason, so categories 1-4 run for real first.
+    const report = await backfillLedgerHistory(dbWhoseWalletPagingFails("referral"));
+
+    expect(report.aborted).not.toBeNull();
+    expect(report.aborted!.category).toBe("referral_commission");
+    expect(report.aborted!.message).toContain("connection terminated unexpectedly");
+    // The earlier categories really ran, and their postings are in the report
+    // rather than thrown away with the error.
+    expect(categoryOf(report, "order_payment").posted).toBeGreaterThan(0);
+    expect(report.totals.posted).toBeGreaterThan(0);
+  });
+
+  it("skips the categories after the failure rather than running them out of order", async () => {
+    await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    await eraseLedger();
+    await backDateHistory();
+
+    const report = await backfillLedgerHistory(dbWhoseWalletPagingFails("referral"));
+
+    const names = report.categories.map((category) => category.category);
+    expect(names).toContain("referral_commission");
+    // Order is load-bearing (see the script's own header), so nothing after the
+    // failure is attempted.
+    expect(names).not.toContain("order_hold_release");
+    expect(names).not.toContain("refund_payout");
+  });
+
+  it("leaves the postings it did make committed, so a re-run finishes the job", async () => {
+    await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    await eraseLedger();
+    await backDateHistory();
+
+    const first = await backfillLedgerHistory(dbWhoseWalletPagingFails("referral"));
+    expect(first.aborted).not.toBeNull();
+    const postedByFirstRun = await prisma.financialTransaction.count();
+    expect(postedByFirstRun).toBeGreaterThan(0);
+
+    // Same database, healthy client: the second run finds the first run's work
+    // already in the books and completes the rest.
+    const second = await backfillLedgerHistory(prisma);
+
+    expect(second.aborted).toBeNull();
+    expect(second.totals.alreadyPosted).toBeGreaterThan(0);
+    expect(await prisma.financialTransaction.count()).toBeGreaterThanOrEqual(postedByFirstRun);
+  });
+
+  it("leads the printed report with the fact that the run did not finish", async () => {
+    await deliveredOrder({ userId: sample.user.id, productId: sample.product.id });
+    await eraseLedger();
+    await backDateHistory();
+
+    const text = formatBackfillReport(await backfillLedgerHistory(dbWhoseWalletPagingFails("referral")));
+
+    expect(text).toContain("RUN DID NOT FINISH");
+    expect(text).toContain("referral_commission");
+    // Before the numbers, so a reader cannot take the totals for a full picture.
+    expect(text.indexOf("RUN DID NOT FINISH")).toBeLessThan(text.indexOf("TOTAL"));
+    // And the per-category table is still there — the audit trail is the point.
+    expect(text).toContain("order_payment");
+  });
+
+  it("propagates an error that is NOT a paging failure, rather than reporting a partial run", async () => {
+    // The incomplete-chart-of-accounts refusal must stay fatal: a run that
+    // reported itself as merely "aborted" there would imply some postings were
+    // made, when in fact every one of them would have been skipped.
+    await prisma.ledgerAccount.deleteMany();
+
+    await expect(backfillLedgerHistory(prisma)).rejects.toThrow(/chart-of-accounts/);
+  });
+});
+
 // ── 4. Rows it refuses to guess at ─────────────────────────────────────────
 
 describe("backfillLedgerHistory — rows it refuses to guess at", () => {

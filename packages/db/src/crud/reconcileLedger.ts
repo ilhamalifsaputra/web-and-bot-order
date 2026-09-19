@@ -30,12 +30,19 @@
  *    place it against the cutover — the check SKIPS that row and says so in the
  *    log, rather than reporting a guess as drift. A reconciliation report nobody
  *    trusts is worth less than no report.
- * 2. **Bulk queries only.** Every check is a fixed, small number of queries
- *    regardless of how many rows it examines (`findMany`/`groupBy`/`aggregate`
- *    plus in-memory `Map` joins) — the same discipline `reconcileFinances`
- *    already follows. This runs every six hours against tables that grow
- *    forever; a per-row `await` in a loop would degrade silently and without
- *    limit.
+ * 2. **Bulk queries, bounded in both directions.** No check ever issues a query
+ *    per row (`findMany`/`groupBy`/`aggregate` plus in-memory `Map` joins) — the
+ *    same discipline `reconcileFinances` already follows. This runs every six
+ *    hours against tables that grow forever, so a per-row `await` in a loop
+ *    would degrade silently and without limit. The converse also holds: no check
+ *    reads an unbounded result set into memory or builds an unbounded `IN (...)`
+ *    list either. The order scan walks pages by keyset
+ *    (`ORDER_SCAN_PAGE_SIZE`), the payout read is scoped by the cutover in the
+ *    query rather than filtered afterwards, and every remaining `IN` list is
+ *    chunked (`idChunks`, `_idChunks.ts`) so it cannot reach Postgres's
+ *    65535-bind-parameter ceiling and fail the whole run with a protocol error.
+ *    Both halves matter: after an M10 backfill the cutover sits at the shop's
+ *    first sale, so "since the cutover" means the shop's entire history.
  * 3. **Money is compared as money.** `moneyEq` (4 decimal places) or an explicit
  *    tolerance, never `Decimal.equals` on raw column values, and never across
  *    currencies: IDR and USDT are separate, unconvertible books here (see
@@ -61,6 +68,7 @@ import {
 import { AppError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { Decimal, money, moneyEq, ZERO } from "@app/core/money";
+import { idChunks } from "./_idChunks";
 import type { Db } from "./_types";
 import { getAccountBalance } from "./ledger";
 
@@ -106,6 +114,33 @@ export interface LedgerReconciliationFinding {
  */
 const MONEY_TOLERANCE = "0.0001";
 
+/**
+ * Orders per page in `findMissingOrderPostings`' keyset walk.
+ *
+ * Small on purpose, and much smaller than `ID_CHUNK_SIZE`: the page size is not
+ * just a bind-parameter budget here, it is the ceiling on how many order rows —
+ * plus the wallet-leg groups and posted keys derived from them — this check holds
+ * in memory at once. 2000 keeps that flat over a shop with any amount of history
+ * while staying large enough that the round trips are not what the run spends its
+ * time on.
+ */
+const ORDER_SCAN_PAGE_SIZE = 2000;
+
+export interface ReconcileLedgerOptions {
+  /**
+   * Orders per page in the missing-posting scan. Defaults to
+   * `ORDER_SCAN_PAGE_SIZE`; production has no reason to pass it.
+   *
+   * It exists so the keyset walk can be tested across more than one page without
+   * a fixture of thousands of orders — the same reason
+   * `backfillLedgerHistory` takes a `batchSize`, and the same thing that
+   * script's "pages through history in bounded batches without changing the
+   * result" test uses it for. A pager whose multi-page behaviour is never
+   * exercised is a pager whose off-by-one nobody has looked for.
+   */
+  orderScanPageSize?: number;
+}
+
 /** The chart-of-accounts suffix for a currency: "IDR" → "idr". Mirrors ledgerPostings.ts. */
 const suffix = (currency: string): string => currency.toLowerCase();
 
@@ -147,14 +182,29 @@ const orderTopupKey = (orderId: number): string => `order:${orderId}:topup`;
 const refundExecutionKey = (refundExecutionId: number): string =>
   `refund_execution:${refundExecutionId}`;
 
-/** Which of the posted keys already exist, as one indexed bulk lookup. */
+/**
+ * Which of the posted keys already exist, as indexed bulk lookups.
+ *
+ * Chunked (`idChunks`, `_idChunks.ts`): none of this function's callers can bound
+ * how many keys they hand over — one derives a key per settled order in the whole
+ * reconciled period, another one per completed payout, another one per order
+ * still holding wallet credit — and Prisma renders each key as its own bind
+ * parameter, so a single `IN (...)` over a real shop's history would blow past
+ * Postgres's 65535-parameter ceiling and fail the entire reconciliation run with
+ * a protocol error. Chunking is result-preserving: this builds a set union over
+ * disjoint key batches.
+ */
 async function postedKeys(db: Db, keys: readonly string[]): Promise<Set<string>> {
   if (keys.length === 0) return new Set();
-  const rows = await db.financialTransaction.findMany({
-    where: { idempotencyKey: { in: [...keys] } },
-    select: { idempotencyKey: true },
-  });
-  return new Set(rows.map((row) => row.idempotencyKey));
+  const found = new Set<string>();
+  for (const chunk of idChunks(keys)) {
+    const rows = await db.financialTransaction.findMany({
+      where: { idempotencyKey: { in: chunk } },
+      select: { idempotencyKey: true },
+    });
+    for (const row of rows) found.add(row.idempotencyKey);
+  }
+  return found;
 }
 
 /** The subset of an order this check reads. */
@@ -190,6 +240,18 @@ interface CandidateOrder {
  * silently — an approximate placement is better than a blind spot, and it can
  * only make the check more conservative at the boundary.
  *
+ * **Paged, not materialised.** The candidate set is "every DELIVERED order since
+ * the cutover", and after an M10 backfill the cutover sits at the shop's very
+ * first sale — so this is the shop's entire order history, and reading it into
+ * one array was both an unbounded allocation and an unbounded `IN (...)` list on
+ * the two lookups that follow it. Keyset pagination by ascending id (`id > after`,
+ * the same walk `backfill-ledger-history.ts` uses and for the same reason: ids
+ * are immutable, so a growing table cannot make the walk skip a row, which an
+ * offset-based walk can). Each page's wallet-leg `groupBy` and posted-key lookup
+ * are then bounded by the page size rather than by history. Paging cannot change
+ * the findings: each order is judged only against its own wallet legs and its own
+ * idempotency key, so no decision here reads across page boundaries.
+ *
  * **Orders that legitimately post nothing are excluded**, not reported. Both
  * posting helpers return `null` without writing anything when there is no
  * amount to recognise: a top-up whose total is not positive, and a product
@@ -202,80 +264,96 @@ async function findMissingOrderPostings(
   db: Db,
   cutover: Date,
   detectedAt: Date,
+  pageSize: number,
 ): Promise<LedgerReconciliationFinding[]> {
-  const rows = await db.order.findMany({
-    where: {
-      status: OrderStatus.DELIVERED,
-      OR: [
-        { paidAt: { gte: cutover } },
-        { AND: [{ paidAt: null }, { deliveredAt: { gte: cutover } }] },
-      ],
-    },
-    select: { id: true, orderCode: true, kind: true, currency: true, totalAmount: true },
-  });
-  if (rows.length === 0) return [];
+  const where = {
+    status: OrderStatus.DELIVERED,
+    OR: [
+      { paidAt: { gte: cutover } },
+      { AND: [{ paidAt: null }, { deliveredAt: { gte: cutover } }] },
+    ],
+  };
 
-  const candidates: CandidateOrder[] = rows.map((row) => ({
-    id: row.id,
-    orderCode: row.orderCode,
-    kind: row.kind,
-    currency: row.currency,
-    totalAmount: money(row.totalAmount),
-  }));
-
-  const topups = candidates.filter((order) => order.kind === OrderKind.WALLET_TOPUP);
-  const products = candidates.filter((order) => order.kind !== OrderKind.WALLET_TOPUP);
-
-  // One aggregate for every candidate product order's wallet legs, so the
-  // "did this order charge the buyer anything at all" question costs one query
-  // rather than one per order. Grouped by currency because the legs carry their
-  // own currency and a non-positive group is not a payment — the same reading
-  // `postOrderPaymentPosting` does when it builds the legs in the first place.
-  const walletSpendByOrder = new Map<number, boolean>();
-  if (products.length > 0) {
-    const legs = await db.walletTransaction.groupBy({
-      by: ["orderId", "currency"],
-      where: { reason: "order_payment", orderId: { in: products.map((order) => order.id) } },
-      _sum: { delta: true },
+  const findings: LedgerReconciliationFinding[] = [];
+  let afterId = 0;
+  for (;;) {
+    const rows = await db.order.findMany({
+      where: { ...where, id: { gt: afterId } },
+      select: { id: true, orderCode: true, kind: true, currency: true, totalAmount: true },
+      orderBy: { id: "asc" },
+      take: pageSize,
     });
-    for (const leg of legs) {
-      if (leg.orderId == null) continue;
-      // Wallet debits are stored negative; the amount spent is their magnitude.
-      const spent = sumOrZero(leg._sum.delta?.toString()).negated();
-      if (spent.greaterThan(0)) walletSpendByOrder.set(leg.orderId, true);
-    }
-  }
+    if (rows.length === 0) break;
+    afterId = rows[rows.length - 1]!.id;
 
-  const expectPosting = (order: CandidateOrder): boolean =>
-    order.kind === OrderKind.WALLET_TOPUP
-      ? order.totalAmount.greaterThan(0)
-      : order.totalAmount.greaterThan(0) || walletSpendByOrder.get(order.id) === true;
-
-  const chargeable = [
-    ...topups.filter(expectPosting).map((order) => ({ order, key: orderTopupKey(order.id) })),
-    ...products.filter(expectPosting).map((order) => ({ order, key: orderPaymentKey(order.id) })),
-  ];
-  const posted = await postedKeys(
-    db,
-    chargeable.map((entry) => entry.key),
-  );
-
-  return chargeable
-    .filter((entry) => !posted.has(entry.key))
-    .map(({ order, key }) => ({
-      type: ReconciliationFindingType.LEDGER_POSTING_MISSING,
-      entity: "order",
-      entityId: String(order.id),
-      // A presence check, not a money comparison: the amount is not in dispute,
-      // the existence of any record of it is.
-      expected: "posted",
-      actual: "missing",
-      difference: null,
-      currency: order.currency,
-      reference: `Order ${order.orderCode} settled for ${order.totalAmount.toString()} ${order.currency} with no ledger posting under "${key}"`,
-      severity: ReconciliationSeverity.CRITICAL,
-      detectedAt,
+    const candidates: CandidateOrder[] = rows.map((row) => ({
+      id: row.id,
+      orderCode: row.orderCode,
+      kind: row.kind,
+      currency: row.currency,
+      totalAmount: money(row.totalAmount),
     }));
+
+    const topups = candidates.filter((order) => order.kind === OrderKind.WALLET_TOPUP);
+    const products = candidates.filter((order) => order.kind !== OrderKind.WALLET_TOPUP);
+
+    // One aggregate for this page's product orders' wallet legs, so the
+    // "did this order charge the buyer anything at all" question costs one query
+    // per page rather than one per order. Grouped by currency because the legs
+    // carry their own currency and a non-positive group is not a payment — the
+    // same reading `postOrderPaymentPosting` does when it builds the legs in the
+    // first place. The `IN` list is bounded by the page size, which is what makes
+    // it safe without a second level of chunking.
+    const walletSpendByOrder = new Map<number, boolean>();
+    if (products.length > 0) {
+      const legs = await db.walletTransaction.groupBy({
+        by: ["orderId", "currency"],
+        where: { reason: "order_payment", orderId: { in: products.map((order) => order.id) } },
+        _sum: { delta: true },
+      });
+      for (const leg of legs) {
+        if (leg.orderId == null) continue;
+        // Wallet debits are stored negative; the amount spent is their magnitude.
+        const spent = sumOrZero(leg._sum.delta?.toString()).negated();
+        if (spent.greaterThan(0)) walletSpendByOrder.set(leg.orderId, true);
+      }
+    }
+
+    const expectPosting = (order: CandidateOrder): boolean =>
+      order.kind === OrderKind.WALLET_TOPUP
+        ? order.totalAmount.greaterThan(0)
+        : order.totalAmount.greaterThan(0) || walletSpendByOrder.get(order.id) === true;
+
+    const chargeable = [
+      ...topups.filter(expectPosting).map((order) => ({ order, key: orderTopupKey(order.id) })),
+      ...products.filter(expectPosting).map((order) => ({ order, key: orderPaymentKey(order.id) })),
+    ];
+    const posted = await postedKeys(
+      db,
+      chargeable.map((entry) => entry.key),
+    );
+
+    for (const { order, key } of chargeable) {
+      if (posted.has(key)) continue;
+      findings.push({
+        type: ReconciliationFindingType.LEDGER_POSTING_MISSING,
+        entity: "order",
+        entityId: String(order.id),
+        // A presence check, not a money comparison: the amount is not in dispute,
+        // the existence of any record of it is.
+        expected: "posted",
+        actual: "missing",
+        difference: null,
+        currency: order.currency,
+        reference: `Order ${order.orderCode} settled for ${order.totalAmount.toString()} ${order.currency} with no ledger posting under "${key}"`,
+        severity: ReconciliationSeverity.CRITICAL,
+        detectedAt,
+      });
+    }
+
+    if (rows.length < pageSize) break;
+  }
+  return findings;
 }
 
 /** The subset of a refund payout these two checks read. */
@@ -289,16 +367,42 @@ interface CompletedExecution {
 }
 
 /**
- * Every COMPLETED payout, with the order code an admin would search for.
+ * The COMPLETED payouts this run can say anything about, with the order code an
+ * admin would search for.
  *
  * Fetched once and shared by both checks that read payouts (missing posting,
  * amount mismatch) rather than queried twice, and joined to its order in the
  * same round trip — `reference` has to name something an admin recognises, and
  * a payout's id alone is not that.
+ *
+ * **Scoped by the cutover, in the query.** This used to read EVERY completed
+ * payout the shop had ever made and then throw away the pre-cutover ones in
+ * memory, in `findMissingRefundPostings` — so the two checks that consume this
+ * list, and the `postedKeys` lookup built from it, all paid for history that no
+ * check could report on. Nothing is lost by pushing the boundary into the query:
+ * `postRefundExecutionPosting` passes the payout's own `executedAt` as its
+ * posting's `occurredAt`, and the cutover IS the minimum `occurredAt` in the
+ * ledger, so a payout executed before the cutover provably has no posting to
+ * compare against and provably cannot be reported as missing one either.
+ *
+ * `executedAt: null` rows are kept regardless of the boundary: they cannot be
+ * placed against it at all, and `findMissingRefundPostings` exists to say so out
+ * loud rather than to drop them silently.
+ *
+ * `cutover === null` means the ledger holds no postings whatsoever, so there is
+ * nothing for either consuming check to compare a payout against — an empty list
+ * is the honest answer and saves a lifetime-wide read on a fresh install.
  */
-async function completedRefundExecutions(db: Db): Promise<CompletedExecution[]> {
+async function completedRefundExecutions(
+  db: Db,
+  cutover: Date | null,
+): Promise<CompletedExecution[]> {
+  if (cutover === null) return [];
   const rows = await db.refundExecution.findMany({
-    where: { status: RefundExecutionStatus.COMPLETED },
+    where: {
+      status: RefundExecutionStatus.COMPLETED,
+      OR: [{ executedAt: { gte: cutover } }, { executedAt: null }],
+    },
     select: {
       id: true,
       amount: true,
@@ -381,23 +485,36 @@ async function findRefundAmountMismatches(
   if (executions.length === 0) return [];
 
   const byKey = new Map(executions.map((execution) => [refundExecutionKey(execution.id), execution]));
-  const postings = await db.financialTransaction.findMany({
-    where: { idempotencyKey: { in: [...byKey.keys()] } },
-    select: { id: true, idempotencyKey: true },
-  });
+  // Both `IN` lists are chunked: `executions` is bounded by the reconciled
+  // period, not by anything this code chose, so on a shop whose cutover has been
+  // backfilled to its first sale either list could exceed Postgres's 65535
+  // bind-parameter ceiling. Each loop only unions disjoint batches into a
+  // collection, so chunking cannot change what is compared.
+  const postings: Array<{ id: number; idempotencyKey: string }> = [];
+  for (const chunk of idChunks([...byKey.keys()])) {
+    postings.push(
+      ...(await db.financialTransaction.findMany({
+        where: { idempotencyKey: { in: chunk } },
+        select: { id: true, idempotencyKey: true },
+      })),
+    );
+  }
   if (postings.length === 0) return [];
 
-  const debitSums = await db.ledgerEntry.groupBy({
-    by: ["financialTransactionId"],
-    where: {
-      financialTransactionId: { in: postings.map((posting) => posting.id) },
-      direction: LedgerDirection.DEBIT,
-    },
-    _sum: { amount: true },
-  });
-  const postedAmountByTransaction = new Map(
-    debitSums.map((row) => [row.financialTransactionId, sumOrZero(row._sum.amount?.toString())]),
-  );
+  const postedAmountByTransaction = new Map<number, Decimal>();
+  for (const chunk of idChunks(postings.map((posting) => posting.id))) {
+    const debitSums = await db.ledgerEntry.groupBy({
+      by: ["financialTransactionId"],
+      where: { financialTransactionId: { in: chunk }, direction: LedgerDirection.DEBIT },
+      _sum: { amount: true },
+    });
+    for (const row of debitSums) {
+      postedAmountByTransaction.set(
+        row.financialTransactionId,
+        sumOrZero(row._sum.amount?.toString()),
+      );
+    }
+  }
 
   const findings: LedgerReconciliationFinding[] = [];
   for (const posting of postings) {
@@ -469,12 +586,13 @@ const HOLD_REASONS: readonly string[] = ["order_payment", "order_refund"];
  * shortfall the ledger has not caught up with, and letting it go negative would
  * let it explain away credit that appeared from nowhere, which is drift.
  *
- * Two queries regardless of how many orders are involved: one `groupBy` that
- * nets each order's movements in the database, then one indexed lookup of the
- * payment keys for the orders whose net is non-zero. Like the rest of this file
- * the second one's `IN` list is unbounded (the same precedent `reconcileFinances`
- * sets); it is bounded in practice by orders that hold wallet credit — every
- * released hold nets to zero and is dropped before the lookup.
+ * Two query shapes regardless of how many orders are involved: one `groupBy`
+ * that nets each order's movements in the database, then an indexed lookup of the
+ * payment keys for the orders whose net is non-zero. That second list is bounded
+ * in practice by orders that still hold wallet credit — every released hold nets
+ * to zero and is dropped before the lookup — and `postedKeys` chunks it anyway,
+ * so a shop with an unusual number of abandoned checkouts cannot exceed the
+ * bind-parameter ceiling.
  */
 async function inFlightWalletHolds(db: Db): Promise<Map<string, Decimal>> {
   const movements = await db.walletTransaction.groupBy({
@@ -702,13 +820,18 @@ async function findDuplicateProviderTransactions(
  * carrying a slightly different clock read from the moment its own query
  * returned.
  */
-export async function reconcileLedger(db: Db): Promise<LedgerReconciliationFinding[]> {
+export async function reconcileLedger(
+  db: Db,
+  options: ReconcileLedgerOptions = {},
+): Promise<LedgerReconciliationFinding[]> {
   const detectedAt = new Date();
   const findings: LedgerReconciliationFinding[] = [];
 
-  const executions = await completedRefundExecutions(db);
-
+  // The cutover is read FIRST, because the payout read below is scoped by it —
+  // see `completedRefundExecutions`.
   const cutover = await ledgerCutover(db);
+  const executions = await completedRefundExecutions(db, cutover);
+
   if (cutover === null) {
     // Nothing has ever been posted, so "this event has no posting" is true of
     // the shop's entire history and says nothing about drift. Reported as a log
@@ -717,7 +840,14 @@ export async function reconcileLedger(db: Db): Promise<LedgerReconciliationFindi
       "Skipped the missing-ledger-posting checks while reconciling the ledger because the ledger has no postings at all yet, so there is no point in its history to measure drift from. The wallet, duplicate-payment and refund-amount checks still ran.",
     );
   } else {
-    findings.push(...(await findMissingOrderPostings(db, cutover, detectedAt)));
+    findings.push(
+      ...(await findMissingOrderPostings(
+        db,
+        cutover,
+        detectedAt,
+        options.orderScanPageSize ?? ORDER_SCAN_PAGE_SIZE,
+      )),
+    );
     const posted = await postedKeys(
       db,
       executions.map((execution) => refundExecutionKey(execution.id)),

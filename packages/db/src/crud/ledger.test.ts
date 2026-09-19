@@ -20,9 +20,10 @@
  *
  * Deliberately NOT covered here: real order/payment/wallet/refund call sites
  * (that's `ledger_postings.test.ts`, exercising the same posting service
- * against real settlement paths). Reversal transactions and any caching of
- * the chart of accounts genuinely do not exist anywhere in this branch as of
- * M20 — no milestone ended up needing either.
+ * against real settlement paths). Any caching of the chart of accounts
+ * genuinely does not exist anywhere in this branch — no milestone ended up
+ * needing it. Reversals DO exist as of the whole-branch review's decision D5
+ * (`reverseFinancialTransaction`) and are covered at the bottom of this file.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -34,6 +35,7 @@ import { CHART_OF_ACCOUNTS, seedChartOfAccounts } from "./ledgerAccounts";
 import {
   getAccountBalance,
   postFinancialTransaction,
+  reverseFinancialTransaction,
   trialBalance,
   type LedgerEntryInput,
   type PostFinancialTransactionArgs,
@@ -152,9 +154,9 @@ describe("postFinancialTransaction — happy path", () => {
       idempotencyKey: "ORDER_PAYMENT:payment:41",
       description: "Buyer paid order ORD-1 through the gateway.",
       occurredAt: OCCURRED_AT.toISOString(),
-      // A REVERSAL's back-pointer: no code anywhere in this branch posts one
-      // yet (no reversal helper was ever built — see ledger.ts's own doc
-      // comment), but a normal posting must never set one regardless.
+      // A REVERSAL's back-pointer: only `reverseFinancialTransaction` sets one,
+      // and a normal posting must never carry it — `assertReversalShape` now
+      // refuses the combination outright (see the reversal describe below).
       reversalOfId: null,
     });
     // `postedAt` is when the row was written here, `occurredAt` when the money
@@ -662,5 +664,259 @@ describe("ValidationError shape", () => {
     // The web layer distinguishes a 422 from a 500 by this class (and its
     // `key`, which humanize() resolves against packages/core/locales).
     await expect(postFinancialTransaction(prisma, postArgs([]))).rejects.toBeInstanceOf(ValidationError);
+  });
+});
+
+/**
+ * `reverseFinancialTransaction` (whole-branch review decision D5) — the only
+ * supported way to undo a posting.
+ *
+ * What these tests actually protect: the ledger is append-only and raw SQL
+ * against its two tables is forbidden, so if this function mirrors a posting
+ * incorrectly there is no second mechanism to catch it — the correction itself
+ * becomes the error, and every account it touched is then wrong in a way a trial
+ * balance still shows as perfectly balanced.
+ */
+describe("reverseFinancialTransaction", () => {
+  /** A posted ORDER_PAYMENT to reverse: one IDR group, deliberately three legs. */
+  async function postOriginal(overrides: Partial<PostFinancialTransactionArgs> = {}) {
+    return postFinancialTransaction(
+      prisma,
+      postArgs(
+        [
+          dr("cash.idr", "97500", "IDR"),
+          dr("payment_fee.idr", "2500", "IDR"),
+          cr("sales_revenue.idr", "100000", "IDR"),
+        ],
+        { idempotencyKey: "ORDER_PAYMENT:payment:41", ...overrides },
+      ),
+    );
+  }
+
+  it("mirrors every entry, keeps the original's occurredAt, and nets each account to zero", async () => {
+    const original = await postOriginal();
+
+    const reversal = await reverseFinancialTransaction(prisma, {
+      originalId: original.id,
+      reason: "The TokoPay webhook was redelivered under a new reference and posted this sale twice.",
+    });
+
+    expect({
+      type: reversal.type,
+      referenceType: reversal.referenceType,
+      referenceId: reversal.referenceId,
+      idempotencyKey: reversal.idempotencyKey,
+      reversalOfId: reversal.reversalOfId,
+      // The original's own event time, NOT now: a period report reads
+      // `occurredAt`, so a reversal stamped today would move the original's
+      // revenue out of the month it was earned in.
+      occurredAt: reversal.occurredAt.toISOString(),
+    }).toEqual({
+      type: FinancialTransactionType.REVERSAL,
+      referenceType: "payment",
+      referenceId: 41,
+      idempotencyKey: `reversal:${original.id}`,
+      reversalOfId: original.id,
+      occurredAt: OCCURRED_AT.toISOString(),
+    });
+    // The reason is quoted verbatim into admin-facing prose, alongside the
+    // original's own description, so the ledger view explains itself.
+    expect(reversal.description).toContain("The TokoPay webhook was redelivered");
+    expect(reversal.description).toContain(`Reversed financial transaction ${original.id}`);
+
+    // Same accounts, same amounts, opposite sides — never a negated amount,
+    // which LedgerEntry's "amount is always positive" invariant forbids.
+    expect(await storedEntries(reversal.id)).toEqual([
+      { accountCode: "cash.idr", direction: "CREDIT", amount: "97500", currency: "IDR" },
+      { accountCode: "payment_fee.idr", direction: "CREDIT", amount: "2500", currency: "IDR" },
+      { accountCode: "sales_revenue.idr", direction: "DEBIT", amount: "100000", currency: "IDR" },
+    ]);
+
+    // The whole point: every account the original touched is back where it was.
+    for (const code of ["cash.idr", "payment_fee.idr", "sales_revenue.idr"]) {
+      expect((await getAccountBalance(prisma, code)).toString(), code).toBe("0");
+    }
+    // And the original is still there — a reversal adds, it never edits.
+    expect(await ledgerCounts()).toEqual({ transactions: 2, entries: 6 });
+    await expect(
+      prisma.financialTransaction.findUnique({ where: { id: original.id } }),
+    ).resolves.toMatchObject({ type: FinancialTransactionType.ORDER_PAYMENT, reversalOfId: null });
+  });
+
+  it("mirrors a multi-currency posting within each currency", async () => {
+    const original = await postFinancialTransaction(
+      prisma,
+      postArgs(
+        [
+          dr("provider_clearing.idr", "50000", "IDR"),
+          cr("sales_revenue.idr", "50000", "IDR"),
+          dr("wallet_liability.usdt", "3.25", "USDT"),
+          cr("sales_revenue.usdt", "3.25", "USDT"),
+        ],
+        { idempotencyKey: "ORDER_PAYMENT:payment:77" },
+      ),
+    );
+
+    const reversal = await reverseFinancialTransaction(prisma, {
+      originalId: original.id,
+      reason: "The order was never actually paid; the poller matched an unrelated deposit.",
+    });
+
+    expect(await storedEntries(reversal.id)).toEqual([
+      { accountCode: "provider_clearing.idr", direction: "CREDIT", amount: "50000", currency: "IDR" },
+      { accountCode: "sales_revenue.idr", direction: "DEBIT", amount: "50000", currency: "IDR" },
+      { accountCode: "wallet_liability.usdt", direction: "CREDIT", amount: "3.25", currency: "USDT" },
+      { accountCode: "sales_revenue.usdt", direction: "DEBIT", amount: "3.25", currency: "USDT" },
+    ]);
+    for (const code of [
+      "provider_clearing.idr",
+      "sales_revenue.idr",
+      "wallet_liability.usdt",
+      "sales_revenue.usdt",
+    ]) {
+      expect((await getAccountBalance(prisma, code)).toString(), code).toBe("0");
+    }
+  });
+
+  it("is idempotent: reversing twice returns the same reversal and posts nothing new", async () => {
+    const original = await postOriginal();
+
+    const first = await reverseFinancialTransaction(prisma, {
+      originalId: original.id,
+      reason: "Duplicate posting.",
+    });
+    const second = await reverseFinancialTransaction(prisma, {
+      originalId: original.id,
+      reason: "Duplicate posting.",
+    });
+
+    // A replay must NOT be rejected by the already-reversed guard — an operator
+    // re-running a correction script is ordinary, and the deterministic key is
+    // what makes it safe.
+    expect(second.id).toBe(first.id);
+    expect(await ledgerCounts()).toEqual({ transactions: 2, entries: 6 });
+  });
+
+  it("produces exactly one reversal under a concurrent burst against the same transaction", async () => {
+    const original = await postOriginal();
+
+    // Several writers can pass the pre-checks before any of them commits; the
+    // losers hit `ix_financial_tx_idempotency_key` and are handed the winner's
+    // row. Tested concurrently rather than sequentially for the same reason the
+    // idempotency tests above are: a check-then-insert guard proves nothing
+    // under a sequential await.
+    const results = await Promise.allSettled(
+      Array.from({ length: CONCURRENCY }, () =>
+        reverseFinancialTransaction(prisma, { originalId: original.id, reason: "Duplicate posting." }),
+      ),
+    );
+    const ids = new Set(results.flatMap((r) => (r.status === "fulfilled" ? [r.value.id] : [])));
+
+    // At most one distinct reversal id however many callers succeeded, and
+    // exactly one row in the table — a caller that lost the race either got the
+    // winner's row back or failed outright, never wrote a second cancellation.
+    expect(ids.size).toBeLessThanOrEqual(1);
+    expect(await prisma.financialTransaction.count({ where: { reversalOfId: original.id } })).toBe(1);
+    expect(await ledgerCounts()).toEqual({ transactions: 2, entries: 6 });
+  });
+
+  it("refuses to reverse a reversal, and writes nothing", async () => {
+    const original = await postOriginal();
+    const reversal = await reverseFinancialTransaction(prisma, {
+      originalId: original.id,
+      reason: "Duplicate posting.",
+    });
+    const before = await ledgerCounts();
+
+    await expect(
+      reverseFinancialTransaction(prisma, { originalId: reversal.id, reason: "Changed my mind." }),
+    ).rejects.toMatchObject({ key: "error.ledger_cannot_reverse_a_reversal" });
+    expect(await ledgerCounts()).toEqual(before);
+  });
+
+  it("refuses a second reversal of an already-reversed transaction, even under a caller's own key", async () => {
+    const original = await postOriginal();
+    await reverseFinancialTransaction(prisma, { originalId: original.id, reason: "Duplicate posting." });
+    const before = await ledgerCounts();
+
+    // A fresh key sidesteps the deterministic-key replay, which is exactly the
+    // case the already-reversed read exists for: without it, this would double
+    // the cancellation and leave every account wrong by the original amount in
+    // the opposite direction.
+    await expect(
+      reverseFinancialTransaction(prisma, {
+        originalId: original.id,
+        reason: "Trying again.",
+        idempotencyKey: `reversal:${original.id}:again`,
+      }),
+    ).rejects.toMatchObject({ key: "error.ledger_already_reversed" });
+    expect(await ledgerCounts()).toEqual(before);
+  });
+
+  it("refuses an id that names no transaction", async () => {
+    await expect(
+      reverseFinancialTransaction(prisma, { originalId: 987654, reason: "Nothing to see." }),
+    ).rejects.toMatchObject({ key: "error.ledger_transaction_not_found" });
+    expect(await ledgerCounts()).toEqual({ transactions: 0, entries: 0 });
+  });
+
+  it("refuses to mirror an entry on an account an admin has since retired", async () => {
+    const original = await postOriginal();
+    await prisma.ledgerAccount.update({ where: { code: "payment_fee.idr" }, data: { isActive: false } });
+    const before = await ledgerCounts();
+
+    // Not a special case in the reversal path: `prepareEntries` refuses a write
+    // to a retired account for every posting, and a reversal is a posting. The
+    // refusal is the honest outcome — reviving the account is an accounting
+    // decision, not something a correction may make silently.
+    await expect(
+      reverseFinancialTransaction(prisma, { originalId: original.id, reason: "Duplicate posting." }),
+    ).rejects.toMatchObject({ key: "error.ledger_account_retired" });
+    expect(await ledgerCounts()).toEqual(before);
+  });
+
+  it("accepts a caller's transaction, so a reversal can be part of a larger correction", async () => {
+    const original = await postOriginal();
+
+    const reversal = await prisma.$transaction((tx) =>
+      reverseFinancialTransaction(tx, { originalId: original.id, reason: "Duplicate posting." }),
+    );
+
+    expect(reversal.reversalOfId).toBe(original.id);
+    expect((await getAccountBalance(prisma, "sales_revenue.idr")).toString()).toBe("0");
+  });
+});
+
+describe("postFinancialTransaction — REVERSAL shape", () => {
+  it("refuses a REVERSAL with no reversalOfId", async () => {
+    await expect(
+      postFinancialTransaction(
+        prisma,
+        postArgs([dr("cash.idr", "1000", "IDR"), cr("sales_revenue.idr", "1000", "IDR")], {
+          type: FinancialTransactionType.REVERSAL,
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.ledger_reversal_shape_invalid" });
+    expect(await ledgerCounts()).toEqual({ transactions: 0, entries: 0 });
+  });
+
+  it("refuses a non-REVERSAL carrying a reversalOfId", async () => {
+    const original = await postFinancialTransaction(
+      prisma,
+      postArgs([dr("cash.idr", "1000", "IDR"), cr("sales_revenue.idr", "1000", "IDR")], {
+        idempotencyKey: "ORDER_PAYMENT:payment:9",
+      }),
+    );
+
+    await expect(
+      postFinancialTransaction(
+        prisma,
+        postArgs([dr("cash.idr", "1000", "IDR"), cr("sales_revenue.idr", "1000", "IDR")], {
+          idempotencyKey: "ORDER_PAYMENT:payment:10",
+          reversalOfId: original.id,
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.ledger_reversal_shape_invalid" });
+    expect(await prisma.financialTransaction.count()).toBe(1);
   });
 });

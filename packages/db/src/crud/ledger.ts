@@ -25,13 +25,18 @@
  *    duplicate returns the already-posted row rather than throwing, because a
  *    retry is normal operation, not an error a webhook handler should surface.
  *
+ * The one WRITE that is not a new economic event is `reverseFinancialTransaction`
+ * — cancelling a mis-posting by adding its mirror image, never by editing or
+ * deleting the original. It is still a posting, and it still goes through
+ * `postFinancialTransaction`, so the "one writer" property above holds of it too.
+ *
  * Deliberately NOT in this file:
- * - **No reversal helper.** The ledger is append-only and a mis-posting is
- *   cancelled by a REVERSAL transaction, but nothing in this milestone needs to
- *   reverse anything yet, and `FinancialTransaction` has no
- *   `@@unique([reversalOfId])` — so a reversal helper also owes a
- *   one-reversal-per-transaction guard, which is a decision better made by the
- *   milestone that first needs it than guessed at here.
+ * - ~~No reversal helper.~~ Stale: `reverseFinancialTransaction` (below) exists
+ *   as of the whole-branch review's decision D5. `FinancialTransaction` still has
+ *   no `@@unique([reversalOfId])`, so the one-reversal-per-transaction guard is
+ *   an application-layer check plus the deterministic `reversal:{originalId}`
+ *   idempotency key — see that function's own doc comment for what each of the
+ *   two actually protects.
  * - ~~No wiring.~~ Stale as of M3: `ledgerPostings.ts`'s eight posting
  *   functions now call `postFinancialTransaction` from every real order,
  *   payment, wallet and refund code path. A balance read off these tables is
@@ -43,7 +48,7 @@
  *   in exchange for nothing measurable.
  */
 import { ValidationError } from "@app/core/errors";
-import { LedgerAccountType, LedgerDirection } from "@app/core/enums";
+import { FinancialTransactionType, LedgerAccountType, LedgerDirection } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { Decimal, money, moneyEq, ZERO } from "@app/core/money";
 import type { FinancialTransaction } from "@prisma/client";
@@ -105,6 +110,20 @@ export interface PostFinancialTransactionArgs {
    */
   occurredAt: Date;
   entries: LedgerEntryInput[];
+  /**
+   * Set ONLY by `reverseFinancialTransaction`: the `FinancialTransaction.id`
+   * this posting cancels. Every other posting leaves it undefined, and a posting
+   * that carries it must also carry `type: REVERSAL` — the pairing is asserted
+   * here rather than trusted, because the two columns are read together by every
+   * "has this been reversed?" query and a row with one and not the other would
+   * make both answers wrong.
+   *
+   * The service does NOT verify that the named transaction exists, is not itself
+   * a reversal, or has not already been reversed. Those are
+   * `reverseFinancialTransaction`'s checks, made against rows it has read; this
+   * layer only refuses the combination that is incoherent on its face.
+   */
+  reversalOfId?: number;
 }
 
 /** One line of a trial balance — an account and where it stands right now. */
@@ -149,6 +168,22 @@ const KNOWN_ACCOUNT_TYPES: readonly string[] = [...DEBIT_NORMAL_TYPES, ...CREDIT
 
 /** Recognised `LedgerEntry.direction` values. */
 const VALID_DIRECTIONS: readonly string[] = [LedgerDirection.DEBIT, LedgerDirection.CREDIT];
+
+/**
+ * The closing clause of every refusal log in this file, spelled once.
+ *
+ * Every one of those lines used to end in "needs a manual entry", which named no
+ * mechanism an operator actually has: this service is the only writer, raw SQL
+ * against these two tables is forbidden (see the module comment), and before
+ * `reverseFinancialTransaction` existed there was no supported way to undo a
+ * posting either. So the advice read as "go and edit the ledger", which is the
+ * one thing the whole design exists to prevent. It now names the two real
+ * mechanisms instead — re-post what is missing, reverse what is wrong — which is
+ * also why this clause is a constant: three logs give the same instruction, and a
+ * fourth copy is a fourth chance for one of them to drift back.
+ */
+const BY_HAND_IS_NOT_AN_OPTION =
+  'never by writing rows into "financial_transactions"/"ledger_entries" directly, which this service exists to be the only writer of. A posting that was made and is WRONG is a different problem and has its own path: cancel it with reverseFinancialTransaction (crud/ledger.ts) and post the corrected event, so both the mistake and its correction stay readable';
 
 /** The two sides of one account's (or one currency group's) entries. */
 interface DirectionSums {
@@ -241,6 +276,31 @@ function assertBalancedPerCurrency(entries: readonly PreparedEntry[]): void {
       });
     }
   }
+}
+
+/**
+ * `type: REVERSAL` and `reversalOfId` must arrive together, or neither.
+ *
+ * Both columns answer the same question from opposite ends — "is this posting a
+ * cancellation, and of what?" — and every consumer reads one of them: a
+ * `reversals` back-relation lookup (the already-reversed guard below), a report
+ * filtering `type`. A row carrying only one of the two makes the other answer
+ * silently wrong, and neither direction is recoverable afterwards: a REVERSAL
+ * with no pointer cancels nothing identifiable, and a pointer on an
+ * ORDER_PAYMENT would make a real sale look like the undoing of one.
+ *
+ * Checked in the service rather than left to `reverseFinancialTransaction`
+ * because this service is the only writer and a future second reversal-shaped
+ * caller would otherwise be free to get it wrong.
+ */
+function assertReversalShape(args: PostFinancialTransactionArgs): void {
+  const isReversalType = args.type === FinancialTransactionType.REVERSAL;
+  const hasPointer = args.reversalOfId != null;
+  if (isReversalType === hasPointer) return;
+  throw new ValidationError("error.ledger_reversal_shape_invalid", {
+    type: args.type,
+    reversalOfId: hasPointer ? String(args.reversalOfId) : "none",
+  });
 }
 
 /**
@@ -359,8 +419,8 @@ async function prepareEntries(db: Db, entries: readonly LedgerEntryInput[]): Pro
  * 2. **Validate everything** (`prepareEntries`, `assertBalancedPerCurrency`)
  *    before the first write.
  * 3. **Write in one transaction**, so a failure cannot leave a transaction
- *    without its entries. `reversalOfId` is never set here — only a REVERSAL
- *    posting has one, and this milestone builds no reversal path.
+ *    without its entries. `reversalOfId` is written only when the caller supplied
+ *    one, which only `reverseFinancialTransaction` does.
  * 4. **Reclaim on the idempotency race.** Two callers posting the same key for
  *    the first time can both pass step 1 before either commits; the loser hits
  *    the unique index on `idempotency_key`, and what it does then is return the
@@ -401,12 +461,12 @@ export async function postFinancialTransaction(
     //
     // Unlike `error.ledger_account_not_found`, this error is NOT swallowed by
     // `postOrSkipMissingAccount`, so a nested call's caller transaction aborts
-    // with it — "the event needs a manual entry" is only true when this call
+    // with it — "the event still has to be posted" is only true when this call
     // owns its own transaction and the money has therefore already moved.
     const e = new ValidationError("error.ledger_idempotency_key_required");
     const consequence = ownsTransaction
-      ? "the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected"
-      : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
+      ? `the money this event describes has already moved, so the books now understate it; once the posting site is corrected, re-post the backlog with "pnpm backfill-ledger-history", which re-derives the same idempotency keys and so posts exactly what is missing and nothing twice — ${BY_HAND_IS_NOT_AN_OPTION}`
+      : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing is missing from the books, only a retry is needed once the posting site is corrected";
     logger.error(
       { err: e },
       `Refused to post the ${args.type} ledger transaction for ${args.referenceType} ${args.referenceId} because it arrived with a blank idempotency key, and wrote nothing at all — a blank key is shared by every other caller that leaves it blank, so accepting it would eventually hand one event's posting back to an unrelated one as its own replay. Whichever posting site built this key is the bug; ${consequence}.`,
@@ -433,6 +493,7 @@ export async function postFinancialTransaction(
 
   let prepared: PreparedEntry[];
   try {
+    assertReversalShape(args);
     prepared = await prepareEntries(db, args.entries);
     assertBalancedPerCurrency(prepared);
   } catch (e) {
@@ -443,29 +504,29 @@ export async function postFinancialTransaction(
     // that one names the business event and what an admin has to do about it.
     //
     // The consequence clause forks on three things a blanket "money already
-    // moved, hand-post an entry" sentence gets wrong on real paths: (a) not
+    // moved, go and add the entry" sentence gets wrong on real paths: (a) not
     // every rejection here is a validation failure — `prepareEntries` reads the
     // chart of accounts first, so a connection reset or timeout lands in this
     // same catch and is not a caller bug; (b) when this call is nested inside a
     // caller's own transaction (executeRefund's payout, for one), throwing here
     // NORMALLY aborts that whole transaction — including whatever money
-    // movement it had already made — so nothing was actually kept, and
-    // hand-posting an entry would fabricate one for a payout that never
-    // happened; (c) the one exception to (b): `error.ledger_account_not_found`
+    // movement it had already made — so nothing was actually kept, and posting
+    // the event afterwards would record one for a payout that never happened;
+    // (c) the one exception to (b): `error.ledger_account_not_found`
     // specifically is caught and SWALLOWED one layer up by
     // `postOrSkipMissingAccount` (./ledgerPostings.ts), which is exactly what
     // makes the overlap noted above deliberate — that catch does not rethrow,
     // so the caller's transaction is still healthy and its own money movement
-    // DOES commit even though this call is nested. A blanket "nothing needs a
-    // manual entry" for every nested case would be false for that one, most
-    // common failure (an unseeded chart of accounts).
+    // DOES commit even though this call is nested. A blanket "nothing is
+    // missing from the books" for every nested case would be false for that
+    // one, most common failure (an unseeded chart of accounts).
     const isValidation = e instanceof ValidationError;
     const isMissingAccount = e instanceof ValidationError && e.key === "error.ledger_account_not_found";
     const consequence = ownsTransaction
-      ? "the money this event describes has already moved, so the books now understate it and need a manual entry once the posting site is corrected"
+      ? `the money this event describes has already moved, so the books now understate it; once the posting site is corrected, re-post the backlog with "pnpm backfill-ledger-history", which re-derives the same idempotency keys and so posts exactly what is missing and nothing twice — ${BY_HAND_IS_NOT_AN_OPTION}`
       : isMissingAccount
-        ? "this call was nested inside the caller's own transaction — if that caller swallows a missing ledger account and continues (see postOrSkipMissingAccount), its own money movement still committed and needs a manual entry once the account is seeded; if it does not, its transaction rolled back with this one and nothing needs a manual entry"
-        : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing needs a manual entry, only a retry once the posting site is corrected";
+        ? `this call was nested inside the caller's own transaction — if that caller swallows a missing ledger account and continues (see postOrSkipMissingAccount), its own money movement still committed, so once the account is seeded the backlog has to be re-posted with "pnpm backfill-ledger-history"; if it does not swallow it, its transaction rolled back with this one and nothing is missing. ${BY_HAND_IS_NOT_AN_OPTION}`
+        : "this call was nested inside the caller's own transaction, so that transaction — and any money movement it already made — was rolled back with it; nothing is missing from the books, only a retry is needed once the posting site is corrected";
     logger.error(
       { err: e, idempotencyKey: args.idempotencyKey },
       isValidation
@@ -484,6 +545,10 @@ export async function postFinancialTransaction(
         idempotencyKey: args.idempotencyKey,
         description: args.description,
         occurredAt: args.occurredAt,
+        // Undefined on every posting but a reversal, which leaves the column
+        // null — Prisma omits an undefined field rather than writing null over a
+        // default, and null is what "this is not a reversal" means here.
+        reversalOfId: args.reversalOfId,
         // When the books learned about it, as opposed to when it happened. The
         // column defaults to now() anyway; set explicitly so the row's meaning
         // does not depend on the database clock of whoever deploys this.
@@ -541,6 +606,191 @@ export async function postFinancialTransaction(
     }
     throw e;
   }
+}
+
+/** What `reverseFinancialTransaction` needs to know about the posting it undoes. */
+export interface ReverseFinancialTransactionArgs {
+  /** `FinancialTransaction.id` of the posting to cancel. */
+  originalId: number;
+  /**
+   * Why it is being cancelled, in the operator's own words. Goes verbatim into
+   * the reversal's `description`, which is admin-facing prose (docs/LOGGING.md),
+   * so write a sentence — "The TokoPay webhook posted this order twice." — not
+   * `reason=duplicate`.
+   */
+  reason: string;
+  /**
+   * Overrides the deterministic `reversal:{originalId}` key. Only a caller that
+   * genuinely needs a SECOND reversal of one transaction has any use for this,
+   * and that caller must first understand why the guard below refuses it; it
+   * exists so the refusal is a deliberate decision rather than an unreachable
+   * branch.
+   */
+  idempotencyKey?: string;
+}
+
+/** The deterministic reversal key. One per reversed transaction, by construction. */
+const reversalKey = (originalId: number): string => `reversal:${originalId}`;
+
+/**
+ * Cancel a posted transaction by adding its mirror image: a `REVERSAL`
+ * transaction whose `reversalOfId` names the original and whose every entry
+ * carries the same amount and account with the direction flipped.
+ *
+ * This is the ONLY way a mis-posting is undone, and it is why every log line in
+ * this file and in `ledgerPostings.ts` points an operator here rather than at a
+ * database client. The ledger is append-only: an `UPDATE` or `DELETE` on a
+ * posted transaction destroys the evidence of what the books said and when,
+ * which is the one thing a ledger exists to preserve, and raw SQL against these
+ * two tables is forbidden outright (see this file's module comment). A reversal
+ * leaves both facts readable — the wrong posting and its cancellation — and
+ * nets their effect on every account to zero.
+ *
+ * Flipping direction rather than negating amounts is not a style choice:
+ * `LedgerEntry.amount` is documented as always positive and `parseEntryAmount`
+ * refuses anything else, so a "negative debit" is not a row this schema can
+ * hold. Same amounts and same accounts means the reversal balances exactly when
+ * the original did, per currency, with no arithmetic of its own to get wrong.
+ *
+ * ## What it refuses, and why each refusal is not a guess
+ *
+ * - **A transaction that does not exist** — there is nothing to mirror, and
+ *   inventing entries for a row nobody can read would be fabrication.
+ * - **A REVERSAL** (`error.ledger_cannot_reverse_a_reversal`). Reversing a
+ *   reversal re-applies the original posting while claiming to undo something,
+ *   and the resulting chain is unreadable: two rows pointing at each other with
+ *   no statement of which effect is currently in force. If the original posting
+ *   was right after all, POST IT AGAIN as the event it is, under a new
+ *   idempotency key, where its description can say so.
+ * - **A transaction that already has a reversal**
+ *   (`error.ledger_already_reversed`). A second reversal would double the
+ *   cancellation and leave every account it touched off by the original amount
+ *   in the opposite direction — a balanced set of books that is now wrong by
+ *   twice the mistake being fixed.
+ *
+ * ## The two guards, and what each one actually covers
+ *
+ * `FinancialTransaction` has no `@@unique([reversalOfId])`, so neither guard is
+ * the database's:
+ *
+ * 1. The **deterministic key** `reversal:{originalId}` is what makes a retry
+ *    safe. Two concurrent callers reversing the same transaction both reach
+ *    `postFinancialTransaction`, one loses the race on
+ *    `ix_financial_tx_idempotency_key`, and the loser is handed the winner's row
+ *    — the same at-least-once guarantee every other posting here relies on. A
+ *    replay is therefore a normal return, not an error: the check below looks the
+ *    key up FIRST and returns the existing reversal, because otherwise the
+ *    already-reversed guard would reject a caller's own retry.
+ * 2. The **already-reversed read** covers what the key cannot: a caller that
+ *    passes its own `idempotencyKey`. It is a plain read-then-write, so two such
+ *    callers racing with two different keys can both pass it. That is the one
+ *    hole, it is documented rather than papered over, and closing it properly
+ *    means a unique index on `reversalOfId` — a schema change this decision did
+ *    not authorise, and one that would also forbid the deliberate second
+ *    reversal the override exists for.
+ *
+ * Accepts a caller's `tx` like everything else here (`Db` is `PrismaClient |
+ * Tx`), so a reversal can be part of a larger correction.
+ *
+ * `occurredAt` is **the original's own `occurredAt`**, not now: a reversal
+ * cancels an event that happened at a particular moment, and a period report
+ * reading `occurredAt` must see the two net to zero inside the same period.
+ * Otherwise reversing last month's mistake would silently move revenue between
+ * months. `postedAt` still records when the correction was actually made, which
+ * is the fact an auditor asking "what did the books say in June?" needs.
+ */
+export async function reverseFinancialTransaction(
+  db: Db,
+  args: ReverseFinancialTransactionArgs,
+): Promise<FinancialTransaction> {
+  const idempotencyKey = args.idempotencyKey ?? reversalKey(args.originalId);
+
+  // Before any validation, so a retry of a reversal that already landed is a
+  // normal return rather than an `error.ledger_already_reversed` rejection —
+  // guard 1 above. `postFinancialTransaction` would return the same row anyway;
+  // checking here is what stops the already-reversed read below from firing on a
+  // caller's own replay.
+  const replay = await db.financialTransaction.findUnique({ where: { idempotencyKey } });
+  if (replay) {
+    logger.info(
+      { idempotencyKey, financialTransactionId: replay.id },
+      `Posted no new reversal for financial transaction ${args.originalId}, because reversal ${replay.id} already cancels it under the same idempotency key — the existing reversal is returned unchanged, so asking twice still cancels the original exactly once`,
+    );
+    return replay;
+  }
+
+  const original = await db.financialTransaction.findUnique({
+    where: { id: args.originalId },
+    select: {
+      id: true,
+      type: true,
+      referenceType: true,
+      referenceId: true,
+      description: true,
+      occurredAt: true,
+      entries: {
+        select: { direction: true, amount: true, currency: true, account: { select: { code: true } } },
+        orderBy: { id: "asc" },
+      },
+      reversals: { select: { id: true }, take: 1 },
+    },
+  });
+  if (!original) {
+    const e = new ValidationError("error.ledger_transaction_not_found", {
+      financialTransactionId: String(args.originalId),
+    });
+    logger.error(
+      { err: e },
+      `Refused to reverse financial transaction ${args.originalId} because no such transaction exists in this database, and wrote nothing at all — there is no posting to mirror, so a reversal here would invent entries for an event the books never recorded. Check the id against the ledger before retrying.`,
+    );
+    throw e;
+  }
+  if (original.type === FinancialTransactionType.REVERSAL) {
+    const e = new ValidationError("error.ledger_cannot_reverse_a_reversal", {
+      financialTransactionId: String(args.originalId),
+    });
+    logger.error(
+      { err: e },
+      `Refused to reverse financial transaction ${args.originalId} because it is itself a reversal, and wrote nothing at all — undoing a cancellation would quietly re-apply the posting it cancelled while claiming to undo something, leaving a chain nobody can read the current effect off. If the original posting was right after all, post that event again under its own idempotency key instead.`,
+    );
+    throw e;
+  }
+  const existingReversal = original.reversals[0];
+  if (existingReversal) {
+    const e = new ValidationError("error.ledger_already_reversed", {
+      financialTransactionId: String(args.originalId),
+      reversalId: String(existingReversal.id),
+    });
+    logger.error(
+      { err: e },
+      `Refused to reverse financial transaction ${args.originalId} because reversal ${existingReversal.id} already cancels it, and wrote nothing at all — a second reversal would cancel the same posting twice and leave every account it touched wrong by the original amount in the opposite direction. Nothing needs correcting here; if a further adjustment is genuinely due, post it as the event it is.`,
+    );
+    throw e;
+  }
+
+  const entries: LedgerEntryInput[] = original.entries.map((entry) => ({
+    accountCode: entry.account.code,
+    // The whole reversal, in one line: same account, same amount, other side.
+    direction:
+      entry.direction === LedgerDirection.DEBIT ? LedgerDirection.CREDIT : LedgerDirection.DEBIT,
+    amount: entry.amount,
+    currency: entry.currency,
+  }));
+
+  return postFinancialTransaction(db, {
+    type: FinancialTransactionType.REVERSAL,
+    // The reversal hangs off the same business thing the original did, so both
+    // show up in a `referenceType`/`referenceId` lookup for that order, payout or
+    // admin — the reader asking "what did the books do about this order?" needs
+    // the correction as much as the mistake.
+    referenceType: original.referenceType,
+    referenceId: original.referenceId,
+    idempotencyKey,
+    description: `Reversed financial transaction ${original.id} ("${original.description}"). ${args.reason}`,
+    occurredAt: original.occurredAt,
+    reversalOfId: original.id,
+    entries,
+  });
 }
 
 /**

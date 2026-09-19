@@ -51,11 +51,12 @@
  * is wired (each rail handler stamps its own gateway transaction id), but
  * `Payment.fee` stays null — none of this shop's six gateways reports a real fee
  * figure, so there is no fee amount to post and never has been; this is not a
- * follow-up task, it is the correct state for as long as that stays true. Also
- * deliberately absent: any reversal helper (`crud/ledger.ts`'s doc comment
- * explains why the milestone that first needs one should own it). Every posting
- * below is an independent `FinancialTransaction` with its own entries, not a
- * mirror of another one.
+ * follow-up task, it is the correct state for as long as that stays true.
+ * Reversals are absent from this file too, but they do EXIST:
+ * `reverseFinancialTransaction` (crud/ledger.ts) mirrors a posting's own entries,
+ * so it needs no account map of its own and belongs with the writer rather than
+ * here. Every posting below is an independent `FinancialTransaction` with its own
+ * entries, not a mirror of another one.
  */
 import {
   FinancialTransactionType,
@@ -76,6 +77,21 @@ import {
 } from "./ledger";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
+
+/**
+ * How an operator is actually meant to fix a posting that is missing or wrong,
+ * spelled once and appended to every log line below that reports one.
+ *
+ * These lines used to end in "needs a manual entry"/"needs to be posted by hand",
+ * which named no mechanism that exists: `postFinancialTransaction` is the ledger's
+ * only writer and raw SQL against its two tables is forbidden (crud/ledger.ts's
+ * module comment), so the advice amounted to "edit the books", which is what the
+ * whole design prevents. The two real mechanisms are the backfill script (for an
+ * event that was never posted) and `reverseFinancialTransaction` (for one that was
+ * posted wrongly), and every line here now says which applies.
+ */
+const NOT_BY_HAND =
+  "do not add rows to \"financial_transactions\"/\"ledger_entries\" by hand. A posting that WAS made and is wrong is the other case, and reverseFinancialTransaction (crud/ledger.ts) is what cancels it before the corrected event is posted.";
 
 /**
  * Post one event, or — if the account it names does not exist — log loudly and
@@ -115,7 +131,7 @@ async function postOrSkipMissingAccount(
     if (e instanceof AppError && e.key === "error.ledger_account_not_found") {
       logger.error(
         { err: e, idempotencyKey: args.idempotencyKey },
-        `Recorded no ledger posting for ${context} because the ledger account it needs does not exist in this database. The money itself moved and is correct; only the double-entry record is missing, so the financial reports will understate this event until it is posted by hand. This almost always means the chart of accounts was never seeded here — run "pnpm seed-chart-of-accounts" and post the missing entries for anything that settled in the meantime.`,
+        `Recorded no ledger posting for ${context} because the ledger account it needs does not exist in this database. The money itself moved and is correct; only the double-entry record is missing, so the financial reports will understate this event until it is posted. This almost always means the chart of accounts was never seeded here — run "pnpm seed-chart-of-accounts", then "pnpm backfill-ledger-history" to post everything that settled in the meantime. That script re-derives the same idempotency keys these functions do, so it posts exactly what is missing and nothing twice; ${NOT_BY_HAND}`,
       );
       return null;
     }
@@ -239,7 +255,7 @@ async function readWalletMovement(
     // a throw: the wallet movement this was meant to describe does not exist, so
     // there is no money event to record either.
     logger.error(
-      `Posted nothing to the ledger for ${context} because wallet movement ${walletTransactionId} could not be found — the ledger will not reflect this balance change, so it needs to be posted by hand if the balance really did move`,
+      `Posted nothing to the ledger for ${context} because wallet movement ${walletTransactionId} could not be found — the ledger will not reflect this balance change. If the balance really did move, whichever path wrote it without a readable wallet_transactions row is the bug to fix first; the movement can then be posted by re-running "pnpm backfill-ledger-history", which covers every wallet-derived posting shape. ${NOT_BY_HAND}`,
     );
     return null;
   }
@@ -574,7 +590,7 @@ export async function postReferralCommissionPosting(
 
   if (movement.currency !== OrderCurrency.USDT) {
     logger.error(
-      `Recorded no ledger posting for the referral commission on order ${args.orderCode} because it was paid in ${movement.currency} rather than USDT, and the shop's chart of accounts has a referral commission expense account in USDT only. The referrer was still paid, so this commission is missing from the books and needs a manual entry. Referral commission is meant to be USDT-only, so whichever code path paid it in another currency is the real bug.`,
+      `Recorded no ledger posting for the referral commission on order ${args.orderCode} because it was paid in ${movement.currency} rather than USDT, and the shop's chart of accounts has a referral commission expense account in USDT only. The referrer was still paid, so this commission is missing from the books. Referral commission is meant to be USDT-only, so whichever code path paid it in another currency is the real bug, and until that is settled there is no account this can honestly be posted to at all — adding one to the chart of accounts is an accounting decision, not a fix for this log line. ${NOT_BY_HAND}`,
     );
     return null;
   }
@@ -729,7 +745,7 @@ export async function postRefundExecutionPosting(
     // rolled back, or a hand-written one. The payout this was meant to describe
     // does not exist, so there is no financial event to record either.
     logger.error(
-      `Posted nothing to the ledger for ${context} because refund execution ${args.refundExecutionId} could not be found — if that payout really happened, the books do not reflect it and it needs a manual entry.`,
+      `Posted nothing to the ledger for ${context} because refund execution ${args.refundExecutionId} could not be found — if that payout really happened, the books do not reflect it. Once the row is readable, "pnpm backfill-ledger-history" posts every completed payout that has no posting yet. ${NOT_BY_HAND}`,
     );
     return null;
   }
@@ -751,7 +767,7 @@ export async function postRefundExecutionPosting(
   if (paidInto === null) {
     logger.error(
       { method: execution.method },
-      `Recorded no ledger posting for ${context} because its payout method is not one this shop knows how to book. The buyer may well have been paid, so this refund is missing from the books and needs a manual entry, and whichever path wrote an unknown method is the real bug.`,
+      `Recorded no ledger posting for ${context} because its payout method is not one this shop knows how to book. The buyer may well have been paid, so this refund is missing from the books, and whichever path wrote an unknown method is the real bug: until this file learns which account that method pays out of, there is nothing it can honestly post. Fix the method, then re-post with "pnpm backfill-ledger-history". ${NOT_BY_HAND}`,
     );
     return null;
   }

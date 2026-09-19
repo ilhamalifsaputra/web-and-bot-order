@@ -51,6 +51,16 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This unit has already been refunded as much as it was paid for.",
   "error.refund_execution_proof_required":
     "A manual transfer needs proof of the transfer before it can be recorded.",
+  // Returning an overpayment (task F2). Both come from
+  // `creditOverpaymentToBalance`'s own guards, and the first one is what a
+  // double-clicked button earns — so it has to read as reassurance rather than
+  // as a failure the admin needs to retry.
+  "error.overpayment_already_credited":
+    "This overpayment has already been credited to the buyer's balance, so nothing was handed over a second time. Refresh the page to see the current state.",
+  "error.overpayment_none_recorded":
+    "No payment provider recorded the buyer overpaying on this order, so there is no excess to return. If they really did pay too much, the provider's own record is what needs checking first.",
+  "error.order_not_found":
+    "That order could not be found — it may have just been removed. Refresh the page.",
 };
 
 /** Looks up a known `ValidationError` key and returns a readable English

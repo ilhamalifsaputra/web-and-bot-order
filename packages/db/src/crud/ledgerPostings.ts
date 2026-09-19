@@ -805,7 +805,7 @@ export async function postUnderpaidTopupCreditPosting(
  * recognised, since the `provider_clearing` debit is a claim that a rail collected
  * this money against THAT order; the admin is named in the description instead.
  *
- * ## NO PRODUCTION CALLER TODAY, and what each rail actually does
+ * ## Its caller (task F2), and what each rail actually does
  *
  * Verified across all six rails (`binance_internal.ts`, `bybit_deposit.ts`,
  * `bybit_bsc_deposit.ts`, `tokopay.ts`, `paydisini.ts`, `nowpayments.ts`): on an
@@ -816,14 +816,21 @@ export async function postUnderpaidTopupCreditPosting(
  * TokoPay where the comparison is against `qrisChargeAmount(total)` because that
  * rail's admin fee is a buyer-side surcharge.
  *
- * So there is no admin route, bot command or job that credits an overpayment; an
- * admin does it today through the generic wallet-adjustment path, which cannot
- * tell this apart from goodwill and therefore posts against equity. This function
- * ships as the mapping to use the moment such a path exists — wire it where the
- * credit is made, in the same transaction, instead of
- * `postWalletAdjustmentPosting`. Giving the generic adjustment route a way to say
- * "this is order X's overpayment" is a product decision that was not part of this
- * one.
+ * `creditOverpaymentToBalance` (crud/overpayments.ts) is what closes that: it
+ * DERIVES the excess from whichever rail's processed row exists
+ * (`findOverpaidExcess`, which carries the per-rail expectation including
+ * TokoPay's surcharge), credits it with `adjustWallet` and calls this posting in
+ * the same transaction. `POST /api/orders/:orderId/credit-overpayment` is the
+ * admin surface, reached from the order detail page's Overpayment card. Nothing
+ * ever passes the amount in — a figure supplied by a caller could disagree with
+ * the rail's record while the ledger still balanced perfectly, which is the one
+ * error class double-entry cannot find.
+ *
+ * The credit is written under its own `wallet_transactions.reason`
+ * (`overpaid_credit`), not `admin_adjust`, which is what makes the table's
+ * `UNIQUE (orderId, reason)` apply and so makes "one order, one credit"
+ * structural. A generic hand-made adjustment on the same order is unaffected:
+ * those carry a null `orderId`.
  *
  * Idempotent on `wallet:{walletTransactionId}` like every other wallet-derived
  * posting here, so the credit is recognised once however many times the resolving
@@ -888,11 +895,18 @@ export async function postOverpaymentCreditPosting(
  * and `postOverpaymentCreditPosting` (a payment that arrived over, credited to the
  * balance). Both go through `provider_clearing` because the cash exists.
  *
- * NOTE, honestly: an admin crediting an overpayment TODAY reaches this function,
- * because no route hands the other one an order to point at — so equity is what an
- * overpayment credit currently consumes. See
- * `postOverpaymentCreditPosting`'s own doc comment for what each rail does and
- * what is still missing. Direction follows the movement:
+ * An overpayment credit no longer reaches this function: task F2 gave it a route
+ * of its own (`POST /api/orders/:orderId/credit-overpayment` →
+ * `creditOverpaymentToBalance`, crud/overpayments.ts), which calls
+ * `postOverpaymentCreditPosting` and books against `provider_clearing` because the
+ * cash really arrived. What still reaches THIS function is only what it is for: a
+ * balance an admin moved with no payment behind it, from web-admin's users route
+ * or the bot's `/wallet`. If a shop admin uses that generic form to hand back an
+ * overpayment by hand anyway, it will still be booked as equity — the form has no
+ * way to know, which is exactly why the dedicated action exists and why the order
+ * detail page offers it where the excess is visible.
+ *
+ * Direction follows the movement:
  *
  * - **Credit to the buyer** (`delta > 0`): `Dr adjustment / Cr wallet_liability`
  *   — the obligation grows.

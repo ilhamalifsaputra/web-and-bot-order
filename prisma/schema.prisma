@@ -91,7 +91,13 @@ model WalletTransaction {
   /// Currency of this ledger row's balance/delta. Existing rows default to IDR
   /// (the system was IDR-base); USDT rows track the USDT credit balance.
   currency     String   @default("IDR")
-  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup | unfulfilled_credit
+  // machine code: admin_adjust | underpaid_refund | referral | order_payment |
+  // order_refund | adjust | wallet_topup | unfulfilled_credit | overpaid_credit.
+  // `overpaid_credit` (task F2) is the excess a buyer overpaid, handed back as
+  // wallet balance by creditOverpaymentToBalance — deliberately its OWN code
+  // rather than admin_adjust, because admin_adjust rows carry a null orderId and
+  // so escape the (orderId, reason) UNIQUE below that stops a second credit.
+  reason       String
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
   orderId      Int?     @map("order_id")

@@ -1151,6 +1151,43 @@ each absorbed shortfall. Those rows are not rewritten — the ledger is append-o
 each can be corrected with `reverseFinancialTransaction` and re-posted, or left
 as documented history.
 
+**8. An overpayment is returned by hand, and only when an admin notices —
+partially closed 2026-09-19 (task F2).** When a buyer pays more than an order
+asked for, every rail delivers the order, stamps `outcome: "overpaid"` on its own
+processed-transaction row and enqueues an `ADMIN_OVERPAID` DM. **No rail credits
+the excess, and no rail persists it as a figure.** What changed is that there is
+now a correct way to hand it back:
+
+- `findOverpaidExcess` (`packages/db/src/crud/overpayments.ts`) DERIVES the excess
+  from whichever rail's row exists — `amount − what the order billed`. The billed
+  figure is **not the same expression on every rail**: TokoPay's QRIS admin fee is
+  a buyer-side surcharge, so the buyer is billed `qrisChargeAmount(total)` and
+  comparing against the bare total would invent an excess equal to the shop's own
+  fee on every QRIS order. Each rail's expectation is taken from the TABLE the row
+  came from, not from `Order.paymentMethod`.
+- `creditOverpaymentToBalance` credits it with `adjustWallet` and posts
+  `postOverpaymentCreditPosting` (`Dr provider_clearing / Cr wallet_liability`) in
+  one transaction. Before this, an admin used the generic wallet-adjustment form,
+  which books `Dr adjustment.*` (EQUITY) — claiming the shop funded out of its own
+  equity a credit the buyer had paid for.
+- `POST /api/orders/:orderId/credit-overpayment` is the surface, at the `super` +
+  `support` tier its `/api/orders` prefix grants — matching
+  `/api/payments/order/:id/credit-anyway`, the existing route that credits a wallet
+  from a rail-recorded amount. **No amount is ever accepted from the client**; a
+  supplied figure could disagree with the rail's record while the ledger balanced
+  perfectly, which is the one error class double-entry cannot detect.
+- One order can be credited once: a read-then-refuse for the ordinary double click,
+  and `wallet_transactions`' own `UNIQUE (orderId, reason)` underneath it for two
+  requests racing past the read. That constraint applies only because the credit
+  has its own reason code, `overpaid_credit` — `admin_adjust` rows carry a null
+  `orderId` and escape it.
+
+**What is still open:** nothing returns an overpayment automatically. The excess
+stays with the shop until an admin opens the order and clicks, so a buyer who
+overpays and is never noticed is never repaid. Automating it was deliberately not
+part of this task — an auto-credit needs a policy decision about dust amounts and
+about whether wallet credit is an acceptable answer for every buyer.
+
 ---
 
 ## Settings reference

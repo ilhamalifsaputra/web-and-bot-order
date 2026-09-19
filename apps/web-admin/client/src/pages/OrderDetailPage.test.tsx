@@ -800,6 +800,101 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
     expect(screen.queryByRole("button", { name: /approve & deliver/i })).not.toBeInTheDocument();
   });
 
+  /**
+   * Overpayment card (task F2). The action's whole justification is that the
+   * amount has an external source, so what these tests pin is that the page shows
+   * the rail's figures, offers the action only while there is an UNCREDITED
+   * excess, and sends a body with no amount in it.
+   */
+  describe("overpayment", () => {
+    const OVERPAID = {
+      gateway: "TOKOPAY",
+      receivedAmount: "52500",
+      expectedAmount: "50000",
+      excess: "2500",
+      currency: "IDR",
+      credited: false,
+    };
+
+    function renderWith(overpayment: Record<string, unknown> | null) {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ ...ORDER_DETAIL_DATA, overpayment }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      render(<OrderDetailPage />, { wrapper: Wrapper });
+    }
+
+    it("shows the rail's own figures beside the excess it is offering to return", async () => {
+      renderWith(OVERPAID);
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      // The received/billed pair is what lets an admin check the number before
+      // handing money over, instead of trusting the button.
+      expect(screen.getByText(/TOKOPAY recorded Rp52\.500 arriving against a bill of Rp50\.000/)).toBeInTheDocument();
+      expect(screen.getByText("Rp2.500")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("renders nothing at all for an ordinary order nobody overpaid", async () => {
+      renderWith(null);
+
+      await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+      expect(screen.queryByText("Overpayment")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /to the buyer/i })).not.toBeInTheDocument();
+    });
+
+    it("stops offering the action once the excess has been returned", async () => {
+      renderWith({ ...OVERPAID, credited: true });
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      expect(screen.getByText(/already returned to the buyer's wallet balance/i)).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /return Rp2\.500 to the buyer/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("says plainly that there is nothing to return when the derived excess is zero", async () => {
+      // A flagged-but-stale rail row: the amount recorded is at or below what the
+      // order billed. Offering a button here would only earn a 422.
+      renderWith({ ...OVERPAID, receivedAmount: "50000", excess: "0" });
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      expect(screen.getByText(/does not actually show the buyer paying more/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /to the buyer/i })).not.toBeInTheDocument();
+    });
+
+    it("posts an EMPTY body — the amount is the server's to derive, never the client's", async () => {
+      renderWith(OVERPAID);
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      vi.mocked(apiPost).mockResolvedValue({ ok: true, credited: "2500", currency: "IDR" });
+
+      await userEvent.click(screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Return it" }));
+
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/orders/1/credit-overpayment", {}),
+      );
+      // No amount field of any kind reached the wire.
+      const body = vi.mocked(apiPost).mock.calls[0]![1] as Record<string, unknown>;
+      expect(Object.keys(body)).toHaveLength(0);
+    });
+
+    it("surfaces a refusal from the server instead of claiming the money moved", async () => {
+      renderWith(OVERPAID);
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      vi.mocked(apiPost).mockRejectedValue(new Error("error.overpayment_already_credited"));
+
+      await userEvent.click(screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Return it" }));
+
+      await waitFor(() => expect(screen.getByText(/already been credited/i)).toBeInTheDocument());
+    });
+  });
+
   it("does not open an SSE connection while orderId is still undefined", () => {
     function NoParamWrapper({ children }: { children: React.ReactNode }) {
       const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

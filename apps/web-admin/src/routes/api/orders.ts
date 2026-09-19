@@ -27,6 +27,7 @@ import {
   countCancelled,
   customerLabel,
   listStockReplacementsForOrder,
+  findOverpaidExcess,
   type OrderFilter,
   type StockReplacementWithRefund,
 } from "@app/db";
@@ -246,6 +247,12 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // open (so it doesn't offer an action that would only be refused) and to
     // show what each earlier request resolved to.
     const stockReplacements = await listStockReplacementsForOrder(prisma, orderId);
+    // What a rail recorded the buyer overpaying, if any (task F2). Sent so the
+    // detail page can offer "Return overpayment" only when there is an
+    // uncredited excess — and so the admin sees the FIGURE rather than being
+    // asked to trust a button. The amount is always derived server-side from the
+    // rail's own record; nothing the client sends here is ever used as an amount.
+    const overpaidExcess = await findOverpaidExcess(prisma, orderId);
     return reply.send({
       order: { ...order, createdAtDisplay: displayDateTime(order.createdAt) },
       money: serializeMoneyView(orderMoneyView(order)),
@@ -256,6 +263,23 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       customerDataFields,
       customerData,
       stockReplacements: stockReplacements.map(serializeStockReplacement),
+      // Null for the overwhelming majority of orders. Amounts are Decimal
+      // strings, formatted client-side like every other money field here.
+      overpayment:
+        overpaidExcess === null
+          ? null
+          : {
+              gateway: overpaidExcess.gateway,
+              receivedAmount: overpaidExcess.receivedAmount.toString(),
+              expectedAmount: overpaidExcess.expectedAmount.toString(),
+              excess: overpaidExcess.excess.toString(),
+              currency: overpaidExcess.currency,
+              // True once the excess has been handed back. The client offers the
+              // action only while this is false AND `excess` is above zero — the
+              // same two conditions the service itself refuses on, so the button
+              // is never shown for a call that would certainly come back 422.
+              credited: overpaidExcess.creditedWalletTransactionId !== null,
+            },
     });
   });
 

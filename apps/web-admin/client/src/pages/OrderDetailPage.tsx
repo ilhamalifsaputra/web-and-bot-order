@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { RefreshCw, Check, X, CircleDollarSign, Send, MailX } from "lucide-react";
+import { RefreshCw, Check, X, CircleDollarSign, Send, MailX, HandCoins } from "lucide-react";
+import { toast } from "sonner";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { useSse } from "../hooks/useSse";
@@ -121,6 +123,25 @@ interface OrderDetailData {
    * only because older cached/mocked responses predate the field — the live
    * route always sends at least `[]`. */
   stockReplacements?: StockReplacementRow[];
+  /** What a payment rail recorded the buyer OVERPAYING on this order, or null
+   * (task F2) — null for the overwhelming majority of orders.
+   *
+   * Every figure here is derived server-side from the rail's own
+   * processed-transaction row; the client never sends an amount back, and the
+   * action route has no field that could accept one. `optional` only because
+   * older cached/mocked responses predate the field. */
+  overpayment?: {
+    /** Which rail's record this came from — named so an admin can check it. */
+    gateway: string;
+    receivedAmount: string;
+    /** What the order actually billed: the QRIS charge on TokoPay (whose admin
+     * fee is a buyer-side surcharge), the bare total everywhere else. */
+    expectedAmount: string;
+    excess: string;
+    currency: string;
+    /** True once the excess has been handed back. */
+    credited: boolean;
+  } | null;
 }
 
 function useOrderDetail(orderId: string) {
@@ -212,6 +233,28 @@ export function OrderDetailPage() {
     onError: (e: Error) => setActionError(describeError(e.message)),
   });
 
+  /** Hand the buyer back what they overpaid (task F2).
+   *
+   * The body is deliberately empty: the amount is derived server-side from the
+   * rail's own record, and there is no field on that route that could accept one
+   * from here. The response carries the figure back so the toast can name what
+   * actually moved — the admin never chose it and has no other way to see it. */
+  const creditOverpayment = useMutation({
+    mutationFn: () =>
+      apiPost<{ credited: string; currency: string }>(
+        `/api/orders/${orderId}/credit-overpayment`,
+        {},
+      ),
+    onSuccess: (res) => {
+      refresh();
+      setActionError(null);
+      toast.success(
+        `Returned ${formatCurrencyDisplay(res.credited, res.currency as "IDR" | "USDT" | "USD")} to the buyer's wallet balance.`,
+      );
+    },
+    onError: (e: Error) => setActionError(describeError(e.message)),
+  });
+
   if (isError) {
     return (
       <PageLayout title="Order Detail">
@@ -229,6 +272,13 @@ export function OrderDetailPage() {
 
   const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, customerDataFields, customerData } = data;
   const stockReplacements = data.stockReplacements ?? [];
+  const overpayment = data.overpayment ?? null;
+  /** Offer the action only while there really is something to hand back — the
+   *  same two conditions `creditOverpaymentToBalance` refuses on, so the button
+   *  is never shown for a call that would certainly come back 422. A zero excess
+   *  can happen on a flagged-but-stale rail row. */
+  const canReturnOverpayment =
+    overpayment !== null && !overpayment.credited && /[1-9]/.test(overpayment.excess);
   const isWalletTopup = order.kind === "WALLET_TOPUP";
   // A top-up never reserves a stockItem/credentials to resend — there's
   // nothing here for the outbox's account-credentials DM to attach.
@@ -335,6 +385,66 @@ export function OrderDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Overpayment (task F2) — rendered only for the rare order a rail flagged.
+          Its own card rather than a row in Payment above, because it is the one
+          thing on this page that says the shop is holding money that is not
+          its own, and because the action lives with the figures that justify it:
+          an admin should be able to check the rail's own numbers before handing
+          anything back, not trust a button. */}
+      {overpayment !== null && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle as="h2">Overpayment</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            <p className="text-ink-soft">
+              The buyer paid more than this order asked for. {overpayment.gateway} recorded{" "}
+              {formatCurrencyDisplay(overpayment.receivedAmount, overpayment.currency as "IDR" | "USDT" | "USD")}{" "}
+              arriving against a bill of{" "}
+              {formatCurrencyDisplay(overpayment.expectedAmount, overpayment.currency as "IDR" | "USDT" | "USD")}.
+            </p>
+            <div className="flex justify-between border-t border-line pt-2">
+              <span className="font-medium text-ink">Excess</span>
+              <span className="font-mono font-semibold">
+                {formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")}
+              </span>
+            </div>
+            {overpayment.credited ? (
+              <p className="text-ink-soft">
+                Already returned to the buyer's wallet balance — it shows on the Wallet Ledger as
+                "Overpayment returned".
+              </p>
+            ) : canReturnOverpayment ? (
+              <ConfirmDialog
+                trigger={
+                  <Button size="sm" disabled={creditOverpayment.isPending}>
+                    <HandCoins className="h-4 w-4" />
+                    Return{" "}
+                    {formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")}{" "}
+                    to the buyer
+                  </Button>
+                }
+                title="Return the overpayment to the buyer?"
+                description={`The buyer gets ${formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")} as wallet balance, spendable on their next order. The amount comes from ${overpayment.gateway}'s own record and cannot be changed here. This can only be done once, and it cannot be undone.`}
+                confirmLabel="Return it"
+                variant="default"
+                onConfirm={() => creditOverpayment.mutate()}
+              />
+            ) : (
+              // A flagged row whose derived excess is zero: the rail recorded an
+              // amount at or below what the order billed, so there is nothing to
+              // return. Said plainly rather than offering a button that would be
+              // refused.
+              <p className="text-ink-soft">
+                {overpayment.gateway}'s record does not actually show the buyer paying more than the
+                order billed, so there is nothing to return. If they really did overpay, the rail's
+                record is what needs looking at first.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Guest contact — only rendered for guest orders (progressive
           disclosure: a registered buyer already has a name and a Telegram id

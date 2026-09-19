@@ -45,10 +45,10 @@ function get(url: string, withCookie: string | null) {
 }
 
 describe("GET /api/flash-sales/denominations", () => {
-  it("anon is redirected to /login", async () => {
+  it("anon gets a JSON 401", async () => {
     const res = await get("/api/flash-sales/denominations", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("returns a row with no flash object for a SKU with no schedule", async () => {

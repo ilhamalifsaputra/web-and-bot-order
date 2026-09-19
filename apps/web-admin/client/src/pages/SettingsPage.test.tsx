@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -275,6 +275,84 @@ describe("SettingsPage", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
+  it("wraps the FieldRow editing block in its own <form>, with Copy/Save/Cancel as explicit type=\"button\" (F-Chrome-autofill)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    const telegramCard = document.getElementById("settings-telegram") as HTMLElement;
+    // bot_token is the secret field, so its editing block also renders the
+    // Copy button — exercising all three buttons in one row.
+    await user.click(within(telegramCard).getByRole("button", { name: "Edit" }));
+
+    const secretInput = screen.getByLabelText("Order Bot token");
+    const form = secretInput.closest("form");
+    expect(form).not.toBeNull();
+    // Every button inside the form must be inside that same form (i.e. the
+    // form scopes Chrome's "nearest preceding field" search to just these
+    // controls, not all the way up to SettingsSearch), and must be
+    // type="button" so it can never become a native submit control.
+    expect(within(form as HTMLElement).getByRole("button", { name: /copy/i })).toHaveAttribute("type", "button");
+    expect(within(form as HTMLElement).getByRole("button", { name: "Save" })).toHaveAttribute("type", "button");
+    expect(within(form as HTMLElement).getByRole("button", { name: "Cancel" })).toHaveAttribute("type", "button");
+  });
+
+  it("pressing Enter in the field's input still opens the save-confirm dialog via the existing onKeyDown handler", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("Demo Shop");
+
+    // Unchanged behavior: the input's own onKeyDown still opens the
+    // save-confirm dialog on Enter — this must keep working once the
+    // input is inside a real <form>.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText('Save "Shop name"?')).toBeInTheDocument();
+  });
+
+  it("the editing form's onSubmit backstop prevents a native submission (e.g. from implicit submission-on-Enter)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("Demo Shop");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(form).not.toBeNull();
+
+    // A browser's own implicit-submission-on-Enter would dispatch a native
+    // "submit" event on the form (this is the mechanism the brief warns
+    // about — Button never defaults to type="button", and pressing Enter
+    // in a lone text field can trigger a native submit even with no
+    // type="submit" button present). Dispatch that event directly and
+    // confirm the form's onSubmit backstop prevents it, so it can never
+    // cause a page-level side effect.
+    const submitted = fireEvent.submit(form);
+    // testing-library's fireEvent returns false when preventDefault() was
+    // called by a handler — i.e. the event was NOT allowed to proceed.
+    expect(submitted).toBe(false);
   });
 
   it("toggling a payment gateway opens a confirmation dialog before persisting", async () => {

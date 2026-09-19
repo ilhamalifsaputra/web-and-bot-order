@@ -72,10 +72,10 @@ describe("GET /api/reports", () => {
     expect(body.days).toBe(30);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/reports", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -97,9 +97,9 @@ describe("GET /api/reports/export", () => {
     expect(lines.length).toBe(8); // header + 7 days
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/reports/export", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });

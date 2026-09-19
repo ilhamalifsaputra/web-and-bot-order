@@ -159,14 +159,14 @@ describe("POST /api/broadcast/:id/queue", () => {
     expect(res.statusCode).toBe(409);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const draftRes = await postJson("/api/broadcast", cookie, csrf, {
       message: "hi", segment: "ALL", scheduled_at: "", image_url: "", draft: true,
     });
     const { broadcast } = draftRes.json() as { broadcast: { id: number } };
     const res = await postJson(`/api/broadcast/${broadcast.id}/queue`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.broadcast.findUnique({ where: { id: broadcast.id } }))!.status).toBe("DRAFT");
   });
 
@@ -206,14 +206,14 @@ describe("POST /api/broadcast/:id/delete", () => {
     expect(await prisma.broadcast.findUnique({ where: { id: broadcast.id } })).not.toBeNull();
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const draftRes = await postJson("/api/broadcast", cookie, csrf, {
       message: "hi", segment: "ALL", scheduled_at: "", image_url: "", draft: true,
     });
     const { broadcast } = draftRes.json() as { broadcast: { id: number } };
     const res = await postJson(`/api/broadcast/${broadcast.id}/delete`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect(await prisma.broadcast.findUnique({ where: { id: broadcast.id } })).not.toBeNull();
   });
 

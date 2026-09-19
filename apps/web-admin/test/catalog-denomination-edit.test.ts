@@ -98,11 +98,11 @@ describe("PATCH /api/catalog/denominations/:id", () => {
     expect(audit).toBeTruthy();
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const id = await seedDenomination();
     const res = await patchJson(`/api/catalog/denominations/${id}`, null, csrf, { name: "Hacked", type: "SHARED", durationLabel: "1 Month", price: "1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.denomination.findUnique({ where: { id } }))!.name).toBe("1 Month");
   });
 
@@ -598,11 +598,11 @@ describe("DELETE /api/catalog/denominations/:id", () => {
     expect(audit!.details).toContain("Parent");
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const id = await seedDenomination();
     const res = await del(`/api/catalog/denominations/${id}`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect(await prisma.denomination.findUnique({ where: { id } })).not.toBeNull();
   });
 
@@ -675,12 +675,12 @@ describe("PATCH /api/catalog/products/:id", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const category = await createCategory(prisma, "Cat");
     const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Old Name" });
     const res = await patchJson(`/api/catalog/products/${product.id}`, null, csrf, { name: "Hacked" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.product.findUnique({ where: { id: product.id } }))!.name).toBe("Old Name");
   });
 

@@ -165,10 +165,10 @@ describe("POST /api/settings/edit", () => {
     expect(await getSetting(prisma, "smtp_pass")).toBe("existing-secret");
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/edit", null, csrf, { key: "shop_name", value: "x" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -197,10 +197,10 @@ describe("POST /api/settings/edit — custom emoji map", () => {
     }
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/edit", null, csrf, { key: "custom_emoji_map", value: MAP });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -264,10 +264,10 @@ describe("POST /api/settings/payments/toggle", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/payments/toggle", null, csrf, { method: "bybit", enabled: "false" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -287,10 +287,10 @@ describe("POST /api/settings/fx/refresh", () => {
     expect(["updated", "unchanged", "disabled"]).toContain(body.status);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/fx/refresh", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -333,13 +333,13 @@ describe("POST /api/settings/password", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/password", null, csrf, {
       current_password: "oldpassword1",
       new_password: "newpassword1",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -384,10 +384,10 @@ describe("POST /api/settings/2fa/begin + /enable + /cancel", () => {
     expect(await getSetting(prisma, twoFaPendingKey(ADMIN_TG))).toBeNull();
   });
 
-  it("begin requires auth (anon → 303 /login)", async () => {
+  it("begin requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/2fa/begin", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("begin rejects bad CSRF (403)", async () => {
@@ -434,13 +434,13 @@ describe("POST /api/settings/2fa/disable", () => {
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBe(secret);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/2fa/disable", null, csrf, {
       current_password: "pw12345678",
       totp_code: currentTotp(secret),
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -468,10 +468,10 @@ describe("GET /api/settings/export", () => {
     expect(audit).toBeTruthy();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await getJson("/api/settings/export", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -503,10 +503,10 @@ describe("POST /api/settings/import", () => {
     expect(await getSetting(prisma, "bulk_purchase_broadcast_threshold")).toBeNull();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/import", null, csrf, { fields: { shop_name: "x" } });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -563,10 +563,10 @@ describe("POST /api/settings/payments/:method/test", () => {
     expect(body.detail).toContain("HTTP 502");
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/payments/tokopay/test", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -612,10 +612,10 @@ describe("POST /api/settings/telegram/test", () => {
     expect(res.json()).toEqual({ ok: false, detail: "Telegram rejected the stored token." });
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/telegram/test", null, csrf, { target: "bot_token" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -657,10 +657,10 @@ describe("POST /api/settings/smtp/test", () => {
     expect(res.json()).toEqual({ ok: false, detail: "SMTP connection failed: Invalid login" });
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/smtp/test", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -679,10 +679,10 @@ describe("POST /api/settings/restart", () => {
     expect(audit).toBeTruthy();
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/settings/restart", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {

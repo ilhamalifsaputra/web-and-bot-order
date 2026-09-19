@@ -88,9 +88,10 @@ describe("GET /api/catalog/detection/metrics", () => {
     expect(res.json()).toEqual({ metrics: summary });
   });
 
-  it("redirects an unauthenticated request to /login", async () => {
+  it("rejects an unauthenticated request (401)", async () => {
     const res = await getJson("/api/catalog/detection/metrics", false);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -140,7 +141,7 @@ describe("POST /api/catalog/detection/issues/:id/resolve", () => {
     expect(after.reviewStatus).toBe("OPEN");
   });
 
-  it("redirects an unauthenticated request to /login", async () => {
+  it("rejects an unauthenticated request (401)", async () => {
     const issue = await seedIssue();
     const res = await app.inject({
       method: "POST",
@@ -148,7 +149,8 @@ describe("POST /api/catalog/detection/issues/:id/resolve", () => {
       headers: { "content-type": "application/json" },
       payload: "{}",
     });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("returns 422 on a second resolve of an already-resolved issue", async () => {

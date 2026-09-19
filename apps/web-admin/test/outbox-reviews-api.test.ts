@@ -109,11 +109,11 @@ describe("POST /api/outbox/:id/retry", () => {
     expect(await prisma.auditLog.findFirst({ where: { action: "outbox_retry" } })).toBeNull();
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const id = await makeFailedNotif();
     const res = await postJson(`/api/outbox/${id}/retry`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.notificationOutbox.findUnique({ where: { id } }))!.status).toBe("FAILED");
   });
 
@@ -170,11 +170,11 @@ describe("POST /api/reviews/:reviewId/hide", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const { reviewId } = await makeReview();
     const res = await postJson(`/api/reviews/${reviewId}/hide`, null, csrf, { hidden: true });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.hidden).toBe(false);
   });
 
@@ -224,11 +224,11 @@ describe("POST /api/reviews/:reviewId/reply", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const { reviewId } = await makeReview();
     const res = await postJson(`/api/reviews/${reviewId}/reply`, null, csrf, { reply: "Hi" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.adminReply).toBeNull();
   });
 
@@ -269,12 +269,12 @@ describe("DELETE /api/reviews/:reviewId/reply", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const { reviewId } = await makeReview();
     await postJson(`/api/reviews/${reviewId}/reply`, cookie, csrf, { reply: "Thanks!" });
     const res = await deleteReq(`/api/reviews/${reviewId}/reply`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.adminReply).toBe("Thanks!");
   });
 
@@ -323,11 +323,11 @@ describe("POST /api/reviews/:reviewId/status", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const { reviewId } = await makeReview();
     const res = await postJson(`/api/reviews/${reviewId}/status`, null, csrf, { status: "CLOSED" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.status).toBe("PENDING_REPLY");
   });
 
@@ -357,11 +357,11 @@ describe("DELETE /api/reviews/:reviewId", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const { reviewId } = await makeReview();
     const res = await deleteReq(`/api/reviews/${reviewId}`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect(await prisma.review.findUnique({ where: { id: reviewId } })).toBeTruthy();
   });
 

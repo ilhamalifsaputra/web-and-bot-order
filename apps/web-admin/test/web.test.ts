@@ -680,9 +680,13 @@ describe("orders", () => {
     const [item1, item2] = items;
 
     // Item #2's reserved row vanishes (onDelete: SetNull clears stockItemId).
+    await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item2!.stockItemId! } });
     await prisma.stockItem.delete({ where: { id: item2!.stockItemId! } });
     // Drain the rest of the AVAILABLE pool so item #2's replacement allocation
     // attempt has nothing to grab.
+    await prisma.stockItemEvent.deleteMany({
+      where: { stockItem: { productId: seed.productId, status: "AVAILABLE" } },
+    });
     await prisma.stockItem.deleteMany({
       where: { productId: seed.productId, status: "AVAILABLE" },
     });
@@ -2614,6 +2618,8 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 
   describe("DELETE /api/catalog/products/:id", () => {
     it("happy path: deletes an empty product and audits", async () => {
+      await prisma.stockItemEvent.deleteMany({ where: { stockItem: { productId: seed.catalogProductId } } });
+      await prisma.stockItem.deleteMany({ where: { productId: seed.catalogProductId } });
       await prisma.denomination.deleteMany({ where: { productId: seed.catalogProductId } });
       const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf);
       expect(res.statusCode).toBe(200);

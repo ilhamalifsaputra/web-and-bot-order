@@ -20,7 +20,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { SearchBar } from "../components/shared/SearchBar";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { apiGet } from "../api/client";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface DenominationRow {
   id: number;
@@ -259,15 +261,12 @@ export function StockPage() {
               },
               {
                 key: "waiting",
-                header: "Waiting",
-                render: (row) => {
-                  const wait = data?.waiting[String(row.id)] ?? 0;
-                  return (
-                    <span className="text-sm text-ink-soft">
-                      {wait > 0 ? wait : "—"}
-                    </span>
-                  );
-                },
+                header: <RestockRequestsHeader />,
+                render: (row) => (
+                  <span className="text-sm text-ink-soft">
+                    {formatRestockRequests(data?.waiting[String(row.id)], counts[String(row.id)]?.available)}
+                  </span>
+                ),
               },
               {
                 key: "stock",

@@ -26,7 +26,7 @@ import {
   setStockNote,
   restockSubscriberCounts,
   logAdminAction,
-  enqueueRestockBroadcast,
+  afterStockAdded,
   updateDenomination,
   revealStockCredentials,
 } from "@app/db";
@@ -115,7 +115,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       "Available",
       "Reserved",
       "Sold",
-      "Waiting",
+      "Restock Requests",
       "Status",
     ];
     let csv = csvRow(header);
@@ -131,7 +131,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(available),
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),
-        String(waiting[d.id] ?? 0),
+        // Same rule as the admin UI: blank unless out of stock with requests.
+        available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
         stockStatusLabel(available),
       ]);
     }
@@ -230,7 +231,13 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
 
     let added: number, skipped: number;
     try {
-      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+      ({ added, skipped } = await prisma.$transaction(async (tx) => {
+        const res = await bulkAddStock(tx, productId, creds);
+        // Same transaction as the insert: stock, subscriber DMs and the optional
+        // broadcast commit or roll back together. Web only enqueues outbox rows.
+        await afterStockAdded(tx, productId, res.added, req.admin!.userId);
+        return res;
+      }));
     } catch (e) {
       if (e instanceof CredentialKeyConfigError) {
         logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
@@ -248,27 +255,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     logger.info(
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
-
-    // Broadcast to ALL non-banned customers, separate from and in addition
-    // to the RestockSubscription opt-in DM — only when the admin turned the
-    // per-product flag on. The web NEVER sends Telegram itself; this just
-    // enqueues rows for the notifier/bot to deliver.
-    if (added > 0 && product.broadcastOnRestock) {
-      const stockCount = await countAvailableStock(prisma, productId);
-      const fullName = `${product.product.name} - ${product.name}`;
-      const notified = await enqueueRestockBroadcast(prisma, {
-        productName: fullName,
-        stockCount,
-        createdById: req.admin!.userId,
-      });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "restock_broadcast",
-        targetType: "product",
-        targetId: productId,
-        details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
-      });
-    }
 
     const message =
       skipped > 0

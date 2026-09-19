@@ -21,6 +21,9 @@ import {
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
 import { resolveAdminIds } from "./admins";
+import { listRestockSubscribers } from "./reviews";
+import { countAvailableStock } from "./stock";
+import { logAdminAction } from "./audit";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
 type Db = PrismaClient | Tx;
@@ -1146,6 +1149,83 @@ export async function enqueueRestockBroadcast(
     },
   });
   return users.length;
+}
+
+async function enqueueRestockSubscriberRows(tx: Tx, denominationId: number): Promise<number> {
+  const subs = await listRestockSubscribers(tx, denominationId);
+  if (!subs.length) return 0;
+  const denom = subs[0]!.product;
+  const productName = `${denom.product.name} - ${denom.name}`;
+  await tx.notificationOutbox.createMany({
+    data: subs.map((s) => ({
+      event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: Number(s.user.telegramId),
+        product_name: productName,
+        buyer_language: langCode(s.user.language),
+      }),
+    })),
+  });
+  // The outbox guarantees at-least-once delivery, so the subscription is
+  // consumed as soon as its DM is durably queued.
+  await tx.restockSubscription.deleteMany({ where: { id: { in: subs.map((s) => s.id) } } });
+  return subs.length;
+}
+
+/**
+ * Queue a "back in stock" DM for every actionable RestockSubscription on this
+ * SKU and consume those subscriptions, atomically. Pass the caller's
+ * transaction to join it; given a plain client it opens its own so the outbox
+ * rows and the deletions can never be split. Returns the number queued.
+ */
+export function enqueueRestockSubscriberNotifications(db: Db, denominationId: number): Promise<number> {
+  if ("$transaction" in db) {
+    return db.$transaction((tx) => enqueueRestockSubscriberRows(tx, denominationId));
+  }
+  return enqueueRestockSubscriberRows(db, denominationId);
+}
+
+/**
+ * Everything that must happen after stock lands on a SKU, from any add-stock
+ * path (bot conversation, web-admin upload): DM the restock subscribers and,
+ * when the SKU has `broadcastOnRestock`, queue the all-customer broadcast plus
+ * its audit row. No-op unless `added > 0`.
+ */
+export async function afterStockAdded(
+  db: Db,
+  denominationId: number,
+  added: number,
+  adminId: number,
+): Promise<{ subscribersQueued: number; broadcastQueued: number }> {
+  if (added <= 0) return { subscribersQueued: 0, broadcastQueued: 0 };
+  // Given a bare client, keep the steps atomic; given a tx, join it (call this
+  // inside the same transaction as bulkAddStock so stock and DMs commit together).
+  if ("$transaction" in db) {
+    return db.$transaction((tx) => afterStockAdded(tx, denominationId, added, adminId));
+  }
+  const subscribersQueued = await enqueueRestockSubscriberNotifications(db, denominationId);
+  let broadcastQueued = 0;
+  const denom = await db.denomination.findUnique({
+    where: { id: denominationId },
+    include: { product: true },
+  });
+  if (denom?.broadcastOnRestock) {
+    const fullName = `${denom.product.name} - ${denom.name}`;
+    broadcastQueued = await enqueueRestockBroadcast(db, {
+      productName: fullName,
+      stockCount: await countAvailableStock(db, denominationId),
+      createdById: adminId,
+    });
+    await logAdminAction(db, {
+      adminId,
+      action: "restock_broadcast",
+      targetType: "product",
+      targetId: denominationId,
+      details: `Queued a restock broadcast for "${fullName}" to ${broadcastQueued} customers.`,
+    });
+  }
+  return { subscribersQueued, broadcastQueued };
 }
 
 /**

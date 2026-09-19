@@ -84,32 +84,34 @@ export async function subscribeToRestock(
   }
 }
 
-/** Subscribers waiting on restock, joined with their user (needed to DM them)
- * and filtered to `telegramId != null` — a web-only subscriber has no chat to
- * send to, so they're excluded here rather than left for every caller to
- * special-case (mirrors the `telegramId: { not: null }` filter broadcasts use,
- * see crud/broadcasts.ts / crud/notifications.ts). */
+/** A restock subscription we can actually serve: the user has a linked Telegram
+ * chat to DM and is not banned — the same audience `enqueueRestockBroadcast`
+ * targets. Web-only subscribers are excluded everywhere (list, counts) so the
+ * admin "Restock requests" figure never counts someone who can't be notified. */
+export const actionableSubscriberWhere = {
+  user: { telegramId: { not: null }, banned: false },
+} satisfies Prisma.RestockSubscriptionWhereInput;
+
+/** Actionable subscribers waiting on restock, joined with their user (needed
+ * to DM them) and product. */
 export function listRestockSubscribers(db: Db, productId: number) {
   return db.restockSubscription.findMany({
-    where: { productId, user: { telegramId: { not: null } } },
+    where: { productId, ...actionableSubscriberWhere },
     include: { product: { include: { product: true } }, user: true },
   });
 }
 
-/** Consumes one restock subscription. Callers should only call this AFTER the
- * subscriber's notification DM has actually succeeded — never as a bulk
- * pre-delete before the send loop runs — so a DM failure (rate limit, bot
- * restart mid-loop) leaves the subscription in place to retry against the
- * next restock instead of silently losing the subscriber. */
+/** Removes one restock subscription by id. */
 export function deleteRestockSubscription(db: Db, id: number) {
   return db.restockSubscription.delete({ where: { id } });
 }
 
-/** Number of users waiting for restock, per product id. Products with no
- * subscribers are simply absent from the map. */
+/** Number of actionable users waiting for restock, per product id. Products
+ * with no actionable subscribers are simply absent from the map. */
 export async function restockSubscriberCounts(db: Db): Promise<Record<number, number>> {
   const grouped = await db.restockSubscription.groupBy({
     by: ["productId"],
+    where: actionableSubscriberWhere,
     _count: { _all: true },
   });
   const out: Record<number, number> = {};
@@ -118,7 +120,7 @@ export async function restockSubscriberCounts(db: Db): Promise<Record<number, nu
 }
 
 export function countRestockSubscribers(db: Db, productId: number): Promise<number> {
-  return db.restockSubscription.count({ where: { productId } });
+  return db.restockSubscription.count({ where: { productId, ...actionableSubscriberWhere } });
 }
 
 /**

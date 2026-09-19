@@ -196,6 +196,11 @@ interface AdminDigiflazzResyncAbortedPayload {
   considered_rows?: unknown;
 }
 
+interface RestockSubscriberPayload {
+  product_name?: unknown;
+  buyer_language?: unknown;
+}
+
 interface TicketClosedPayload {
   buyer_language?: unknown;
 }
@@ -215,7 +220,8 @@ export function render(
     AdminStalePaymentPayload &
     WalletTopupCreditedPayload &
     AdminDigiflazzResyncAbortedPayload &
-    TicketClosedPayload,
+    TicketClosedPayload &
+    RestockSubscriberPayload,
 ): string {
   if (event === NotificationEvent.TICKET_CLOSED_DM) {
     // Buyer DM (Task 2, Phase C): rendered in the buyer's OWN stored
@@ -308,6 +314,13 @@ export function render(
       `⏳ <b>Ends:</b> ${endsAt}\n\n` +
       `Grab it before the timer runs out!`
     );
+  }
+  if (event === NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED) {
+    // Same copy as locale key browse.subscribed_restock_notify (the old direct
+    // send), in the buyer's own stored language.
+    const name = escape(String(payload.product_name ?? ""));
+    const lang = typeof payload.buyer_language === "string" ? payload.buyer_language.toLowerCase() : "en";
+    return lang === "id" ? `<b>${name}</b> tersedia kembali.` : `<b>${name}</b> is back in stock.`;
   }
   if (event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST) {
     // Buyer DM broadcast to all customers, sent as-given (English only, not

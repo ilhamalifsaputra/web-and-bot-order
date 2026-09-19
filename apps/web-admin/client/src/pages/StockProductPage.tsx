@@ -9,6 +9,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +28,7 @@ import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface StockItem {
   id: number;
@@ -516,7 +518,9 @@ export function StockProductPage() {
         <span className="text-ink-soft">Product: <span className="text-ink">{product.product?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Category: <span className="text-ink">{product.product?.category?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{statusCounts.available}</span></span>
-        <span className="text-ink-soft">Waiting: <span className="text-ink">{waiting}</span></span>
+        <span className="text-ink-soft">
+          <RestockRequestsHeader />: <span className="text-ink">{formatRestockRequests(waiting, statusCounts.available)}</span>
+        </span>
       </div>
 
       {/* Bulk add */}

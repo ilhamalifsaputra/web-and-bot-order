@@ -38,6 +38,12 @@ describe("apiPost", () => {
     expect(JSON.parse(init.body as string)).toEqual({ denomination_id: 1, qty: 2 });
   });
 
+  it("resolves (does not throw) on an HTTP 200 body carrying ok:false, so restock outcomes reach the caller", async () => {
+    const body = { ok: false, result: "needs_telegram", redirect: "/" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => body })));
+    await expect(apiPost("/api/v1/restock/1", {})).resolves.toEqual(body);
+  });
+
   it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);

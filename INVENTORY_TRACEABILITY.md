@@ -208,21 +208,15 @@ independen/aditif satu sama lain:
   menulis satu baris `notification_outbox` per user eligible (event
   `PRODUCT_RESTOCKED_BROADCAST`) plus satu baris `Broadcast` untuk tabel
   History di admin.
-- **`RestockSubscription`** (opt-in per-SKU, DM sekali pakai) — HANYA
-  dipicu dari conversation admin di order-bot
-  (`apps/order-bot/src/conversations/admin.ts:188` →
-  `notifyRestockSubscribers`, `apps/order-bot/src/handlers/admin.ts:642-670`).
-  Beda dari yang di atas, ini kirim langsung lewat `ctx.api.sendMessage`
-  (bukan lewat `notification_outbox`), dengan throttle antar-pesan, dan
-  baris subscription baru dihapus (`deleteRestockSubscription`) **setelah**
-  kirim sukses — supaya kirim yang gagal otomatis dicoba lagi di restock
-  berikutnya. Rute web-admin **tidak** memicu jalur ini; ia cuma
-  menampilkan jumlah subscriber (`countRestockSubscribers`).
-
-Karena hanya satu dari dua entry point "tambah stok" (order-bot, bukan
-web-admin) yang memicu DM per-subscriber, admin yang menambah stok lewat
-web-admin perlu tahu bahwa subscriber opt-in tidak otomatis di-DM dari
-sana.
+- **`RestockSubscription`** (opt-in per-SKU, DM sekali pakai) —
+  dipicu oleh `afterStockAdded` → `enqueueRestockSubscriberNotifications`
+  (`packages/db/src/crud/notifications.ts`), dipanggil dari conversation
+  admin order-bot dan dari upload web-admin, di transaksi yang sama dengan
+  penambahan stok.
+  Seperti broadcast di atas, DM-nya lewat `notification_outbox` (event
+  `RESTOCK_SUBSCRIBER_NOTIFIED`); baris subscription dihapus dalam transaksi
+  yang sama dengan enqueue-nya. Hanya subscriber dengan Telegram terhubung
+  dan tidak banned yang dihitung/dikirimi (`actionableSubscriberWhere`).
 
 ## 7. Sold count — agregat baca, bukan counter tersimpan
 

@@ -129,10 +129,12 @@ kartu produk storefront (badge "stok menipis" di bawah
 
 `RestockSubscription` (unique `(userId, productId)`) — pelanggan
 "berlangganan" notifikasi saat stok produk tertentu kembali tersedia.
-**Bukan cron** — `notifyRestockSubscribers(ctx, productId)`
-(`apps/order-bot/src/handlers/admin.ts`) dipanggil **langsung setelah admin
-menambah stok** lewat panel/bot. Sekali-pakai: subscription row dihapus
-(`deleteMany`) begitu notifikasi terkirim, jadi pelanggan harus subscribe
-ulang untuk restock berikutnya. Kirim langsung via `ctx.api.sendMessage`
-(bukan lewat `notification_outbox`) — perhatikan ini satu-satunya jalur
-notifikasi di luar outbox yang ditemukan di codebase.
+**Bukan cron** — `afterStockAdded(db, denominationId, added, adminId)`
+(`packages/db/src/crud/notifications.ts`) dipanggil **langsung setelah admin
+menambah stok** (bot maupun web-admin) bila `added > 0`. Ia memanggil
+`enqueueRestockSubscriberNotifications`: dalam satu transaksi, subscriber
+yang actionable (Telegram terhubung, tidak banned) dienqueue ke
+`notification_outbox` (event `RESTOCK_SUBSCRIBER_NOTIFIED`) dan subscription
+row-nya dihapus — sekali-pakai, pelanggan harus subscribe ulang untuk restock
+berikutnya. Subscriber web-only tidak dihitung ("Restock requests" di admin)
+maupun dikirimi.

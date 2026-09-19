@@ -739,11 +739,13 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
-    if (denom?.isActive) {
-      await subscribeToRestock(prisma, customer.userId, denom.id);
-    }
     // The SPA bounces back to the parent product detail (slug URL).
-    return reply.send({ ok: true, redirect: denom ? `/p/${denom.product.slug}` : "/" });
+    const redirect = denom ? `/p/${denom.product.slug}` : "/";
+    if (!denom?.isActive) return reply.send({ ok: false, result: "unavailable", redirect });
+    // Restock DMs go out over Telegram, so a web-only account can never be served.
+    if (customer.user.telegramId == null) return reply.send({ ok: false, result: "needs_telegram", redirect });
+    const isNew = await subscribeToRestock(prisma, customer.userId, denom.id);
+    return reply.send({ ok: true, result: isNew ? "subscribed" : "already", redirect });
   });
 
   // ---- Settings ----

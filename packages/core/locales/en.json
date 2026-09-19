@@ -246,6 +246,8 @@
   "error.ledger_transaction_not_found": "There is no ledger transaction {financialTransactionId} to reverse.",
   "error.ledger_cannot_reverse_a_reversal": "Ledger transaction {financialTransactionId} is itself a reversal, so it cannot be reversed — post the event again instead.",
   "error.ledger_already_reversed": "Ledger transaction {financialTransactionId} has already been cancelled by reversal {reversalId}.",
+  "error.settlement_amounts_invalid": "A settlement batch's fee and net amount must each be a number that is not negative — this one reports a fee of {feeAmount} and a net of {netAmount} {currency}.",
+  "error.settlement_amounts_inconsistent": "This settlement batch does not add up: {netAmount} net plus {feeAmount} fee is not {grossAmount} gross {currency}.",
   "error.out_of_stock": "<b>{product}</b> is out of stock. Please try a different product.",
   "error.payment_amount_invalid": "The payment amount must be a valid, finite number greater than zero.",
   "error.payment_fee_invalid": "A payment's fee and net amount must each be a valid, finite number that is not negative.",

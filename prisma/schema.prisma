@@ -2026,7 +2026,8 @@ model LedgerAccount {
 /// the others without needing a shared prefix.
 ///
 /// `referenceType`/`referenceId` are an intentionally UNTYPED back-pointer
-/// ("order" | "payment" | "refund_execution" | "wallet_topup" | "manual"), not
+/// ("order" | "payment" | "refund_execution" | "wallet_topup" | "settlement" |
+/// "manual"), not
 /// a set of nullable FKs. A ledger is a general journal: it must be able to
 /// record an event against anything, including a purely manual adjustment with
 /// no domain row at all, and a column-per-domain shape would need a new
@@ -2046,7 +2047,8 @@ model FinancialTransaction {
   /// WALLET_DEPOSIT | WALLET_WITHDRAWAL | REFUND | REVERSAL | ADJUSTMENT | FEE
   /// | SETTLEMENT. Free String, not a native Prisma enum.
   type           String
-  /// "order" | "payment" | "refund_execution" | "wallet_topup" | "manual". See
+  /// "order" | "payment" | "refund_execution" | "wallet_topup" | "settlement" |
+  /// "manual". See
   /// this model's doc comment for why this pair is untyped.
   referenceType  String   @map("reference_type")
   referenceId    Int      @map("reference_id")

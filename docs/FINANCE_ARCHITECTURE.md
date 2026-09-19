@@ -882,7 +882,7 @@ authoritative reasoning, and copying it here would create a second copy to drift
 Recorded so they are not rediscovered as new findings. None is a defect
 introduced by the hardening pass.
 
-**1. No `FEE` ledger posting exists, on any rail — by design.**
+**1. No per-payment `FEE` ledger posting exists, on any rail — by design.**
 No gateway in this system reports a real, per-transaction fee figure. The only
 fee-shaped data anywhere is TokoPay's `computeQrisAdminFee`
 (`packages/core/src/payments/tokopay.ts:98`) — a **locally estimated** constant
@@ -897,9 +897,18 @@ keeps its real, unknown cut out of the buyer's gross), or fabricate an entry
 from a number that is not a transaction fact. So `payment_fee.idr` /
 `payment_fee.usdt` (`crud/ledgerAccounts.ts:133`, `:139`) and
 `FinancialTransactionType.FEE` exist in the chart of accounts and are
-**legitimately unused** until a real gateway-reported fee figure exists. That is
-honest incompleteness, not a gap to paper over. See `crud/tokopay.ts:223-224`,
-which says so at the call site.
+**legitimately unused** at payment time until a real gateway-reported fee figure
+exists. That is honest incompleteness, not a gap to paper over. See
+`crud/tokopay.ts:223-224`, which says so at the call site.
+
+There is one place a real, provider-reported fee figure does exist, and it is not
+a `Payment`: `Settlement.feeAmount` is read off the provider's own statement by
+the admin entering the batch. `postSettlementPosting`
+(`packages/db/src/crud/ledgerPostings.ts`) books it as the fee leg of a
+`SETTLEMENT` posting — `Dr cash` (net) + `Dr payment_fee` (fee) / `Cr
+provider_clearing` (gross). That is still not a `FEE` transaction, and the
+distinction is the whole point: a reported amount, at the moment the provider
+actually kept it, rather than an estimate attached to each order. See gap 6.
 
 **2. `Payment.netAmount == Payment.amount` on TokoPay, and that is correct.**
 `netAmount` is documented as "`gross paid − fee`", not "`amount − fee`".
@@ -939,6 +948,49 @@ whole FX group — the spread, the three sanity-band figures and both staleness
 levers — is rendered in the "Exchange Rates" card next to the rate itself rather
 than falling through to "Other Settings". Every setting in the table below is now
 either admin-editable or explicitly internal.
+
+**6. Settlement ingestion does not exist, so `cash.*` and `provider_clearing.*`
+are not yet a cash position.** The `Settlement`/`SettlementTransaction` models
+were shipped as schema only — nothing in this codebase writes a row to either,
+and there is no admin route, importer or job that would. The accounting side of
+that gap is now closed: `postSettlementPosting`
+(`packages/db/src/crud/ledgerPostings.ts`) posts `Dr cash.<ccy>` (net) + `Dr
+payment_fee.<ccy>` (fee) / `Cr provider_clearing.<ccy>` (gross) under
+`settlement:{id}`, and it refuses a batch whose `netAmount + feeAmount` does not
+equal its `grossAmount` rather than posting two incompatible claims. But it has
+no caller, so until one exists:
+
+- `provider_clearing.*` is debited by every settled order and top-up and credited
+  by nothing, and therefore **grows without bound**;
+- `cash.*` is debited by nothing and credited by each `MANUAL_TRANSFER` refund,
+  and therefore reads **monotonically negative**;
+- `refund_clearing.*` is posted by nothing in either direction and reads a true
+  zero — deliberately, not as a second missing posting. A refund payout here is
+  one event, not approve-then-pay, so there is no interval for a clearing account
+  to describe, and a `Dr refund_clearing` drain added to the payout alone would
+  drive the account negative. See `CHART_OF_ACCOUNTS`' doc comment
+  (`crud/ledgerAccounts.ts`).
+
+Every other account is fully posted and can be read as it stands
+(`sales_revenue.*`, `wallet_liability.*`, `adjustment.*`,
+`referral_expense.usdt`, and `payment_shortfall.*` from gap 7). `trialBalance`
+and `getAccountBalance` (`crud/ledger.ts`) carry this same warning at the point
+of use, because they are where a reader would otherwise trust the number.
+
+**7. Underpaid-but-delivered orders posted at the full order total before
+2026-09-19.** `deliverUnderpaidOrder` ("deliver anyway") books the order's full
+total as `sales_revenue` — correctly; the shop earned the sale it chose to
+honour — but only the amount that actually arrived is a receivable from the
+gateway. The shortfall the operator absorbed is now booked to
+`payment_shortfall.<ccy>` (EXPENSE, both currencies), so the three legs are `Dr
+provider_clearing` (received) + `Dr payment_shortfall` (shortfall) / `Cr
+sales_revenue` (total). Postings made **before** that change put the whole total
+into `provider_clearing` with no expense leg, which overstates the receivable by
+each absorbed shortfall. Those rows are not rewritten — the ledger is append-only
+— and `reconcileLedger` reports the same shape as a
+`LEDGER_POSTING_AMOUNT_MISMATCH` finding, so the affected orders are findable;
+each can be corrected with `reverseFinancialTransaction` and re-posted, or left
+as documented history.
 
 ---
 

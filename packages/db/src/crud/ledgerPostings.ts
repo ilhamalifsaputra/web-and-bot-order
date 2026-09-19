@@ -6,10 +6,10 @@
  * `crud/ledger.ts` owns HOW a posting is written (balanced, idempotent,
  * append-only) and is the ledger's only writer. This file owns WHAT to write:
  * for an order payment, a wallet top-up (settled in full, or credited short when
- * the money arrived short), a manual adjustment, a referral commission and the
- * four ways money flows back toward a customer, it turns the event into a list
- * of debit/credit legs and hands them to `postFinancialTransaction`. Nothing here
- * writes a ledger row itself.
+ * the money arrived short), a provider settlement batch, a manual adjustment, a
+ * referral commission and the four ways money flows back toward a customer, it
+ * turns the event into a list of debit/credit legs and hands them to
+ * `postFinancialTransaction`. Nothing here writes a ledger row itself.
  *
  * Why one module rather than a helper inside each caller: three of these events
  * are raised from more than one place (an order payment settles through both
@@ -42,16 +42,21 @@
  *    means this file built a wrong entry list, which is a bug to surface rather
  *    than an event to skip.
  * 3. **Idempotency keys are derived, never invented per call site**:
- *    `order:{orderId}:payment`, `order:{orderId}:topup`, and
- *    `wallet:{walletTransactionId}` for everything keyed off a wallet movement.
+ *    `order:{orderId}:payment`, `order:{orderId}:topup`, `settlement:{settlementId}`,
+ *    and `wallet:{walletTransactionId}` for everything keyed off a wallet movement.
  *    A retried webhook or a double-tapped admin button re-derives the same key
  *    and `postFinancialTransaction` returns the first posting.
  *
- * Deliberately NOT here: a FEE posting for any rail. `Payment.providerTransactionId`
- * is wired (each rail handler stamps its own gateway transaction id), but
- * `Payment.fee` stays null — none of this shop's six gateways reports a real fee
- * figure, so there is no fee amount to post and never has been; this is not a
- * follow-up task, it is the correct state for as long as that stays true.
+ * Deliberately NOT here: a per-payment FEE posting for any rail.
+ * `Payment.providerTransactionId` is wired (each rail handler stamps its own
+ * gateway transaction id), but `Payment.fee` stays null — none of this shop's six
+ * gateways reports a real per-transaction fee figure, so there is no fee amount to
+ * post at payment time and never has been; this is not a follow-up task, it is the
+ * correct state for as long as that stays true. A provider's fee IS booked where a
+ * real figure exists, which is a settlement batch an admin entered off the
+ * provider's own statement (`postSettlementPosting`) — that is the fee leg of a
+ * SETTLEMENT, not a FEE transaction, and the distinction is the difference between
+ * a reported amount and an estimated one.
  * Reversals are absent from this file too, but they do EXIST:
  * `reverseFinancialTransaction` (crud/ledger.ts) mirrors a posting's own entries,
  * so it needs no account map of its own and belongs with the writer rather than
@@ -64,7 +69,7 @@ import {
   OrderCurrency,
   RefundExecutionMethod,
 } from "@app/core/enums";
-import { AppError } from "@app/core/errors";
+import { AppError, ValidationError } from "@app/core/errors";
 import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { Decimal, ZERO } from "@app/core/money";
@@ -105,8 +110,8 @@ const NOT_BY_HAND =
  * crediting and admin wallet adjustments, so letting the error propagate means a
  * shop that deployed without running the seed would refuse to DELIVER PAID
  * ORDERS and refuse to credit top-ups whose money has already arrived. A missing
- * bookkeeping row is recoverable (seed the chart, post the backlog by hand); a
- * buyer who paid and got nothing is not.
+ * bookkeeping row is recoverable (seed the chart, then re-post the backlog with
+ * `pnpm backfill-ledger-history`); a buyer who paid and got nothing is not.
  *
  * So this is convention #2 above applied to the one failure mode that is an
  * operator or deploy omission rather than a money error. Everything else
@@ -162,6 +167,17 @@ const walletKey = (walletTransactionId: number): string => `wallet:${walletTrans
  */
 const refundExecutionKey = (refundExecutionId: number): string =>
   `refund_execution:${refundExecutionId}`;
+
+/**
+ * A provider payout batch's key: the `Settlement` row is the one thing that
+ * exists exactly once per batch, and a batch is what actually moves money from
+ * `provider_clearing` into `cash`. Deliberately NOT keyed on
+ * `batchReference` — that column is admin-typed free text from an external
+ * system and is explicitly not unique (see the model's own doc comment), so two
+ * genuinely different batches can share one, and a provider reusing its own
+ * statement id would silently swallow the second batch as a replay of the first.
+ */
+const settlementKey = (settlementId: number): string => `settlement:${settlementId}`;
 
 /** The subset of an order every posting here needs. Deliberately structural. */
 export interface PostableOrder {
@@ -371,6 +387,169 @@ export async function postOrderPaymentPosting(
       entries,
     },
     `the payment of order ${order.orderCode}`,
+  );
+}
+
+/** The subset of a `Settlement` row this posting needs. Deliberately structural. */
+export interface PostableSettlement {
+  id: number;
+  /** `PaymentMethod` value — named in the description so an admin recognises the batch. */
+  provider: string;
+  /** The provider's own statement/payout id, or null. Admin-typed free text. */
+  batchReference?: string | null;
+  currency: string;
+  /** What the provider collected from buyers in this batch, before its cut. */
+  grossAmount: Decimal.Value;
+  /** The provider's total cut. Zero is a real answer here, not "unknown". */
+  feeAmount: Decimal.Value;
+  /** What actually landed in the shop's own account. */
+  netAmount: Decimal.Value;
+  /** When the provider settled the batch (UTC) — this posting's `occurredAt`. */
+  settlementDate: Date;
+}
+
+/**
+ * A provider paying out a batch: the money a gateway had collected from buyers
+ * and owed the shop finally lands in the shop's own account, minus the
+ * provider's cut.
+ *
+ * `Dr cash.<ccy>` (net) + `Dr payment_fee.<ccy>` (fee) / `Cr
+ * provider_clearing.<ccy>` (gross). This is the posting that makes the two
+ * accounts either side of it mean what their doc comments say they mean:
+ * `provider_clearing.*` is a receivable that DRAINS when the provider pays, and
+ * `cash.*` is money actually settled into the shop's own account. Without it,
+ * every sale debits `provider_clearing` and nothing ever credits it, while
+ * `cash.*` is only ever debited by a `MANUAL_TRANSFER` refund — so the account
+ * named "Cash" goes monotonically NEGATIVE while the receivable grows without
+ * bound. That is the misstatement decision D1 exists to close (see
+ * `trialBalance`'s own doc comment in crud/ledger.ts).
+ *
+ * The fee leg is where `payment_fee.*` finally has a real amount to hold, and it
+ * is a genuine one rather than the estimate `FEE` postings were rejected over
+ * (see this file's module comment, and known gap 1 in docs/FINANCE_ARCHITECTURE.md):
+ * `Settlement.feeAmount` is a figure an admin read off the provider's own
+ * statement, not a locally computed guess. That is the whole difference, and it
+ * is why the fee belongs on THIS posting and not on the order payment.
+ *
+ * ## NO PRODUCTION CALLER TODAY
+ *
+ * Nothing in this codebase creates a `Settlement` or `SettlementTransaction`
+ * row: there is no admin route, no importer and no job — the models were
+ * shipped as schema only, and settlement ingestion was deliberately deferred by
+ * the Financial Ledger plan. So this function is exported and tested but
+ * unreached, and `cash.*`/`provider_clearing.*` still read as described above
+ * until an ingestion path calls it. It ships now rather than with that path
+ * because the account mapping is the part that must not be invented twice, and
+ * because the balance-read doc comments had to stop claiming a gap that has no
+ * stated shape. Wire it at the moment a `Settlement` row is written, in the same
+ * transaction, like every other posting here.
+ *
+ * ## What it refuses
+ *
+ * `netAmount` is STORED rather than derived (the model says so on purpose, so a
+ * provider's own arithmetic can be recorded verbatim), which means a row can
+ * hold three figures that do not add up. This posting refuses that row instead
+ * of posting it: net + fee != gross is not a bookkeeping preference, it is two
+ * incompatible claims about one batch, and the only shapes available here are to
+ * refuse it or to pick one figure to believe. `postFinancialTransaction` would
+ * reject it anyway as `error.ledger_unbalanced`; refusing here names the three
+ * amounts that disagree instead of reporting a debit total against a credit
+ * total, which is what an admin fixing a typo needs to see.
+ *
+ * It THROWS for that, unlike the "log and skip" convention the rest of this file
+ * follows, and the difference is exactly convention #2's boundary: those
+ * functions run after a buyer's money has already moved, where refusing would
+ * strand a paid order over a bookkeeping gap. A settlement batch is a record an
+ * admin is entering right now, and the honest response to an inconsistent entry
+ * is to reject the entry.
+ *
+ * A zero fee posts no fee leg and a zero net posts no cash leg (entry amounts
+ * must be strictly positive), so a batch the provider swallowed entirely still
+ * posts correctly as a one-sided-looking but balanced pair of legs. A gross of
+ * zero has nothing to settle at all and is skipped with a log.
+ *
+ * `occurredAt` is the batch's own `settlementDate`, never now: financial
+ * reporting for a period reads `occurredAt`, and an admin entering last week's
+ * statement today must not move that money into this week.
+ */
+export async function postSettlementPosting(
+  db: Db,
+  settlement: PostableSettlement,
+): Promise<FinancialTransaction | null> {
+  const batch = settlement.batchReference?.trim()
+    ? `${settlement.provider} batch ${settlement.batchReference.trim()}`
+    : `${settlement.provider} settlement #${settlement.id}`;
+  const context = `the ${batch}`;
+
+  const gross = q4(new Decimal(settlement.grossAmount));
+  const fee = q4(new Decimal(settlement.feeAmount));
+  const net = q4(new Decimal(settlement.netAmount));
+
+  if (!gross.greaterThan(0)) {
+    logger.warn(
+      `Recorded no ledger posting for ${context} because its gross amount is zero or negative, so there is no money in transit for it to settle. A settlement batch with no value should not have been recordable, so whichever path wrote it is worth investigating.`,
+    );
+    return null;
+  }
+  if (fee.isNegative() || net.isNegative()) {
+    throw new ValidationError("error.settlement_amounts_invalid", {
+      grossAmount: gross.toString(),
+      feeAmount: fee.toString(),
+      netAmount: net.toString(),
+      currency: settlement.currency,
+    });
+  }
+  if (!net.plus(fee).equals(gross)) {
+    // Compared with Decimal.equals on values already quantized to this repo's 4
+    // places by `q4` above, so this is `moneyEq` in effect and cannot fire on a
+    // representation artefact in the 5th decimal.
+    throw new ValidationError("error.settlement_amounts_inconsistent", {
+      grossAmount: gross.toString(),
+      feeAmount: fee.toString(),
+      netAmount: net.toString(),
+      currency: settlement.currency,
+    });
+  }
+
+  const entries: LedgerEntryInput[] = [];
+  const described: string[] = [];
+  if (net.greaterThan(0)) {
+    entries.push({
+      accountCode: `cash.${suffix(settlement.currency)}`,
+      direction: LedgerDirection.DEBIT,
+      amount: net,
+      currency: settlement.currency,
+    });
+    described.push(`${net.toString()} ${settlement.currency} landed in the shop's own account`);
+  }
+  if (fee.greaterThan(0)) {
+    entries.push({
+      accountCode: `payment_fee.${suffix(settlement.currency)}`,
+      direction: LedgerDirection.DEBIT,
+      amount: fee,
+      currency: settlement.currency,
+    });
+    described.push(`${fee.toString()} ${settlement.currency} was the provider's cut`);
+  }
+  entries.push({
+    accountCode: `provider_clearing.${suffix(settlement.currency)}`,
+    direction: LedgerDirection.CREDIT,
+    amount: gross,
+    currency: settlement.currency,
+  });
+
+  return postOrSkipMissingAccount(
+    db,
+    {
+      type: FinancialTransactionType.SETTLEMENT,
+      referenceType: "settlement",
+      referenceId: settlement.id,
+      idempotencyKey: settlementKey(settlement.id),
+      description: `Settled ${gross.toString()} ${settlement.currency} of ${settlement.provider} takings for ${batch}: ${described.join(", and ")}.`,
+      occurredAt: settlement.settlementDate,
+      entries,
+    },
+    context,
   );
 }
 

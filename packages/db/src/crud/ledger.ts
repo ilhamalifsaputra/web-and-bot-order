@@ -81,7 +81,7 @@ export interface PostFinancialTransactionArgs {
   type: string;
   /**
    * What business thing this event is about — "order" | "payment" |
-   * "refund_execution" | "wallet_topup" | "manual". A free string, not an enum,
+   * "refund_execution" | "wallet_topup" | "settlement" | "manual". A free string, not an enum,
    * matching `AuditLog.targetType`'s precedent and FinancialTransaction's own
    * "intentionally UNTYPED back-pointer" doc comment: a general journal has to
    * be able to record an event against anything, including a purely manual
@@ -870,6 +870,11 @@ function signedBalance(account: { code: string; type: string }, sums: DirectionS
  * account has no entries" and "there is no such account" are different answers,
  * and a typo'd code silently reading 0.00 would make a reconciliation report
  * look clean.
+ *
+ * Three accounts cannot be read as a cash position today, for a reason outside
+ * this function: `cash.*`, `provider_clearing.*` and `refund_clearing.*` are
+ * short the postings that would make them mean what they are named. See
+ * `trialBalance`'s doc comment below for which posting is missing and why.
  */
 export async function getAccountBalance(db: Db, accountCode: string): Promise<Decimal> {
   const account = await db.ledgerAccount.findUnique({
@@ -892,11 +897,25 @@ export async function getAccountBalance(db: Db, accountCode: string): Promise<De
  * NO PRODUCTION CALLER TODAY — exported and covered by tests, but no route, job
  * or admin page renders it yet (`reconcileLedger` uses `getAccountBalance` for
  * the one control account it checks, not this). Noted so a reader does not assume
- * an admin is looking at these numbers somewhere. Worth knowing before trusting
- * them: with no SETTLEMENT posting in the system, `cash.*` only ever goes
- * negative and `provider_clearing.*` never drains, so a trial balance rendered
- * today would show a structurally misleading cash position — see the ledger's
- * open design questions, not a bug in this function.
+ * an admin is looking at these numbers somewhere.
+ *
+ * ## `cash.*` and `provider_clearing.*` do not yet mean what their names say
+ *
+ * Worth knowing before trusting any figure this returns, and it is not a bug in
+ * this function: nothing in this codebase creates a `Settlement` row, so
+ * `postSettlementPosting` (crud/ledgerPostings.ts) — the one posting that debits
+ * `cash.*` and drains `provider_clearing.*` when a gateway actually pays out —
+ * has no caller. Until settlement ingestion exists, `provider_clearing.*` is
+ * debited by every sale and credited by nothing, so it grows without bound, while
+ * `cash.*` is debited by nothing and credited by each `MANUAL_TRANSFER` refund,
+ * so it reads monotonically NEGATIVE. Both figures are arithmetically correct
+ * given what has been posted and structurally misleading as a cash position.
+ * `refund_clearing.*` is likewise never posted at all (this shop books a refund
+ * payout as one event rather than approve-then-pay), so it reads a true zero.
+ * Every other account here — `sales_revenue.*`, `wallet_liability.*`,
+ * `adjustment.*`, `referral_expense.usdt` — is fully posted and can be read as
+ * it stands. Recorded here rather than left to be rediscovered as drift; see
+ * known gap 6 in docs/FINANCE_ARCHITECTURE.md.
  *
  * It does NOT assert that debits equal credits across accounts: that property is
  * true by construction, because `postFinancialTransaction` refuses to write an

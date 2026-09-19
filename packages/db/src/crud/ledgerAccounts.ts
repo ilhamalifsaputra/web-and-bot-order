@@ -55,9 +55,30 @@ export interface ChartOfAccountsEntry {
  * The `*_clearing` accounts are what make money-in-transit expressible at all:
  * funds a gateway has taken from the buyer but not yet paid out to us sit in
  * `provider_clearing.*` rather than being counted as `cash.*`, and an approved
- * but not-yet-paid refund sits in `refund_clearing.*`. Both are expected to
+ * but not-yet-paid refund would sit in `refund_clearing.*`. Both are expected to
  * trend back to zero; a persistent balance on one is the signal that something
  * never settled.
+ *
+ * WHAT ACTUALLY POSTS TO THEM TODAY, because the two differ and the difference
+ * matters when reading a balance:
+ *
+ * - `provider_clearing.*` is debited by every settled order, top-up and
+ *   first-time recognition of arrived cash. It is credited only by
+ *   `postSettlementPosting` (crud/ledgerPostings.ts), which has no caller —
+ *   nothing in this codebase creates a `Settlement` row yet — so today it only
+ *   ever grows. See `trialBalance`'s doc comment in crud/ledger.ts.
+ * - `refund_clearing.*` is posted by NOTHING, in either direction, and reads a
+ *   true zero. That is not an omission: this shop pays a refund out as a single
+ *   event (`executeRefund` credits the wallet or records the transfer, and
+ *   `postRefundExecutionPosting` books it straight from revenue or
+ *   `provider_clearing` to `wallet_liability` or `cash` in the same
+ *   transaction), so there is no interval between "approved" and "paid" for a
+ *   clearing account to describe. `transitionRefundStatus` reaching PROCESSING
+ *   moves a record, never money — it deliberately posts nothing. A `Dr
+ *   refund_clearing` drain bolted onto the payout alone would drive the account
+ *   NEGATIVE, since nothing ever credits it. The account stays in the chart for
+ *   the two-phase workflow a future payout queue would need; until one exists,
+ *   an empty account is the honest state.
  *
  * The two clearing purposes are NOT both typed `CLEARING`, even though that
  * type exists, because money in transit is still somebody's asset or somebody's
@@ -69,9 +90,10 @@ export interface ChartOfAccountsEntry {
  *   `cash.*`. A sale posts `Dr provider_clearing / Cr sales_revenue`, so the
  *   balance sits on the debit side.
  * - `refund_clearing.*` is a LIABILITY (credit-normal). It is money we owe a
- *   buyer once a refund is approved but before it is paid out: approval posts
- *   `Cr refund_clearing` and the payout posts `Dr refund_clearing`, so the
- *   balance sits on the credit side.
+ *   buyer once a refund is approved but before it is paid out: an approval would
+ *   post `Cr refund_clearing` and the payout `Dr refund_clearing`, so the balance
+ *   would sit on the credit side. Stated in the conditional because neither
+ *   posting exists — see the "what actually posts to them today" note above.
  *
  * Typing both as the normal-balance-agnostic `CLEARING` would leave a future
  * trial-balance or reconciliation report to guess a sign, and it would get one

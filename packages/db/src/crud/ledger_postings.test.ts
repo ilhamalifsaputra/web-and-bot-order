@@ -54,12 +54,14 @@ import {
   createWalletTopupOrder,
   creditOrderToBalance,
   creditUnderpaidTopupAnyway,
+  getAccountBalance,
   getOrder,
   markOrderUnderpaid,
   markUnderpaid,
   maybePayReferralCommission,
   postFinancialTransaction,
   postOrderPaymentPosting,
+  postSettlementPosting,
   postWalletAdjustmentPosting,
   postWalletTopupPosting,
   seedChartOfAccounts,
@@ -76,6 +78,10 @@ let sample: SampleData;
 
 /** A fixed admin id for every acting-admin argument below. */
 const ADMIN_ID = 7;
+
+/** A fixed settlement date, so a batch posting's `occurredAt` is asserted rather
+ *  than guessed — it must be the provider's own date, never the import time. */
+const SETTLED_AT = new Date("2026-09-01T00:00:00.000Z");
 
 beforeAll(async () => {
   db = await makeTestDb();
@@ -865,5 +871,179 @@ describe("wallet hold release — posts only when revenue was recognised", () =>
       where: { orderId: order.id, reason: "unfulfilled_credit" },
     });
     expect(net.toString()).toBe(new Decimal(credit.delta).toString());
+  });
+});
+
+// ── 8. Provider settlement batch ───────────────────────────────────────────
+
+/**
+ * `postSettlementPosting` (whole-branch review decision D1) — the posting that
+ * drains `provider_clearing` into `cash` when a gateway actually pays out.
+ *
+ * Driven directly rather than through a business function, unlike every other
+ * describe in this file, for a reason worth stating: there IS no business
+ * function. Nothing in this codebase writes a `Settlement` row — no route, no
+ * importer, no job — so there is no call site to drive it from, and these tests
+ * are what pins the account mapping until settlement ingestion exists. The
+ * `Settlement` rows below are therefore built with a direct `create`, which is
+ * exactly what a future ingestion path will do before calling this.
+ */
+describe("provider settlement posting (postSettlementPosting)", () => {
+  /** A recorded batch, as an admin entering a provider's statement would write it. */
+  async function recordSettlement(args: {
+    gross: string;
+    fee: string;
+    net: string;
+    currency?: string;
+    batchReference?: string | null;
+  }) {
+    return prisma.settlement.create({
+      data: {
+        provider: PaymentMethod.TOKOPAY,
+        batchReference: args.batchReference ?? "STMT-2026-09-01",
+        settlementDate: SETTLED_AT,
+        currency: args.currency ?? "IDR",
+        grossAmount: args.gross,
+        feeAmount: args.fee,
+        netAmount: args.net,
+        createdBy: ADMIN_ID,
+      },
+    });
+  }
+
+  it("posts Dr cash (net) + Dr payment_fee (fee) / Cr provider_clearing (gross)", async () => {
+    const settlement = await recordSettlement({ gross: "1000000", fee: "23500", net: "976500" });
+
+    const posted = await postSettlementPosting(prisma, settlement);
+
+    expect(posted).not.toBeNull();
+    const posting = await postingByKey(`settlement:${settlement.id}`);
+    expect(posting.id).toBe(posted!.id);
+    expect({
+      type: posting.type,
+      referenceType: posting.referenceType,
+      referenceId: posting.referenceId,
+      // The batch's own settlement date, never the moment it was keyed in: a
+      // period report reads `occurredAt`, and an admin entering last week's
+      // statement today must not move that money into this week.
+      occurredAt: posting.occurredAt.toISOString(),
+    }).toEqual({
+      type: FinancialTransactionType.SETTLEMENT,
+      referenceType: "settlement",
+      referenceId: settlement.id,
+      occurredAt: SETTLED_AT.toISOString(),
+    });
+    expect(await entriesOf(posting.id)).toEqual([
+      { code: "cash.idr", direction: "DEBIT", amount: "976500", currency: "IDR" },
+      { code: "payment_fee.idr", direction: "DEBIT", amount: "23500", currency: "IDR" },
+      { code: "provider_clearing.idr", direction: "CREDIT", amount: "1000000", currency: "IDR" },
+    ]);
+    await expectBalanced(posting.id);
+    // The admin-facing description names the provider's own statement id, which
+    // is the string an admin would search the statement for.
+    expect(posting.description).toContain("STMT-2026-09-01");
+  });
+
+  it("drains provider_clearing left behind by a settled order and moves it into cash", async () => {
+    // The property the whole decision is about, asserted against a REAL sale
+    // rather than a hand-built clearing balance.
+    const order = await makeOrderAwaitingVerification({ productId: sample.product.id });
+    await approveOrder(prisma, order.id, { adminId: ADMIN_ID });
+    const total = new Decimal(order.totalAmount).toString();
+    expect((await getAccountBalance(prisma, "provider_clearing.idr")).toString()).toBe(total);
+    expect((await getAccountBalance(prisma, "cash.idr")).toString()).toBe("0");
+
+    const settlement = await recordSettlement({ gross: total, fee: "0", net: total });
+    await postSettlementPosting(prisma, settlement);
+
+    // Received in full, nothing kept: the receivable is back to zero and the
+    // money is now in the shop's own account. Before this posting existed,
+    // `provider_clearing` could only ever grow and `cash` could only ever go
+    // negative — see trialBalance's doc comment in crud/ledger.ts.
+    expect((await getAccountBalance(prisma, "provider_clearing.idr")).toString()).toBe("0");
+    expect((await getAccountBalance(prisma, "cash.idr")).toString()).toBe(total);
+  });
+
+  it("omits the fee leg when the provider kept nothing", async () => {
+    const settlement = await recordSettlement({ gross: "500000", fee: "0", net: "500000" });
+
+    const posted = await postSettlementPosting(prisma, settlement);
+
+    // A zero fee is not an entry: ledger entry amounts are strictly positive.
+    expect(await entriesOf(posted!.id)).toEqual([
+      { code: "cash.idr", direction: "DEBIT", amount: "500000", currency: "IDR" },
+      { code: "provider_clearing.idr", direction: "CREDIT", amount: "500000", currency: "IDR" },
+    ]);
+    await expectBalanced(posted!.id);
+  });
+
+  it("omits the cash leg when the provider kept the whole batch", async () => {
+    const settlement = await recordSettlement({ gross: "80000", fee: "80000", net: "0" });
+
+    const posted = await postSettlementPosting(prisma, settlement);
+
+    expect(await entriesOf(posted!.id)).toEqual([
+      { code: "payment_fee.idr", direction: "DEBIT", amount: "80000", currency: "IDR" },
+      { code: "provider_clearing.idr", direction: "CREDIT", amount: "80000", currency: "IDR" },
+    ]);
+    await expectBalanced(posted!.id);
+  });
+
+  it("posts a USDT batch against the USDT accounts", async () => {
+    const settlement = await recordSettlement({
+      gross: "125.5",
+      fee: "0.5",
+      net: "125",
+      currency: "USDT",
+    });
+
+    const posted = await postSettlementPosting(prisma, settlement);
+
+    expect(await entriesOf(posted!.id)).toEqual([
+      { code: "cash.usdt", direction: "DEBIT", amount: "125", currency: "USDT" },
+      { code: "payment_fee.usdt", direction: "DEBIT", amount: "0.5", currency: "USDT" },
+      { code: "provider_clearing.usdt", direction: "CREDIT", amount: "125.5", currency: "USDT" },
+    ]);
+    await expectBalanced(posted!.id);
+  });
+
+  it("is idempotent under its settlement key", async () => {
+    const settlement = await recordSettlement({ gross: "1000000", fee: "23500", net: "976500" });
+
+    const first = await postSettlementPosting(prisma, settlement);
+    const second = await postSettlementPosting(prisma, settlement);
+
+    expect(second!.id).toBe(first!.id);
+    expect(await allPostings()).toHaveLength(1);
+    // And the cash position moved once, not twice — the point of the key.
+    expect((await getAccountBalance(prisma, "cash.idr")).toString()).toBe("976500");
+  });
+
+  it("refuses a batch whose net plus fee is not its gross, and posts nothing", async () => {
+    // `netAmount` is STORED rather than derived, so a row can hold three figures
+    // that contradict each other. Refused rather than posted: picking one figure
+    // to believe would record a number no statement supports.
+    const settlement = await recordSettlement({ gross: "1000000", fee: "23500", net: "900000" });
+
+    await expect(postSettlementPosting(prisma, settlement)).rejects.toMatchObject({
+      key: "error.settlement_amounts_inconsistent",
+    });
+    expect(await allPostings()).toHaveLength(0);
+  });
+
+  it("refuses a negative fee or net", async () => {
+    const settlement = await recordSettlement({ gross: "100000", fee: "-1000", net: "101000" });
+
+    await expect(postSettlementPosting(prisma, settlement)).rejects.toMatchObject({
+      key: "error.settlement_amounts_invalid",
+    });
+    expect(await allPostings()).toHaveLength(0);
+  });
+
+  it("posts nothing for a batch with no gross value", async () => {
+    const settlement = await recordSettlement({ gross: "0", fee: "0", net: "0" });
+
+    await expect(postSettlementPosting(prisma, settlement)).resolves.toBeNull();
+    expect(await allPostings()).toHaveLength(0);
   });
 });

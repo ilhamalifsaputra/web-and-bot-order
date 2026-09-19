@@ -1,17 +1,11 @@
 /**
- * Tests for buildNicknameProviderEntries (Trustance reconciliation Phase B,
- * Task 1 — extracted from apps/storefront/src/routes/apiTopup.ts's inline
- * gameId/ProviderGameMapping resolution). Follows crud/games.test.ts's
- * makeTestDb + resetDb + buildSampleData shape; games/provider_game_mappings
- * aren't wiped by the shared resetDb, so this file clears them itself in
- * beforeEach, same as games.test.ts.
- *
- * The gameId-branch cases here mirror
- * apps/storefront/test/topup-check-account.test.ts's "gameId-based
- * multi-provider (Task 9)" describe block one level down the stack (DB reads
- * only, no HTTP route/NicknameService involved) — that file is the proof the
- * extraction didn't change apiTopup.ts's observable behavior; this file is
- * the proof the extracted function itself does what its doc comment claims.
+ * Tests for resolveNicknameGate and buildNicknameProviderEntries after the
+ * KokinPay-only, catalog-auto-detecting rewrite: KokinPay is the only
+ * nickname-check provider, and which game (if any) to check is resolved
+ * from either an admin-set `Denomination.nicknameCheckGameCode` override or
+ * auto-detection of `Product.digiflazzBrand`/`name` against the static
+ * catalog (`@app/core/nickname/gameCatalog`) — no more DB-backed
+ * `Game`/`ProviderGameMapping` tables.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -20,15 +14,9 @@ import { resetDb } from "../../../../tests/helpers/sampleData";
 import {
   buildNicknameProviderEntries,
   resolveNicknameGate,
-  createGame,
-  upsertProviderGameMapping,
   setSetting,
   deleteSetting,
   KOKINPAY_API_KEY_KEY,
-  VIPRESELLER_API_ID_KEY,
-  VIPRESELLER_API_KEY_KEY,
-  MELOSTORE_API_KEY_KEY,
-  MELOSTORE_SECRET_KEY_KEY,
 } from "@app/db";
 
 let db: TestDb;
@@ -43,181 +31,133 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await resetDb(prisma);
-  // Not covered by the shared resetDb (added after it was written) — same
-  // as games.test.ts.
-  await prisma.providerGameMapping.deleteMany();
-  await prisma.game.deleteMany();
 });
 
-async function makeGame(slug: string) {
-  return createGame(prisma, { slug, name: slug });
-}
-
-describe("buildNicknameProviderEntries — gameId branch", () => {
-  it("returns one entry per enabled mapping, in ascending priority order, each carrying its mapping's gameCode", async () => {
-    const game = await makeGame("ml-priority");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "vipreseller", providerGameCode: "vip-code", priority: 1 });
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "kokinpay", providerGameCode: "kp-code", priority: 0 });
-    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
-    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
-    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
-
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
-
-    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([
-      ["kokinpay", "kp-code"],
-      ["vipreseller", "vip-code"],
-    ]);
-  });
-
-  it("includes a melostore entry when a melostore mapping is enabled and credentialed", async () => {
-    const game = await makeGame("ml-melostore");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "melostore", providerGameCode: "melo-code", priority: 0 });
-    await setSetting(prisma, MELOSTORE_API_KEY_KEY, "melo-key");
-    await setSetting(prisma, MELOSTORE_SECRET_KEY_KEY, "melo-secret");
-
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
-
-    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["melostore", "melo-code"]]);
-  });
-
-  it("excludes a disabled mapping entirely", async () => {
-    const game = await makeGame("ml-disabled");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "kokinpay", providerGameCode: "kp-code", priority: 0, enabled: false });
+describe("buildNicknameProviderEntries", () => {
+  it("returns a single kokinpay entry carrying the given gameCode when kokinpay credentials exist", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
 
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
+    const entries = await buildNicknameProviderEntries(prisma, "mobile-legends");
 
-    expect(entries).toEqual([]);
+    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["kokinpay", "mobile-legends"]]);
   });
 
-  it("skips a mapping whose provider has no credentials configured, without dropping the others", async () => {
-    const game = await makeGame("ml-no-creds");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "kokinpay", providerGameCode: "kp-code", priority: 0 });
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "vipreseller", providerGameCode: "vip-code", priority: 1 });
-    await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
-    await setSetting(prisma, VIPRESELLER_API_ID_KEY, "vip-id");
-    await setSetting(prisma, VIPRESELLER_API_KEY_KEY, "vip-key");
-
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id });
-
-    expect(entries.map((e) => e.provider.id)).toEqual(["vipreseller"]);
-  });
-
-  it("returns [] when the game has zero ProviderGameMapping rows", async () => {
-    const game = await makeGame("ml-empty");
-    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
-
-    expect(await buildNicknameProviderEntries(prisma, { gameId: game.id })).toEqual([]);
-  });
-
-  it("returns [] when every enabled mapping's provider is missing credentials", async () => {
-    const game = await makeGame("ml-all-uncredentialed");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "kokinpay", providerGameCode: "kp-code", priority: 0 });
+  it("returns [] when gameCode is set but no kokinpay credentials are configured", async () => {
     await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
 
-    expect(await buildNicknameProviderEntries(prisma, { gameId: game.id })).toEqual([]);
+    expect(await buildNicknameProviderEntries(prisma, "mobile-legends")).toEqual([]);
   });
-});
 
-describe("buildNicknameProviderEntries — legacyGameCode fallback", () => {
-  it("returns a single kokinpay entry carrying legacyGameCode when gameId is unset and kokinpay credentials exist", async () => {
+  it("returns [] when gameCode is null, without even checking credentials", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
 
-    const entries = await buildNicknameProviderEntries(prisma, { legacyGameCode: "legacy-code" });
-
-    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["kokinpay", "legacy-code"]]);
-  });
-
-  it("returns [] when gameId is unset, legacyGameCode is set, but no kokinpay credentials are configured", async () => {
-    await deleteSetting(prisma, KOKINPAY_API_KEY_KEY);
-
-    expect(await buildNicknameProviderEntries(prisma, { legacyGameCode: "legacy-code" })).toEqual([]);
-  });
-
-  it("returns [] when neither gameId nor legacyGameCode is given", async () => {
-    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
-
-    expect(await buildNicknameProviderEntries(prisma, {})).toEqual([]);
-  });
-
-  it("gameId resolving to at least one entry wins over legacyGameCode — the legacy fallback is never consulted", async () => {
-    const game = await makeGame("ml-precedence");
-    await upsertProviderGameMapping(prisma, { gameId: game.id, provider: "kokinpay", providerGameCode: "gameid-code", priority: 0 });
-    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
-
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id, legacyGameCode: "legacy-code-unused" });
-
-    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["kokinpay", "gameid-code"]]);
-  });
-
-  it("gameId given but resolving to zero entries falls through to legacyGameCode", async () => {
-    const game = await makeGame("ml-fallthrough");
-    // No ProviderGameMapping rows for this game at all.
-    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
-
-    const entries = await buildNicknameProviderEntries(prisma, { gameId: game.id, legacyGameCode: "legacy-fallback-code" });
-
-    expect(entries.map((e) => [e.provider.id, e.gameCode])).toEqual([["kokinpay", "legacy-fallback-code"]]);
+    expect(await buildNicknameProviderEntries(prisma, null)).toEqual([]);
   });
 });
 
 // ===========================================================================
 // resolveNicknameGate — the single opt-in rule shared by all 3 call sites
 // (apps/storefront/src/routes/apiTopup.ts, apps/order-bot/src/handlers/
-// checkout.ts, apps/order-bot/src/conversations/nicknameCheck.ts) after
-// Trustance reconciliation Phase B final-review Important #4. This fixture
-// matrix is the "insurance against drift" the reviewer asked for: each call
-// site now just destructures this function's return, so pinning the
-// function itself pins all 3 call sites to the same rule structurally —
-// there is no longer a second copy of the rule for a fixture to disagree
-// with.
+// checkout.ts, apps/order-bot/src/conversations/nicknameCheck.ts). Each call
+// site just destructures this function's return, so pinning the function
+// itself pins all 3 call sites to the same rule structurally.
 // ===========================================================================
 
-describe("resolveNicknameGate — shared opt-in rule fixture matrix", () => {
+describe("resolveNicknameGate", () => {
   type Fixture = Parameters<typeof resolveNicknameGate>[0];
 
-  it("game-linked + active + nicknameSupported: gameId wins, legacyGameCode carried but subordinate", () => {
+  it("override present: uses nicknameCheckGameCode verbatim, with requiresZone/requiresServer from a matching catalog entry", () => {
     const denomination = {
-      nicknameCheckGameCode: "legacy-code",
-      product: { gameId: 7, game: { isActive: true, nicknameSupported: true } },
+      nicknameCheckGameCode: "mobile-legends",
+      product: { digiflazzBrand: null, name: "Unrelated Product Name" },
     } as unknown as Fixture;
 
-    expect(resolveNicknameGate(denomination)).toEqual({ gameId: 7, legacyGameCode: "legacy-code" });
+    // mobile-legends is a known catalog code with requiresServer: true.
+    expect(resolveNicknameGate(denomination)).toEqual({
+      gameCode: "mobile-legends",
+      requiresZone: false,
+      requiresServer: true,
+    });
   });
 
-  it("game-linked but soft-disabled (isActive:false): gameId is unset, falls through to legacyGameCode", () => {
+  it("override present but not a recognized catalog code: still used verbatim, requiresZone/requiresServer default to false", () => {
     const denomination = {
-      nicknameCheckGameCode: "legacy-code",
-      product: { gameId: 7, game: { isActive: false, nicknameSupported: true } },
+      nicknameCheckGameCode: "some-hand-typed-code",
+      product: { digiflazzBrand: null, name: "Unrelated Product Name" },
     } as unknown as Fixture;
 
-    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+    expect(resolveNicknameGate(denomination)).toEqual({
+      gameCode: "some-hand-typed-code",
+      requiresZone: false,
+      requiresServer: false,
+    });
   });
 
-  it("game-linked but nicknameSupported:false: gameId is unset, falls through to legacyGameCode", () => {
+  it("override absent, brand matches a catalog entry: auto-detects from digiflazzBrand", () => {
     const denomination = {
-      nicknameCheckGameCode: "legacy-code",
-      product: { gameId: 7, game: { isActive: true, nicknameSupported: false } },
+      nicknameCheckGameCode: null,
+      product: { digiflazzBrand: "Mobile Legends (Indonesia)", name: "ML 86 Diamonds" },
     } as unknown as Fixture;
 
-    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+    expect(resolveNicknameGate(denomination)).toEqual({
+      gameCode: "mobile-legends",
+      requiresZone: false,
+      requiresServer: true,
+    });
   });
 
-  it("no game link at all: gameId is null, legacyGameCode passes through unchanged", () => {
-    const denomination = { nicknameCheckGameCode: "legacy-code", product: { gameId: null, game: null } } as unknown as Fixture;
+  it("override absent, digiflazzBrand null, name matches a catalog entry, product is Digiflazz-sourced: falls back to name", () => {
+    const denomination = {
+      nicknameCheckGameCode: null,
+      autoDeliverySource: "digiflazz",
+      product: { digiflazzBrand: null, name: "Free Fire 100 Diamonds" },
+    } as unknown as Fixture;
 
-    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: "legacy-code" });
+    expect(resolveNicknameGate(denomination)).toEqual({
+      gameCode: "free-fire",
+      requiresZone: false,
+      requiresServer: false,
+    });
   });
 
-  it("legacy-fallback only (no game link, no nicknameCheckGameCode is also handled): neither set yields both null", () => {
-    const denomination = { nicknameCheckGameCode: null, product: { gameId: null, game: null } } as unknown as Fixture;
+  it("override absent, digiflazzBrand null, name matches a catalog entry, but product is NOT Digiflazz-sourced: no name fallback (I-8 false-positive guard)", () => {
+    const denomination = {
+      nicknameCheckGameCode: null,
+      autoDeliverySource: null,
+      product: { digiflazzBrand: null, name: "Joki Mobile Legends" },
+    } as unknown as Fixture;
 
-    expect(resolveNicknameGate(denomination)).toEqual({ gameId: null, legacyGameCode: null });
+    expect(resolveNicknameGate(denomination)).toEqual({ gameCode: null, requiresZone: false, requiresServer: false });
   });
 
-  it("null/undefined denomination degrades to both unset, never throws", () => {
-    expect(resolveNicknameGate(null)).toEqual({ gameId: null, legacyGameCode: null });
-    expect(resolveNicknameGate(undefined)).toEqual({ gameId: null, legacyGameCode: null });
+  it("neither override nor a catalog match: gameCode null, requiresZone/requiresServer false", () => {
+    const denomination = {
+      nicknameCheckGameCode: null,
+      product: { digiflazzBrand: "Some Unrelated Voucher", name: "Some Unrelated Voucher" },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameCode: null, requiresZone: false, requiresServer: false });
+  });
+
+  it("override always wins over an auto-detectable brand", () => {
+    const denomination = {
+      nicknameCheckGameCode: "free-fire",
+      product: { digiflazzBrand: "Mobile Legends", name: "Mobile Legends 86 Diamonds" },
+    } as unknown as Fixture;
+
+    expect(resolveNicknameGate(denomination)).toEqual({ gameCode: "free-fire", requiresZone: false, requiresServer: false });
+  });
+
+  it("null/undefined denomination degrades to gameCode null, never throws", () => {
+    expect(resolveNicknameGate(null)).toEqual({ gameCode: null, requiresZone: false, requiresServer: false });
+    expect(resolveNicknameGate(undefined)).toEqual({ gameCode: null, requiresZone: false, requiresServer: false });
+  });
+
+  it("no product on the denomination degrades to gameCode null unless an override is set", () => {
+    expect(resolveNicknameGate({ nicknameCheckGameCode: null, product: null } as unknown as Fixture)).toEqual({
+      gameCode: null,
+      requiresZone: false,
+      requiresServer: false,
+    });
   });
 });

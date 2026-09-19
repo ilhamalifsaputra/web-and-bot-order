@@ -98,11 +98,11 @@ describe("PATCH /api/catalog/denominations/:id", () => {
     expect(audit).toBeTruthy();
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const id = await seedDenomination();
     const res = await patchJson(`/api/catalog/denominations/${id}`, null, csrf, { name: "Hacked", type: "SHARED", durationLabel: "1 Month", price: "1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.denomination.findUnique({ where: { id } }))!.name).toBe("1 Month");
   });
 
@@ -423,82 +423,6 @@ describe("PATCH /api/catalog/denominations/:id — nicknameCheckGameCode (Task 7
   });
 });
 
-describe("PATCH /api/catalog/denominations/:id — regionWarning/expectedRegionCode (Region-check Task B)", () => {
-  it("sets regionWarning independent of autoDeliverySource and of expectedRegionCode (no Digiflazz link, no live check required)", async () => {
-    const id = await seedDenomination();
-    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
-      name: "1 Month",
-      type: "SHARED",
-      durationLabel: "1 Month",
-      price: "10000",
-      regionWarning: "Hanya untuk akun region Indonesia",
-    });
-    expect(res.statusCode).toBe(200);
-    const row = await prisma.denomination.findUnique({ where: { id } });
-    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
-    expect(row!.expectedRegionCode).toBeNull();
-    expect(row!.autoDeliverySource).toBeNull();
-  });
-
-  it("sets expectedRegionCode independent of regionWarning", async () => {
-    const id = await seedDenomination();
-    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
-      name: "1 Month",
-      type: "SHARED",
-      durationLabel: "1 Month",
-      price: "10000",
-      expectedRegionCode: "ID",
-    });
-    expect(res.statusCode).toBe(200);
-    const row = await prisma.denomination.findUnique({ where: { id } });
-    expect(row!.expectedRegionCode).toBe("ID");
-    expect(row!.regionWarning).toBeNull();
-  });
-
-  it("sets both fields together", async () => {
-    const id = await seedDenomination();
-    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
-      name: "1 Month",
-      type: "SHARED",
-      durationLabel: "1 Month",
-      price: "10000",
-      regionWarning: "Hanya untuk akun region Indonesia",
-      expectedRegionCode: "ID",
-    });
-    expect(res.statusCode).toBe(200);
-    const row = await prisma.denomination.findUnique({ where: { id } });
-    expect(row!.regionWarning).toBe("Hanya untuk akun region Indonesia");
-    expect(row!.expectedRegionCode).toBe("ID");
-  });
-
-  it("trims both values and clears them to null when the request sends blank/omits them", async () => {
-    const id = await seedDenomination();
-    const setup = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
-      name: "1 Month",
-      type: "SHARED",
-      durationLabel: "1 Month",
-      price: "10000",
-      regionWarning: "  Hanya untuk akun region Indonesia  ",
-      expectedRegionCode: "  ID  ",
-    });
-    expect(setup.statusCode).toBe(200);
-    const seeded = await prisma.denomination.findUnique({ where: { id } });
-    expect(seeded!.regionWarning).toBe("Hanya untuk akun region Indonesia");
-    expect(seeded!.expectedRegionCode).toBe("ID");
-
-    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
-      name: "1 Month",
-      type: "SHARED",
-      durationLabel: "1 Month",
-      price: "10000",
-    });
-    expect(res.statusCode).toBe(200);
-    const row = await prisma.denomination.findUnique({ where: { id } });
-    expect(row!.regionWarning).toBeNull();
-    expect(row!.expectedRegionCode).toBeNull();
-  });
-});
-
 describe("PATCH /api/catalog/denominations/:id — C2: priceOverridden", () => {
   const DIGIFLAZZ_FIELDS = [
     { key: "user_id", label: { id: "Game ID", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
@@ -674,11 +598,11 @@ describe("DELETE /api/catalog/denominations/:id", () => {
     expect(audit!.details).toContain("Parent");
   });
 
-  it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and writes nothing", async () => {
     const id = await seedDenomination();
     const res = await del(`/api/catalog/denominations/${id}`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect(await prisma.denomination.findUnique({ where: { id } })).not.toBeNull();
   });
 
@@ -751,12 +675,12 @@ describe("PATCH /api/catalog/products/:id", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const category = await createCategory(prisma, "Cat");
     const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Old Name" });
     const res = await patchJson(`/api/catalog/products/${product.id}`, null, csrf, { name: "Hacked" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect((await prisma.product.findUnique({ where: { id: product.id } }))!.name).toBe("Old Name");
   });
 

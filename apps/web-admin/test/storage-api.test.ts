@@ -64,10 +64,10 @@ describe("GET /api/storage/summary", () => {
     expect(body.dbBytes).toBeGreaterThan(0);
   });
 
-  it("auth-fail: no admin session is redirected to /login", async () => {
+  it("auth-fail: no admin session gets a JSON 401", async () => {
     const res = await getJson("/api/storage/summary", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -97,10 +97,10 @@ describe("POST /api/storage/cleanup", () => {
     expect(audit!.details).toContain("broadcast image");
   });
 
-  it("auth-fail: no admin session is redirected to /login and runs no cleanup", async () => {
+  it("auth-fail: no admin session gets a JSON 401 and runs no cleanup", async () => {
     const res = await postJson("/api/storage/cleanup", null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
     expect(await prisma.auditLog.findFirst({ where: { action: "storage_cleanup" } })).toBeNull();
   });
 

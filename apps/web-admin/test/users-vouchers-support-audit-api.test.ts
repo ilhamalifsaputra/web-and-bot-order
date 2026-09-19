@@ -75,10 +75,10 @@ describe("POST /api/users/:userId/role", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson(`/api/users/${customerId}/role`, null, csrf, { role: "reseller" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -112,10 +112,10 @@ describe("POST /api/users/:userId/ban", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson(`/api/users/${customerId}/ban`, null, csrf, { banned: "1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -145,10 +145,10 @@ describe("POST /api/users/:userId/wallet", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson(`/api/users/${customerId}/wallet`, null, csrf, { delta: "1000", note: "x" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -261,10 +261,10 @@ describe("POST /api/vouchers", () => {
     expect(res.statusCode).toBe(409);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/vouchers", null, csrf, { code: "SAVE10", type: "percent", value: "10" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -324,10 +324,10 @@ describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/vouchers/1/toggle", null, csrf, { is_active: "0" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -411,11 +411,11 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("reply requires auth (anon → 303 /login)", async () => {
+  it("reply requires auth (anon → 401)", async () => {
     const ticket = await createTicket(prisma, customerId, "Help please");
     const res = await postJson(`/api/support/${ticket.id}/reply`, null, csrf, { content: "hi" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("reply rejects bad CSRF (403)", async () => {
@@ -435,10 +435,10 @@ describe("GET /api/audit", () => {
     expect(Array.isArray(body.rows)).toBe(true);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/audit", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -532,10 +532,10 @@ describe("GET /api/support", () => {
     expect(body.items.map((t) => t.id)).not.toContain(fresh.id);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/support", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -605,11 +605,11 @@ describe("GET /api/support/:ticketId", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const ticket = await createTicket(prisma, customerId, "Need help");
     const res = await get(`/api/support/${ticket.id}`, null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -634,11 +634,11 @@ describe("POST /api/support/:ticketId/priority", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const ticket = await createTicket(prisma, customerId, "Help please");
     const res = await postJson(`/api/support/${ticket.id}/priority`, null, csrf, { priority: "HIGH" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -806,11 +806,11 @@ describe("POST /api/support/bulk-action", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const t1 = await createTicket(prisma, customerId, "One");
     const res = await postJson("/api/support/bulk-action", null, csrf, { ids: [t1.id], action: "close" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -887,10 +887,10 @@ describe("GET /api/support/photo/:fileId", () => {
     expect(res.statusCode).toBe(502);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/support/photo/FAKE_FILE_ID", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -938,10 +938,10 @@ describe("GET /api/users", () => {
     expect(userWithoutOrder!.totalOrders).toBe(0);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/users", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });
 
@@ -1055,9 +1055,9 @@ describe("GET /api/wallet-transactions", () => {
     expect(ids.size).toBe(55);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await get("/api/wallet-transactions", null);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 });

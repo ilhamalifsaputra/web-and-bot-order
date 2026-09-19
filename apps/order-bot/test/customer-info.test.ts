@@ -312,6 +312,35 @@ describe("customerInfoConversation", () => {
     expect(JSON.parse(answerMsg.session.scratch.customerData as string)).toEqual([{ game_id: "GID-777" }]);
   });
 
+  it("resumes at unit index 1 (not 0) when scratch.prefilledCustomerDataUnit is seeded (nicknameCheck.ts's multi-unit handoff, final-review round 2)", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const prefilled = JSON.stringify({ game_id: "FROM-NICKNAME-CHECK" });
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: {
+        ...userSession(),
+        scratch: { pendingInfoProductId: denom.id, pendingInfoQuantity: 2, prefilledCustomerDataUnit: prefilled },
+      },
+      callbackData: `v1:buy:${denom.id}:2`,
+    }).ctx;
+    const unit2 = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "GID-2" }).ctx;
+    const conv = new FakeConversation([unit2]);
+
+    await customerInfoConversation(conv.asMyConversation(), entry);
+
+    // Starts straight at "Unit 2 of 2" — the prefilled unit already satisfied
+    // unit 1, so it's never re-prompted.
+    expect(sentIncludes(sink, "Unit 1 of 2")).toBe(false);
+    expect(sentIncludes(sink, "Unit 2 of 2")).toBe(true);
+    expect(JSON.parse(unit2.session.scratch.customerData as string)).toEqual([
+      { game_id: "FROM-NICKNAME-CHECK" },
+      { game_id: "GID-2" },
+    ]);
+    expect(entry.session.scratch.prefilledCustomerDataUnit).toBeUndefined();
+  });
+
   it("defends against a manual_with_info SKU with no configured fields by going straight to renderOrderConfirmation", async () => {
     const denom = await makeManualWithInfoDenom([]);
     const sink: SentCall[] = [];

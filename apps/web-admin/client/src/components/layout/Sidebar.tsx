@@ -9,7 +9,6 @@ import {
   FolderTree,
   Boxes,
   Tag,
-  Gamepad2,
   Users,
   MessageCircle,
   Megaphone,
@@ -75,7 +74,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/catalog", label: "Catalog", icon: Package },
       { to: "/categories", label: "Categories", icon: FolderTree },
-      { to: "/games", label: "Games", icon: Gamepad2 },
       { to: "/stock", label: "Stock", icon: Boxes, badge: "stock" },
       { to: "/flash-sales", label: "Flash Sales", icon: Zap },
       { to: "/vouchers", label: "Vouchers", icon: Tag },

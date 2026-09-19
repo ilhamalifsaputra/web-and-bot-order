@@ -19,6 +19,6 @@ export type NicknameLookupOutcome =
   | { ok: false; errorCode: NicknameErrorCode };
 
 export interface NicknameProvider {
-  readonly id: "kokinpay" | "vipreseller" | "melostore";
+  readonly id: "kokinpay";
   checkNickname(req: NicknameRequest): Promise<NicknameLookupOutcome>;
 }

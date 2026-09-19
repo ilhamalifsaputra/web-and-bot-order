@@ -18,6 +18,13 @@ function csrfToken(): string {
 const CSRF_FAILURE_BODY = "CSRF check failed";
 const STALE_SESSION_MESSAGE = "Your session was refreshed in another tab. Reload this page to continue.";
 
+/** Shown when the 2xx success body isn't valid JSON — same bug class as
+ * client.ts's `parseJsonOrThrow`: an expired session makes `currentAdmin`
+ * 303-redirect this XHR to the HTML `/login` page, which lands here as a 200
+ * OK with an HTML body, and the un-guarded `JSON.parse(body)` below used to
+ * throw a raw, unreadable `SyntaxError` straight into `uploadError`. */
+const SESSION_EXPIRED_UPLOAD_MESSAGE = "Your session may have expired. Reload the page and try again.";
+
 /** The two phases a Save actually goes through: bytes leaving the browser
  * (`sending`, driven by real upload progress), then the server doing its own
  * work — sniffing, a DB read, file unlinks, a `writeFile`, and a couple of
@@ -207,10 +214,16 @@ export function ImageUploadField({
         }
         throw new Error(body || `Upload failed (${status})`);
       }
+      let url: string;
+      try {
+        ({ url } = JSON.parse(body) as { url: string });
+      } catch {
+        setStaleSession(true);
+        throw new Error(SESSION_EXPIRED_UPLOAD_MESSAGE);
+      }
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPendingFile(null);
       setPreviewUrl(null);
-      const { url } = JSON.parse(body) as { url: string };
       onUploaded(url);
       if (showSuccessCheckmark) {
         setJustSaved(true);

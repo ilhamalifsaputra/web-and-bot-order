@@ -1608,7 +1608,14 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         await recordDigiflazzOutcome(
           prisma,
           order,
-          { kind: "terminal", reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}` },
+          {
+            kind: "terminal",
+            reason: `Digiflazz live re-check reported Gagal${result.message ? ` (${result.message})` : ""}`,
+            // Same rule as dispatchPendingDigiflazzOrders' own Gagal branch
+            // (crud/digiflazz.ts) — only a bare "Gagal" with no message
+            // triggers the reactive account/region diagnostic.
+            supplierGaveReason: Boolean(result.message),
+          },
           dispatchedAt,
         );
       } catch (err) {

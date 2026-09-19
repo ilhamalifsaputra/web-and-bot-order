@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { apiGet, apiPost, apiPatch, apiDelete, logout } from "./client";
+import { apiGet, apiPost, apiPatch, apiDelete, publicPost, logout } from "./client";
 
 beforeEach(() => {
   document.head.insertAdjacentHTML("beforeend", '<meta name="csrf-token" content="test-token">');
@@ -21,6 +21,26 @@ describe("apiGet", () => {
   it("throws when the response is not ok", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, text: async () => "{}" })));
     await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
+  });
+
+  // Reproduces the bug: fetch() follows a 303 session/setup redirect (see
+  // plugins/auth.ts and plugins/setupGate.ts) automatically, landing on a
+  // 200 OK HTML page — res.ok is true, but res.json() throws a raw
+  // SyntaxError. This is defense-in-depth for that (now server-fixed) case
+  // and any other 2xx-non-JSON edge case.
+  it("throws a clean error instead of a raw SyntaxError when a 2xx response isn't JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => {
+          throw new SyntaxError('Unexpected token \'<\', "<!doctype "... is not valid JSON');
+        },
+      })),
+    );
+    await expect(apiGet("/api/settings")).rejects.toThrow(
+      "/api/settings returned an unexpected response. Reload the page and try again.",
+    );
   });
 });
 
@@ -208,6 +228,34 @@ describe("apiDelete", () => {
     );
     await expect(apiDelete("/api/catalog/denominations/10")).rejects.toThrow(
       "Cannot delete a denomination with order history.",
+    );
+  });
+});
+
+// apiGet's own test above ("throws a clean error instead of a raw
+// SyntaxError...") reproduces the bug for one helper; every other JSON
+// helper shares the exact same `parseJsonOrThrow` guard on its success path
+// (see client.ts), so a regression in any single one of them should fail a
+// test too, not just apiGet's.
+describe("parseJsonOrThrow guard, shared by every JSON helper", () => {
+  const nonJsonRes = () => ({
+    ok: true,
+    json: async () => {
+      throw new SyntaxError('Unexpected token \'<\', "<!doctype "... is not valid JSON');
+    },
+  });
+
+  const cases: [name: string, path: string, call: (path: string) => Promise<unknown>][] = [
+    ["apiPost", "/api/settings", (path) => apiPost(path, {})],
+    ["apiPatch", "/api/settings", (path) => apiPatch(path, {})],
+    ["apiDelete", "/api/settings", (path) => apiDelete(path)],
+    ["publicPost", "/setup/restart", (path) => publicPost(path, {})],
+  ];
+
+  it.each(cases)("%s throws a clean error instead of a raw SyntaxError on a non-JSON 2xx body", async (_name, path, call) => {
+    vi.stubGlobal("fetch", vi.fn(async () => nonJsonRes()));
+    await expect(call(path)).rejects.toThrow(
+      `${path} returned an unexpected response. Reload the page and try again.`,
     );
   });
 });

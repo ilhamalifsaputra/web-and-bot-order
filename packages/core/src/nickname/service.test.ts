@@ -14,7 +14,7 @@ const REQ = { target: "123456789", zone: "1234" };
 describe("NicknameService.checkNickname", () => {
   it("returns found on the first entry and never calls the second entry's provider", async () => {
     const providerA = makeProvider("kokinpay", async () => ({ ok: true, nickname: "ProPlayerA" }));
-    const providerB = makeProvider("vipreseller", async () => ({ ok: true, nickname: "ProPlayerB" }));
+    const providerB = makeProvider("kokinpay", async () => ({ ok: true, nickname: "ProPlayerB" }));
     const service = new NicknameService([
       { provider: providerA, gameCode: "mobile-legends" },
       { provider: providerB, gameCode: "mobile-legends" },
@@ -29,7 +29,7 @@ describe("NicknameService.checkNickname", () => {
 
   it("falls through a retryable error on the first entry and finds the nickname on the second", async () => {
     const providerA = makeProvider("kokinpay", async () => ({ ok: false, errorCode: "NETWORK_ERROR" }));
-    const providerB = makeProvider("vipreseller", async () => ({ ok: true, nickname: "ProPlayerB" }));
+    const providerB = makeProvider("kokinpay", async () => ({ ok: true, nickname: "ProPlayerB" }));
     const service = new NicknameService([
       { provider: providerA, gameCode: "mobile-legends" },
       { provider: providerB, gameCode: "mobile-legends" },
@@ -37,14 +37,14 @@ describe("NicknameService.checkNickname", () => {
 
     const result = await service.checkNickname(REQ);
 
-    expect(result).toEqual({ status: "found", nickname: "ProPlayerB", providerId: "vipreseller" });
+    expect(result).toEqual({ status: "found", nickname: "ProPlayerB", providerId: "kokinpay" });
     expect(providerA.checkNickname).toHaveBeenCalledTimes(1);
     expect(providerB.checkNickname).toHaveBeenCalledTimes(1);
   });
 
   it("stops immediately on a non-retryable error and never calls the second entry", async () => {
     const providerA = makeProvider("kokinpay", async () => ({ ok: false, errorCode: "INVALID_TARGET" }));
-    const providerB = makeProvider("vipreseller", async () => ({ ok: true, nickname: "ProPlayerB" }));
+    const providerB = makeProvider("kokinpay", async () => ({ ok: true, nickname: "ProPlayerB" }));
     const service = new NicknameService([
       { provider: providerA, gameCode: "mobile-legends" },
       { provider: providerB, gameCode: "mobile-legends" },
@@ -59,8 +59,8 @@ describe("NicknameService.checkNickname", () => {
 
   it("returns not_found after all entries are exhausted with retryable errors", async () => {
     const providerA = makeProvider("kokinpay", async () => ({ ok: false, errorCode: "TIMEOUT" }));
-    const providerB = makeProvider("vipreseller", async () => ({ ok: false, errorCode: "RATE_LIMITED" }));
-    const providerC = makeProvider("melostore", async () => ({ ok: false, errorCode: "PROVIDER_UNAVAILABLE" }));
+    const providerB = makeProvider("kokinpay", async () => ({ ok: false, errorCode: "RATE_LIMITED" }));
+    const providerC = makeProvider("kokinpay", async () => ({ ok: false, errorCode: "PROVIDER_UNAVAILABLE" }));
     const service = new NicknameService([
       { provider: providerA, gameCode: "mobile-legends" },
       { provider: providerB, gameCode: "mobile-legends" },
@@ -85,12 +85,12 @@ describe("NicknameService.checkNickname", () => {
 
   it("tries entries in array order, not by provider id", async () => {
     const callOrder: string[] = [];
-    const providerB = makeProvider("vipreseller", async () => {
-      callOrder.push("vipreseller");
+    const providerB = makeProvider("kokinpay", async () => {
+      callOrder.push("providerB");
       return { ok: false, errorCode: "TIMEOUT" };
     });
     const providerA = makeProvider("kokinpay", async () => {
-      callOrder.push("kokinpay");
+      callOrder.push("providerA");
       return { ok: true, nickname: "ProPlayerA" };
     });
     // Constructed with B first, A second.
@@ -102,6 +102,6 @@ describe("NicknameService.checkNickname", () => {
     const result = await service.checkNickname(REQ);
 
     expect(result).toEqual({ status: "found", nickname: "ProPlayerA", providerId: "kokinpay" });
-    expect(callOrder).toEqual(["vipreseller", "kokinpay"]);
+    expect(callOrder).toEqual(["providerB", "providerA"]);
   });
 });

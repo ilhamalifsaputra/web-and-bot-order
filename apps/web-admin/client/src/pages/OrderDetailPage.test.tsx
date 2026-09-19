@@ -703,10 +703,40 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
       digiflazzAttempts: 5,
       digiflazzNextRecheckAt: null,
       digiflazzFailureDetail: "Supplier returned insufficient balance.",
+      accountDiagnosticNote: null,
     });
 
     await waitFor(() => expect(screen.getByText(/failed — needs manual review/i)).toBeInTheDocument());
     expect(screen.getByText("Supplier returned insufficient balance.")).toBeInTheDocument();
+    // No diagnostic note on this failure (Digiflazz's own message was
+    // specific enough) — the reactive-diagnostic paragraph must not render.
+    expect(screen.queryByText(/KokinPay:/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the reactive account/region diagnostic note once the SSE stream pushes one alongside a failed status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    MockEventSource.instances[0].emit({
+      orderStatus: "PENDING_VERIFICATION",
+      digiflazzStatus: "failed",
+      digiflazzAttempts: 5,
+      digiflazzNextRecheckAt: null,
+      digiflazzFailureDetail: "Digiflazz reported Gagal",
+      accountDiagnosticNote:
+        "KokinPay: akun tidak ditemukan untuk kode game mobile-legends — kemungkinan salah ID/region.",
+    });
+
+    await waitFor(() => expect(screen.getByText(/failed — needs manual review/i)).toBeInTheDocument());
+    expect(
+      screen.getByText("KokinPay: akun tidak ditemukan untuk kode game mobile-legends — kemungkinan salah ID/region."),
+    ).toBeInTheDocument();
   });
 
   // Final whole-branch review I-3 fix: the SSE merge no longer overwrites

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -275,6 +275,84 @@ describe("SettingsPage", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
+  it("wraps the FieldRow editing block in its own <form>, with Copy/Save/Cancel as explicit type=\"button\" (F-Chrome-autofill)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    const telegramCard = document.getElementById("settings-telegram") as HTMLElement;
+    // bot_token is the secret field, so its editing block also renders the
+    // Copy button — exercising all three buttons in one row.
+    await user.click(within(telegramCard).getByRole("button", { name: "Edit" }));
+
+    const secretInput = screen.getByLabelText("Order Bot token");
+    const form = secretInput.closest("form");
+    expect(form).not.toBeNull();
+    // Every button inside the form must be inside that same form (i.e. the
+    // form scopes Chrome's "nearest preceding field" search to just these
+    // controls, not all the way up to SettingsSearch), and must be
+    // type="button" so it can never become a native submit control.
+    expect(within(form as HTMLElement).getByRole("button", { name: /copy/i })).toHaveAttribute("type", "button");
+    expect(within(form as HTMLElement).getByRole("button", { name: "Save" })).toHaveAttribute("type", "button");
+    expect(within(form as HTMLElement).getByRole("button", { name: "Cancel" })).toHaveAttribute("type", "button");
+  });
+
+  it("pressing Enter in the field's input still opens the save-confirm dialog via the existing onKeyDown handler", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("Demo Shop");
+
+    // Unchanged behavior: the input's own onKeyDown still opens the
+    // save-confirm dialog on Enter — this must keep working once the
+    // input is inside a real <form>.
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText('Save "Shop name"?')).toBeInTheDocument();
+  });
+
+  it("the editing form's onSubmit backstop prevents a native submission (e.g. from implicit submission-on-Enter)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("Demo Shop");
+    const form = input.closest("form") as HTMLFormElement;
+    expect(form).not.toBeNull();
+
+    // A browser's own implicit-submission-on-Enter would dispatch a native
+    // "submit" event on the form (this is the mechanism the brief warns
+    // about — Button never defaults to type="button", and pressing Enter
+    // in a lone text field can trigger a native submit even with no
+    // type="submit" button present). Dispatch that event directly and
+    // confirm the form's onSubmit backstop prevents it, so it can never
+    // cause a page-level side effect.
+    const submitted = fireEvent.submit(form);
+    // testing-library's fireEvent returns false when preventDefault() was
+    // called by a handler — i.e. the event was NOT allowed to proceed.
+    expect(submitted).toBe(false);
   });
 
   it("toggling a payment gateway opens a confirmation dialog before persisting", async () => {
@@ -578,41 +656,6 @@ describe("SettingsPage", () => {
 
     expect(screen.getByText("Cycles are completing normally; last run 2 minute(s) ago.")).toBeInTheDocument();
     expect(screen.getByText("The poller has never completed a cycle.")).toBeInTheDocument();
-  });
-
-  it("renders the MeloStore (Nickname Check) card with both fields masked/secret, and wires its own Test Connection button", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          ...SETTINGS_DATA,
-          fields: [
-            ...SETTINGS_DATA.fields,
-            { key: "melostore_api_key", label: "MeloStore API key", secret: true, hasValue: true, value: "", needsRestart: false },
-            { key: "melostore_secret_key", label: "MeloStore secret key", secret: true, hasValue: true, value: "", needsRestart: false },
-          ],
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-    render(<SettingsPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
-
-    const melostoreCard = document.getElementById("settings-melostore") as HTMLElement;
-    expect(melostoreCard).not.toBeNull();
-    expect(within(melostoreCard).getByText("MeloStore API key")).toBeInTheDocument();
-    expect(within(melostoreCard).getByText("MeloStore secret key")).toBeInTheDocument();
-
-    // Both fields are secret — their Edit inputs render as password fields,
-    // same masking as the KokinPay/VIP-Reseller cards' credential rows.
-    const user = userEvent.setup();
-    await user.click(within(melostoreCard).getAllByRole("button", { name: "Edit" })[0]!);
-    expect(screen.getByLabelText("MeloStore API key")).toHaveAttribute("type", "password");
-
-    const testButton = within(melostoreCard).getByRole("button", { name: "Test Connection" });
-    expect(testButton).toBeEnabled();
-    await user.click(testButton);
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Test the MeloStore connection?")).toBeInTheDocument();
   });
 
   it("Export Configuration downloads the exported fields", async () => {

@@ -44,58 +44,6 @@ const PRODUCT_DETAIL = {
   },
 };
 
-// Task 12: fixture for the Linked Game picker's fetched options (GET /api/games,
-// the Task 11 api-client hook's list shape).
-const GAMES_LIST = {
-  games: [
-    {
-      id: 3,
-      slug: "mobile-legends",
-      name: "Mobile Legends",
-      category: null,
-      nicknameSupported: true,
-      requiresZone: true,
-      requiresServer: false,
-      isActive: true,
-      providerMappings: [],
-    },
-    {
-      id: 7,
-      slug: "free-fire",
-      name: "Free Fire",
-      category: null,
-      nicknameSupported: true,
-      requiresZone: false,
-      requiresServer: false,
-      isActive: true,
-      providerMappings: [],
-    },
-  ],
-};
-
-/** URL-routing fetch mock shared by the Linked Game picker tests below —
- * mirrors "moves the product to another category from the edit card"'s
- * pattern, since opening the edit card triggers useCatalog's `/api/catalog`
- * fetch (for the Category select) alongside useGames' `/api/games` fetch
- * (for the new Linked Game select), not just the product detail fetch. */
-function mockCatalogAndGamesFetch(productDetail: unknown) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = String(input);
-    const body =
-      url === "/api/games"
-        ? GAMES_LIST
-        : url === "/api/catalog"
-          ? { categories: [], products: [] }
-          : url.startsWith("/api/catalog/1") && !init?.method
-            ? productDetail
-            : { ok: true };
-    return new Response(JSON.stringify(body), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    });
-  });
-}
-
 beforeEach(() => {
   vi.restoreAllMocks();
   Element.prototype.scrollIntoView = vi.fn();
@@ -227,10 +175,10 @@ describe("ProductDetailPage", () => {
   it("deletes a denomination after confirming", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     // URL-routed (not a fixed mockResolvedValueOnce chain): ProductDetailPage
-    // fires useCatalog's `/api/catalog` and useGames' `/api/games` mount
-    // fetches alongside useProductDetail's `/api/catalog/1`, so a fixed FIFO
-    // queue of 3 Once-responses no longer lines up with the 5 real calls
-    // (2 mount fetches + product-detail load + DELETE + post-delete refetch).
+    // fires useCatalog's `/api/catalog` mount fetch alongside
+    // useProductDetail's `/api/catalog/1`, so a fixed FIFO queue of Once-
+    // responses no longer lines up with the real calls (mount fetch +
+    // product-detail load + DELETE + post-delete refetch).
     let denomsDeleted = false;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
@@ -239,8 +187,8 @@ describe("ProductDetailPage", () => {
         return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       const body =
-        url === "/api/games" || url === "/api/catalog"
-          ? { games: [], categories: [], products: [] }
+        url === "/api/catalog"
+          ? { categories: [], products: [] }
           : denomsDeleted
             ? { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, denominations: [] } }
             : PRODUCT_DETAIL;
@@ -344,140 +292,6 @@ describe("ProductDetailPage", () => {
     });
   });
 
-  // Task 10/12: a nullable "Linked Game" picker near gameVariant/gameRegion —
-  // fetches GET /api/games for its options (Task 11's useGames hook) and
-  // stores the chosen Game's id, distinct from the free-text gameVariant/
-  // gameVariantEmoji/gameRegion fields covered by the test above.
-  // Final-review fix, Finding 4: the picker must not offer an inactive game
-  // to link, EXCEPT the currently-linked one (kept visible even if it's
-  // since been deactivated), so editing an already-linked product doesn't
-  // make the existing selection disappear from the list.
-  it("excludes an inactive, non-selected game from the picker but keeps a currently-linked-but-inactive game visible", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const withLinkedInactiveGame = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameId: 9 } };
-    const gamesWithInactive = {
-      games: [
-        ...GAMES_LIST.games,
-        {
-          id: 9,
-          slug: "retired-game",
-          name: "Retired Game",
-          category: null,
-          nicknameSupported: true,
-          requiresZone: false,
-          requiresServer: false,
-          isActive: false,
-          providerMappings: [],
-        },
-        {
-          id: 12,
-          slug: "another-inactive-game",
-          name: "Another Inactive Game",
-          category: null,
-          nicknameSupported: true,
-          requiresZone: false,
-          requiresServer: false,
-          isActive: false,
-          providerMappings: [],
-        },
-      ],
-    };
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = String(input);
-      const body =
-        url === "/api/games"
-          ? gamesWithInactive
-          : url === "/api/catalog"
-            ? { categories: [], products: [] }
-            : url.startsWith("/api/catalog/1") && !init?.method
-              ? withLinkedInactiveGame
-              : { ok: true };
-      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
-    });
-
-    render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
-
-    await user.click(screen.getByRole("button", { name: /edit product/i }));
-    await user.click(screen.getByRole("combobox", { name: "Linked Game" }));
-
-    // The currently-linked game (id 9), though inactive, still appears.
-    expect(await screen.findByRole("option", { name: "Retired Game (inactive)" })).toBeInTheDocument();
-    // An unrelated inactive game (id 12, never linked) is excluded entirely.
-    expect(screen.queryByRole("option", { name: /another inactive game/i })).not.toBeInTheDocument();
-    // Active games are unaffected.
-    expect(screen.getByRole("option", { name: "Mobile Legends" })).toBeInTheDocument();
-  });
-
-  it("shows the Linked Game picker populated with the fetched games", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    mockCatalogAndGamesFetch(PRODUCT_DETAIL);
-
-    render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
-
-    await user.click(screen.getByRole("button", { name: /edit product/i }));
-    await user.click(screen.getByRole("combobox", { name: "Linked Game" }));
-
-    expect(await screen.findByRole("option", { name: "No linked game" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Mobile Legends" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Free Fire" })).toBeInTheDocument();
-  });
-
-  it("selecting a Linked Game sends its id as gameId in the PATCH body", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const fetchSpy = mockCatalogAndGamesFetch(PRODUCT_DETAIL);
-
-    render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
-
-    await user.click(screen.getByRole("button", { name: /edit product/i }));
-    await user.click(screen.getByRole("combobox", { name: "Linked Game" }));
-    await user.click(await screen.findByRole("option", { name: "Mobile Legends" }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/catalog/products/1",
-        expect.objectContaining({ method: "PATCH" }),
-      ),
-    );
-    const patch = fetchSpy.mock.calls.find(
-      ([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH",
-    )!;
-    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ gameId: 3 });
-  });
-
-  it("clears a previously-linked game back to gameId: null when 'No linked game' is picked", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    const withLinkedGame = { ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, gameId: 3 } };
-    const fetchSpy = mockCatalogAndGamesFetch(withLinkedGame);
-
-    render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
-
-    await user.click(screen.getByRole("button", { name: /edit product/i }));
-    // Sanity: the picker prefilled the previously-linked game before we clear it.
-    await waitFor(() =>
-      expect(screen.getByRole("combobox", { name: "Linked Game" })).toHaveTextContent("Mobile Legends"),
-    );
-
-    await user.click(screen.getByRole("combobox", { name: "Linked Game" }));
-    await user.click(await screen.findByRole("option", { name: "No linked game" }));
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/catalog/products/1",
-        expect.objectContaining({ method: "PATCH" }),
-      ),
-    );
-    const patch = fetchSpy.mock.calls.find(
-      ([url, init]) => url === "/api/catalog/products/1" && (init as RequestInit)?.method === "PATCH",
-    )!;
-    expect(JSON.parse(String((patch[1] as RequestInit).body))).toMatchObject({ gameId: null });
-  });
-
   it("select-all checks every denomination, and the bulk bar activates/deactivates them", async () => {
     const user = userEvent.setup();
     const TWO_DENOMS = {
@@ -570,8 +384,8 @@ describe("ProductDetailPage", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const body =
-        url === "/api/games" || url === "/api/catalog"
-          ? { games: [], categories: [], products: [] }
+        url === "/api/catalog"
+          ? { categories: [], products: [] }
           : url.startsWith("/api/catalog/1") && !init?.method
             ? PRODUCT_DETAIL
             : { ok: true };
@@ -596,8 +410,8 @@ describe("ProductDetailPage", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const body =
-        url === "/api/games" || url === "/api/catalog"
-          ? { games: [], categories: [], products: [] }
+        url === "/api/catalog"
+          ? { categories: [], products: [] }
           : url.startsWith("/api/catalog/1") && !init?.method
             ? premiumAppsProduct
             : { ok: true };
@@ -618,8 +432,8 @@ describe("ProductDetailPage", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = String(input);
       const body =
-        url === "/api/games" || url === "/api/catalog"
-          ? { games: [], categories: [], products: [] }
+        url === "/api/catalog"
+          ? { categories: [], products: [] }
           : url.startsWith("/api/catalog/1") && !init?.method
             ? PRODUCT_DETAIL
             : { ok: true };

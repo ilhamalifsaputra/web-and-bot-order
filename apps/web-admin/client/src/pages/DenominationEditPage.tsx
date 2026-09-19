@@ -40,8 +40,6 @@ interface EditableDenomination {
   autoDeliverySource: string | null;
   supplierSku: string | null;
   nicknameCheckGameCode: string | null;
-  regionWarning: string | null;
-  expectedRegionCode: string | null;
   /** Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — null until set. */
   qtyValue: number | null;
   qtyUnit: string | null;
@@ -74,9 +72,6 @@ interface ProductDetailForEdit {
     name: string;
     category: { id: number; name: string } | null;
     denominations: EditableDenomination[];
-    /** Task 10/12: the parent Product's Linked Game (null until an admin
-     * links one) — drives DeliveryTypeSection's legacy-field note below. */
-    gameId?: number | null;
   };
   statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
 }
@@ -132,8 +127,6 @@ export function DenominationEditPage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
-  const [regionWarning, setRegionWarning] = useState("");
-  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   // Compact-button quantity (Task 8/14), e.g. 86 "Diamonds" — independent of
   // every other field on this form.
   const [qtyValue, setQtyValue] = useState("");
@@ -162,8 +155,6 @@ export function DenominationEditPage() {
     setAutoDeliverySource(denomination.autoDeliverySource ?? null);
     setSupplierSku(denomination.supplierSku ?? "");
     setNicknameCheckGameCode(denomination.nicknameCheckGameCode ?? "");
-    setRegionWarning(denomination.regionWarning ?? "");
-    setExpectedRegionCode(denomination.expectedRegionCode ?? "");
     setQtyValue(denomination.qtyValue != null ? String(denomination.qtyValue) : "");
     setQtyUnit(denomination.qtyUnit ?? "");
     if (existingRule) {
@@ -194,8 +185,6 @@ export function DenominationEditPage() {
           ? { autoDeliverySource, supplierSku: supplierSku.trim() }
           : {}),
         nicknameCheckGameCode: nicknameCheckGameCode.trim() || null,
-        regionWarning: regionWarning.trim() || null,
-        expectedRegionCode: expectedRegionCode.trim() || null,
         qtyValue: qtyValue.trim() ? Number(qtyValue.trim()) : null,
         qtyUnit: qtyUnit.trim() || null,
       }),
@@ -332,11 +321,6 @@ export function DenominationEditPage() {
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
-          regionWarning={regionWarning}
-          onRegionWarningChange={setRegionWarning}
-          expectedRegionCode={expectedRegionCode}
-          onExpectedRegionCodeChange={setExpectedRegionCode}
-          productHasLinkedGame={Boolean(data?.product.gameId)}
         />
 
         <div>

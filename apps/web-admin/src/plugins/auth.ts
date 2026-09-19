@@ -104,10 +104,65 @@ export function canMutate(role: WebRole, rawPath: string): boolean {
   return underAny(path, OPS_PREFIXES) && !underAny(path, CONFIG_PREFIXES);
 }
 
-/** preHandler: reject unauthenticated requests with a 303 redirect to /login. */
+/** The message shown to an admin whose session was missing/expired at the
+ * moment of an `/api/*` call — see currentAdmin below for why this can't
+ * just redirect like a page navigation does. */
+export const SESSION_EXPIRED_MESSAGE = "Your session has expired. Reload the page and log in again.";
+
+/**
+ * Tells a real top-level browser navigation (the user's tab loading a URL —
+ * clicking a plain `<a href>`, typing a URL, a redirect target) apart from a
+ * `fetch()`/`XMLHttpRequest` call the SPA happens to make against a
+ * non-`/api` — or, here, `/api/*` — path. `Sec-Fetch-Mode: navigate` is the
+ * standard signal: browsers attach it to real navigations (including plain
+ * link clicks) but never to `fetch`/XHR unless the caller explicitly
+ * overrides it, and this repo's client (api/client.ts, ImageUploadField.tsx)
+ * never does. Older browsers that omit `Sec-Fetch-Mode` entirely fall back
+ * to `Accept`: a navigating browser sends `Accept: text/html,...`, while
+ * `fetch()` here never asks for `text/html`.
+ */
+function isBrowserNavigation(req: FastifyRequest): boolean {
+  const mode = req.headers["sec-fetch-mode"];
+  if (typeof mode === "string") return mode === "navigate";
+  const accept = req.headers.accept;
+  return typeof accept === "string" && accept.includes("text/html");
+}
+
+/**
+ * preHandler: reject unauthenticated requests.
+ *
+ * `/api/*` calls are normally JSON `fetch()`s, not page navigations —
+ * `fetch` follows a 303 automatically and lands on the HTML `/login` page
+ * with `res.ok` true, so the client's `res.json()` throws a raw, unreadable
+ * SyntaxError instead of a clean error (see
+ * apps/web-admin/client/src/api/client.ts). Those get a JSON 401 instead.
+ *
+ * The one exception: a handful of `/api/*` routes are also linked directly
+ * from real `<a href>` navigations — the export/download links on
+ * ReportsPage, SupportPage, UsersPage, StockPage, and StockProductPage. A
+ * browser tab navigating to one of those has no way to recover from a raw
+ * `{"error":...}` JSON page (no fetch call to catch the rejection), so those
+ * still need the 303 to /login like any other page load. `isBrowserNavigation`
+ * above tells the two cases apart.
+ *
+ * Non-`/api` paths always keep the 303 here, whether or not the caller is a
+ * real navigation: the SPA shell's `GET /*` catch-all (spaShell.ts) genuinely
+ * is one, while `/setup/restart` (called via `publicPost`, client.ts) and the
+ * branding/broadcast/catalog-photo upload endpoints (XHRs from
+ * ImageUploadField.tsx's `uploadWithProgress`) are fetch/XHR calls that
+ * happen to hit non-`/api` routes — those are guarded against this same
+ * expired-session bug a different way instead (`parseJsonOrThrow` in
+ * `publicPost`, and the JSON.parse guard in ImageUploadField.tsx's
+ * `confirmUpload`), since a 303 from here would just get silently followed
+ * either way.
+ */
 export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
   const data = await optionalAdmin(req);
   if (!data) {
+    const path = (req.url.split("?")[0] || req.url) ?? "/";
+    if (path.startsWith("/api/") && !isBrowserNavigation(req)) {
+      return reply.code(401).send({ error: SESSION_EXPIRED_MESSAGE });
+    }
     return reply.code(303).redirect("/login");
   }
   req.admin = data;

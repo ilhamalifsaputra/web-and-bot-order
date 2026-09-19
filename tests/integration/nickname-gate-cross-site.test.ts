@@ -36,8 +36,9 @@ import "./setup-cross-site-env";
 //      needs to complete the full wizard, just observe whether it engaged
 //      the prompt loop at all.
 //
-// Each of the 6-case unit test's existing fixture shapes in nickname.test.ts
-// stays untouched — this is additive, not a replacement.
+// This is additive to, not a replacement for, packages/db/src/crud/
+// nickname.test.ts's own resolveNicknameGate fixture matrix, which pins the
+// function's behavior in isolation.
 // ===========================================================================
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -51,11 +52,8 @@ import {
   prisma,
   createCategory,
   createCatalogProduct,
-  updateCatalogProduct,
   createDenomination,
   bulkAddStock,
-  createGame,
-  upsertProviderGameMapping,
   setSetting,
   KOKINPAY_API_KEY_KEY,
 } from "@app/db";
@@ -123,48 +121,26 @@ afterAll(async () => {
 
 /**
  * One AUTO SKU (1 stock unit) whose fixture shape is driven entirely by
- * `resolveNicknameGate`'s own inputs — a linked `Game` (with its own
- * `isActive`/`nicknameSupported`), an optional credentialed
- * `ProviderGameMapping`, and an optional legacy `nicknameCheckGameCode` —
- * mirroring packages/db/src/crud/nickname.test.ts's own fixture matrix
- * one level up the stack (the real DB rows those unit-test fixtures stand
- * in for).
+ * `resolveNicknameGate`'s own inputs — an optional `digiflazzBrand` (for
+ * catalog auto-detection, @app/core/nickname/gameCatalog) and an optional
+ * admin-set `nicknameCheckGameCode` override — mirroring packages/db/src/
+ * crud/nickname.test.ts's own fixture matrix one level up the stack (the
+ * real DB rows those unit-test fixtures stand in for).
  */
-async function makeFixtureDenom(opts: {
-  linkGame?: boolean;
-  gameActive?: boolean;
-  nicknameSupported?: boolean;
-  withMapping?: boolean;
-  legacyGameCode?: string | null;
-}) {
+async function makeFixtureDenom(opts: { digiflazzBrand?: string | null; nicknameCheckGameCode?: string | null }) {
   fixtureCounter += 1;
-  let gameId: number | null = null;
-  if (opts.linkGame) {
-    const game = await createGame(prisma, {
-      slug: `cross-site-game-${fixtureCounter}`,
-      name: `Cross Site Game ${fixtureCounter}`,
-      isActive: opts.gameActive ?? true,
-      nicknameSupported: opts.nicknameSupported ?? true,
-    });
-    gameId = game.id;
-    if (opts.withMapping) {
-      await upsertProviderGameMapping(prisma, {
-        gameId: game.id,
-        provider: "kokinpay",
-        providerGameCode: `cross-site-code-${fixtureCounter}`,
-        priority: 0,
-      });
-    }
-  }
-  const product = await createCatalogProduct(prisma, { categoryId, name: `Cross Site Product ${fixtureCounter}` });
-  if (gameId != null) await updateCatalogProduct(prisma, product.id, { gameId });
+  const product = await createCatalogProduct(prisma, {
+    categoryId,
+    name: `Cross Site Product ${fixtureCounter}`,
+    digiflazzBrand: opts.digiflazzBrand ?? null,
+  });
   const denom = await createDenomination(prisma, {
     productId: product.id,
     name: `Cross Site Denom ${fixtureCounter}`,
     type: ProductType.SHARED,
     durationLabel: "N/A",
     price: "10.00",
-    nicknameCheckGameCode: opts.legacyGameCode ?? undefined,
+    nicknameCheckGameCode: opts.nicknameCheckGameCode ?? undefined,
   });
   await bulkAddStock(prisma, denom.id, [`stock-${fixtureCounter}`]);
   return denom.id;
@@ -232,23 +208,26 @@ async function expectGateOutcomeAgrees(denominationId: number, triggers: boolean
 }
 
 describe("nickname-check gate — storefront, showOrderConfirmation, and nicknameCheck agree on the same fixture matrix", () => {
-  it("game-linked + active + nicknameSupported + credentialed mapping: all 3 sites trigger the check", async () => {
-    const denominationId = await makeFixtureDenom({ linkGame: true, withMapping: true });
+  it("nicknameCheckGameCode override set (with KokinPay credentials set): all 3 sites trigger the check", async () => {
+    const denominationId = await makeFixtureDenom({ nicknameCheckGameCode: "cross-site-legacy-code" });
     await expectGateOutcomeAgrees(denominationId, true);
   });
 
-  it("game-linked but nicknameSupported:false (even with a credentialed mapping): all 3 sites skip the check", async () => {
-    const denominationId = await makeFixtureDenom({ linkGame: true, nicknameSupported: false, withMapping: true });
-    await expectGateOutcomeAgrees(denominationId, false);
+  it("no override, but digiflazzBrand auto-detects a catalog game: all 3 sites trigger the check", async () => {
+    const denominationId = await makeFixtureDenom({ digiflazzBrand: "Mobile Legends" });
+    await expectGateOutcomeAgrees(denominationId, true);
   });
 
-  it("no game link and no legacy game code: all 3 sites skip the check (the overwhelming common case)", async () => {
+  it("no override and no catalog match: all 3 sites skip the check (the overwhelming common case)", async () => {
     const denominationId = await makeFixtureDenom({});
     await expectGateOutcomeAgrees(denominationId, false);
   });
 
-  it("no game link but a legacy nicknameCheckGameCode is configured (with KokinPay credentials set): all 3 sites trigger via the legacy fallback", async () => {
-    const denominationId = await makeFixtureDenom({ legacyGameCode: "cross-site-legacy-code" });
+  it("override wins over a non-matching digiflazzBrand: all 3 sites still trigger the check via the override", async () => {
+    const denominationId = await makeFixtureDenom({
+      digiflazzBrand: "Some Unrelated Voucher",
+      nicknameCheckGameCode: "cross-site-override-code",
+    });
     await expectGateOutcomeAgrees(denominationId, true);
   });
 });

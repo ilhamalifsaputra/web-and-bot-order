@@ -227,8 +227,8 @@ describe("branding page", () => {
 
   it("image clear requires auth", async () => {
     const res = await postJson("/api/branding/image/clear", null, csrf, { field: "favicon" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("image clear rejects bad CSRF", async () => {
@@ -251,8 +251,8 @@ describe("branding page", () => {
 
   it("text reset requires auth", async () => {
     const res = await postJson("/api/branding/text/reset", null, csrf, { key: "shop_name" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("text reset rejects bad CSRF", async () => {
@@ -411,8 +411,8 @@ describe("branding page", () => {
 
   it("POST /api/branding/text for a new key requires auth, same as shop_name", async () => {
     const res = await postJson("/api/branding/text", null, csrf, { key: "email_brand_color", value: "#112233" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("POST /api/branding/text for a new key rejects bad CSRF, same as shop_name", async () => {

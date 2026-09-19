@@ -73,6 +73,10 @@ model User {
   voucherRedemptions    VoucherRedemption[]
   reviewsRepliedAsAdmin Review[]              @relation("ReviewRepliedByAdmin")
   adminTasksAssigned    AdminTask[]           @relation("AdminTaskAssignee")
+  stockItemsAddedAsAdmin      StockItem[]      @relation("StockItemAddedByAdmin")
+  stockItemsDeletedAsAdmin    StockItem[]      @relation("StockItemDeletedByAdmin")
+  stockItemEventsAsActorAdmin StockItemEvent[] @relation("StockItemEventActorAdmin")
+  stockItemEventsAsCustomer   StockItemEvent[] @relation("StockItemEventActorCustomer")
 
   @@index([role, createdAt], map: "ix_users_role_created_at")
   @@index([lastSeenAt], map: "ix_users_last_seen_at")
@@ -186,59 +190,6 @@ model Category {
   @@map("categories")
 }
 
-/// Top-level catalog entity for nickname-checkable games (e.g. Mobile Legends,
-/// COD, PUBG). One Game may be sold through multiple providers, each with a
-/// different provider-specific code — that mapping lives in ProviderGameMapping.
-/// Task 2 will add Product.gameId to tie catalog products to a game.
-model Game {
-  id                Int      @id @default(autoincrement())
-  slug              String   @unique(map: "ix_games_slug")
-  name              String
-  /// Optional category/classification within the game system (e.g. "multiplayer", "battle_royale").
-  category          String?
-  /// Whether this game supports buyer nickname checks (third-party API lookups).
-  nicknameSupported Boolean  @default(true) @map("nickname_supported")
-  /// Whether this game requires a zone/region code from the buyer at checkout.
-  requiresZone      Boolean  @default(false) @map("requires_zone")
-  /// Whether this game requires a server/realm code from the buyer at checkout.
-  requiresServer    Boolean  @default(false) @map("requires_server")
-  /// Soft-enabled toggle; false removes the game from storefront/admin catalogs.
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-
-  providerMappings ProviderGameMapping[]
-  products         Product[]
-
-  @@map("games")
-}
-
-/// Maps a Game to a provider's game code, supporting multi-provider catalog
-/// routing. Each row pairs a game with a provider (kokinpay, vipreseller, melostore)
-/// and the provider's internal game code; enabled + priority govern which providers
-/// are tried and in what order.
-model ProviderGameMapping {
-  id               Int      @id @default(autoincrement())
-  gameId           Int      @map("game_id")
-  /// Provider identifier: "kokinpay" | "vipreseller" | "melostore".
-  provider         String
-  /// Provider's internal code for this game (used in API calls to that provider).
-  providerGameCode String   @map("provider_game_code")
-  /// false temporarily disables this provider for a game (soft-disable without deleting).
-  enabled          Boolean  @default(true)
-  /// Ascending priority order; 0 = highest priority, tried first. Used to rank
-  /// which provider's API is queried for nickname checks and order fulfillment.
-  priority         Int      @default(0)
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
-
-  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-
-  @@unique([gameId, provider], map: "ix_provider_game_mappings_game_provider")
-  @@index([gameId, enabled, priority], map: "ix_provider_game_mappings_game_priority")
-  @@map("provider_game_mappings")
-}
-
 /// Mid-tier of the catalog (Category → **Product** → Denomination). The
 /// customer-facing item (e.g. "CapCut Pro"); carries image/description/nav only.
 /// NO price, NO stock — those live on each child Denomination (the sellable SKU).
@@ -304,9 +255,8 @@ model Product {
   /// Admin-set free-text region/country label (e.g. "🇮🇩 Indonesia") — any
   /// flag glyph is part of this string, unlike gameVariantEmoji, since a
   /// region label is only ever rendered once, at the region picker.
-  /// Independent of Denomination.expectedRegionCode (machine ISO-ish code
-  /// checked against a live supplier API) and of the Digiflazz Product-name
-  /// "(Region)" suffix — neither backfills this field.
+  /// Independent of the Digiflazz Product-name "(Region)" suffix, which does
+  /// not backfill this field.
   gameRegion              String?  @map("game_region")
   sortOrder               Int      @default(0) @map("sort_order")
   isActive                Boolean  @default(true) @map("is_active")
@@ -316,12 +266,6 @@ model Product {
   /// Delete, which is refused once it has denominations.
   isArchived              Boolean  @default(false) @map("is_archived")
   createdAt               DateTime @default(now()) @map("created_at")
-  /// Nullable FK to Game — links this Product to the canonical Game record
-  /// that drives the multi-provider nickname-check (NicknameService). Null =
-  /// not yet migrated; the storefront falls back entirely to the legacy
-  /// per-Denomination nicknameCheckGameCode/expectedRegionCode fields, which
-  /// keep working completely unchanged.
-  gameId                  Int?     @map("game_id")
   /// Detection Engine (packages/core/src/detection) output, cached on the
   /// Product row so read paths never call detect() inline. Null = never run
   /// / not yet classified. All five fields are written together by the
@@ -341,13 +285,11 @@ model Product {
   detectionStamp          String?  @map("detection_stamp")
 
   category        Category         @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
-  game            Game?            @relation(fields: [gameId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
   supportTickets  SupportTicket[]
 
   @@index([categoryId], map: "ix_products_category_id")
-  @@index([gameId], map: "ix_products_game_id")
   @@index([detectionProductKey], map: "ix_products_detection_product_key")
   @@map("products")
 }
@@ -379,32 +321,18 @@ model Denomination {
   /// Null for every non-Digiflazz SKU — set only when autoDeliverySource
   /// points at the Digiflazz supplier.
   supplierSku           String?   @map("supplier_sku")
-  /// KokinPay's game_code for this denomination's title (e.g. "mobile-legends"),
-  /// used to offer a live nickname lookup on the buyer's account field before
-  /// they pay. Null = no live check for this product — the field still works
-  /// as plain text, never blocks the buyer. Admin copies this value from
-  /// KokinPay's own game-code list (api.kokinpay.com/docs/kode-game).
+  /// Manual override for the auto-detected nickname-check game (KokinPay's
+  /// game_code, e.g. "mobile-legends") — normally the engine auto-detects the
+  /// game from Product.digiflazzBrand against the static catalog
+  /// (packages/core/src/nickname/gameCatalog.ts); set this only when that
+  /// auto-detection is wrong or absent for this SKU. Null = pure auto-detect,
+  /// still the common case — the field still works as plain text either way,
+  /// never blocks the buyer. Admin copies this value from KokinPay's own
+  /// game-code list (api.kokinpay.com/docs/kode-game).
   /// Independent of autoDeliverySource/supplierSku — this is a storefront UX
   /// enhancement, not a fulfilment link, so it applies to any manual_with_info
   /// product regardless of who (if anyone) auto-fulfils it.
   nicknameCheckGameCode String?   @map("nickname_check_game_code")
-  /// Admin-authored short warning shown near the account field on the
-  /// storefront's instant-buy page (e.g. "Hanya untuk akun region
-  /// Indonesia") — a manual mitigation for the wrong-region-variant problem
-  /// (this SKU/Product may be a region-specific split of a game that has
-  /// multiple Digiflazz SKUs per region, and nothing else in the catalog
-  /// enforces which one a buyer picks). Independent of every other field on
-  /// this model — works even with no live nickname/region check configured.
-  regionWarning         String?   @map("region_warning")
-  /// The region this SKU is FOR, as an ISO-3166-alpha2-ish code (e.g. "ID"
-  /// for Indonesia) — compared against VIP-Reseller's live region-check
-  /// result (packages/core/src/suppliers/vipreseller.ts, only returns
-  /// country data for some games, e.g. Mobile Legends) to flag a mismatch on
-  /// the storefront. Null = no automatic region check for this SKU (the
-  /// live check is skipped silently, same graceful-degrade discipline as
-  /// nicknameCheckGameCode). Admin sets this to match whichever Digiflazz
-  /// SKU/region this particular Product/Denomination represents.
-  expectedRegionCode    String?   @map("expected_region_code")
   /// True once an admin has manually edited this SKU's price after import.
   /// The Digiflazz re-sync job (packages/db/src/crud/digiflazz.ts,
   /// resyncDigiflazzCatalog) skips price recomputation for any row where this
@@ -518,9 +446,8 @@ model Denomination {
 }
 
 /// Maps a Denomination (SKU) to a transaction-fulfilment provider's own SKU
-/// code, supporting multi-provider dispatch routing — the transaction-side
-/// analogue of ProviderGameMapping above (which does this for nickname-check
-/// lookups). Digiflazz is the only real transaction provider today; this
+/// code, supporting multi-provider dispatch routing. Digiflazz is the only
+/// real transaction provider today; this
 /// model exists to remove the STRUCTURAL blocker — a SKU hard-bound to
 /// Digiflazz in the schema via Denomination.autoDeliverySource/supplierSku
 /// alone — so a second provider can be added later without a schema
@@ -543,9 +470,8 @@ model ProductProviderMapping {
   /// Holds a Denomination id — see this model's doc comment for why the
   /// column is named product_id.
   productId    Int       @map("product_id")
-  /// Provider identifier: "digiflazz" today; free-text (like
-  /// ProviderGameMapping.provider) so a second transaction provider can be
-  /// added later without a schema change.
+  /// Provider identifier: "digiflazz" today; free-text so a second
+  /// transaction provider can be added later without a schema change.
   provider     String
   /// The provider's own SKU/product code for this Denomination (Digiflazz's
   /// buyer_sku_code, e.g. "ML86").
@@ -587,6 +513,49 @@ model StockItem {
   soldAt      DateTime? @map("sold_at")
   note        String?
 
+  // ── Stock traceability hardening plan, Fase 1 (schema-only, additive) ──
+  // These columns are all nullable or safely defaulted; no crud code reads
+  // or writes them yet. They exist so a later phase can record identity/
+  // provenance/lifecycle detail without a further migration.
+  //
+  // identityFingerprint/credentialFingerprint MUST be a keyed HMAC (server
+  // pepper held outside the DB, alongside CREDENTIAL_ENCRYPTION_KEY) when a
+  // later phase populates them — never an unkeyed hash. A plain SHA-256 of
+  // the plaintext credential stored next to that same credential's own
+  // ciphertext would let anyone with DB read access confirm a guessed
+  // credential offline, undoing the point of Fase 6's encryption hardening.
+  identityFingerprint   String?   @map("identity_fingerprint")
+  credentialFingerprint String?   @map("credential_fingerprint")
+
+  soldToOrderId     Int? @map("sold_to_order_id")
+  soldToOrderItemId Int? @map("sold_to_order_item_id")
+
+  addedByAdminId Int?     @map("added_by_admin_id")
+  importBatchId  Int?     @map("import_batch_id")
+  supplierRef    String?  @map("supplier_ref")
+  unitCost       Decimal? @map("unit_cost")
+
+  // Query-only mirror of the keyVersion already stored authoritatively
+  // inside the credentials envelope (credentialCrypto.ts's encryptCredentials
+  // writes keyVersion into the JSON blob; decryptCredentials reads it back
+  // from there). Left nullable with NO default here deliberately: FINDINGS.md
+  // notes the count of legacy-plaintext / non-v1 rows has not been measured
+  // against production, so stamping every existing row "1" would assert an
+  // unverified fact. A later phase's backfill populates this from the
+  // envelope's own value; the envelope stays the source of truth either way.
+  credentialKeyVersion Int? @map("credential_key_version")
+
+  warrantyUntil       DateTime? @map("warranty_until")
+  replacesStockItemId Int?      @map("replaces_stock_item_id")
+
+  lastCheckedAt   DateTime? @map("last_checked_at")
+  lastCheckResult String?   @map("last_check_result")
+
+  deletedAt        DateTime? @map("deleted_at")
+  deletedByAdminId Int?      @map("deleted_by_admin_id")
+
+  deadReason String? @map("dead_reason")
+
   // Relation field kept as `product` for source-compat; it resolves to a
   // Denomination (the SKU). Renamed to `denomination` in Phase 5 cleanup.
   product                Denomination       @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -600,10 +569,100 @@ model StockItem {
   replacementsAsOriginal StockReplacement[] @relation("ReplacementOriginal")
   replacementsAsNew      StockReplacement[] @relation("ReplacementNew")
 
+  events      StockItemEvent[]
+  importBatch StockImportBatch? @relation(fields: [importBatchId], references: [id], onUpdate: NoAction)
+  addedByAdmin   User? @relation("StockItemAddedByAdmin", fields: [addedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  deletedByAdmin User? @relation("StockItemDeletedByAdmin", fields: [deletedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
   @@index([status], map: "ix_stock_items_status")
   @@index([productId], map: "ix_stock_items_product_id")
   @@index([productId, status], map: "ix_stock_product_status")
+  @@index([identityFingerprint], map: "ix_stock_items_identity_fingerprint")
+  @@index([credentialFingerprint], map: "ix_stock_items_credential_fingerprint")
+  @@index([soldToOrderId], map: "ix_stock_items_sold_to_order_id")
+  @@index([importBatchId], map: "ix_stock_items_import_batch_id")
+  @@index([replacesStockItemId], map: "ix_stock_items_replaces_stock_item_id")
   @@map("stock_items")
+}
+
+// Immutable lifecycle-event log for a StockItem (stock traceability
+// hardening plan, Fase 1). Recorded alongside — never instead of — the
+// mutable columns on StockItem itself, so a rollback/substitution keeps its
+// history instead of losing it to a null-out/overwrite. Fase 1 only adds
+// this table; no crud code writes to it yet.
+//
+// onDelete: Restrict on stockItem is deliberate — a lifecycle event must
+// never disappear along with the row it describes — but it is only safe
+// once every path that can remove a StockItem row is soft-delete-only.
+// Today that is NOT yet true: bulkDeleteStock/deleteStockItem
+// (packages/db/src/crud/stock.ts) hard-delete directly, and
+// Denomination's `onDelete: Cascade` to StockItem (this file, `product`
+// relation above) hard-deletes every one of a product's stock rows when the
+// product itself is deleted. The moment a later phase starts writing real
+// events, all of those paths — plus the shared test-reset helper that does
+// `stockItem.deleteMany()` — will start failing with a P2003 foreign-key
+// violation the instant a StockItem has a child event. Converting
+// bulkDeleteStock/deleteStockItem to soft-delete (already planned, Fase 3)
+// and switching that Cascade to a soft-delete-aware path MUST land in the
+// same change as the first real event write, not after it.
+model StockItemEvent {
+  id          Int     @id @default(autoincrement())
+  stockItemId Int     @map("stock_item_id")
+  eventType   String  @map("event_type")
+  fromStatus  String? @map("from_status")
+  toStatus    String? @map("to_status")
+
+  orderId     Int? @map("order_id")
+  orderItemId Int? @map("order_item_id")
+
+  actorType       String  @map("actor_type")
+  actorAdminId    Int?    @map("actor_admin_id")
+  actorCustomerId Int?    @map("actor_customer_id")
+
+  reasonCode    String?  @map("reason_code")
+  // Intended (not yet enforced — additive phase) dedup key for a future
+  // unique index once idempotent event-writing matters:
+  // (stockItemId, eventType, correlationId).
+  correlationId String?  @map("correlation_id")
+  // JSONB (Prisma `Json`), not the `String?` this schema otherwise uses for
+  // free-form data (see OrderStatusHistory.meta, NotificationOutbox.payloadJson)
+  // — deliberate deviation: this is the one column meant to hold queryable
+  // structured detail per event rather than a fixed human-readable string.
+  // Caution for whichever phase first writes to it: a nullable Json field
+  // distinguishes SQL NULL from a JSON `null` value (Prisma's DbNull vs.
+  // JsonNull) and rejects a bare `null` literal on write.
+  meta          Json?
+  occurredAt    DateTime @default(now()) @map("occurred_at")
+
+  stockItem     StockItem @relation(fields: [stockItemId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  actorAdmin    User?     @relation("StockItemEventActorAdmin", fields: [actorAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  actorCustomer User?     @relation("StockItemEventActorCustomer", fields: [actorCustomerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([stockItemId, occurredAt], map: "ix_stock_item_events_stock_item_id_occurred_at")
+  @@index([orderId], map: "ix_stock_item_events_order_id")
+  @@index([eventType, occurredAt], map: "ix_stock_item_events_event_type_occurred_at")
+  @@map("stock_item_events")
+}
+
+// One row per bulk stock-import operation (stock traceability hardening
+// plan, Fase 1). StockItem.importBatchId will point back here so a later
+// phase can trace a credential to the exact import run that added it. Fase
+// 1 only adds this table; no crud code writes to it yet.
+model StockImportBatch {
+  id            Int      @id @default(autoincrement())
+  adminId       Int?     @map("admin_id")
+  productId     Int?     @map("product_id")
+  sourceLabel   String?  @map("source_label")
+  sourceHash    String?  @map("source_hash")
+  rowsSubmitted Int      @map("rows_submitted")
+  rowsInserted  Int      @map("rows_inserted")
+  rowsDuplicate Int      @map("rows_duplicate")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  items StockItem[]
+
+  @@index([createdAt], map: "ix_stock_import_batches_created_at")
+  @@map("stock_import_batches")
 }
 
 model Order {
@@ -709,6 +768,11 @@ model Order {
   /// shown to the buyer — the buyer-facing copy is fixed, reassuring i18n
   /// text, not this field.
   digiflazzFailureDetail String?   @map("digiflazz_failure_detail")
+  /// Internal-only diagnostic for admins (OrderDetailPage/AuditLog) — set automatically
+  /// when a Digiflazz fulfillment failure gave no specific reason of its own; holds the
+  /// result of a fallback KokinPay nickname lookup on the order's target account, to
+  /// help distinguish "wrong ID/region" from other causes. NEVER shown to the buyer.
+  accountDiagnosticNote String? @map("account_diagnostic_note")
   /// Client-minted UUID (Task A1), stamped once when the bot's "Confirm & Pay"
   /// bubble is first rendered for a given checkout attempt and passed through
   /// to createOrderDirect/createOrderFromCart. The unique constraint is the

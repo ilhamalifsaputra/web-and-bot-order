@@ -60,10 +60,10 @@ describe("POST /api/admins/add", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/admins/add", null, csrf, { telegram_id: NEW_ADMIN_TG });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -93,10 +93,10 @@ describe("POST /api/admins/remove", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson("/api/admins/remove", null, csrf, { telegram_id: NEW_ADMIN_TG });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -132,10 +132,10 @@ describe("POST /api/admins/:tgId/role", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson(`/api/admins/${NEW_ADMIN_TG}/role`, null, csrf, { role: "support" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {
@@ -168,10 +168,10 @@ describe("POST /api/admins/:tgId/logout", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("requires auth (anon → 303 /login)", async () => {
+  it("requires auth (anon → 401)", async () => {
     const res = await postJson(`/api/admins/${NEW_ADMIN_TG}/logout`, null, csrf);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "Your session has expired. Reload the page and log in again." });
   });
 
   it("rejects bad CSRF (403)", async () => {

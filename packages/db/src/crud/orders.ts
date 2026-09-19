@@ -522,7 +522,18 @@ export async function getOrder(db: Db, orderId: number) {
 export function getOrderByCode(db: Db, orderCode: string) {
   return db.order.findUnique({
     where: { orderCode },
-    include: { items: { include: { product: true } }, user: { select: ORDER_USER_SELECT } },
+    include: {
+      items: {
+        include: {
+          product: {
+            include: {
+              product: { select: { digiflazzBrand: true, name: true } },
+            },
+          },
+        },
+      },
+      user: { select: ORDER_USER_SELECT },
+    },
   });
 }
 

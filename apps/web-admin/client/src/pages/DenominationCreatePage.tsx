@@ -39,15 +39,11 @@ interface ProductForBreadcrumb {
   product: {
     id: number;
     name: string;
-    /** Task 10/12: the parent Product's Linked Game (null until an admin
-     * links one) — drives DeliveryTypeSection's legacy-field note below. */
-    gameId?: number | null;
   };
 }
 
 /** Reads the same `["catalog", productId]` query the breadcrumb name has
- * always used (see the doc comment above) and additionally surfaces the
- * parent Product's Linked Game — no extra request. */
+ * always used (see the doc comment above) — no extra request. */
 function useParentProduct(productId: string | undefined) {
   const { data } = useQuery<ProductForBreadcrumb>({
     queryKey: ["catalog", productId],
@@ -58,7 +54,6 @@ function useParentProduct(productId: string | undefined) {
     // Fallback while loading (or if the fetch hasn't resolved yet): the
     // product id, not a hardcoded generic "Product" label.
     name: data?.product.name ?? `Product #${productId ?? "?"}`,
-    gameId: data?.product.gameId ?? null,
   };
 }
 
@@ -66,7 +61,7 @@ export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const { name: productName, gameId: parentProductGameId } = useParentProduct(productId);
+  const { name: productName } = useParentProduct(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -84,8 +79,6 @@ export function DenominationCreatePage() {
   const [autoDeliverySource, setAutoDeliverySource] = useState<string | null>(null);
   const [supplierSku, setSupplierSku] = useState("");
   const [nicknameCheckGameCode, setNicknameCheckGameCode] = useState("");
-  const [regionWarning, setRegionWarning] = useState("");
-  const [expectedRegionCode, setExpectedRegionCode] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -109,8 +102,6 @@ export function DenominationCreatePage() {
             ? { autoDeliverySource, supplierSku: supplierSku.trim() }
             : {}),
           ...(nicknameCheckGameCode.trim() ? { nicknameCheckGameCode: nicknameCheckGameCode.trim() } : {}),
-          ...(regionWarning.trim() ? { regionWarning: regionWarning.trim() } : {}),
-          ...(expectedRegionCode.trim() ? { expectedRegionCode: expectedRegionCode.trim() } : {}),
           ...(qtyValue.trim() ? { qtyValue: Number(qtyValue.trim()) } : {}),
           ...(qtyUnit.trim() ? { qtyUnit: qtyUnit.trim() } : {}),
         },
@@ -225,11 +216,6 @@ export function DenominationCreatePage() {
           onSupplierSkuChange={setSupplierSku}
           nicknameCheckGameCode={nicknameCheckGameCode}
           onNicknameCheckGameCodeChange={setNicknameCheckGameCode}
-          regionWarning={regionWarning}
-          onRegionWarningChange={setRegionWarning}
-          expectedRegionCode={expectedRegionCode}
-          onExpectedRegionCodeChange={setExpectedRegionCode}
-          productHasLinkedGame={Boolean(parentProductGameId)}
         />
 
         <div>

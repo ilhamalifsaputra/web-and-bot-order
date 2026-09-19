@@ -22,8 +22,6 @@ import {
   Users,
   Gamepad2,
   UserSearch,
-  Globe,
-  Store,
 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -200,20 +198,6 @@ const DIGIFLAZZ_KEYS = new Set([
 // Digiflazz above: it gets its own Card, not PAY_CRED_GROUPS/GatewayCard.
 const KOKINPAY_KEYS = new Set(["kokinpay_api_key"]);
 
-// VIP-Reseller: a second, independent region-check lookup (Region-check Task
-// A) — used only to detect a buyer's account region on Mobile Legends
-// lookups, catching a buyer who picked the wrong region variant of a game.
-// Same "not a checkout payment method" reasoning as KokinPay above: its own
-// Card, not PAY_CRED_GROUPS/GatewayCard. Two required fields (unlike
-// KokinPay's one), so the Card's Test Connection button gates on both.
-const VIPRESELLER_KEYS = new Set(["vipreseller_api_id", "vipreseller_api_key"]);
-
-// MeloStore: a third, independent nickname-check provider (multi-provider
-// nickname check plan) — same "not a checkout payment method" reasoning as
-// KokinPay/VIP-Reseller above: its own Card, not PAY_CRED_GROUPS/GatewayCard.
-// Two required fields (API key + secret key), like VIP-Reseller.
-const MELOSTORE_KEYS = new Set(["melostore_api_key", "melostore_secret_key"]);
-
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
   ...TELEGRAM_KEYS,
@@ -223,8 +207,6 @@ const ALL_GROUPED_KEYS = new Set([
   ...PAY_CRED_KEYS,
   ...DIGIFLAZZ_KEYS,
   ...KOKINPAY_KEYS,
-  ...VIPRESELLER_KEYS,
-  ...MELOSTORE_KEYS,
 ]);
 
 // Short, muted helper description per field (Settings refinement §6) — every
@@ -312,10 +294,6 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   digiflazz_markup_type: "How the markup below is applied when pricing Digiflazz SKUs.",
   digiflazz_markup_value: "Percent (e.g. 8 for 8%) or a flat IDR amount, depending on the type above.",
   kokinpay_api_key: "Authenticates requests to KokinPay's nickname-check lookup — never shown once saved.",
-  vipreseller_api_id: "Your VIP-Reseller account's API ID.",
-  vipreseller_api_key: "Authenticates requests to VIP-Reseller's region-check lookup — never shown once saved.",
-  melostore_api_key: "Authenticates requests to MeloStore's nickname-check lookup — never shown once saved.",
-  melostore_secret_key: "Signs requests to MeloStore's nickname-check lookup — never shown once saved.",
 };
 
 /** Instant client-side echo of the server's own field-specific validation
@@ -504,74 +482,89 @@ function FieldRow({ field, query, onSaved, onStatusChange, onNeedsRestart, selec
           </div>
         )}
         {editing && (
-          <div className="mt-2 flex flex-col gap-1.5">
-            <div className="flex flex-wrap gap-2 items-center">
-              {selectOptions ? (
-                <Select value={value} onValueChange={setValue}>
-                  <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
-                    <SelectValue placeholder="Select a type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectOptions.map((opt) => (
-                      <SelectItem key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              ) : (
-                <Input
-                  type={field.secret ? "password" : "text"}
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !validationError) setConfirmOpen(true);
-                    if (e.key === "Escape") cancelEditing();
-                  }}
-                  aria-label={field.label}
-                  aria-invalid={validationError ? true : undefined}
-                  autoFocus
-                  className="w-full max-w-sm"
-                  // Reported bug: filling in a secret field (e.g. Digiflazz
-                  // API key) here was landing in the page's own "Search
-                  // settings…" box instead. Root cause: this is a generic
-                  // setting value, not a real account credential, but
-                  // rendering it as `type="password"` with no autoComplete
-                  // hint and no <form> boundary makes Chrome's native
-                  // password manager treat it as a login field — it pairs
-                  // the field with the NEAREST PRECEDING text input on the
-                  // page as a guessed "username" (here, SettingsSearch's own
-                  // search box) and offers to autofill this admin's saved
-                  // /login credentials into both. "new-password" is the
-                  // standard signal that stops Chrome from treating a
-                  // password-shaped input as a saved-login target; plain
-                  // "off" for the non-secret case is just hygiene (a
-                  // markup-type/value field has no business being
-                  // autofilled either).
-                  autoComplete={field.secret ? "new-password" : "off"}
-                />
-              )}
-              {field.secret && (
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={`Copy ${field.label}`}
-                  onClick={() => void copyValue()}
-                  disabled={!value}
-                >
-                  {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
+          // Chrome's password manager pairs a bare type="password" input with
+          // the NEAREST PRECEDING text input on the page as a guessed
+          // "username" — on this page, that's SettingsSearch's own "Search
+          // settings…" box, which renders before the field list in DOM
+          // order. autoComplete hints alone don't reliably stop this; a
+          // <form> boundary scopes Chrome's search to inside this tiny form
+          // instead of all the way up to SettingsSearch. Since this is the
+          // first real <form> around these buttons, they'd otherwise become
+          // native submit buttons by HTML's own default (Button never sets
+          // one) — every button below gets an explicit type="button", and
+          // onSubmit is a preventDefault backstop alongside the existing
+          // onKeyDown Enter handling.
+          <form onSubmit={(e) => e.preventDefault()} autoComplete="off">
+            <div className="mt-2 flex flex-col gap-1.5">
+              <div className="flex flex-wrap gap-2 items-center">
+                {selectOptions ? (
+                  <Select value={value} onValueChange={setValue}>
+                    <SelectTrigger className="w-full max-w-sm" aria-label={field.label}>
+                      <SelectValue placeholder="Select a type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectOptions.map((opt) => (
+                        <SelectItem key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    type={field.secret ? "password" : "text"}
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !validationError) setConfirmOpen(true);
+                      if (e.key === "Escape") cancelEditing();
+                    }}
+                    aria-label={field.label}
+                    aria-invalid={validationError ? true : undefined}
+                    autoFocus
+                    className="w-full max-w-sm"
+                    // Reported bug: filling in a secret field (e.g. Digiflazz
+                    // API key) here was landing in the page's own "Search
+                    // settings…" box instead. Root cause: this is a generic
+                    // setting value, not a real account credential, but
+                    // rendering it as `type="password"` with no autoComplete
+                    // hint and no <form> boundary makes Chrome's native
+                    // password manager treat it as a login field — it pairs
+                    // the field with the NEAREST PRECEDING text input on the
+                    // page as a guessed "username" (here, SettingsSearch's own
+                    // search box) and offers to autofill this admin's saved
+                    // /login credentials into both. "new-password" is the
+                    // standard signal that stops Chrome from treating a
+                    // password-shaped input as a saved-login target; plain
+                    // "off" for the non-secret case is just hygiene (a
+                    // markup-type/value field has no business being
+                    // autofilled either).
+                    autoComplete={field.secret ? "new-password" : "off"}
+                  />
+                )}
+                {field.secret && (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`Copy ${field.label}`}
+                    onClick={() => void copyValue()}
+                    disabled={!value}
+                  >
+                    {copied ? <Check className="h-3.5 w-3.5 text-grass" /> : <Copy className="h-3.5 w-3.5" />}
+                  </Button>
+                )}
+                <Button type="button" size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
+                  <Save className="h-4 w-4" />
+                  Save
                 </Button>
-              )}
-              <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={!!validationError}>
-                <Save className="h-4 w-4" />
-                Save
-              </Button>
-              <Button size="sm" variant="ghost" onClick={cancelEditing}>
-                Cancel
-              </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={cancelEditing}>
+                  Cancel
+                </Button>
+              </div>
+              {validationError && <p className="text-sm text-rust">{validationError}</p>}
             </div>
-            {validationError && <p className="text-sm text-rust">{validationError}</p>}
-          </div>
+          </form>
         )}
       </div>
       {/* Rendered unconditionally (not inside `editing && …`) — save()
@@ -997,8 +990,6 @@ export function SettingsPage() {
   const fxFields = fieldGroup(data.fields, FX_KEYS);
   const digiflazzFields = fieldGroup(data.fields, DIGIFLAZZ_KEYS);
   const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
-  const vipresellerFields = fieldGroup(data.fields, VIPRESELLER_KEYS);
-  const melostoreFields = fieldGroup(data.fields, MELOSTORE_KEYS);
 
   const generalVisible = showGeneral && sectionVisible("General", generalFields);
   const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
@@ -1008,8 +999,6 @@ export function SettingsPage() {
   const fxVisible = sectionVisible("Exchange Rates", fxFields);
   const digiflazzVisible = sectionVisible("Digiflazz (Top Up Game)", digiflazzFields);
   const kokinpayVisible = sectionVisible("KokinPay (Nickname Check)", kokinpayFields);
-  const vipresellerVisible = sectionVisible("VIP-Reseller (Region Check)", vipresellerFields);
-  const melostoreVisible = sectionVisible("MeloStore (Nickname Check)", melostoreFields);
   const securityVisible = sectionVisible("Security", []);
   const payGroupsVisible = payGroups.map((g) => ({ ...g, visible: sectionVisible(g.label, g.credFields) }));
 
@@ -1025,8 +1014,6 @@ export function SettingsPage() {
     { id: "settings-exchange-rates", label: "Exchange Rates", icon: navIcon(ArrowLeftRight), visible: fxVisible },
     { id: "settings-digiflazz", label: "Digiflazz (Top Up Game)", icon: navIcon(Gamepad2), visible: digiflazzVisible },
     { id: "settings-kokinpay", label: "KokinPay (Nickname Check)", icon: navIcon(UserSearch), visible: kokinpayVisible },
-    { id: "settings-vipreseller", label: "VIP-Reseller (Region Check)", icon: navIcon(Globe), visible: vipresellerVisible },
-    { id: "settings-melostore", label: "MeloStore (Nickname Check)", icon: navIcon(Store), visible: melostoreVisible },
     { id: "settings-security", label: "Security", icon: navIcon(KeyRound), visible: securityVisible },
   ];
 
@@ -1462,101 +1449,6 @@ export function SettingsPage() {
                 {testResults.kokinpay && (
                   <p className={`text-xs ${testResults.kokinpay.ok ? "text-grass-dark" : "text-rust"}`}>
                     {testResults.kokinpay.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* VIP-Reseller (Region Check) — Region-check Task A. A second,
-              independent lookup from KokinPay, used only to detect a buyer's
-              account region on Mobile Legends lookups; its own Card, same
-              reasoning as KokinPay above (not a checkout payment method). */}
-          {vipresellerVisible && (
-            <Card id="settings-vipreseller">
-              <CardHeader>
-                <CardTitle as="h2">VIP-Reseller (Region Check)</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {vipresellerFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("VIP-Reseller (Region Check)")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={
-                    !vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue ||
-                    !vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
-                  }
-                  title={
-                    vipresellerFields.find((f) => f.key === "vipreseller_api_id")?.hasValue &&
-                    vipresellerFields.find((f) => f.key === "vipreseller_api_key")?.hasValue
-                      ? undefined
-                      : "Add credentials above to test this connection."
-                  }
-                  onClick={() => setPendingTest({ methodKey: "vipreseller", label: "VIP-Reseller" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.vipreseller && (
-                  <p className={`text-xs ${testResults.vipreseller.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.vipreseller.detail}
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* MeloStore (Nickname Check) — multi-provider nickname check plan.
-              A third, independent nickname-check provider alongside
-              KokinPay/VIP-Reseller; its own Card, same reasoning as those two
-              above (not a checkout payment method). Two required fields (API
-              key + secret key), like VIP-Reseller. */}
-          {melostoreVisible && (
-            <Card id="settings-melostore">
-              <CardHeader>
-                <CardTitle as="h2">MeloStore (Nickname Check)</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {melostoreFields.map((field) => (
-                  <FieldRow
-                    key={field.key}
-                    field={field}
-                    query={fieldQueryFor("MeloStore (Nickname Check)")}
-                    onSaved={onSaved}
-                    onStatusChange={onStatusChange}
-                  />
-                ))}
-              </CardContent>
-              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={
-                    !melostoreFields.find((f) => f.key === "melostore_api_key")?.hasValue ||
-                    !melostoreFields.find((f) => f.key === "melostore_secret_key")?.hasValue
-                  }
-                  title={
-                    melostoreFields.find((f) => f.key === "melostore_api_key")?.hasValue &&
-                    melostoreFields.find((f) => f.key === "melostore_secret_key")?.hasValue
-                      ? undefined
-                      : "Add credentials above to test this connection."
-                  }
-                  onClick={() => setPendingTest({ methodKey: "melostore", label: "MeloStore" })}
-                >
-                  Test Connection
-                </Button>
-                {testResults.melostore && (
-                  <p className={`text-xs ${testResults.melostore.ok ? "text-grass-dark" : "text-rust"}`}>
-                    {testResults.melostore.detail}
                   </p>
                 )}
               </CardContent>

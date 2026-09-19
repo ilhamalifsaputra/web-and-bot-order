@@ -64,13 +64,18 @@ interface OrderDetail {
    * for a real order. `useSse` (below) keeps these current between
    * fetches for a Digiflazz-routed order; on a genuine order.status
    * change it triggers a full refetch (queryClient.invalidateQueries)
-   * rather than merging status directly, so these four fields and the
+   * rather than merging status directly, so these five fields and the
    * status-derived canAct/canFulfill/canReject/isDelivered booleans can
    * never show a stale combination for longer than one refetch. */
   digiflazzStatus?: string | null;
   digiflazzAttempts?: number;
   digiflazzNextRecheckAt?: string | null;
   digiflazzFailureDetail?: string | null;
+  /** Set automatically when a Digiflazz fulfillment failure gave no specific
+   * reason of its own — the result of a fallback KokinPay nickname lookup on
+   * the order's target account, to help distinguish "wrong ID/region" from
+   * other causes. Internal-only, never shown to the buyer. */
+  accountDiagnosticNote?: string | null;
 }
 
 interface MoneyView {
@@ -172,6 +177,7 @@ export function OrderDetailPage() {
         digiflazzAttempts: number;
         digiflazzNextRecheckAt: string | null;
         digiflazzFailureDetail: string | null;
+        accountDiagnosticNote: string | null;
       };
       if (snapshot.orderStatus !== prev.order.status) {
         // The order's overall status changed (e.g. a Sukses-driven
@@ -180,9 +186,10 @@ export function OrderDetailPage() {
         // derivable from this SSE snapshot alone, so a partial merge here
         // would desync them from the badge (Fix 3, final review finding
         // I-3). Invalidate instead: the next refetch brings status and
-        // every derived boolean back in lockstep. The four digiflazz*
-        // fields below still update immediately via the merge in the
-        // meantime, so the sub-status badge doesn't wait on the refetch.
+        // every derived boolean back in lockstep. The five digiflazz*/
+        // accountDiagnosticNote fields below still update immediately via
+        // the merge in the meantime, so the sub-status badge doesn't wait
+        // on the refetch.
         void qc.invalidateQueries({ queryKey: ["order", orderId] });
       }
       return {
@@ -193,6 +200,7 @@ export function OrderDetailPage() {
           digiflazzAttempts: snapshot.digiflazzAttempts,
           digiflazzNextRecheckAt: snapshot.digiflazzNextRecheckAt,
           digiflazzFailureDetail: snapshot.digiflazzFailureDetail,
+          accountDiagnosticNote: snapshot.accountDiagnosticNote,
         },
       };
     },
@@ -337,6 +345,9 @@ export function OrderDetailPage() {
                 </div>
                 {order.digiflazzFailureDetail && (
                   <p className="text-xs text-ink-soft">{order.digiflazzFailureDetail}</p>
+                )}
+                {order.accountDiagnosticNote && (
+                  <p className="text-xs text-ink-soft">{order.accountDiagnosticNote}</p>
                 )}
               </div>
             )}

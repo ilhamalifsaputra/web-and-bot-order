@@ -136,6 +136,7 @@ describe("GET /api/orders/:orderId/digiflazz/stream", () => {
       digiflazzAttempts: 0,
       digiflazzNextRecheckAt: null,
       digiflazzFailureDetail: null,
+      accountDiagnosticNote: null,
     });
     await closeSseConnection(res);
   });
@@ -162,6 +163,31 @@ describe("GET /api/orders/:orderId/digiflazz/stream", () => {
       digiflazzAttempts: 2,
       digiflazzNextRecheckAt: "2026-08-23T12:00:00.000Z",
       digiflazzFailureDetail: "Digiflazz timed out",
+      accountDiagnosticNote: null,
+    });
+    await closeSseConnection(res);
+  });
+
+  it("pushes the reactive account/region diagnostic note when a failed order has one", async () => {
+    const orderId = await makeOrder();
+    await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: OrderStatus.PROCESSING,
+        digiflazzStatus: "failed",
+        digiflazzFailureDetail: "Digiflazz reported Gagal",
+        accountDiagnosticNote:
+          'KokinPay: akun tidak ditemukan untuk kode game mobile-legends — kemungkinan salah ID/region.',
+      },
+    });
+
+    const res = await injectStream(`/api/orders/${orderId}/digiflazz/stream`, cookie);
+    expect(res.statusCode).toBe(200);
+    const chunk = await readOneChunk(res.stream());
+    expect(parseSseData(chunk)).toMatchObject({
+      digiflazzStatus: "failed",
+      accountDiagnosticNote:
+        "KokinPay: akun tidak ditemukan untuk kode game mobile-legends — kemungkinan salah ID/region.",
     });
     await closeSseConnection(res);
   });

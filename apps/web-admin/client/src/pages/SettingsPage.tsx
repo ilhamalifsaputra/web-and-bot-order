@@ -254,30 +254,36 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   fx_rate_max_age_hours:
     "Hides USDT payments shop-wide once the saved rate has gone this long without being refreshed or re-typed — the outer limit, measured in hours. Blank or 0 turns the check off.",
   min_order_amount_idr:
-    "Smallest order total customers can check out with, on any payment method that has no minimum of its own. Blank turns it off and leaves only the per-method minimums.",
+    "Smallest amount customers can pay — an order total or a wallet top-up — on any payment method that has no minimum of its own. Blank turns it off and leaves only the per-method minimums.",
   tokopay_merchant_id: "Your TokoPay merchant account identifier.",
   tokopay_secret: "Signs requests to TokoPay — never shown once saved.",
-  tokopay_min_amount: "Minimum order total customers can pay via TokoPay.",
+  tokopay_min_amount:
+    "Minimum amount customers can pay via TokoPay — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   paydisini_userkey: "Your PayDisini account's user key.",
   paydisini_apikey: "Authenticates requests to PayDisini — never shown once saved.",
   paydisini_default_channel: "Default PayDisini payment channel offered at checkout.",
-  paydisini_min_amount: "Minimum order total customers can pay via PayDisini.",
+  paydisini_min_amount:
+    "Minimum amount customers can pay via PayDisini — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   nowpayments_api_key: "Authenticates requests to NOWPayments — never shown once saved.",
   nowpayments_ipn_secret: "Verifies that payment webhooks really came from NOWPayments.",
   nowpayments_pay_currency: "Cryptocurrency customers pay with via NOWPayments.",
-  nowpayments_min_amount: "Minimum order total customers can pay via NOWPayments.",
+  nowpayments_min_amount:
+    "Minimum amount customers can pay via NOWPayments — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bybit_uid: "Your Bybit account's UID — where internal transfers are received.",
   bybit_api_key: "Read-only Bybit API key used to detect incoming transfers.",
   bybit_api_secret: "Signs Bybit API requests — never shown once saved.",
-  bybit_min_amount: "Minimum order total customers can pay via Bybit Internal Transfer.",
+  bybit_min_amount:
+    "Minimum amount customers can pay via Bybit Internal Transfer — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bybit_bsc_deposit_address: "BEP20 wallet address customers send USDT to on-chain.",
-  bybit_bsc_min_amount: "Minimum order total customers can pay via Bybit BSC.",
+  bybit_bsc_min_amount:
+    "Minimum amount customers can pay via Bybit BSC — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bscscan_api_key: "Optional — raises the BscScan lookup rate limit for confirmation tracking.",
   bybit_bsc_required_confirmations: "On-chain confirmations required before a BSC deposit is trusted.",
   binance_receive_uid: "Your Binance account's UID — where internal transfers are received.",
   binance_api_key: "Read-only Binance API key used to detect incoming transfers.",
   binance_api_secret: "Signs Binance API requests — never shown once saved.",
-  binance_internal_min_amount: "Minimum order total customers can pay via Binance Internal Transfer.",
+  binance_internal_min_amount:
+    "Minimum amount customers can pay via Binance Internal Transfer — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bot_token: "The Telegram bot customers order through. Changing this needs a restart.",
   notif_bot_token: "A second bot used only for admin/channel notifications. Changing this needs a restart.",
   public_channel_id: "Public Telegram channel order/stock updates are posted to. Changing this needs a restart.",

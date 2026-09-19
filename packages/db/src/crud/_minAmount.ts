@@ -5,9 +5,11 @@ import { Decimal } from "@app/core/money";
  * denominated in the currency that rail actually settles in: Rupiah for the two
  * QRIS rails, USDT for the four crypto rails. Written by web-admin's Settings
  * page (apps/web-admin/src/routes/api/settings.ts, whose own labels read
- * "Minimum order total customers can pay via <rail>"), read by each rail's
+ * "<rail> min amount"), read by each rail's
  * config resolver below and — since M11 — ENFORCED as the per-method override
- * in crud/orderMinimums.ts.
+ * in crud/orderMinimums.ts. Since F4b they also set what the wallet top-up forms
+ * advertise and accept (crud/wallet_topup.ts's `resolveWalletTopupEffectiveMin`),
+ * which is why the admin-facing copy no longer calls them order-only.
  *
  * They live here, in the leaf module every rail file already imports
  * `parseMinAmount` from, rather than in the six rail files that own the rest of

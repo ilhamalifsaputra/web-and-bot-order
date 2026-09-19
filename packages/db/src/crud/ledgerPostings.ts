@@ -519,18 +519,23 @@ export interface PostableSettlement {
  * statement, not a locally computed guess. That is the whole difference, and it
  * is why the fee belongs on THIS posting and not on the order payment.
  *
- * ## NO PRODUCTION CALLER TODAY
+ * ## Its caller (task F1), and what is still not automatic
  *
- * Nothing in this codebase creates a `Settlement` or `SettlementTransaction`
- * row: there is no admin route, no importer and no job — the models were
- * shipped as schema only, and settlement ingestion was deliberately deferred by
- * the Financial Ledger plan. So this function is exported and tested but
- * unreached, and `cash.*`/`provider_clearing.*` still read as described above
- * until an ingestion path calls it. It ships now rather than with that path
- * because the account mapping is the part that must not be invented twice, and
- * because the balance-read doc comments had to stop claiming a gap that has no
- * stated shape. Wire it at the moment a `Settlement` row is written, in the same
- * transaction, like every other posting here.
+ * `recordSettlement` (crud/settlements.ts) is the one production caller: an admin
+ * enters a provider's own payout statement through `POST /api/settlements`, and
+ * that service writes the `Settlement` row, its `SettlementTransaction` lines,
+ * this posting and the audit row in ONE transaction. Nothing else may create a
+ * `Settlement` row — a row written past that service would be a batch with no
+ * posting, and since the ledger is append-only nothing downstream would notice
+ * the cash position it left understated.
+ *
+ * What remains manual is the ENTRY, not the accounting: no importer polls any
+ * provider's payout API, so `provider_clearing.*` still over-reads and `cash.*`
+ * still under-reads by exactly the batches nobody has typed in yet. That is an
+ * operational gap (known gap 6 in docs/FINANCE_ARCHITECTURE.md), not a mapping
+ * one. An importer added later calls this same function through
+ * `recordSettlement` rather than posting directly, for the reason this whole file
+ * exists.
  *
  * ## What it refuses
  *

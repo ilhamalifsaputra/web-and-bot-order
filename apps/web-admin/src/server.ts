@@ -45,6 +45,7 @@ import stockApiRoutes from "./routes/api/stock";
 import ordersApiRoutes from "./routes/api/orders";
 import orderDigiflazzStreamRoutes from "./routes/api/orderDigiflazzStream";
 import stockReplacementApiRoutes from "./routes/api/stockReplacements";
+import settlementsApiRoutes from "./routes/api/settlements";
 import storageApiRoutes from "./routes/api/storage";
 import catalogPhotoRoutes from "./routes/catalogPhoto";
 import brandingRoutes from "./routes/branding";
@@ -156,6 +157,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(ordersApiRoutes);
   await app.register(orderDigiflazzStreamRoutes);
   await app.register(stockReplacementApiRoutes);
+  await app.register(settlementsApiRoutes);
   await app.register(storageApiRoutes);
   await app.register(catalogPhotoRoutes);
   await app.register(brandingRoutes);

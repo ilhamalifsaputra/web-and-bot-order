@@ -24,6 +24,7 @@ import { VouchersPage } from "./pages/VouchersPage";
 import { AdminsPage } from "./pages/AdminsPage";
 import { PaymentsPage } from "./pages/PaymentsPage";
 import { WalletTransactionsPage } from "./pages/WalletTransactionsPage";
+import { SettlementsPage } from "./pages/SettlementsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { UserDetailPage } from "./pages/UserDetailPage";
 import { BroadcastPage } from "./pages/BroadcastPage";
@@ -78,6 +79,7 @@ export default function App() {
         <Route path="/admins" element={<AdminsPage />} />
         <Route path="/payments" element={<PaymentsPage />} />
         <Route path="/wallet-transactions" element={<WalletTransactionsPage />} />
+        <Route path="/settlements" element={<SettlementsPage />} />
         <Route path="/outbox" element={<OutboxPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/reviews" element={<ReviewsPage />} />

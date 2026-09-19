@@ -108,6 +108,16 @@ export async function resetDb(prisma: PrismaClient) {
   // or a leftover Refund/RefundItem row blocks the delete below.
   await prisma.refundItem.deleteMany();
   await prisma.refund.deleteMany();
+  // SettlementTransaction.payment and .settlement are both onDelete:Restrict
+  // (Infra-5 policy — a settlement line is a financial-audit record that
+  // neither its batch nor the Payment it matched may silently erase), so both
+  // tables have to go before Payment, or a line left behind by
+  // `recordSettlement` (task F1) blocks that delete and every later one with
+  // it. Settlement itself has no FK of its own, but it is cleared here so a
+  // batch row cannot survive into the next test and be counted by
+  // `listSettlements`.
+  await prisma.settlementTransaction.deleteMany();
+  await prisma.settlement.deleteMany();
   // Payment.order is onDelete:Restrict (Trustance Phase A Task A2a — same
   // financial-audit-record policy as Refund/RefundItem/OrderStatusHistory) —
   // must be cleared before Order, or a leftover Payment row blocks the

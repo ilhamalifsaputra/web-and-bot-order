@@ -871,10 +871,12 @@ function signedBalance(account: { code: string; type: string }, sums: DirectionS
  * and a typo'd code silently reading 0.00 would make a reconciliation report
  * look clean.
  *
- * Three accounts cannot be read as a cash position today, for a reason outside
- * this function: `cash.*`, `provider_clearing.*` and `refund_clearing.*` are
- * short the postings that would make them mean what they are named. See
- * `trialBalance`'s doc comment below for which posting is missing and why.
+ * Three accounts need a caveat before being read as a cash position, for a
+ * reason outside this function: `cash.*` and `provider_clearing.*` are only as
+ * complete as the provider statements an admin has entered by hand
+ * (`recordSettlement`, crud/settlements.ts — there is no importer), and
+ * `refund_clearing.*` is never posted at all. See `trialBalance`'s doc comment
+ * below for what each one is short and why.
  */
 export async function getAccountBalance(db: Db, accountCode: string): Promise<Decimal> {
   const account = await db.ledgerAccount.findUnique({
@@ -899,23 +901,28 @@ export async function getAccountBalance(db: Db, accountCode: string): Promise<De
  * the one control account it checks, not this). Noted so a reader does not assume
  * an admin is looking at these numbers somewhere.
  *
- * ## `cash.*` and `provider_clearing.*` do not yet mean what their names say
+ * ## `cash.*` and `provider_clearing.*` mean what their names say only as far as
+ * ## the statements an admin has entered
  *
  * Worth knowing before trusting any figure this returns, and it is not a bug in
- * this function: nothing in this codebase creates a `Settlement` row, so
- * `postSettlementPosting` (crud/ledgerPostings.ts) — the one posting that debits
- * `cash.*` and drains `provider_clearing.*` when a gateway actually pays out —
- * has no caller. Until settlement ingestion exists, `provider_clearing.*` is
- * debited by every sale and credited by nothing, so it grows without bound, while
- * `cash.*` is debited by nothing and credited by each `MANUAL_TRANSFER` refund,
- * so it reads monotonically NEGATIVE. Both figures are arithmetically correct
- * given what has been posted and structurally misleading as a cash position.
- * `refund_clearing.*` is likewise never posted at all (this shop books a refund
- * payout as one event rather than approve-then-pay), so it reads a true zero.
- * Every other account here — `sales_revenue.*`, `wallet_liability.*`,
- * `adjustment.*`, `referral_expense.usdt` — is fully posted and can be read as
- * it stands. Recorded here rather than left to be rediscovered as drift; see
- * known gap 6 in docs/FINANCE_ARCHITECTURE.md.
+ * this function. `postSettlementPosting` (crud/ledgerPostings.ts) — the one
+ * posting that debits `cash.*` and drains `provider_clearing.*` when a gateway
+ * actually pays out — DOES have a caller now (`recordSettlement`,
+ * crud/settlements.ts, reached from web-admin's Settlements page). But that
+ * caller is an admin typing a provider's statement in by hand; no importer polls
+ * any provider's payout API. So both accounts are short exactly the batches
+ * nobody has entered yet: `provider_clearing.*` over-reads by them and `cash.*`
+ * under-reads by them, and a shop that has never recorded a settlement still sees
+ * the original shape — a receivable that only grows and a "Cash" account that
+ * only goes negative. Arithmetically correct given what has been posted;
+ * trustworthy as a cash position only for the periods that are covered.
+ * `refund_clearing.*` is a different case and is never posted at all (this shop
+ * books a refund payout as one event rather than approve-then-pay), so it reads a
+ * true zero. Every other account here — `sales_revenue.*`,
+ * `wallet_liability.*`, `adjustment.*`, `referral_expense.usdt`,
+ * `payment_shortfall.*` — is fully posted and can be read as it stands. Recorded
+ * here rather than left to be rediscovered as drift; see known gap 6 in
+ * docs/FINANCE_ARCHITECTURE.md.
  *
  * It does NOT assert that debits equal credits across accounts: that property is
  * true by construction, because `postFinancialTransaction` refuses to write an

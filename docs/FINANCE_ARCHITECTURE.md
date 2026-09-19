@@ -1094,27 +1094,41 @@ levers — is rendered in the "Exchange Rates" card next to the rate itself rath
 than falling through to "Other Settings". Every setting in the table below is now
 either admin-editable or explicitly internal.
 
-**6. Settlement ingestion does not exist, so `cash.*` and `provider_clearing.*`
-are not yet a cash position.** The `Settlement`/`SettlementTransaction` models
-were shipped as schema only — nothing in this codebase writes a row to either,
-and there is no admin route, importer or job that would. The accounting side of
-that gap is now closed: `postSettlementPosting`
-(`packages/db/src/crud/ledgerPostings.ts`) posts `Dr cash.<ccy>` (net) + `Dr
-payment_fee.<ccy>` (fee) / `Cr provider_clearing.<ccy>` (gross) under
-`settlement:{id}`, and it refuses a batch whose `netAmount + feeAmount` does not
-equal its `grossAmount` rather than posting two incompatible claims. But it has
-no caller, so until one exists:
+**6. `cash.*` and `provider_clearing.*` become a real cash position only for the
+periods an admin has actually entered a statement for — CLOSED as of 2026-09-19
+(task F1), with an operational caveat.** The `Settlement`/`SettlementTransaction`
+models shipped as schema only, and for a while nothing wrote a row to either;
+`postSettlementPosting` (`packages/db/src/crud/ledgerPostings.ts`) had the
+accounting right — `Dr cash.<ccy>` (net) + `Dr payment_fee.<ccy>` (fee) / `Cr
+provider_clearing.<ccy>` (gross) under `settlement:{id}`, refusing a batch whose
+`netAmount + feeAmount` does not equal its `grossAmount` — but had no caller. It
+has one now:
 
-- `provider_clearing.*` is debited by every settled order and top-up and credited
-  by nothing, and therefore **grows without bound**;
-- `cash.*` is debited by nothing and credited by each `MANUAL_TRANSFER` refund,
-  and therefore reads **monotonically negative**;
-- `refund_clearing.*` is posted by nothing in either direction and reads a true
-  zero — deliberately, not as a second missing posting. A refund payout here is
-  one event, not approve-then-pay, so there is no interval for a clearing account
-  to describe, and a `Dr refund_clearing` drain added to the payout alone would
-  drive the account negative. See `CHART_OF_ACCOUNTS`' doc comment
-  (`crud/ledgerAccounts.ts`).
+- `recordSettlement` (`packages/db/src/crud/settlements.ts`) writes the
+  `Settlement` row, its `SettlementTransaction` lines, the `SETTLEMENT` posting
+  and the audit row in **one transaction**, so a batch can never be recorded
+  without being booked (or booked without being recordable);
+- `POST /api/settlements` + `GET /api/settlements`
+  (`apps/web-admin/src/routes/api/settlements.ts`) are the admin surface, behind
+  the Settlements page in web-admin. The prefix is in `CONFIG_PREFIXES`
+  (`plugins/auth.ts`), so **only `super` may record a batch** — the same tier as
+  a hand-made wallet adjustment.
+
+**The remaining caveat is operational, not structural: this is manual entry.**
+`provider_clearing.*` still over-reads and `cash.*` still under-reads by exactly
+the batches nobody has typed in yet, so the two accounts are a cash position only
+as far as the statements an admin has entered. A batch that was recorded while the
+chart of accounts was unseeded saves its row and posts nothing; those show in the
+list with no posting id and a red "Not booked to the ledger" note, and the fix is
+`pnpm seed-chart-of-accounts` followed by recording the batch again (the
+backfill script does **not** cover settlements).
+
+`refund_clearing.*` remains posted by nothing in either direction and reads a
+true zero — deliberately, not as a second missing posting. A refund payout here is
+one event, not approve-then-pay, so there is no interval for a clearing account
+to describe, and a `Dr refund_clearing` drain added to the payout alone would
+drive the account negative. See `CHART_OF_ACCOUNTS`' doc comment
+(`crud/ledgerAccounts.ts`).
 
 Every other account is fully posted and can be read as it stands
 (`sales_revenue.*`, `wallet_liability.*`, `adjustment.*`,

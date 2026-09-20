@@ -25,7 +25,7 @@ import {
   bulkMarkStockDead,
 } from "./stock";
 import { lowStockDenominations } from "./catalog";
-import { StockStatus } from "@app/core/enums";
+import { StockStatus, StockActorType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -90,7 +90,12 @@ describe("stock reads exclude soft-deleted rows", () => {
         totalAmount: "5",
       },
     });
-    expect(await allocateOneAvailableStock(prisma, sample.product.id, order.id)).toBeNull();
+    expect(
+      await allocateOneAvailableStock(prisma, sample.product.id, order.id, {
+        type: StockActorType.CUSTOMER,
+        customerId: sample.user.id,
+      }),
+    ).toBeNull();
   });
 
   it("stockStatusCounts", async () => {

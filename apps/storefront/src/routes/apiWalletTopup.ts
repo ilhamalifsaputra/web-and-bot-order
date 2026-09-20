@@ -14,7 +14,7 @@
  * ownership-checked wrappers around those shared helpers.
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
-import { OrderKind, PaymentMethod } from "@app/core/enums";
+import { OrderKind, PaymentMethod, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import {
   prisma,
@@ -210,7 +210,12 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
     const order = await loadOwnedTopup(req.params.code, customer);
     if (!order) return reply.code(404).send({ error: "not_found" });
     try {
-      await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled"));
+      await prisma.$transaction((tx) =>
+        cancelOrder(tx, order.id, "user_cancelled", {
+          type: StockActorType.CUSTOMER,
+          customerId: customer.userId,
+        }),
+      );
     } catch (e) {
       if (!(e instanceof ValidationError)) throw e; // already paid/delivered → just bounce
     }

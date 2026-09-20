@@ -14,7 +14,7 @@ import {
   createOrderFromCart,
   cancelOrder,
 } from "@app/db";
-import { VoucherType } from "@app/core/enums";
+import { VoucherType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -188,7 +188,10 @@ describe("createOrderFromCart with voucher", () => {
     await addToCart(prisma, user.id, product.id, 2);
     const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
 
-    await cancelOrder(prisma, order!.id, "user_cancelled");
+    await cancelOrder(prisma, order!.id, "user_cancelled", {
+      type: StockActorType.CUSTOMER,
+      customerId: user.id,
+    });
 
     const redemption = await prisma.voucherRedemption.findUnique({
       where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },
@@ -211,7 +214,7 @@ describe("createOrderFromCart with voucher", () => {
     await addToCart(prisma, user.id, product.id, 2);
     const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
 
-    await cancelOrder(prisma, order!.id, "expired");
+    await cancelOrder(prisma, order!.id, "expired", { type: StockActorType.SYSTEM });
 
     const redemption = await prisma.voucherRedemption.findUnique({
       where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },

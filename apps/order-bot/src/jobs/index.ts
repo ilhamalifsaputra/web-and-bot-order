@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus } from "@app/core/enums";
+import { langCode, OrderStatus, StockActorType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
@@ -490,7 +490,7 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
 
   for (const o of orderData) {
     try {
-      await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired"));
+      await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired", { type: StockActorType.SYSTEM }));
       logger.info(`Order ${o.code} auto-cancelled after its payment window expired`);
       try {
         await notifyAutoCancelled(api, o);

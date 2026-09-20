@@ -40,7 +40,7 @@ import { createWalletTopupOrder } from "./wallet_topup";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { addToCart } from "./cart";
 import { bulkAddStock } from "./stock";
-import { DeliveryType, OrderStatus, OrderItemStatus, ProductType, PaymentMethod } from "@app/core/enums";
+import { DeliveryType, OrderStatus, OrderItemStatus, ProductType, PaymentMethod, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 
 let db: TestDb;
@@ -348,7 +348,7 @@ describe("recomputeOrderStatus — the cases where it must refuse to act", () =>
   // recomputeOrderStatus itself. These two tests are the proof.
   it("an order cancelled from PENDING_VERIFICATION keeps items PENDING; recompute refuses to resurrect it", async () => {
     const order = await makePendingVerificationOrder(sample.product.id, 2);
-    await cancelOrder(prisma, order.id, "test cancellation");
+    await cancelOrder(prisma, order.id, "test cancellation", { type: StockActorType.SYSTEM });
 
     const cancelled = await prisma.order.findUnique({ where: { id: order.id } });
     expect(cancelled!.status).toBe(OrderStatus.CANCELLED);

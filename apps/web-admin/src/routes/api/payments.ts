@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { OrderStatus, OrderKind } from "@app/core/enums";
+import { OrderStatus, OrderKind, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -380,7 +380,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
 
     try {
       await prisma.$transaction(async (tx) => {
-        const order = await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
+        const order = await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`, {
+          type: StockActorType.ADMIN,
+          adminId: req.admin!.userId,
+        });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "underpaid_cancel",

@@ -32,7 +32,7 @@ import {
   findUnderpaidReceived,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
-import { VoucherType, VoucherScope, OrderKind } from "@app/core/enums";
+import { VoucherType, VoucherScope, OrderKind, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
@@ -807,7 +807,9 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
   it("cancelOrder refuses a paid PROCESSING order the same way", async () => {
     const order = await makeOrder("PROCESSING", { paidAt: new Date() });
 
-    await expect(cancelOrder(prisma, order.id, "admin_cancelled: test")).rejects.toMatchObject({
+    await expect(
+      cancelOrder(prisma, order.id, "admin_cancelled: test", { type: StockActorType.ADMIN, adminId: 1 }),
+    ).rejects.toMatchObject({
       key: "error.order_paid_needs_credit",
     });
     expect((await getOrder(prisma, order.id))!.status).toBe("PROCESSING");
@@ -820,7 +822,12 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
     ).resolves.toMatchObject({ status: "REJECTED" });
 
     const cancellable = await makeOrder("PROCESSING");
-    await expect(cancelOrder(prisma, cancellable.id, "admin_cancelled: test")).resolves.toMatchObject({
+    await expect(
+      cancelOrder(prisma, cancellable.id, "admin_cancelled: test", {
+        type: StockActorType.ADMIN,
+        adminId: 1,
+      }),
+    ).resolves.toMatchObject({
       status: "CANCELLED",
     });
   });
@@ -835,7 +842,9 @@ describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reje
     await expect(rejectOrder(prisma, order.id, { adminId: 1, reason: "x" })).rejects.toMatchObject({
       key: "error.order_not_pending_verification",
     });
-    await expect(cancelOrder(prisma, order.id, "x")).resolves.toMatchObject({ status: "CANCELLED" });
+    await expect(
+      cancelOrder(prisma, order.id, "x", { type: StockActorType.ADMIN, adminId: 1 }),
+    ).resolves.toMatchObject({ status: "CANCELLED" });
   });
 });
 

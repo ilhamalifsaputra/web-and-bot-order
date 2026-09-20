@@ -16,7 +16,7 @@ import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { localize } from "@app/core/datetime";
-import { PaymentMethod } from "@app/core/enums";
+import { PaymentMethod, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -488,7 +488,9 @@ export async function payTopupNowpayments(ctx: MyContext): Promise<void> {
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a NOWPayments invoice for wallet top-up order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -573,7 +575,9 @@ export async function payTopupTokopay(ctx: MyContext): Promise<void> {
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a TokoPay transaction for wallet top-up order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -665,7 +669,9 @@ export async function payTopupPaydisini(ctx: MyContext): Promise<void> {
   } catch (err) {
     await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a PayDisini transaction for wallet top-up order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }

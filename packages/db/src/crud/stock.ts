@@ -10,9 +10,10 @@
  * stock browser, neither of which should carry plaintext through unrelated
  * code paths. `revealStockCredentials` is the sole explicit-reveal read.
  */
-import { StockStatus } from "@app/core/enums";
+import { StockStatus, StockEventType } from "@app/core/enums";
 import { encryptCredentials, decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
+import { recordStockEvent, type StockEventActor } from "./stockEvents";
 
 /**
  * Bulk-insert AVAILABLE stock, deduping against the incoming batch itself
@@ -199,17 +200,26 @@ export async function availableStockCountsByDenomination(
 }
 
 /**
- * Grab one AVAILABLE row, flip to RESERVED, link to the order. Returns the
- * reserved row or null if none available.
+ * Grab one AVAILABLE row, flip to RESERVED, link to the order, and record the
+ * RESERVED event. Returns the reserved row or null if none available.
  *
  * SQLite serializes writers, so within a transaction this is race-free; we add
  * an optimistic guard (updateMany where status=AVAILABLE) and retry to be safe
  * under the interactive-transaction model. (migrate.md §5.4)
+ *
+ * The event is written only for the attempt that actually WON the conditional
+ * update, so a row a caller lost the race for never gets a reservation it
+ * doesn't hold. `orderItemId` is optional because not every caller knows the
+ * line id (see approveOrder's substitution branch, which does); pass it
+ * whenever it is known, since it is the only link back to the order line once
+ * a release clears `OrderItem.stockItemId`.
  */
 export async function allocateOneAvailableStock(
   db: Db,
   productId: number,
   orderId: number,
+  actor: StockEventActor,
+  orderItemId?: number | null,
 ) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = await db.stockItem.findFirst({
@@ -227,6 +237,15 @@ export async function allocateOneAvailableStock(
       },
     });
     if (res.count === 1) {
+      await recordStockEvent(db, {
+        stockItemId: candidate.id,
+        eventType: StockEventType.RESERVED,
+        fromStatus: StockStatus.AVAILABLE,
+        toStatus: StockStatus.RESERVED,
+        orderId,
+        orderItemId: orderItemId ?? null,
+        actor,
+      });
       return db.stockItem.findUnique({ where: { id: candidate.id } });
     }
     // Lost the race for this row — try the next available one.

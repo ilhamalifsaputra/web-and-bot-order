@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { OrderStatus, OrderKind, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderKind, DeliveryType, StockActorType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
@@ -440,7 +440,10 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
     try {
       await prisma.$transaction(async (tx) => {
-        const order = await cancelOrder(tx, orderId, `admin_cancelled: ${reason}`);
+        const order = await cancelOrder(tx, orderId, `admin_cancelled: ${reason}`, {
+          type: StockActorType.ADMIN,
+          adminId: req.admin!.userId,
+        });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "cancel_order",
@@ -556,7 +559,10 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
             continue;
           }
           await prisma.$transaction(async (tx) => {
-            await cancelOrder(tx, orderId, `admin_bulk_cancel: ${reason}`);
+            await cancelOrder(tx, orderId, `admin_bulk_cancel: ${reason}`, {
+              type: StockActorType.ADMIN,
+              adminId: req.admin!.userId,
+            });
           });
         }
         succeeded.push(orderId);

@@ -23,6 +23,7 @@ import {
   OrderStatus,
   PaymentExpiryReason,
   PaymentMethod,
+  StockActorType,
   UserRole,
 } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -1197,7 +1198,9 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -1364,7 +1367,9 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -1545,7 +1550,9 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
-    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
+    await prisma
+      .$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed", { type: StockActorType.SYSTEM }))
+      .catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -1782,7 +1789,10 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   }
   try {
     await prisma.$transaction(async (tx) => {
-      await cancelOrder(tx, orderId, "user_cancelled");
+      await cancelOrder(tx, orderId, "user_cancelled", {
+        type: StockActorType.CUSTOMER,
+        customerId: info.id,
+      });
       // Mirrors logAdminAction's convention for a self-contained mutation
       // (e.g. conversations/reject.ts) — cancelOrder + the audit row commit
       // atomically, since there's no external gateway call to wait on here.

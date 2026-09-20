@@ -7,6 +7,17 @@ import type { Prisma } from "@prisma/client";
 import { StockEventType, StockActorType } from "@app/core/enums";
 import type { Db } from "./_types";
 
+/**
+ * Who caused an event. Passed down explicitly through every mutator that can
+ * move a stock row (allocate/release/cancel/approve) rather than inferred
+ * from a free-text reason string, so attribution survives refactors.
+ */
+export interface StockEventActor {
+  type: StockActorType;
+  adminId?: number | null;
+  customerId?: number | null;
+}
+
 export interface StockEventInput {
   stockItemId: number;
   eventType: StockEventType;
@@ -14,7 +25,7 @@ export interface StockEventInput {
   toStatus?: string | null;
   orderId?: number | null;
   orderItemId?: number | null;
-  actor: { type: StockActorType; adminId?: number | null; customerId?: number | null };
+  actor: StockEventActor;
   reasonCode?: string | null;
   correlationId?: string | null;
   meta?: Prisma.InputJsonValue;

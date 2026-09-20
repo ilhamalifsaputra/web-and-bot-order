@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
-import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod, StockActorType } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { getSetting, setSetting, deleteSetting } from "./settings";
@@ -565,7 +565,7 @@ describe("settleWalletTopup — money that arrives after the payment window clos
       ),
     );
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
     const cancelled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(cancelled.status).toBe(OrderStatus.CANCELLED);
     return order;
@@ -729,7 +729,7 @@ describe("settleWalletTopup — owner wallet-topup email (Task T3)", () => {
     await configureOwnerEmail();
     const order = await makeIdrTopupOrder("20000");
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
 
     await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
     await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
@@ -872,7 +872,7 @@ describe("settleWalletTopup — buyer WALLET_TOPUP_CREDITED_DM (Task E1)", () =>
   it("a late-paid, auto-cancelled top-up enqueues exactly one DM, and none on a repeat settlement", async () => {
     const order = await makeIdrTopupOrder("20000");
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
 
     await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
     await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));

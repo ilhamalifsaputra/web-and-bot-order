@@ -37,7 +37,7 @@ import {
   bulkAddStock,
   cancelOrder,
 } from "@app/db";
-import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 
@@ -667,7 +667,7 @@ describe("deliverPaidPaydisiniOrder / listPendingPaydisiniOrders — late-paid a
   it("a top-up auto-cancelled at window close is still credited when the payment lands late", async () => {
     const order = await makePendingTopupOrder();
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
 
     const result = await deliverPaidPaydisiniOrder(prisma, {
@@ -690,7 +690,7 @@ describe("deliverPaidPaydisiniOrder / listPendingPaydisiniOrders — late-paid a
 
   it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
     const order = await makePendingPaydisiniOrder();
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
 
     const result = await deliverPaidPaydisiniOrder(prisma, {
       orderId: order.id,

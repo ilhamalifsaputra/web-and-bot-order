@@ -26,6 +26,7 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError } from "@app/core/errors";
+import { StockActorType } from "@app/core/enums";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { checkoutView, payView, payState } from "./checkout";
@@ -124,7 +125,12 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
     const order = await getOrderByCode(prisma, req.params.code);
     if (order && order.userId === customer.userId) {
       try {
-        await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled"));
+        await prisma.$transaction((tx) =>
+          cancelOrder(tx, order.id, "user_cancelled", {
+            type: StockActorType.CUSTOMER,
+            customerId: customer.userId,
+          }),
+        );
       } catch (e) {
         if (!(e instanceof ValidationError)) throw e; // already paid/delivered → just bounce
       }

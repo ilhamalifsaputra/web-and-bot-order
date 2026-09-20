@@ -36,7 +36,7 @@ import { createCategory, createCatalogProduct, createDenomination } from "./cata
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
 import { bulkAddStock } from "./stock";
-import { OrderStatus, OrderKind, PaymentMethod, DeliveryType, NotificationEvent, StockStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, DeliveryType, NotificationEvent, StockStatus, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -843,7 +843,7 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
   it("a top-up auto-cancelled at window close is still credited when the deposit lands late", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
 
     const result = await deliverPaidBybitOrder(prisma, {
@@ -865,7 +865,7 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
       productId: sample.product.id,
       quantity: 1,
     }))!;
-    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired", { type: StockActorType.SYSTEM }));
 
     const result = await deliverPaidBybitOrder(prisma, {
       orderId: productOrder.id,

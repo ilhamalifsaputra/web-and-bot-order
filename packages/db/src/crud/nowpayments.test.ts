@@ -35,7 +35,7 @@ import {
   bulkAddStock,
   cancelOrder,
 } from "@app/db";
-import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 
@@ -335,7 +335,7 @@ describe("deliverPaidNowpaymentsOrder — WALLET_TOPUP routing", () => {
   it("a top-up auto-cancelled at window close is still credited, with exactly one credit DM", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
 
     const result = await deliverPaidNowpaymentsOrder(prisma, {
@@ -366,7 +366,7 @@ describe("deliverPaidNowpaymentsOrder — WALLET_TOPUP routing", () => {
       where: { id: productOrder.id },
       data: { paymentMethod: PaymentMethod.NOWPAYMENTS },
     });
-    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, productOrder.id, "expired", { type: StockActorType.SYSTEM }));
 
     const result = await deliverPaidNowpaymentsOrder(prisma, {
       orderId: productOrder.id,

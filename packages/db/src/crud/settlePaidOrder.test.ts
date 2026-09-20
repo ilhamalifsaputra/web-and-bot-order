@@ -20,10 +20,18 @@ import {
   updateOrderCustomerData,
 } from "./orders";
 import { createWalletTopupOrder } from "./wallet_topup";
+import { markStockDead } from "./stock";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { LEGAL_TRANSITIONS, transitionOrderStatus } from "./orderStatus";
-import { DeliveryType, OrderStatus, NotificationEvent, StockStatus } from "@app/core/enums";
+import {
+  DeliveryType,
+  OrderStatus,
+  NotificationEvent,
+  StockStatus,
+  StockActorType,
+  StockEventType,
+} from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import {
   validateFieldAnswer,
@@ -1305,8 +1313,78 @@ describe("wallet top-ups cannot be settled through the product-delivery path", (
       data: { status: OrderStatus.PENDING_VERIFICATION },
     });
 
-    const result = await settlePaidOrder(prisma, order!.id, { adminId: 1 });
+    // A real admin row, not a literal: the SOLD stock event this now writes
+    // carries actorAdminId under a real FK to User (see this file's `adminId`
+    // fixture comment — the same hazard AuditLog.adminId already had).
+    const result = await settlePaidOrder(prisma, order!.id, { adminId });
 
     expect(result.kind).toBe("delivered");
+  });
+});
+
+// Fase 3b: when the row reserved at checkout is no longer RESERVED by the
+// time an admin approves (an admin marked it dead, a supplier revoked it),
+// approveOrder pulls a replacement. That swap has to be legible in the
+// ledger, or "which credential did this buyer actually get?" has no answer.
+describe("approveOrder substitution events", () => {
+  it("a reserved row marked dead before approval is substituted out, and the replacement is sold", async () => {
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
+    const deadRowId = item.stockItemId!;
+    expect(await markStockDead(prisma, deadRowId, "test: supplier revoked it")).toBe(1);
+
+    const { credentials } = await approveOrder(prisma, order.id, { adminId });
+
+    // The line now points at a different row, and that row is the one sold.
+    const itemAfter = await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(itemAfter.stockItemId).not.toBe(deadRowId);
+    const replacement = await prisma.stockItem.findUniqueOrThrow({ where: { id: itemAfter.stockItemId! } });
+    expect(replacement.status).toBe(StockStatus.SOLD);
+    expect(replacement.soldToOrderId).toBe(order.id);
+    expect(replacement.soldToOrderItemId).toBe(item.id);
+    expect(replacement.warrantyUntil!.getTime() - replacement.soldAt!.getTime()).toBe(30 * 86_400_000);
+    // Warranty replacement is Fase 5e's semantics, not a substitution's.
+    expect(replacement.replacesStockItemId).toBeNull();
+
+    // The dead row keeps its status and gains only the swap annotation.
+    const deadRow = await prisma.stockItem.findUniqueOrThrow({ where: { id: deadRowId } });
+    expect(deadRow.status).toBe(StockStatus.DEAD);
+    expect(deadRow.soldToOrderId).toBeNull();
+
+    const outEvents = await prisma.stockItemEvent.findMany({
+      where: { orderId: order.id, eventType: StockEventType.SUBSTITUTED_OUT },
+    });
+    expect(outEvents).toHaveLength(1);
+    expect(outEvents[0]).toMatchObject({
+      stockItemId: deadRowId,
+      orderItemId: item.id,
+      actorType: StockActorType.ADMIN,
+      actorAdminId: adminId,
+    });
+
+    // The replacement's own ledger: reserved by this approval, annotated as
+    // the row swapped in, then sold.
+    const replacementEvents = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: replacement.id },
+      orderBy: { id: "asc" },
+    });
+    expect(replacementEvents.map((e) => e.eventType)).toEqual([
+      StockEventType.RESERVED,
+      StockEventType.SUBSTITUTED_IN,
+      StockEventType.SOLD,
+    ]);
+    for (const event of replacementEvents) {
+      expect(event).toMatchObject({
+        orderId: order.id,
+        orderItemId: item.id,
+        actorType: StockActorType.ADMIN,
+        actorAdminId: adminId,
+      });
+    }
+
+    // The buyer receives the replacement's plaintext credential, decrypted
+    // exactly once (it used to be run through decryptCredentials twice and
+    // rely on the legacy plaintext passthrough).
+    expect(credentials).toEqual([decryptCredentials(replacement.credentials)]);
   });
 });

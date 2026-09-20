@@ -18,7 +18,8 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, markStockDead, countAvailableStock, upsertUser } from "@app/db";
+import { createOrderDirect, cancelOrder, markStockDead, countAvailableStock, upsertUser } from "@app/db";
+import { StockActorType, StockEventType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -73,6 +74,25 @@ async function assertNoDoubleReservation() {
   expect(dupes).toEqual([]);
 }
 
+/** The ledger's own version of the same claim (Fase 3b): no stock row was
+ *  reserved twice with no release in between. Two RESERVED events on one row
+ *  are legitimate ONLY across a cancel — hence "one more RESERVED than
+ *  RESERVATION_RELEASED", never more. */
+async function assertNoDoubleReservationEvents() {
+  const events = await prisma.stockItemEvent.findMany({
+    where: { eventType: { in: [StockEventType.RESERVED, StockEventType.RESERVATION_RELEASED] } },
+    orderBy: { id: "asc" },
+  });
+  const held = new Map<number, number>();
+  const overReserved: number[] = [];
+  for (const event of events) {
+    const depth = (held.get(event.stockItemId) ?? 0) + (event.eventType === StockEventType.RESERVED ? 1 : -1);
+    held.set(event.stockItemId, depth);
+    if (depth > 1) overReserved.push(event.stockItemId);
+  }
+  expect(overReserved).toEqual([]);
+}
+
 describe("createOrderDirect under true Postgres concurrency", () => {
   it("Case A — 1 available stock item, 5 concurrent buyers (qty=1 each): exactly 1 succeeds, 4 fail cleanly, no double-reservation", async () => {
     const { product } = sample;
@@ -108,6 +128,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
     expect(deadAfter.map((s) => s.id).sort()).toEqual(deadBefore.map((s) => s.id).sort());
 
     await assertNoDoubleReservation();
+    await assertNoDoubleReservationEvents();
   });
 
   it("Case B — 1 available stock item, exactly 1 buyer (sanity control): succeeds cleanly", async () => {
@@ -148,6 +169,7 @@ describe("createOrderDirect under true Postgres concurrency", () => {
 
     expect(await countAvailableStock(prisma, product.id)).toBe(0);
     await assertNoDoubleReservation();
+    await assertNoDoubleReservationEvents();
   });
 
   it("Case D — 1 available stock item, 5 concurrent buyers each requesting quantity=2 (individually over-stock): all fail cleanly, nothing reserved", async () => {
@@ -166,5 +188,48 @@ describe("createOrderDirect under true Postgres concurrency", () => {
 
     const reservedCount = await prisma.stockItem.count({ where: { productId: product.id, status: "RESERVED" } });
     expect(reservedCount).toBe(0);
+  });
+
+  // Fase 3b / audit L-6. This is the scenario the duplicate-pointer detector
+  // above could not previously survive: the cancelled order kept pointing at
+  // the row it had released, so the very next checkout to take that row left
+  // TWO OrderItems on it. `releaseOrderHolds` now clears the pointer, and the
+  // event ledger carries the history instead.
+  it("Case E — one row, reserved → cancelled → re-reserved by a second buyer: one pointer, full ledger", async () => {
+    const { product, user } = sample;
+    await reduceStockTo(product.id, 1);
+    const row = (await prisma.stockItem.findFirstOrThrow({
+      where: { productId: product.id, status: "AVAILABLE" },
+    }));
+
+    const first = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
+    await cancelOrder(prisma, first!.id, "user_cancelled", {
+      type: StockActorType.CUSTOMER,
+      customerId: user.id,
+    });
+    expect(await countAvailableStock(prisma, product.id)).toBe(1);
+
+    const [second] = await makeBuyers(1);
+    const reReserved = await createOrderDirect(prisma, { user: second!, productId: product.id, quantity: 1 });
+    expect(reReserved).not.toBeNull();
+
+    // The same row, now held by exactly one order line.
+    const pointers = await prisma.orderItem.findMany({ where: { stockItemId: row.id } });
+    expect(pointers).toHaveLength(1);
+    expect(pointers[0]!.orderId).toBe(reReserved!.id);
+
+    await assertNoDoubleReservation();
+    await assertNoDoubleReservationEvents();
+
+    const trail = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: row.id },
+      orderBy: { id: "asc" },
+    });
+    expect(trail.map((e) => e.eventType)).toEqual([
+      StockEventType.RESERVED,
+      StockEventType.RESERVATION_RELEASED,
+      StockEventType.RESERVED,
+    ]);
+    expect(trail.map((e) => e.orderId)).toEqual([first!.id, first!.id, reReserved!.id]);
   });
 });

@@ -42,7 +42,7 @@ import {
   setSetting,
   createPaymentAttempt,
 } from "@app/db";
-import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 
@@ -665,7 +665,7 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
   it("a top-up auto-cancelled at window close is still credited when the transfer lands late", async () => {
     const order = await makePendingTopupOrder(sample.user.id, "10");
     await prisma.order.update({ where: { id: order.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
     expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.CANCELLED);
 
     const result = await deliverPaidInternalOrder(prisma, {
@@ -686,7 +686,7 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
 
   it("a CANCELLED PRODUCT order paid late is still stale — the top-up relaxation does not leak", async () => {
     const order = await makePendingInternalOrder();
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired"));
+    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "expired", { type: StockActorType.SYSTEM }));
 
     const result = await deliverPaidInternalOrder(prisma, {
       orderId: order.id,

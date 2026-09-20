@@ -53,6 +53,7 @@ const baseOrder: OrderDetailData["order"] = {
   subtotal: "158000",
   discount: "0",
   bulk_discount: "0",
+  wallet_credit: "0",
   total: "158000",
   created_at_display: "2026-07-01 10:00",
   customer_data_fields: [],
@@ -110,6 +111,36 @@ describe("OrderDetailPage", () => {
     renderDetail(() => data);
     expect(await screen.findByText("Your credentials")).toBeInTheDocument();
     expect(screen.getByText("user:pass")).toBeInTheDocument();
+  });
+
+  // The summary rows are stacked and read as arithmetic, so every reduction
+  // that moved the total needs a row: a wallet-paid order used to show its
+  // subtotal and discounts above a Total lower by the whole credit, with
+  // nothing explaining the gap (the server derives these figures now — see
+  // apps/storefront/src/routes/buyerOrderSummary.ts).
+  it("prints the wallet-credit row when the balance paid for part of the order", async () => {
+    const data: OrderDetailData = {
+      order: {
+        ...baseOrder,
+        bulk_discount: "20000",
+        discount: "30000",
+        wallet_credit: "28000",
+        // 158.000 − 20.000 − 30.000 − 28.000, the identity the rows assert.
+        total: "80000",
+      },
+      delivered: true,
+      pending_payment: false,
+      processing: false,
+    };
+    renderDetail(() => data);
+    expect(await screen.findByText("Wallet credit")).toBeInTheDocument();
+    expect(screen.getByText("−Rp28.000")).toBeInTheDocument();
+  });
+
+  it("omits the wallet-credit row when no balance was spent", async () => {
+    renderDetail(() => ({ order: baseOrder, delivered: true, pending_payment: false, processing: false }));
+    await screen.findByRole("heading", { name: /Order code/ });
+    expect(screen.queryByText("Wallet credit")).not.toBeInTheDocument();
   });
 
   it("hides credentials for a non-delivered order", async () => {

@@ -77,10 +77,22 @@ const JOIN_GATE_KEYS = new Set([
   "join_gate_group_id",
 ]);
 
+// The rate itself, plus every lever that decides whether a fetched rate is
+// trusted and how long a saved one stays usable. The M13 sanity-band keys and
+// the quote TTL used to fall through to "Other Settings", which put the three
+// figures that can silently switch the whole USDT rail off somewhere nobody
+// looking at the rate would find them.
 const FX_KEYS = new Set([
   "usd_idr_rate",
   "usd_idr_rate_auto",
   "usd_idr_rate_rounding",
+  "usdt_spread_bps",
+  "usdt_rounding_ceil_since",
+  "fx_rate_min",
+  "fx_rate_max",
+  "fx_rate_max_delta_pct",
+  "fx_quote_ttl_minutes",
+  "fx_rate_max_age_hours",
 ]);
 
 const SMTP_KEYS = new Set([
@@ -211,29 +223,49 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   usd_idr_rate: "Rupiah per 1 USDT, used to price USDT gateways in IDR.",
   usd_idr_rate_auto: "Automatically refresh the rate from the market instead of setting it by hand.",
   usd_idr_rate_rounding: "Rounds the auto-fetched rate to the nearest step (e.g. 100).",
+  usdt_spread_bps:
+    "Shaves the auto-fetched rate down so buyers send slightly more USDT — 100 = 1%. It is applied only to the automatic refresh; a rate you type in by hand is saved exactly as typed. It does not count towards the maximum move below, so any size is safe there, but the floor and ceiling above still judge the rate after it is applied.",
+  usdt_rounding_ceil_since:
+    "When this shop started rounding USDT amounts up to the cent instead of to the nearest 0.1. It does not affect prices at all — the six-hourly finance check uses it to tell an older order priced the old way apart from one that is genuinely wrong. It is filled in for you at upgrade time; only change it if that date is wrong. Empty means the check assumes every order was priced the current way.",
+  fx_rate_min: "Refuses an auto-fetched rate below this — catches a rate source that starts answering in the wrong unit. Blank turns the check off.",
+  fx_rate_max: "Refuses an auto-fetched rate above this — catches a rate source returning a placeholder. Blank turns the check off.",
+  fx_rate_max_delta_pct:
+    "How far the market rate may move between two accepted refreshes. It is measured market-to-market, so the spread above never counts as part of the move — a refresh is only refused when the market itself jumped this far, which usually means the rate source is misbehaving.",
+  fx_quote_ttl_minutes:
+    "Stops offering USDT payment methods once the saved rate has gone this long without being refreshed or re-typed, and refuses any USDT order submitted anyway. USDT prices are still shown. Every admin is DMed when it trips. Keep it at a few times the hourly update interval so one missed update does not switch USDT off; blank or 0 turns the check off.",
+  fx_rate_max_age_hours:
+    "Hides USDT payments shop-wide once the saved rate has gone this long without being refreshed or re-typed — the outer limit, measured in hours. Blank or 0 turns the check off.",
+  min_order_amount_idr:
+    "Smallest amount customers can pay — an order total or a wallet top-up — on any payment method that has no minimum of its own. Blank turns it off and leaves only the per-method minimums.",
   tokopay_merchant_id: "Your TokoPay merchant account identifier.",
   tokopay_secret: "Signs requests to TokoPay — never shown once saved.",
-  tokopay_min_amount: "Minimum order total customers can pay via TokoPay.",
+  tokopay_min_amount:
+    "Minimum amount customers can pay via TokoPay — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   paydisini_userkey: "Your PayDisini account's user key.",
   paydisini_apikey: "Authenticates requests to PayDisini — never shown once saved.",
   paydisini_default_channel: "Default PayDisini payment channel offered at checkout.",
-  paydisini_min_amount: "Minimum order total customers can pay via PayDisini.",
+  paydisini_min_amount:
+    "Minimum amount customers can pay via PayDisini — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   nowpayments_api_key: "Authenticates requests to NOWPayments — never shown once saved.",
   nowpayments_ipn_secret: "Verifies that payment webhooks really came from NOWPayments.",
   nowpayments_pay_currency: "Cryptocurrency customers pay with via NOWPayments.",
-  nowpayments_min_amount: "Minimum order total customers can pay via NOWPayments.",
+  nowpayments_min_amount:
+    "Minimum amount customers can pay via NOWPayments — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bybit_uid: "Your Bybit account's UID — where internal transfers are received.",
   bybit_api_key: "Read-only Bybit API key used to detect incoming transfers.",
   bybit_api_secret: "Signs Bybit API requests — never shown once saved.",
-  bybit_min_amount: "Minimum order total customers can pay via Bybit Internal Transfer.",
+  bybit_min_amount:
+    "Minimum amount customers can pay via Bybit Internal Transfer — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bybit_bsc_deposit_address: "BEP20 wallet address customers send USDT to on-chain.",
-  bybit_bsc_min_amount: "Minimum order total customers can pay via Bybit BSC.",
+  bybit_bsc_min_amount:
+    "Minimum amount customers can pay via Bybit BSC — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bscscan_api_key: "Optional — raises the BscScan lookup rate limit for confirmation tracking.",
   bybit_bsc_required_confirmations: "On-chain confirmations required before a BSC deposit is trusted.",
   binance_receive_uid: "Your Binance account's UID — where internal transfers are received.",
   binance_api_key: "Read-only Binance API key used to detect incoming transfers.",
   binance_api_secret: "Signs Binance API requests — never shown once saved.",
-  binance_internal_min_amount: "Minimum order total customers can pay via Binance Internal Transfer.",
+  binance_internal_min_amount:
+    "Minimum amount customers can pay via Binance Internal Transfer — an order total or a wallet top-up. Raising it also raises the minimum the top-up forms advertise.",
   bot_token: "The Telegram bot customers order through. Changing this needs a restart.",
   notif_bot_token: "A second bot used only for admin/channel notifications. Changing this needs a restart.",
   public_channel_id: "Public Telegram channel order/stock updates are posted to. Changing this needs a restart.",
@@ -866,7 +898,7 @@ export function SettingsPage() {
       URL.revokeObjectURL(url);
       toast.success(`Exported ${Object.keys(result.fields).length} settings.`);
     } catch (err) {
-      toast.error(describeError(err instanceof Error ? err.message : "Export failed"));
+      toast.error(describeError(err, "Export failed"));
     }
   }
 

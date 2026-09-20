@@ -26,6 +26,7 @@ import {
   countOrders,
   listUserOrders,
   countUserOrders,
+  shopFulfilmentStats,
   computeOrderEligibility,
   channelMaskedBuyerId,
   customerLabel,
@@ -141,6 +142,111 @@ describe("order status counts", () => {
   });
 });
 
+// Task 6a (Financial Ledger M6) pinned a decision here that is easy to
+// "fix" in the wrong direction later, so it is asserted rather than left to a
+// comment: every counter in this block deliberately stays KIND-AGNOSTIC while
+// the revenue/sales aggregates in revenue.ts, reports.ts and users.ts were
+// narrowed to kind: PRODUCT.
+//
+// They are not sales metrics. They feed two surfaces:
+//  - the dashboard's Operation Center and Pending Actions cards — admin
+//    work-queue counters, each deep-linking straight to the Orders page
+//    filtered by that same status;
+//  - the Orders page's own KPI row and status-tab count badges
+//    (OrderStatusTabs.tsx reads /api/orders/kpis).
+// The Orders list behind both is itself kind-agnostic (listOrders has no kind
+// filter, and admins really do resolve top-up orders there), so narrowing
+// these counters would (a) make every tab badge disagree with the list it
+// labels, and (b) hide genuine admin work: an UNDERPAID or expired top-up
+// needs a human exactly as much as an UNDERPAID product order does.
+describe("operational order counters stay kind-agnostic (wallet top-ups are real admin work)", () => {
+  it("counts a WALLET_TOPUP order alongside a PRODUCT order in every queue/tab counter", async () => {
+    const now = new Date();
+    for (const kind of [OrderKind.PRODUCT, OrderKind.WALLET_TOPUP]) {
+      await makeOrder("PENDING_PAYMENT", { kind, expiresAt: new Date(now.getTime() - 60_000) });
+      await makeOrder("PENDING_VERIFICATION", { kind });
+      await makeOrder("UNDERPAID", { kind });
+      await makeOrder("PAID", { kind });
+      await makeOrder("DELIVERED", { kind });
+      await makeOrder("CANCELLED", { kind });
+    }
+
+    expect(await countPendingPaymentLike(prisma)).toBe(2);
+    expect(await countExpiredPending(prisma, now)).toBe(2);
+    expect(await countPendingVerifications(prisma)).toBe(2);
+    expect(await countUnderpaid(prisma)).toBe(2);
+    expect(await countProcessing(prisma)).toBe(2);
+    expect(await countDelivered(prisma)).toBe(2);
+    expect(await countCancelled(prisma)).toBe(2);
+  });
+
+  // countAwaitingManualFulfillment needs no kind filter and gets none: a
+  // WALLET_TOPUP order can never hold status PROCESSING. PROCESSING is written
+  // in exactly one place for a fresh order — settlePaidOrder's MANUAL branch —
+  // and that function refuses a WALLET_TOPUP before the branch split (proven
+  // in settlePaidOrder.test.ts, "wallet top-ups cannot be settled through the
+  // product-delivery path"). Even without that guard the branch is
+  // unreachable: `isManual` reads `order.items.some(...)` and a top-up order
+  // has zero OrderItem rows, so it would always take the AUTO branch. The only
+  // other writer, digiflazz.ts's dispatcher, re-asserts PROCESSING on orders
+  // that already hold it and requires `items: { some: ... }`.
+  //
+  // This test states the invariant the way the count is actually reached, so a
+  // future change that starts routing top-ups into PROCESSING fails here and
+  // forces the filter question to be reopened deliberately.
+  it("countAwaitingManualFulfillment needs no filter — PROCESSING is unreachable for a top-up", async () => {
+    await makeOrder("PROCESSING", { kind: OrderKind.PRODUCT });
+    const topupsInProcessing = await prisma.order.count({
+      where: { kind: OrderKind.WALLET_TOPUP, status: "PROCESSING" },
+    });
+    expect(topupsInProcessing).toBe(0);
+    expect(await countAwaitingManualFulfillment(prisma)).toBe(1);
+  });
+});
+
+// Task 6a (Financial Ledger M6): OrderFilter had no `kind` field at all, so no
+// caller could opt into excluding top-ups from a filtered list/count. The field
+// is deliberately NOT defaulted inside orderWhere() — this is the generic
+// helper behind the admin Orders list, whose existing callers must keep seeing
+// every kind — so both behaviors are pinned here.
+describe("listOrders/countOrders — optional kind filter", () => {
+  it("counts and lists both kinds when no kind is passed (existing callers unchanged)", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await countOrders(prisma, {})).toBe(2);
+    expect(await listOrders(prisma, {})).toHaveLength(2);
+  });
+
+  it("excludes WALLET_TOPUP rows when kind: PRODUCT is passed", async () => {
+    const productOrder = await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await countOrders(prisma, { kind: OrderKind.PRODUCT })).toBe(1);
+    expect((await listOrders(prisma, { kind: OrderKind.PRODUCT })).map((o) => o.id)).toEqual([productOrder.id]);
+  });
+
+  it("selects only WALLET_TOPUP rows when kind: WALLET_TOPUP is passed", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    const topup = await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await countOrders(prisma, { kind: OrderKind.WALLET_TOPUP })).toBe(1);
+    expect((await listOrders(prisma, { kind: OrderKind.WALLET_TOPUP })).map((o) => o.id)).toEqual([topup.id]);
+  });
+
+  // The kind clause must AND with the rest of the filter, not replace or be
+  // replaced by it — `q` is the one branch that writes a top-level OR.
+  it("combines with a q search and a status filter instead of overriding either", async () => {
+    const productOrder = await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    const topup = await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await countOrders(prisma, { kind: OrderKind.PRODUCT, q: productOrder.orderCode })).toBe(1);
+    expect(await countOrders(prisma, { kind: OrderKind.PRODUCT, q: topup.orderCode })).toBe(0);
+    expect(await countOrders(prisma, { kind: OrderKind.PRODUCT, status: "DELIVERED" })).toBe(1);
+    expect(await countOrders(prisma, { kind: OrderKind.PRODUCT, status: "CANCELLED" })).toBe(0);
+  });
+});
+
 // Task 4 (wallet top-up): a WALLET_TOPUP order is a real Order row (zero
 // OrderItem rows) but isn't a "purchase" from the buyer's point of view —
 // it's already visible via the wallet ledger — so "My Orders" must exclude
@@ -165,6 +271,19 @@ describe("listUserOrders / countUserOrders — exclude WALLET_TOPUP", () => {
     const orders = await listUserOrders(prisma, userId, 5, 0);
     expect(orders.map(o => o.id)).toEqual([order.id]);
     expect(await countUserOrders(prisma, userId)).toBe(1);
+  });
+});
+
+// Task 6a fix pass (I-1): shopFulfilmentStats fed the storefront home page's
+// "honest" delivered-orders/customers band, but neither query filtered
+// kind — a settled WALLET_TOPUP order inflated both figures exactly like the
+// bugs this task's own commit (3c15ba47) already fixed elsewhere in this file.
+describe("shopFulfilmentStats — exclude WALLET_TOPUP", () => {
+  it("counts only the PRODUCT order as a delivered order/customer", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 1, customers: 1 });
   });
 });
 

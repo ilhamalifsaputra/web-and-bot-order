@@ -17,6 +17,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { PaymentStatus, PaymentExpiryReason } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect, setOrderPaymentRail } from "./orders";
@@ -254,6 +255,110 @@ describe("confirmPaymentAttempt", () => {
     await confirmPaymentAttempt(prisma, { paymentId: payment.id });
 
     await expect(confirmPaymentAttempt(prisma, { paymentId: payment.id })).rejects.toThrow(ValidationError);
+  });
+
+  // Financial Ledger M3 (Task 3b): the three data-capture columns Task 1 added
+  // to Payment — providerTransactionId, fee, netAmount — are written here, at
+  // the one place all six payment rails already confirm an attempt. They are
+  // captured DATA only: nothing in this function posts a ledger entry for them
+  // (see the "no FEE posting" reasoning in .superpowers/sdd/task-3b-brief.md,
+  // pinned as a test in crud/tokopay.test.ts).
+  it("records providerTransactionId, fee and netAmount when the caller supplies them", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+    expect(payment.providerTransactionId).toBeNull();
+
+    const result = await confirmPaymentAttempt(prisma, {
+      paymentId: payment.id,
+      providerTransactionId: "TOKOPAY-TRX-777",
+      fee: "1200",
+      netAmount: "98800",
+    });
+
+    expect(result.status).toBe(PaymentStatus.CONFIRMED);
+    expect(result.providerTransactionId).toBe("TOKOPAY-TRX-777");
+    expect(new Decimal(result.fee!).equals("1200")).toBe(true);
+    expect(new Decimal(result.netAmount!).equals("98800")).toBe(true);
+
+    // Read the PERSISTED row too: the point of these arguments is that the
+    // figures outlive the call, not that the return value carries them.
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(stored.providerTransactionId).toBe("TOKOPAY-TRX-777");
+    expect(new Decimal(stored.fee!).equals("1200")).toBe(true);
+    expect(new Decimal(stored.netAmount!).equals("98800")).toBe(true);
+  });
+
+  it("leaves all three columns null when the caller supplies none (every pre-M3 caller is unaffected)", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    const result = await confirmPaymentAttempt(prisma, { paymentId: payment.id });
+
+    expect(result.status).toBe(PaymentStatus.CONFIRMED);
+    expect(result.confirmedAt).toBeInstanceOf(Date);
+    expect(result.pendingOrderId).toBeNull();
+    expect(result.providerTransactionId).toBeNull();
+    expect(result.fee).toBeNull();
+    expect(result.netAmount).toBeNull();
+  });
+
+  // Payment.fee's own doc comment (schema.prisma) draws this distinction: null
+  // means "no fee figure is known", while 0 is a real statement that this
+  // payment cost the shop nothing. Rejecting zero would force a genuinely free
+  // payment to be recorded as unknown.
+  it("accepts a fee of zero as a real figure, distinct from null", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "PAYDISINI", amount: order.totalAmount, currency: order.currency });
+
+    const result = await confirmPaymentAttempt(prisma, {
+      paymentId: payment.id,
+      providerTransactionId: "PAYDISINI-FREE-1",
+      fee: "0",
+      netAmount: order.totalAmount,
+    });
+
+    expect(result.fee).not.toBeNull();
+    expect(new Decimal(result.fee!).isZero()).toBe(true);
+  });
+
+  it("quantizes fee and netAmount to this repo's four decimal places", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    const result = await confirmPaymentAttempt(prisma, {
+      paymentId: payment.id,
+      // Half-up at the 4th place, and a figure that vanishes entirely below it.
+      fee: "0.00004",
+      netAmount: "1.00005",
+    });
+
+    expect(new Decimal(result.fee!).equals("0")).toBe(true);
+    expect(new Decimal(result.netAmount!).equals("1.0001")).toBe(true);
+  });
+
+  it("rejects a malformed fee as a clean ValidationError and leaves the attempt PENDING", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    await expect(
+      confirmPaymentAttempt(prisma, { paymentId: payment.id, fee: "not-a-number" }),
+    ).rejects.toThrow(ValidationError);
+
+    // The figures are validated BEFORE the status claim, so a bad one cannot
+    // leave a CONFIRMED row missing the data it was confirmed for.
+    const stored = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    expect(stored.status).toBe(PaymentStatus.PENDING);
+    expect(stored.confirmedAt).toBeNull();
+  });
+
+  it("rejects a negative fee and a negative netAmount", async () => {
+    const order = await makeOrder();
+    const payment = await createPaymentAttempt(prisma, { orderId: order.id, method: "TOKOPAY", amount: order.totalAmount, currency: order.currency });
+
+    await expect(confirmPaymentAttempt(prisma, { paymentId: payment.id, fee: "-1" })).rejects.toThrow(ValidationError);
+    await expect(confirmPaymentAttempt(prisma, { paymentId: payment.id, netAmount: "-1" })).rejects.toThrow(ValidationError);
+
+    expect((await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } })).status).toBe(PaymentStatus.PENDING);
   });
 
   const illegalConfirmFrom: readonly string[] = [PaymentStatus.CONFIRMED, PaymentStatus.EXPIRED, PaymentStatus.FAILED];

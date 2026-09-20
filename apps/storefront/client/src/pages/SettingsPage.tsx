@@ -36,6 +36,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
@@ -106,12 +107,11 @@ export default function SettingsPage() {
       : params.get("err") === "tg_invalid"
         ? t("web.error_message")
         : null;
-  const mutationErrorKey = credentialsMutation.error ? (credentialsMutation.error as Error).message : null;
   // A failed credentials POST is about the form, so it renders inside the
   // form; only the redirect-flow (?err=…) messages, which belong to the
   // Telegram link round-trip, stay at page level. The two can never be
   // showing at once — a failed POST never navigates.
-  const mutationErrorText = mutationErrorKey ? t(mutationErrorKey) : null;
+  const mutationErrorText = credentialsMutation.error ? tError(credentialsMutation.error) : null;
   const saved = Boolean(params.get("saved"));
   const linked = Boolean(params.get("linked"));
 

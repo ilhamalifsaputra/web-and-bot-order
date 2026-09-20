@@ -28,6 +28,7 @@ import { AlertTriangle, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { WalletTopupCreateResponse, WalletTopupData } from "../api/types";
 import { t } from "../lib/i18n";
+import { humanError } from "../lib/errors";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
 import EmptyState from "../components/shop/EmptyState";
 import Skeleton from "../components/shop/Skeleton";
@@ -43,12 +44,9 @@ import { cn } from "../components/ui/cn";
 
 type Currency = "IDR" | "USDT";
 
-/** Same i18n-key-vs-developer-fallback split CheckoutPage.tsx's humanError
- * uses — the server's own failures arrive as i18n keys, everything else
- * (network error, unexpected status) becomes the generic apology. */
-function humanError(message: string): string {
-  return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
-}
+/* `humanError` now comes from lib/errors.ts and takes the ERROR rather than its
+ * message (whole-branch review F4a) — same i18n-key-vs-developer-fallback split
+ * as before, plus the `{placeholder}` figures the rejection carried. */
 
 interface MethodOption {
   value: string;
@@ -72,7 +70,7 @@ const USDT_METHODS: MethodOption[] = [
  * eight near-identical `{page.x_enabled && ...}` blocks (there's no fee-note
  * variance here to justify the longer form; per-method icons are looked up
  * separately via iconFor()). */
-function methodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
+function configuredMethodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
   const enabledMap: Record<string, boolean> =
     currency === "IDR"
       ? { qris: data.idr_enabled, paydisini: data.paydisini_enabled }
@@ -86,11 +84,48 @@ function methodsFor(data: WalletTopupData, currency: Currency): MethodOption[] {
   return list.filter((m) => enabledMap[m.value]);
 }
 
+/**
+ * Which configured rails the typed amount can actually be paid through
+ * (whole-branch review F3).
+ *
+ * `finalizeWalletTopupPayment` refuses a top-up below the chosen rail's floor, so
+ * offering such a rail turns a fixable "type a bigger number" into a failed
+ * submission on the next screen. The floors come from the server
+ * (`data.rail_min`, already in the currency being typed) rather than being
+ * re-derived here — see the field's own comment in api/types.ts.
+ *
+ * An amount that is blank or not a positive number filters NOTHING: there is no
+ * figure to judge yet, and emptying the input must not make the whole picker
+ * vanish. Same reason `railsClearingTheTotal` (routes/checkout.ts) exempts a zero
+ * total. A rail with a null floor has nothing to clear and always survives.
+ *
+ * Client-side UX only, like every other check on this form: the create call
+ * re-runs the real guard.
+ */
+function offeredMethodsFor(data: WalletTopupData, currency: Currency, amount: string): MethodOption[] {
+  const configured = configuredMethodsFor(data, currency);
+  const typed = Number(amount);
+  if (!amount.trim() || !Number.isFinite(typed) || typed <= 0) return configured;
+  return configured.filter((m) => {
+    const floor = data.rail_min?.[m.value];
+    return !floor || typed >= Number(floor);
+  });
+}
+
+/** The minimum to advertise and to judge a typed amount by: the server's
+ * EFFECTIVE minimum, which already folds the top-up bound together with the
+ * floors of the rails on offer (whole-branch review F4b). Reading `min_idr`/
+ * `min_usdt` here is what let this form promise a figure the create call then
+ * refused. */
+function effectiveMin(data: WalletTopupData, currency: Currency): string | null {
+  return currency === "IDR" ? data.effective_min_idr : data.effective_min_usdt;
+}
+
 /** Server-configured min/max for `currency`, formatted for display — a plain
  * "between X and Y" / "at least X" / "up to Y" hint. null when neither bound
  * is set. */
 function limitsHint(data: WalletTopupData, currency: Currency): string | null {
-  const min = currency === "IDR" ? data.min_idr : data.min_usdt;
+  const min = effectiveMin(data, currency);
   const max = currency === "IDR" ? data.max_idr : data.max_usdt;
   const fmt = (v: string) => (currency === "IDR" ? formatIdr(v) : formatNativeUsdt(v));
   if (min && max) return t("web.wallet_topup_range_hint", { min: fmt(min), max: fmt(max) });
@@ -99,11 +134,14 @@ function limitsHint(data: WalletTopupData, currency: Currency): string | null {
   return null;
 }
 
-/** UX convenience only — createWalletTopupOrder (server) is the real gate. */
+/** UX convenience only — createWalletTopupOrder (server) is the real gate.
+ * Judges the amount by the same EFFECTIVE minimum the hint above advertises, so
+ * the sentence the buyer reads and the button's enabled state can never disagree
+ * (F4b). */
 function amountValid(data: WalletTopupData, currency: Currency, amount: string): boolean {
   const n = Number(amount);
   if (!amount.trim() || Number.isNaN(n) || n <= 0) return false;
-  const min = currency === "IDR" ? data.min_idr : data.min_usdt;
+  const min = effectiveMin(data, currency);
   const max = currency === "IDR" ? data.max_idr : data.max_usdt;
   if (min && n < Number(min)) return false;
   if (max && n > Number(max)) return false;
@@ -170,22 +208,30 @@ export default function WalletTopupPage() {
   const [currency, setCurrency] = useState<Currency>(preselect);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<string | null>(null);
-  const [submitErrorKey, setSubmitErrorKey] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<unknown>(null);
 
-  // Re-pick the default method whenever the currency (or the enabled-gateway
-  // payload) changes, mirroring CheckoutPage's defaultMethod cascade: first
-  // enabled option wins, cleared to null when the switch leaves none enabled.
+  // Re-pick the default method whenever the currency, the enabled-gateway
+  // payload, or the amount changes, mirroring CheckoutPage's defaultMethod
+  // cascade: first offered option wins, cleared to null when nothing is offered.
+  //
+  // A selection the buyer made themselves is KEPT while it is still offered
+  // (whole-branch review F3): the amount is in this dependency list so a rail
+  // that stops accepting the typed figure gets dropped, and resetting to the
+  // first row on every keystroke would silently move a deliberate choice back to
+  // QRIS as the buyer finished typing.
   useEffect(() => {
     if (!data) return;
-    const options = methodsFor(data, currency);
-    setMethod(options[0]?.value ?? null);
-  }, [data, currency]);
+    const options = offeredMethodsFor(data, currency, amount);
+    setMethod((current) =>
+      current && options.some((m) => m.value === current) ? current : (options[0]?.value ?? null),
+    );
+  }, [data, currency, amount]);
 
   const submitMutation = useMutation({
     mutationFn: () =>
       apiPost<WalletTopupCreateResponse>("/api/v1/wallet/topup", { currency, amount, method }),
     onSuccess: (resp) => navigate(`/wallet/topup/${resp.orderCode}/pay`),
-    onError: (err) => setSubmitErrorKey((err as Error).message),
+    onError: (err) => setSubmitError(err),
   });
 
   if (!data) {
@@ -209,14 +255,21 @@ export default function WalletTopupPage() {
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
-          description={humanError((error as Error).message)}
+          description={humanError(error)}
           action={{ label: t("web.account_title"), to: "/account" }}
         />
       </>
     );
   }
 
-  const options = methodsFor(data, currency);
+  const options = offeredMethodsFor(data, currency, amount);
+  // The shop HAS a working gateway for this currency and the amount is simply
+  // under every one of their floors. Two causes look identical in an empty
+  // picker and need opposite messages — the same distinction
+  // PaymentMethodSelector.tsx draws with `below_all_minimums` on the product
+  // checkout page. "Check back soon" would leave a buyer waiting for something
+  // that will never change, when all they have to do is type a larger amount.
+  const belowEveryRailMinimum = options.length === 0 && configuredMethodsFor(data, currency).length > 0;
   const hint = limitsHint(data, currency);
   const valid = amountValid(data, currency, amount);
   const submitBlocked = !valid || !method;
@@ -226,9 +279,9 @@ export default function WalletTopupPage() {
     <div className="max-w-lg mx-auto">
       <h1 className="page-title text-2xl! mb-5">{t("web.wallet_topup_title")}</h1>
 
-      {submitErrorKey && (
+      {submitError !== null && (
         <Alert variant="banner" tone="error">
-          {humanError(submitErrorKey)}
+          {humanError(submitError)}
         </Alert>
       )}
 
@@ -282,7 +335,11 @@ export default function WalletTopupPage() {
             {options.length === 0 && (
               <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
                 <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-                <p>{t("web.wallet_topup_none_available")}</p>
+                <p>
+                  {belowEveryRailMinimum
+                    ? t("web.wallet_topup_below_rail_minimum_all")
+                    : t("web.wallet_topup_none_available")}
+                </p>
               </div>
             )}
           </div>

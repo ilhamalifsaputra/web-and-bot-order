@@ -41,7 +41,7 @@ export function AdminsPage() {
       void qc.invalidateQueries({ queryKey: ["admins"] });
       toast.success("Admin removed.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const setRole = useMutation({
@@ -51,7 +51,7 @@ export function AdminsPage() {
       void qc.invalidateQueries({ queryKey: ["admins"] });
       toast.success("Admin role updated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const forceLogout = useMutation({
@@ -60,7 +60,7 @@ export function AdminsPage() {
       void qc.invalidateQueries({ queryKey: ["admins"] });
       toast.success("Admin logged out.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) return <PageLayout title="Admins"><p className="text-sm text-rust">Failed to load admins.</p></PageLayout>;

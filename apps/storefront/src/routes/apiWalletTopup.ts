@@ -28,13 +28,17 @@ import {
   getPaydisiniCreds,
   getNowpaymentsCreds,
   resolveWalletTopupLimits,
+  resolveWalletTopupRailFloor,
+  resolveWalletTopupEffectiveMin,
   createWalletTopupOrder,
   type WalletTopupIdrMethod,
   type WalletTopupUsdtMethod,
+  type WalletTopupMethod,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "@app/core/errorBody";
 import { payView, payState } from "./checkout";
 import { originOk } from "./cart";
 
@@ -70,6 +74,87 @@ async function loadOwnedTopup(code: string, customer: Customer) {
   return order;
 }
 
+/**
+ * The client's method token for each rail, and the currency that rail settles
+ * in. Single source of truth for both halves of the top-up form's gateway list:
+ * the `<token>_enabled` flags the GET already served, and the per-rail floors
+ * added by whole-branch review F3.
+ *
+ * The tokens are the SPA's, not `PaymentMethod`'s — `WalletTopupPage.tsx` and the
+ * POST body below both speak "qris"/"binance"/…, so the floors have to be keyed
+ * the same way or the page would have to maintain a second mapping to read them.
+ */
+const TOPUP_RAILS = [
+  ["qris", PaymentMethod.TOKOPAY, "IDR"],
+  ["paydisini", PaymentMethod.PAYDISINI, "IDR"],
+  ["binance", PaymentMethod.BINANCE_INTERNAL, "USDT"],
+  ["bybit", PaymentMethod.BYBIT, "USDT"],
+  ["bybit_bsc", PaymentMethod.BYBIT_BSC, "USDT"],
+  ["nowpayments", PaymentMethod.NOWPAYMENTS, "USDT"],
+] as const satisfies readonly (readonly [string, WalletTopupMethod, "IDR" | "USDT"])[];
+
+/**
+ * The smallest amount each rail will accept, **in the currency the buyer types**,
+ * keyed by the SPA's method token. null = that rail has no floor to clear (or, for
+ * a USDT rail with no usable exchange rate, no floor this server can express —
+ * those rails are already switched off by the same missing rate, so the page never
+ * consults their entry).
+ *
+ * This is what lets the top-up form stop offering a rail that
+ * `finalizeWalletTopupPayment`'s guard would refuse the moment it was picked —
+ * the storefront twin of what `offeredTopupRails` does in the bot and of
+ * `railsClearingTheTotal` on the product checkout page. The figure is
+ * deliberately resolved SERVER-side through `resolveWalletTopupRailFloor` rather
+ * than derived in the page from the raw settings: for a USDT rail judged by the
+ * shop-wide Rupiah floor the two are different numbers, and re-deriving the
+ * conversion (and its round-UP direction) in the client is how the page would end
+ * up advertising a figure the guard then refuses.
+ */
+async function railFloors(fxRate: Decimal | null): Promise<Record<string, string | null>> {
+  const out: Record<string, string | null> = {};
+  for (const [token, method, currency] of TOPUP_RAILS) {
+    if (currency === "USDT" && !fxRate) {
+      out[token] = null;
+      continue;
+    }
+    const floor = await resolveWalletTopupRailFloor(prisma, {
+      method,
+      ...(currency === "IDR" ? ({ currency: "IDR" } as const) : ({ currency: "USDT", rate: fxRate! } as const)),
+    });
+    out[token] = floor ? floor.toString() : null;
+  }
+  return out;
+}
+
+/**
+ * The minimum the form should ADVERTISE for `currency` (whole-branch review F4b):
+ * `max(wallet_topup_min_amount_*, the lowest floor among the rails on offer)`,
+ * or null when neither exists.
+ *
+ * `web.wallet_topup_min_hint` used to read `min_idr`/`min_usdt` alone, so a shop
+ * with a Rp10.000 rail floor and a Rp1.000 top-up bound printed "Minimum Rp1.000"
+ * and then refused the buyer at Rp5.000 — the form and the guard quoting different
+ * figures on consecutive screens.
+ *
+ * `enabledTokens` matters: a floor belonging to a rail this shop has not
+ * configured is not a floor this buyer can hit, and folding it in would advertise
+ * a minimum higher than anything that can actually refuse them.
+ */
+async function effectiveMin(
+  currency: "IDR" | "USDT",
+  fxRate: Decimal | null,
+  enabledTokens: ReadonlySet<string>,
+): Promise<Decimal | null> {
+  const methods = TOPUP_RAILS.filter(
+    ([token, , railCurrency]) => railCurrency === currency && enabledTokens.has(token),
+  ).map(([, method]) => method);
+  // No rate means no USDT rail is on offer, so `methods` is empty and the rail
+  // side is vacuous — the rate below is only there to satisfy the signature.
+  const query =
+    currency === "IDR" ? ({ currency: "IDR" } as const) : ({ currency: "USDT", rate: fxRate ?? 1 } as const);
+  return resolveWalletTopupEffectiveMin(prisma, { ...query, methods });
+}
+
 const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
   // ---- Gateway availability + limits + current balances ----
   app.get("/wallet/topup", async (req, reply) => {
@@ -87,18 +172,44 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       resolveWalletTopupLimits(prisma),
     ]);
     const haveRate = Boolean(fxRate);
+    const enabled: Record<string, boolean> = {
+      qris: Boolean(tokopay),
+      paydisini: Boolean(paydisini),
+      binance: haveRate && binance.enabled,
+      bybit: haveRate && bybit.enabled,
+      bybit_bsc: haveRate && bybitBsc.enabled,
+      nowpayments: haveRate && Boolean(nowpayments),
+    };
+    const enabledTokens = new Set(Object.keys(enabled).filter((token) => enabled[token]));
+    const [minIdr, minUsdt] = await Promise.all([
+      effectiveMin("IDR", fxRate, enabledTokens),
+      effectiveMin("USDT", fxRate, enabledTokens),
+    ]);
 
     return reply.send({
-      idr_enabled: Boolean(tokopay),
-      paydisini_enabled: Boolean(paydisini),
-      binance_enabled: haveRate && binance.enabled,
-      bybit_enabled: haveRate && bybit.enabled,
-      bybit_bsc_enabled: haveRate && bybitBsc.enabled,
-      nowpayments_enabled: haveRate && Boolean(nowpayments),
+      idr_enabled: enabled.qris,
+      paydisini_enabled: enabled.paydisini,
+      binance_enabled: enabled.binance,
+      bybit_enabled: enabled.bybit,
+      bybit_bsc_enabled: enabled.bybit_bsc,
+      nowpayments_enabled: enabled.nowpayments,
+      // The raw top-up bounds, as configured. `min_*` is NOT what the form
+      // advertises — see `effective_min_*` below — and is kept in the payload
+      // because it is the input that figure is derived from, which is what makes
+      // a surprising advertised minimum diagnosable from the response alone.
       min_idr: limits.minIdr ? limits.minIdr.toString() : null,
       max_idr: limits.maxIdr ? limits.maxIdr.toString() : null,
       min_usdt: limits.minUsdt ? limits.minUsdt.toString() : null,
       max_usdt: limits.maxUsdt ? limits.maxUsdt.toString() : null,
+      // Per-rail floors (F3): what each gateway itself will accept, so the form
+      // can drop a rail the typed amount cannot be paid through instead of
+      // offering it and having the create call refuse it.
+      rail_min: await railFloors(fxRate),
+      // The minimum to SHOW and to validate against (F4b): the top-up bound and
+      // the rail floors fold into one figure, so the form can never advertise a
+      // number the create call would refuse.
+      effective_min_idr: minIdr ? minIdr.toString() : null,
+      effective_min_usdt: minUsdt ? minUsdt.toString() : null,
       wallet_idr: new Decimal(customer.user.walletBalance).toString(),
       wallet_usdt: new Decimal(customer.user.walletBalanceUsdt).toString(),
     });
@@ -174,7 +285,7 @@ const apiWalletTopupRoutes: FastifyPluginAsync = async (app) => {
       );
       return reply.code(201).send({ orderCode: order.orderCode });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+      if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
       throw e;
     }
   });

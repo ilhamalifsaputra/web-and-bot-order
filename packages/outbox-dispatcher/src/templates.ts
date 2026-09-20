@@ -205,6 +205,37 @@ interface TicketClosedPayload {
   buyer_language?: unknown;
 }
 
+/** M13 / audit P0-3 — the hourly market-rate refresh refused what it fetched.
+ * `reason` mirrors `FxRateRejection`'s discriminant; the figures below it are
+ * present only for the reason that uses them. */
+interface AdminFxRateRejectedPayload {
+  reason?: unknown;
+  market?: unknown;
+  rate?: unknown;
+  saved?: unknown;
+  consecutive_failures?: unknown;
+  min?: unknown;
+  max?: unknown;
+  last_known?: unknown;
+  delta_pct?: unknown;
+  max_delta_pct?: unknown;
+}
+
+/**
+ * M13 / audit P0-3 — the saved rate stopped being confirmed. `stage` says which
+ * threshold it crossed (whole-branch review D7): `"quote_ttl"` = no USDT rail is
+ * offered any more but prices still show USDT, `"max_age"` = USDT is gone
+ * shop-wide. Absent means `"max_age"`, which is all this event used to mean, so
+ * a row enqueued before the field existed still renders correctly.
+ */
+interface AdminFxRateStalePayload {
+  stage?: unknown;
+  confirmed_at?: unknown;
+  age_hours?: unknown;
+  max_age_hours?: unknown;
+  ttl_minutes?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -220,6 +251,8 @@ export function render(
     AdminStalePaymentPayload &
     WalletTopupCreditedPayload &
     AdminDigiflazzResyncAbortedPayload &
+    AdminFxRateRejectedPayload &
+    AdminFxRateStalePayload &
     TicketClosedPayload &
     RestockSubscriberPayload,
 ): string {
@@ -441,6 +474,106 @@ export function render(
         `Ini biasanya berarti respons dari supplier tidak valid, bukan perubahan harga asli — mohon periksa koneksi Digiflazz sebelum sinkronisasi berikutnya.`;
     }
     return `${header}${bodyEn}\n\n${headerId}${bodyId}`;
+  }
+  if (event === NotificationEvent.ADMIN_FX_RATE_REJECTED) {
+    // Admin DM: the hourly market-rate refresh fetched a rate that failed
+    // validateUsdIdrRate's sanity band, so nothing was saved (M13). The admin
+    // needs three things from this message, in this order: that pricing is
+    // still safe (the old rate stands — otherwise the first reaction is panic
+    // about mispriced orders), WHICH check failed and by how much, and what
+    // goes wrong if they ignore it (the saved rate keeps ageing towards the
+    // staleness cut-off that hides the USDT rail entirely).
+    const market = escape(String(payload.market ?? ""));
+    const rate = escape(String(payload.rate ?? ""));
+    const saved = payload.saved == null ? null : escape(String(payload.saved));
+    const failures = escape(String(payload.consecutive_failures ?? "1"));
+    const reason = String(payload.reason ?? "");
+    let whyEn: string;
+    let whyId: string;
+    if (reason === "below_min" || reason === "above_max") {
+      const bound = escape(String(payload.min ?? payload.max ?? ""));
+      const word = reason === "below_min" ? "below the minimum" : "above the maximum";
+      const wordId = reason === "below_min" ? "di bawah batas minimum" : "di atas batas maksimum";
+      whyEn = `Rp${rate} per USDT is ${word} plausible rate of Rp${bound}.`;
+      whyId = `Rp${rate} per USDT berada ${wordId} yang masuk akal, Rp${bound}.`;
+    } else if (reason === "delta_too_large") {
+      const lastKnown = escape(String(payload.last_known ?? ""));
+      const deltaPct = escape(String(payload.delta_pct ?? ""));
+      const maxDeltaPct = escape(String(payload.max_delta_pct ?? ""));
+      // Both figures are MARKET rates, not the saved rate: the cap measures the
+      // market against the last market figure this shop accepted (whole-branch
+      // review D10). Saying "the saved rate" here would send an admin to compare
+      // two numbers whose difference is not the percentage quoted.
+      whyEn =
+        `The market rate Rp${market} per USDT is ${deltaPct}% away from the last market rate accepted, Rp${lastKnown}, ` +
+        `more than the ${maxDeltaPct}% move allowed in one refresh.`;
+      whyId =
+        `Kurs pasar Rp${market} per USDT berjarak ${deltaPct}% dari kurs pasar terakhir yang diterima, Rp${lastKnown}, ` +
+        `melebihi batas perubahan ${maxDeltaPct}% dalam satu pembaruan.`;
+    } else {
+      // not_a_number / not_positive — no configured figure to cite.
+      whyEn = `The rate source returned ${rate}, which is not a usable price.`;
+      whyId = `Sumber kurs mengembalikan ${rate}, yang tidak bisa dipakai sebagai harga.`;
+    }
+    return (
+      `⚠️ <b>Rejected a USD/IDR rate from the market — the saved rate is still in effect</b>\n` +
+      `${whyEn}\n` +
+      `Market figure: <b>Rp${market}</b>. Still pricing with: <b>${saved ? `Rp${saved}` : "no saved rate"}</b>.\n` +
+      `Consecutive failed refreshes: <b>${failures}</b>.\n` +
+      `Nothing was mispriced, but the saved rate keeps ageing — please check the rate source or widen the sanity band in Settings, ` +
+      `or USDT payments will be switched off once it passes its maximum age.\n\n` +
+      `⚠️ <b>Kurs USD/IDR dari pasar ditolak — kurs tersimpan masih dipakai</b>\n` +
+      `${whyId}\n` +
+      `Angka pasar: <b>Rp${market}</b>. Masih memakai: <b>${saved ? `Rp${saved}` : "belum ada kurs tersimpan"}</b>.\n` +
+      `Kegagalan pembaruan berturut-turut: <b>${failures}</b>.\n` +
+      `Tidak ada harga yang salah, tapi kurs tersimpan makin tua — mohon periksa sumber kurs atau lebarkan batas wajar di Pengaturan, ` +
+      `kalau tidak pembayaran USDT akan dimatikan begitu kurs melewati umur maksimalnya.`
+    );
+  }
+  if (event === NotificationEvent.ADMIN_FX_RATE_STALE) {
+    // Admin DM: the saved rate went unconfirmed long enough to cost the shop
+    // USDT sales (M13). Unlike the rejection DM above this is not a warning
+    // about something that MIGHT go wrong — it has already happened and the
+    // shop is losing USDT sales right now, so the message leads with the
+    // consequence, not the cause.
+    const confirmedAt = escape(String(payload.confirmed_at ?? ""));
+    const ageHours = escape(String(payload.age_hours ?? ""));
+    const maxAgeHours = escape(String(payload.max_age_hours ?? ""));
+    // Two thresholds, two different consequences (whole-branch review D7). The
+    // earlier one takes USDT off the checkout screens while prices still show a
+    // USDT figure, so its message must not claim USDT is gone: an admin who
+    // looks at the shop and still sees USDT prices would read the alert as a
+    // false alarm and stop trusting the category. A payload with no `stage` is
+    // the max-age wording, which is the only thing this event used to mean.
+    if (payload.stage === "quote_ttl") {
+      const ttlMinutes = escape(String(payload.ttl_minutes ?? ""));
+      return (
+        `⚠️ <b>USDT checkout is not being offered — the saved USD/IDR rate has stopped being refreshed</b>\n` +
+        `Last confirmed: <code>${confirmedAt}</code> (about ${ageHours}h ago), past the ${ttlMinutes}-minute quote lifetime.\n` +
+        `Customers still see USDT prices, but no USDT payment option is offered and any USDT order is refused; Rupiah payments are unaffected. ` +
+        `The hourly automatic update has missed at least three tries, so this will not fix itself.\n` +
+        `Fix it in Settings: press "Update now" on the USDT rate, or type a rate by hand. ` +
+        `If it is left alone, USDT prices disappear from the shop too once the rate passes its maximum age.\n\n` +
+        `⚠️ <b>Checkout USDT tidak ditawarkan — kurs USD/IDR tersimpan berhenti diperbarui</b>\n` +
+        `Terakhir dikonfirmasi: <code>${confirmedAt}</code> (sekitar ${ageHours} jam lalu), melewati masa berlaku kuotasi ${ttlMinutes} menit.\n` +
+        `Pelanggan masih melihat harga USDT, tapi tidak ada pilihan pembayaran USDT dan setiap pesanan USDT ditolak; pembayaran Rupiah tidak terpengaruh. ` +
+        `Pembaruan otomatis tiap jam sudah gagal minimal tiga kali, jadi ini tidak akan beres sendiri.\n` +
+        `Perbaiki di Pengaturan: tekan "Update now" pada kurs USDT, atau isi kursnya manual. ` +
+        `Kalau dibiarkan, harga USDT juga akan hilang dari toko begitu kurs melewati umur maksimalnya.`
+      );
+    }
+    return (
+      `⛔ <b>USDT payments are switched off — the saved USD/IDR rate is too old</b>\n` +
+      `Last confirmed: <code>${confirmedAt}</code> (about ${ageHours}h ago), past the ${maxAgeHours}h limit.\n` +
+      `Until the rate is refreshed, customers are not shown USDT prices and cannot pay in USDT; Rupiah payments are unaffected.\n` +
+      `Fix it in Settings: press "Update now" on the USDT rate, or type a rate by hand. ` +
+      `If the automatic update has been failing, turning it back on is not enough on its own — check the rate source too.\n\n` +
+      `⛔ <b>Pembayaran USDT dimatikan — kurs USD/IDR tersimpan sudah terlalu lama</b>\n` +
+      `Terakhir dikonfirmasi: <code>${confirmedAt}</code> (sekitar ${ageHours} jam lalu), melewati batas ${maxAgeHours} jam.\n` +
+      `Selama kurs belum diperbarui, pelanggan tidak melihat harga USDT dan tidak bisa membayar dengan USDT; pembayaran Rupiah tidak terpengaruh.\n` +
+      `Perbaiki di Pengaturan: tekan "Update now" pada kurs USDT, atau isi kursnya manual. ` +
+      `Kalau pembaruan otomatis memang sedang gagal, menyalakannya kembali saja tidak cukup — periksa juga sumber kursnya.`
+    );
   }
   if (event === NotificationEvent.ADMIN_UNCONFIRMABLE_PAYMENT) {
     // Admin DM: the gateway says this order is paid, but returned no

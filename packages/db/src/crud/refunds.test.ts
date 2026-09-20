@@ -5,13 +5,16 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
-import { RefundStatus } from "@app/core/enums";
+import { RefundExecutionMethod, RefundExecutionStatus, RefundStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect } from "./orders";
+import { adjustWallet } from "./users";
 import {
   createRefund,
+  executeRefund,
   listRefunds,
   transitionRefundStatus,
   createRefundItem,
@@ -218,6 +221,76 @@ describe("transitionRefundStatus — state machine", () => {
     const admin = await makeAdmin();
     const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
     await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: admin.id,
+      acknowledgeNoPayout: true,
+    });
+
+    const auditRows = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    const completedRow = auditRows.find((r) => (r.details ?? "").includes("PROCESSING") && (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("Record-keeping only — no payout was triggered");
+  });
+
+  it("a COMPLETED transition beside a real payout says the buyer WAS paid, and names the execution", async () => {
+    // The `executeRefund` shape: the payout is made and the RefundExecution row
+    // written BEFORE the transition closes the record, in the same transaction.
+    // The row is inserted directly here because what is under test is the
+    // sentence this function chooses, not the payout stack that produces the row
+    // (refundExecution.test.ts covers the integrated path). Telling a shop admin
+    // "record-keeping only — no payout was triggered" beside a wallet credit the
+    // buyer has already received reads as "they have NOT been paid", which is the
+    // opposite of the truth.
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    const execution = await prisma.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: RefundExecutionMethod.WALLET,
+        amount: "5.00",
+        currency: "IDR",
+        status: RefundExecutionStatus.COMPLETED,
+        executedBy: admin.id,
+        executedAt: new Date(),
+      },
+    });
+
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PROCESSING,
+      to: RefundStatus.COMPLETED,
+      adminId: admin.id,
+      acknowledgeNoPayout: true,
+    });
+
+    const auditRows = await prisma.auditLog.findMany({ where: { action: "refund_status_change", targetId: refund.id } });
+    const completedRow = auditRows.find((r) => (r.details ?? "").includes("PROCESSING") && (r.details ?? "").includes("COMPLETED"))!;
+    expect(completedRow.details).toContain("The buyer has been paid");
+    expect(completedRow.details).toContain(`refund execution #${execution.id}`);
+    expect(completedRow.details).not.toContain("no payout was triggered");
+  });
+
+  it("ignores a FAILED execution when wording the COMPLETED line — a bounced transfer paid nobody", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const refund = await createRefund(prisma, { orderId: order.id, amount: "5.00", currency: "IDR", adminId: admin.id });
+    await transitionRefundStatus(prisma, { refundId: refund.id, from: RefundStatus.PENDING, to: RefundStatus.PROCESSING, adminId: admin.id });
+    await prisma.refundExecution.create({
+      data: {
+        refundId: refund.id,
+        method: RefundExecutionMethod.MANUAL_TRANSFER,
+        amount: "5.00",
+        currency: "IDR",
+        status: RefundExecutionStatus.FAILED,
+        executedBy: admin.id,
+        executedAt: new Date(),
+      },
+    });
 
     await transitionRefundStatus(prisma, {
       refundId: refund.id,
@@ -627,5 +700,183 @@ describe("createRefundItem — rejects attaching to a terminal Refund", () => {
 
     const refundItem = await createRefundItem(prisma, { refundId: refund.id, orderItemId: item.id, amount: "1.00", adminId: admin.id });
     expect(refundItem.amount.toString()).toBe("1");
+  });
+});
+
+/**
+ * `executeRefund`'s ORDER-level refundable ceiling (whole-branch review decision
+ * D4).
+ *
+ * Three different code paths give money back to a buyer for one order, built at
+ * different times, and the ceiling originally counted only the newest of them. An
+ * order already refunded through either of the other two could therefore be paid
+ * out AGAIN for its whole value — a buyer keeps what they were given and is paid
+ * the total on top of it.
+ *
+ * Not reachable through the routes shipped today (`executeRefund`'s only
+ * production caller requires a DELIVERED order, and both other paths leave the
+ * order elsewhere), which is exactly why it needs tests rather than a note: the
+ * guard is invisible until a generic admin refund route exists, and by then
+ * nobody will re-derive it.
+ */
+describe("executeRefund — the refundable ceiling counts every way money went back", () => {
+  /** A PROCESSING refund — the only state `executeRefund` accepts. */
+  async function makeProcessingRefund(orderId: number, amount: Decimal.Value, adminId: number) {
+    const refund = await createRefund(prisma, { orderId, amount, currency: "IDR", adminId });
+    await transitionRefundStatus(prisma, {
+      refundId: refund.id,
+      from: RefundStatus.PENDING,
+      to: RefundStatus.PROCESSING,
+      adminId,
+    });
+    return refund;
+  }
+
+  /**
+   * The row `refundUnderpaidOrder` (crud/binance_internal.ts) writes: an
+   * already-COMPLETED `Refund` with NO `RefundExecution`, created directly rather
+   * than through the state machine. Written the same way here, because the shape
+   * is the whole point — it is what the ceiling has to notice.
+   */
+  async function makeLegacyCompletedRefund(orderId: number, amount: string) {
+    return prisma.refund.create({
+      data: {
+        orderId,
+        amount,
+        currency: "IDR",
+        status: RefundStatus.COMPLETED,
+        processedAt: new Date(),
+      },
+    });
+  }
+
+  /** An order's total, quantized the way the ceiling compares it. */
+  const totalOf = (order: { totalAmount: Decimal.Value }) => new Decimal(order.totalAmount);
+
+  it("refuses a payout on an order already refunded through the underpaid path", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    await makeLegacyCompletedRefund(order.id, totalOf(order).toString());
+    const refund = await makeProcessingRefund(order.id, "1.00", admin.id);
+
+    await expect(
+      executeRefund(prisma, {
+        refundId: refund.id,
+        method: RefundExecutionMethod.WALLET,
+        amount: "1.00",
+        executedBy: admin.id,
+      }),
+    ).rejects.toMatchObject({ key: "error.refund_exceeds_refundable_amount" });
+
+    // Nothing recorded and nothing paid: the refund stays PROCESSING and the
+    // buyer's balance is untouched.
+    expect(await prisma.refundExecution.count({ where: { refundId: refund.id } })).toBe(0);
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(buyer.walletBalance.toString()).toBe("0");
+  });
+
+  it("refuses a payout on an order already credited back as wallet balance", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    // What `creditOrderToBalance` (crud/orders.ts) writes: an
+    // `unfulfilled_credit` movement against the order, and NO Refund row at all,
+    // so neither refund-shaped read can see it.
+    await adjustWallet(prisma, sample.user.id, totalOf(order), {
+      reason: "unfulfilled_credit",
+      currency: "IDR",
+      orderId: order.id,
+      adminId: admin.id,
+    });
+    const refund = await makeProcessingRefund(order.id, "1.00", admin.id);
+
+    await expect(
+      executeRefund(prisma, {
+        refundId: refund.id,
+        method: RefundExecutionMethod.WALLET,
+        amount: "1.00",
+        executedBy: admin.id,
+      }),
+    ).rejects.toMatchObject({ key: "error.refund_exceeds_refundable_amount" });
+    expect(await prisma.refundExecution.count({ where: { refundId: refund.id } })).toBe(0);
+  });
+
+  it("leaves exactly the remainder refundable after a partial underpaid refund", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const remainder = totalOf(order).minus("2.00");
+    await makeLegacyCompletedRefund(order.id, "2.00");
+
+    // One cent more than the remainder is refused...
+    const tooMuch = await makeProcessingRefund(order.id, remainder.plus("0.01"), admin.id);
+    await expect(
+      executeRefund(prisma, {
+        refundId: tooMuch.id,
+        method: RefundExecutionMethod.WALLET,
+        amount: remainder.plus("0.01"),
+        executedBy: admin.id,
+      }),
+    ).rejects.toMatchObject({ key: "error.refund_exceeds_refundable_amount" });
+
+    // ...and exactly the remainder is allowed. A ceiling that only ever refused
+    // would pass the two cases above for the wrong reason.
+    const exact = await makeProcessingRefund(order.id, remainder, admin.id);
+    const execution = await executeRefund(prisma, {
+      refundId: exact.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: remainder,
+      executedBy: admin.id,
+    });
+    expect(execution.amount.toString()).toBe(remainder.toString());
+  });
+
+  it("counts a refund with a COMPLETED execution once, not twice", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    const first = await makeProcessingRefund(order.id, "2.00", admin.id);
+    await executeRefund(prisma, {
+      refundId: first.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: "2.00",
+      executedBy: admin.id,
+    });
+
+    // That refund is now COMPLETED *and* has a COMPLETED execution, so it matches
+    // the execution read — and must NOT also match the "no execution at all" read,
+    // or 2.00 would be deducted twice and the remainder would be short.
+    const remainder = totalOf(order).minus("2.00");
+    const second = await makeProcessingRefund(order.id, remainder, admin.id);
+    const execution = await executeRefund(prisma, {
+      refundId: second.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: remainder,
+      executedBy: admin.id,
+    });
+
+    expect(execution.amount.toString()).toBe(remainder.toString());
+    const buyer = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(buyer.walletBalance.toString()).toBe(totalOf(order).toString());
+  });
+
+  it("ignores an unfulfilled_credit movement in another currency", async () => {
+    const { order } = await makeOrderWithItem();
+    const admin = await makeAdmin();
+    // IDR and USDT are unconvertible here, so a USDT credit says nothing about
+    // how much of an IDR order has been given back — deducting it would be a
+    // meaningless number, not a conservative one.
+    await adjustWallet(prisma, sample.user.id, totalOf(order), {
+      reason: "unfulfilled_credit",
+      currency: "USDT",
+      orderId: order.id,
+      adminId: admin.id,
+    });
+    const refund = await makeProcessingRefund(order.id, "1.00", admin.id);
+
+    const execution = await executeRefund(prisma, {
+      refundId: refund.id,
+      method: RefundExecutionMethod.WALLET,
+      amount: "1.00",
+      executedBy: admin.id,
+    });
+    expect(execution.amount.toString()).toBe("1");
   });
 });

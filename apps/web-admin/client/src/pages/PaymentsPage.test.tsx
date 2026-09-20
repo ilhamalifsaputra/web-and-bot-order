@@ -908,6 +908,42 @@ describe("PaymentsPage — underpaid order resolution", () => {
 
     expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
   });
+
+  // P2. "Deliver anyway" on a manual-delivery SKU runs `approveOrder`'s stock
+  // allocation, which refuses with `error.cannot_deliver_out_of_stock` naming the
+  // product (crud/orders.ts) — see crud/binance_internal.ts's own comment on
+  // `deliverUnderpaidOrder`, which calls this the expected failure for that SKU.
+  // The route used to send the key alone, so an admin with several underpaid
+  // orders open was told "this item" and left to guess which one. The figure now
+  // travels as `error_args` and `describeError` puts it in the toast.
+  it("names the product in a stock refusal instead of saying 'this item'", async () => {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
+    vi.mocked(apiPost).mockRejectedValueOnce(
+      Object.assign(new Error("error.cannot_deliver_out_of_stock"), {
+        status: 422,
+        errorArgs: { product: "Mobile Legends 86 Diamonds" },
+      }),
+    );
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Deliver anyway"));
+
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+
+    expect(
+      await screen.findByText(
+        "Mobile Legends 86 Diamonds has no stock reserved and can't be delivered automatically — refund or credit the buyer instead.",
+      ),
+    ).toBeInTheDocument();
+    // The braces themselves must never reach an admin — that is the whole F4a
+    // failure mode, one surface over.
+    expect(screen.queryByText(/\{product\}/)).not.toBeInTheDocument();
+  });
 });
 
 // Idempotency-Key. All six payment mutations read one (see

@@ -128,7 +128,7 @@ export function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
       setForm({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const cancel = useMutation({
@@ -137,7 +137,7 @@ export function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
       toast.success("Broadcast cancelled.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const saveDraft = useMutation({
@@ -153,7 +153,7 @@ export function BroadcastPage() {
       setForm({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
       toast.success("Draft saved.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const queueDraft = useMutation({
@@ -162,7 +162,7 @@ export function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
       toast.success("Broadcast queued to send.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const deleteDraft = useMutation({
@@ -171,7 +171,7 @@ export function BroadcastPage() {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
       toast.success("Draft deleted.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) return <PageLayout title="Broadcast"><p className="text-sm text-rust">Failed to load broadcast.</p></PageLayout>;

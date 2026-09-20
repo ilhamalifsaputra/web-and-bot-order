@@ -74,7 +74,7 @@ export function CategoriesPage() {
       await apiPost(`/api/catalog/categories/${id}/active`, { active: isActive });
       await invalidateCatalog();
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update the category."));
+      toast.error(describeError(e, "Failed to update the category."));
     } finally {
       setToggling((s) => {
         const n = new Set(s);
@@ -95,7 +95,7 @@ export function CategoriesPage() {
       await apiPost("/api/catalog/categories/reorder", { ids });
       await invalidateCatalog();
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to reorder categories."));
+      toast.error(describeError(e, "Failed to reorder categories."));
     } finally {
       setReordering(false);
     }

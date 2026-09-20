@@ -96,7 +96,10 @@ describe("storefront cart-size cap (M-7)", () => {
         payload: { method: "bybit" },
       });
       expect(res.statusCode).toBe(400);
-      expect(res.json()).toEqual({ error: "error.cart_too_large" });
+      // `error_args` carries the `{limit}` the copy names (whole-branch review
+      // F4a) — without it the buyer read "max {limit} total" with the braces
+      // still in it, which is the one number the message exists to tell them.
+      expect(res.json()).toEqual({ error: "error.cart_too_large", error_args: { limit: expect.any(String) } });
       // The whole point of the fix: an over-cap cart never even opens the
       // write transaction that the per-unit allocation loop would otherwise
       // hold for seconds.

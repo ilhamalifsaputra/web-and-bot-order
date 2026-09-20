@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OrderStatus, OrderKind } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import type { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { evaluatePollHealth } from "@app/core/payments/pollHealth";
@@ -180,7 +181,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         details: `Delivered underpaid order ${order.orderCode} anyway.`,
       });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
     logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
@@ -258,7 +259,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
           : "Marked an underpaid order refunded, but returned nothing to the buyer's wallet because no payment record shows how much they actually sent. Refund them by hand if they really did pay.",
       });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
     // `refunded`/`currency` go back to the browser so the admin panel can tell
@@ -327,7 +328,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
           : "Cancelled underpaid top-up order, but credited nothing to the buyer's wallet because no payment record shows how much they actually sent. Credit them by hand if they really did pay.",
       });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
     // `credited`/`currency` go back to the browser so the admin panel can tell
@@ -390,7 +391,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         });
       });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
     return respond(200, { ok: true });
@@ -466,7 +467,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
       return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
   });
@@ -543,8 +544,11 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       logger.info(`Admin ${req.admin!.userId} credited Binance transfer ${binanceTxId} to order ${orderCode}'s buyer balance via the web panel`);
       return respond(200, { ok: true });
     } catch (e) {
+      // Not an AppError and so not `errorBody`'s business: its message is already
+      // a finished English sentence naming the order code, not an i18n key with
+      // figures to attach.
       if (e instanceof NotFoundError) return respond(404, { error: e.message });
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
   });
@@ -605,7 +609,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       logger.info(`Admin ${req.admin!.userId} dismissed unmatched Binance transfer ${binanceTxId} via the web panel`);
       return respond(200, { ok: true });
     } catch (e) {
-      if (e instanceof ValidationError) return respond(422, { error: e.message });
+      if (e instanceof ValidationError) return respond(422, errorBody(e));
       throw e;
     }
   });

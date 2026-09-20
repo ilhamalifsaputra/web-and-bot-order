@@ -44,6 +44,14 @@ export interface DashboardKpis {
     usd: string | null;
     trendPct: { idr: string | null; usdt: string | null };
   };
+  /** Refunds actually paid out today, per currency — COMPLETED
+   *  RefundExecution.amount, the real payout figure, never the Refund request's
+   *  amount. `null` means none (same null-when-zero convention as `revenue`). */
+  refunds: { idr: string | null; usdt: string | null };
+  /** Today's gross sales (`revenue` above) minus today's `refunds`, per
+   *  currency. Never clamped at zero: a refund may be for an order sold on an
+   *  earlier day, so this can legitimately be negative and must render as such. */
+  netSales: { idr: string | null; usdt: string | null };
   profit: { idr: CurrencyProfit | null; usdt: CurrencyProfit | null };
   orders: { total: number; delivered: number; pending: number; failed: number };
   pendingActions: {
@@ -138,11 +146,20 @@ export interface DigiflazzSyncStatus {
   finishedAt: string;
 }
 
-export type AnalyticsRange = "7d" | "30d";
+/** `7d`/`30d` are rolling daily windows; `week`/`month`/`year` are calendar
+ *  rollups (Financial Ledger M6, Task 6c) — 12 ISO weeks, 12 calendar months or
+ *  5 calendar years, all UTC-bounded. */
+export type AnalyticsRange = "7d" | "30d" | "week" | "month" | "year";
 export type AnalyticsCurrency = "idr" | "usdt" | "combined";
-export type AnalyticsMetric = "revenue" | "orders";
+export type AnalyticsMetric = "revenue" | "orders" | "profit";
 
 export interface AnalyticsPoint {
-  day: string; // YYYY-MM-DD
-  value: string | number; // string for money series, number for order-count series
+  /** The bucket label: `2026-06-25` for a daily series, `2026-W38` / `2026-09` /
+   *  `2026` for the calendar ranges. One field for every granularity, so the
+   *  chart's `dataKey="day"` needs no per-range branching. */
+  day: string;
+  /** String for money series, number for order counts, and `null` for a profit
+   *  bucket with no cost-known delivered sale — an unknown profit, which must be
+   *  drawn as a gap and never coerced to a zero that reads like break-even. */
+  value: string | number | null;
 }

@@ -275,6 +275,34 @@ describe("deliverPaidInternalOrder — Payment ledger confirmation (Task A2b)", 
     expect(confirmed.pendingOrderId).toBeNull();
   });
 
+  // Financial Ledger M3 (Task 3b): the confirmation now also captures the
+  // gateway's own transaction id. This rail reports no fee figure anywhere in
+  // its poller payload, so `fee`/`netAmount` stay null — Payment.fee's
+  // documented "not known", not a claim that Binance Internal is free.
+  it("captures the Binance transfer id as the Payment row's providerTransactionId, and no fee figures", async () => {
+    const order = await makePendingInternalOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BINANCE_INTERNAL,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: order.paymentRef,
+    });
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-m3-capture-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe("tx-m3-capture-1");
+    expect(confirmed.fee).toBeNull();
+    expect(confirmed.netAmount).toBeNull();
+  });
+
   it("confirms the Payment attempt on a WALLET_TOPUP delivery too", async () => {
     const { user } = sample;
     const order = await prisma.$transaction((tx) =>
@@ -297,6 +325,9 @@ describe("deliverPaidInternalOrder — Payment ledger confirmation (Task A2b)", 
 
     const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
     expect(confirmed.status).toBe("CONFIRMED");
+    // The WALLET_TOPUP branch captures the transfer id too (Task 3b) — both of
+    // this function's confirm call sites are wired, not just the product one.
+    expect(confirmed.providerTransactionId).toBe("tx-ledger-confirm-topup-1");
   });
 
   it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {

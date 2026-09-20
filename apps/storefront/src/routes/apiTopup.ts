@@ -78,6 +78,7 @@ import { csrfOk, originOk } from "./cart";
 import { normalizeGuestEmail, normalizeIdempotencyKey, sendGuestOrderCodeEmail, withGuestCsrf } from "./api";
 import { establishSession } from "./auth";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "@app/core/errorBody";
 
 interface CheckAccountResponse {
   available: boolean;
@@ -401,14 +402,20 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
         );
       } catch (e) {
         if (e instanceof ValidationError) {
-          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
         }
         throw e;
       }
     }
 
     try {
-      const { orderCode } = await performDirectCheckout(customer, line, method, voucherCode, req.body?.customer_data);
+      const { orderCode, settledWithoutGateway } = await performDirectCheckout(
+        customer,
+        line,
+        method,
+        voucherCode,
+        req.body?.customer_data,
+      );
 
       // Mail the recovery code to guests only, keyed on the BUYER'S ROW
       // (`user.isGuest`) rather than on `isGuest` above — a retry after a
@@ -419,11 +426,16 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       const guestEmail = customer.user.isGuest ? customer.user.guestEmail : null;
       const emailSent = guestEmail ? await sendGuestOrderCodeEmail(req, guestEmail, orderCode) : false;
 
-      const body = { order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` };
+      // Fully-discounted orders go to the order page, not the pay page — same
+      // reasoning (and same wallet-branch precedent) as POST /api/v1/checkout.
+      const body = {
+        order_code: orderCode,
+        pay_url: settledWithoutGateway ? `/account/orders/${orderCode}` : `/checkout/${orderCode}/pay`,
+      };
       return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
       }
       throw e;
     }

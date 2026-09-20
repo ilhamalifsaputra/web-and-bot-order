@@ -184,6 +184,11 @@ describe("createOrderFromCart under true Postgres concurrency — checkoutIntent
 describe("createInternalOrder (Binance Internal wrapper) under true Postgres concurrency — checkoutIntentId collision", () => {
   it("5 concurrent buyers, SAME checkoutIntentId, ample stock: exactly 1 order is created, 4 reject with DuplicateCheckoutIntentError", async () => {
     const { product } = sample;
+    // M11: the fixture SKU costs Rp5, which converts to 0.0 USDT at this rate,
+    // and finalizeOrderPayment now refuses to put a nothing-to-collect total on
+    // a gateway. Price it realistically — this race is about the
+    // checkoutIntentId unique index, not about the amount.
+    await prisma.denomination.update({ where: { id: product.id }, data: { price: "80000" } });
     const buyers = await makeBuyers(5);
     const checkoutIntentId = randomUUID();
 

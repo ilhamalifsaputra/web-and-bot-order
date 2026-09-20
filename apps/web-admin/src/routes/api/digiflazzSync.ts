@@ -19,6 +19,7 @@ import {
 import { getPriceList } from "@app/core/suppliers/digiflazz";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
@@ -228,7 +229,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       try {
         await resolveDetectionIssue(prisma, id, req.admin!.userId);
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+        if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
         throw e;
       }
       return reply.send({ ok: true });
@@ -246,7 +247,7 @@ export default async function digiflazzSyncApiRoutes(app: FastifyInstance): Prom
       try {
         await dismissDetectionIssue(prisma, id, req.admin!.userId);
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+        if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
         throw e;
       }
       return reply.send({ ok: true });

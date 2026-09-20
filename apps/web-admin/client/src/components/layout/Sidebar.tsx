@@ -23,6 +23,7 @@ import {
   Zap,
   HardDrive,
   Wallet,
+  Landmark,
   X,
 } from "lucide-react";
 import { useOperations } from "../../hooks/useOperations";
@@ -59,6 +60,13 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/orders", label: "Orders", icon: ShoppingCart, badge: "orders" },
       { to: "/payments", label: "Payments", icon: CreditCard },
       { to: "/wallet-transactions", label: "Wallet Ledger", icon: Wallet },
+      // Recording a batch is super-admin only (/api/settlements is a CONFIG
+      // prefix in plugins/auth.ts), but the entry is listed for every role the
+      // same way /admins is: the SPA carries no role of its own, so hiding it
+      // would need a role in the client that does not exist, and the page
+      // surfaces the server's 403 rather than the nav pretending the surface
+      // isn't there.
+      { to: "/settlements", label: "Settlements", icon: Landmark },
     ],
   },
   {

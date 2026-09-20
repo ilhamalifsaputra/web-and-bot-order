@@ -23,7 +23,7 @@ export { formatCompactQty, formatCompactPrice } from "@app/core/compactFormat";
 
 /**
  * Catalog price display (plan.md §15.6): the central Rupiah price with the
- * derived USDT info BESIDE it — "Rp79.000 (≈ $4.9)" — or just the Rupiah when
+ * derived USDT info BESIDE it — "Rp79.000 (≈ $4.94)" — or just the Rupiah when
  * no usd_idr_rate is set. Use for product/cart/confirmation amounts; NOT for
  * wallet balances or USDT-order totals (those are USDT figures).
  */

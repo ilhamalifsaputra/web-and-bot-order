@@ -275,7 +275,7 @@ export function PaymentsPage() {
       setMatchForm({ binance_tx_id: "", order_code: "" });
       setMatchError(null);
     },
-    onError: (e: Error) => setMatchError(describeError(e.message)),
+    onError: (e: Error) => setMatchError(describeError(e)),
   });
 
   const dismiss = useMutation({
@@ -285,7 +285,7 @@ export function PaymentsPage() {
       toast.success("Transfer dismissed.");
       setPendingDismiss(null);
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const creditToBalance = useMutation({
@@ -296,7 +296,7 @@ export function PaymentsPage() {
       setPendingCredit(null);
       setCreditOrderCode("");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const deliverAnyway = useMutation({
@@ -305,7 +305,7 @@ export function PaymentsPage() {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order delivered.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   // Takes the whole row for the same reason `creditAnyway` below does: the
@@ -332,7 +332,7 @@ export function PaymentsPage() {
         );
       }
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const cancelUnderpaid = useMutation({
@@ -341,7 +341,7 @@ export function PaymentsPage() {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Order cancelled.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   // Takes the whole row, not just its id, so the "nothing was credited" branch
@@ -369,7 +369,7 @@ export function PaymentsPage() {
         );
       }
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const ledgerRows = data?.ledger ?? [];

@@ -43,6 +43,10 @@ import {
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
   completeOrderWithWalletCredit,
+  settleFullyDiscountedOrder,
+  orderHasNothingLeftToCollect,
+  orderTotalClearsRailMinimum,
+  usdIdrQuoteIsFresh,
   createOrderDirect,
   finalizeOrderPayment,
   getUsdIdrRate,
@@ -311,6 +315,62 @@ async function computeTotals(
  * ad-hoc denomination instead of the buyer's cart, with no cart read at all.
  * That is what makes `POST /api/v1/topup/preview` (routes/apiTopup.ts) a
  * parameter on this one implementation rather than a second, drifting one. */
+/** The six gateway rails, with the currency each one settles in. */
+const GATEWAY_RAILS = [
+  [PaymentMethod.TOKOPAY, OrderCurrency.IDR],
+  [PaymentMethod.PAYDISINI, OrderCurrency.IDR],
+  [PaymentMethod.BINANCE_INTERNAL, OrderCurrency.USDT],
+  [PaymentMethod.BYBIT, OrderCurrency.USDT],
+  [PaymentMethod.BYBIT_BSC, OrderCurrency.USDT],
+  [PaymentMethod.NOWPAYMENTS, OrderCurrency.USDT],
+] as const;
+
+/**
+ * Which rails a cart totalling `total` could actually be finalized on, keyed by
+ * PaymentMethod (M11). Reads `orderTotalClearsRailMinimum` — the SAME helper
+ * the finalize-time guard throws from — so this page can never offer a method
+ * that would be refused the moment the buyer picked it.
+ *
+ * Two deliberate non-filters:
+ *  - A total of zero clears nothing, yet needs no rail at all: such an order is
+ *    settled from the shop's own books whichever method is submitted
+ *    (`settleFullyDiscountedOrder`). Filtering there would hide every option
+ *    and strand a buyer whose voucher covered their whole cart — a guest most
+ *    of all, since the wallet rows are never offered to one.
+ *  - A missing exchange rate leaves the USDT rails' answer to their existing
+ *    `haveRate` gate rather than judging them against an amount we cannot
+ *    convert.
+ *
+ * Not affected by whole-branch review D6, and worth saying so because the bot's
+ * equivalent needed checking: `total` is the full cart total, and it is also the
+ * full amount every gateway rail here will be asked for. The storefront never
+ * combines wallet credit with a gateway — `performCheckout` and
+ * `performDirectCheckout` deliberately pass no `walletAmount`, and the SPA
+ * exposes credit only as an all-or-nothing method of its own that settles
+ * without a gateway. So there is no credit that could lower the amount to
+ * collect between this list and the finalize-time guard.
+ */
+async function railsClearingTheTotal(
+  total: Decimal,
+  fxRate: Awaited<ReturnType<typeof getUsdIdrRate>>,
+): Promise<Record<string, boolean>> {
+  const out: Record<string, boolean> = {};
+  const nothingToCollect = !total.greaterThan(0);
+  for (const [method, currency] of GATEWAY_RAILS) {
+    if (nothingToCollect || (currency === OrderCurrency.USDT && !fxRate)) {
+      out[method] = true;
+      continue;
+    }
+    out[method] = await orderTotalClearsRailMinimum(prisma, {
+      method,
+      currency,
+      idrAmount: total,
+      railAmount: currency === OrderCurrency.IDR ? total : usdtFromIdr(total, fxRate!),
+    });
+  }
+  return out;
+}
+
 export async function checkoutView(
   req: FastifyRequest,
   customer: Customer | null,
@@ -329,6 +389,35 @@ export async function checkoutView(
     getNowpaymentsCreds(prisma),
   ]);
   const haveRate = Boolean(fxRate);
+  // Third condition on every USDT rail, beyond "configured" and "clears the
+  // minimum": the saved rate must still be inside its quote lifetime, read
+  // through the same helper `finalizeOrderPayment`'s guard throws from. `fxRate`
+  // only goes null once `fx_rate_max_age_hours` has passed (two days by
+  // default), so between the one-hour quote TTL and that horizon the page used
+  // to offer every USDT method and have each one refused with
+  // `error.fx_quote_expired` the moment it was submitted.
+  //
+  // Zero total exempt for the same reason railsClearingTheTotal exempts it: a
+  // nothing-left-to-collect cart is settled from the shop's own books and never
+  // reaches the guard, so hiding its options would strand the buyer.
+  const usdtRailsOfferable =
+    haveRate && (!totals.total.greaterThan(0) || (await usdIdrQuoteIsFresh(prisma)));
+  const clears = await railsClearingTheTotal(totals.total, fxRate);
+  // "Is this rail switched on and usable at all", before the minimums have a say.
+  // Kept separate from the flags below so the page can tell the buyer WHICH of
+  // two very different things happened: a shop with no working gateway (nothing
+  // they can do but wait or ask), or a total under every gateway's floor (which
+  // they fix by buying a little more). One "no payment methods, contact support"
+  // message for both was wrong half the time.
+  const railLive: Record<string, boolean> = {
+    [PaymentMethod.TOKOPAY]: Boolean(tokopay),
+    [PaymentMethod.PAYDISINI]: Boolean(paydisini),
+    [PaymentMethod.BINANCE_INTERNAL]: usdtRailsOfferable && binance.enabled,
+    [PaymentMethod.BYBIT]: usdtRailsOfferable && bybit.enabled,
+    [PaymentMethod.BYBIT_BSC]: usdtRailsOfferable && bybitBsc.enabled,
+    [PaymentMethod.NOWPAYMENTS]: usdtRailsOfferable && Boolean(nowpayments),
+  };
+  const offered = (method: string) => railLive[method]! && clears[method]!;
   return {
     items_empty: totals.empty,
     // Per-item data (Task 6): the SPA's checkout info-collection step needs
@@ -357,12 +446,21 @@ export async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    binance_enabled: haveRate && binance.enabled,
-    bybit_enabled: haveRate && bybit.enabled,
-    bybit_bsc_enabled: haveRate && bybitBsc.enabled,
-    idr_enabled: Boolean(tokopay),
-    paydisini_enabled: Boolean(paydisini),
-    nowpayments_enabled: haveRate && Boolean(nowpayments),
+    binance_enabled: offered(PaymentMethod.BINANCE_INTERNAL),
+    bybit_enabled: offered(PaymentMethod.BYBIT),
+    bybit_bsc_enabled: offered(PaymentMethod.BYBIT_BSC),
+    idr_enabled: offered(PaymentMethod.TOKOPAY),
+    paydisini_enabled: offered(PaymentMethod.PAYDISINI),
+    nowpayments_enabled: offered(PaymentMethod.NOWPAYMENTS),
+    // Every working gateway was filtered out by a minimum, and only by that:
+    // there IS a live rail, the cart is simply too cheap for it. The buyer can
+    // act on this, so the page says so instead of sending them to support. False
+    // when no rail is live in the first place (nothing to do with the total) and
+    // on a zero total (never filtered at all — see railsClearingTheTotal).
+    below_all_minimums:
+      totals.total.greaterThan(0) &&
+      GATEWAY_RAILS.some(([method]) => railLive[method]) &&
+      !GATEWAY_RAILS.some(([method]) => offered(method)),
     wallet_idr: customer ? new Decimal(customer.user.walletBalance).toString() : "0",
     wallet_usdt: customer ? new Decimal(customer.user.walletBalanceUsdt).toString() : "0",
     // Balance payment methods are only ever offered to signed-in buyers — a
@@ -464,6 +562,14 @@ export function payState(order: OrderRow) {
   if (
     order.status === OrderStatus.PENDING_VERIFICATION ||
     order.status === OrderStatus.PAID ||
+    // A MANUAL / MANUAL_WITH_INFO SKU's paid order waits here for an admin to
+    // hand-type and send the account (PAID → PROCESSING → DELIVERED). It is the
+    // most alive an order gets, and it used to fall into the "closed" catch-all
+    // below — so a buyer who had just paid for a hand-fulfilled SKU, or whose
+    // voucher covered one entirely, was shown "This order is closed." The
+    // "Payment received — finishing up your order…" copy this state renders is
+    // exactly what is happening.
+    order.status === OrderStatus.PROCESSING ||
     // Bybit BSC in-flight states (deposit seen / confirming on-chain / fully
     // confirmed) — without these, a live Bybit BSC order would fall into the
     // "closed" catch-all below and render as dead the moment a deposit is
@@ -549,13 +655,20 @@ async function resolveGatewayPaymentChoice(method: string): Promise<GatewayPayme
  * /checkout (routes/apiCheckout.ts) calls. Throws ValidationError
  * (unavailable method, too many pending orders, generic failure) exactly as
  * the former inline HTML-route code used to.
+ *
+ * `settledWithoutGateway` reports which of the two outcomes happened, because
+ * they need different next screens: a normal order is waiting to be paid and
+ * belongs on the pay page, while a fully-discounted one is already paid and
+ * (for an auto SKU) delivered, and belongs on the order page like the
+ * wallet-credit siblings below. Sending a settled order to the pay page showed
+ * the buyer a payment screen for an order nobody owes anything on.
  */
 export async function performCheckout(
   customer: Customer,
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
-): Promise<{ orderCode: string }> {
+): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
   // Fail fast on an over-cap cart BEFORE even opening the write transaction
@@ -629,9 +742,16 @@ export async function performCheckout(
       customerData: customerDataJson,
     });
     if (!created) throw new ValidationError("error.generic");
-    return finalizeOrderPayment(tx, created.id, choice);
+    // A voucher or bulk rule can cover the whole cart, leaving nothing for the
+    // rail the buyer picked to collect (M11). Settle it from the shop's own
+    // books instead of opening a gateway payment for Rp0 — the buyer still
+    // gets a paid, delivered order, which is what they are owed.
+    if (orderHasNothingLeftToCollect(created)) {
+      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+    }
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
   });
-  return { orderCode: order!.orderCode };
+  return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
 /**
@@ -720,7 +840,7 @@ export async function performDirectCheckout(
   method: string,
   voucherCode: string | null,
   customerData?: unknown,
-): Promise<{ orderCode: string }> {
+): Promise<{ orderCode: string; settledWithoutGateway: boolean }> {
   const choice = await resolveGatewayPaymentChoice(method);
 
   const order = await prisma.$transaction(async (tx) => {
@@ -741,9 +861,14 @@ export async function performDirectCheckout(
       customerData: directCustomerDataJson(denom, line.quantity, customerData),
     });
     if (!created) throw new ValidationError("error.generic");
-    return finalizeOrderPayment(tx, created.id, choice);
+    // Same zero-total routing as performCheckout above — see its comment,
+    // including why the caller is told which branch ran.
+    if (orderHasNothingLeftToCollect(created)) {
+      return { order: (await settleFullyDiscountedOrder(tx, created.id)).order, settled: true };
+    }
+    return { order: await finalizeOrderPayment(tx, created.id, choice), settled: false };
   });
-  return { orderCode: order!.orderCode };
+  return { orderCode: order.order!.orderCode, settledWithoutGateway: order.settled };
 }
 
 /**
@@ -1039,7 +1164,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const cb = verifyCallback(body, creds);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Neither the signature nor the body is logged: the signature is the
+      // credential this route authenticates on, and a rejected body is
+      // attacker-controlled bytes (CLAUDE.md, "Never log secrets"). The fact of
+      // the rejection is what an operator needs, and the rate limiter above
+      // bounds how many of these one source can produce.
+      logger.warn(
+        `Rejected a TokoPay payment callback because its signature did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the merchant secret in Settings no longer matches TokoPay's.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
@@ -1050,6 +1185,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // 2026-06-23).
     if (!order || order.paymentMethod !== PaymentMethod.TOKOPAY || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      logger.warn(
+        `A signed TokoPay callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no TokoPay rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+      );
       return reply.send({ status: "unmatched" });
     }
 
@@ -1136,13 +1274,23 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const cb = verifyPaydisiniCallback(body, creds);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Same reasoning as the TokoPay callback above — see the comment there
+      // for why neither the signature nor the rejected body is logged.
+      logger.warn(
+        `Rejected a PayDisini payment callback because its signature did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the API key in Settings no longer matches PayDisini's.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
     // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
     if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      logger.warn(
+        `A signed PayDisini callback reported a payment of ${cb.amount.toString()} against reference "${cb.refId}", but no PayDisini rupiah order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+      );
       return reply.send({ status: "unmatched" });
     }
 
@@ -1253,7 +1401,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       const rawBody = (req as FastifyRequest & { rawBody?: string }).rawBody ?? "";
       const sigHeader = req.headers["x-nowpayments-sig"];
       const cb = verifyIpn(rawBody, body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
-      if (!cb) return reply.code(403).send({ status: "bad signature" });
+      if (!cb) {
+        // Same reasoning as the TokoPay callback above — see the comment there
+        // for why neither the signature nor the rejected body is logged. This
+        // route has one extra way to land here that the other two do not: the
+        // `x-nowpayments-sig` header can be missing entirely, which verifyIpn
+        // rejects exactly like a wrong one.
+        logger.warn(
+          `Rejected a NOWPayments IPN callback because its signature header was missing or did not verify — no order was looked up and nothing was delivered. A few of these are ordinary internet noise hitting a public URL, but a steady stream against valid order codes is someone probing the callback, and a sudden start after a deploy usually means the IPN secret in Settings no longer matches NOWPayments'.`,
+        );
+        return reply.code(403).send({ status: "bad signature" });
+      }
       // Only an EXACT "finished" status is a delivery — every other status
       // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
       // expired) is "not ready yet" and ignored, never an error.
@@ -1263,6 +1421,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
       if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
         await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+        logger.warn(
+          `A signed NOWPayments IPN reported a finished payment of ${cb.amount.toString()} against reference "${cb.orderId}", but no NOWPayments USDT order of that code exists — recorded as an unmatched transaction and left for manual review rather than delivered, because there is no order to deliver. Real money may have arrived with nobody credited for it, so somebody should find out whose payment this was.`,
+        );
         return reply.send({ status: "unmatched" });
       }
       // Amount sanity: never deliver on a short/partial payment.
@@ -1338,7 +1499,19 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // secret field exists yet) — apiKey doubles as the signing secret here,
     // matching verifyCallback's own doc comment in @app/core/suppliers/digiflazz.
     const cb = verifyDigiflazzCallback(creds.apiKey, body);
-    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb) {
+      // Same reasoning as the TokoPay/PayDisini/NOWPayments callbacks above:
+      // neither the signature nor the body is logged (CLAUDE.md, "Never log
+      // secrets"), and the pre-existing `webhookRateLimited` check above already
+      // bounds how many of these one source can produce. This route's signing
+      // secret is Digiflazz's own API key rather than a separate webhook
+      // secret, so a sudden run of these usually means that key was rotated in
+      // Settings without updating it here.
+      logger.warn(
+        `Rejected a Digiflazz delivery callback because its signature did not verify — no order was looked up and nothing was delivered. A steady stream against valid order codes is someone probing the callback; a sudden start after a deploy usually means the Digiflazz API key in Settings no longer matches the one Digiflazz is signing with.`,
+      );
+      return reply.code(403).send({ status: "bad signature" });
+    }
 
     const order = await getOrderByCode(prisma, cb.refId);
     if (!order) {

@@ -76,6 +76,12 @@ function stubStatus(body: Record<string, unknown>) {
  * nowpaymentsReconcile.ts's `extractInvoiceId`). */
 async function makeNowpaymentsOrder(invoiceId = "INV-1") {
   const created = await prisma.$transaction(async (tx) => {
+    // M11: the shared fixture SKU costs Rp5, which converts to 0.0 USDT at the
+    // 16000 rate below — finalizeOrderPayment now refuses to put a
+    // nothing-to-collect total on a gateway. Price it realistically; every
+    // amount this file asserts on is derived from the order's own totalAmount,
+    // never from a hard-coded figure.
+    await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     const o = await createOrderDirect(tx, {
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,
@@ -102,6 +108,8 @@ async function makeNowpaymentsOrder(invoiceId = "INV-1") {
  * never gets an invoice cached at all. */
 async function makeNowpaymentsOrderWithoutInvoice() {
   const created = await prisma.$transaction(async (tx) => {
+    // Same M11 fixture pricing as makeNowpaymentsOrder above — see its comment.
+    await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     const o = await createOrderDirect(tx, {
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,

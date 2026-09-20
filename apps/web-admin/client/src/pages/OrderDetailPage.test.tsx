@@ -93,6 +93,8 @@ const ORDER_DETAIL_DATA = {
   canFulfill: false,
   customerDataFields: [] as Array<{ key: string; label: { id: string; en: string }; type: string; required: boolean; options: string[]; placeholder: string }>,
   customerData: [] as Array<Record<string, string>>,
+  // M20: every replacement request ever opened against a unit of this order.
+  stockReplacements: [] as Array<Record<string, unknown>>,
 };
 
 beforeEach(() => {
@@ -418,6 +420,222 @@ describe("OrderDetailPage — manual fulfilment", () => {
   });
 });
 
+/**
+ * M20: a bad delivered account is replaced (or refunded) one PURCHASED UNIT at
+ * a time, from a row action on the Items table this page already rendered. The
+ * guards all live in the service (packages/db/src/crud/stockReplacement.ts) —
+ * what these tests pin down is that the page offers each action only where it
+ * could succeed, and posts to the per-unit route with the reason the admin
+ * actually typed.
+ */
+describe("OrderDetailPage — replacing a bad delivered account", () => {
+  const UNIT_A = {
+    id: 100,
+    quantity: 1,
+    unitPrice: "99000",
+    product: { id: 5, name: "CapCut Pro 1M" },
+    stockItem: { id: 900, credentials: "a@mail.com:pw1" },
+  };
+  const UNIT_B = {
+    id: 101,
+    quantity: 1,
+    unitPrice: "99000",
+    product: { id: 6, name: "Canva Pro 1M" },
+    stockItem: { id: 901, credentials: "b@mail.com:pw2" },
+  };
+
+  function deliveredResponse(overrides: Record<string, unknown> = {}) {
+    return new Response(
+      JSON.stringify({
+        ...ORDER_DETAIL_DATA,
+        order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED", items: [UNIT_A, UNIT_B] },
+        isDelivered: true,
+        canAct: false,
+        ...overrides,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const AWAITING_REQUEST = {
+    id: 7,
+    orderItemId: UNIT_A.id,
+    status: "AWAITING_STOCK",
+    reason: "account banned within 24h",
+    originalStockItemId: 900,
+    replacementStockItemId: null,
+    supportTicketId: null,
+    requestedAt: "2026-01-02T00:00:00.000Z",
+    requestedAtDisplay: "2026-01-02 07:00",
+    resolvedAt: null,
+    resolvedAtDisplay: null,
+    refund: null,
+  };
+
+  it("reports one unit as bad with the typed reason, on the per-unit route", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deliveredResponse());
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, status: "COMPLETED", credentialIssued: true });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getAllByRole("button", { name: /report issue/i })[0]);
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByPlaceholderText(/what was wrong/i), "password changed by the owner");
+    await user.click(within(dialog).getByRole("button", { name: /^report/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/orders/1/items/100/replace", {
+        reason: "password changed by the owner",
+      }),
+    );
+  });
+
+  it("refuses to submit an empty reason — the service requires one", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deliveredResponse());
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getAllByRole("button", { name: /report issue/i })[0]);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: /^report/i })).toBeDisabled();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("offers Retry now and Refund instead — two distinct actions — for a unit waiting on stock", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      deliveredResponse({ stockReplacements: [AWAITING_REQUEST] }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: /retry now/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /refund instead/i })).toBeInTheDocument();
+    // The unit already has an open request, so reporting it again is not on
+    // offer — only the other unit's action is.
+    expect(screen.getAllByRole("button", { name: /report issue/i })).toHaveLength(1);
+    expect(screen.getByText("Awaiting Stock")).toBeInTheDocument();
+  });
+
+  it("retries the allocation for a waiting request", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      deliveredResponse({ stockReplacements: [AWAITING_REQUEST] }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, status: "COMPLETED", credentialIssued: true });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /retry now/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/orders/1/replacements/7/retry", {}),
+    );
+  });
+
+  it("refunds the unit instead, behind a confirmation", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      deliveredResponse({ stockReplacements: [AWAITING_REQUEST] }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, refunded: "99000", currency: "IDR" });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /refund instead/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /^refund/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/orders/1/replacements/7/refund", {}),
+    );
+  });
+
+  it("shows what each past request resolved to, and when", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      deliveredResponse({
+        stockReplacements: [
+          {
+            ...AWAITING_REQUEST,
+            id: 5,
+            status: "COMPLETED",
+            replacementStockItemId: 950,
+            resolvedAt: "2026-01-03T00:00:00.000Z",
+            resolvedAtDisplay: "2026-01-03 07:00",
+          },
+          {
+            ...AWAITING_REQUEST,
+            id: 6,
+            orderItemId: UNIT_B.id,
+            status: "REFUNDED_INSTEAD",
+            resolvedAt: "2026-01-04T00:00:00.000Z",
+            resolvedAtDisplay: "2026-01-04 07:00",
+            refund: { id: 3, amount: "89100", currency: "IDR", status: "COMPLETED" },
+          },
+        ],
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.getByText(/a fresh account was issued/i)).toBeInTheDocument();
+    // Money is rendered through the admin panel's shared display helper, so it
+    // reads as Rp89.100 rather than a raw server string.
+    expect(screen.getByText(/refunded Rp89\.100/i)).toBeInTheDocument();
+    expect(screen.getByText("2026-01-03 07:00")).toBeInTheDocument();
+    expect(screen.getByText("2026-01-04 07:00")).toBeInTheDocument();
+  });
+
+  it("reports several selected units in one pass — one independent request per unit", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(deliveredResponse());
+    vi.mocked(apiPost).mockResolvedValue({ ok: true, status: "AWAITING_STOCK", credentialIssued: false });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: /select unit 1 of 2/i }));
+    await user.click(screen.getByRole("checkbox", { name: /select unit 2 of 2/i }));
+    await user.click(screen.getByRole("button", { name: /report issue \(2 units\)/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByPlaceholderText(/what was wrong/i), "whole batch is dead");
+    await user.click(within(dialog).getByRole("button", { name: /^report/i }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledTimes(2));
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/items/100/replace", { reason: "whole batch is dead" });
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/items/101/replace", { reason: "whole batch is dead" });
+  });
+
+  it("offers nothing on an order that was never delivered", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({ ...ORDER_DETAIL_DATA, order: { ...ORDER_DETAIL_DATA.order, items: [UNIT_A] } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: /report issue/i })).not.toBeInTheDocument();
+  });
+
+  it("offers nothing for a hand-fulfilled unit, which never held a stock account", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      deliveredResponse({
+        order: {
+          ...ORDER_DETAIL_DATA.order,
+          status: "DELIVERED",
+          items: [{ ...UNIT_A, stockItem: null }],
+        },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: /report issue/i })).not.toBeInTheDocument();
+  });
+});
+
 describe("OrderDetailPage — realtime digiflazz sub-status", () => {
   // Final whole-branch review I-3 fix: this SSE push's orderStatus
   // ("PROCESSING") differs from the initial fetch's order.status
@@ -610,6 +828,101 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
 
     await waitFor(() => expect(screen.getByText("Delivered")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /approve & deliver/i })).not.toBeInTheDocument();
+  });
+
+  /**
+   * Overpayment card (task F2). The action's whole justification is that the
+   * amount has an external source, so what these tests pin is that the page shows
+   * the rail's figures, offers the action only while there is an UNCREDITED
+   * excess, and sends a body with no amount in it.
+   */
+  describe("overpayment", () => {
+    const OVERPAID = {
+      gateway: "TOKOPAY",
+      receivedAmount: "52500",
+      expectedAmount: "50000",
+      excess: "2500",
+      currency: "IDR",
+      credited: false,
+    };
+
+    function renderWith(overpayment: Record<string, unknown> | null) {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ ...ORDER_DETAIL_DATA, overpayment }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      render(<OrderDetailPage />, { wrapper: Wrapper });
+    }
+
+    it("shows the rail's own figures beside the excess it is offering to return", async () => {
+      renderWith(OVERPAID);
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      // The received/billed pair is what lets an admin check the number before
+      // handing money over, instead of trusting the button.
+      expect(screen.getByText(/TOKOPAY recorded Rp52\.500 arriving against a bill of Rp50\.000/)).toBeInTheDocument();
+      expect(screen.getByText("Rp2.500")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }),
+      ).toBeInTheDocument();
+    });
+
+    it("renders nothing at all for an ordinary order nobody overpaid", async () => {
+      renderWith(null);
+
+      await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+      expect(screen.queryByText("Overpayment")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /to the buyer/i })).not.toBeInTheDocument();
+    });
+
+    it("stops offering the action once the excess has been returned", async () => {
+      renderWith({ ...OVERPAID, credited: true });
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      expect(screen.getByText(/already returned to the buyer's wallet balance/i)).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /return Rp2\.500 to the buyer/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("says plainly that there is nothing to return when the derived excess is zero", async () => {
+      // A flagged-but-stale rail row: the amount recorded is at or below what the
+      // order billed. Offering a button here would only earn a 422.
+      renderWith({ ...OVERPAID, receivedAmount: "50000", excess: "0" });
+
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      expect(screen.getByText(/does not actually show the buyer paying more/i)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /to the buyer/i })).not.toBeInTheDocument();
+    });
+
+    it("posts an EMPTY body — the amount is the server's to derive, never the client's", async () => {
+      renderWith(OVERPAID);
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      vi.mocked(apiPost).mockResolvedValue({ ok: true, credited: "2500", currency: "IDR" });
+
+      await userEvent.click(screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Return it" }));
+
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/orders/1/credit-overpayment", {}),
+      );
+      // No amount field of any kind reached the wire.
+      const body = vi.mocked(apiPost).mock.calls[0]![1] as Record<string, unknown>;
+      expect(Object.keys(body)).toHaveLength(0);
+    });
+
+    it("surfaces a refusal from the server instead of claiming the money moved", async () => {
+      renderWith(OVERPAID);
+      await waitFor(() => expect(screen.getByText("Overpayment")).toBeInTheDocument());
+      vi.mocked(apiPost).mockRejectedValue(new Error("error.overpayment_already_credited"));
+
+      await userEvent.click(screen.getByRole("button", { name: /return Rp2\.500 to the buyer/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Return it" }));
+
+      await waitFor(() => expect(screen.getByText(/already been credited/i)).toBeInTheDocument());
+    });
   });
 
   it("does not open an SSE connection while orderId is still undefined", () => {

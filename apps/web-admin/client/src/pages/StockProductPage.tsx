@@ -139,7 +139,7 @@ export function StockProductPage() {
       return;
     }
     fetchRevealed(item).catch((e: unknown) => {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to reveal the account credential."));
+      toast.error(describeError(e, "Failed to reveal the account credential."));
     });
   }
 
@@ -152,7 +152,7 @@ export function StockProductPage() {
       setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
     } catch (err) {
       console.error("Failed to copy the stock item's account credential to the clipboard", err);
-      toast.error(describeError(err instanceof Error ? err.message : "Failed to copy the account credential."));
+      toast.error(describeError(err, "Failed to copy the account credential."));
     }
   }
 
@@ -206,7 +206,7 @@ export function StockProductPage() {
       if (ctx) {
         ctx.previous.forEach(([key, snapshot]) => qc.setQueryData(key, snapshot));
       }
-      toast.error(describeError(err.message));
+      toast.error(describeError(err));
     },
     // Patch with the server's authoritative value instead of invalidating —
     // this toggle doesn't change anything else on the page worth refetching.
@@ -249,7 +249,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success(`${count} item(s) marked dead.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark items dead."));
+      toast.error(describeError(e, "Failed to mark items dead."));
     } finally {
       setBulkActing(false);
     }
@@ -270,7 +270,7 @@ export function StockProductPage() {
           : `${result.count} item(s) deleted. ${result.skipped} skipped (sold or linked to an order).`,
       );
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete items."));
+      toast.error(describeError(e, "Failed to delete items."));
     } finally {
       setBulkActing(false);
     }
@@ -282,7 +282,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Stock item marked dead.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark item dead."));
+      toast.error(describeError(e, "Failed to mark item dead."));
     }
   }
 
@@ -292,7 +292,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Stock item deleted.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete item."));
+      toast.error(describeError(e, "Failed to delete item."));
     }
   }
 
@@ -303,7 +303,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Note saved.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update note."));
+      toast.error(describeError(e, "Failed to update note."));
     }
   }
 

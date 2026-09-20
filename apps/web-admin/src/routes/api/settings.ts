@@ -5,6 +5,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
+import type { FxRateRejection } from "@app/core/fx";
 import {
   prisma,
   listAllSettings,
@@ -13,6 +14,8 @@ import {
   deleteSetting,
   logAdminAction,
   refreshUsdIdrRate,
+  setUsdIdrRate,
+  USD_IDR_RATE_KEY,
   getBybitPollHealth,
   getBybitBscPollHealth,
   resolveBybitConfig,
@@ -53,6 +56,31 @@ const EDITABLE: Record<string, string> = {
   usd_idr_rate: "USDT rate (IDR per 1 USDT)",
   usd_idr_rate_auto: "Auto-update USDT rate",
   usd_idr_rate_rounding: "Rate rounding",
+  // M13 / audit P0-3. Plain free-text numeric fields, same shape as
+  // `usd_idr_rate_rounding` right above: no validation branch in
+  // `applyFieldEdit`, because every reader already treats a blank/unusable
+  // value as "this check is off" rather than failing. A typo must cost the
+  // shop a disabled safety check, never a pricing outage.
+  fx_rate_min: "USDT rate sanity floor (IDR per 1 USDT)",
+  fx_rate_max: "USDT rate sanity ceiling (IDR per 1 USDT)",
+  fx_rate_max_delta_pct: "Max USDT rate move per update (%)",
+  fx_rate_max_age_hours: "Hide USDT payments if the rate is older than (hours)",
+  usdt_spread_bps: "USDT spread (basis points, 100 = 1%)",
+  // D8. Not a pricing lever at all — the only reader is `reconcileFinances`,
+  // which uses it to tell a USDT total rounded the old way (0.1 half-up) apart
+  // from one that is simply wrong. It lives with the FX fields because that is
+  // where an admin looking at USDT rounding will look, and it is free text for
+  // the same reason as the block above: a typo must cost the shop a check it
+  // stops trusting, never a pricing outage. Seeded to the deploy instant by
+  // migration, so an admin normally never touches it.
+  usdt_rounding_ceil_since: "USDT rounding changed at (ISO timestamp, reconciliation only)",
+  // The last two settings the pricing/FX system reads that had a documented
+  // default but no field here, so the only way to change either was a direct
+  // database write (FINANCE_ARCHITECTURE known gap 5). Same free-text shape as
+  // the M13 block above — `assertFxQuoteIsFresh` and `getShopMinOrderAmountIdr`
+  // both already read an unusable value as "this check is off".
+  fx_quote_ttl_minutes: "Stop offering USDT checkout if the rate is older than (minutes)",
+  min_order_amount_idr: "Shop-wide minimum order total (IDR)",
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "TokoPay enabled",
@@ -162,6 +190,49 @@ function customEmojiMapProblem(value: string): string | null {
     }
   }
   return null;
+}
+
+/**
+ * The sentence shown to the admin who pressed "Update now" when the market's
+ * answer failed the sanity band (M13 / audit P0-3). Separate from
+ * `describeFxRejection`'s developer-facing log line on purpose: this one names
+ * the Settings field they would go and change, and leads with the fact that
+ * nothing broke — the previous rate is still pricing orders.
+ *
+ * Every figure here is one the market reported, never the post-spread figure
+ * that would have been saved: an admin who is about to widen a bound needs the
+ * number the bound was applied to. `market` covers the plausibility bounds;
+ * `reason.subject` covers the deviation cap, which since D10 measures the market
+ * against the last market rate accepted rather than against the saved rate.
+ */
+function fxRejectionMessage(reason: FxRateRejection, market: Decimal): string {
+  const tail = "The previously saved rate is still in effect, so nothing was mispriced.";
+  switch (reason.reason) {
+    case "not_a_number":
+    case "not_positive":
+      return `The rate service answered ${market.toString()}, which isn't a usable rate. ${tail}`;
+    case "below_min":
+      return (
+        `The rate service answered Rp${market.toString()} per USDT, below the Rp${reason.min.toString()} sanity floor. ` +
+        `Check the rate service, or lower "USDT rate sanity floor" if this is genuinely the market now. ${tail}`
+      );
+    case "above_max":
+      return (
+        `The rate service answered Rp${market.toString()} per USDT, above the Rp${reason.max.toString()} sanity ceiling. ` +
+        `Check the rate service, or raise "USDT rate sanity ceiling" if this is genuinely the market now. ${tail}`
+      );
+    case "delta_too_large":
+      // Both figures quoted are PRE-spread MARKET rates, not the saved rate
+      // (whole-branch review D10): the cap measures the market against the last
+      // market figure this shop accepted. Naming the saved rate here would hand
+      // the admin two numbers whose difference is not the percentage quoted.
+      return (
+        `The market rate Rp${reason.subject.toString()} per USDT is ${reason.deltaPct.toDecimalPlaces(2).toString()}% away from ` +
+        `the last market rate accepted, Rp${reason.lastKnown.toString()}, more than the ${reason.maxDeltaPct.toString()}% ` +
+        `one update is allowed to move it. If the market really moved this far, raise "Max USDT rate move per update" ` +
+        `or type the new rate by hand. ${tail}`
+      );
+  }
 }
 
 /** Thrown by `applyFieldEdit` for any rejection — carries the HTTP status the
@@ -339,6 +410,27 @@ async function applyFieldEdit(
       }
       throw e;
     }
+  } else if (key === USD_IDR_RATE_KEY && value !== "") {
+    // M12 / audit P0-2: typing a rate by hand is a re-confirmation of it, so it
+    // must stamp `usd_idr_rate_updated_at` exactly like a market refresh does,
+    // or a shop that sets its rate manually would have every USDT order refused
+    // once the TTL elapsed. `setUsdIdrRate` is the one sanctioned mutator that
+    // writes the value and that stamp together (crud/pricing.ts).
+    //
+    // A cleared rate (value === "") deliberately falls through to the plain
+    // write below: an absent rate is not a confirmed-fresh one, and clearing it
+    // already disables the USDT path entirely (`getUsdIdrRate` returns null).
+    //
+    // This is the ENCRYPTED_SETTING_KEYS branch's shape, not the
+    // public_channel_id one's: the field needs a different setter, not
+    // different validation or a different audit line. Everything below — the
+    // displayValue, the `setting_set` audit entry, the reply — stays shared, so
+    // this field's audit trail cannot drift from every other field's.
+    //
+    // Deliberately NO value validation here: web-admin's rate field stays free
+    // text exactly as it was. Sanity bounds are M13's job
+    // (`fx_rate_min`/`fx_rate_max`/`fx_rate_max_delta_pct`).
+    await setUsdIdrRate(prisma, value);
   } else {
     await setSetting(prisma, key, value);
   }
@@ -614,6 +706,30 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       const r = await refreshUsdIdrRate(prisma, { force: true });
       if (r.status === "updated") {
         await logAdminAction(prisma, { adminId: req.admin!.userId, action: "setting_set", targetType: "setting", details: `Refreshed the USDT rate from the market to Rp${r.rate.toString()}.` });
+      }
+      if (r.status === "rejected") {
+        // M13 / audit P0-3. Deliberately NO admin DM here, unlike the hourly
+        // cron's own handling of the same outcome: the admin who pressed this
+        // button is reading the answer right now, and DMing every admin about
+        // a failure one of them just triggered on purpose would train them to
+        // ignore the alert that matters — the unattended one. The refusal is
+        // still audited (an admin pressed a rate button and the rate did not
+        // move; a support investigation needs to see that) and still counted
+        // in `fx_refresh_failures`, so a streak is a streak however it was
+        // triggered.
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "setting_set",
+          targetType: "setting",
+          details:
+            `Tried to refresh the USDT rate from the market and it was refused as implausible ` +
+            `(the market said Rp${r.market.toString()}). The previous rate is still in effect.`,
+        });
+        return reply.code(422).send({
+          ok: false,
+          status: r.status,
+          error: fxRejectionMessage(r.reason, r.market),
+        });
       }
       return reply.send({
         ok: true,

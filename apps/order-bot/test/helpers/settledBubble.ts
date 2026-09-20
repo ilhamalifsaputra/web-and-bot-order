@@ -82,6 +82,12 @@ export async function makeSettledAnchoredOrder(
           }),
         )
       : await db.$transaction(async (tx) => {
+          // M11: the shared fixture SKU costs Rp5, which converts to 0.0 USDT at
+          // the 16000 rate below — finalizeOrderPayment now refuses to put a
+          // nothing-to-collect total on a gateway. Price the SKU realistically
+          // for every rail so this helper keeps producing a finalizable order;
+          // no caller of it asserts on the amount.
+          await tx.denomination.update({ where: { id: opts.productId }, data: { price: "80000" } });
           const created = await createOrderDirect(tx, {
             user: opts.buyer,
             productId: opts.productId,

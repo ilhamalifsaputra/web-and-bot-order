@@ -56,7 +56,7 @@ function csvRow(fields: string[]): string {
  * the stored value's length or a decrypted prefix — either would leak
  * partial plaintext (or its length) to a page load nobody asked to reveal
  * anything on. */
-const MASKED_CREDENTIAL = "••••••••";
+export const MASKED_CREDENTIAL = "••••••••";
 
 /** Page size for GET /api/stock/:productId's tab/page pagination — replaces
  * the old flat `take: 500` that spanned every status at once (the bug this
@@ -71,7 +71,7 @@ const PAGE_SIZE = 50;
  * server.ts) and return this as JSON instead, so a missing/malformed
  * `CREDENTIAL_ENCRYPTION_KEY` surfaces as a readable admin error instead of
  * `apiPost` failing to parse an HTML error page. */
-const CREDENTIAL_KEY_ERROR_MESSAGE =
+export const CREDENTIAL_KEY_ERROR_MESSAGE =
   "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use

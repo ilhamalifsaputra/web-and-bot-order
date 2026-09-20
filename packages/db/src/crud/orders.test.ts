@@ -56,6 +56,11 @@ beforeEach(async () => {
   // describe block's own test (e.g. createOrderFromCart's real OrderItems, or
   // rejectOrder's walletUsed refund writing a WalletTransaction) blocks these
   // deleteManys.
+  // StockItemEvent.actorCustomerId/actorAdminId are real FKs to User, so the
+  // reservation events a createOrderFromCart test below leaves behind block
+  // the user.deleteMany() at the end of this list — same reason the
+  // deleteManys above it exist (Fase 3b; resetDb clears these too).
+  await prisma.stockItemEvent.deleteMany();
   await prisma.orderItem.deleteMany();
   await prisma.orderStatusHistory.deleteMany();
   await prisma.walletTransaction.deleteMany();

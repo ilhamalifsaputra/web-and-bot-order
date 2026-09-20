@@ -4071,6 +4071,17 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
     });
 
+    it("audits a count sentence and never echoes the admin-typed note (which may hold a pasted credential)", async () => {
+      const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+      const ids = items.slice(0, 2).map((i) => i.id);
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids, note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
+      expect(audit!.details).toBe("Marked 2 stock items dead.");
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
+    });
+
     it("rejects an empty ids array with 400", async () => {
       const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [] });
       expect(res.statusCode).toBe(400);
@@ -4129,6 +4140,16 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
       expect(audit).toBeTruthy();
       expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("audits a sentence naming the item and never echoes the admin-typed note", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit!.details).toBe(`Marked stock item #${item.id} dead.`);
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
     });
 
     it("rejects a non-existent stock item id with 404", async () => {
@@ -4215,6 +4236,16 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.note).toBe("checked ok");
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_edit_note", targetId: item.id } });
       expect(audit).toBeTruthy();
+    });
+
+    it("audits a sentence naming the item and never echoes the note text", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/note`, seed.cookie, seed.csrf, { note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_edit_note", targetId: item.id } });
+      expect(audit!.details).toBe(`Updated the note on stock item #${item.id}.`);
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
     });
 
     it("rejects a non-existent stock item id with 404", async () => {

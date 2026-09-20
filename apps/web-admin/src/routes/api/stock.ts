@@ -286,8 +286,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true, broadcastOnRestock: body.enabled });
   });
 
-  // Bulk mark selected stock items dead (one writer, audited once). Never logs
-  // credentials — only the count and ids.
+  // Bulk mark selected stock items dead (one writer, audited once). The audit row
+  // carries only the count — never the credentials or the admin-typed note.
   app.post("/api/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -301,7 +301,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_bulk_dead",
       targetType: "product",
       targetId: productId,
-      details: `Marked ${count} stock items dead. Note: "${note.slice(0, 160)}".`, // never the credentials
+      details: `Marked ${count} stock ${count === 1 ? "item" : "items"} dead.`, // never the note — admins paste credentials into it
     });
     logger.info(`Bulk-marked ${count} stock items dead on product ${productId}`);
     return reply.send({ ok: true, count });
@@ -344,7 +344,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
-      details: `Marked stock item dead. Note: "${note.slice(0, 200)}".`, // never the credentials
+      details: `Marked stock item #${stockId} dead.`, // never the note — admins paste credentials into it
     });
     return reply.send({ ok: true });
   });
@@ -391,7 +391,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_edit_note",
       targetType: "stock_item",
       targetId: stockId,
-      details: `Updated stock item note to: "${note.slice(0, 200)}".`, // never the credentials
+      details: `Updated the note on stock item #${stockId}.`, // never the note — admins paste credentials into it
     });
     return reply.send({ ok: true });
   });

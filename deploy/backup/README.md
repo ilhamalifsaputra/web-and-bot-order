@@ -111,13 +111,25 @@ Boot yang skemanya sudah cocok tidak mengambil snapshot apa pun, jadi
 `docker compose restart` berulang (atau crash-loop) tidak menggerus retensi.
 Detail lengkap: [../../docs/MIGRATIONS.md](../../docs/MIGRATIONS.md).
 
-Ini **khusus jalur SQLite**: `docker-entrypoint.sh`'s `auto_migrate()`
-langsung no-op (skip total, tidak ada snapshot maupun `prisma db push`) begitu
-`DATABASE_URL_PRISMA` bukan `file:...` — lihat komentarnya sendiri di
-`docker-entrypoint.sh`. Setelah cutover ke Postgres, perubahan skema **tidak**
-otomatis dijalankan/di-backup oleh entrypoint sama sekali; operator harus
-menjalankan `backup.sh` secara manual sebelum `pnpm prisma db push`, persis
-pola D-01 di bagian bawah dokumen ini.
+Ini **khusus jalur SQLite**, dan setelah cutover ke Postgres pembagiannya
+berubah — bukan lagi "tidak ada yang otomatis":
+
+- **Perubahan skema: otomatis.** `auto_migrate()` sekarang menangani
+  `postgresql://` sepenuhnya (`prisma db push` → seed chart of accounts ledger →
+  migrasi data-only rilis ini), jadi deploy cukup
+  `docker compose ... up -d --build`. Lihat "Jalur PostgreSQL" di
+  [../../docs/MIGRATIONS.md](../../docs/MIGRATIONS.md).
+- **Snapshot pra-push: TIDAK otomatis, dan tetap tugas operator.** Jalur Postgres
+  di skrip ini mengambil dump dengan menjalankan `pg_dump` **di dalam** container
+  `postgres` lewat `docker compose exec` (lihat Prasyarat di atas) — sesuatu yang
+  container `server` tidak bisa lakukan dari dalam dirinya sendiri, karena ia tidak
+  punya akses ke Docker socket. Jadi jalankan `backup.sh` **di host sebelum**
+  deploy; itu satu-satunya titik rollback deploy tersebut, persis pola D-01 di
+  bagian bawah dokumen ini.
+
+Yang tetap melindungi data dari push itu sendiri: `db push` dijalankan **tanpa**
+`--accept-data-loss`, jadi perubahan yang akan membuang baris menggagalkan push
+dan container menolak start — bukan menghapus lalu lanjut.
 
 ---
 

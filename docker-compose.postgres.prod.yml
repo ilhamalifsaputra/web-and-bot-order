@@ -43,21 +43,56 @@
 #     that only resolves because Compose puts `server` and `postgres` on the
 #     same internal project network and DNS-resolves service names there.
 #
-# IMPORTANT — schema application is NOT automatic with this file, unlike the
-# SQLite path. docker-entrypoint.sh's auto_migrate() only knows how to
-# snapshot-then-push a `file:` (SQLite) URL; for any other DATABASE_URL_PRISMA
-# (including this postgresql:// one) resolve_db_path() returns non-zero and
-# auto_migrate() logs "DATABASE_URL_PRISMA does not point at a SQLite file...
-# Skipping the automatic schema update; apply it yourself." and returns 0 (no
-# crash, no backup/migrate machinery runs). So after `postgres` is up and
-# healthy, push the schema yourself once per deploy that changes
-# schema.prisma:
+# SCHEMA APPLICATION IS AUTOMATIC with this file. docker-entrypoint.sh's
+# auto_migrate() handles the postgresql:// path in full, before `pnpm start`
+# runs, on every start path (`up`, `restart`, and the automatic restart after a
+# crash):
+#
+#   1. waits briefly for the datasource to answer a query — the `depends_on:
+#      service_healthy` below proves `pg_isready` succeeded, not that a
+#      first-boot Postgres container has finished restarting its real server;
+#   2. `prisma db push --skip-generate`, never with --accept-data-loss: a change
+#      that would drop rows fails the push and the container refuses to start;
+#   3. seeds the ledger chart of accounts (scripts/seed-chart-of-accounts.ts).
+#      Every ledger posting resolves its account by `code`, so without those
+#      rows settlements, wallet top-ups and referral commissions record nothing;
+#   4. applies the release's data-only migrations (the $DATA_MIGRATIONS list in
+#      docker-entrypoint.sh) — `db push` only ever syncs structure, so a
+#      migration that seeds or backfills ROWS has to be executed separately.
+#
+# Steps 3 and 4 only WARN on failure and start-up continues: the schema push has
+# already succeeded by then, and a container that refuses to start cannot be used
+# to repair anything. So read the entrypoint lines after every deploy:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+#     logs --since 10m server | grep entrypoint
+#
+# Deploying a new release therefore needs nothing more than:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+#
+# The React SPA bundles are built by the Dockerfile's builder stage, so `--build`
+# covers those too — there is no separate client build step on the Docker path.
+#
+# OPTING OUT: set AUTO_MIGRATE=0 in .env (docker-compose.yml passes it through to
+# the container) and the entrypoint leaves the database alone; deploy/backup/restore.sh
+# achieves the same for one boot with its data/SKIP_AUTO_MIGRATE sentinel, so a
+# restored database is not migrated forward again. Either way the steps become
+# yours to run:
 #
 #   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
 #     run --rm server pnpm exec prisma db push --schema prisma/schema.prisma
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+#     run --rm server pnpm seed-chart-of-accounts
 #
-# (Task 9's runbook covers this as an explicit deploy step — do not expect it
-# to happen for you the way it does for the SQLite entrypoint path.)
+# NO PRE-DEPLOY SNAPSHOT is taken on this path. deploy/backup/backup.sh's Postgres
+# branch dumps by running `pg_dump` INSIDE this `postgres` container via
+# `docker compose exec`, which needs a Docker socket the `server` container does
+# not have — and postgresql-client installed into the app image would be older
+# than the postgres:16 server here, producing dumps this server rejects. Take the
+# dump on the HOST before deploying: see "Backup — Postgres" in
+# deploy/backup/README.md. What the entrypoint does guarantee is that `db push`
+# refuses any change it cannot apply without dropping data.
 
 services:
   postgres:

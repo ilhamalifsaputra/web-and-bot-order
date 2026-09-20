@@ -87,6 +87,7 @@ const ORDER_DETAIL_DATA = {
     totalToPay: "50000",
     equivalentIdr: null,
   },
+  hasDeliveredContent: false,
   isDelivered: false,
   canAct: true,
   canCredit: true,
@@ -105,6 +106,29 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const MASK = "••••••••";
+
+/** A DELIVERED auto order whose one item reserved a stock account — the detail
+ * payload carries only the masked placeholder for its credentials. */
+const AUTO_DELIVERED_DATA = {
+  ...ORDER_DETAIL_DATA,
+  order: {
+    ...ORDER_DETAIL_DATA.order,
+    status: "DELIVERED",
+    items: [
+      {
+        id: 100,
+        quantity: 1,
+        unitPrice: "99000",
+        product: { id: 5, name: "CapCut Pro 1M" },
+        stockItem: { id: 900, credentials: MASK },
+      },
+    ],
+  },
+  isDelivered: true,
+  canAct: false,
+};
 
 describe("OrderDetailPage", () => {
   it("shows order detail", async () => {
@@ -383,12 +407,15 @@ describe("OrderDetailPage — manual fulfilment", () => {
     expect(screen.queryByText("Buyer-Submitted Info")).not.toBeInTheDocument();
   });
 
-  it("shows the Delivered Content card for a manually delivered order", async () => {
+  // The detail payload never carries the hand-typed content itself — only the
+  // masked placeholder plus hasDeliveredContent; Reveal fetches the real text.
+  it("shows the Delivered Content card masked by default for a manually delivered order", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
         JSON.stringify({
           ...ORDER_DETAIL_DATA,
-          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED", deliveredContent: "user:x pass:y" },
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED", deliveredContent: MASK },
+          hasDeliveredContent: true,
           isDelivered: true,
           canAct: false,
         }),
@@ -397,7 +424,38 @@ describe("OrderDetailPage — manual fulfilment", () => {
     );
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Delivered Content")).toBeInTheDocument());
-    expect(screen.getByText("user:x pass:y")).toBeInTheDocument();
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(screen.queryByText("user:x pass:y")).not.toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("reveals the Delivered Content via the audited reveal route, and hides it again without a second request", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED", deliveredContent: MASK },
+          hasDeliveredContent: true,
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ credentials: [], deliveredContent: "user:x pass:y" });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Delivered Content")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Show delivered content" }));
+    expect(await screen.findByText("user:x pass:y")).toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/reveal", {});
+    expect(screen.queryByText(MASK)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide delivered content" }));
+    expect(screen.queryByText("user:x pass:y")).not.toBeInTheDocument();
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledTimes(1);
   });
 
   it("hides the Delivered Content card for an auto-delivered order (deliveredContent null)", async () => {
@@ -628,5 +686,65 @@ describe("OrderDetailPage — realtime digiflazz sub-status", () => {
     vi.spyOn(globalThis, "fetch");
     render(<OrderDetailPage />, { wrapper: NoParamWrapper });
     expect(MockEventSource.instances).toHaveLength(0);
+  });
+});
+
+describe("OrderDetailPage — credential reveal", () => {
+  function mockDetail() {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(AUTO_DELIVERED_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+  }
+
+  it("masks each item's credentials by default and offers a Show button", async () => {
+    mockDetail();
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show delivered credentials" })).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it("fetches the real credentials from the reveal route on Show, and hides them again on Hide", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockDetail();
+    vi.mocked(apiPost).mockResolvedValueOnce({
+      credentials: [{ id: 100, text: "buyer@example.com:hunter2" }],
+      deliveredContent: null,
+    });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Show delivered credentials" }));
+    expect(await screen.findByText("buyer@example.com:hunter2")).toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledWith("/api/orders/1/reveal", {});
+    expect(screen.queryByText(MASK)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide delivered credentials" }));
+    expect(screen.queryByText("buyer@example.com:hunter2")).not.toBeInTheDocument();
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(apiPost).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the credentials masked and shows the error when the reveal request fails", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockDetail();
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error("Order not found."));
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Show delivered credentials" }));
+    expect(await screen.findByText(/order not found/i)).toBeInTheDocument();
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show delivered credentials" })).toBeInTheDocument();
+  });
+
+  it("offers no reveal button for an order with no credentials to reveal", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /show delivered/i })).not.toBeInTheDocument();
   });
 });

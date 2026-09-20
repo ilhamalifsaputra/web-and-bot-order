@@ -110,6 +110,7 @@ const ACTION_LABELS: Record<string, string> = {
   approve_order: "Order approved",
   reject_order: "Order rejected",
   order_resend_credentials: "Order credentials resent",
+  order_credentials_revealed: "Order credentials revealed",
   order_credit_balance: "Order credited to balance",
   stock_upload: "Stock uploaded",
   stock_bulk_dead: "Stock bulk marked dead",

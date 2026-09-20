@@ -8,6 +8,8 @@ type StatCardTone = "neutral" | "success" | "warning" | "danger"
 
 interface StatCardProps {
   label: string;
+  /** Hover text explaining what the number counts; defaults to the label. */
+  hint?: string;
   /** Preformatted — caller decides string/number/CurrencyStack/etc. */
   value: React.ReactNode;
   icon?: LucideIcon;
@@ -39,6 +41,7 @@ const TONE_BORDER_CLASS: Record<StatCardTone, string> = {
 
 export function StatCard({
   label,
+  hint,
   value,
   icon: Icon,
   tone = "neutral",
@@ -70,7 +73,7 @@ export function StatCard({
     >
       <CardContent className="flex h-full flex-col justify-between gap-2">
         <div className="flex items-start justify-between gap-2">
-          <p className="text-xs text-ink-soft truncate" title={label}>{label}</p>
+          <p className="text-xs text-ink-soft truncate" title={hint ?? label}>{label}</p>
           {Icon && <Icon className={cn("h-4 w-4 shrink-0", TONE_ICON_CLASS[tone])} />}
         </div>
         {isLoading ? (

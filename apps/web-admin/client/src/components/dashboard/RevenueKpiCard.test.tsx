@@ -31,6 +31,11 @@ describe("RevenueKpiCard", () => {
     await waitFor(() => expect(screen.getByText("Rp137")).toBeInTheDocument());
     expect(screen.getByText("20.25 USDT")).toBeInTheDocument();
     expect(screen.queryByText(/Rp137.*\+.*20\.25/)).not.toBeInTheDocument();
+    // The payload still carries the old duplicate `usd` field; the same USDT
+    // amount must not be shown a second time under a "USD" label.
+    expect(screen.queryByText("USD")).not.toBeInTheDocument();
+    expect(screen.queryByText("20.25 USD")).not.toBeInTheDocument();
+    expect(screen.getByText(/delivered today · product orders only/i)).toBeInTheDocument();
   });
 
   it("shows a no-revenue message when every currency is null", async () => {
@@ -69,6 +74,25 @@ describe("RevenueKpiCard", () => {
         <RevenueKpiCard />
       </QueryClientProvider>,
     );
-    await waitFor(() => expect(screen.getByText(/12\.3% vs yesterday/)).toBeInTheDocument());
+    // Labelled with its currency and the real comparison basis.
+    await waitFor(() => expect(screen.getByText("IDR 12.3% vs same time yesterday")).toBeInTheDocument());
+  });
+
+  it("labels each currency's trend line separately and shows none for a currency whose base was too small", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => ({
+          revenue: { idr: "10000", usdt: "5", trendPct: { idr: "12.3", usdt: null } },
+          profit: { idr: null, usdt: null },
+          orders: { total: 0, delivered: 0, pending: 0, failed: 0, other: 0 },
+          pendingActions: { toReview: 0, refundDecisions: 0, failedDeliveries: 0, manualApprovals: 0 },
+        }),
+      })),
+    );
+    renderWithQuery();
+    await waitFor(() => expect(screen.getByText("IDR 12.3% vs same time yesterday")).toBeInTheDocument());
+    expect(screen.queryByText(/USDT .*vs same time yesterday/)).not.toBeInTheDocument();
   });
 });

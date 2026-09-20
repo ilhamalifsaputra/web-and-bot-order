@@ -42,7 +42,13 @@ describe("OperationCenter", () => {
     // distinct filter from Orders Processing (the pre-existing, unrelated
     // CONFIRMED/PAID metric) — the two must never collide.
     const ordersProcessingLink = screen.getByText("Orders Processing").closest("a");
-    expect(ordersProcessingLink).toHaveAttribute("href", "/orders?status=PAID");
+    expect(ordersProcessingLink).toHaveAttribute("href", "/orders?status=CONFIRMED,PAID");
+    // Pending Payments counts three statuses, so its link must list all three
+    // (the count equals the rows the Orders page opens with).
+    expect(screen.getByText("Pending Payments").closest("a")).toHaveAttribute(
+      "href",
+      "/orders?status=PENDING_PAYMENT,PAYMENT_DETECTED,CONFIRMING",
+    );
     const awaitingFulfillmentLink = screen.getByText("Awaiting Fulfillment").closest("a");
     expect(awaitingFulfillmentLink).toHaveAttribute("href", "/orders?status=PROCESSING");
   });

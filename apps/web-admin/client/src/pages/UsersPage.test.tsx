@@ -218,6 +218,18 @@ describe("UsersPage", () => {
     expect(citraCells[7]).toHaveTextContent("—");
   });
 
+  it("says the customer figures are product-only and points wallet top-ups to the wallet ledger", async () => {
+    mockFetchRouter();
+    render(<UsersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(
+      screen.getByText(/count product orders only; wallet top-ups are listed in Wallet Transactions/),
+    ).toBeInTheDocument();
+    for (const header of ["Total Spent", "Orders", "Last Order"]) {
+      expect(screen.getByText(header)).toHaveAttribute("title", expect.stringMatching(/wallet top-ups/i));
+    }
+  });
+
   it("shows the Banned badge for a banned row, New Customer for a recently-joined row, and Returning otherwise", async () => {
     mockFetchRouter({
       users: {

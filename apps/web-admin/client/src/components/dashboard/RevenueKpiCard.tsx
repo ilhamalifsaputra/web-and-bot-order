@@ -30,7 +30,6 @@ export function RevenueKpiCard() {
   const amounts: CurrencyAmount[] = [];
   if (data.revenue.idr) amounts.push({ currency: "IDR", value: data.revenue.idr });
   if (data.revenue.usdt) amounts.push({ currency: "USDT", value: data.revenue.usdt });
-  if (data.revenue.usd) amounts.push({ currency: "USD", value: data.revenue.usd });
 
   return (
     <Card>
@@ -42,13 +41,14 @@ export function RevenueKpiCard() {
           <>
             <CurrencyStack amounts={amounts} />
             <div className="mt-1.5 flex flex-col gap-0.5">
-              {data.revenue.trendPct.idr !== null && <StatTrend pct={data.revenue.trendPct.idr} />}
-              {data.revenue.trendPct.usdt !== null && <StatTrend pct={data.revenue.trendPct.usdt} />}
+              {data.revenue.trendPct.idr !== null && <StatTrend pct={data.revenue.trendPct.idr} label="IDR" />}
+              {data.revenue.trendPct.usdt !== null && <StatTrend pct={data.revenue.trendPct.usdt} label="USDT" />}
             </div>
           </>
         ) : (
           <p className="text-sm text-ink-soft">No revenue yet today.</p>
         )}
+        <p className="mt-1 text-xs text-ink-soft">Delivered today · product orders only.</p>
       </CardContent>
     </Card>
   );

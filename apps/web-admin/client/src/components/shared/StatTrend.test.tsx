@@ -20,4 +20,9 @@ describe("StatTrend", () => {
     const { container } = render(<StatTrend pct={null} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("names its comparison basis and, when given, the currency it is about", () => {
+    render(<StatTrend pct="12.3" label="IDR" />);
+    expect(screen.getByText("IDR 12.3% vs same time yesterday")).toBeInTheDocument();
+  });
 });

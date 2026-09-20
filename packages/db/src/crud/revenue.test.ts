@@ -324,8 +324,8 @@ describe("topProducts", () => {
     const since = new Date(now.getTime() - 60_000);
     const [top] = await topProducts(prisma, since, 10);
     const [margin] = await topProductsByMargin(prisma, since, 10);
-    expect(top.revenue).toBe("24000");
-    expect(top.revenue).toBe(margin.revenueIdrEquiv);
+    expect(top?.revenue).toBe("24000");
+    expect(top?.revenue).toBe(margin?.revenueIdrEquiv);
   });
 });
 

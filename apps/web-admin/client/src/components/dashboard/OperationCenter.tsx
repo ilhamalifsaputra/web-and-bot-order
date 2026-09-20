@@ -12,11 +12,17 @@ type OpCardDef = {
   critical?: boolean;
 };
 
+// The drill-down links carry the same statuses the counters sum (see
+// countPendingPaymentLike / countProcessing in packages/db/src/crud/orders.ts),
+// comma-separated, so the number on a card equals the rows the list opens with.
+const PENDING_PAYMENT_STATUSES = "PENDING_PAYMENT,PAYMENT_DETECTED,CONFIRMING";
+const PROCESSING_STATUSES = "CONFIRMED,PAID";
+
 const CARDS: OpCardDef[] = [
-  { key: "pendingPayments", label: "Pending Payments", href: "/orders?status=PENDING_PAYMENT" },
+  { key: "pendingPayments", label: "Pending Payments", href: `/orders?status=${PENDING_PAYMENT_STATUSES}` },
   { key: "manualReviews", label: "Manual Reviews", href: "/orders?status=PENDING_VERIFICATION" },
   { key: "failedDeliveries", label: "Failed Deliveries", href: "/payments?outcome=delivery_failed", critical: true },
-  { key: "ordersProcessing", label: "Orders Processing", href: "/orders?status=PAID" },
+  { key: "ordersProcessing", label: "Orders Processing", href: `/orders?status=${PROCESSING_STATUSES}` },
   // No orders-page filter isolates expired payments, so this card is a non-clickable counter.
   { key: "expiredPayments", label: "Expired Payments", href: null },
   // Manual/manual_with_info orders paid and waiting on an admin to hand-type

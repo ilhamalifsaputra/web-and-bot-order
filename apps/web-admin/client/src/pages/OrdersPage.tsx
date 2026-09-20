@@ -392,6 +392,9 @@ export function OrdersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="_all_">All</SelectItem>
+              {/* A deep link like the dashboard's Pending Payments card carries
+                  several statuses; without an item for it the trigger reads blank. */}
+              {draft.status.includes(",") && <SelectItem value={draft.status}>Several statuses</SelectItem>}
               {statuses.map((s) => (
                 <SelectItem key={s} value={s}>
                   {orderStatusLabel(s)}

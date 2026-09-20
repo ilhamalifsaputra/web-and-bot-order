@@ -102,7 +102,7 @@ describe("GET /api/reports", () => {
     const reports = (await get("/api/reports", cookie)).json() as { products: { productId: number; revenue: string }[] };
     const dashboard = (await get("/api/dashboard/top-products?days=30", cookie)).json() as { productId: number; revenueIdrEquiv: string }[];
     expect(reports.products).toEqual([expect.objectContaining({ productId: denom.id, revenue: "15000" })]);
-    expect(reports.products[0].revenue).toBe(dashboard[0].revenueIdrEquiv);
+    expect(reports.products[0]?.revenue).toBe(dashboard[0]?.revenueIdrEquiv);
   });
 
   it("treats a fractional ?days like its whole part, so the window still starts on a local midnight", async () => {

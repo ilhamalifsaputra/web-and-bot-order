@@ -46,4 +46,21 @@ describe("ProfitKpiCard", () => {
     renderWithKpis({ idr: null, usdt: null });
     await waitFor(() => expect(screen.getByText(/no profit yet/i)).toBeInTheDocument());
   });
+
+  it("shows the load error, not the 'no profit yet' empty state, when the request fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, text: async () => "", json: async () => ({}) })));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ProfitKpiCard />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText(/couldn't load profit/i)).toBeInTheDocument());
+    expect(screen.queryByText(/no profit yet/i)).not.toBeInTheDocument();
+  });
+
+  it("states its basis under a real figure", async () => {
+    renderWithKpis({ idr: { netProfit: "8000", marginPct: "40", excludedItemCount: 0 }, usdt: null });
+    await waitFor(() => expect(screen.getByText(/delivered today · product orders only/i)).toBeInTheDocument());
+  });
 });

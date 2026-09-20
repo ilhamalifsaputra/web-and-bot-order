@@ -298,7 +298,7 @@ export function UsersPage() {
     <PageLayout title="Customers">
       <PageHeader
         title="Customers"
-        description="Browse and manage every registered customer and reseller."
+        description="Browse and manage every registered customer and reseller. Total Spent, Orders and Last Order count product orders only; wallet top-ups are listed in Wallet Transactions, not here."
         actions={
           <a href={`/api/users/export?${exportParams.toString()}`}>
             <Button variant="outline" size="sm">Export CSV</Button>
@@ -523,7 +523,7 @@ export function UsersPage() {
               },
               {
                 key: "totalSpent",
-                header: "Total Spent",
+                header: <span title="Delivered product orders only; wallet top-ups are in Wallet Transactions.">Total Spent</span>,
                 render: (row) => {
                   const amounts = nonZeroAmounts(row.totalSpent);
                   return amounts.length > 0 ? (
@@ -535,12 +535,12 @@ export function UsersPage() {
               },
               {
                 key: "orders",
-                header: "Orders",
+                header: <span title="Product orders only; wallet top-ups are in Wallet Transactions.">Orders</span>,
                 render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
               },
               {
                 key: "lastOrder",
-                header: "Last Order",
+                header: <span title="Latest product order; wallet top-ups are in Wallet Transactions.">Last Order</span>,
                 render: (row) => (
                   <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
                 ),

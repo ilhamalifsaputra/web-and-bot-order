@@ -18,6 +18,15 @@
 # `depends_on` migrator service is only evaluated on `up` (so
 # `docker compose restart server` would silently skip it). Full background,
 # including the manual equivalent, is in docs/MIGRATIONS.md.
+#
+# Both database engines are handled, on different terms:
+#   - postgresql:// (production since the engine-swap) — `prisma db push`, then
+#     the ledger chart-of-accounts seed, then the data-only migrations listed in
+#     $DATA_MIGRATIONS. No snapshot is taken: the Postgres dump runs on the host,
+#     not in this container (see postgres_migrate's own comment). A deploy is
+#     therefore just `docker compose ... up -d --build`.
+#   - file: (SQLite, pre-cutover checkouts) — unchanged: compare, snapshot with
+#     deploy/backup/backup.sh, then push.
 set -e
 
 # Where the app is installed. Always /app in this image (Dockerfile WORKDIR);
@@ -26,9 +35,34 @@ APP_ROOT="${APP_ROOT:-/app}"
 DATA_DIR="$APP_ROOT/data"
 SKIP_SENTINEL="$DATA_DIR/SKIP_AUTO_MIGRATE"
 PRISMA="$APP_ROOT/node_modules/.bin/prisma"
+TSX="$APP_ROOT/node_modules/.bin/tsx"
 SCHEMA="$APP_ROOT/prisma/schema.prisma"
 BACKUP="$APP_ROOT/deploy/backup/backup.sh"
 CREDENTIAL_KEY_FILE="$DATA_DIR/credential_encryption.key"
+LEDGER_SEED="$APP_ROOT/scripts/seed-chart-of-accounts.ts"
+
+# Data-only migrations re-applied after every successful schema push on the
+# Postgres path. These are the releases' steps that `prisma db push` cannot
+# carry: db push only ever syncs STRUCTURE, so a migration that seeds or
+# backfills ROWS has to be executed separately or it silently never happens.
+#
+# Every file named here MUST be safe to run again on an already-migrated
+# database — an `ON CONFLICT DO NOTHING` insert, an idempotent `UPDATE ... WHERE
+# <not yet done>`, or equivalent. The entrypoint re-runs the whole list on EVERY
+# start, because there is nothing to consult about what already ran: this repo
+# deploys with `db push`, which never writes `_prisma_migrations`
+# (docs/MIGRATIONS.md). A file that is not idempotent would therefore be
+# re-applied on every restart.
+#
+# When a release ships a new data-only migration, append its folder name here
+# (space-separated, oldest first) and state in the migration's own header comment
+# why re-running it is safe.
+DATA_MIGRATIONS="20260919120000_seed_usdt_rounding_ceil_since"
+
+# Bounded wait for the database to accept connections before the schema push.
+# Overridable so the wait can be shortened in tests; 10 x 2s is the default.
+DB_WAIT_ATTEMPTS="${DB_WAIT_ATTEMPTS:-10}"
+DB_WAIT_SECONDS="${DB_WAIT_SECONDS:-2}"
 
 # Set once the effective user is known: the prefix that runs a command as the
 # unprivileged `app` user (empty when we are already that user).
@@ -65,6 +99,116 @@ db_push() {
   fi
 }
 
+# Wait until the datasource actually answers a query, then hand over to db_push.
+#
+# docker-compose.postgres.prod.yml already gates `server` on the postgres
+# service's `service_healthy` condition, so by the time this runs `pg_isready`
+# has succeeded at least once. That proves the server answered a health probe —
+# not that it is accepting this role's connections: a first-boot Postgres
+# container runs its init scripts against a temporary server and restarts the
+# real one afterwards, and an external/managed Postgres has no depends_on gate at
+# all. A few seconds of retrying turns that race into a short pause instead of a
+# crash-loop.
+#
+# Only a connection problem is retried. Anything else — wrong password, missing
+# database, a schema change Prisma refuses — falls through to db_push(), whose
+# own error message is the one an operator needs to read.
+wait_for_database() {
+  _attempt=1
+  while [ "$_attempt" -le "$DB_WAIT_ATTEMPTS" ]; do
+    # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
+    if printf 'SELECT 1;\n' | $RUN_AS "$PRISMA" db execute --schema "$SCHEMA" --stdin >/dev/null 2>&1; then
+      return 0
+    fi
+    log "The database is not accepting connections yet (attempt $_attempt of $DB_WAIT_ATTEMPTS) — waiting ${DB_WAIT_SECONDS}s before trying again."
+    sleep "$DB_WAIT_SECONDS"
+    _attempt=$((_attempt + 1))
+  done
+  log "WARNING: the database still did not answer a 'SELECT 1' after $DB_WAIT_ATTEMPTS attempts. Attempting the schema push anyway, so that its own error message — which names the real cause — reaches this log instead of a generic timeout."
+  return 0
+}
+
+# Installs the Financial Ledger's chart of accounts (scripts/seed-chart-of-accounts.ts,
+# also `pnpm seed-chart-of-accounts`). Every ledger posting site resolves the
+# account it needs by `code`, so on a database where this has never run, order
+# settlements, wallet top-ups, manual wallet adjustments and referral commissions
+# record NOTHING — the posting is skipped, not retried. The script is an
+# idempotent upsert keyed on `code`, so re-running it on every start is a no-op
+# once the accounts exist.
+#
+# Why a failure here warns instead of refusing to start: the schema push above
+# has already succeeded by this point, so exiting would crash-loop the container
+# with the schema half-deployed and no running service to fix it from. Worse, the
+# script exits non-zero for two things that are NOT failures — an account whose
+# stored type/currency disagrees with CHART_OF_ACCOUNTS, and an active account the
+# chart no longer lists. Both are accounting decisions about rows that may already
+# carry posted entries (see the script's own header), and taking the shop offline
+# over a bookkeeping question is the wrong trade.
+seed_ledger_accounts() {
+  if [ ! -f "$LEDGER_SEED" ] || [ ! -x "$TSX" ]; then
+    log "WARNING: skipped the ledger chart-of-accounts seed because $LEDGER_SEED or $TSX is missing from this image — if it was built from this repo's Dockerfile, this should never happen. Until the seed runs, every ledger posting fails to resolve its account and the money that moved is not recorded. Run it by hand after fixing the image: docker compose run --rm server pnpm seed-chart-of-accounts" >&2
+    return 0
+  fi
+
+  log "Seeding the ledger chart of accounts (idempotent upsert on the account code)."
+  set +e
+  # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
+  $RUN_AS "$TSX" "$LEDGER_SEED"
+  _rc=$?
+  set -e
+  if [ "$_rc" -ne 0 ]; then
+    log "WARNING: the ledger chart-of-accounts seed exited $_rc — read its own output just above to tell the two cases apart. A drifted chart (an account classified differently from CHART_OF_ACCOUNTS, or an active account the chart no longer lists) needs an accounting decision, not a re-run. A genuine failure needs the cause fixed and this command re-run: docker compose run --rm server pnpm seed-chart-of-accounts. Start-up continues either way, because the schema push already succeeded — but ledger postings for accounts that are missing will be skipped until this is resolved." >&2
+    return 0
+  fi
+  log "Ledger chart of accounts is seeded."
+}
+
+# Re-applies every file in $DATA_MIGRATIONS (see its comment for the idempotency
+# contract). A failure warns rather than exits for the same reason the seed does:
+# the schema is already pushed, and a container that refuses to start cannot be
+# used to repair anything.
+apply_data_migrations() {
+  for _name in $DATA_MIGRATIONS; do
+    _file="$APP_ROOT/prisma/migrations/$_name/migration.sql"
+    if [ ! -f "$_file" ]; then
+      log "WARNING: the data-only migration $_name is listed in docker-entrypoint.sh but $_file is not in this image, so it was skipped. Either the image predates that migration (rebuild it) or the list and prisma/migrations/ disagree." >&2
+      continue
+    fi
+    set +e
+    # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
+    $RUN_AS "$PRISMA" db execute --schema "$SCHEMA" --file "$_file"
+    _rc=$?
+    set -e
+    if [ "$_rc" -ne 0 ]; then
+      log "WARNING: the data-only migration $_name failed (prisma db execute exited $_rc). Start-up continues, because the schema push already succeeded and these migrations only seed or backfill rows. Each one documents in its header what an unapplied state means for the app; fix the cause, then re-run just that file: docker compose run --rm server pnpm exec prisma db execute --schema prisma/schema.prisma --file prisma/migrations/$_name/migration.sql" >&2
+      continue
+    fi
+    log "Applied the data-only migration $_name (it is written to be safe to re-run, so this is a no-op once it has taken effect)."
+  done
+}
+
+# The whole Postgres deploy sequence: schema, then the row-level steps a schema
+# push cannot carry. Automating it here is what lets a release deploy with a
+# plain `docker compose ... up -d --build`, with the same guarantee the SQLite
+# path has always had — the schema is current BEFORE any application code runs,
+# on every start path including `restart` and the automatic restart after a crash.
+postgres_migrate() {
+  log "DATABASE_URL_PRISMA points at PostgreSQL — bringing the schema up to date, then applying this release's row-level steps."
+  # No pre-push snapshot exists on this path, deliberately. deploy/backup/backup.sh's
+  # Postgres branch dumps by running pg_dump INSIDE the postgres container via
+  # `docker compose exec` (deploy/backup/README.md), which needs a Docker socket
+  # this container does not have; installing postgresql-client here instead would
+  # ship a client older than the postgres:16 server and produce dumps that server
+  # rejects. What protects the data is db_push()'s refusal to accept data loss:
+  # any change that would drop rows fails the push and stops the container.
+  log "No pre-deploy snapshot is taken on the Postgres path (the dump runs on the host, not in this container). 'prisma db push' below still refuses any change that would drop data. Recommended before every deploy: take a dump yourself — see 'Backup — Postgres' in deploy/backup/README.md."
+  wait_for_database
+  db_push
+  log "Schema is in sync with schema.prisma."
+  seed_ledger_accounts
+  apply_data_migrations
+}
+
 auto_migrate() {
   case "$(printf '%s' "${AUTO_MIGRATE:-1}" | tr 'A-Z' 'a-z')" in
     0 | false | no | off)
@@ -97,8 +241,20 @@ auto_migrate() {
     exit 1
   fi
 
+  # The production engine. Handled in full — schema push, ledger chart-of-accounts
+  # seed, data-only migrations — so a release deploys with nothing but
+  # `docker compose ... up -d --build`. Checked before resolve_db_path() because a
+  # postgresql:// URL has no local file to snapshot and must not fall into the
+  # SQLite branch's backup machinery.
+  case "$DATABASE_URL_PRISMA" in
+    postgres://* | postgresql://*)
+      postgres_migrate
+      return 0
+      ;;
+  esac
+
   if ! db_path="$(resolve_db_path)"; then
-    log "DATABASE_URL_PRISMA does not point at a SQLite file, so there is no file to snapshot. Skipping the automatic schema update; apply it yourself."
+    log "DATABASE_URL_PRISMA is neither a postgresql:// URL nor a SQLite 'file:' URL, so the entrypoint does not know how to bring this database up to date, and there is no file to snapshot either. Skipping the automatic schema update; apply it yourself (docs/MIGRATIONS.md)."
     return 0
   fi
 

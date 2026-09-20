@@ -27,7 +27,7 @@ beforeEach(async () => {
 
 describe("adjustWallet ledger", () => {
   it("writes a ledger row with the applied delta, running balance, and reason", async () => {
-    const bal = await adjustWallet(prisma, userId, "5.00", { reason: "admin_adjust", note: "promo", adminId: 7 });
+    const { balance: bal } = await adjustWallet(prisma, userId, "5.00", { reason: "admin_adjust", note: "promo", adminId: 7 });
     expect(bal.toString()).toBe("5");
     const rows = await prisma.walletTransaction.findMany({ where: { userId } });
     expect(rows.length).toBe(1);
@@ -61,7 +61,7 @@ describe("adjustWallet ledger", () => {
   // when allowNegative is set (e.g. clawing back an erroneous credit). The guard
   // is bypassed only then; a ledger row is still written.
   it("allowNegative lets an admin adjust the balance below zero (with a ledger row)", async () => {
-    const newBal = await adjustWallet(prisma, userId, "-5", {
+    const { balance: newBal } = await adjustWallet(prisma, userId, "-5", {
       reason: "admin_adjust",
       adminId: 7,
       allowNegative: true,
@@ -76,7 +76,7 @@ describe("adjustWallet ledger", () => {
 
   it("the overdraw guard is exact: a debit to precisely zero is allowed", async () => {
     await adjustWallet(prisma, userId, "5", { reason: "admin_adjust" });
-    const bal = await adjustWallet(prisma, userId, "-5", { reason: "order_payment" }); // → 0, not negative
+    const { balance: bal } = await adjustWallet(prisma, userId, "-5", { reason: "order_payment" }); // → 0, not negative
     expect(bal.toString()).toBe("0");
   });
 

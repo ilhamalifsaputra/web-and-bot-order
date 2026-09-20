@@ -104,20 +104,90 @@ export async function completeOrderWithWalletCredit(
     throw new ValidationError("error.insufficient_wallet");
   }
 
-  await db.order.update({ where: { id: finalized.id }, data: { paidAt: new Date() } });
-  await transitionOrderStatus(db, {
-    orderId: finalized.id,
-    from: OrderStatus.PENDING_PAYMENT,
-    to: OrderStatus.PENDING_VERIFICATION,
-    meta: "wallet_full_credit",
-  });
   // No outbox delivered-DM here for the AUTO case — the caller
   // (completeOrderWithWallet) sends the account file directly, with an
   // outbox fallback only if that direct send fails, so wallet delivery
   // doesn't hinge on the outbox dispatcher running (same resilience as the
   // instant Binance Internal / Bybit rails). The MANUAL case's "being
   // prepared" DM is already enqueued by settlePaidOrder itself.
-  return await settlePaidOrder(db, finalized.id, { adminId: 0 });
+  return await markPaidAndSettle(db, finalized.id);
+}
+
+/**
+ * Mark an order paid and run it through settlement — the shared tail of every
+ * "nothing left to collect" rail in this file. Extracted so the three of them
+ * cannot drift on the paid-at stamp, the status transition or its `meta` tag;
+ * each caller keeps its own rule for WHY the order owes nothing.
+ */
+async function markPaidAndSettle(db: Db, orderId: number): Promise<WalletCheckoutResult> {
+  await db.order.update({ where: { id: orderId }, data: { paidAt: new Date() } });
+  await transitionOrderStatus(db, {
+    orderId,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.PENDING_VERIFICATION,
+    meta: "wallet_full_credit",
+  });
+  return await settlePaidOrder(db, orderId, { adminId: 0 });
+}
+
+/**
+ * Is there anything left for a payment rail to collect on this freshly created
+ * order? The one place that question is answered, so a checkout entry point
+ * deciding to skip the gateway and {@link settleFullyDiscountedOrder} agreeing
+ * to settle can never disagree.
+ *
+ * It subtracts the unique cents for the same reason `finalizeOrderPayment`
+ * derives its `baseIdr` that way: the cents are matching noise the order
+ * carries from creation (USE_UNIQUE_CENTS is on by default), not money anyone
+ * owes. A voucher that covers an order's whole price therefore leaves a
+ * `totalAmount` of a few hundredths of a Rupiah rather than a literal zero —
+ * reading the column alone would silently miss every fully-discounted order on
+ * a live deploy while passing in any test that turns unique cents off.
+ */
+export function orderHasNothingLeftToCollect(order: {
+  totalAmount: Decimal.Value;
+  uniqueCents: Decimal.Value;
+}): boolean {
+  return !new Decimal(order.totalAmount).minus(order.uniqueCents).greaterThan(0);
+}
+
+/**
+ * Settle an order a discount alone already reduced to zero (M11 / audit P0-1).
+ *
+ * A voucher or bulk rule can cover an order's whole price before wallet credit
+ * is even considered — `createOrderDirect`/`createOrderFromCart` stamp its
+ * total as Rp0 and leave it PENDING_PAYMENT like any other. Until now the
+ * checkout flow then handed that order to whichever gateway the buyer had
+ * nominally picked, asking it to collect nothing; since M11's rail-minimum
+ * guard that attempt is refused outright, which would leave a fully-discounted
+ * order unbuyable by any route. So this is a ROUTING rule, not a rejection:
+ * there is nothing to collect, so nothing is collected, and the buyer gets the
+ * normal "paid, here's your delivery" outcome.
+ *
+ * Booked exactly like the wallet rails above — `paymentMethod: WALLET`,
+ * currency IDR, no unique cents — because that is what actually happened: the
+ * order was settled from the shop's own books with no external rail involved.
+ * It moves no money, so it writes no WalletTransaction: `createOrderDirect`
+ * only debits credit when `walletUsed` is above zero, and on a zero-total order
+ * it never is. The buyer's chosen currency is deliberately not honoured; a zero
+ * total converts to zero in either one, and booking a nonexistent charge in
+ * USDT would attach an exchange rate to a payment that never happened.
+ *
+ * Must run inside the caller's `$transaction`, alongside the order creation it
+ * follows, so a failure here rolls the whole checkout back.
+ */
+export async function settleFullyDiscountedOrder(db: Db, orderId: number): Promise<WalletCheckoutResult> {
+  const order = await getOrder(db, orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (!orderHasNothingLeftToCollect(order)) {
+    // Caller misuse, not a buyer-facing state: this rail exists only for an
+    // order that costs nothing, and settling one that still owes money would
+    // deliver goods nobody paid for.
+    throw new ValidationError("error.order_still_owing");
+  }
+
+  await finalizeOrderPayment(db, orderId, { currency: OrderCurrency.IDR, method: PaymentMethod.WALLET });
+  return await markPaidAndSettle(db, orderId);
 }
 
 /**
@@ -192,14 +262,7 @@ export async function completeCartOrderWithWalletCredit(
     throw new ValidationError("error.insufficient_wallet");
   }
 
-  await db.order.update({ where: { id: finalized.id }, data: { paidAt: new Date() } });
-  await transitionOrderStatus(db, {
-    orderId: finalized.id,
-    from: OrderStatus.PENDING_PAYMENT,
-    to: OrderStatus.PENDING_VERIFICATION,
-    meta: "wallet_full_credit",
-  });
   // No outbox DM here either — the storefront's own OrderDetailPage reads
   // the order straight from the DB, there is no Telegram DM to send.
-  return await settlePaidOrder(db, finalized.id, { adminId: 0 });
+  return await markPaidAndSettle(db, finalized.id);
 }

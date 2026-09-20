@@ -62,6 +62,8 @@ import {
   enqueueAdminPasswordReset,
   enqueueAdminStalePayment,
   enqueueAdminDigiflazzResyncAborted,
+  enqueueAdminFxRateRejected,
+  enqueueAdminFxRateStale,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
@@ -356,6 +358,52 @@ describe("drainBatch routes ADMIN_DIGIFLAZZ_RESYNC_ABORTED as an admin DM, never
     const row = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 900_200_001);
     expect(row).toBeDefined();
     expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * M13 / audit P0-3: both FX alerts must be routed as admin DMs, never posts to
+ * PUBLIC_CHANNEL_ID — same M-10-shaped risk as the two blocks above, with a
+ * sharper edge here. ADMIN_FX_RATE_STALE says in plain language that the shop
+ * cannot take USDT payments right now; on the public channel that is an outage
+ * announcement to every customer.
+ */
+describe("drainBatch routes both FX alerts as admin DMs, never public posts (M13)", () => {
+  afterEach(() => resetBotIdentity());
+
+  it("sends ADMIN_FX_RATE_REJECTED and ADMIN_FX_RATE_STALE to the admin's chat_id with a public channel configured", async () => {
+    await addAdminIdToDb(prisma, 900_200_002);
+    setBotIdentity({ publicChannelId: -1009876543212 });
+    await enqueueAdminFxRateRejected(prisma, {
+      reason: "above_max",
+      market: "16200000",
+      rate: "16200000",
+      saved: "16000",
+      consecutiveFailures: 2,
+      max: "40000",
+    });
+    await enqueueAdminFxRateStale(prisma, {
+      stage: "max_age",
+      confirmedAt: new Date("2026-09-14T00:00:00.000Z"),
+      ageHours: "72.4",
+      maxAgeHours: "48",
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const calls = sendMessage.mock.calls.filter((c) => c[0] === 900_200_002) as [number, string][];
+    expect(calls.length).toBe(2);
+    expect(sendMessage.mock.calls.some((c) => c[0] === -1009876543212)).toBe(false);
+    expect(calls.some(([, text]) => text.includes("40000"))).toBe(true);
+    expect(calls.some(([, text]) => /USDT payments are switched off/i.test(text))).toBe(true);
+
+    for (const event of [NotificationEvent.ADMIN_FX_RATE_REJECTED, NotificationEvent.ADMIN_FX_RATE_STALE]) {
+      const rows = await prisma.notificationOutbox.findMany({ where: { event, orderId: null } });
+      const row = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === 900_200_002);
+      expect(row, `${event} should have a row for this admin`).toBeDefined();
+      expect(row!.status).toBe("SENT");
+    }
   });
 });
 
@@ -1079,6 +1127,30 @@ describe("PRODUCT_RESTOCKED_BROADCAST", () => {
     );
     const row = await prisma.notificationOutbox.findFirst({
       where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
+describe("RESTOCK_SUBSCRIBER_NOTIFIED", () => {
+  it("DMs the subscriber in their language, marks the row SENT", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED,
+        orderId: null,
+        payloadJson: JSON.stringify({ chat_id: 700_010, product_name: "Netflix - 1 Month", buyer_language: "id" }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).toHaveBeenCalledWith(700_010, "<b>Netflix - 1 Month</b> tersedia kembali.", {
+      parse_mode: "HTML",
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED },
       orderBy: { id: "desc" },
     });
     expect(row!.status).toBe("SENT");

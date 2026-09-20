@@ -150,9 +150,9 @@ const relatedProduct: ProductCardData = {
   all_non_auto: false,
 };
 
-function renderProduct(slug: string, respond: (path: string) => unknown) {
+function renderProduct(slug: string, respond: (path: string) => unknown, ctx: ShopContext = context) {
   (apiGet as Mock).mockImplementation(async (path: string) => {
-    if (path === "/api/v1/pages/context") return context;
+    if (path === "/api/v1/pages/context") return ctx;
     return respond(path);
   });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -254,6 +254,54 @@ describe("ProductPage", () => {
     expect(await screen.findByRole("button", { name: /Notify me when ready/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add to cart/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Buy now/ })).not.toBeInTheDocument();
+  });
+
+  describe("restock CTA feedback", () => {
+    const allOut: ProductPageData = {
+      ...productData,
+      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false })),
+    };
+
+    it("hides the Notify button and explains why for a signed-in account without a linked Telegram", async () => {
+      renderProduct("netflix-premium", () => allOut, {
+        ...context,
+        customer: { username: "budi", email: null, telegram_linked: false },
+      });
+      expect(await screen.findByText(/Link your Telegram account in Settings/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
+    });
+
+    it("shows the real outcome after subscribing, then disables the button", async () => {
+      (apiPost as Mock).mockResolvedValue({ ok: true, result: "subscribed", redirect: "/p/netflix-premium" });
+      renderProduct("netflix-premium", () => allOut, {
+        ...context,
+        customer: { username: "budi", email: null, telegram_linked: true },
+      });
+      const btn = await screen.findByRole("button", { name: /Notify me when ready/ });
+      fireEvent.click(btn);
+      expect(await screen.findByRole("status")).toHaveTextContent(/back in stock/);
+      expect(btn).toBeDisabled();
+    });
+
+    it("shows the unavailable message from an ok:false result", async () => {
+      (apiPost as Mock).mockResolvedValue({ ok: false, result: "unavailable", redirect: "/" });
+      renderProduct("netflix-premium", () => allOut, {
+        ...context,
+        customer: { username: "budi", email: null, telegram_linked: true },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Notify me when ready/ }));
+      expect(await screen.findByRole("status")).toHaveTextContent(/aren't available for this plan/);
+    });
+
+    it("says so when the account is already on the list", async () => {
+      (apiPost as Mock).mockResolvedValue({ ok: true, result: "already", redirect: "/p/netflix-premium" });
+      renderProduct("netflix-premium", () => allOut, {
+        ...context,
+        customer: { username: "budi", email: null, telegram_linked: true },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: /Notify me when ready/ }));
+      expect(await screen.findByRole("status")).toHaveTextContent(/already on the list/);
+    });
   });
 
   it("renders reviews with masked author and the pre-formatted display date", async () => {

@@ -4,7 +4,15 @@ import { Decimal } from "@app/core/money";
 import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { getSetting, setSetting, deleteSetting } from "./settings";
+import { getSetting, setSetting, deleteSetting, __clearSettingsCacheForTests } from "./settings";
+import { MIN_ORDER_AMOUNT_IDR_KEY } from "./orderMinimums";
+import {
+  PAYDISINI_MIN_AMOUNT_KEY,
+  BYBIT_MIN_AMOUNT_KEY,
+  BYBIT_BSC_MIN_AMOUNT_KEY,
+  NOWPAYMENTS_MIN_AMOUNT_KEY,
+} from "./_minAmount";
+import { finalizeOrderPayment } from "./pricing";
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
 import { cancelOrder, createOrderDirect } from "./orders";
@@ -21,6 +29,11 @@ import {
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MIN_AMOUNT_USDT_KEY,
   WALLET_TOPUP_MAX_AMOUNT_USDT_KEY,
+  walletTopupRailAmounts,
+  walletTopupRailMinimumFailure,
+  walletTopupClearsRailMinimum,
+  resolveWalletTopupRailFloor,
+  resolveWalletTopupEffectiveMin,
   type WalletTopupUsdtMethod,
 } from "./wallet_topup";
 
@@ -287,6 +300,408 @@ describe("createWalletTopupOrder — min/max bound enforcement", () => {
       ),
     ).rejects.toMatchObject({ key: "error.wallet_topup_above_max" });
     expect(await prisma.order.count()).toBe(0);
+  });
+});
+
+/**
+ * Whole-branch review D9 — a top-up refused by the SHOP-WIDE rail minimum used
+ * to be told to add more items.
+ *
+ * `min_order_amount_idr` is a different floor from
+ * `wallet_topup_min_amount_idr` above: it is the shop's "we will not ask a
+ * gateway to collect less than this" figure, enforced inside
+ * `finalizeOrderPayment`, which an IDR top-up shares with product checkout. The
+ * floor is still shared on purpose — it is a property of the rail, not of what
+ * is being bought — but the sentence is not: a top-up buyer has no cart, so
+ * "Add more items" was the one instruction they could not follow.
+ */
+describe("createWalletTopupOrder — an IDR top-up gets top-up wording from the rail minimum (D9)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    // Well clear of the top-up's own minimum, so the failure under test is
+    // unambiguously the shop-wide rail floor and not the bound above.
+    await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY);
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+  });
+
+  it("refuses with the top-up sentence, not the product-order one, and creates no order", async () => {
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "5000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      // The figure that failed is still carried, even though this key's copy
+      // does not print it — the storefront surfaces the key alone.
+      formatArgs: { min: "10000", currency: OrderCurrency.IDR },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("names a rail's OWN minimum the same way a product order does", async () => {
+    await setSetting(prisma, PAYDISINI_MIN_AMOUNT_KEY, "25000");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "5000", currency: "IDR", method: PaymentMethod.PAYDISINI }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      formatArgs: { min: "25000", currency: OrderCurrency.IDR },
+    });
+  });
+
+  it("uses the zero-amount backstop's top-up wording for a sub-Rupiah amount", async () => {
+    // With every configured floor cleared, the only check left is "we will not
+    // ask a gateway to collect nothing" — reachable here because the IDR branch
+    // quantizes to whole Rupiah, so Rp0.40 becomes Rp0.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, { userId: sample.user.id, amount: "0.4", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_nothing_to_collect",
+      formatArgs: { currency: OrderCurrency.IDR },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("leaves a PRODUCT order's wording alone — it still has a cart to add to", async () => {
+    const order = await createOrderDirect(prisma, {
+      user: await freshUser(),
+      productId: sample.product.id,
+      quantity: 1,
+    });
+    await expect(
+      finalizeOrderPayment(prisma, order!.id, { currency: OrderCurrency.IDR, method: PaymentMethod.TOKOPAY }),
+    ).rejects.toMatchObject({ key: "error.amount_below_rail_minimum" });
+  });
+});
+
+/**
+ * Whole-branch review F3 — a USDT top-up never met the rail-minimum guard at
+ * all. `createWalletTopupOrder` routes USDT top-ups to
+ * `finalizeWalletTopupPayment`, which had no
+ * `assertOrderTotalClearsRailMinimum` call, so an amount below a rail's own
+ * `<rail>_min_amount` (or below the shop-wide Rupiah floor) was handed to the
+ * gateway anyway and refused out of band.
+ */
+describe("createWalletTopupOrder — a USDT top-up clears the rail minimum too (F3)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_USDT_KEY);
+  });
+
+  it("refuses a USDT amount below the rail's OWN minimum, with the top-up wording, and creates no order", async () => {
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "10");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "5",
+          currency: "USDT",
+          method: PaymentMethod.BYBIT,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      formatArgs: { min: "10", currency: OrderCurrency.USDT },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("refuses a USDT amount whose RUPIAH equivalent is below the shop-wide floor", async () => {
+    // 0.5 USDT at 16.000 is Rp8.000, under a Rp10.000 shop floor. The guard's
+    // whole point: judge the USDT figure against the USDT floor and the Rupiah
+    // equivalent against the Rupiah one, each in its own currency.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "0.5",
+          currency: "USDT",
+          method: PaymentMethod.BINANCE_INTERNAL,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      key: "error.wallet_topup_below_rail_minimum",
+      formatArgs: { min: "10000", currency: OrderCurrency.IDR },
+    });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("accepts a USDT amount whose Rupiah equivalent clears the shop-wide floor", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "1",
+        currency: "USDT",
+        method: PaymentMethod.BINANCE_INTERNAL,
+        rate: "16000",
+      }),
+    );
+    // Rp16.000 equivalent, comfortably over the floor — and the credited figure
+    // is still the typed USDT amount, never the Rupiah one it was judged by.
+    expect(new Decimal(order.totalAmount).minus(order.uniqueCents).equals("1")).toBe(true);
+  });
+
+  it("judges the typed amount, never a rate-converted one — 1 USDT is not 0.01 USDT", async () => {
+    // The regression this pairs with: had the guard been handed
+    // `usdtFromIdr(amount, rate)` (the product-order derivation) instead of the
+    // typed figure, 1 USDT would have been judged as 0.0001 -> 0.01 USDT and
+    // refused by any rail floor above a cent.
+    await setSetting(prisma, BYBIT_BSC_MIN_AMOUNT_KEY, "0.5");
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "1",
+        currency: "USDT",
+        method: PaymentMethod.BYBIT_BSC,
+        rate: "16000",
+      }),
+    );
+    expect(new Decimal(order.totalAmount).minus(order.uniqueCents).equals("1")).toBe(true);
+  });
+
+  it("leaves nothing half-finalized: a refused top-up stamps no payment method, window or reference", async () => {
+    // The guard runs before the row is touched, so the rollback has nothing to
+    // undo — but assert the observable consequence rather than the ordering.
+    await setSetting(prisma, NOWPAYMENTS_MIN_AMOUNT_KEY, "50");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "10",
+          currency: "USDT",
+          method: PaymentMethod.NOWPAYMENTS,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_below_rail_minimum" });
+    expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("the top-up's own USDT bound is checked first, so its wording wins when both would fail", async () => {
+    await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_USDT_KEY, "20");
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "10");
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "5",
+          currency: "USDT",
+          method: PaymentMethod.BYBIT,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_below_min" });
+  });
+});
+
+describe("walletTopupRailAmounts — which figure is derived from which (F3)", () => {
+  it("a USDT top-up's rail amount is the typed figure and its Rupiah figure is derived", () => {
+    const { idrAmount, railAmount } = walletTopupRailAmounts({ currency: "USDT", amount: "2.5", rate: "16000" });
+    expect(railAmount.equals("2.5")).toBe(true);
+    expect(idrAmount.equals("40000")).toBe(true);
+  });
+
+  it("does NOT quantize the Rupiah equivalent — it is a comparison operand, not a stored figure", () => {
+    const { idrAmount } = walletTopupRailAmounts({ currency: "USDT", amount: "0.333", rate: "16000" });
+    expect(idrAmount.equals("5328")).toBe(true);
+  });
+
+  it("an IDR top-up's two figures are the same whole-Rupiah number", () => {
+    const { idrAmount, railAmount } = walletTopupRailAmounts({ currency: "IDR", amount: "50000.4" });
+    expect(idrAmount.equals("50000")).toBe(true);
+    expect(railAmount.equals("50000")).toBe(true);
+  });
+
+  it("refuses an unusable rate rather than inventing a Rupiah equivalent", () => {
+    expect(() => walletTopupRailAmounts({ currency: "USDT", amount: "5", rate: "0" })).toThrow();
+  });
+});
+
+describe("resolveWalletTopupRailFloor — the floor in the currency the buyer types (F4b)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+  });
+
+  it("a rail's own minimum passes through untouched — it is already in the typed currency", async () => {
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "12.5");
+    const floor = await resolveWalletTopupRailFloor(prisma, {
+      currency: "USDT",
+      rate: "16000",
+      method: PaymentMethod.BYBIT,
+    });
+    expect(floor?.equals("12.5")).toBe(true);
+  });
+
+  it("the shop-wide RUPIAH floor becomes a USDT figure, rounded UP to the cent", async () => {
+    // Rp10.000 / 16.000 = 0.625 exactly; Rp10.001 rounds up rather than down,
+    // because a floor rounded down is a figure the guard would then refuse.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10001");
+    const floor = await resolveWalletTopupRailFloor(prisma, {
+      currency: "USDT",
+      rate: "16000",
+      method: PaymentMethod.BINANCE_INTERNAL,
+    });
+    expect(floor?.equals("0.63")).toBe(true);
+    // And the figure it names really does clear the guard it was derived from.
+    expect(
+      await walletTopupClearsRailMinimum(prisma, {
+        currency: "USDT",
+        rate: "16000",
+        amount: floor!,
+        method: PaymentMethod.BINANCE_INTERNAL,
+      }),
+    ).toBe(true);
+  });
+
+  it("an IDR rail's floor is the Rupiah figure as configured", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "15000");
+    const floor = await resolveWalletTopupRailFloor(prisma, { currency: "IDR", method: PaymentMethod.TOKOPAY });
+    expect(floor?.equals("15000")).toBe(true);
+  });
+
+  it("is null when every floor has been cleared", async () => {
+    expect(await resolveWalletTopupRailFloor(prisma, { currency: "IDR", method: PaymentMethod.TOKOPAY })).toBeNull();
+  });
+});
+
+describe("resolveWalletTopupEffectiveMin — what the top-up form should advertise (F4b)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    await deleteSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY);
+  });
+
+  it("is the rail floor when it is higher than the top-up's own minimum — the Rp1.000-then-refused-at-Rp5.000 bug", async () => {
+    await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "1000");
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+    const min = await resolveWalletTopupEffectiveMin(prisma, {
+      currency: "IDR",
+      methods: [PaymentMethod.TOKOPAY, PaymentMethod.PAYDISINI],
+    });
+    expect(min?.equals("10000")).toBe(true);
+  });
+
+  it("is the top-up's own minimum when that is the higher of the two", async () => {
+    await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "50000");
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+    const min = await resolveWalletTopupEffectiveMin(prisma, { currency: "IDR", methods: [PaymentMethod.TOKOPAY] });
+    expect(min?.equals("50000")).toBe(true);
+  });
+
+  it("takes the LOWEST rail floor among the offered rails — the rails are alternatives", async () => {
+    // A Rp10.000 shop floor with PayDisini overriding it down to Rp2.000: a
+    // Rp2.000 top-up is payable, just not through QRIS, so the form must not
+    // demand Rp10.000.
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "10000");
+    await setSetting(prisma, PAYDISINI_MIN_AMOUNT_KEY, "2000");
+    const min = await resolveWalletTopupEffectiveMin(prisma, {
+      currency: "IDR",
+      methods: [PaymentMethod.TOKOPAY, PaymentMethod.PAYDISINI],
+    });
+    expect(min?.equals("2000")).toBe(true);
+  });
+
+  it("an offered rail with no floor of its own makes the rail side vacuous", async () => {
+    await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "1000");
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+    const min = await resolveWalletTopupEffectiveMin(prisma, { currency: "IDR", methods: [PaymentMethod.TOKOPAY] });
+    expect(min?.equals("1000")).toBe(true);
+  });
+
+  it("with no rails offered at all, only the top-up's own bound binds", async () => {
+    await setSetting(prisma, WALLET_TOPUP_MIN_AMOUNT_IDR_KEY, "1000");
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "99999");
+    const min = await resolveWalletTopupEffectiveMin(prisma, { currency: "IDR", methods: [] });
+    expect(min?.equals("1000")).toBe(true);
+  });
+
+  it("is null when neither floor exists", async () => {
+    expect(
+      await resolveWalletTopupEffectiveMin(prisma, { currency: "IDR", methods: [PaymentMethod.TOKOPAY] }),
+    ).toBeNull();
+  });
+
+  it("converts a Rupiah shop floor for a USDT form, and the figure it names is accepted", async () => {
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "16000");
+    const min = await resolveWalletTopupEffectiveMin(prisma, {
+      currency: "USDT",
+      rate: "16000",
+      methods: [PaymentMethod.BINANCE_INTERNAL, PaymentMethod.BYBIT],
+    });
+    expect(min?.equals("1")).toBe(true);
+    expect(
+      await walletTopupClearsRailMinimum(prisma, {
+        currency: "USDT",
+        rate: "16000",
+        amount: min!,
+        method: PaymentMethod.BINANCE_INTERNAL,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("walletTopupClearsRailMinimum — the form's rail list agrees with the guard (F3)", () => {
+  beforeEach(async () => {
+    __clearSettingsCacheForTests(prisma);
+    await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
+  });
+
+  it("refuses exactly the rail the guard refuses, and accepts the sibling that would take it", async () => {
+    await setSetting(prisma, BYBIT_MIN_AMOUNT_KEY, "10");
+    const query = { currency: "USDT", rate: "16000", amount: "5" } as const;
+    expect(await walletTopupClearsRailMinimum(prisma, { ...query, method: PaymentMethod.BYBIT })).toBe(false);
+    expect(await walletTopupClearsRailMinimum(prisma, { ...query, method: PaymentMethod.BINANCE_INTERNAL })).toBe(true);
+
+    // The predicate's answer is the guard's answer — asserted by actually
+    // finalizing through the rail it said yes to.
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount: "5",
+        currency: "USDT",
+        method: PaymentMethod.BINANCE_INTERNAL,
+        rate: "16000",
+      }),
+    );
+    expect(order.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    await expect(
+      prisma.$transaction((tx) =>
+        createWalletTopupOrder(tx, {
+          userId: sample.user.id,
+          amount: "5",
+          currency: "USDT",
+          method: PaymentMethod.BYBIT,
+          rate: "16000",
+        }),
+      ),
+    ).rejects.toMatchObject({ key: "error.wallet_topup_below_rail_minimum" });
+  });
+
+  it("reports WHY, so a caller can tell a configured floor from the zero-amount backstop", async () => {
+    await setSetting(prisma, PAYDISINI_MIN_AMOUNT_KEY, "25000");
+    expect(
+      await walletTopupRailMinimumFailure(prisma, {
+        currency: "IDR",
+        amount: "5000",
+        method: PaymentMethod.PAYDISINI,
+      }),
+    ).toMatchObject({ reason: "below_minimum" });
+    expect(
+      await walletTopupRailMinimumFailure(prisma, {
+        currency: "IDR",
+        amount: "0.4",
+        method: PaymentMethod.TOKOPAY,
+      }),
+    ).toMatchObject({ reason: "nothing_to_collect" });
   });
 });
 

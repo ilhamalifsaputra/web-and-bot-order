@@ -24,6 +24,7 @@ import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -125,6 +126,8 @@ function ShareRow({ productName }: { productName: string }) {
   );
 }
 
+type RestockResult = "subscribed" | "already" | "unavailable" | "needs_telegram";
+
 export default function ProductPage() {
   const { slug = "" } = useParams<{ slug: string }>();
   const navigate = useNavigate();
@@ -147,7 +150,7 @@ export default function ProductPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);
-  const [cartErrorKey, setCartErrorKey] = useState<string | null>(null);
+  const [cartError, setCartError] = useState<unknown>(null);
   const isDesktop = useIsDesktop();
   // The live summary card is the sticky bar's sentinel: the bar exists only to
   // stand in for the real buy controls once they've scrolled away, so it stays
@@ -182,30 +185,44 @@ export default function ProductPage() {
 
   const addMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartErrorKey(null),
+    onMutate: () => setCartError(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/cart");
     },
-    onError: (err) => setCartErrorKey((err as Error).message),
+    onError: (err) => setCartError(err),
   });
   const buyMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
-    onMutate: () => setCartErrorKey(null),
+    onMutate: () => setCartError(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/checkout");
     },
-    onError: (err) => setCartErrorKey((err as Error).message),
+    onError: (err) => setCartError(err),
   });
   const restockMutation = useMutation({
-    mutationFn: (denominationId: number) => apiPost(`/api/v1/restock/${denominationId}`, {}),
+    mutationFn: (denominationId: number) => apiPost<{ result: RestockResult }>(`/api/v1/restock/${denominationId}`, {}),
     onError: (err) => {
       if ((err as Error & { status?: number }).status === 401) {
         navigate(`/login?next=/p/${slug}`);
       }
     },
   });
+
+  // A result belongs to the plan it was requested for — clear it on a switch.
+  const resetRestock = restockMutation.reset;
+  useEffect(() => {
+    resetRestock();
+  }, [selectedId, slug, resetRestock]);
+
+  // Restock DMs go out over Telegram, so a signed-in account without a linked
+  // Telegram can't be served — hide the button and say why instead. Anonymous
+  // visitors keep it (tapping it sends them to log in).
+  const needsTelegram = Boolean(ctx?.customer) && ctx?.customer?.telegram_linked === false;
+  const restockResult = restockMutation.data?.result;
+  const restockDone = restockResult === "subscribed" || restockResult === "already";
+  const restockFeedbackKey = restockResult ? `web.restock_${restockResult}` : null;
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -384,9 +401,9 @@ export default function ProductPage() {
             )}
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
-            {cartErrorKey && (
+            {cartError !== null && (
               <Alert variant="banner" tone="error" className="mt-3 mb-0">
-                {t(cartErrorKey)}
+                {tError(cartError)}
               </Alert>
             )}
 
@@ -436,15 +453,24 @@ export default function ProductPage() {
             ) : (
               // Out-of-stock restock CTA (works only when logged in).
               <form id="restock-form" className="mt-3" onSubmit={(e) => e.preventDefault()}>
-                <button
-                  type="button"
-                  className="btn btn-soft"
-                  disabled={restockMutation.isPending}
-                  onClick={() => restockMutation.mutate(selected.id)}
-                >
-                  {restockMutation.isPending && <Spinner />}
-                  <Bell className="w-4 h-4" /> {t("web.notify_restock")}
-                </button>
+                {needsTelegram ? (
+                  <p className="text-sm text-ink-soft">{t("web.restock_needs_telegram")}</p>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-soft"
+                    disabled={restockMutation.isPending || restockDone}
+                    onClick={() => restockMutation.mutate(selected.id)}
+                  >
+                    {restockMutation.isPending && <Spinner />}
+                    <Bell className="w-4 h-4" /> {t("web.notify_restock")}
+                  </button>
+                )}
+                {restockFeedbackKey && (
+                  <p role="status" className="mt-2 text-sm text-ink-soft">
+                    {t(restockFeedbackKey)}
+                  </p>
+                )}
               </form>
             )}
           </div>
@@ -570,7 +596,7 @@ export default function ProductPage() {
           view beside the image, so it needs none of this. Shared component
           (components.md "Sticky purchase bar") — Add to Cart stays in the
           in-page form only, so just `primaryAction` is passed. */}
-      {!isDesktop && !buyAreaVisible && (
+      {!isDesktop && !buyAreaVisible && (purchasable(selected) || !needsTelegram) && (
         <StickyPurchaseBar
           ariaLabel={t("web.purchase_bar")}
           priceLabel={selected.duration_label || selected.name}
@@ -587,11 +613,11 @@ export default function ProductPage() {
               : {
                   // Nothing to buy, but the bar still carries the one action
                   // that does exist — an empty bar is wasted screen on 320px.
-                  label: t("web.notify_restock"),
+                  label: restockFeedbackKey ? t(restockFeedbackKey) : t("web.notify_restock"),
                   icon: <Bell className="w-4 h-4" />,
                   onClick: () => restockMutation.mutate(selected.id),
                   pending: restockMutation.isPending,
-                  disabled: restockMutation.isPending,
+                  disabled: restockMutation.isPending || restockDone,
                   variant: "soft",
                 }
           }

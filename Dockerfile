@@ -6,9 +6,11 @@
 # + node_modules + the generated Prisma client. The default CMD runs the combined
 # server (`pnpm start`); docker-compose uses the same command.
 #
-# Before that command runs, docker-entrypoint.sh brings the database schema up to
-# date (taking a verified snapshot first), so a deploy cannot leave new code
-# running against an old schema. See docs/MIGRATIONS.md.
+# Before that command runs, docker-entrypoint.sh brings the database up to date,
+# so a deploy cannot leave new code running against an old schema: on Postgres it
+# pushes the schema, seeds the ledger chart of accounts and applies the release's
+# data-only migrations; on a legacy SQLite URL it takes a verified snapshot first
+# and then pushes. See docs/MIGRATIONS.md.
 
 # ---- Stage 1: builder ----
 # node:sqlite (used by scripts/migrate-sqlite-to-postgres.ts,
@@ -67,6 +69,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssl tini go
     && groupadd -r app && useradd -r -g app -m -d /home/app app
 
 # Copy the fully-installed workspace (node_modules symlinks + generated client).
+#
+# This includes devDependencies on purpose, and the runtime needs them: the apps
+# are executed straight from TypeScript, so node_modules/.bin/tsx is what runs
+# both `pnpm start` and the entrypoint's ledger chart-of-accounts seed
+# (scripts/seed-chart-of-accounts.ts), and node_modules/.bin/prisma is what
+# applies the schema. The builder therefore must NOT install with `--prod` (and
+# NODE_ENV is deliberately unset in that stage, which would do the same thing
+# implicitly) — deploy/test-entrypoint-auto-migrate.sh asserts the entrypoint
+# calls both binaries, but only a real build can catch them being pruned away.
 COPY --from=builder --chown=app:app /app /app
 
 # Data dir is a mount point (SQLite DB + logs). Owned by the runtime user.

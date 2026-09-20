@@ -31,6 +31,7 @@ const data: CheckoutData = {
   wallet_idr_enabled: true,
   wallet_usdt_enabled: true,
   is_guest: false,
+  below_all_minimums: false,
 };
 
 function renderSelector(overrides: Partial<CheckoutData> = {}) {
@@ -75,5 +76,39 @@ describe("PaymentMethodSelector", () => {
     expect(screen.queryByRole("group", { name: "QRIS & e-wallet" })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Wallet credit" })).not.toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Cryptocurrency" })).toBeInTheDocument();
+  });
+
+  /**
+   * Whole-branch review A5: with every row gated off, the panel used to say
+   * "No payment methods are available right now… contact support" whatever the
+   * cause. When the cause is the order being under every gateway's minimum, that
+   * sends the buyer to ask a question the shop cannot answer either, about
+   * something they could have fixed themselves in one tap.
+   */
+  describe("when nothing at all is payable", () => {
+    const nothingPayable: Partial<CheckoutData> = {
+      idr_enabled: false,
+      paydisini_enabled: false,
+      binance_enabled: false,
+      bybit_enabled: false,
+      bybit_bsc_enabled: false,
+      nowpayments_enabled: false,
+      wallet_idr: "0",
+      wallet_usdt: "0",
+    };
+
+    it("explains the minimum, with no support link, when the order is simply too small", () => {
+      renderSelector({ ...nothingPayable, below_all_minimums: true });
+
+      expect(screen.getByText(/below the minimum for every payment method/i)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /contact support/i })).not.toBeInTheDocument();
+    });
+
+    it("keeps the contact-support wording when no gateway is usable at all", () => {
+      renderSelector({ ...nothingPayable, below_all_minimums: false });
+
+      expect(screen.getByRole("link", { name: /contact support/i })).toBeInTheDocument();
+      expect(screen.queryByText(/below the minimum for every payment method/i)).not.toBeInTheDocument();
+    });
   });
 });

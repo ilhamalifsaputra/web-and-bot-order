@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -34,6 +35,7 @@ import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useCatalog, CATALOG_QUERY_KEY } from "../api/catalog";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface DenominationRow {
   id: number;
@@ -222,7 +224,7 @@ export function ProductDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
       toast.success("Denomination deleted.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete denomination."));
+      toast.error(describeError(e, "Failed to delete denomination."));
     }
   }
 
@@ -246,7 +248,7 @@ export function ProductDetailPage() {
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
       toast.success(`${count} denomination(s) ${active ? "activated" : "deactivated"}.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update denominations."));
+      toast.error(describeError(e, "Failed to update denominations."));
     } finally {
       setBulkActing(false);
     }
@@ -604,7 +606,7 @@ export function ProductDetailPage() {
               { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
               { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
               { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
-              { key: "waiting", header: "Waiting", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{stat?.waiting ?? 0}</span>; } },
+              { key: "waiting", header: <RestockRequestsHeader />, render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{formatRestockRequests(stat?.waiting, stat?.available)}</span>; } },
               {
                 key: "active",
                 header: "Active",

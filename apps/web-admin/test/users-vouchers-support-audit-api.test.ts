@@ -178,15 +178,16 @@ describe("POST /api/users/:userId/wallet", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("is atomic: audit-log failure rolls back the balance change and ledger row too", async () => {
+  it("is atomic: audit-log failure rolls back the balance change, ledger row and ledger posting too", async () => {
     // adjustWallet (no internal $transaction of its own — its doc comment
     // requires the CALLER to wrap it) writes the new wallet balance AND a
-    // wallet_transactions ledger row as two separate awaited calls, before
-    // logAdminAction writes a third, separate audit row. Force the audit
-    // insert to fail (FK violation: the acting admin's User row no longer
-    // exists, so audit_logs.admin_id has nothing to reference) and prove the
-    // route's prisma.$transaction rolls the balance + ledger write back with
-    // it — not just the audit write — so the three can never diverge.
+    // wallet_transactions ledger row as two separate awaited calls;
+    // postWalletAdjustmentPosting then writes a FinancialTransaction plus its
+    // LedgerEntry rows (Financial Ledger M3), and logAdminAction writes the
+    // audit row last. Force the audit insert to fail (FK violation: the acting
+    // admin's User row no longer exists, so audit_logs.admin_id has nothing to
+    // reference) and prove the route's prisma.$transaction rolls ALL of them
+    // back with it — not just the audit write — so the four can never diverge.
     const before = (await prisma.user.findUniqueOrThrow({ where: { id: customerId } })).walletBalance.toString();
     await prisma.user.delete({ where: { id: adminId } });
 
@@ -209,6 +210,13 @@ describe("POST /api/users/:userId/wallet", () => {
     expect(ledger.length).toBe(0);
     const audit = await prisma.auditLog.findMany({ where: { action: "wallet_adjust" } });
     expect(audit.length).toBe(0);
+    // Nor any double-entry posting: a FinancialTransaction surviving a rolled-back
+    // wallet movement would claim in the books that money moved when it did not.
+    const postings = await prisma.financialTransaction.findMany({
+      where: { type: "ADJUSTMENT" },
+    });
+    expect(postings.length).toBe(0);
+    expect(await prisma.ledgerEntry.count()).toBe(0);
   });
 });
 

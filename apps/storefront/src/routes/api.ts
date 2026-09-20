@@ -55,6 +55,7 @@ import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
 import { clientIp, guestCheckoutRateLimited, checkoutSubmitRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "@app/core/errorBody";
 
 interface CategoryJson {
   id: number;
@@ -674,14 +675,19 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
         return respond(201, withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
-          return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+          return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
         }
         throw e;
       }
     }
 
     try {
-      const { orderCode } = await performCheckout(customer, method, voucherCode, req.body?.customer_data);
+      const { orderCode, settledWithoutGateway } = await performCheckout(
+        customer,
+        method,
+        voucherCode,
+        req.body?.customer_data,
+      );
 
       // Mail the recovery code to guests only — a registered buyer has an
       // account and a "My orders" page, so mailing them would be a behaviour
@@ -699,14 +705,22 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       const guestEmail = customer.user.isGuest ? customer.user.guestEmail : null;
       const emailSent = guestEmail ? await sendGuestOrderCodeEmail(req, guestEmail, orderCode) : false;
 
-      const body = { order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` };
+      // A voucher or bulk rule can cover the whole cart, in which case
+      // performCheckout already settled the order from the shop's own books and
+      // there is nothing to pay — so it goes to the order page, exactly like the
+      // wallet-credit branch above. Sending it to the pay page showed a payment
+      // screen for an order nobody owed anything on.
+      const body = {
+        order_code: orderCode,
+        pay_url: settledWithoutGateway ? `/account/orders/${orderCode}` : `/checkout/${orderCode}/pay`,
+      };
       // `email_sent` is added for guests only: the checked-in test for the
       // signed-in 201 asserts that body is EXACTLY `{ order_code, pay_url }`,
       // and a registered buyer has no use for a flag about mail they never get.
       return respond(201, withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return respond(400, withGuestCsrf({ error: e.key }, isGuest, customer));
+        return respond(400, withGuestCsrf(errorBody(e), isGuest, customer));
       }
       throw e;
     }

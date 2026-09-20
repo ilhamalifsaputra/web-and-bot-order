@@ -478,7 +478,7 @@ export async function getVoucherStats(
 /**
  * Per-voucher performance for the admin Vouchers page: orders/revenue/
  * customers, aggregated in one query and reduced in JS. DELIVERED-only
- * (mirrors revenue.ts's deliveredRevenueByCurrency — only a completed,
+ * (mirrors revenue.ts's salesRevenueByCurrency — only a completed,
  * fulfilled order counts as "earned" performance). Revenue is a single
  * IDR-equivalent Decimal per voucher: IDR orders pass through unconverted,
  * USDT orders convert via THAT order's own fxRate snapshot (never a live

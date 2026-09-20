@@ -22,7 +22,7 @@ export function OrdersKpiRow(): JSX.Element {
         <StatCard label="Total Orders" hint={ALL_KINDS} value={data?.totalOrders ?? 0} icon={ShoppingCart} isLoading={isLoading} />
         <StatCard
           label="Revenue Today"
-          hint="Delivered today, product orders only (wallet top-ups are not sales)."
+          hint="Delivered today, product sales only: what was charged plus any wallet credit spent. Wallet top-ups are not sales."
           value={revenueAmounts.length > 0 ? <CurrencyStack amounts={revenueAmounts} /> : "—"}
           icon={Wallet}
           isLoading={isLoading}
@@ -38,7 +38,7 @@ export function OrdersKpiRow(): JSX.Element {
         <StatCard label="Processing" hint={ALL_KINDS} value={data?.processing ?? 0} icon={RefreshCw} isLoading={isLoading} />
         <StatCard
           label="Delivered"
-          hint="Delivered product orders only (wallet top-ups excluded)."
+          hint={ALL_KINDS}
           value={data?.delivered ?? 0}
           icon={CheckCircle2}
           tone="success"
@@ -47,8 +47,8 @@ export function OrdersKpiRow(): JSX.Element {
         <StatCard label="Cancelled" hint={ALL_KINDS} value={data?.cancelled ?? 0} icon={XCircle} tone="danger" isLoading={isLoading} />
       </div>
       <p className="mt-2 text-xs text-ink-soft">
-        Revenue Today and Delivered count product orders only; the other tiles count every order in the list,
-        including wallet top-ups.
+        Revenue Today counts product sales only; every other tile counts every order in the list below, including
+        wallet top-ups, so each one matches its status tab.
       </p>
     </div>
   );

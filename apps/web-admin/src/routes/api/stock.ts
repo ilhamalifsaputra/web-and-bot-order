@@ -26,7 +26,7 @@ import {
   setStockNote,
   restockSubscriberCounts,
   logAdminAction,
-  enqueueRestockBroadcast,
+  afterStockAdded,
   updateDenomination,
   revealStockCredentials,
 } from "@app/db";
@@ -56,7 +56,7 @@ function csvRow(fields: string[]): string {
  * the stored value's length or a decrypted prefix — either would leak
  * partial plaintext (or its length) to a page load nobody asked to reveal
  * anything on. */
-const MASKED_CREDENTIAL = "••••••••";
+export const MASKED_CREDENTIAL = "••••••••";
 
 /** Page size for GET /api/stock/:productId's tab/page pagination — replaces
  * the old flat `take: 500` that spanned every status at once (the bug this
@@ -71,7 +71,7 @@ const PAGE_SIZE = 50;
  * server.ts) and return this as JSON instead, so a missing/malformed
  * `CREDENTIAL_ENCRYPTION_KEY` surfaces as a readable admin error instead of
  * `apiPost` failing to parse an HTML error page. */
-const CREDENTIAL_KEY_ERROR_MESSAGE =
+export const CREDENTIAL_KEY_ERROR_MESSAGE =
   "Stock credential encryption is not configured correctly — check CREDENTIAL_ENCRYPTION_KEY.";
 
 /** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
@@ -115,7 +115,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       "Available",
       "Reserved",
       "Sold",
-      "Waiting",
+      "Restock Requests",
       "Status",
     ];
     let csv = csvRow(header);
@@ -131,7 +131,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         String(available),
         String(cnt?.reserved ?? 0),
         String(cnt?.sold ?? 0),
-        String(waiting[d.id] ?? 0),
+        // Same rule as the admin UI: blank unless out of stock with requests.
+        available === 0 && waiting[d.id] ? String(waiting[d.id]) : "",
         stockStatusLabel(available),
       ]);
     }
@@ -230,7 +231,13 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
 
     let added: number, skipped: number;
     try {
-      ({ added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds)));
+      ({ added, skipped } = await prisma.$transaction(async (tx) => {
+        const res = await bulkAddStock(tx, productId, creds);
+        // Same transaction as the insert: stock, subscriber DMs and the optional
+        // broadcast commit or roll back together. Web only enqueues outbox rows.
+        await afterStockAdded(tx, productId, res.added, req.admin!.userId);
+        return res;
+      }));
     } catch (e) {
       if (e instanceof CredentialKeyConfigError) {
         logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
@@ -248,27 +255,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     logger.info(
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
-
-    // Broadcast to ALL non-banned customers, separate from and in addition
-    // to the RestockSubscription opt-in DM — only when the admin turned the
-    // per-product flag on. The web NEVER sends Telegram itself; this just
-    // enqueues rows for the notifier/bot to deliver.
-    if (added > 0 && product.broadcastOnRestock) {
-      const stockCount = await countAvailableStock(prisma, productId);
-      const fullName = `${product.product.name} - ${product.name}`;
-      const notified = await enqueueRestockBroadcast(prisma, {
-        productName: fullName,
-        stockCount,
-        createdById: req.admin!.userId,
-      });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "restock_broadcast",
-        targetType: "product",
-        targetId: productId,
-        details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
-      });
-    }
 
     const message =
       skipped > 0
@@ -300,8 +286,8 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     return reply.send({ ok: true, broadcastOnRestock: body.enabled });
   });
 
-  // Bulk mark selected stock items dead (one writer, audited once). Never logs
-  // credentials — only the count and ids.
+  // Bulk mark selected stock items dead (one writer, audited once). The audit row
+  // carries only the count — never the credentials or the admin-typed note.
   app.post("/api/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, unknown>;
@@ -315,7 +301,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_bulk_dead",
       targetType: "product",
       targetId: productId,
-      details: `Marked ${count} stock items dead. Note: "${note.slice(0, 160)}".`, // never the credentials
+      details: `Marked ${count} stock ${count === 1 ? "item" : "items"} dead.`, // never the note — admins paste credentials into it
     });
     logger.info(`Bulk-marked ${count} stock items dead on product ${productId}`);
     return reply.send({ ok: true, count });
@@ -358,7 +344,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
-      details: `Marked stock item dead. Note: "${note.slice(0, 200)}".`, // never the credentials
+      details: `Marked stock item #${stockId} dead.`, // never the note — admins paste credentials into it
     });
     return reply.send({ ok: true });
   });
@@ -405,7 +391,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       action: "stock_edit_note",
       targetType: "stock_item",
       targetId: stockId,
-      details: `Updated stock item note to: "${note.slice(0, 200)}".`, // never the credentials
+      details: `Updated the note on stock item #${stockId}.`, // never the note — admins paste credentials into it
     });
     return reply.send({ ok: true });
   });

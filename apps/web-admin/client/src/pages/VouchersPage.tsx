@@ -428,7 +428,7 @@ export function VouchersPage() {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const update = useMutation({
@@ -438,7 +438,7 @@ export function VouchersPage() {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const toggle = useMutation({
@@ -448,7 +448,7 @@ export function VouchersPage() {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       toast.success(vars.active ? "Voucher enabled." : "Voucher disabled.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const del = useMutation({
@@ -457,7 +457,7 @@ export function VouchersPage() {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       toast.success("Voucher deleted.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const bulkAction = useMutation({
@@ -473,7 +473,7 @@ export function VouchersPage() {
           : `${verb} ${result.succeeded.length} voucher${result.succeeded.length === 1 ? "" : "s"}.`,
       );
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;

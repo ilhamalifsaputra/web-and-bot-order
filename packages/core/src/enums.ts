@@ -563,6 +563,11 @@ export const NotificationEvent = {
   // broadcastOnRestock enabled. payload carries chat_id + product_name +
   // stock_count per recipient (one outbox row per customer).
   PRODUCT_RESTOCKED_BROADCAST: "PRODUCT_RESTOCKED_BROADCAST",
+  // Buyer DM to one customer who opted in (RestockSubscription) to be told
+  // when this SKU is back in stock. payload carries chat_id + product_name +
+  // buyer_language; the subscription is deleted in the same transaction that
+  // enqueues the row (enqueueRestockSubscriberNotifications).
+  RESTOCK_SUBSCRIBER_NOTIFIED: "RESTOCK_SUBSCRIBER_NOTIFIED",
   // Buyer DM broadcast to ALL non-banned customers with a linked Telegram
   // account, triggered by the order-bot's announceStartedFlashSales job the
   // first minute a scheduled flash sale becomes live (its flashAnnouncedAt is
@@ -693,6 +698,37 @@ export const NotificationEvent = {
   // sharp_changes/considered_rows (plain counts only, never a SKU/price
   // dump), same fan-out-per-admin shape as ADMIN_STALE_PAYMENT above.
   ADMIN_DIGIFLAZZ_RESYNC_ABORTED: "ADMIN_DIGIFLAZZ_RESYNC_ABORTED",
+  // Admin DM (not a channel post): the hourly market-rate refresh
+  // (`refreshUsdIdrRate`, scheduled by `scheduleFxRefresh`) fetched a
+  // USD→IDR rate that failed `validateUsdIdrRate`'s sanity band — outside
+  // `fx_rate_min`/`fx_rate_max`, or more than `fx_rate_max_delta_pct` away
+  // from the rate already saved (M13 / audit P0-3). The saved rate and its
+  // freshness stamp were left exactly as they were, so nothing mispriced;
+  // this DM exists because that refusal is otherwise silent and the NEXT
+  // hourly tick would refuse the same garbage again, forever, while the saved
+  // rate quietly aged out. Same "malformed upstream response, circuit breaker
+  // held, a human must check the source" category as
+  // ADMIN_DIGIFLAZZ_RESYNC_ABORTED above. payload carries `chat_id` plus
+  // reason/market/rate/saved (+ the reason's own figures: min, max,
+  // last_known, delta_pct, max_delta_pct) and consecutive_failures — plain
+  // money figures only, never a URL or credential. NOT order-scoped
+  // (orderId: null): no order is involved, the rate is shop-wide.
+  ADMIN_FX_RATE_REJECTED: "ADMIN_FX_RATE_REJECTED",
+  // Admin DM (not a channel post): the saved `usd_idr_rate` has not been
+  // confirmed against the market for longer than `fx_rate_max_age_hours`
+  // (default 48h), so `getUsdIdrRate` now reports no rate at all and the
+  // WHOLE USDT rail is hidden shop-wide — checkout stops offering it, USDT
+  // prices stop being shown (M13 / audit P0-3). Deliberately a DIFFERENT
+  // event from ADMIN_FX_RATE_REJECTED above even though the two often share a
+  // root cause: the remedy is different (there, the rate SOURCE is suspect;
+  // here, the shop is already losing USDT sales and the fix is to refresh or
+  // re-enter a rate), and one alert must not be mistaken for the other.
+  // Enqueued at most ONCE per staleness episode, keyed off the stamp it is
+  // complaining about (`fx_stale_alerted_for`) — an hourly cron would
+  // otherwise DM every admin 24 times a day for as long as nobody looked.
+  // payload carries `chat_id` plus confirmed_at/age_hours/max_age_hours.
+  // NOT order-scoped (orderId: null).
+  ADMIN_FX_RATE_STALE: "ADMIN_FX_RATE_STALE",
   // Admin/support-group DM (fan-out — one row per resolved target, same
   // per-recipient shape as ADMIN_MANUAL_ORDER_QUEUED/ADMIN_STALE_PAYMENT):
   // forwards a newly-opened support ticket for triage. Enqueued from the
@@ -919,3 +955,262 @@ export const AdminTaskStatus = {
 } as const;
 export type AdminTaskStatus = (typeof AdminTaskStatus)[keyof typeof AdminTaskStatus];
 export const zAdminTaskStatus = z.nativeEnum(AdminTaskStatus);
+
+/**
+ * LedgerAccount.type (Financial Ledger M1) — the accounting classification of
+ * a chart-of-accounts row, which is what decides whether a DEBIT to that
+ * account increases or decreases its real-world balance. String, not a native
+ * Prisma enum, matching every other classification column in this schema.
+ *
+ * ASSET/EXPENSE accounts increase on DEBIT; LIABILITY/REVENUE/EQUITY accounts
+ * increase on CREDIT. CLEARING is meant as a normal-balance-agnostic transit
+ * classification for money that has left the buyer but not yet landed in
+ * `cash.*` — but the actual chart of accounts (`ledgerAccounts.ts`'s own doc
+ * comment explains this in full) deliberately types NEITHER real clearing
+ * account as CLEARING: `provider_clearing.*` is ASSET and `refund_clearing.*`
+ * is LIABILITY, specifically because a trial balance can only close if each
+ * side is classified by its actual normal balance, and CLEARING would force a
+ * report to guess a sign. This value is therefore currently unused by any
+ * seeded account — read `ledgerAccounts.ts` before adding a new account typed
+ * CLEARING, since the chart's own reasoning argues against it in most cases.
+ */
+export const LedgerAccountType = {
+  ASSET: "ASSET",
+  LIABILITY: "LIABILITY",
+  REVENUE: "REVENUE",
+  EXPENSE: "EXPENSE",
+  CLEARING: "CLEARING",
+  EQUITY: "EQUITY",
+} as const;
+export type LedgerAccountType = (typeof LedgerAccountType)[keyof typeof LedgerAccountType];
+export const zLedgerAccountType = z.nativeEnum(LedgerAccountType);
+
+/**
+ * LedgerEntry.direction (Financial Ledger M1) — which side of the
+ * double-entry a single ledger line sits on. `LedgerEntry.amount` is ALWAYS
+ * stored positive; this column carries the sign. A balanced
+ * FinancialTransaction's DEBIT entries and CREDIT entries sum to the same
+ * total per currency, which is the invariant `postFinancialTransaction`
+ * (packages/db/src/crud/ledger.ts, since M2) enforces before the first INSERT.
+ */
+export const LedgerDirection = {
+  DEBIT: "DEBIT",
+  CREDIT: "CREDIT",
+} as const;
+export type LedgerDirection = (typeof LedgerDirection)[keyof typeof LedgerDirection];
+export const zLedgerDirection = z.nativeEnum(LedgerDirection);
+
+/**
+ * FinancialTransaction.type (Financial Ledger M1) — what real-world event a
+ * balanced group of LedgerEntry rows records. String, not a native Prisma
+ * enum, matching every other lifecycle/classification column in this schema.
+ *
+ * REVERSAL is the only value that is about the ledger itself rather than
+ * about money moving: this ledger is append-only, so a mis-posted
+ * transaction is never edited or deleted — it is cancelled by posting a
+ * REVERSAL whose entries mirror the original's with the directions flipped,
+ * linked back through `FinancialTransaction.reversalOfId`. ADJUSTMENT, by
+ * contrast, is a deliberate human correction of the books (a write-off, an
+ * opening balance), not a fix for a bad posting.
+ */
+export const FinancialTransactionType = {
+  ORDER_PAYMENT: "ORDER_PAYMENT",
+  WALLET_DEPOSIT: "WALLET_DEPOSIT",
+  WALLET_WITHDRAWAL: "WALLET_WITHDRAWAL",
+  REFUND: "REFUND",
+  REVERSAL: "REVERSAL",
+  ADJUSTMENT: "ADJUSTMENT",
+  FEE: "FEE",
+  SETTLEMENT: "SETTLEMENT",
+} as const;
+export type FinancialTransactionType =
+  (typeof FinancialTransactionType)[keyof typeof FinancialTransactionType];
+export const zFinancialTransactionType = z.nativeEnum(FinancialTransactionType);
+
+/**
+ * RefundExecution.method (Financial Ledger M1) — how an approved Refund is
+ * actually paid back to the buyer. WALLET credits the buyer's in-DB balance
+ * (`User.walletBalance`/`walletBalanceUsdt`); MANUAL_TRANSFER is an admin
+ * sending money out of band (bank transfer, gateway refund done by hand),
+ * evidenced by `RefundExecution.reference`/`proofFileId`.
+ *
+ * This is deliberately separate from `Refund.status`: a Refund reaching
+ * COMPLETED is record-keeping only and triggers no payout (see
+ * Refund.status's own doc comment in prisma/schema.prisma), whereas a
+ * RefundExecution row IS the payout attempt. `executeRefund`
+ * (packages/db/src/crud/refunds.ts) is what carries one out and writes the row.
+ */
+export const RefundExecutionMethod = {
+  WALLET: "WALLET",
+  MANUAL_TRANSFER: "MANUAL_TRANSFER",
+} as const;
+export type RefundExecutionMethod =
+  (typeof RefundExecutionMethod)[keyof typeof RefundExecutionMethod];
+export const zRefundExecutionMethod = z.nativeEnum(RefundExecutionMethod);
+
+/**
+ * RefundExecution.status (Financial Ledger M1) — the lifecycle of one payout
+ * attempt. PENDING -> COMPLETED | FAILED, both terminal. A FAILED execution
+ * does not reopen its parent Refund; it records that this particular attempt
+ * did not land, leaving an admin free to add another RefundExecution row for
+ * the same Refund (which is why RefundExecution is a one-to-many child of
+ * Refund rather than a single set of columns on Refund itself).
+ */
+export const RefundExecutionStatus = {
+  PENDING: "PENDING",
+  COMPLETED: "COMPLETED",
+  FAILED: "FAILED",
+} as const;
+export type RefundExecutionStatus =
+  (typeof RefundExecutionStatus)[keyof typeof RefundExecutionStatus];
+export const zRefundExecutionStatus = z.nativeEnum(RefundExecutionStatus);
+
+/**
+ * Settlement.status (Financial Ledger M1) — how far an admin has got in
+ * reconciling one payout batch from a payment provider against this shop's
+ * own Payment rows. RECORDED is the raw manual entry ("the provider says it
+ * paid us this"); RECONCILED means its SettlementTransaction children have
+ * been matched to real payments and the totals agree; DISPUTED flags a batch
+ * whose totals do not agree and that is being chased with the provider.
+ * Manual entry is the only path in this milestone — no provider settlement
+ * API is wired up.
+ */
+export const SettlementStatus = {
+  RECORDED: "RECORDED",
+  RECONCILED: "RECONCILED",
+  DISPUTED: "DISPUTED",
+} as const;
+export type SettlementStatus = (typeof SettlementStatus)[keyof typeof SettlementStatus];
+export const zSettlementStatus = z.nativeEnum(SettlementStatus);
+
+/**
+ * `LedgerReconciliationFinding.type` (Financial Ledger M5) — what kind of drift
+ * `reconcileLedger` (packages/db/src/crud/reconcileLedger.ts) found between the
+ * shop's operational rows (Order/Payment/User wallet balances/RefundExecution)
+ * and the double-entry ledger that is supposed to describe them.
+ *
+ * Every value names a comparison between two real sets of rows, never a
+ * heuristic — the reconciliation reports only discrepancies it can point at:
+ *
+ * - LEDGER_POSTING_MISSING — real money moved (an order settled, a top-up was
+ *   credited, a refund was paid out) but no `FinancialTransaction` exists under
+ *   the idempotency key that event derives. The most serious class: the books
+ *   are silently understating what happened.
+ * - WALLET_LEDGER_DRIFT — the sum of every `User.walletBalance` (or
+ *   `walletBalanceUsdt`) disagrees with the `wallet_liability.<ccy>` control
+ *   account that exists to mirror it. The control-account invariant the whole
+ *   wallet sub-ledger rests on.
+ * - DUPLICATE_PROVIDER_TRANSACTION — two `Payment` rows share one
+ *   `(method, providerTransactionId)` pair. The schema's own
+ *   `@@unique([method, providerTransactionId])` already forbids this, so a hit
+ *   means something wrote around the Prisma client (a manual edit, a migration
+ *   inconsistency) — a defensive read, expected to find nothing.
+ * - REFUND_AMOUNT_MISMATCH — a `RefundExecution.amount` disagrees with the
+ *   amount its own posted `FinancialTransaction` recorded, i.e. the buyer was
+ *   paid one figure and the books say another.
+ * - ORDER_POSTING_AMOUNT_MISMATCH — a settled order's posting exists but books a
+ *   different amount as owed by the gateway than the rail recorded as received.
+ *   The only softer finding of the five (WARNING, not CRITICAL): the money is
+ *   right and the split between receivable and absorbed cost is wrong. See its
+ *   own comment below.
+ */
+export const ReconciliationFindingType = {
+  LEDGER_POSTING_MISSING: "LEDGER_POSTING_MISSING",
+  WALLET_LEDGER_DRIFT: "WALLET_LEDGER_DRIFT",
+  DUPLICATE_PROVIDER_TRANSACTION: "DUPLICATE_PROVIDER_TRANSACTION",
+  REFUND_AMOUNT_MISMATCH: "REFUND_AMOUNT_MISMATCH",
+  /**
+   * A settled order HAS its ledger posting, but that posting books a different
+   * amount as owed by the gateway than the rail recorded as received. Reported
+   * only for orders a rail flagged short and an admin delivered anyway
+   * (`deliverUnderpaidOrder`), which is the one case where the two can differ:
+   * `provider_clearing` must hold what actually arrived, with the absorbed
+   * shortfall in `payment_shortfall`. Distinct from LEDGER_POSTING_MISSING
+   * because the event IS recorded — a presence check cannot see this at all.
+   */
+  ORDER_POSTING_AMOUNT_MISMATCH: "ORDER_POSTING_AMOUNT_MISMATCH",
+} as const;
+export type ReconciliationFindingType =
+  (typeof ReconciliationFindingType)[keyof typeof ReconciliationFindingType];
+export const zReconciliationFindingType = z.nativeEnum(ReconciliationFindingType);
+
+/**
+ * `LedgerReconciliationFinding.severity` (Financial Ledger M5) — how loudly one
+ * finding should be escalated.
+ *
+ * WARNING is drift worth understanding but consistent with money being correct;
+ * CRITICAL means the books and the money may genuinely disagree, which is the
+ * class an admin has to act on. Every check `reconcileLedger` ships with today
+ * reports CRITICAL — each of them compares two records of the SAME money, so
+ * any disagreement means one of the two is wrong. WARNING exists for the
+ * softer checks later milestones will add (an unsettled clearing balance, a
+ * provider fee that drifted within tolerance) rather than being reserved
+ * speculatively: a severity field with one possible value would not be one.
+ */
+export const ReconciliationSeverity = {
+  WARNING: "WARNING",
+  CRITICAL: "CRITICAL",
+} as const;
+export type ReconciliationSeverity =
+  (typeof ReconciliationSeverity)[keyof typeof ReconciliationSeverity];
+export const zReconciliationSeverity = z.nativeEnum(ReconciliationSeverity);
+
+/**
+ * `StockReplacement.status` (Financial Ledger M18) — where a "the credential
+ * you delivered me is bad" complaint has got to. String, not a native Prisma
+ * enum, matching every other lifecycle-status column in this schema
+ * (`Order.status`, `Refund.status`, `Payment.status`). Live since M19: the
+ * `replaceStockItem` / `retryReplacementAllocation` / `refundInsteadOfReplace`
+ * services (packages/db/src/crud/stockReplacement.ts) write these values, and
+ * the M20 admin UI reads them.
+ *
+ * - REQUESTED — an admin has recorded the complaint against one purchased unit.
+ *   The opening state; `StockReplacement.status`'s column default.
+ * - AWAITING_STOCK — the complaint is accepted but there is no AVAILABLE
+ *   credential for that SKU to hand over yet. Distinct from REQUESTED because
+ *   it says the hold-up is supply, not triage, which is what makes it the
+ *   status a restock should be able to unblock.
+ * - COMPLETED — a replacement credential was issued
+ *   (`replacementStockItemId` is set).
+ * - REFUNDED_INSTEAD — no replacement was issued and the buyer got their money
+ *   back (`refundId` is set). A distinct terminal value rather than a flag on
+ *   COMPLETED: "the buyer holds a working account" and "the buyer holds their
+ *   money" are different outcomes, and only one of them consumed stock.
+ * - CANCELLED — withdrawn before resolution (the buyer recovered access, the
+ *   complaint turned out to be user error).
+ * - FAILED — the shop could neither replace nor refund. Kept separate from
+ *   CANCELLED so an unresolved complaint can never be filed away as a
+ *   deliberate withdrawal.
+ *
+ * COMPLETED, REFUNDED_INSTEAD, CANCELLED and FAILED are all TERMINAL: nothing
+ * transitions out of them, and each is what sets `resolvedAt`. REQUESTED and
+ * AWAITING_STOCK are the only non-terminal values. The transition table itself
+ * is `STOCK_REPLACEMENT_LEGAL_TRANSITIONS` (packages/db/src/crud/
+ * stockReplacement.ts), a `LEGAL_TRANSITIONS`-shaped map alongside
+ * `REFUND_LEGAL_TRANSITIONS` / `PAYMENT_LEGAL_TRANSITIONS`.
+ */
+export const StockReplacementStatus = {
+  REQUESTED: "REQUESTED",
+  AWAITING_STOCK: "AWAITING_STOCK",
+  COMPLETED: "COMPLETED",
+  REFUNDED_INSTEAD: "REFUNDED_INSTEAD",
+  CANCELLED: "CANCELLED",
+  FAILED: "FAILED",
+} as const;
+export type StockReplacementStatus =
+  (typeof StockReplacementStatus)[keyof typeof StockReplacementStatus];
+export const zStockReplacementStatus = z.nativeEnum(StockReplacementStatus);
+
+/**
+ * The four terminal `StockReplacementStatus` values — the ones that set
+ * `StockReplacement.resolvedAt` and that nothing transitions out of. Exported
+ * as data (not re-derived by each caller) so `STOCK_REPLACEMENT_LEGAL_TRANSITIONS`
+ * and any "still open" admin query agree on one list, the same way
+ * `IN_FLIGHT_ORDER_ITEM_STATUSES` serves `deriveOrderStatusFromItems`.
+ */
+export const TERMINAL_STOCK_REPLACEMENT_STATUSES: readonly StockReplacementStatus[] = [
+  StockReplacementStatus.COMPLETED,
+  StockReplacementStatus.REFUNDED_INSTEAD,
+  StockReplacementStatus.CANCELLED,
+  StockReplacementStatus.FAILED,
+] as const;

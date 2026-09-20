@@ -209,7 +209,7 @@ export function UsersPage() {
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       toast.success(vars.doBan ? "Customer suspended." : "Customer unbanned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const banTarget = data?.users.find((u) => u.id === banTargetId) ?? null;
@@ -298,7 +298,7 @@ export function UsersPage() {
     <PageLayout title="Customers">
       <PageHeader
         title="Customers"
-        description="Browse and manage every registered customer and reseller. Total Spent, Orders and Last Order count product orders only; wallet top-ups are listed in Wallet Transactions, not here."
+        description="Browse and manage every registered customer and reseller. Total Spent counts delivered product orders only — what was charged plus any wallet credit spent on them — while Orders and Last Order count every order on the account, wallet top-ups included."
         actions={
           <a href={`/api/users/export?${exportParams.toString()}`}>
             <Button variant="outline" size="sm">Export CSV</Button>
@@ -523,7 +523,7 @@ export function UsersPage() {
               },
               {
                 key: "totalSpent",
-                header: <span title="Delivered product orders only; wallet top-ups are in Wallet Transactions.">Total Spent</span>,
+                header: <span title="Delivered product orders only, counting wallet credit spent on them. Funding a wallet is not spending — top-ups are in Wallet Transactions.">Total Spent</span>,
                 render: (row) => {
                   const amounts = nonZeroAmounts(row.totalSpent);
                   return amounts.length > 0 ? (
@@ -535,12 +535,12 @@ export function UsersPage() {
               },
               {
                 key: "orders",
-                header: <span title="Product orders only; wallet top-ups are in Wallet Transactions.">Orders</span>,
+                header: <span title="Every order on this account, wallet top-ups included — account activity, not purchases.">Orders</span>,
                 render: (row) => <span className="text-sm text-ink">{row.totalOrders}</span>,
               },
               {
                 key: "lastOrder",
-                header: <span title="Latest product order; wallet top-ups are in Wallet Transactions.">Last Order</span>,
+                header: <span title="The account's latest order of any kind, a wallet top-up included.">Last Order</span>,
                 render: (row) => (
                   <span className="text-xs text-ink-soft">{row.lastOrderAtDisplay ?? "—"}</span>
                 ),

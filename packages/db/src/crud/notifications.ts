@@ -21,6 +21,9 @@ import {
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
 import { resolveAdminIds } from "./admins";
+import { listRestockSubscribers } from "./reviews";
+import { countAvailableStock } from "./stock";
+import { logAdminAction } from "./audit";
 import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
 type Db = PrismaClient | Tx;
@@ -319,6 +322,119 @@ export async function enqueueAdminDigiflazzResyncAborted(
           ...(args.kind === "sharp_change"
             ? { sharp_changes: args.sharpChanges, considered_rows: args.consideredRows }
             : {}),
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue one admin DM per resolved admin alerting that the hourly market-rate
+ * refresh fetched a USD→IDR rate that failed `validateUsdIdrRate`'s sanity
+ * band, so nothing was saved (M13 / audit P0-3). Same fan-out-per-admin,
+ * no-`Api`-needed shape as `enqueueAdminDigiflazzResyncAborted` above, and for
+ * the same structural reason: `scheduleFxRefresh` deliberately holds no bot
+ * `Api` (it must keep running on a web-only boot), so its alerting cannot be a
+ * direct `sendMessage` and has to go through the outbox.
+ *
+ * `reason` mirrors `FxRateRejection`'s own discriminant (packages/core/src/
+ * fx.ts) — kept as an equivalent inline union here rather than imported,
+ * matching this file's existing plain-object-args style for `enqueueAdmin*`
+ * functions. The reason-specific figures are omitted rather than zeroed when
+ * they do not apply, so the template can tell "not applicable" apart from
+ * "zero", exactly as the Digiflazz payload does.
+ *
+ * `saved` is the rate STILL IN EFFECT (null on a shop that has never saved
+ * one), not the rejected figure — an admin reading this DM needs to know what
+ * orders are being priced with right now, which is the first thing they would
+ * otherwise go and look up. Not order-scoped (`orderId: null`): the rate is
+ * shop-wide. No-op if no admin is resolved.
+ */
+export async function enqueueAdminFxRateRejected(
+  db: Db,
+  args: {
+    reason: "not_a_number" | "not_positive" | "below_min" | "above_max" | "delta_too_large";
+    /** The raw figure the market source returned. */
+    market: Decimal.Value;
+    /** What it became after the spread and rounding — the figure actually judged. */
+    rate: Decimal.Value;
+    /** The rate still in effect, or null if the shop has never saved one. */
+    saved: Decimal.Value | null;
+    /** How many refreshes in a row have now failed, including this one. */
+    consecutiveFailures: number;
+    min?: Decimal.Value;
+    max?: Decimal.Value;
+    lastKnown?: Decimal.Value;
+    deltaPct?: Decimal.Value;
+    maxDeltaPct?: Decimal.Value;
+  },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_FX_RATE_REJECTED,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          reason: args.reason,
+          market: String(args.market),
+          rate: String(args.rate),
+          saved: args.saved == null ? null : String(args.saved),
+          consecutive_failures: args.consecutiveFailures,
+          ...(args.min == null ? {} : { min: String(args.min) }),
+          ...(args.max == null ? {} : { max: String(args.max) }),
+          ...(args.lastKnown == null ? {} : { last_known: String(args.lastKnown) }),
+          ...(args.deltaPct == null ? {} : { delta_pct: String(args.deltaPct) }),
+          ...(args.maxDeltaPct == null ? {} : { max_delta_pct: String(args.maxDeltaPct) }),
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue one admin DM per resolved admin alerting that the saved
+ * `usd_idr_rate` has gone unconfirmed long enough to cost the shop USDT sales
+ * (M13 / audit P0-3, widened by whole-branch review D7).
+ *
+ * `stage` says WHICH threshold was crossed, because the consequence differs and
+ * the DM leads with the consequence: `quote_ttl` means checkout has stopped
+ * offering the USDT rails while USDT prices are still shown, `max_age` means
+ * USDT is gone from the shop entirely. The template renders one of two messages
+ * off it, and treats a payload with no `stage` at all as `max_age` — rows
+ * enqueued before this field existed can still be sitting in the outbox.
+ *
+ * Deliberately NOT deduped here, unlike `enqueueAdminUnconfirmablePayment`:
+ * the "only once per staleness episode" rule lives in the caller
+ * (`alertIfUsdIdrRateStale`, crud/pricing.ts), keyed off the freshness stamp and
+ * stage being complained about, because the episode — not the row — is what must
+ * be deduplicated, and a new episode after a refresh genuinely deserves a new DM.
+ * Not order-scoped (`orderId: null`). No-op if no admin is resolved.
+ */
+export async function enqueueAdminFxRateStale(
+  db: Db,
+  args: {
+    stage: "quote_ttl" | "max_age";
+    confirmedAt: Date;
+    ageHours: Decimal.Value;
+    /** The `fx_rate_max_age_hours` limit — the `max_age` stage only. */
+    maxAgeHours?: Decimal.Value;
+    /** The `fx_quote_ttl_minutes` lifetime — the `quote_ttl` stage only. */
+    ttlMinutes?: Decimal.Value;
+  },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_FX_RATE_STALE,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          stage: args.stage,
+          confirmed_at: args.confirmedAt.toISOString(),
+          age_hours: String(args.ageHours),
+          ...(args.maxAgeHours == null ? {} : { max_age_hours: String(args.maxAgeHours) }),
+          ...(args.ttlMinutes == null ? {} : { ttl_minutes: String(args.ttlMinutes) }),
         }),
       },
     });
@@ -721,8 +837,8 @@ export async function enqueueBuyerOrderReadyEmail(
       unitPrice: Decimal;
       /** The whole line's money, computed by the CALLER — not something this
        * layer or the renderer may re-derive as `unitPrice * quantity`. On a
-       * currency-converted order `unitPrice` has already been rounded to the
-       * nearest 0.1 USDT, so scaling it by the quantity would scale that
+       * currency-converted order `unitPrice` has already been rounded UP to
+       * the next 0.01 USDT, so scaling it by the quantity would scale that
        * rounding error too and print a line total contradicting the subtotal
        * right below it. See the call site in crud/orders.ts. */
       lineTotal: Decimal;
@@ -1146,6 +1262,83 @@ export async function enqueueRestockBroadcast(
     },
   });
   return users.length;
+}
+
+async function enqueueRestockSubscriberRows(tx: Tx, denominationId: number): Promise<number> {
+  const subs = await listRestockSubscribers(tx, denominationId);
+  if (!subs.length) return 0;
+  const denom = subs[0]!.product;
+  const productName = `${denom.product.name} - ${denom.name}`;
+  await tx.notificationOutbox.createMany({
+    data: subs.map((s) => ({
+      event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: Number(s.user.telegramId),
+        product_name: productName,
+        buyer_language: langCode(s.user.language),
+      }),
+    })),
+  });
+  // The outbox guarantees at-least-once delivery, so the subscription is
+  // consumed as soon as its DM is durably queued.
+  await tx.restockSubscription.deleteMany({ where: { id: { in: subs.map((s) => s.id) } } });
+  return subs.length;
+}
+
+/**
+ * Queue a "back in stock" DM for every actionable RestockSubscription on this
+ * SKU and consume those subscriptions, atomically. Pass the caller's
+ * transaction to join it; given a plain client it opens its own so the outbox
+ * rows and the deletions can never be split. Returns the number queued.
+ */
+export function enqueueRestockSubscriberNotifications(db: Db, denominationId: number): Promise<number> {
+  if ("$transaction" in db) {
+    return db.$transaction((tx) => enqueueRestockSubscriberRows(tx, denominationId));
+  }
+  return enqueueRestockSubscriberRows(db, denominationId);
+}
+
+/**
+ * Everything that must happen after stock lands on a SKU, from any add-stock
+ * path (bot conversation, web-admin upload): DM the restock subscribers and,
+ * when the SKU has `broadcastOnRestock`, queue the all-customer broadcast plus
+ * its audit row. No-op unless `added > 0`.
+ */
+export async function afterStockAdded(
+  db: Db,
+  denominationId: number,
+  added: number,
+  adminId: number,
+): Promise<{ subscribersQueued: number; broadcastQueued: number }> {
+  if (added <= 0) return { subscribersQueued: 0, broadcastQueued: 0 };
+  // Given a bare client, keep the steps atomic; given a tx, join it (call this
+  // inside the same transaction as bulkAddStock so stock and DMs commit together).
+  if ("$transaction" in db) {
+    return db.$transaction((tx) => afterStockAdded(tx, denominationId, added, adminId));
+  }
+  const subscribersQueued = await enqueueRestockSubscriberNotifications(db, denominationId);
+  let broadcastQueued = 0;
+  const denom = await db.denomination.findUnique({
+    where: { id: denominationId },
+    include: { product: true },
+  });
+  if (denom?.broadcastOnRestock) {
+    const fullName = `${denom.product.name} - ${denom.name}`;
+    broadcastQueued = await enqueueRestockBroadcast(db, {
+      productName: fullName,
+      stockCount: await countAvailableStock(db, denominationId),
+      createdById: adminId,
+    });
+    await logAdminAction(db, {
+      adminId,
+      action: "restock_broadcast",
+      targetType: "product",
+      targetId: denominationId,
+      details: `Queued a restock broadcast for "${fullName}" to ${broadcastQueued} customers.`,
+    });
+  }
+  return { subscribersQueued, broadcastQueued };
 }
 
 /**

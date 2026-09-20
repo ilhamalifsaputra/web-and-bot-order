@@ -25,17 +25,34 @@ describe("formatIdr", () => {
 });
 
 describe("formatUsdt", () => {
-  it("derives USDT rounded to the nearest 0.1, shown with 2dp", () => {
-    // 16,000 IDR/USDT → Rp40.000 = $2.5 (the documented core example)
+  // These are parity assertions against core's `usdtFromIdr`, not independent
+  // display choices — every expected value here is what the crypto rails will
+  // actually charge for that Rupiah figure. If core's rounding rule changes
+  // again, these must change with it in the same commit.
+  it("derives USDT rounded UP to the next 0.01, shown with 2dp (core usdtFromIdr parity)", () => {
+    // 16,000 IDR/USDT → Rp40.000 = $2.50 exactly, nothing to round up
     expect(formatUsdt("40000", "16000")).toBe("≈ $2.50");
-    // 79,000 / 16,000 = 4.9375 → 4.9
-    expect(formatUsdt("79000", "16000")).toBe("≈ $4.90");
+    // 79,000 / 16,000 = 4.9375 → 4.94 (was 4.90 under the old 0.1 half-up step)
+    expect(formatUsdt("79000", "16000")).toBe("≈ $4.94");
+    // 44,500 / 16,000 = 2.78125 → 2.79, the core doc comment's own example
+    expect(formatUsdt("44500", "16000")).toBe("≈ $2.79");
+    // Float-error trap: (2.78125 * 100) is not exactly 278.125 in IEEE-754, so
+    // a naive Math.ceil of the product can land a cent high.
+    expect(formatUsdt("32000", "16000")).toBe("≈ $2.00");
+    expect(formatUsdt("16000", "16000")).toBe("≈ $1.00");
+    expect(formatUsdt("48000", "16000")).toBe("≈ $3.00");
   });
 
-  it("hides the hint when the rate is missing or the value is negligible", () => {
+  it("shows a hint for a small amount that used to round away to nothing", () => {
+    // Rp50 is 0.003125 USDT — floored to 0.0 and hidden under the old step,
+    // now a real 0.01 the buyer will actually be charged.
+    expect(formatUsdt("50", "16000")).toBe("≈ $0.01");
+  });
+
+  it("hides the hint when the rate is missing or the value is worth nothing", () => {
     expect(formatUsdt("79000", null)).toBe("");
     expect(formatUsdt("79000", "")).toBe("");
-    expect(formatUsdt("50", "16000")).toBe(""); // rounds below $0.01
+    expect(formatUsdt("0", "16000")).toBe("");
   });
 });
 

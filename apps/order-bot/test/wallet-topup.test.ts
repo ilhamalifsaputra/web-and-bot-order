@@ -271,6 +271,27 @@ describe("payTopup* handlers (representative rails)", () => {
     expect(orders).toBe(0);
   });
 
+  // Whole-branch review D9. The shop-wide rail floor (`min_order_amount_idr`)
+  // is enforced inside `finalizeOrderPayment`, which an IDR top-up shares with
+  // product checkout — so the buyer used to be told to "add more items" on a
+  // screen with no cart, right after typing an amount they could simply have
+  // typed larger. This pins the sentence at the surface the buyer actually reads.
+  it("payTopupTokopay refused by the shop-wide rail minimum says to top up more, not to add items", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "IDR", topupAmount: "5000" } },
+    });
+    await walletTopup.payTopupTokopay(ctx);
+
+    const shown = JSON.stringify(sink);
+    expect(shown).toContain("Please top up a larger amount");
+    expect(shown).not.toMatch(/add more items/i);
+    // And nothing was created: the guard runs before finalize writes anything.
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+  });
+
   it("payTopupTokopay refuses a wrong-currency scratch (USDT) instead of creating an IDR order", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -280,5 +301,84 @@ describe("payTopup* handlers (representative rails)", () => {
     await walletTopup.payTopupTokopay(ctx);
     const orders = await prisma.order.count({ where: { userId: sample.user.id } });
     expect(orders).toBe(0);
+  });
+});
+
+// ===========================================================================
+// The advertised minimum (whole-branch review F4b)
+//
+// `wallet.topup_min_hint` used to read only the wallet-top-up bounds, so a shop
+// with a Rp10.000 rail floor and a Rp1.000 top-up minimum told the buyer
+// "Minimum Rp1.000" and then refused them at Rp5.000 — the prompt and the guard
+// quoting different figures on consecutive screens. The hint now advertises the
+// EFFECTIVE minimum: the larger of the top-up bound and the lowest floor among
+// the rails this currency can actually be paid through.
+// ===========================================================================
+
+describe("the amount prompt advertises the effective minimum", () => {
+  it("quotes the shop-wide rail floor when it is higher than the top-up bound", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "wallet_topup_min_amount_idr", "1000");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.promptTopupAmount(ctx, "IDR");
+
+    const shown = JSON.stringify(sink);
+    expect(shown).toContain("Rp10.000");
+    // The figure it used to quote, which the buyer would then have been refused at.
+    expect(shown).not.toContain("Rp1.000");
+  });
+
+  it("quotes a rail's OWN minimum when that is what binds", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "tokopay_min_amount", "20000");
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.promptTopupAmount(ctx, "IDR");
+    expect(JSON.stringify(sink)).toContain("Rp20.000");
+  });
+
+  it("keeps the top-up bound when it is the higher of the two", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "1000");
+    await setSetting(prisma, "wallet_topup_min_amount_idr", "50000");
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.promptTopupAmount(ctx, "IDR");
+    expect(JSON.stringify(sink)).toContain("Rp50.000");
+  });
+
+  it("refuses a typed amount the effective minimum rejects, re-prompting with that same figure", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "IDR", "5000");
+
+    const shown = JSON.stringify(sink);
+    expect(shown).toContain("valid amount");
+    expect(shown).toContain("Rp10.000");
+    // Still capturing: the buyer retypes into the same screen rather than being
+    // dropped into a gateway picker with nothing in it.
+    expect(ctx.session.awaitingTopupCurrency).toBe("IDR");
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBeUndefined();
+  });
+
+  it("accepts an amount that clears the effective minimum and moves on to the gateway picker", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    await setSetting(prisma, "min_order_amount_idr", "10000");
+
+    const { ctx, sink } = customerCtx();
+    await walletTopup.handleTopupAmountInput(ctx, "IDR", "15000");
+
+    expect(ctx.session.awaitingTopupCurrency).toBeUndefined();
+    expect((ctx.session.scratch as Record<string, unknown>).topupAmount).toBe("15000");
+    expect(JSON.stringify(sink)).toContain("v1:topup:pay:tokopay");
   });
 });

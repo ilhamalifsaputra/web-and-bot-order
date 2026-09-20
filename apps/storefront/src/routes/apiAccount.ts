@@ -21,6 +21,7 @@ import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { buyerOrderSummary } from "./buyerOrderSummary";
 import {
   parseTicketMultipart,
   parseNewTicketMultipart,
@@ -66,6 +67,7 @@ import {
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { resolveBotId, resolveBotUsername } from "../shop";
 import { constantTimeEqual } from "../auth";
+import { errorBody } from "@app/core/errorBody";
 import { originOk } from "./cart";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -244,13 +246,15 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     // manual_with_info fields), so the client renders nothing extra for them.
     const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
     const customerData = parseCustomerData(order.customerData);
+    const money = buyerOrderSummary(order);
     return reply.send({
       order: {
         code: order.orderCode,
         status: order.status,
-        subtotal: order.subtotalAmount.toString(),
-        discount: order.discountAmount.toString(),
-        bulk_discount: order.bulkDiscountAmount.toString(),
+        subtotal: money.subtotal.toString(),
+        discount: money.discount.toString(),
+        bulk_discount: money.bulkDiscount.toString(),
+        wallet_credit: money.walletCredit.toString(),
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
         customer_data_fields: customerDataFields,
@@ -293,7 +297,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       try {
         await updateOrderCustomerData(prisma, order.id, req.body?.customer_data);
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
       return reply.send({ ok: true });
@@ -446,7 +450,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       try {
         ({ message, attachments, orderCode: orderCodeInput } = await parseTicketMultipart(req));
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
     } else {
@@ -536,7 +540,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         orderCodeInput = parsed.orderCode;
         attachments = parsed.attachments;
       } catch (e) {
-        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
         throw e;
       }
     } else {
@@ -624,7 +628,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         try {
           ({ message, attachments } = await parseTicketMultipart(req));
         } catch (e) {
-          if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+          if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
           throw e;
         }
       } else {
@@ -739,11 +743,13 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
-    if (denom?.isActive) {
-      await subscribeToRestock(prisma, customer.userId, denom.id);
-    }
     // The SPA bounces back to the parent product detail (slug URL).
-    return reply.send({ ok: true, redirect: denom ? `/p/${denom.product.slug}` : "/" });
+    const redirect = denom ? `/p/${denom.product.slug}` : "/";
+    if (!denom?.isActive) return reply.send({ ok: false, result: "unavailable", redirect });
+    // Restock DMs go out over Telegram, so a web-only account can never be served.
+    if (customer.user.telegramId == null) return reply.send({ ok: false, result: "needs_telegram", redirect });
+    const isNew = await subscribeToRestock(prisma, customer.userId, denom.id);
+    return reply.send({ ok: true, result: isNew ? "subscribed" : "already", redirect });
   });
 
   // ---- Settings ----

@@ -46,6 +46,7 @@ import type { CheckoutData, PlaceOrderResponse, ProductPageData } from "../api/t
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
+import { humanError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { fadeUp } from "../lib/motion";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
@@ -90,13 +91,10 @@ function purchasable(d: { delivery_type: string; in_stock: boolean }): boolean {
   return d.delivery_type !== "auto" || d.in_stock;
 }
 
-/** Same fallback CheckoutPage.tsx applies to its own load failures — a
- * server-side i18n key renders through `t()`; anything else (a network
- * error, the API client's developer-facing "responded 500" fallback) becomes
- * the generic apology instead of leaking a raw string to a shopper. */
-function humanError(message: string): string {
-  return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
-}
+/** Whole-branch review F4a: the local `humanError(message)` this page and
+ * CheckoutPage each carried is now `lib/errors.ts`'s, taking the ERROR so the
+ * figures its copy quotes ({min}, {limit}, {max}) can be substituted instead of
+ * reaching the buyer as braces. Same i18n-key-vs-developer-string rule as before. */
 
 /** I-3, widened: shared by both re-pricing triggers this page has — a
  * denomination switch (the checkoutData effect below) and a voucher
@@ -134,7 +132,11 @@ export default function InstantBuyPage() {
   const [guestEmail, setGuestEmail] = useState("");
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
-  const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
+  // The rejection itself, not just its key — the figures its copy quotes ride on
+  // the Error (`errorArgs`, F4a). The derived key below is what the two
+  // guest-email branches compare against.
+  const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
+  const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
   const [page, setPage] = useState<CheckoutData | null>(null);
   const [totals, setTotals] = useState<CheckoutData | null>(null);
 
@@ -348,7 +350,7 @@ export default function InstantBuyPage() {
       else navigate(resp.pay_url);
     },
     onError: (err) => {
-      setPlaceOrderErrorKey((err as Error).message);
+      setPlaceOrderError(err);
       if (page?.is_guest) void queryClient.invalidateQueries({ queryKey: ["context"] });
     },
   });
@@ -406,12 +408,12 @@ export default function InstantBuyPage() {
 
       {previewErrorKey && (
         <Alert variant="banner" tone="error">
-          {humanError(previewErrorKey)}
+          {humanError(previewQuery.error)}
         </Alert>
       )}
       {placeOrderErrorKey && !(page?.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
         <Alert variant="banner" tone="error">
-          {humanError(placeOrderErrorKey)}
+          {humanError(placeOrderError)}
         </Alert>
       )}
 

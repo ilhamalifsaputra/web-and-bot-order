@@ -196,13 +196,13 @@ export function OrdersPage() {
       invalidateAll();
       toast.success("Order approved and delivered.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const resendMutation = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/orders/${orderId}/resend`, {}),
     onSuccess: () => toast.success("Delivery credentials resent."),
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const bulkMutation = useMutation({
@@ -213,7 +213,7 @@ export function OrdersPage() {
       setSelected(new Set());
       toast.success(`${result.succeeded.length} succeeded, ${result.failed.length} failed.`);
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   // Row cancel (single id) uses the dedicated /cancel route so the audit log
@@ -246,7 +246,7 @@ export function OrdersPage() {
             : "Order cancelled.",
       );
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) {

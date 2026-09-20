@@ -110,7 +110,7 @@ export interface OrderReadyItem {
    *
    * NOT necessarily `unitPrice * quantity`, and this template must never
    * compute it that way: on a currency-converted order the caller's
-   * `unitPrice` is already rounded to the nearest 0.1 USDT, and the caller
+   * `unitPrice` is already rounded UP to the next 0.01 USDT, and the caller
    * derives this from the unrounded line instead. */
   lineTotal: string;
 }

@@ -62,7 +62,7 @@ export function UserDetailPage() {
       setWalletCurrency("IDR");
       toast.success("Wallet adjusted.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const setRole = useMutation({
@@ -71,7 +71,7 @@ export function UserDetailPage() {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       toast.success("Role updated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const ban = useMutation({
@@ -81,7 +81,7 @@ export function UserDetailPage() {
       setBanReason("");
       toast.success(doBan ? "User banned." : "User unbanned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) return <PageLayout title="Customer"><p className="text-sm text-rust">Failed to load user.</p></PageLayout>;

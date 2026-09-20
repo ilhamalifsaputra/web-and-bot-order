@@ -218,15 +218,23 @@ describe("UsersPage", () => {
     expect(citraCells[7]).toHaveTextContent("—");
   });
 
-  it("says the customer figures are product-only and points wallet top-ups to the wallet ledger", async () => {
+  // Spend and account activity are different questions and the crud layer
+  // answers them differently (users.ts SPEND_KIND_FILTER vs
+  // orderStatsByUserIds' all-kinds totalOrders/lastOrderAt), so the three
+  // column headers must not all claim the same basis.
+  it("says Total Spent is product-only while Orders and Last Order count every order kind", async () => {
     mockFetchRouter();
     render(<UsersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
     expect(
-      screen.getByText(/count product orders only; wallet top-ups are listed in Wallet Transactions/),
+      screen.getByText(/Total Spent counts delivered product orders only/),
     ).toBeInTheDocument();
-    for (const header of ["Total Spent", "Orders", "Last Order"]) {
-      expect(screen.getByText(header)).toHaveAttribute("title", expect.stringMatching(/wallet top-ups/i));
+    expect(screen.getByText("Total Spent")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/Delivered product orders only/i),
+    );
+    for (const header of ["Orders", "Last Order"]) {
+      expect(screen.getByText(header)).toHaveAttribute("title", expect.stringMatching(/wallet top-up/i));
     }
   });
 

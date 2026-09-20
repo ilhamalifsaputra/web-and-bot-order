@@ -129,7 +129,7 @@ function DetectionPanel() {
         queryClient.invalidateQueries({ queryKey: ["detection-metrics"] }),
       ]);
     } catch (err) {
-      toast.error(describeError(err instanceof Error ? err.message : "Gagal memperbarui isu deteksi."));
+      toast.error(describeError(err, "Gagal memperbarui isu deteksi."));
     } finally {
       setBusyId(null);
     }
@@ -381,7 +381,7 @@ export function DigiflazzSyncPage() {
       await queryClient.invalidateQueries({ queryKey: ["catalog"] });
       navigate("/catalog");
     } catch (err) {
-      toast.error(describeError(err instanceof Error ? err.message : "Import failed."));
+      toast.error(describeError(err, "Import failed."));
     } finally {
       setImporting(false);
     }

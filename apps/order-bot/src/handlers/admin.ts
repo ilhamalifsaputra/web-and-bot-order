@@ -26,6 +26,7 @@ import {
   getUserByTelegramId,
   setUserRole,
   adjustWallet,
+  postWalletAdjustmentPosting,
   getSetting,
   setSetting,
   deleteSetting,
@@ -38,8 +39,6 @@ import {
   closeTicket,
   enqueueTicketClosedDm,
   logAdminAction,
-  listRestockSubscribers,
-  deleteRestockSubscription,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
@@ -249,7 +248,15 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     newBal = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
       const actingId = requireAdminId(admin);
-      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
+      const { balance: bal, transactionId } = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
+      // Record the hand-made move in the double-entry ledger, in the same
+      // transaction as the balance change and the audit row, so the three
+      // cannot disagree about whether this adjustment happened.
+      await postWalletAdjustmentPosting(tx, {
+        walletTransactionId: transactionId,
+        adminId: actingId,
+        occurredAt: new Date(),
+      });
       await logAdminAction(tx, {
         adminId: actingId,
         action: "wallet_adjust",
@@ -495,6 +502,16 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");
     return `${icon} #${it.id} — ${preview}`;
   });
+  // The previews above are decrypted plaintext, so record the view (count only,
+  // never the text) before showing them — the web equivalents are audited too.
+  const admin = await getUserByTelegramId(prisma, ctx.from!.id);
+  await logAdminAction(prisma, {
+    adminId: requireAdminId(admin),
+    action: "stock_view",
+    targetType: "product",
+    targetId: productId,
+    details: `Viewed ${items.length} stock ${items.length === 1 ? "item" : "items"} in the admin bot.`,
+  });
   const text =
     `📦 <b>Stock items for ${esc(p.name)}</b>\n` +
     `Total shown: ${items.length}\n\n` +
@@ -626,47 +643,6 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
     await enqueueTicketClosedDm(prisma, { ticketId, chatId: Number(customerTgId), buyerLanguage: buyerLang });
   }
   await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
-}
-
-// ===========================================================================
-// Restock subscriber notification (used after a stock upload)
-// ===========================================================================
-
-// Throttle between restock-notification DMs — same value/rationale as
-// drainBroadcasts' BROADCAST_THROTTLE_MS (apps/order-bot/src/jobs/index.ts):
-// stays under Telegram's ~30 msg/s bulk limit, which a batch of >~30
-// subscribers reliably trips without a delay between sends.
-const RESTOCK_NOTIFY_THROTTLE_MS = 40;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-export async function notifyRestockSubscribers(ctx: MyContext, productId: number): Promise<void> {
-  const subs = await listRestockSubscribers(prisma, productId);
-  if (!subs.length) return;
-  const denomination = (subs[0] as { product: { name: string; product: { name: string } } }).product;
-  const productName = `${denomination.product.name} - ${denomination.name}`;
-
-  for (const sub of subs as unknown as Array<{ id: number; user: { telegramId: bigint | null; language: string } }>) {
-    const tgId = sub.user.telegramId;
-    // listRestockSubscribers already filters to telegramId != null; this stays
-    // defensive so a web-only user can never be sent to chat 0.
-    if (!tgId) continue;
-    const lang = langCode(sub.user.language);
-    try {
-      await ctx.api.sendMessage(
-        Number(tgId),
-        coreT("browse.subscribed_restock_notify", lang, { product: esc(productName) }),
-        { parse_mode: "HTML" },
-      );
-      // Only consume the subscription once its DM has actually gone out — a
-      // failure below (rate limit, bot restart mid-loop) leaves it in place
-      // so the subscriber is retried on the next restock instead of silently
-      // losing their spot.
-      await deleteRestockSubscription(prisma, sub.id);
-    } catch (err) {
-      logger.error({ err }, `Failed to notify restock subscriber ${tgId} about "${productName}" being back in stock — their subscription was kept so they'll be retried on the next restock`);
-    }
-    await sleep(RESTOCK_NOTIFY_THROTTLE_MS);
-  }
 }
 
 // ===========================================================================

@@ -10,6 +10,8 @@ import {
   featuredReviews,
   overallRating,
   listRestockSubscribers,
+  restockSubscriberCounts,
+  countRestockSubscribers,
   deleteRestockSubscription,
   subscribeToRestock,
   createReview,
@@ -244,6 +246,40 @@ describe("listRestockSubscribers (web-only users excluded, user+product joined)"
     expect(subs[0]!.userId).toBe(linked.id);
     expect(subs[0]!.user.telegramId).toBe(linked.telegramId);
     expect(subs[0]!.product.name).toBeTruthy();
+  });
+});
+
+describe("actionable restock subscribers (linked Telegram, not banned)", () => {
+  async function mkUser(o: { telegramId?: bigint | null; banned?: boolean }) {
+    return prisma.user.create({
+      data: {
+        telegramId: o.telegramId === undefined ? BigInt(Math.floor(Math.random() * 1e15)) : o.telegramId,
+        referralCode: `r${Math.random()}`,
+        banned: o.banned ?? false,
+      },
+    });
+  }
+
+  it("list, per-SKU counts and single count all skip web-only and banned subscribers", async () => {
+    const productId = await seed([]);
+    const ok = await mkUser({});
+    const webOnly = await mkUser({ telegramId: null });
+    const banned = await mkUser({ banned: true });
+    for (const u of [ok, webOnly, banned]) await subscribeToRestock(prisma, u.id, productId);
+
+    const subs = await listRestockSubscribers(prisma, productId);
+    expect(subs.map((s) => s.userId)).toEqual([ok.id]);
+    expect(await countRestockSubscribers(prisma, productId)).toBe(1);
+    expect((await restockSubscriberCounts(prisma))[productId]).toBe(1);
+  });
+
+  it("omits a SKU from the counts map when its only subscriber is web-only", async () => {
+    const productId = await seed([]);
+    const webOnly = await mkUser({ telegramId: null });
+    await subscribeToRestock(prisma, webOnly.id, productId);
+
+    expect((await restockSubscriberCounts(prisma))[productId]).toBeUndefined();
+    expect(await countRestockSubscribers(prisma, productId)).toBe(0);
   });
 });
 

@@ -159,7 +159,7 @@ export function CatalogPage() {
       await invalidateCatalog();
       toast.success("Product deleted.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete product."));
+      toast.error(describeError(e, "Failed to delete product."));
     }
   }
 
@@ -184,7 +184,7 @@ export function CatalogPage() {
       await invalidateCatalog();
       toast.success(`${count} product(s) ${active ? "activated" : "deactivated"}.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update products."));
+      toast.error(describeError(e, "Failed to update products."));
     } finally {
       setBulkActing(false);
     }
@@ -199,7 +199,7 @@ export function CatalogPage() {
       await invalidateCatalog();
       toast.success(`${count} product(s) ${archived ? "archived" : "unarchived"}.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update products."));
+      toast.error(describeError(e, "Failed to update products."));
     } finally {
       setBulkActing(false);
     }
@@ -217,7 +217,7 @@ export function CatalogPage() {
       await invalidateCatalog();
       toast.success(`${res.count} product(s) moved to "${category?.name ?? "the category"}".`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to move products."));
+      toast.error(describeError(e, "Failed to move products."));
     } finally {
       setBulkActing(false);
     }

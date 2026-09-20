@@ -202,8 +202,13 @@ describe("OrdersPage", () => {
     await waitFor(() => expect(within(statCard("Total Orders")).getByText("67")).toBeInTheDocument());
     expect(within(statCard("Awaiting Fulfillment")).getByText("12")).toBeInTheDocument();
     expect(within(statCard("Delivered")).getByText("51")).toBeInTheDocument();
-    // The KPI row says which tiles are product-only and which count every order.
-    expect(screen.getByText(/Revenue Today and Delivered count product orders only/)).toBeInTheDocument();
+    // The KPI row says which tile is product-only and which count every order.
+    expect(screen.getByText(/Revenue Today counts product sales only/)).toBeInTheDocument();
+    // Delivered mirrors its status tab, so it must NOT claim to be product-only.
+    expect(within(statCard("Delivered")).getByText("Delivered")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/including wallet top-up orders/i),
+    );
     // The inline header stats line (distinct text from the KPI cards).
     expect(screen.getByText(/67 Orders · 12 Awaiting Fulfillment · 4 Processing · 51 Delivered/)).toBeInTheDocument();
   });

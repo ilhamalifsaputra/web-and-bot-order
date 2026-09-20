@@ -69,6 +69,19 @@ describe("recentDayWindow", () => {
     expect(window.since.toISOString()).toBe("2026-10-30T04:00:00.000Z");
   });
 
+  it("truncates a fractional day count so the window still starts on a local midnight", () => {
+    const from = new Date("2026-03-15T10:00:00.000Z");
+    expect(recentDayWindow(7.5, from, "Asia/Jakarta")).toEqual(recentDayWindow(7, from, "Asia/Jakarta"));
+  });
+
+  it("treats zero, negative and non-finite day counts as a single day instead of throwing or looping", () => {
+    const from = new Date("2026-03-15T10:00:00.000Z");
+    const one = recentDayWindow(1, from, "Asia/Jakarta");
+    for (const bad of [0, -3, 0.4, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(recentDayWindow(bad, from, "Asia/Jakarta")).toEqual(one);
+    }
+  });
+
   it("defaults `from` to now and `zone` to config.TIMEZONE, ending on today's shop-local day", () => {
     const window = recentDayWindow(7);
     expect(window.keys).toHaveLength(7);

@@ -150,7 +150,6 @@ export interface StatusCount {
   count: number;
 }
 
-/** Order counts grouped by status (the funnel). */
 /**
  * Order counts grouped by status — the Reports page's funnel. Product orders
  * only, like every other figure on that page: a settled wallet top-up is a

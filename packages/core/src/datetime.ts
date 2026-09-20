@@ -85,12 +85,16 @@ export const recentDayWindow = (
   from: Date = new Date(),
   zone: string = config.TIMEZONE,
 ): DayWindow => {
+  // Callers pass unvalidated query values (`?days=7.5`, NaN, Infinity): a
+  // fractional count would start the window off-midnight and Infinity would
+  // never finish the loop below, so anything unusable becomes one day.
+  const count = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : 1;
   const oldest = DateTime.fromJSDate(from, { zone: "utc" })
     .setZone(zone)
     .startOf("day")
-    .minus({ days: days - 1 });
+    .minus({ days: count - 1 });
   const keys: string[] = [];
-  for (let i = 0; i < days; i++) keys.push(oldest.plus({ days: i }).toFormat("yyyy-LL-dd"));
+  for (let i = 0; i < count; i++) keys.push(oldest.plus({ days: i }).toFormat("yyyy-LL-dd"));
   return { since: oldest.toUTC().toJSDate(), keys };
 };
 

@@ -20,7 +20,7 @@ import {
   markStockDead,
   upsertUser,
 } from "@app/db";
-import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
+import { OrderStatus, StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -165,6 +165,58 @@ describe("stock event ledger across an order's lifecycle", () => {
       actorAdminId: admin.id,
       actorCustomerId: null,
     });
+  });
+
+  it("a release that no longer owns the row leaves the new reservation alone", async () => {
+    // The stall window: an expiry sweep reads order O1 while its row R is
+    // RESERVED, then stalls. An admin cancel of O1 completes first, R goes back
+    // to AVAILABLE and a second buyer's order O2 re-reserves it. When the
+    // stalled sweep finally writes, R belongs to O2 — releasing it anyway would
+    // steal a live reservation out from under a paying buyer and log a
+    // RESERVATION_RELEASED that never happened for O1.
+    //
+    // The fixture below builds that window's COMMITTED state directly (O1 still
+    // open and still pointing at R, R reserved by O2) rather than racing two
+    // real callers, because the staleness lives in the caller's in-memory order
+    // snapshot and a race would be nondeterministic. The release guard is
+    // status- and owner-blind either way, so a plain cancelOrder on this state
+    // exercises exactly the same defect.
+    const { product, user } = sample;
+    await reduceStockTo(product.id, 1);
+
+    const first = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const firstItem = await prisma.orderItem.findFirstOrThrow({ where: { orderId: first.id } });
+    const rowId = firstItem.stockItemId!;
+
+    // The winning cancel released R (status only — O1's pointer is what the
+    // stalled caller still holds), and buyer B's order then took it.
+    await prisma.stockItem.update({
+      where: { id: rowId },
+      data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
+    });
+    const buyerB = await upsertUser(prisma, { telegramId: 777003, username: "buyer-c", fullName: "Buyer C" });
+    const second = (await createOrderDirect(prisma, { user: buyerB, productId: product.id, quantity: 1 }))!;
+    const secondItem = await prisma.orderItem.findFirstOrThrow({ where: { orderId: second.id } });
+    expect(secondItem.stockItemId).toBe(rowId);
+
+    // The stalled sweep finally commits.
+    await cancelOrder(prisma, first.id, "expired", { type: StockActorType.SYSTEM });
+
+    // Buyer B keeps the row and the pointer.
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: rowId } });
+    expect(row.status).toBe(StockStatus.RESERVED);
+    expect(row.orderId).toBe(second.id);
+    expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: secondItem.id } })).stockItemId).toBe(rowId);
+
+    // And nothing was logged claiming O1 released it.
+    const falseReleases = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: rowId, eventType: StockEventType.RESERVATION_RELEASED, orderId: first.id },
+    });
+    expect(falseReleases).toEqual([]);
+
+    // The cancel itself still succeeded — a row it no longer owns is skipped,
+    // not an error.
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: first.id } })).status).toBe(OrderStatus.CANCELLED);
   });
 
   it("the expiry sweep's cancel is attributed to the system", async () => {

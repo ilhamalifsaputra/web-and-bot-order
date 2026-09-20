@@ -29,6 +29,10 @@ export interface StockEventInput {
   reasonCode?: string | null;
   correlationId?: string | null;
   meta?: Prisma.InputJsonValue;
+  /** When the change happened, if the caller already has an authoritative
+   *  instant (e.g. the one it also stamps on a ledger posting, so the two
+   *  agree). Omitted means now() — the column's own default. */
+  occurredAt?: Date;
 }
 
 function toRow(e: StockEventInput): Prisma.StockItemEventUncheckedCreateInput {
@@ -52,6 +56,9 @@ function toRow(e: StockEventInput): Prisma.StockItemEventUncheckedCreateInput {
     reasonCode: e.reasonCode ?? null,
     correlationId: e.correlationId ?? null,
     meta: e.meta,
+    // undefined (not null) so Prisma falls through to the column default; the
+    // column is NOT NULL, so an explicit null would be rejected.
+    occurredAt: e.occurredAt ?? undefined,
   };
 }
 

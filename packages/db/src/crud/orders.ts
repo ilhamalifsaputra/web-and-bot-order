@@ -828,7 +828,12 @@ export async function createOrderFromCart(
     if (ci.product.deliveryType !== DeliveryType.AUTO) continue;
     const lineItemIds = unpairedItemIds.get(ci.productId) ?? [];
     for (let k = 0; k < ci.quantity; k++) {
-      const orderItemId = lineItemIds.shift()!;
+      const orderItemId = lineItemIds.shift();
+      if (orderItemId === undefined) {
+        throw new Error(
+          `Cannot reserve stock for order ${order.orderCode}: the cart line for product ${ci.productId} asked for ${ci.quantity} units, but fewer order-item rows came back from the batch insert than the line needs. Every AUTO unit must have its own order-item row to reserve against.`,
+        );
+      }
       const reserved = await allocateOneAvailableStock(db, ci.productId, order.id, buyerActor, orderItemId);
       if (!reserved) {
         throw new ValidationError("error.out_of_stock", { product: ci.product.name });
@@ -1370,10 +1375,19 @@ async function releaseOrderHolds(
 ) {
   for (const item of order.items) {
     if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
-      await db.stockItem.update({
-        where: { id: item.stockItem.id },
+      // Release only a row THIS order still holds. `order` is a snapshot taken
+      // before this function ran, and the row can have moved on since: an
+      // expiry sweep can read O1, stall, and by the time it writes, a competing
+      // cancel has released the row and another buyer's checkout has
+      // re-reserved it. An unconditional update would steal that live
+      // reservation and log a release that never happened for this order, so
+      // the owner is part of the condition and the event and the pointer clear
+      // follow only the attempt that actually won.
+      const res = await db.stockItem.updateMany({
+        where: { id: item.stockItem.id, status: StockStatus.RESERVED, orderId: order.id },
         data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
       });
+      if (res.count !== 1) continue;
       await recordStockEvent(db, {
         stockItemId: item.stockItem.id,
         eventType: StockEventType.RESERVATION_RELEASED,
@@ -1382,6 +1396,7 @@ async function releaseOrderHolds(
         orderId: order.id,
         orderItemId: item.id,
         actor,
+        occurredAt,
       });
       await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: null } });
     }

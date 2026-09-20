@@ -50,6 +50,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { AccountOrdersData, SupportData, SupportFormOptions, SupportTicketStats } from "../api/types";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import SupportHero from "../components/shop/SupportHero";
 import NewTicketCard, { type NewTicketFormValue } from "../components/shop/NewTicketCard";
 import MyTicketsCard, { type TicketSortKey } from "../components/shop/MyTicketsCard";
@@ -224,11 +225,14 @@ export default function HelpPage() {
     onError: (err) => {
       const key = err instanceof Error ? err.message : "error.generic";
       const field = FIELD_ERROR_KEY[key];
+      // `tError`, not `t(key)`: the length errors this form can raise quote the
+      // limit they were judged by ("at most {max} characters"), and that figure
+      // arrives on the Error rather than in the key (F4a).
       if (field) {
-        setFieldErrors({ [field]: t(key) });
+        setFieldErrors({ [field]: tError(err) });
       } else {
         setToastKind("error");
-        setToastText(t(key));
+        setToastText(tError(err));
       }
     },
   });

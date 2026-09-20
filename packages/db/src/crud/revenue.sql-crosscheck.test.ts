@@ -10,9 +10,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
+import { OrderKind } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { revenueSummary, topProductsByMargin, profitSummarySince } from "./revenue";
+import { revenueSummary, grossSalesForNetSales, topProductsByMargin, profitSummarySince } from "./revenue";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -47,9 +48,9 @@ beforeEach(async () => {
 });
 
 /** Seeds a mixed scenario: 2 IDR delivered orders, 2 USDT delivered orders
- * (distinct fxRates), 1 cancelled order, 1 pending order, and one delivered
- * item with no costPrice — everything a real dashboard would need to get
- * right at once. */
+ * (distinct fxRates), 1 cancelled order, 1 pending order, one settled wallet
+ * top-up, and one delivered item with no costPrice — everything a real
+ * dashboard would need to get right at once. */
 async function seedMixedScenario(now: Date) {
   const idrDenom = await createDenomination(prisma, { productId: parentProductId, name: "IDR Plan", type: "SHARED", durationLabel: "1 Month", price: "25000", costPrice: "10000" });
   const usdtDenomA = await createDenomination(prisma, { productId: parentProductId, name: "USDT Plan A", type: "SHARED", durationLabel: "3 Month", price: "60000", costPrice: "24000" });
@@ -73,6 +74,13 @@ async function seedMixedScenario(now: Date) {
   const pending = await prisma.order.create({ data: { orderCode: `ORD-pending-${Math.random()}`, userId, subtotalAmount: "500000", totalAmount: "500000", currency: "IDR", status: "PENDING_PAYMENT" } });
   await prisma.orderItem.create({ data: { orderId: pending.id, productId: idrDenom.id, quantity: 1, unitPrice: "500000", warrantyDaysSnapshot: 30 } });
 
+  // A settled wallet top-up (Financial Ledger M6, Task 6a): DELIVERED with a
+  // deliveredAt and NO OrderItem rows — the row shape settleWalletTopup leaves.
+  // Deliberately the largest amount in the scenario, so a figure that counted
+  // it would be obviously wrong rather than marginally so. The raw
+  // recomputations below skip `kind <> 'PRODUCT'` independently of revenue.ts.
+  await prisma.order.create({ data: { orderCode: `TOPUP-${Math.random()}`, userId, kind: OrderKind.WALLET_TOPUP, subtotalAmount: "2000000", totalAmount: "2000000", currency: "IDR", status: "DELIVERED", paidAt: now, deliveredAt: now } });
+
   return { idrDenom, usdtDenomA, usdtDenomB };
 }
 
@@ -82,12 +90,15 @@ describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
     await seedMixedScenario(now);
     const since = new Date(now.getTime() - 60_000);
 
-    const rows = await prisma.$queryRawUnsafe<{ status: string; currency: string; total_amount: string }[]>(
-      `SELECT status, currency, total_amount FROM orders`,
+    const rows = await prisma.$queryRawUnsafe<{ status: string; kind: string; currency: string; total_amount: string }[]>(
+      `SELECT status, kind, currency, total_amount FROM orders`,
     );
     const expected = { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 };
     for (const r of rows) {
       if (r.status !== "DELIVERED") continue;
+      // Sales only: a wallet top-up is the buyer's own money parked in their
+      // wallet, never shop revenue (Financial Ledger M6, Task 6a).
+      if (r.kind !== OrderKind.PRODUCT) continue;
       if (r.currency === "IDR") expected.idr = expected.idr.plus(r.total_amount);
       else expected.usdt = expected.usdt.plus(r.total_amount);
       expected.orders += 1;
@@ -97,6 +108,44 @@ describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
     expect(result.revenue_idr.toString()).toBe(expected.idr.toString());
     expect(result.revenue_usdt.toString()).toBe(expected.usdt.toString());
     expect(result.orders).toBe(expected.orders);
+  });
+
+  // The Net Sales basis is a second orders-rooted money figure, so it gets its
+  // own independent recomputation like every other one in this file (Task 6b
+  // fix, C1). The REFUNDED order is created here rather than in
+  // `seedMixedScenario` so the delivered-only recomputations above keep
+  // proving exactly what they prove today.
+  it("grossSalesForNetSales matches a raw SUM(total_amount) grouped by currency over DELIVERED *and* REFUNDED sales", async () => {
+    const now = new Date();
+    await seedMixedScenario(now);
+    // A sale that was made and later refunded in full: executeRefund leaves it
+    // REFUNDED with its original deliveredAt intact.
+    await prisma.order.create({
+      data: { orderCode: `ORD-refunded-${Math.random()}`, userId, subtotalAmount: "30000", totalAmount: "30000", currency: "IDR", status: "REFUNDED", deliveredAt: now },
+    });
+    const since = new Date(now.getTime() - 60_000);
+
+    const rows = await prisma.$queryRawUnsafe<{ status: string; kind: string; currency: string; total_amount: string }[]>(
+      `SELECT status, kind, currency, total_amount FROM orders`,
+    );
+    const expected = { idr: new Decimal(0), usdt: new Decimal(0) };
+    for (const r of rows) {
+      // The one difference from revenueSummary's recomputation above: a sale
+      // that has since been refunded still belongs in the figure the day's
+      // refund payouts are subtracted from, or the same refund is charged twice.
+      if (r.status !== "DELIVERED" && r.status !== "REFUNDED") continue;
+      if (r.kind !== OrderKind.PRODUCT) continue;
+      if (r.currency === "IDR") expected.idr = expected.idr.plus(r.total_amount);
+      else expected.usdt = expected.usdt.plus(r.total_amount);
+    }
+
+    const result = await grossSalesForNetSales(prisma, since);
+    expect(result.idr.toString()).toBe(expected.idr.toString());
+    expect(result.usdt.toString()).toBe(expected.usdt.toString());
+    // And it really is wider than "Revenue Today" — the refunded sale is the
+    // whole difference between the two, nothing else.
+    const delivered = await revenueSummary(prisma, since);
+    expect(result.idr.minus(delivered.revenue_idr).toString()).toBe("30000");
   });
 
   it("topProductsByMargin.revenueIdrEquiv matches raw unit_price×quantity per denomination, delivered-only, with zero fx multiplication", async () => {

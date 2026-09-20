@@ -110,6 +110,21 @@ describe("StockPage", () => {
     expect(within(outRow).getByText("0 / 5 Ready")).toBeInTheDocument();
   });
 
+  it("labels the column 'Restock requests' with an explanatory tooltip, and shows the count only while the SKU is out of stock", async () => {
+    mockStock({ ...STOCK_DATA, waiting: { "10": 4, "30": 2 } });
+    render(<StockPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("1 Month")).toBeInTheDocument());
+
+    const header = screen.getByText("Restock requests");
+    expect(header).toHaveAttribute("title", expect.stringContaining("asked to be notified"));
+    expect(screen.queryByText("Waiting")).not.toBeInTheDocument();
+
+    // Out-of-stock SKU with 2 requests -> the count.
+    expect(within(screen.getByText("1 Year").closest("tr")!).getByText("2")).toBeInTheDocument();
+    // In-stock SKU with 4 stale requests -> "—".
+    expect(within(screen.getByText("1 Month").closest("tr")!).queryByText("4")).not.toBeInTheDocument();
+  });
+
   it("filters by category", async () => {
     const user = userEvent.setup();
     mockStock();

@@ -18,6 +18,7 @@ import { ArrowLeft, CheckCircle2, ExternalLink, RotateCcw } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../../api/client";
 import type { SupportTicketSummary, TicketDetailData } from "../../api/types";
 import { t } from "../../lib/i18n";
+import { tError } from "../../lib/errors";
 import { formatRelativeTime } from "../../lib/formatRelativeTime";
 import { buildTicketTimeline } from "../../lib/ticketTimeline";
 import { loadTicketDraft, clearTicketDraft } from "../../lib/ticketDraft";
@@ -90,7 +91,7 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       refetch();
       onMutated();
     },
-    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+    onError: (err) => setErrorText(tError(err)),
   });
 
   const closeMutation = useMutation({
@@ -100,7 +101,7 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       onMutated();
     },
     onError: (err) => {
-      setErrorText(t(err instanceof Error ? err.message : "error.generic"));
+      setErrorText(tError(err));
       // A 409 here means the ticket was already closed out from under this
       // tap — refetch so the panel re-renders into the real (closed) state
       // instead of leaving a stale "not yet closed" view next to the toast.
@@ -114,7 +115,7 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       refetch();
       onMutated();
     },
-    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+    onError: (err) => setErrorText(tError(err)),
   });
 
   function submitReply() {
@@ -153,7 +154,7 @@ export default function InlineTicketPanel({ ticketId, summary, onClose, onMutate
       )}
 
       {error && (error as Error & { status?: number }).status !== 401 && !data && (
-        <p className="text-sm text-ink-soft">{t(error instanceof Error ? error.message : "error.generic")}</p>
+        <p className="text-sm text-ink-soft">{tError(error)}</p>
       )}
 
       {data && (

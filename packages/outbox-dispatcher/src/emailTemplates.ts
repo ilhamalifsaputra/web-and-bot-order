@@ -242,7 +242,7 @@ async function resolveBuyerBrandConfig(): Promise<BrandConfig> {
  *
  * `lineTotal` is deliberately taken from the payload rather than derived as
  * `unitPrice * quantity`: on a currency-converted order the payload's
- * `unitPrice` has already been rounded to the nearest 0.1 USDT, so scaling it
+ * `unitPrice` has already been rounded UP to the next 0.01 USDT, so scaling it
  * here would scale that rounding error and print a line total contradicting
  * the subtotal a few lines below. The enqueue side multiplies in central IDR
  * and converts once (crud/orders.ts's enqueueBuyerOrderReadyEmailIfGuest).

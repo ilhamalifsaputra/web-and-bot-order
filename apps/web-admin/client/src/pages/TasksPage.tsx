@@ -227,7 +227,7 @@ export function TasksPage() {
       invalidateAll();
       toast.success("Task assigned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const start = useMutation({
@@ -237,7 +237,7 @@ export function TasksPage() {
       invalidateAll();
       toast.success("Task started.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const complete = useMutation({
@@ -247,7 +247,7 @@ export function TasksPage() {
       invalidateAll();
       toast.success("Task completed.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const escalate = useMutation({
@@ -257,7 +257,7 @@ export function TasksPage() {
       invalidateAll();
       toast.success("Task escalated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) {

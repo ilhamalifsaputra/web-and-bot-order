@@ -9,6 +9,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Pagination } from "../components/shared/Pagination";
 import { SearchBar } from "../components/shared/SearchBar";
+import { RestockRequestsHeader } from "../components/shared/RestockRequestsHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -27,6 +28,7 @@ import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { visibleSelection } from "../lib/selection";
+import { formatRestockRequests } from "../lib/restockRequests";
 
 interface StockItem {
   id: number;
@@ -137,7 +139,7 @@ export function StockProductPage() {
       return;
     }
     fetchRevealed(item).catch((e: unknown) => {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to reveal the account credential."));
+      toast.error(describeError(e, "Failed to reveal the account credential."));
     });
   }
 
@@ -150,7 +152,7 @@ export function StockProductPage() {
       setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
     } catch (err) {
       console.error("Failed to copy the stock item's account credential to the clipboard", err);
-      toast.error(describeError(err instanceof Error ? err.message : "Failed to copy the account credential."));
+      toast.error(describeError(err, "Failed to copy the account credential."));
     }
   }
 
@@ -204,7 +206,7 @@ export function StockProductPage() {
       if (ctx) {
         ctx.previous.forEach(([key, snapshot]) => qc.setQueryData(key, snapshot));
       }
-      toast.error(describeError(err.message));
+      toast.error(describeError(err));
     },
     // Patch with the server's authoritative value instead of invalidating —
     // this toggle doesn't change anything else on the page worth refetching.
@@ -247,7 +249,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success(`${count} item(s) marked dead.`);
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark items dead."));
+      toast.error(describeError(e, "Failed to mark items dead."));
     } finally {
       setBulkActing(false);
     }
@@ -268,7 +270,7 @@ export function StockProductPage() {
           : `${result.count} item(s) deleted. ${result.skipped} skipped (sold or linked to an order).`,
       );
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete items."));
+      toast.error(describeError(e, "Failed to delete items."));
     } finally {
       setBulkActing(false);
     }
@@ -280,7 +282,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Stock item marked dead.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark item dead."));
+      toast.error(describeError(e, "Failed to mark item dead."));
     }
   }
 
@@ -290,7 +292,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Stock item deleted.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete item."));
+      toast.error(describeError(e, "Failed to delete item."));
     }
   }
 
@@ -301,7 +303,7 @@ export function StockProductPage() {
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success("Note saved.");
     } catch (e) {
-      toast.error(describeError(e instanceof Error ? e.message : "Failed to update note."));
+      toast.error(describeError(e, "Failed to update note."));
     }
   }
 
@@ -516,7 +518,9 @@ export function StockProductPage() {
         <span className="text-ink-soft">Product: <span className="text-ink">{product.product?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Category: <span className="text-ink">{product.product?.category?.name ?? "—"}</span></span>
         <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{statusCounts.available}</span></span>
-        <span className="text-ink-soft">Waiting: <span className="text-ink">{waiting}</span></span>
+        <span className="text-ink-soft">
+          <RestockRequestsHeader />: <span className="text-ink">{formatRestockRequests(waiting, statusCounts.available)}</span>
+        </span>
       </div>
 
       {/* Bulk add */}

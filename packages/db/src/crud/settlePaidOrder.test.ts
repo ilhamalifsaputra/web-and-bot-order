@@ -553,12 +553,14 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
   // price that had already been rounded to the nearest 0.1 USDT, which
   // multiplies that rounding error by the quantity.
   //
-  // 5 x Rp8.900 at an fxRate of 16.000 is the sharpest small case:
-  //   unit    8.900 / 16.000 = 0.55625  -> rounds UP to 0.6 USDT
-  //   naive   0.6 x 5                   =  3.00 USDT   (wrong)
-  //   correct 44.500 / 16.000 = 2.78125 -> 2.8 USDT    (== the subtotal)
-  // The receipt would otherwise print "5 x 0.60 = 3.00" directly above
-  // "Subtotal 2.80" — a 0.2 USDT self-contradiction in front of the buyer.
+  // 5 x Rp8.900 at an fxRate of 16.000 is the sharpest small case (M13 / P2-1
+  // shrank the gap from 0.2 to 0.01 by moving the step from 0.1 to 0.01, but
+  // did not close it — a smaller contradiction is still a contradiction):
+  //   unit    8.900 / 16.000 = 0.55625  -> rounds UP to 0.56 USDT
+  //   naive   0.56 x 5                  =  2.80 USDT   (wrong)
+  //   correct 44.500 / 16.000 = 2.78125 -> 2.79 USDT   (== the subtotal)
+  // The receipt would otherwise print "5 x 0.56 = 2.80" directly above
+  // "Subtotal 2.79" — a 0.01 USDT self-contradiction in front of the buyer.
   it("USDT multi-quantity line: lineTotal is converted once from the central-IDR line, so it agrees with the subtotal instead of scaling a rounded unit price", async () => {
     await makeSampleUserAGuest();
     const denom = await makeManualDenom(DeliveryType.MANUAL, "8900");
@@ -566,7 +568,7 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     await collapseItemsIntoOneLine(order.id, 5);
     // Simulate a USDT-settled order the way finalizeOrderPayment would have
     // left it: subtotal/unitPrice stay central-IDR, but `totalAmount` is
-    // converted — round(baseIdr / rate, 0.1) plus the unique cents. Patching
+    // converted — ceil(baseIdr / rate, 0.01) plus the unique cents. Patching
     // only currency+fxRate and leaving a central-IDR total behind would be a
     // state no real order is ever in, and the receipt's figures are now
     // derived from that total.
@@ -589,14 +591,14 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const items = payload.items as Array<Record<string, unknown>>;
     expect(items).toHaveLength(1);
     expect(items[0]!.quantity).toBe(5);
-    expect(items[0]!.unitPrice).toBe(usdtFromIdr("8900", "16000").toString()); // "0.6"
-    expect(items[0]!.lineTotal).toBe(usdtFromIdr("44500", "16000").toString()); // "2.8"
-    // The naive product of the rounded unit price — the bug being pinned.
-    expect(items[0]!.lineTotal).not.toBe("3");
+    expect(items[0]!.unitPrice).toBe(usdtFromIdr("8900", "16000").toString()); // "0.56"
+    expect(items[0]!.lineTotal).toBe(usdtFromIdr("44500", "16000").toString()); // "2.79"
+    // The naive product of the rounded unit price (0.56 x 5) — the bug being pinned.
+    expect(items[0]!.lineTotal).not.toBe("2.8");
     // This order has exactly one item line, so its line total IS the subtotal.
     // Anything else is a receipt that contradicts itself.
     expect(items[0]!.lineTotal).toBe(payload.subtotal);
-    expect(payload.subtotal).toBe("2.8");
+    expect(payload.subtotal).toBe("2.79");
   });
 
   it("IDR multi-quantity line (no conversion happens): lineTotal is the plain quantity x unitPrice product", async () => {
@@ -621,22 +623,29 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
    * an overcharge.
    *
    * Three separate roundings used to guarantee it never would. `subtotal` and
-   * `discount` were each converted to the nearest 0.1 USDT on their own while
-   * `total` had already been converted, once, by finalizeOrderPayment — and
-   * on top of that, finalizeOrderPayment folds 0.002-0.098 USDT of
-   * deterministic "unique cents" into `totalAmount` (so the payment poller can
-   * match the transfer by amount) that no line of the receipt printed at all.
+   * `discount` were each converted independently on their own while `total`
+   * had already been converted, once, by finalizeOrderPayment — and on top of
+   * that, finalizeOrderPayment folds 0.002-0.098 USDT of deterministic
+   * "unique cents" into `totalAmount` (so the payment poller can match the
+   * transfer by amount) that no line of the receipt printed at all.
    *
-   * Rp45.000 with a 20% voucher at an fxRate of 16.000 is the clean worked
-   * example of the rounding half:
-   *   subtotal 45.000 / 16.000 = 2.8125  -> 2.8 USDT
-   *   discount  9.000 / 16.000 = 0.5625  -> 0.6 USDT   (converted alone)
-   *   net      36.000 / 16.000 = 2.25    -> 2.3 USDT   (what total is built on)
-   * so the old receipt printed "2.8 - 0.6 = 2.2" above a total of 2.3 + cents.
+   * Rp32.080 with a Rp16.016 voucher at an fxRate of 16.000 is the clean
+   * worked example of the rounding half (M13 / P2-1's 0.01-ceil step shrank
+   * the gap this used to demonstrate — Rp45.000/Rp9.000 no longer
+   * discriminates, because subtotal(2.82) - net(2.25) happens to equal the
+   * independently-converted discount(0.57) exactly at that pair; this one
+   * still does not):
+   *   subtotal 32.080 / 16.000 = 2.005   -> 2.01 USDT
+   *   discount 16.016 / 16.000 = 1.001   -> 1.01 USDT   (converted alone)
+   *   net      16.064 / 16.000 = 1.004   -> 1.01 USDT   (what total is built on)
+   * An independently-converted discount would print "2.01 - 1.01 = 1.00"
+   * beside a total built on 1.01 + cents — a contradiction. The DERIVED
+   * discount (subtotal minus net, both already converted) is "1", which
+   * agrees with the total by construction.
    */
   const USDT_RATE = "16000";
-  const PRICE_IDR = "45000";
-  const DISCOUNT_IDR = "9000";
+  const PRICE_IDR = "32080";
+  const DISCOUNT_IDR = "16016";
 
   /**
    * A guest order settled in USDT on a given rail, driven through the real
@@ -727,11 +736,11 @@ describe("BUYER_EMAIL_ORDER_READY (guest buyer's order-ready email)", () => {
     const payload = await deliverAndReadReceipt(orderId);
 
     // Anchored: converted once from central IDR, exactly as before.
-    expect(payload.subtotal).toBe(usdtFromIdr(PRICE_IDR, USDT_RATE).toString()); // "2.8"
-    // Derived: subtotal minus the net the total is actually built on (2.3),
-    // NOT the independently-rounded 9.000/16.000 = 0.5625 -> "0.6" that used
-    // to leave the receipt 0.1 USDT short of its own total.
-    expect(payload.discount).toBe("0.5");
+    expect(payload.subtotal).toBe(usdtFromIdr(PRICE_IDR, USDT_RATE).toString()); // "2.01"
+    // Derived: subtotal minus the net the total is actually built on (1.01),
+    // NOT the independently-rounded 16.016/16.000 = 1.001 -> "1.01" that would
+    // otherwise leave the receipt contradicting its own total.
+    expect(payload.discount).toBe("1");
     expect(payload.discount).not.toBe(usdtFromIdr(DISCOUNT_IDR, USDT_RATE).toString());
   });
 

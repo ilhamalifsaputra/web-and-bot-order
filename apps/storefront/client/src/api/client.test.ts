@@ -38,6 +38,12 @@ describe("apiPost", () => {
     expect(JSON.parse(init.body as string)).toEqual({ denomination_id: 1, qty: 2 });
   });
 
+  it("resolves (does not throw) on an HTTP 200 body carrying ok:false, so restock outcomes reach the caller", async () => {
+    const body = { ok: false, result: "needs_telegram", redirect: "/" };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => body })));
+    await expect(apiPost("/api/v1/restock/1", {})).resolves.toEqual(body);
+  });
+
   it("sends no Idempotency-Key unless one is given (the routes' opt-out)", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
@@ -184,6 +190,77 @@ describe("publicPost", () => {
   it("throws the server's error message on failure", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, json: async () => ({ error: "login_failed" }) })));
     await expect(publicPost("/api/v1/auth/login", {})).rejects.toThrow("login_failed");
+  });
+});
+
+// Whole-branch review F4a. An i18n key like
+// `error.amount_below_rail_minimum` ("... accepts ({min} {currency})") is useless
+// without the figures it names, and this layer used to drop them: it threw
+// `new Error(body.error)` and nothing else. Every helper that can reject with a
+// server-sent key now carries the server's `error_args` on the Error, which is
+// what makes the fix one change instead of one per message.
+describe("error_args carried from the server onto the thrown Error", () => {
+  type ArgsError = Error & { errorArgs?: Record<string, string> };
+
+  it("apiPost carries them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "error.amount_below_rail_minimum", error_args: { min: "100000", currency: "IDR" } }),
+      })),
+    );
+    await apiPost("/api/v1/checkout", {}).catch((err: ArgsError) => {
+      expect(err.message).toBe("error.amount_below_rail_minimum");
+      expect(err.errorArgs).toEqual({ min: "100000", currency: "IDR" });
+    });
+    expect.hasAssertions();
+  });
+
+  it("apiGet carries them alongside the status it already carried", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: "error.text_too_long", error_args: { max: "2000" } }) })),
+    );
+    await apiGet("/api/v1/account").catch((err: ArgsError & { status?: number }) => {
+      expect(err.errorArgs).toEqual({ max: "2000" });
+      expect(err.status).toBe(400);
+    });
+    expect.hasAssertions();
+  });
+
+  it("publicPost carries them", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: "error.text_too_short", error_args: { min: "8" } }) })),
+    );
+    await publicPost("/api/v1/auth/register", {}).catch((err: ArgsError) => {
+      expect(err.errorArgs).toEqual({ min: "8" });
+    });
+    expect.hasAssertions();
+  });
+
+  it("leaves errorArgs undefined when the server sent none, rather than inventing an empty object", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: "error.cart_empty" }) })));
+    await apiPost("/api/v1/checkout", {}).catch((err: ArgsError) => {
+      expect(err.errorArgs).toBeUndefined();
+    });
+    expect.hasAssertions();
+  });
+
+  // A hostile or broken response must not be able to hand the renderer something
+  // that is not a flat string map — `t()` would stringify whatever it was given
+  // straight into the page.
+  it("ignores an error_args that is not an object of strings", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 400, json: async () => ({ error: "error.generic", error_args: "min=1" }) })),
+    );
+    await apiPost("/api/v1/checkout", {}).catch((err: ArgsError) => {
+      expect(err.errorArgs).toBeUndefined();
+    });
+    expect.hasAssertions();
   });
 });
 

@@ -80,13 +80,21 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
     OrderStatus.REFUNDED,
     OrderStatus.CANCELLED,
   ],
-  // Terminal states — no outgoing transitions.
-  [OrderStatus.DELIVERED]: [],
-  // Terminal for the same reason DELIVERED is: the order's lines have all
-  // reached an outcome, some good and some not. What a buyer is owed for the
-  // failed half is a Refund-domain question, and that domain is deferred —
-  // when it lands it will add the outgoing edge (REFUNDED) here.
+  // A delivered order is otherwise terminal, but it can still be refunded:
+  // the buyer got the goods and the money is then given back (a dead account,
+  // a goodwill refund). REFUNDED is the only outgoing edge — nothing un-delivers
+  // an order. Added by the Financial Ledger milestone, which introduces
+  // RefundExecution (the row that records an actual payout); before it, no code
+  // path could pay a delivered order's buyer back, so the edge had no caller.
+  [OrderStatus.DELIVERED]: [OrderStatus.REFUNDED],
+  // Still terminal, unlike DELIVERED above: the order's lines have all reached
+  // an outcome, some good and some not. What a buyer is owed for the failed
+  // half is a partial-refund question — how much of a part-delivered order to
+  // give back is a per-item calculation over RefundItem, not the whole-order
+  // refund DELIVERED now allows — and that path has no caller yet, so the
+  // outgoing edge stays unlisted until one exists.
   [OrderStatus.PARTIALLY_DELIVERED]: [],
+  // Terminal states — no outgoing transitions.
   [OrderStatus.CANCELLED]: [],
   [OrderStatus.REJECTED]: [],
   [OrderStatus.REFUNDED]: [],

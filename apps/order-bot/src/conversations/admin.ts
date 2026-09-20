@@ -22,8 +22,7 @@ import {
   getVoucherByCode,
   createVoucher,
   bulkAddStock,
-  countAvailableStock,
-  enqueueRestockBroadcast,
+  afterStockAdded,
   getUserByTelegramId,
   logAdminAction,
   searchUsers,
@@ -53,7 +52,7 @@ import { esc, formatPrice } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
-import { adminCommand, notifyRestockSubscribers, renderUserCard } from "../handlers/admin";
+import { adminCommand, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
 
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
@@ -162,18 +161,21 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   await adminAnchor(ctx, t(ctx, "admin.processing"));
 
   const adminTg = ctx.from!.id;
-  const { added, dedupSkipped, denomination } = await prisma.$transaction(async (tx) => {
+  const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
     const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
     const admin = await getUserByTelegramId(tx, adminTg);
+    const adminId = requireAdminId(admin);
     await logAdminAction(tx, {
-      adminId: requireAdminId(admin),
+      adminId,
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
       details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
     });
-    const denom = await tx.denomination.findUnique({ where: { id: productId }, include: { product: true } });
-    return { added: n, dedupSkipped: skipped, denomination: denom };
+    // Same transaction as the insert: stock, subscriber DMs and the optional
+    // broadcast commit or roll back together.
+    await afterStockAdded(tx, productId, n, adminId);
+    return { added: n, dedupSkipped: skipped };
   });
 
   // Parse-time skips (malformed lines) and dedup skips (already-existing or
@@ -185,28 +187,6 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     t(ctx, "admin.stock_added", { count: added, skipped: skippedCount + dedupSkipped }),
     akb.backToAdminKb(lang),
   );
-  await notifyRestockSubscribers(ctx, productId);
-
-  // Broadcast to ALL non-banned customers, separate from and in addition to
-  // the RestockSubscription opt-in DM above — only when the admin turned the
-  // per-product flag on.
-  if (added > 0 && denomination?.broadcastOnRestock) {
-    const stockCount = await countAvailableStock(prisma, productId);
-    const admin = await getUserByTelegramId(prisma, adminTg);
-    const fullName = `${denomination.product.name} - ${denomination.name}`;
-    const notified = await enqueueRestockBroadcast(prisma, {
-      productName: fullName,
-      stockCount,
-      createdById: admin?.id ?? null,
-    });
-    await logAdminAction(prisma, {
-      adminId: requireAdminId(admin),
-      action: "restock_broadcast",
-      targetType: "product",
-      targetId: productId,
-      details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
-    });
-  }
 }
 
 // ===========================================================================

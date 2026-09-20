@@ -765,6 +765,34 @@ describe("deliverPaidBybitOrder — Payment ledger confirmation (Task A2b)", () 
     expect(confirmed.pendingOrderId).toBeNull();
   });
 
+  // Financial Ledger M3 (Task 3b): the confirmation now also captures the
+  // gateway's own transaction id. This rail reports no fee figure anywhere in
+  // its poller payload, so `fee`/`netAmount` stay null — Payment.fee's
+  // documented "not known", not a claim that Bybit Internal is free.
+  it("captures the Bybit deposit id as the Payment row's providerTransactionId, and no fee figures", async () => {
+    const order = await makePendingBybitOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "tx-m3-capture-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe("tx-m3-capture-1");
+    expect(confirmed.fee).toBeNull();
+    expect(confirmed.netAmount).toBeNull();
+  });
+
   it("delivers normally with no Payment row at all — the ledger is purely additive", async () => {
     const order = await makePendingBybitOrder();
 

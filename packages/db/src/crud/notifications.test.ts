@@ -43,8 +43,12 @@ import {
   notificationBackoffMs,
   NOTIF_RETRY_BASE_MS,
   NOTIF_RETRY_MAX_MS,
+  enqueueRestockSubscriberNotifications,
+  afterStockAdded,
 } from "./notifications";
 import { addAdminIdToDb } from "./admins";
+import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
+import { bulkAddStock } from "./stock";
 import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
 import { setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
@@ -2003,5 +2007,148 @@ describe("enqueueBuyerOrderReadyEmail (buyer-facing EMAIL notification)", () => 
       expect(Object.keys(payload)).not.toContain(forbidden);
       expect(row.payloadJson).not.toContain(forbidden);
     }
+  });
+});
+
+describe("enqueueRestockSubscriberNotifications / afterStockAdded", () => {
+  async function seedSku(broadcastOnRestock = false) {
+    const cat = await createCategory(prisma, `c${Math.random()}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Netflix" });
+    const denom = await createDenomination(prisma, {
+      productId: parent.id,
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5",
+    });
+    return prisma.denomination.update({ where: { id: denom.id }, data: { broadcastOnRestock } });
+  }
+  function mkUser(o: { telegramId?: bigint | null; banned?: boolean; language?: string }) {
+    return prisma.user.create({
+      data: {
+        telegramId: o.telegramId === undefined ? BigInt(Math.floor(Math.random() * 1e15)) : o.telegramId,
+        referralCode: `r${Math.random()}`,
+        banned: o.banned ?? false,
+        language: o.language ?? "EN",
+      },
+    });
+  }
+  const subEvents = (chatId: number) =>
+    prisma.notificationOutbox
+      .findMany({ where: { event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED } })
+      .then((rows) => rows.filter((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === chatId));
+
+  it("enqueues one DM per actionable subscriber (buyer language kept) and consumes only those subscriptions", async () => {
+    const denom = await seedSku();
+    const ok = await mkUser({ language: "ID" });
+    const webOnly = await mkUser({ telegramId: null });
+    const banned = await mkUser({ banned: true });
+    for (const u of [ok, webOnly, banned]) {
+      await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    }
+
+    const n = await enqueueRestockSubscriberNotifications(prisma, denom.id);
+
+    expect(n).toBe(1);
+    const rows = await subEvents(Number(ok.telegramId));
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.payloadJson)).toEqual({
+      chat_id: Number(ok.telegramId),
+      product_name: "Netflix - 1 Month",
+      buyer_language: "id",
+    });
+    const left = await prisma.restockSubscription.findMany({ where: { productId: denom.id } });
+    expect(left.map((s) => s.userId).sort()).toEqual([webOnly.id, banned.id].sort());
+  });
+
+  it("writes nothing when there is no actionable subscriber", async () => {
+    const denom = await seedSku();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED } });
+    expect(await enqueueRestockSubscriberNotifications(prisma, denom.id)).toBe(0);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.RESTOCK_SUBSCRIBER_NOTIFIED } })).toBe(before);
+  });
+
+  it("is atomic: when the caller's transaction rolls back, both the outbox rows and the deletions roll back", async () => {
+    const denom = await seedSku();
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        await enqueueRestockSubscriberNotifications(tx, denom.id);
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    expect(await subEvents(Number(u.telegramId))).toHaveLength(0);
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(1);
+  });
+
+  it("afterStockAdded joins the caller's transaction: stock, subscriber rows and deletions commit together", async () => {
+    const denom = await seedSku();
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+
+    await prisma.$transaction(async (tx) => {
+      const { added } = await bulkAddStock(tx, denom.id, [`joined${Math.random()}@x.com:pw`]);
+      await afterStockAdded(tx, denom.id, added, admin.id);
+    });
+
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(1);
+    expect(await subEvents(Number(u.telegramId))).toHaveLength(1);
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(0);
+  });
+
+  it("rolls the stock add back when the notification step throws inside the same transaction", async () => {
+    const denom = await seedSku(true);
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+
+    await expect(
+      prisma.$transaction(async (tx) => {
+        const { added } = await bulkAddStock(tx, denom.id, [`rollback${Math.random()}@x.com:pw`]);
+        // Simulate the outbox write failing after the stock insert.
+        tx.notificationOutbox.createMany = (() => {
+          throw new Error("outbox write failed");
+        }) as never;
+        await afterStockAdded(tx, denom.id, added, admin.id);
+      }),
+    ).rejects.toThrow("outbox write failed");
+
+    expect(await prisma.stockItem.count({ where: { productId: denom.id } })).toBe(0);
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(1);
+  });
+
+  it("afterStockAdded does nothing when no stock was added", async () => {
+    const denom = await seedSku(true);
+    const u = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: u.id, productId: denom.id } });
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+
+    const res = await afterStockAdded(prisma, denom.id, 0, admin.id);
+
+    expect(res).toEqual({ subscribersQueued: 0, broadcastQueued: 0 });
+    expect(await prisma.restockSubscription.count({ where: { productId: denom.id } })).toBe(1);
+  });
+
+  it("afterStockAdded queues the subscriber DMs, and the broadcast (with an audit row) only when broadcastOnRestock is on", async () => {
+    const admin = await prisma.user.create({ data: { referralCode: `a${Math.random()}`, role: "ADMIN" } });
+    const off = await seedSku(false);
+    const subA = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: subA.id, productId: off.id } });
+    const resOff = await afterStockAdded(prisma, off.id, 3, admin.id);
+    expect(resOff.subscribersQueued).toBe(1);
+    expect(resOff.broadcastQueued).toBe(0);
+
+    const on = await seedSku(true);
+    const subB = await mkUser({});
+    await prisma.restockSubscription.create({ data: { userId: subB.id, productId: on.id } });
+    const resOn = await afterStockAdded(prisma, on.id, 3, admin.id);
+    expect(resOn.subscribersQueued).toBe(1);
+    expect(resOn.broadcastQueued).toBeGreaterThan(0);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "restock_broadcast", targetId: on.id } });
+    expect(audit?.adminId).toBe(admin.id);
   });
 });

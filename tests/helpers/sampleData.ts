@@ -14,6 +14,9 @@ import {
   createDenomination,
   bulkAddStock,
   createVoucher,
+  seedChartOfAccounts,
+  setSetting,
+  MIN_ORDER_AMOUNT_IDR_KEY,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { ProductType, VoucherType } from "@app/core/enums";
@@ -52,6 +55,16 @@ export async function buildSampleData(prisma: PrismaClient) {
     usageLimit: 100,
     minPurchase: "3",
   });
+  // The sample shop has NO shop-wide minimum order amount. Its product costs
+  // Rp5.00 — two orders of magnitude under `min_order_amount_idr`'s real default
+  // of Rp1.000 (crud/orderMinimums.ts, M11) — so leaving that default in force
+  // here would make every fixture-built order unfinalizable on every gateway,
+  // for a reason none of those tests are about. Written as an explicit "0"
+  // rather than left unset, because unset is what SELECTS the default: this is
+  // the fixture declaring a configuration, not bypassing one. The guard itself
+  // is covered by packages/db/src/crud/orderMinimums.test.ts, which sets real
+  // minimums, and any test that wants a minimum in force can set one too.
+  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
   // `product` is the Denomination/SKU (id used by the order/stock flow);
   // `parentProduct` is the mid-tier Product wrapper (the row the bot's flat
   // list shows and whose picker collapses to this single denomination).
@@ -68,6 +81,12 @@ export async function resetDb(prisma: PrismaClient) {
   __clearSettingsCacheForTests(prisma);
   await prisma.idempotencyRecord.deleteMany();
   await prisma.notificationOutbox.deleteMany();
+  // StockReplacement (Financial Ledger M18) points at an OrderItem, two
+  // StockItems, a Refund and a SupportTicket, ALL onDelete: Restrict — a
+  // replacement record is an audit record of a delivered-goods correction, so
+  // it has to go before any of those five, which is why it leads this list
+  // rather than sitting beside the refund rows further down.
+  await prisma.stockReplacement.deleteMany();
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();
   await prisma.review.deleteMany();
@@ -78,12 +97,27 @@ export async function resetDb(prisma: PrismaClient) {
   // cleared before RefundItem/Refund/OrderItem/Order, or a leftover
   // AdminTask row blocks any of those deletes below.
   await prisma.adminTask.deleteMany();
+  // RefundExecution.refund is onDelete:Restrict (Financial Ledger M1 — a
+  // recorded payout is a financial-audit record and must never be erasable by
+  // deleting its Refund) — must be cleared before Refund, or a payout row left
+  // behind by `executeRefund` blocks that delete and every later one with it.
+  await prisma.refundExecution.deleteMany();
   // RefundItem.orderItem and Refund.order are both onDelete:Restrict
   // (Refund domain, Task 8a — same financial-audit-record policy as
   // OrderItem/OrderStatusHistory) — must be cleared before OrderItem/Order,
   // or a leftover Refund/RefundItem row blocks the delete below.
   await prisma.refundItem.deleteMany();
   await prisma.refund.deleteMany();
+  // SettlementTransaction.payment and .settlement are both onDelete:Restrict
+  // (Infra-5 policy — a settlement line is a financial-audit record that
+  // neither its batch nor the Payment it matched may silently erase), so both
+  // tables have to go before Payment, or a line left behind by
+  // `recordSettlement` (task F1) blocks that delete and every later one with
+  // it. Settlement itself has no FK of its own, but it is cleared here so a
+  // batch row cannot survive into the next test and be counted by
+  // `listSettlements`.
+  await prisma.settlementTransaction.deleteMany();
+  await prisma.settlement.deleteMany();
   // Payment.order is onDelete:Restrict (Trustance Phase A Task A2a — same
   // financial-audit-record policy as Refund/RefundItem/OrderStatusHistory) —
   // must be cleared before Order, or a leftover Payment row blocks the
@@ -122,4 +156,21 @@ export async function resetDb(prisma: PrismaClient) {
   // no cascade to do it implicitly anymore.
   await prisma.walletTransaction.deleteMany();
   await prisma.user.deleteMany();
+  // Ledger (Financial Ledger M3). Order settlement, wallet top-ups, manual
+  // wallet adjustments and referral commissions all post to the double-entry
+  // ledger now, so the chart of accounts has to exist in every test schema or
+  // those paths fail on an unknown account code — the same way they would in
+  // production if `pnpm seed-chart-of-accounts` had never been run.
+  //
+  // Postings are cleared each reset so a test can assert "this settlement posted
+  // exactly one transaction" without counting another test's rows. The accounts
+  // themselves are NOT cleared: they carry no per-test state, and re-seeding 15
+  // rows in every beforeEach across the whole suite costs far more than the one
+  // count check that skips it. Children first — LedgerEntry → FinancialTransaction
+  // and → LedgerAccount are both onDelete: Restrict (Infra-5 policy).
+  await prisma.ledgerEntry.deleteMany();
+  await prisma.financialTransaction.deleteMany();
+  if ((await prisma.ledgerAccount.count()) === 0) {
+    await seedChartOfAccounts(prisma);
+  }
 }

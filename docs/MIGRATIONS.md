@@ -392,34 +392,117 @@ dengan `db push` (bukan `migrate deploy`) seperti langkah berikutnya.
 ```bash
 # Non-Docker
 pnpm exec prisma db push
+pnpm seed-chart-of-accounts   # sekali per environment; idempoten, lihat di bawah
 
-# Docker — biasanya TIDAK perlu: entrypoint sudah melakukannya saat container
-# start (lihat bagian berikut). Perintah ini tetap valid & idempoten, mis. saat
-# AUTO_MIGRATE=0 atau untuk menerapkan skema tanpa restart.
+# Docker — biasanya TIDAK perlu: entrypoint sudah melakukan keduanya (plus
+# migrasi data-only rilis ini) saat container start, lihat bagian berikut.
+# Kedua perintah ini tetap valid & idempoten, mis. saat AUTO_MIGRATE=0 atau untuk
+# menerapkan skema tanpa restart.
 docker compose run --rm server pnpm exec prisma db push
+docker compose run --rm server pnpm seed-chart-of-accounts
 ```
 
 ### Docker: otomatis lewat entrypoint
 
 `docker-entrypoint.sh` menyelaraskan skema **sebelum** `pnpm start` dijalankan,
-jadi "urutan wajib" di bawah dipenuhi secara struktural — tidak bisa lupa.
-Alurnya tiap start:
+jadi "urutan wajib" di bawah dipenuhi secara struktural — tidak bisa lupa. Dua
+gerbang pertama sama untuk kedua engine:
 
-1. `AUTO_MIGRATE=0`? → berhenti di sini, skema tak disentuh.
+1. `AUTO_MIGRATE=0`? → berhenti di sini, database tak disentuh sama sekali.
 2. Ada `data/SKIP_AUTO_MIGRATE`? → berhenti (jeda pasca-rollback, ditulis
    `restore.sh`); isi file dicetak ke log.
-3. File DB belum ada → fresh install, `db push` langsung (tak ada yang perlu
+3. `DATABASE_URL_PRISMA` belum di-set → **container menolak start**
+   (`schema.prisma` menuntut connection string `postgresql://`).
+
+Sesudah itu jalurnya bercabang menurut prefix `DATABASE_URL_PRISMA`.
+
+#### Jalur PostgreSQL (produksi hari ini)
+
+Sejak rilis Financial Ledger, entrypoint menjalankan **seluruh** langkah deploy
+rilis, bukan cuma skemanya — jadi deploy cukup
+`docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build`,
+tanpa satu pun perintah manual sesudahnya:
+
+1. **Tunggu database siap** (maks. 10 × 2 detik; `DB_WAIT_ATTEMPTS`/
+   `DB_WAIT_SECONDS` bisa di-override). `depends_on: service_healthy` di
+   `docker-compose.postgres.prod.yml` hanya membuktikan `pg_isready` pernah
+   sukses — bukan bahwa container Postgres yang **baru pertama kali** boot sudah
+   selesai me-restart server sungguhannya setelah menjalankan init script. Tanpa
+   jeda ini, race beberapa detik itu menjadi crash-loop.
+2. **`prisma db push --skip-generate`** (lewat `db_push()` yang sama dengan jalur
+   SQLite, jadi **tetap tanpa** `--accept-data-loss`): perubahan yang akan
+   membuang data **menggagalkan push** dan container **menolak start**. Ini satu-
+   satunya langkah yang fatal.
+3. **Seed chart of accounts ledger** (`scripts/seed-chart-of-accounts.ts`, sama
+   dengan `pnpm seed-chart-of-accounts`). Setiap posting ledger mencari akunnya
+   **berdasarkan `code`**, jadi di database yang belum pernah di-seed, settlement
+   order, top-up wallet, penyesuaian wallet manual, dan komisi referral
+   **tidak mencatat apa pun** — postingnya dilewati, bukan di-retry. Seed ini
+   upsert idempoten, jadi aman dijalankan setiap start.
+4. **Migrasi data-only** yang terdaftar di `$DATA_MIGRATIONS` (di
+   `docker-entrypoint.sh`), diterapkan lewat `prisma db execute --file`. `db push`
+   hanya menyinkronkan **struktur**, jadi migrasi yang mengisi/membetulkan
+   **baris** harus dieksekusi terpisah atau diam-diam tidak pernah jalan. Hari ini
+   isinya satu: `20260919120000_seed_usdt_rounding_ceil_since`.
+
+**Langkah 3 dan 4 hanya WARNING kalau gagal, tidak pernah crash-loop.** Alasannya
+dua. Pertama, skema sudah ter-push di titik itu; container yang menolak start
+justru menghilangkan satu-satunya tempat untuk membetulkannya. Kedua, seed
+chart-of-accounts **sengaja** keluar non-zero juga untuk hal yang bukan
+kegagalan: akun yang `type`/`currency`-nya berbeda dari `CHART_OF_ACCOUNTS`, dan
+akun aktif yang sudah tidak ada lagi di chart. Keduanya keputusan **akuntansi**
+atas baris yang mungkin sudah memuat entri terposting (lihat komentar kepala
+skripnya) — mematikan toko karena pertanyaan pembukuan adalah trade yang salah.
+
+Karena itu **baca baris entrypoint setiap habis deploy**:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml \
+  logs --since 10m server | grep entrypoint
+```
+
+**Kontrak idempotensi `$DATA_MIGRATIONS`:** setiap file di daftar itu
+di-apply-ulang **setiap start**, karena tidak ada apa pun yang bisa dikonsultasi
+soal apa yang sudah jalan — repo ini deploy dengan `db push`, yang tidak pernah
+menulis `_prisma_migrations` (lihat bagian paling atas halaman ini). Jadi file
+yang boleh masuk daftar itu **hanya** yang aman dijalankan berulang: `INSERT ...
+ON CONFLICT DO NOTHING`, `UPDATE ... WHERE <belum dikerjakan>`, atau sejenisnya.
+Saat sebuah rilis membawa migrasi data-only baru: tambahkan nama foldernya ke
+`$DATA_MIGRATIONS` (dipisah spasi, terlama dulu) **dan** tulis di komentar kepala
+file SQL-nya kenapa re-run-nya aman.
+`deploy/test-entrypoint-auto-migrate.sh` ikut memverifikasi setiap nama di daftar
+itu benar-benar ada di `prisma/migrations/`, supaya salah tulis tidak berakhir
+sebagai WARNING produksi yang tak pernah dibaca.
+
+**Tidak ada snapshot pra-push di jalur ini**, dan itu disengaja: jalur Postgres
+`deploy/backup/backup.sh` mengambil dump dengan menjalankan `pg_dump` **di dalam**
+container `postgres` lewat `docker compose exec` (lihat
+[`deploy/backup/README.md`](../deploy/backup/README.md)), yang butuh Docker socket
+yang tidak dimiliki container `server` — dan memasang `postgresql-client` ke image
+app justru memberi client lebih tua dari server `postgres:16`, yang dump-nya
+ditolak server itu sendiri. Yang **dijamin** entrypoint: `db push` menolak setiap
+perubahan yang tidak bisa diterapkan tanpa membuang data. Yang **tetap tugas
+operator**: ambil dump di host sebelum deploy — lihat "Backup — Postgres" di
+[`deploy/backup/README.md`](../deploy/backup/README.md).
+
+#### Jalur SQLite (checkout pra-cutover) — tidak berubah
+
+1. File DB belum ada → fresh install, `db push` langsung (tak ada yang perlu
    di-backup).
-4. `prisma migrate diff --exit-code` membandingkan DB vs `schema.prisma`:
+2. `prisma migrate diff --exit-code` membandingkan DB vs `schema.prisma`:
    - exit **0** (sama) → tidak ada backup, tidak ada push. Jadi `restart`
      berulang/crash-loop tidak menggerus retensi backup.
    - exit **2** (beda) → `deploy/backup/backup.sh` **dulu**, lalu `db push`.
    - exit **1** (gagal membandingkan) → **container menolak start**, supaya
      masalahnya terlihat sekarang alih-alih muncul sebagai `P2022` di setiap
      query order.
-5. Kalau snapshot tak bisa diambil (mis. `sqlite3` hilang dari image, atau
+3. Kalau snapshot tak bisa diambil (mis. `sqlite3` hilang dari image, atau
    `backup.sh` gagal) → **menolak mengubah skema**. Tidak ada perubahan skema
    tanpa jalur rollback.
+
+`DATABASE_URL_PRISMA` yang bukan `postgresql://` maupun `file:` dilewati dengan
+satu baris log — entrypoint tidak menebak cara menyelaraskan engine yang tidak
+dikenalnya.
 
 Kenapa di entrypoint dan bukan service `migrate` + `depends_on`:
 `depends_on` hanya dievaluasi saat `up`, sehingga
@@ -480,9 +563,10 @@ uji coba) — tapi tetap disiplin commit `schema.prisma` + folder migrasi SQL
 ### Staging
 
 ```bash
-docker compose up -d --build             # entrypoint: snapshot → db push → app
-docker compose logs -f server            # cek baris "entrypoint: ..."
-curl -I http://127.0.0.1:8000/healthz    # smoke test
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
+$COMPOSE up -d --build                    # entrypoint: db push → seed ledger → migrasi data → app
+$COMPOSE logs -f server                   # cek baris "entrypoint: ..."
+curl -I http://127.0.0.1:8000/healthz     # smoke test
 ```
 Staging adalah tempat **menguji prosedur rollback** sebelum dipraktikkan di
 produksi (lihat "Uji end-to-end" di `deploy/backup/README.md`).
@@ -490,21 +574,31 @@ produksi (lihat "Uji end-to-end" di `deploy/backup/README.md`).
 ### Production
 
 ```bash
-deploy/backup/backup.sh                                  # 1. backup manual, SELALU (lihat catatan)
-docker compose up -d --build                             # 2. entrypoint: snapshot → db push → app
-docker compose logs --since 5m server | grep entrypoint  # 3. pastikan skema diselaraskan
-curl -I https://admin.contoh.com/healthz                 # 4. smoke test
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
+
+deploy/backup/backup.sh                             # 1. dump manual, SELALU (lihat catatan)
+$COMPOSE up -d --build                              # 2. entrypoint: db push → seed ledger → migrasi data → app
+$COMPOSE logs --since 10m server | grep entrypoint  # 3. BACA barisnya (lihat catatan)
+curl -I https://admin.contoh.com/healthz            # 4. smoke test
 ```
 
-Langkah 2 sudah mengambil snapshot pra-migrasi sendiri, jadi secara teknis
-langkah 1 redundan untuk kasus migrasi. Tetap jalankan: snapshot entrypoint
-hanya melindungi dari *perubahan skema*, sedangkan langkah 1 melindungi dari
-segala hal lain yang bisa salah pada sebuah deploy — dan ia berjalan **sebelum**
-image baru menyentuh apa pun. Insiden nyata di bagian berikut terjadi persis
-karena backup dilewati.
+Langkah 2 juga membangun ulang bundle SPA React (panel admin + toko web) di
+builder stage Dockerfile, jadi tidak ada langkah build client terpisah di jalur
+Docker.
 
-Kalau skema tidak berubah, langkah 2 tidak mengambil snapshot dan tidak
-menyentuh DB — log akan bilang `schema already matches`.
+**Langkah 1 tidak redundan di jalur Postgres.** Entrypoint **tidak** mengambil
+snapshot sendiri di sini (alasannya di "Jalur PostgreSQL" di atas: `pg_dump`
+jalan di dalam container `postgres` lewat Docker socket yang tidak dimiliki
+container `server`), jadi langkah 1 adalah **satu-satunya** titik rollback
+deploy ini. Yang melindungi data dari push itu sendiri adalah penolakan
+`db push` terhadap perubahan yang membuang data — bukan backup.
+
+**Langkah 3 wajib dibaca, bukan sekadar dijalankan.** Hanya `db push` yang fatal;
+seed chart-of-accounts dan migrasi data-only **hanya WARNING** kalau gagal, dan
+container tetap start. Jadi satu-satunya tanda bahwa seed ledger perlu keputusan
+Anda (akun ter-drift, atau akun aktif yang tak ada lagi di chart) ada di baris
+`entrypoint: WARNING ...` itu. Kalau skema tidak berubah, `db push` cuma bilang
+sudah sinkron; seed dan migrasi data-only tetap jalan dan tetap no-op.
 
 ## Kegagalan umum & pemulihan
 

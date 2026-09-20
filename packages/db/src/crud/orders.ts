@@ -51,6 +51,11 @@ import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
+  postOrderHoldReleasePosting,
+  postOrderPaymentPosting,
+  postOrderWalletCreditPosting,
+} from "./ledgerPostings";
+import {
   enqueueNotification,
   enqueueOrderProcessingDm,
   enqueueManualDeliveredDm,
@@ -545,27 +550,19 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
 type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
 
-/** The amount actually received for an UNDERPAID order, regardless of which
- *  amount-matching rail flagged it. Binance Internal writes its ledger row to
- *  `processedBinanceTx`; Bybit AND Bybit BSC share `processedBybitTx` (one
- *  table serves both sub-rails — see reports.ts's LedgerGateway doc comment);
- *  the three QRIS/IDR gateways (TokoPay, PayDisini, NOWPayments) share
- *  `qrisUnderpaidTx`, written by `markOrderUnderpaid` (crud/orderStatus.ts).
- *  Checks all three; at most one will ever have a matching row for a given
- *  order. Each candidate is tested on its own nullable amount column rather
- *  than falling through on the row as a whole, so a row that exists but
- *  records no amount cannot mask a later table that does record one. */
-export async function findUnderpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
-  const [binance, bybit, qris] = await Promise.all([
-    db.processedBinanceTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
-    db.processedBybitTx.findFirst({ where: { orderId, outcome: "underpaid" }, orderBy: { createdAt: "desc" } }),
-    db.qrisUnderpaidTx.findFirst({ where: { orderId } }),
-  ]);
-  if (binance?.amount != null) return new Decimal(binance.amount);
-  if (bybit?.amount != null) return new Decimal(bybit.amount);
-  if (qris?.receivedAmount != null) return new Decimal(qris.receivedAmount);
-  return null;
-}
+/**
+ * The amount actually received for an UNDERPAID order, regardless of which
+ * amount-matching rail flagged it.
+ *
+ * MOVED to `./_underpaid` and re-exported here unchanged, so every existing
+ * importer (`binance_internal.ts`, `wallet_topup.ts`, this module's tests,
+ * `@app/db`) keeps working. It had to become a leaf module because
+ * `ledgerPostings.ts` now reads the same figure — to split an
+ * underpaid-but-delivered order's posting between the receivable and the
+ * shortfall the shop absorbed — and this file already imports that one. See
+ * `_underpaid.ts`'s own comment for the import cycle that avoids.
+ */
+export { findUnderpaidReceived } from "./_underpaid";
 
 export async function createOrderFromCart(
   db: Db,
@@ -1160,8 +1157,11 @@ export async function shopFulfilmentStats(
   db: Db,
 ): Promise<{ deliveredOrders: number; customers: number }> {
   const [deliveredOrders, buyers] = await Promise.all([
-    db.order.count({ where: { status: OrderStatus.DELIVERED } }),
-    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED } }),
+    db.order.count({ where: { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT } }),
+    db.order.groupBy({
+      by: ["userId"],
+      where: { status: OrderStatus.DELIVERED, kind: OrderKind.PRODUCT },
+    }),
   ]);
   return { deliveredOrders, customers: buyers.length };
 }
@@ -1222,9 +1222,35 @@ export function listExpiredPendingOrders(db: Db, now: Date) {
   });
 }
 
+// ---- Operational status counters (admin queues + Orders-page tab badges) ---
+//
+// KIND-AGNOSTIC ON PURPOSE (Financial Ledger M6, Task 6a). Financial Ledger
+// M6 narrowed every SALES aggregate to `kind: OrderKind.PRODUCT` — see
+// `ORDER_KIND_SALES_FILTER` in crud/revenue.ts, plus `ordersByStatus`/
+// `ordersByStatusSince` in crud/reports.ts and the spend/revenue functions in
+// crud/users.ts. The counters in this block were reviewed in that pass and
+// deliberately left counting BOTH kinds. Do not "finish the job" here.
+//
+// They are not sales metrics. They feed exactly two surfaces:
+//   - the dashboard's Operation Center and Pending Actions cards — admin
+//     work-queue counters, each one deep-linking to the Orders page filtered
+//     by that same status (apps/web-admin/client/src/components/dashboard/
+//     OperationCenter.tsx);
+//   - the Orders page's own KPI row and status-tab count badges
+//     (pages/orders/OrderStatusTabs.tsx, via GET /api/orders/kpis).
+//
+// The Orders list behind both is itself kind-agnostic (`listOrders` applies no
+// kind filter, and admins genuinely resolve top-up orders there — see
+// routes/api/orders.ts's WALLET_TOPUP branches), so filtering these would
+// (a) make every tab badge contradict the list it labels, and (b) hide real
+// work: an UNDERPAID or expired wallet top-up needs a human exactly as much
+// as an UNDERPAID product order does. `countOrders`/`OrderFilter` below is the
+// escape hatch for a caller that genuinely wants one kind only.
+
 /** Orders awaiting payment confirmation right now — covers every payment
  * method's pre-confirmation states, including the Bybit BSC on-chain
- * milestones ("Pending Payments" on the dashboard). */
+ * milestones ("Pending Payments" on the dashboard). Counts both order kinds —
+ * see this block's header comment. */
 export function countPendingPaymentLike(db: Db): Promise<number> {
   return db.order.count({
     where: { status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] } },
@@ -1253,19 +1279,36 @@ export function countUnderpaid(db: Db): Promise<number> {
  * Deliberately NOT named countProcessing — that pre-existing function counts
  * CONFIRMED/PAID orders (a different, payment-gateway-in-flight concept) and
  * must not be touched or confused with this one.
+ *
+ * This is the one counter in this block that needs no `kind` filter for a
+ * STRUCTURAL reason rather than a product one: a `WALLET_TOPUP` order can never
+ * hold `PROCESSING`. Only `settlePaidOrder`'s MANUAL branch puts a fresh order
+ * there, and that function refuses a top-up before the branch split (see
+ * settlePaidOrder.test.ts, "wallet top-ups cannot be settled through the
+ * product-delivery path"); even without that guard the branch is unreachable,
+ * because `isManual` reads `order.items.some(...)` and a top-up order has zero
+ * `OrderItem` rows. The only other writer — digiflazz.ts's dispatcher —
+ * re-asserts `PROCESSING` on orders that already hold it and additionally
+ * requires `items: { some: ... }`. So a filter here would be dead weight that
+ * implies the invariant is weaker than it is.
  */
 export function countAwaitingManualFulfillment(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PROCESSING } });
 }
 
-/** Orders successfully delivered — the Orders page KPI's "Delivered" count. */
+/** Orders successfully delivered — the Orders page KPI's "Delivered" count and
+ * its "Delivered" tab badge, so it counts both order kinds to stay equal to
+ * the row count that tab shows (see this block's header comment). For
+ * delivered PRODUCT SALES, use revenue.ts's `revenueSummary`/`ordersByDay` or
+ * `countOrders(db, { kind: OrderKind.PRODUCT, status: DELIVERED })`. */
 export function countDelivered(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.DELIVERED } });
 }
 
 /** Orders voided (admin-cancelled or rejected) — folded together for the
  * Orders page KPI's "Cancelled" count, matching the display bucket
- * OrderStatusBadge groups them into on the client. */
+ * OrderStatusBadge groups them into on the client. Counts both order kinds,
+ * for the same tab-badge reason as `countDelivered` above. */
 export function countCancelled(db: Db): Promise<number> {
   return db.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } });
 }
@@ -1303,6 +1346,14 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
 /**
  * Release any reserved stock + refund wallet + roll back voucher usage.
  *
+ * Called from three places with genuinely different accounting consequences —
+ * `rejectOrder`, `cancelOrder` and `creditOrderToBalance` — which is why the
+ * ledger posting for the wallet release is decided HERE, from the order's own
+ * posting history, rather than at each caller. Only the
+ * `creditOrderToBalance`-on-an-already-settled-order path has anything to post;
+ * see `postOrderHoldReleasePosting` for the full rule and for why posting on the
+ * other two paths would corrupt `wallet_liability`.
+ *
  * Releasing a row ALSO clears the line's `OrderItem.stockItemId` (audit L-6,
  * Fase 3b). Before that, a cancelled/expired/rejected order kept pointing at
  * a row the next checkout immediately re-reserved, so two OrderItems ended up
@@ -1315,6 +1366,7 @@ async function releaseOrderHolds(
   db: Db,
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
   actor: StockEventActor,
+  occurredAt: Date = new Date(),
 ) {
   for (const item of order.items) {
     if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
@@ -1337,11 +1389,17 @@ async function releaseOrderHolds(
   if (new Decimal(order.walletUsed).greaterThan(0)) {
     // Credit back to the balance matching the order's currency: an order spends
     // and is refunded against the same credit balance (IDR or USDT).
-    await adjustWallet(db, order.userId, order.walletUsed, {
+    const { transactionId } = await adjustWallet(db, order.userId, order.walletUsed, {
       currency: order.currency === "USDT" ? "USDT" : "IDR",
       allowNegative: true,
       reason: "order_refund",
       orderId: order.id,
+    });
+    await postOrderHoldReleasePosting(db, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt,
     });
   }
   if (order.voucherId) {
@@ -1488,18 +1546,36 @@ export async function creditOrderToBalance(
   const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
   const amount = q4(Decimal.max(ZERO, new Decimal(args.amount ?? order.totalAmount)));
 
+  // One timestamp for both money events this function records (the credit and
+  // the hold release), so the two postings share the occurredAt of the single
+  // admin action that caused them rather than two clock reads a few
+  // milliseconds apart.
+  const now = new Date();
+
   if (amount.greaterThan(0)) {
-    await adjustWallet(db, order.userId, amount, {
+    const { transactionId } = await adjustWallet(db, order.userId, amount, {
       currency,
       reason: "unfulfilled_credit",
       orderId: order.id,
       adminId: args.adminId,
     });
+    // The buyer's external payment becoming wallet credit. Whether this reverses
+    // recognised revenue or recognises the payment for the first time depends on
+    // whether this order ever settled — `canCredit` covers PENDING_VERIFICATION
+    // and UNDERPAID (never settled) as well as PROCESSING (settled), so the
+    // posting asks the ledger instead of assuming either.
+    await postOrderWalletCreditPosting(db, {
+      walletTransactionId: transactionId,
+      orderId: order.id,
+      orderCode: order.orderCode,
+      occurredAt: now,
+    });
   }
 
   // Release held stock + return the already-spent walletUsed (in order currency)
-  // + roll back voucher usage. Distinct money from the paid amount credited above.
-  await releaseOrderHolds(db, order, { type: StockActorType.ADMIN, adminId: args.adminId });
+  // + roll back voucher usage. Distinct money from the paid amount credited above,
+  // and separately posted (or not) by releaseOrderHolds itself.
+  await releaseOrderHolds(db, order, { type: StockActorType.ADMIN, adminId: args.adminId }, now);
 
   await db.order.update({
     where: { id: order.id },
@@ -1754,6 +1830,17 @@ export async function approveOrder(
   // the referee's commission and post the same channel testimonial.
   await finalizeDeliverySideEffects(db, order, now);
 
+  // Recognise the order's revenue in the double-entry ledger. `now` is the same
+  // timestamp the atomic claim above stamped as `paidAt`, so the posting's
+  // `occurredAt` is the order's real payment time and not a second clock read.
+  //
+  // Placed after delivery rather than before it because a posting must never be
+  // what stops a paid buyer getting their goods: by here the order is already
+  // DELIVERED and its stock SOLD. `settlePaidOrder`'s AUTO branch reaches this
+  // through its call to this function, so it needs no posting of its own — only
+  // the MANUAL branch does.
+  await postOrderPaymentPosting(db, order, now);
+
   logger.info(`Approved and delivered order ${order.orderCode} by admin ${args.adminId}`);
   const refreshed = await getOrder(db, order.id);
   return { order: refreshed!, credentials };
@@ -1856,8 +1943,8 @@ export function customerLabel(
  *
  * BEWARE THE OTHER HALF OF THAT RULE: separately-rounded figures need not
  * reconcile with each other. Two values that each went through here are each
- * rounded to the nearest 0.1 USDT on their own, so their difference can be up
- * to ~0.1 USDT away from the converted difference (docs/audit-backend-2026-07
+ * rounded UP to the next 0.01 USDT on their own, so their difference can be up
+ * to ~0.01 USDT away from the converted difference (docs/audit-backend-2026-07
  * -31.md's L-1 finding flags exactly this for orderMoneyView.ts). A caller
  * whose figures a reader will ADD UP therefore cannot convert each of them
  * here and hope: it must convert ONE and derive the rest from figures already
@@ -1866,7 +1953,7 @@ export function customerLabel(
  *
  * The owner-facing OWNER_EMAIL_ORDER_PAID call site below still converts
  * subtotal and discount independently, and its figures can still disagree by
- * ~0.1 USDT — an accepted tradeoff there, where the reader is the shop admin
+ * ~0.01 USDT — an accepted tradeoff there, where the reader is the shop admin
  * and the reconciled view they act on is the admin ledger. The wider L-1
  * class (line totals summing to the subtotal, orderMoneyView.ts, etc.) is
  * deliberately still open; do not try to solve it here.
@@ -1907,14 +1994,25 @@ function storefrontBase(): string | null {
  * open (widening it is a matter of relaxing this one condition, but that is
  * out of scope here). A guest with no `guestEmail` has nowhere to receive it.
  *
+ * RETURNS WHETHER IT ACTUALLY ENQUEUED ANYTHING, so a caller that has to tell
+ * an admin whether the buyer was reached can know rather than assume. The
+ * delivery call sites above ignore it — for them "guest or not" is not a
+ * decision, it is just the shape of the buyer — but the stock-replacement
+ * service (crud/stockReplacement.ts) reports the answer in its audit line, and
+ * it must be THIS function's guard that decides it rather than a second copy of
+ * the condition that could drift away from this one.
+ *
  * NO CREDENTIALS CROSS THIS BOUNDARY. Note what is NOT read off `order` here:
  * `deliveredContent`, the admin-typed manual content, and the stock items'
  * credentials. Email is unencrypted and permanent, and the outbox payload is
  * additionally visible in the admin `/outbox` panel — the buyer reads what
  * they bought on the order page, which is exactly what this email links to.
  */
-async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithIncludes): Promise<void> {
-  if (!order.user.isGuest || !order.user.guestEmail) return;
+export async function enqueueBuyerOrderReadyEmailIfGuest(
+  db: Db,
+  order: OrderWithIncludes,
+): Promise<boolean> {
+  if (!order.user.isGuest || !order.user.guestEmail) return false;
 
   const toOrderCurrency = orderCurrencyConverter(order);
   const base = storefrontBase();
@@ -1930,17 +2028,24 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
   // `totalAmount - uniqueCents` IS `usdtFromIdr(baseIdr, fxRate)` — the single
   // conversion finalizeOrderPayment already performed, recovered without
   // rounding anything again. Second, converting a figure through
-  // `toOrderCurrency` rounds it to the nearest 0.1 USDT, and two such figures
-  // subtracted from each other need not land on a third (Rp45.000 with a
-  // Rp9.000 voucher at an fxRate of 16.000: 2.8 - 0.6 = 2.2, against a net of
-  // 2.3 — the receipt used to contradict itself by 0.1 USDT).
+  // `toOrderCurrency` rounds it, so two independently converted figures
+  // subtracted from each other need not land on the conversion of their
+  // difference — `round(a) - round(b)` is simply not `round(a - b)`, under any
+  // rounding rule. The original worked example was from the 0.1-half-up era
+  // (Rp45.000 with a Rp9.000 voucher at an fxRate of 16.000 printed 2.8 - 0.6 =
+  // 2.2 beside a net of 2.3, a receipt contradicting itself by 0.1 USDT). M13's
+  // 0.01-ceil step shrinks the worst case to 0.01 but does not remove it:
+  // Rp32.080 with a Rp16.016 voucher converts to a 2.01 subtotal, a 1.01
+  // independently-converted discount and a 1.01 net — and 2.01 - 1.01 is 1.00,
+  // not 1.01. A smaller contradiction is still a contradiction to the customer
+  // reading it, so the derivation below stays exactly as it was.
   //
   // So convert exactly ONE figure and derive the rest. The SUBTOTAL is the
   // anchor: it sits directly beneath the item lines, which are themselves
   // converted from central IDR, so it is the figure a reader cross-checks
   // against something else on the page. The discount is the derived one — it
   // is an adjustment rather than a quantity, it already has a hide-when-zero
-  // convention, and being off by up to 0.1 USDT from its own converted value
+  // convention, and being off by up to 0.01 USDT from its own converted value
   // is the cheapest place on the page to absorb the rounding.
   //
   // `Decimal.max` is defensive, not load-bearing: `usdtFromIdr` is monotonic
@@ -1982,13 +2087,16 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
       unitPrice: toOrderCurrency(item.unitPrice),
       // Multiply in central IDR, then convert the PRODUCT once — never
       // `unitPrice * quantity` on the already-converted figure above. On a
-      // USDT order that figure has been rounded to the nearest 0.1, and
+      // USDT order that figure has been rounded UP to the next 0.01, and
       // scaling it scales the rounding error with it: 5 x Rp8.900 at an
-      // fxRate of 16.000 gives a unit price of 0.55625 -> 0.6, so the naive
-      // product prints "5 x 0.60 = 3.00 USDT" directly above a Subtotal of
-      // 44.500/16.000 = 2.78125 -> 2.80 USDT. This is `usdtFromIdr`'s own
+      // fxRate of 16.000 gives a unit price of 0.55625 -> 0.56, so the naive
+      // product prints "5 x 0.56 = 2.80 USDT" directly above a Subtotal of
+      // 44.500/16.000 = 2.78125 -> 2.79 USDT. This is `usdtFromIdr`'s own
       // "convert once per displayed figure, never per component" rule, and
-      // the receipt's reader is the paying customer.
+      // the receipt's reader is the paying customer. (The gap shrank with
+      // M13's rounding step — it was 3.00 against 2.80 — but every extra unit
+      // widens it again, and ceiling makes it always favour the shop, which is
+      // the version a customer complains about.)
       lineTotal: toOrderCurrency(new Decimal(item.unitPrice).times(item.quantity)),
     })),
     subtotal,
@@ -2014,6 +2122,7 @@ async function enqueueBuyerOrderReadyEmailIfGuest(db: Db, order: OrderWithInclud
     // order code back for a session and is their only way in.
     trackUrl: base ? `${base}/track` : null,
   });
+  return true;
 }
 
 /**
@@ -2030,14 +2139,18 @@ export async function finalizeDeliverySideEffects(
 ): Promise<void> {
   // Referral commission (referee's first delivered order only). Currency +
   // fxRate ride along so IDR orders convert to the USDT wallet basis.
-  await maybePayReferralCommission(db, {
-    id: order.id,
-    userId: order.userId,
-    orderCode: order.orderCode,
-    totalAmount: order.totalAmount,
-    currency: order.currency,
-    fxRate: order.fxRate,
-  });
+  await maybePayReferralCommission(
+    db,
+    {
+      id: order.id,
+      userId: order.userId,
+      orderCode: order.orderCode,
+      totalAmount: order.totalAmount,
+      currency: order.currency,
+      fxRate: order.fxRate,
+    },
+    now,
+  );
 
   // Enqueue testimoni notification in the same transaction as the status flip
   // — but only when a testimonial channel is actually configured. Without
@@ -2331,6 +2444,14 @@ export async function settlePaidOrder(
   // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
   // the admin fulfils via fulfillManualOrder).
   await db.order.update({ where: { id: orderId }, data: { paidAt: now } });
+  // Recognise the order's revenue, using the same `now` just stamped as
+  // `paidAt`. This branch is the MANUAL one and never calls `approveOrder`, so
+  // it is the only place the posting can happen for a hand-fulfilled order —
+  // and the order is genuinely paid here even though it is not delivered yet
+  // (`fulfillManualOrder` does that later and must not post again, or the same
+  // revenue would be recognised twice; the shared idempotency key
+  // `order:{id}:payment` is the backstop for that).
+  await postOrderPaymentPosting(db, order, now);
   await enqueueOrderProcessingDm(db, {
     orderId,
     orderCode: order.orderCode,
@@ -2524,6 +2645,21 @@ export interface OrderFilter {
   /** Restrict to this exact set of order ids — the bulk-toolbar's
    * "export only the selected rows" path. */
   ids?: number[] | null;
+  /**
+   * Restrict to one `OrderKind` ("PRODUCT" / "WALLET_TOPUP"). Added by
+   * Financial Ledger M6 (Task 6a) so a sales-oriented caller can exclude
+   * wallet top-ups from a filtered list/count — before this, no caller could
+   * even ask.
+   *
+   * Omitting it counts/lists BOTH kinds, and `orderWhere` deliberately applies
+   * no default: this is the generic helper behind the admin Orders list, whose
+   * existing callers (the `/api/orders` list + its `total`, `/api/orders/kpis`'
+   * "Total Orders" card and "All" tab badge, `/api/orders/export`) must keep
+   * showing every kind — an admin resolves top-up orders on that page too, and
+   * a count that disagreed with its own list would be a bug, not a fix. A new
+   * sales/revenue caller must pass `OrderKind.PRODUCT` explicitly.
+   */
+  kind?: OrderKind | null;
 }
 
 function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
@@ -2532,6 +2668,9 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
   }
   if (f.userId != null) where.userId = f.userId;
+  // Top-level (AND) clause, so it narrows the `q` free-text OR below rather
+  // than competing with it. No default — see OrderFilter.kind.
+  if (f.kind) where.kind = f.kind;
   if (f.orderCode) where.orderCode = { contains: f.orderCode.trim(), mode: "insensitive" };
   if (f.paymentMethod) where.paymentMethod = f.paymentMethod;
   if (f.voucherId != null) where.voucherId = f.voucherId;

@@ -25,6 +25,8 @@ import {
   countUserPendingOrders,
   createWalletTopupOrder,
   resolveWalletTopupLimits,
+  resolveWalletTopupEffectiveMin,
+  walletTopupClearsRailMinimum,
   hasPendingWalletTopupOrder,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
@@ -86,9 +88,21 @@ function fmtBound(v: Decimal, currency: "IDR" | "USDT"): string {
  * message — mirrors checkout.ts's minAmountNote (blank when neither bound is
  * configured). Client-side UX only; createWalletTopupOrder re-validates for
  * real (packages/db/src/crud/wallet_topup.ts's own doc-comment).
+ *
+ * `min` is passed in rather than read off `limits` (whole-branch review F4b): the
+ * figure to advertise is the EFFECTIVE minimum — `max(wallet_topup_min_amount_*,
+ * the lowest floor among the rails this currency can be paid through)` — and only
+ * the caller knows which rails those are. Quoting `limits` alone is what let a
+ * shop say "Minimum Rp1.000" and then refuse the buyer at Rp5.000 because a rail
+ * floor it never mentioned was Rp10.000. The MAX still comes from `limits`: it is
+ * a top-up bound only, with no rail equivalent.
  */
-function topupRangeLine(ctx: MyContext, limits: WalletTopupLimits, currency: "IDR" | "USDT"): string {
-  const min = currency === "IDR" ? limits.minIdr : limits.minUsdt;
+function topupRangeLine(
+  ctx: MyContext,
+  limits: WalletTopupLimits,
+  currency: "IDR" | "USDT",
+  min: Decimal | null,
+): string {
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
   if (min && max) return "\n\n" + t(ctx, "wallet.topup_range_hint", { min: fmtBound(min, currency), max: fmtBound(max, currency) });
   if (min) return "\n\n" + t(ctx, "wallet.topup_min_hint", { min: fmtBound(min, currency) });
@@ -123,11 +137,42 @@ export async function showWalletTopupMenu(ctx: MyContext): Promise<void> {
   await smartEdit(ctx, t(ctx, "wallet.topup_choose_currency"), ckb.topupCurrencyKb(lang));
 }
 
+/**
+ * The bounds to advertise for `currency`, and to judge a typed amount against
+ * (whole-branch review F4b).
+ *
+ * One place so the prompt, the invalid-entry re-prompt and the acceptance check
+ * can never quote or apply different figures — which is exactly how a buyer ended
+ * up reading a minimum on one screen and being refused by a different one on the
+ * next. `resolveWalletTopupEffectiveMin` is handed the rails this currency is
+ * actually offered on, since a floor belonging to a rail the shop has not
+ * configured is not a floor this buyer can hit.
+ */
+async function topupBounds(
+  currency: "IDR" | "USDT",
+): Promise<{ limits: WalletTopupLimits; min: Decimal | null }> {
+  const limits = await resolveWalletTopupLimits(prisma);
+  const { rate, methods } = await offeredTopupRails(currency, null);
+  const query =
+    currency === "IDR"
+      ? ({ currency: "IDR" } as const)
+      : // No rate means no USDT rail is offered at all, so there is no rail floor
+        // to fold in and the top-up bound stands alone. `resolveWalletTopupEffectiveMin`
+        // needs SOME rate for its signature, and with an empty `methods` list it
+        // never uses it.
+        ({ currency: "USDT", rate: rate ?? 1 } as const);
+  const min = await resolveWalletTopupEffectiveMin(prisma, { ...query, methods });
+  return { limits, min };
+}
+
 /** Currency picked -> prompt for the amount (captured as free text). */
 export async function promptTopupAmount(ctx: MyContext, currency: "IDR" | "USDT"): Promise<void> {
   const lang = ctx.session.lang;
-  const limits = await resolveWalletTopupLimits(prisma);
-  const text = t(ctx, "wallet.topup_amount_prompt", { currency, range_line: topupRangeLine(ctx, limits, currency) });
+  const { limits, min } = await topupBounds(currency);
+  const text = t(ctx, "wallet.topup_amount_prompt", {
+    currency,
+    range_line: topupRangeLine(ctx, limits, currency, min),
+  });
   await smartEdit(ctx, text, ckb.topupAmountCancelKb(lang));
   // smartEdit just cleared this — set it AFTER rendering, same ordering
   // customer.qtyInputStart uses for awaitingQtyDenomId.
@@ -145,15 +190,17 @@ export async function promptTopupAmount(ctx: MyContext, currency: "IDR" | "USDT"
 export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "USDT", rawText: string): Promise<void> {
   await consumeInput(ctx);
   const lang = ctx.session.lang;
-  const limits = await resolveWalletTopupLimits(prisma);
-  const rangeLine = topupRangeLine(ctx, limits, currency);
+  const { limits, min } = await topupBounds(currency);
+  const rangeLine = topupRangeLine(ctx, limits, currency, min);
 
   // Length cap before parsing — same defensive spirit as handleQtyTextInput's
   // digit-string checks, just guarding against a pathologically long paste
   // rather than a real amount.
   const trimmed = rawText.trim().replace(/,/g, "");
   const amount = trimmed.length <= 20 && /^\d+(\.\d+)?$/.test(trimmed) ? new Decimal(trimmed) : null;
-  const min = currency === "IDR" ? limits.minIdr : limits.minUsdt;
+  // `min` is the EFFECTIVE minimum (F4b), so an amount no configured rail would
+  // accept is refused here — on the screen the buyer can retype into — instead of
+  // being carried into a gateway picker that would have nothing in it.
   const max = currency === "IDR" ? limits.maxIdr : limits.maxUsdt;
   const valid =
     amount !== null &&
@@ -173,22 +220,80 @@ export async function handleTopupAmountInput(ctx: MyContext, currency: "IDR" | "
   await showTopupMethods(ctx, currency, amount!);
 }
 
+/**
+ * Which rails a top-up in `currency` can be offered on.
+ *
+ * Two questions, deliberately kept in one place so the amount prompt and the
+ * gateway picker can never disagree about them:
+ *
+ *  - CONFIGURED — does the shop have working credentials for that rail, and (for
+ *    the four USDT rails) a usable exchange rate? Unchanged behaviour.
+ *  - ACCEPTS THE AMOUNT — would `finalizeWalletTopupPayment`'s rail-minimum
+ *    guard refuse it (whole-branch review F3)? Asked only when an amount is
+ *    known, via the SAME `walletTopupClearsRailMinimum` the guard throws from, so
+ *    a button a buyer can tap is always a rail their top-up can be finalized on.
+ *    Pass `amount: null` to skip this half, which is what the amount prompt does
+ *    — there is no amount to judge yet, and the prompt only needs to know which
+ *    rails exist in order to advertise the right minimum.
+ */
+async function offeredTopupRails(
+  currency: "IDR" | "USDT",
+  amount: Decimal | null,
+): Promise<{ rate: Decimal | null; methods: WalletTopupMethod[] }> {
+  const rate = currency === "USDT" ? await currentUsdtRate() : null;
+  const configured: WalletTopupMethod[] = [];
+  if (currency === "IDR") {
+    if ((await getTokopayCreds(prisma)) != null) configured.push(PaymentMethod.TOKOPAY);
+    if ((await getPaydisiniCreds(prisma)) != null) configured.push(PaymentMethod.PAYDISINI);
+  } else if (rate !== null) {
+    if ((await resolveBinanceInternalConfig(prisma)).enabled) configured.push(PaymentMethod.BINANCE_INTERNAL);
+    if ((await resolveBybitConfig(prisma)).enabled) configured.push(PaymentMethod.BYBIT);
+    if ((await resolveBybitBscConfig(prisma)).enabled) configured.push(PaymentMethod.BYBIT_BSC);
+    if ((await getNowpaymentsCreds(prisma)) != null) configured.push(PaymentMethod.NOWPAYMENTS);
+  }
+  if (amount === null) return { rate, methods: configured };
+
+  const methods: WalletTopupMethod[] = [];
+  for (const method of configured) {
+    const query =
+      currency === "IDR"
+        ? ({ currency: "IDR", amount } as const)
+        : ({ currency: "USDT", amount, rate: rate! } as const);
+    if (await walletTopupClearsRailMinimum(prisma, { ...query, method })) methods.push(method);
+  }
+  return { rate, methods };
+}
+
 /** Amount captured -> show the gateway picker for the chosen currency. */
 async function showTopupMethods(ctx: MyContext, currency: "IDR" | "USDT", amount: Decimal): Promise<void> {
   const lang = ctx.session.lang;
-  const rate = currency === "USDT" ? await currentUsdtRate() : null;
-  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
-  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
-  const internalEnabled = (await resolveBinanceInternalConfig(prisma)).enabled && rate !== null;
-  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled && rate !== null;
-  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled && rate !== null;
-  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null && rate !== null;
+  const { methods } = await offeredTopupRails(currency, amount);
 
+  // Every configured rail refused this amount. `handleTopupAmountInput` already
+  // checks the effective minimum, so reaching here means either no rail is
+  // configured for this currency at all, or an admin raised a floor between the
+  // prompt and this tap. Say so instead of rendering a picker with nothing in
+  // it — a keyboard whose only button is "Back" reads as a bug.
+  if (methods.length === 0) {
+    await smartEdit(ctx, t(ctx, "wallet.topup_no_rail_for_amount"), ckb.topupCurrencyKb(lang));
+    return;
+  }
+
+  const offers = (method: WalletTopupMethod) => methods.includes(method);
   const amountText = currency === "IDR" ? formatIdr(amount) : formatUsdtAmount(amount);
   await smartEdit(
     ctx,
     t(ctx, "wallet.topup_choose_method", { currency, amount: amountText }),
-    ckb.topupMethodsKb(currency, lang, tokopayEnabled, paydisiniEnabled, internalEnabled, bybitEnabled, bybitBscEnabled, nowpaymentsEnabled),
+    ckb.topupMethodsKb(
+      currency,
+      lang,
+      offers(PaymentMethod.TOKOPAY),
+      offers(PaymentMethod.PAYDISINI),
+      offers(PaymentMethod.BINANCE_INTERNAL),
+      offers(PaymentMethod.BYBIT),
+      offers(PaymentMethod.BYBIT_BSC),
+      offers(PaymentMethod.NOWPAYMENTS),
+    ),
   );
 }
 

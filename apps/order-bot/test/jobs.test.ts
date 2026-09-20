@@ -1,7 +1,8 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Decimal } from "@app/core/money";
 import {
   prisma,
   createOrderDirect,
@@ -17,6 +18,10 @@ import {
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
   POLL_HEALTH_KEYS,
+  setFxRateFetcher,
+  USD_IDR_RATE_KEY,
+  USD_IDR_RATE_UPDATED_AT_KEY,
+  USD_IDR_MARKET_RATE_KEY,
 } from "@app/db";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
@@ -85,6 +90,8 @@ import {
   outboxDispatcherPollWatchdog,
   scheduleOutboxDispatcherWatchdog,
   runDigiflazzCatalogSyncTick,
+  runFxRefreshTick,
+  reconcileLedgerJob,
   TOKOPAY_POLL_STALE_MS,
   NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
@@ -1592,6 +1599,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
+    //  reconcileLedgerJob,
     //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog,
     //  tokopayPollWatchdog, paydisiniPollWatchdog, nowpaymentsPollWatchdog,
     //  drainBroadcasts, announceStartedFlashSales, storageCleanupJob,
@@ -1608,59 +1616,66 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // double-page admins on the same incident.
       expect(crons[2]!.getPattern()).toBe("0 */6 * * *"); // reconcileFinancesJob
       expect(crons[2]!.options.protect).toBe(true);
-      expect(crons[3]!.getPattern()).toBe("*/2 * * * *"); // binancePollWatchdog
+      // reconcileLedgerJob (Financial Ledger M5) — registered ADDITIVELY next
+      // to reconcileFinancesJob above, on the same cadence and the same
+      // overlap guard. The two ask different questions (operational rows
+      // against each other vs. against the double-entry ledger) and neither
+      // replaces the other, so both must stay registered.
+      expect(crons[3]!.getPattern()).toBe("0 */6 * * *"); // reconcileLedgerJob
       expect(crons[3]!.options.protect).toBe(true);
-      expect(crons[4]!.getPattern()).toBe("*/2 * * * *"); // bybitPollWatchdog
+      expect(crons[4]!.getPattern()).toBe("*/2 * * * *"); // binancePollWatchdog
       expect(crons[4]!.options.protect).toBe(true);
-      expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
+      expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitPollWatchdog
       expect(crons[5]!.options.protect).toBe(true);
+      expect(crons[6]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
+      expect(crons[6]!.options.protect).toBe(true);
       // The three QRIS/IDR watchdogs (Task 12) — each on its own second
       // (:15/:17/:19) of every even minute, so none of them shares a
       // SQLite write-lock instant with the crypto three above (implicitly
       // second 0) or with each other.
-      expect(crons[6]!.getPattern()).toBe("15 */2 * * * *"); // tokopayPollWatchdog
-      expect(crons[6]!.options.protect).toBe(true);
-      expect(crons[7]!.getPattern()).toBe("17 */2 * * * *"); // paydisiniPollWatchdog
+      expect(crons[7]!.getPattern()).toBe("15 */2 * * * *"); // tokopayPollWatchdog
       expect(crons[7]!.options.protect).toBe(true);
-      expect(crons[8]!.getPattern()).toBe("19 */2 * * * *"); // nowpaymentsPollWatchdog
+      expect(crons[8]!.getPattern()).toBe("17 */2 * * * *"); // paydisiniPollWatchdog
       expect(crons[8]!.options.protect).toBe(true);
+      expect(crons[9]!.getPattern()).toBe("19 */2 * * * *"); // nowpaymentsPollWatchdog
+      expect(crons[9]!.options.protect).toBe(true);
       // drainBroadcasts — four ticks a minute so a queued broadcast starts
       // within ~15s instead of up to a full minute, on seconds that dodge both
       // second 0 (autoCancelExpiredOrders and the hourly/6-hourly jobs) and
       // second 40 (announceStartedFlashSales) so they never contend for
       // SQLite's single write-lock in the same instant; still protected.
       // "*/15" is deliberately NOT used — it would put a tick back on second 0.
-      expect(crons[9]!.getPattern()).toBe("5,20,35,50 * * * * *");
-      expect(crons[9]!.options.protect).toBe(true);
+      expect(crons[10]!.getPattern()).toBe("5,20,35,50 * * * * *");
+      expect(crons[10]!.options.protect).toBe(true);
       // announceStartedFlashSales — offset to :40 past the minute for the same
       // reason, protected so an overlapping tick can't race the
       // flashAnnouncedAt stamp.
-      expect(crons[10]!.getPattern()).toBe("40 * * * * *");
-      expect(crons[10]!.options.protect).toBe(true);
+      expect(crons[11]!.getPattern()).toBe("40 * * * * *");
+      expect(crons[11]!.options.protect).toBe(true);
       // storageCleanupJob — once daily, off-peak (03:15), well clear of every
       // other job's minutely/hourly ticks.
-      expect(crons[11]!.getPattern()).toBe("30 15 3 * * *");
-      expect(crons[11]!.options.protect).toBe(true);
+      expect(crons[12]!.getPattern()).toBe("30 15 3 * * *");
+      expect(crons[12]!.options.protect).toBe(true);
       // cleanupProcessedTelegramUpdatesJob (Task 1, Phase D) — same daily
       // off-peak slot as storageCleanupJob just above, one minute later and
       // on a distinct second (10) so it never shares a firing second with
       // any other registered job.
-      expect(crons[12]!.getPattern()).toBe("10 16 3 * * *");
-      expect(crons[12]!.options.protect).toBe(true);
+      expect(crons[13]!.getPattern()).toBe("10 16 3 * * *");
+      expect(crons[13]!.options.protect).toBe(true);
       // cleanupExpiredBotSessionsJob (Task 2, Phase D) — same daily off-peak
       // slot, on second 45 (NOT 20 — drainBroadcasts already fires every
       // minute at :20, so that second would be a genuine collision at
       // 03:16:20, not just a test-flagged one) so it never shares a firing
       // second with any other registered job.
-      expect(crons[13]!.getPattern()).toBe("45 16 3 * * *");
-      expect(crons[13]!.options.protect).toBe(true);
+      expect(crons[14]!.getPattern()).toBe("45 16 3 * * *");
+      expect(crons[14]!.options.protect).toBe(true);
       // sweepPaidOrderBubbles (T2-E) — every minute, but on second 25: it
       // writes up to MAX_ORDERS_PER_CYCLE anchor-clearing rows back to back,
       // exactly the profile behind the P1008/P2028 write-lock pile-up on
       // second 0 (2026-07-20). :25 is ≥5s clear of every other second in this
       // list (0, 5/20/35/50, 40, 15/17/19, 30, 10, 45).
-      expect(crons[14]!.getPattern()).toBe("25 * * * * *");
-      expect(crons[14]!.options.protect).toBe(true);
+      expect(crons[15]!.getPattern()).toBe("25 * * * * *");
+      expect(crons[15]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second
@@ -2289,5 +2304,201 @@ describe("runDigiflazzCatalogSyncTick (Task 10 shadow-mode detection pass)", () 
     } finally {
       error.mockRestore();
     }
+  });
+});
+
+/**
+ * Ledger reconciliation job (Financial Ledger M5). `reconcileLedger` itself has
+ * its own suite (packages/db/src/crud/reconcileLedger.test.ts); what is tested
+ * here is only the job's side of the contract — that clean books stay silent,
+ * that drift reaches BOTH the audit log and exactly one admin, and that a
+ * failed DM never costs the audit record.
+ *
+ * Drift is created by writing a wallet balance straight onto the row, which is
+ * the cheapest real drift there is: the buyer's balance moves without the
+ * matching ledger posting, so `wallet_liability.idr` no longer mirrors it.
+ */
+describe("reconcileLedgerJob", () => {
+  const sentMessages = (api: Api) => (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls;
+  const driftAudits = () => prisma.auditLog.findMany({ where: { action: "reconcile_ledger.drift" } });
+
+  it("stays silent when the ledger agrees with the rows it describes", async () => {
+    const api = fakeApi();
+
+    await reconcileLedgerJob(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    // No drift means nothing for an admin to read later either — a clean run
+    // must not fill the audit log shop admins actually use.
+    expect(await driftAudits()).toEqual([]);
+  });
+
+  it("audits the drift and DMs the FIRST admin only, in plain text", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "5000" } });
+    const api = fakeApi();
+
+    await reconcileLedgerJob(api);
+
+    // ADMIN_IDS is "999,1000" (test/setup-db.ts). This alert category pages one
+    // admin, unlike the payment-rail watchdogs which page every admin.
+    expect(sentMessages(api)).toHaveLength(1);
+    const [target, text, extra] = sentMessages(api)[0]!;
+    expect(target).toBe(999);
+    expect(String(text)).toContain("Ledger drift detected");
+    expect(String(text)).toContain("wallet balance drift: 1");
+    // Plain text, no parse_mode — an account name or order code containing an
+    // unescaped "<" would otherwise fail the send outright.
+    expect(extra).toBeUndefined();
+
+    const audits = await driftAudits();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.adminId).toBeNull(); // a system action, not a person's
+    expect(audits[0]!.targetType).toBe("system");
+    expect(audits[0]!.details).toContain("1 wallet balance totals that disagree with the ledger");
+    expect(audits[0]!.details).toContain("0 settled events with no ledger record");
+  });
+
+  it("keeps the audit record when the admin DM fails", async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { walletBalance: "5000" } });
+    const api = fakeApi({
+      sendMessage: vi.fn().mockRejectedValue(telegramError(403, "Forbidden: bot was blocked by the user")),
+    });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await expect(reconcileLedgerJob(api)).resolves.toBeUndefined();
+
+      expect(await driftAudits()).toHaveLength(1);
+      expect(error.mock.calls.some((c) => String(c[1]).includes("ledger drift"))).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+});
+
+/**
+ * M13 / audit P0-3 — the hourly FX tick's own side of the contract.
+ * `refreshUsdIdrRate`, `validateUsdIdrRate` and `alertIfUsdIdrRateStale` all
+ * have their own suites (packages/db/src/crud/pricing.test.ts,
+ * packages/core/src/core.test.ts); what is tested HERE is only what the cron
+ * adds: that a rejected refresh reaches every admin through the outbox (this
+ * job holds no bot `Api`, so a direct send was never an option), that the
+ * staleness check still runs when the refresh itself failed — the very case
+ * that produces staleness — and that neither failure takes down the tick.
+ */
+describe("runFxRefreshTick (M13 FX sanity band + staleness kill-switch)", () => {
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const rejectedDms = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED } });
+  const staleDms = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ADMIN_FX_RATE_STALE } });
+
+  afterEach(() => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+  });
+
+  it("DMs every admin when the market answers with a rate outside the sanity band", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    // D10: the deviation cap measures the market against ITS last figure; with no
+    // reference saved the cap is skipped once (the deliberate first-refresh grace).
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    await expect(runFxRefreshTick()).resolves.toBeUndefined();
+
+    const rows = await rejectedDms();
+    // ADMIN_IDS is "999,1000" (test/setup-db.ts) — this category tells every
+    // admin, like the Digiflazz circuit-breaker alert it is modelled on.
+    expect(
+      rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b),
+    ).toEqual([999, 1000]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.reason).toBe("delta_too_large");
+    expect(payload.saved).toBe("16000"); // the rate still pricing orders
+    expect(payload.consecutive_failures).toBe(1);
+    // …and nothing was saved.
+    expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+
+  it("says nothing to anyone when the refresh succeeds", async () => {
+    setFxRateFetcher(async () => new Decimal("16000"));
+    await expect(runFxRefreshTick()).resolves.toBeUndefined();
+    expect(await rejectedDms()).toHaveLength(0);
+    expect(await staleDms()).toHaveLength(0);
+  });
+
+  it("still checks staleness when the fetch itself threw — that is exactly how a rate goes stale", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    setFxRateFetcher(async () => {
+      throw new Error("rate service unreachable");
+    });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      await expect(runFxRefreshTick()).resolves.toBeUndefined();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await staleDms()).length).toBe(2); // one per admin
+  });
+
+  it("tells the admins about a staleness episode exactly once, however many ticks run", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(72));
+    setFxRateFetcher(async () => {
+      throw new Error("rate service unreachable");
+    });
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      for (let tick = 0; tick < 4; tick++) await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await staleDms()).length).toBe(2); // still one per admin, not four
+  });
+
+  // Whole-branch review A4: the rejection alert is the sibling of the staleness
+  // one above and now dedupes the same way. A misconfigured rate source is a
+  // standing condition, not an event, so repeating its DM hourly for days only
+  // teaches the admins to ignore the category.
+  it("tells the admins about a rejection episode exactly once, however many ticks run", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000"); // D10: arm the delta cap
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      for (let tick = 0; tick < 4; tick++) await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await rejectedDms()).length).toBe(2); // one per admin, not eight
+    // The streak itself is still counted — the single DM's figure is what tells
+    // an admin how long this has been going on.
+    expect(await getSetting(prisma, "fx_refresh_failures")).toBe("4");
+  });
+
+  it("re-arms after a good tick, so a second episode gets its own DM", async () => {
+    await setSetting(prisma, USD_IDR_RATE_KEY, "16000");
+    await setSetting(prisma, USD_IDR_MARKET_RATE_KEY, "16000"); // D10: arm the delta cap
+    await setSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY, hoursAgo(1));
+    const error = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    try {
+      setFxRateFetcher(async () => new Decimal("17500"));
+      await runFxRefreshTick();
+      expect((await rejectedDms()).length).toBe(2);
+
+      // A tick the market answers plausibly ends the episode…
+      setFxRateFetcher(async () => new Decimal("16100"));
+      await runFxRefreshTick();
+
+      // …so the next bad answer is a new one and is reported again.
+      setFxRateFetcher(async () => new Decimal("19000"));
+      await runFxRefreshTick();
+    } finally {
+      error.mockRestore();
+    }
+    expect((await rejectedDms()).length).toBe(4);
   });
 });

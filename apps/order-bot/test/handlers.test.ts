@@ -51,7 +51,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot), getOrder: vi.fn(actual.getOrder) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, createPaymentAttempt, MAX_CART_ORDER_UNITS, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY, BYBIT_UID_KEY, BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, BYBIT_BSC_ENABLED_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as mockedCreatePaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -60,7 +60,7 @@ import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/p
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -78,7 +78,7 @@ import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuc
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard, notifyRestockSubscribers } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
@@ -120,6 +120,20 @@ function userSession(): Partial<SessionData> {
 
 function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
   return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
+}
+
+/**
+ * Price the shared fixture SKU realistically before checking it out on a
+ * crypto rail. Its Rp5.00 price converts to 0.0 USDT at the 16000 rate these
+ * tests use, and since M11 (crud/orderMinimums.ts) finalizeOrderPayment
+ * refuses to put a nothing-to-collect total on a gateway. Every caller below
+ * asserts on which fields were stamped or which audit row was written, never
+ * on the amount — which is also why the Binance-Internal ledger test further
+ * down already builds a higher-priced product of its own rather than reuse
+ * this fixture.
+ */
+async function priceFixtureForUsdtRail() {
+  await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
 }
 
 function adminCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
@@ -2958,6 +2972,7 @@ describe("checkout handlers", () => {
     await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
     await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx, sink } = customerCtx();
     await checkout.buyNowInternal(ctx, sample.product.id, 1);
 
@@ -3089,6 +3104,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, BYBIT_API_KEY_KEY, "key");
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowBybit(ctx, sample.product.id, 1);
 
@@ -3105,6 +3121,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "secret");
     await setSetting(prisma, BYBIT_BSC_ENABLED_KEY, "true");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowBybitBsc(ctx, sample.product.id, 1);
 
@@ -3119,6 +3136,7 @@ describe("Phase H customer-audit trail — remaining checkout rails", () => {
     await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "ak");
     await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "secret");
     await setSetting(prisma, "usd_idr_rate", "16000");
+    await priceFixtureForUsdtRail();
     const { ctx } = customerCtx();
     await checkout.buyNowNowpayments(ctx, sample.product.id, 1);
 
@@ -3308,8 +3326,8 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
   });
 
   it("v1:walletm:usdt with ample balance fully covers the order despite USDT rounding (regression: no gateway remainder)", async () => {
-    // Rate 2.6 makes usdtFromIdr(5.00) round to 1.9 USDT; the old preview left
-    // a ~Rp0.06 remainder so the order never read as fully covered (dead-end).
+    // Rate 2.6 makes usdtFromIdr(5.00) round up to 1.93 USDT; the old preview
+    // left a stray remainder so the order never read as fully covered (dead-end).
     await adjustWallet(prisma, sample.user.id, "19", { currency: "USDT", reason: "admin_adjust" });
     await setSetting(prisma, "usd_idr_rate", "2.6");
     const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:usdt:${sample.product.id}:1` });
@@ -3332,6 +3350,13 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
   });
 
   it("confirmation closing line is the default payment prompt when no credit is applied", async () => {
+    // A payment prompt only makes sense when some rail can collect the total.
+    // The fixture's Rp5 price is under the shop-wide minimum and no gateway is
+    // configured by default, so give the order a live IDR rail and a total that
+    // clears it (the bubble says "no method for this total" otherwise).
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { price: "5000" } });
+    await setSetting(prisma, "tokopay_merchant_id", "M-TEST");
+    await setSetting(prisma, "tokopay_secret", "S-TEST");
     const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:back:${sample.product.id}:1` });
     await routeCallback(ctx);
 
@@ -3898,77 +3923,6 @@ describe("drainBroadcasts", () => {
 });
 
 // ===========================================================================
-// Restock subscriber notification (throttled send loop, per-subscription consume)
-// ===========================================================================
-
-describe("notifyRestockSubscribers", () => {
-  it("consumes only the subscription whose DM succeeded, keeping the failed one for retry", async () => {
-    const other = await upsertUser(prisma, { telegramId: 4242, username: "other", fullName: "Other User" });
-    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
-    await subscribeToRestock(prisma, other.id, sample.product.id);
-
-    const { ctx } = adminCtx();
-    const sent: number[] = [];
-    // Simulate other's DM (e.g. rate limit / bot restart mid-loop) failing
-    // while sample.user's succeeds.
-    ctx.api.sendMessage = (async (chatId: number) => {
-      sent.push(chatId);
-      if (chatId === Number(other.telegramId)) throw new Error("simulated Telegram failure");
-      return { message_id: 1 };
-    }) as unknown as typeof ctx.api.sendMessage;
-
-    await notifyRestockSubscribers(ctx, sample.product.id);
-
-    expect(sent.sort()).toEqual([Number(sample.user.telegramId), Number(other.telegramId)].sort());
-    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
-    // sample.user's DM succeeded -> subscription consumed (not retryable).
-    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
-    // other's DM failed -> subscription kept (retryable next restock).
-    expect(remaining.some((s) => s.userId === other.id)).toBe(true);
-  });
-
-  it("skips a web-only subscriber (telegramId: null) instead of sending to chat 0", async () => {
-    const webOnly = await prisma.user.create({
-      data: { telegramId: null, referralCode: "WEBONLY1", role: UserRole.CUSTOMER, language: "EN" },
-    });
-    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
-    await subscribeToRestock(prisma, webOnly.id, sample.product.id);
-
-    const { ctx } = adminCtx();
-    const sent: number[] = [];
-    ctx.api.sendMessage = (async (chatId: number) => {
-      sent.push(chatId);
-      return { message_id: 1 };
-    }) as unknown as typeof ctx.api.sendMessage;
-
-    await notifyRestockSubscribers(ctx, sample.product.id);
-
-    expect(sent).toEqual([Number(sample.user.telegramId)]);
-    expect(sent).not.toContain(0);
-    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
-    // The Telegram-linked subscriber was notified and consumed...
-    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
-    // ...the web-only one was never targeted, so its row is untouched.
-    expect(remaining.some((s) => s.userId === webOnly.id)).toBe(true);
-  });
-
-  it("throttles between sends (40ms per recipient, mirroring drainBroadcasts)", async () => {
-    const other = await upsertUser(prisma, { telegramId: 4343, username: "other2", fullName: "Other Two" });
-    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
-    await subscribeToRestock(prisma, other.id, sample.product.id);
-
-    const { ctx } = adminCtx();
-    ctx.api.sendMessage = (async () => ({ message_id: 1 })) as unknown as typeof ctx.api.sendMessage;
-
-    const start = Date.now();
-    await notifyRestockSubscribers(ctx, sample.product.id);
-    // 2 recipients * 40ms throttle ⇒ at least ~80ms elapsed (minus scheduling
-    // jitter — assert a lower bound well under the nominal value).
-    expect(Date.now() - start).toBeGreaterThanOrEqual(70);
-  });
-});
-
-// ===========================================================================
 // Verification (admin approve / resend)
 // ===========================================================================
 
@@ -4203,6 +4157,68 @@ describe("admin handlers", () => {
     expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
   });
 
+  // Financial Ledger M3: `/wallet` is one of the two `admin_adjust` call sites
+  // that post a manual adjustment to the double-entry ledger, and it is the only
+  // one that lives in the bot process. A hand-made credit has no customer payment
+  // behind it, so it must be funded from the shop's own equity — `Dr
+  // adjustment.<ccy> / Cr wallet_liability.<ccy>` — and it must land in the same
+  // transaction as the balance change, or the books and the balance can disagree
+  // about whether the adjustment happened at all.
+  it("/wallet posts the hand-made credit to the ledger as Dr adjustment / Cr wallet_liability", async () => {
+    const { ctx } = adminCtx({ match: `${sample.user.id} 5000` });
+    await adminWalletCommand(ctx);
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { userId: sample.user.id, reason: "admin_adjust" },
+    });
+    const posting = await prisma.financialTransaction.findUniqueOrThrow({
+      where: { idempotencyKey: `wallet:${movement.id}` },
+    });
+    expect(posting.type).toBe(FinancialTransactionType.ADJUSTMENT);
+    // A hand-made move's most useful back-pointer is the admin who made it — and
+    // it is the acting admin's DB id, not their Telegram id.
+    expect(posting.referenceType).toBe("manual");
+    expect(posting.referenceId).toBe(adminDbId);
+
+    const entries = await prisma.ledgerEntry.findMany({
+      where: { financialTransactionId: posting.id },
+      include: { account: true },
+      orderBy: { id: "asc" },
+    });
+    expect(
+      entries.map((e) => [e.account.code, e.direction, new Decimal(e.amount).toString(), e.currency]),
+    ).toEqual([
+      ["adjustment.idr", LedgerDirection.DEBIT, "5000", "IDR"],
+      ["wallet_liability.idr", LedgerDirection.CREDIT, "5000", "IDR"],
+    ]);
+  });
+
+  // The currency argument has to reach the ledger too, not just the balance: a
+  // USDT credit posted against the IDR accounts would misstate both currencies
+  // at once, and the trial balance would still balance.
+  it("/wallet <uid> <amount> USDT posts against the USDT ledger accounts", async () => {
+    const { ctx } = adminCtx({ match: `${sample.user.id} 2.5 USDT` });
+    await adminWalletCommand(ctx);
+
+    const movement = await prisma.walletTransaction.findFirstOrThrow({
+      where: { userId: sample.user.id, reason: "admin_adjust" },
+    });
+    const posting = await prisma.financialTransaction.findUniqueOrThrow({
+      where: { idempotencyKey: `wallet:${movement.id}` },
+    });
+    const entries = await prisma.ledgerEntry.findMany({
+      where: { financialTransactionId: posting.id },
+      include: { account: true },
+      orderBy: { id: "asc" },
+    });
+    expect(
+      entries.map((e) => [e.account.code, e.direction, new Decimal(e.amount).toString(), e.currency]),
+    ).toEqual([
+      ["adjustment.usdt", LedgerDirection.DEBIT, "2.5", "USDT"],
+      ["wallet_liability.usdt", LedgerDirection.CREDIT, "2.5", "USDT"],
+    ]);
+  });
+
   it("/wallet rejects an unrecognized trailing currency argument as bad args", async () => {
     const before = (await getUser(prisma, sample.user.id))!;
     const { ctx, sink } = adminCtx({ match: `${sample.user.id} 5 EUR` });
@@ -4302,6 +4318,22 @@ describe("admin handlers", () => {
     const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item!.id } });
     expect(audit).toBeTruthy();
     expect(audit!.details).toContain("Netflix Premium 1M");
+  });
+
+  it("viewing the admin stock browser writes one audit row stating the count, never the credential text", async () => {
+    await bulkAddStock(prisma, sample.product.id, ["user@example.com:hunter2"]);
+    const total = await prisma.stockItem.count({ where: { productId: sample.product.id } });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:prod:stock:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:prod:stock:${sample.product.id}`.split(":"));
+
+    // The preview itself is unchanged: the admin still sees the plaintext.
+    expect(JSON.stringify(sink)).toContain("hunter2");
+
+    const rows = await prisma.auditLog.findMany({ where: { adminId: adminDbId, action: "stock_view" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toBe(`Viewed ${total} stock items in the admin bot.`);
+    expect(rows[0]!.details).not.toContain("hunter2");
+    expect(rows[0]!.details).not.toContain("user@example.com");
   });
 
   // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"

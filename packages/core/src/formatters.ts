@@ -65,13 +65,37 @@ export function formatMoney(amount: Decimal.Value, currency: string): string {
 
 /**
  * Derived USDT for a central-IDR amount (plan.md §15.1): idr / rate, rounded
- * to the NEAREST 0.1 (16,000/USDT → Rp40.000 = $2.5; $2.453 → $2.5). The
- * rounded value is both what's displayed beside the IDR price and what Binance
- * actually charges. Convert once per displayed price/total — never per
- * component — to avoid double-rounding drift.
+ * UP to the next 0.01 (16,000/USDT → Rp40.000 = $2.50 exactly; Rp44.500 =
+ * 2.78125 → $2.79). The rounded value is both what's displayed beside the IDR
+ * price and what the crypto rails actually charge. Convert once per displayed
+ * price/total — never per component — to avoid double-rounding drift.
+ *
+ * WHY CEILING, AND WHY 0.01 (M13 / P2-1, a deliberate pricing-policy change
+ * from step-0.1 half-up). Rupiah is the source of truth; every USDT figure is
+ * a derived quote the shop has to honour. Half-up rounded half of those quotes
+ * DOWN, so the shop systematically undercharged on half of its crypto sales —
+ * by up to 0.05 USDT a time at the old step, which on a cheap order was a
+ * double-digit percentage of the sale. Ceiling never undercharges: rounding
+ * always lands in the platform's favour. Cutting the step from 0.1 to 0.01
+ * pays for that by making the worst-case overcharge 0.01 rather than 0.1, so
+ * the buyer is closer to the true converted price than they were before, not
+ * further from it.
+ *
+ * Two consequences worth knowing before touching anything downstream:
+ *  - No positive Rupiah amount converts away to zero any more. `Rp700 → 0.0`
+ *    was the case `orderMinimums.ts` was built around; it is now `0.05`, and
+ *    that module's `nothing_to_collect` backstop has become a guard against a
+ *    genuinely zero total rather than against rounding.
+ *  - Two Rupiah totals one cent apart in USDT can no longer be told apart by
+ *    the unique-cents offset alone, because that offset's range (0.002 …
+ *    0.098) is now wider than the step. That does not weaken payment matching
+ *    — every producible total is still an even multiple of 0.001 and so at
+ *    least 0.002 from any other, comfortably outside `AMOUNT_TOLERANCE` — and
+ *    `finalizeOrderPayment`'s Bybit collision loop compares final totals, not
+ *    offsets. There is a regression test pinning both halves of that argument.
  */
 export function usdtFromIdr(idr: Decimal.Value, rate: Decimal.Value): Decimal {
-  return new Decimal(idr).div(rate).toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
+  return new Decimal(idr).div(rate).toDecimalPlaces(2, Decimal.ROUND_CEIL);
 }
 
 const ORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -123,6 +147,18 @@ export function generatePaymentRef(): string {
  * while keeping the same 49 buckets and the same step/tolerance safety margin
  * (still safe if collisions happen anyway — manual review, never a
  * mis-deliver).
+ *
+ * M13 / P2-1 note: the 0.002-vs-0.001 margin above is about ADJACENT OFFSETS,
+ * which is only half the question now that {@link usdtFromIdr} rounds to 0.01
+ * instead of 0.1. The offset range (0.096 wide) is now wider than the base
+ * step, so two different Rupiah totals CAN land on the same final amount — but
+ * they can never land within 0.001 of each other without being equal, because
+ * a base is a whole number of cents and an offset is a whole number of
+ * 0.002s, making every producible total an even multiple of 0.001. Exact ties
+ * are handled where they always were: `finalizeOrderPayment` re-rolls the
+ * offset until no other pending order on the same rail shares the total. Both
+ * halves of this are pinned by tests in core.test.ts — read them before
+ * changing either constant or the rounding step.
  */
 export function computeUniqueCents(orderIdOrSeed: number): Decimal {
   const bucket = (orderIdOrSeed % 49) + 1; // 1..49

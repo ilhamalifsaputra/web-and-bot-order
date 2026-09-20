@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { UserRole } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import {
   prisma,
   getUser,
@@ -13,6 +14,7 @@ import {
   setUserRole,
   setUserBanned,
   adjustWallet,
+  postWalletAdjustmentPosting,
   logAdminAction,
   listUsers,
   countUsers,
@@ -302,11 +304,19 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     let newBalance: Decimal;
     try {
       newBalance = await prisma.$transaction(async (tx) => {
-        const balance = await adjustWallet(tx, userId, deltaDec, {
+        const { balance, transactionId } = await adjustWallet(tx, userId, deltaDec, {
           reason: "admin_adjust",
           note: note || null,
           adminId: req.admin!.userId,
           currency,
+        });
+        // Record the hand-made move in the double-entry ledger, in the same
+        // transaction as the balance change and the audit row, so the three
+        // cannot disagree about whether this adjustment happened.
+        await postWalletAdjustmentPosting(tx, {
+          walletTransactionId: transactionId,
+          adminId: req.admin!.userId,
+          occurredAt: new Date(),
         });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
@@ -318,7 +328,7 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
         return balance;
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true, newBalance: newBalance.toString() });

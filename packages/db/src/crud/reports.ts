@@ -7,9 +7,76 @@ import { OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
+import { getSetting } from "./settings";
 import type { Db } from "./_types";
 
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
+
+/**
+ * `usdtFromIdr` as it behaved BEFORE M13 / P2-1: the nearest 0.1, half-up.
+ *
+ * Needed by `reconcileFinances` alone, and only because that check re-derives
+ * what a USDT order's total should be and compares it against the total that
+ * was actually stored. Orders finalized before the rounding policy changed
+ * carry the old figure and are not drift — they are correctly priced under the
+ * rule that was in force when they were priced. Without this exemption the
+ * first reconciliation run after the change would report the shop's ENTIRE
+ * USDT order history as drift, and an alert that fires on every past order is
+ * the alert an admin learns to ignore.
+ *
+ * Deliberately a frozen local copy rather than a parameter on `usdtFromIdr`:
+ * nothing may ever PRICE anything with this again. It exists to recognise
+ * history, not to produce it, and a future reader must not be able to reach it
+ * from the pricing path.
+ */
+function legacyUsdtFromIdr(idr: Decimal.Value, rate: Decimal.Value): Decimal {
+  return new Decimal(idr).div(rate).toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
+}
+
+/**
+ * Settings key: when this shop switched from the 0.1-half-up USDT rounding to
+ * the 0.01-ceil one, as an ISO timestamp. It is the end date of
+ * {@link legacyUsdtFromIdr}'s exemption — orders created BEFORE it are history
+ * and may match either rule, orders created on or after it must match the
+ * current rule alone.
+ *
+ * The exemption used to have no end date (whole-branch review D8), so a total
+ * that happened to land on the old figure was excused forever, including on an
+ * order created today. A present-day 0.1-shaped total is not correctly priced
+ * history, it is a bug in whatever produced it, and it was the one class of
+ * mispricing this report could never see — the only USDT figures it accepted
+ * without deriving them were exactly the ones it should have been suspicious of.
+ *
+ * UNSET (or blank, or unparseable) exempts NOTHING. That is the strict
+ * direction on purpose: the value says "here is when my pricing changed", and a
+ * shop that has never recorded that cannot show any order predates the change.
+ * The permissive reading would quietly keep the open-ended exemption this key
+ * exists to remove. The cutoff is seeded to the deploy instant by migration
+ * `20260919120000_seed_usdt_rounding_ceil_since`, so an existing shop's history
+ * is exempt without an admin touching anything; a shop that clears the field
+ * afterwards is asking for every USDT order to be re-derived under the current
+ * rule, which is a legitimate thing to ask for once its 0.1-era orders are gone.
+ *
+ * The boundary is exclusive at the top: an order created at exactly this instant
+ * is judged by the new rule. The cutoff names the moment the new rule took
+ * effect, and the first order of the new era is the one most worth checking.
+ */
+export const USDT_ROUNDING_CEIL_SINCE_KEY = "usdt_rounding_ceil_since";
+
+/**
+ * {@link USDT_ROUNDING_CEIL_SINCE_KEY} as a Date, or null for "no cutoff
+ * recorded" — which {@link reconcileFinances} reads as "exempt nothing".
+ * Anything unparseable is treated as unset rather than throwing: a malformed
+ * settings row must not take the six-hourly reconciliation job down, and the
+ * failure it causes instead (a noisier report) is the visible, self-announcing
+ * one.
+ */
+async function usdtRoundingCeilSince(db: Db): Promise<Date | null> {
+  const raw = (await getSetting(db, USDT_ROUNDING_CEIL_SINCE_KEY))?.trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 export interface ReconcileFindings {
   order_drift: Array<{ order_id: number; order_code: string; expected: string; actual: string }>;
@@ -28,6 +95,12 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
   const orders = await db.order.findMany({
     where: { status: { not: OrderStatus.CANCELLED }, kind: OrderKind.PRODUCT },
   });
+
+  // When the USDT rounding rule changed, so the legacy exemption below can be
+  // limited to orders that actually predate it (D8). Read once for the whole
+  // run: the answer cannot change mid-report, and one read keeps the job's
+  // query count flat in the number of orders.
+  const roundingCeilSince = await usdtRoundingCeilSince(db);
 
   // Which currency each order's wallet leg was actually paid in, read from the
   // ledger rather than inferred from Order.currency. `Order.walletUsed` is a
@@ -68,7 +141,15 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     // Subtotals are stored in the central price unit (IDR post-cutover; the
     // pre-cutover snapshot unit before). The CHARGED total depends on the
     // pay-time choice (plan.md §15.1): a USDT order with an fxRate snapshot is
-    // round(base/rate, 0.1) + cents; an IDR order is the whole-Rupiah base.
+    // ceil(base/rate, 0.01) + cents; an IDR order is the whole-Rupiah base.
+    // (M13 / P2-1 changed that step from a half-up 0.1. This expression reads
+    // the rule out of `usdtFromIdr`, so it followed automatically — but an order
+    // finalized BEFORE the change carries the old figure, so the derivation is
+    // done BOTH ways below for those orders and a match on either one clears
+    // them. "Those orders" is the point of D8: the second derivation happens
+    // only for an order created before `usdt_rounding_ceil_since`, because on a
+    // present-day order the old figure is a bug and not history. See
+    // `legacyUsdtFromIdr` and `USDT_ROUNDING_CEIL_SINCE_KEY`.)
     //
     // Each wallet leg is subtracted in ITS OWN currency and at the right point
     // in the conversion: an IDR leg comes off the central-IDR base BEFORE the
@@ -77,11 +158,22 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     // applyUsdtWalletToOrder spends it). Written this way the expression is
     // correct for either leg, both, or neither.
     let expected: Decimal;
+    // What the same order would total if it had been priced under the PREVIOUS
+    // rounding policy. Null for anything that policy cannot explain: an order
+    // the policy never touched, and — since D8 — any order created on or after
+    // the recorded cutoff, which was priced by the current rule and has no claim
+    // on the old one.
+    let legacyExpected: Decimal | null = null;
     if (o.currency === "USDT" && o.fxRate != null) {
       const baseIdr = Decimal.max(new Decimal(0), afterDisc.minus(walletIdr));
-      let afterWallet = usdtFromIdr(baseIdr, o.fxRate).minus(walletUsdt);
-      if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
-      expected = q4(afterWallet.plus(o.uniqueCents));
+      const convert = (converted: Decimal) => {
+        const afterWallet = converted.minus(walletUsdt);
+        return q4((afterWallet.lessThan(0) ? new Decimal(0) : afterWallet).plus(o.uniqueCents));
+      };
+      expected = convert(usdtFromIdr(baseIdr, o.fxRate));
+      if (roundingCeilSince != null && o.createdAt < roundingCeilSince) {
+        legacyExpected = convert(legacyUsdtFromIdr(baseIdr, o.fxRate));
+      }
     } else if (o.currency === "IDR") {
       let afterWallet = afterDisc.minus(walletIdr);
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
@@ -91,7 +183,17 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = q4(afterWallet.plus(o.uniqueCents));
     }
-    if (expected.minus(o.totalAmount).abs().greaterThan("0.0001")) {
+    const matches = (candidate: Decimal) => candidate.minus(o.totalAmount).abs().lessThanOrEqualTo("0.0001");
+    // M13 / P2-1: a USDT order matching the PREVIOUS rounding policy exactly is
+    // correctly priced history, not drift (see `legacyUsdtFromIdr`). The
+    // exemption is an exact match on the legacy figure, not a widened
+    // tolerance — an order that is 0.1 off for any OTHER reason still gets
+    // reported, and the figure reported is always the CURRENT rule's, because
+    // that is the only one this code considers correct. D8 added the other half
+    // of "history": `legacyExpected` is null unless the order predates
+    // `usdt_rounding_ceil_since`, so the exemption cannot outlive the era it
+    // describes.
+    if (!matches(expected) && !(legacyExpected != null && matches(legacyExpected))) {
       findings.order_drift.push({
         order_id: o.id,
         order_code: o.orderCode,
@@ -150,19 +252,42 @@ export interface StatusCount {
   count: number;
 }
 
-/** Order counts grouped by status (the funnel). */
+/**
+ * Order counts grouped by status (the funnel) — product sales only.
+ *
+ * Its one caller is the Reports page's order funnel (GET /api/reports,
+ * alongside `revenueByDay`, `topProducts` and `voucherUsage`), so this is a
+ * sales report, not an operational queue view. A settled `WALLET_TOPUP` order
+ * reaches `DELIVERED` like any sale (`settleWalletTopup`) and would otherwise
+ * inflate the funnel's delivered leg with money the buyer has not spent —
+ * Financial Ledger M6, Task 6a. Sibling `ordersByStatusSince` below carries
+ * the same filter for the same reason.
+ *
+ * Kind-agnostic status counters live in crud/orders.ts (`countDelivered`,
+ * `countPendingVerifications`, ...) and deliberately do NOT carry this filter:
+ * they feed admin work queues and the Orders page's own tab badges, where a
+ * top-up is real, actionable work. See that file's
+ * "operational order counters stay kind-agnostic" test for the full reasoning.
+ */
 export async function ordersByStatus(db: Db): Promise<StatusCount[]> {
-  const grouped = await db.order.groupBy({ by: ["status"], _count: { _all: true } });
+  const grouped = await db.order.groupBy({
+    by: ["status"],
+    where: { kind: OrderKind.PRODUCT },
+    _count: { _all: true },
+  });
   return grouped
     .map((g) => ({ status: g.status, count: g._count._all }))
     .sort((a, b) => b.count - a.count);
 }
 
-/** Order counts grouped by status, restricted to orders created since `since` — the dashboard's "today" funnel. */
+/** Order counts grouped by status, restricted to product orders created since
+ * `since` — the dashboard's "Orders Today" funnel (GET /api/dashboard/kpis ->
+ * OrdersKpiCard). Product-sales-only for the same reason as `ordersByStatus`
+ * above. */
 export async function ordersByStatusSince(db: Db, since: Date): Promise<StatusCount[]> {
   const grouped = await db.order.groupBy({
     by: ["status"],
-    where: { createdAt: { gte: since } },
+    where: { kind: OrderKind.PRODUCT, createdAt: { gte: since } },
     _count: { _all: true },
   });
   return grouped

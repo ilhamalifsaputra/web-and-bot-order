@@ -36,6 +36,68 @@ function adoptCsrfToken(data: unknown): void {
 }
 
 /**
+ * An API failure, as every helper in this file throws it.
+ *
+ * `message` is the server's i18n key when it sent one (pages check for the
+ * `web.`/`error.` prefix before translating it) and a developer-facing
+ * "<path> responded <status>" otherwise.
+ */
+export interface ApiError extends Error {
+  /** HTTP status, when a response arrived at all. */
+  status?: number;
+  /**
+   * The figures the message's `{placeholder}`s name, from the response's
+   * `error_args` (whole-branch review F4a).
+   *
+   * Half this shop's refusal copy quotes a number — "below the minimum this
+   * payment method accepts ({min} {currency})", "at most {max} characters" — and
+   * this layer used to throw the key alone, so `t()` had nothing to substitute
+   * and left the braces in the sentence the buyer read. Carrying the args here,
+   * rather than teaching each message to live without them, is what makes every
+   * such key (including ones added later) render for real. Undefined when the
+   * server sent none: `t(key)` with no args is the path that must stay
+   * byte-identical for the many messages that name no figure.
+   */
+  errorArgs?: Record<string, string>;
+}
+
+/**
+ * `error_args` off a response body, accepted only as a flat map of strings.
+ *
+ * A body that isn't ours (a proxy's error page, a tampered response) must not be
+ * able to hand a page something `t()` would stringify straight into the DOM, so
+ * anything else — an array, a nested object, a bare string — is read as "no
+ * args", which renders the template unchanged.
+ */
+function readErrorArgs(data: unknown): Record<string, string> | undefined {
+  const raw = (data as { error_args?: unknown } | null | undefined)?.error_args;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string") out[name] = value;
+    else if (typeof value === "number" || typeof value === "boolean") out[name] = String(value);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** The Error a failed call rejects with: the server's key (or a generic
+ * "<path> responded <status>"), its status, and the args its copy names. */
+function apiError(
+  message: string,
+  status: number | undefined,
+  data: unknown,
+  options?: { withStatus?: boolean },
+): ApiError {
+  const err = new Error(message) as ApiError;
+  // `publicPost` has never attached a status and pages may branch on its
+  // absence, so the field is opt-in rather than set unconditionally here.
+  if (options?.withStatus !== false && status !== undefined) err.status = status;
+  const args = readErrorArgs(data);
+  if (args) err.errorArgs = args;
+  return err;
+}
+
+/**
  * POST without a CSRF token — for the pre-session auth endpoints
  * (/api/v1/auth/login, register, forgot, reset: no customer session exists
  * yet, and the HTML routes they replace carried no CSRF either).
@@ -52,7 +114,7 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
     // HTML 502), and the caller still needs an Error to render.
     const data = (await res.json().catch(() => ({}))) as { error?: string; csrf_token?: string };
     adoptCsrfToken(data);
-    throw new Error(data.error ?? `${path} failed ${res.status}`);
+    throw apiError(data.error ?? `${path} failed ${res.status}`, res.status, data, { withStatus: false });
   }
   // Strict on success: a 200 whose body isn't JSON is a broken server, and
   // resolving it as `{}` would hand the caller a payload-shaped hole (a /track
@@ -68,9 +130,7 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: string };
-    const err = new Error(data.error ?? `${path} responded ${res.status}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
+    throw apiError(data.error ?? `${path} responded ${res.status}`, res.status, data);
   }
   return res.json() as Promise<T>;
 }
@@ -124,9 +184,7 @@ export async function apiPost<T>(path: string, body: unknown, options?: PostOpti
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: string; csrf_token?: string };
     adoptCsrfToken(data);
-    const err = new Error(data.error ?? `${path} responded ${res.status}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
+    throw apiError(data.error ?? `${path} responded ${res.status}`, res.status, data);
   }
   const data = (await res.json()) as T;
   adoptCsrfToken(data);
@@ -162,9 +220,7 @@ export function apiPostFormWithProgress<T>(
         resolve(data as T);
         return;
       }
-      const err = new Error(data.error ?? `${path} responded ${xhr.status}`);
-      (err as Error & { status?: number }).status = xhr.status;
-      reject(err);
+      reject(apiError(data.error ?? `${path} responded ${xhr.status}`, xhr.status, data));
     };
     xhr.onerror = () => reject(new Error("Network error during upload."));
     xhr.send(form);
@@ -183,9 +239,7 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { error?: string };
-    const err = new Error(data.error ?? `${path} responded ${res.status}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
+    throw apiError(data.error ?? `${path} responded ${res.status}`, res.status, data);
   }
   return res.json() as Promise<T>;
 }

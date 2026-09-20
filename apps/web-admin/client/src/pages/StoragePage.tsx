@@ -66,7 +66,7 @@ export function StoragePage() {
           `${summary.resetTokensDeleted} reset token(s), and ${summary.cartsDeleted} abandoned cart line(s).`,
       );
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   return (

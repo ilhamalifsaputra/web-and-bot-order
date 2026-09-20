@@ -41,6 +41,7 @@ import { createCategory, createCatalogProduct, createDenomination } from "./cata
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
 import { bulkAddStock } from "./stock";
+import { createPaymentAttempt } from "./payments";
 import { OrderStatus, OrderKind, PaymentMethod, DeliveryType, NotificationEvent, StockStatus, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -683,6 +684,77 @@ describe("deliverPaidBybitBscOrder — re-claiming a bybitTxId across non-delive
       amount: recoveryOrder.totalAmount,
     });
     expect(recovered.status).toBe("delivered");
+  });
+});
+
+// Financial Ledger M3 (Task 3b): this rail's settlement now captures the
+// on-chain transaction hash onto the confirmed Payment row. Nothing in a BSC
+// deposit's payload reports a gateway fee (the on-chain gas the SENDER paid is
+// not a cut taken out of what reaches this shop), so `fee`/`netAmount` stay
+// null — Payment.fee's documented "not known", not a claim this rail is free.
+describe("deliverPaidBybitBscOrder — provider transaction id capture (Financial Ledger M3)", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makePendingBybitBscOrder() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT_BSC } });
+    return order;
+  }
+
+  it("captures the on-chain tx hash as the Payment row's providerTransactionId, and no fee figures", async () => {
+    const order = await makePendingBybitBscOrder();
+    const bybitTxId = "0x" + "a".repeat(64);
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT_BSC,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: null,
+    });
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId, amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe(bybitTxId);
+    expect(confirmed.fee).toBeNull();
+    expect(confirmed.netAmount).toBeNull();
+  });
+
+  it("captures it on a WALLET_TOPUP settlement too — both call sites are wired, not just the product branch", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "10", currency: "USDT", method: PaymentMethod.BYBIT_BSC, rate: "16000" }),
+    );
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+    const bybitTxId = "0x" + "b".repeat(64);
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.BYBIT_BSC,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId, amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe(bybitTxId);
   });
 });
 

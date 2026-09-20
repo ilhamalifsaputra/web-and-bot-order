@@ -77,7 +77,7 @@ describe("transitionOrderStatus", () => {
     expect(history.map((h) => h.status)).toEqual(hops);
   });
 
-  it("rejects DELIVERED -> PAYMENT_DETECTED (terminal state, no outgoing transitions)", async () => {
+  it("rejects DELIVERED -> PAYMENT_DETECTED (REFUNDED is DELIVERED's only legal target)", async () => {
     await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.DELIVERED } });
     await expect(
       transitionOrderStatus(prisma, {
@@ -93,12 +93,36 @@ describe("transitionOrderStatus", () => {
     expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
   });
 
-  it.each(["DELIVERED", "CANCELLED", "REJECTED", "REFUNDED"])(
+  it.each(["CANCELLED", "REJECTED", "REFUNDED"])(
     "%s is terminal — has zero legal outgoing transitions",
     (status) => {
       expect(LEGAL_TRANSITIONS[status]).toEqual([]);
     },
   );
+
+  // DELIVERED used to be in the list above. The Financial Ledger milestone gave
+  // it one outgoing edge: a delivered order can still be refunded (a dead
+  // account, a goodwill refund), which RefundExecution now makes recordable.
+  // Pinned as an exact array, not a `toContain`, so a later milestone cannot
+  // quietly add a second target — nothing un-delivers an order.
+  it("DELIVERED is refundable but otherwise terminal — REFUNDED is its only legal target", () => {
+    expect(LEGAL_TRANSITIONS[OrderStatus.DELIVERED]).toEqual([OrderStatus.REFUNDED]);
+  });
+
+  it("DELIVERED -> REFUNDED is legal and writes one history row", async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.DELIVERED } });
+
+    await transitionOrderStatus(prisma, {
+      orderId,
+      from: OrderStatus.DELIVERED,
+      to: OrderStatus.REFUNDED,
+    });
+
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.status).toBe(OrderStatus.REFUNDED);
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId } });
+    expect(history.map((h) => h.status)).toEqual([OrderStatus.REFUNDED]);
+  });
 
   it("rejects a transition when the order's actual status no longer matches `from` (stale caller)", async () => {
     // Order is really PENDING_PAYMENT, but the caller believes it's already

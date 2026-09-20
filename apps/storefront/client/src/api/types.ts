@@ -291,6 +291,12 @@ export interface CheckoutData {
   /** True for an anonymous visitor: the checkout collects a contact email and
    * the order is placed against a synthetic guest account (guest checkout). */
   is_guest: boolean;
+  /** True when this shop HAS a working gateway but every one of them was
+   * filtered out because the total is under its minimum. Distinguishes the one
+   * cause the buyer can actually fix (buy a bit more) from the one they cannot
+   * (no gateway configured, or the exchange rate is unusable), which the
+   * `*_enabled` flags alone cannot tell apart — they are false for both. */
+  below_all_minimums: boolean;
 }
 
 /** 201 response of POST /api/v1/checkout (order created). */
@@ -400,6 +406,29 @@ export interface WalletTopupData {
   max_idr: string | null;
   min_usdt: string | null;
   max_usdt: string | null;
+  /**
+   * The smallest amount each gateway rail will accept, keyed by the same method
+   * token the POST body uses, **already denominated in the currency the buyer
+   * types** (whole-branch review F3). null = that rail has no floor to clear, so
+   * any amount clears it.
+   *
+   * Separate from `min_idr`/`min_usdt`, which are the shop's own top-up bounds:
+   * these are the RAILS' floors, and the two are independently configured. The
+   * form must respect both — it advertises whichever binds and stops offering a
+   * rail the amount cannot be paid through.
+   */
+  rail_min: Record<string, string | null>;
+  /**
+   * The minimum the form ADVERTISES and validates against (whole-branch review
+   * F4b): `max(min_*, the lowest rail floor among the rails on offer)`, null when
+   * neither bound exists.
+   *
+   * Use this, not `min_idr`/`min_usdt`, for the hint and the client-side check.
+   * Reading the raw bound is what let the page say "Minimum Rp1.000" and then
+   * have the create call refuse Rp5.000 over a rail floor it never mentioned.
+   */
+  effective_min_idr: string | null;
+  effective_min_usdt: string | null;
   wallet_idr: string;
   wallet_usdt: string;
 }
@@ -496,6 +525,12 @@ export interface OrderDetailData {
     subtotal: string;
     discount: string;
     bulk_discount: string;
+    /** Balance spent on this order, in Rupiah. Its own row in the summary: while
+     * it went unprinted, a wallet-paid order's stacked figures were short by the
+     * whole credit. "0" on a non-IDR order, whose stored figure is USDT and
+     * would be printed as Rupiah here (see
+     * apps/storefront/src/routes/buyerOrderSummary.ts). */
+    wallet_credit: string;
     total: string;
     created_at_display: string;
     /** Parsed manual_with_info field spec — [] for auto/manual orders. */

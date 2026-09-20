@@ -4,14 +4,14 @@
  * it can DM users/admins directly.
  *
  * Schedule (scheduleJobs): auto-cancel every minute, stale-ticket close hourly,
- * finance reconcile every 6h.
+ * finance reconcile every 6h, ledger reconcile every 6h.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import { GrammyError, type Api, type InlineKeyboard } from "grammy";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus, StockActorType } from "@app/core/enums";
+import { langCode, OrderStatus, ReconciliationFindingType, StockActorType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { PaymentLogEvent } from "@app/core/payments/logEvents";
 import {
@@ -23,6 +23,8 @@ import {
   closeTicket,
   getUser,
   reconcileFinances,
+  reconcileLedger,
+  countFindingsByType,
   logAdminAction,
   getBinancePollHealth,
   getBybitPollHealth,
@@ -45,6 +47,8 @@ import {
   BROADCAST_STALE_CLAIM_MS,
   failBroadcast,
   refreshUsdIdrRate,
+  alertIfUsdIdrRateStale,
+  alertIfFxRateRejected,
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
   runStorageCleanup,
@@ -664,6 +668,106 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
       );
     } catch (err) {
       logger.error({ err }, "Failed to DM the admin about reconciliation drift — drift is still recorded in the audit log, but no one was paged");
+    }
+  }
+}
+
+/**
+ * Ledger reconciliation (Financial Ledger M5) — cross-checks the double-entry
+ * ledger against the rows it is supposed to describe, and pages an admin when
+ * they disagree.
+ *
+ * Runs ALONGSIDE `reconcileFinancesJob` above, on the same 6-hourly schedule,
+ * and deliberately does not replace it: that job checks the operational rows
+ * against each other (order totals, voucher counts, negative balances), while
+ * this one checks those same rows against the ledger. A shop can pass either
+ * check and fail the other, so both alerts are worth having.
+ *
+ * Every finding `reconcileLedger` returns is CRITICAL by construction — each
+ * check compares two records of the SAME money — so there is no severity
+ * filtering here: anything it returns is worth an admin's attention. The DM
+ * follows `reconcileFinancesJob`'s pattern exactly (plain text, first admin
+ * only, swallowed failure), not the HTML/every-admin shape the payment-rail
+ * watchdogs use: this is financial-drift reporting an admin reviews, not a
+ * rail outage that needs everyone woken up.
+ *
+ * A clean run says what it compared, not that the books balance — see the
+ * no-findings branch. `reconcileLedger` is a set of bounded checks inside a
+ * cutover boundary, and on an un-backfilled shop the largest of them do not run
+ * at all, so "no findings" and "reconciled" are not the same statement.
+ */
+export async function reconcileLedgerJob(api: Api): Promise<void> {
+  const findings = await reconcileLedger(prisma);
+  if (findings.length === 0) {
+    // Deliberately narrower than "the books balance". This run checks five
+    // specific things, each within a boundary, and an operator reading a clean
+    // line has to know which: a silent "everything matched" would let a shop
+    // whose entire history predates the ledger's first posting — where the
+    // missing-posting checks do not run at all — read as fully reconciled.
+    // `reconcileLedger` logs each skip on its own line; this says what was
+    // actually compared.
+    logger.info(
+      "Ledger reconciliation finished with no findings. What it checked: every settled order and completed refund payout dated at or after the ledger's earliest posting has a posting under its own idempotency key; each currency's wallet-liability control account agrees with the balances buyers hold plus the checkout holds still outstanding; no two payments claim the same provider transaction id; every posted payout's ledger entries record the amount that was actually paid out; and every order a rail flagged short but an admin delivered anyway books only what actually arrived as owed by the gateway, with the rest as an absorbed shortfall. It did NOT check anything dated before that earliest posting (pre-ledger history, which the M10 backfill script owns, not this job) or any payout carrying no execution timestamp, and it does not verify that the ledger as a whole balances. Any check skipped for those reasons logged its own line during this run.",
+    );
+    return;
+  }
+
+  const counts = countFindingsByType(findings);
+  const missingPostings = counts[ReconciliationFindingType.LEDGER_POSTING_MISSING] ?? 0;
+  const walletDrift = counts[ReconciliationFindingType.WALLET_LEDGER_DRIFT] ?? 0;
+  const duplicatePayments = counts[ReconciliationFindingType.DUPLICATE_PROVIDER_TRANSACTION] ?? 0;
+  const refundMismatches = counts[ReconciliationFindingType.REFUND_AMOUNT_MISMATCH] ?? 0;
+  const orderAmountMismatches = counts[ReconciliationFindingType.ORDER_POSTING_AMOUNT_MISMATCH] ?? 0;
+
+  // The severity claim forks on that last count, because it is the one finding
+  // type that does NOT mean the money may be wrong: an underpaid-but-delivered
+  // order whose posting books the full total has the right money and the wrong
+  // split between what a gateway owes and what the shop absorbed. Saying "the
+  // books and the money may genuinely disagree" of those would page an admin
+  // about documented pre-cutover history as though it were an incident.
+  const seriousCount = missingPostings + walletDrift + duplicatePayments + refundMismatches;
+  logger.warn(
+    `Ledger reconciliation found drift — ${missingPostings} settled event(s) with no ledger posting, ` +
+      `${walletDrift} wallet balance total(s) disagreeing with their control account, ` +
+      `${duplicatePayments} duplicated provider transaction(s), ` +
+      `${refundMismatches} refund payout(s) whose posted amount differs from what was paid, and ` +
+      `${orderAmountMismatches} underpaid-but-delivered order(s) booking the full order total as owed by the gateway rather than only what arrived. ` +
+      (seriousCount > 0
+        ? `Each of the first four kinds means the books and the money may genuinely disagree, so each needs manual review. `
+        : ``) +
+      (orderAmountMismatches > 0
+        ? `The last kind does not: that money is right, and only the split between the receivable and the shortfall the shop absorbed is wrong — the expected shape for any such order settled before that split shipped. `
+        : ``) +
+      `(see audit log for details)`,
+  );
+
+  await logAdminAction(prisma, {
+    adminId: null, // system action
+    action: "reconcile_ledger.drift",
+    targetType: "system",
+    targetId: null,
+    details:
+      `Ledger reconciliation found ${missingPostings} settled events with no ledger record, ` +
+      `${walletDrift} wallet balance totals that disagree with the ledger, ` +
+      `${duplicatePayments} duplicated provider transactions, ` +
+      `${refundMismatches} refunds whose recorded amount differs from what was paid out, and ` +
+      `${orderAmountMismatches} orders delivered despite a short payment whose bookkeeping still treats the whole total as money a gateway owes us.`,
+  });
+
+  if (adminIds().length) {
+    try {
+      await api.sendMessage(
+        adminIds()[0]!,
+        "⚠ Ledger drift detected\n" +
+          `missing ledger postings: ${missingPostings}\n` +
+          `wallet balance drift: ${walletDrift}\n` +
+          `duplicate provider transactions: ${duplicatePayments}\n` +
+          `refund amount mismatches: ${refundMismatches}\n` +
+          `underpaid orders booked at their full total: ${orderAmountMismatches}\n` +
+          "See audit log for full details.",
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to DM the admin about ledger drift — the drift is still recorded in the audit log, but no one was paged");
     }
   }
 }
@@ -1447,14 +1551,70 @@ export async function cleanupExpiredBotSessionsJob(): Promise<void> {
  * immediately so a fresh install gets a rate without waiting for the hour.
  */
 export function scheduleFxRefresh(): Cron {
-  const run = () =>
-    refreshUsdIdrRate(prisma)
-      .then((r) => {
-        if (r.status === "disabled") logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
-      })
-      .catch((err) => logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate"));
-  void run();
-  return new Cron("5 * * * *", { protect: true }, run);
+  void runFxRefreshTick();
+  return new Cron("5 * * * *", { protect: true }, runFxRefreshTick);
+}
+
+/**
+ * One hourly FX tick: try to re-confirm `usd_idr_rate` against the market,
+ * then — whatever that attempt did — check whether the saved rate has aged
+ * past `fx_rate_max_age_hours` and the USDT rail is now off shop-wide.
+ *
+ * Exported so the tick can be exercised directly in tests without a live cron,
+ * same as `runDigiflazzCatalogSyncTick` below.
+ *
+ * The staleness check runs even when the refresh threw or was disabled, and
+ * that is the point: those are precisely the states that PRODUCE staleness. It
+ * lives here rather than inside `getUsdIdrRate` because `getUsdIdrRate` runs on
+ * every catalogue render and every checkout — it has to stay a cheap,
+ * side-effect-free read, and alerting from it would mean a DM per page view.
+ * Once an hour is ample for a horizon measured in days.
+ *
+ * Alerting goes through the outbox (`alertIfFxRateRejected`,
+ * `alertIfUsdIdrRateStale`), never a direct `api.sendMessage`: this job holds
+ * no bot `Api` on purpose, because it must keep running on a web-only boot
+ * (§16.3). Both alerts fire once per EPISODE rather than once per tick, each
+ * through its own marker in the settings table, re-armed by the next confirmed
+ * rate — so a source stuck in one failure mode does not turn into an hourly DM
+ * to every admin for as long as it stays stuck. The two failures are also kept
+ * isolated from each other — a throwing refresh must not skip the staleness
+ * check, and a failing enqueue must not take down the tick.
+ */
+export async function runFxRefreshTick(): Promise<void> {
+  try {
+    const r = await refreshUsdIdrRate(prisma);
+    if (r.status === "disabled") {
+      logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
+    } else if (r.status === "rejected") {
+      // refreshUsdIdrRate has already logged which check failed and by how
+      // much; this is the part it deliberately leaves to its caller, because
+      // the admin panel's own refresh button answers its admin on screen and
+      // must not also DM everyone. Nobody is watching this one.
+      //
+      // Once per EPISODE, not once per tick: `alertIfFxRateRejected` owns the
+      // dedupe marker and the payload, the same way `alertIfUsdIdrRateStale`
+      // below owns the staleness one. Building the payload here as well would
+      // have put the DM's contents in the job and the "have they been told
+      // already" rule in crud, which is how the two drift apart.
+      await alertIfFxRateRejected(prisma, {
+        reason: r.reason,
+        market: r.market,
+        rate: r.rate,
+        consecutiveFailures: r.consecutiveFailures,
+      });
+    }
+  } catch (err) {
+    logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate");
+  }
+
+  try {
+    await alertIfUsdIdrRateStale(prisma);
+  } catch (err) {
+    logger.error(
+      { err },
+      "Could not check whether the saved USD/IDR rate has gone stale — admins may not have been told that the USDT payment rail is switched off",
+    );
+  }
 }
 
 /**
@@ -1578,6 +1738,11 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", { protect: true }, wrap("reconcileFinancesJob", reconcileFinancesJob)),
+    // Additive alongside the finance reconcile above, not a replacement for it
+    // (Financial Ledger M5): same cadence, same overlap guard, different
+    // question — that one checks the operational rows against each other, this
+    // one checks them against the double-entry ledger.
+    new Cron("0 */6 * * *", { protect: true }, wrap("reconcileLedgerJob", reconcileLedgerJob)),
     // { protect: true } (M-26 fix, backend audit 2026-07-31): these watchdogs
     // were the one group of jobs in this list missing it. A slow Telegram API
     // call during the admin DM loop below can let a tick overlap with the

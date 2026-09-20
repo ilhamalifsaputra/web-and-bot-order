@@ -21,6 +21,7 @@ import { Send, Inbox } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { AccountOrdersData, SupportData } from "../api/types";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Button from "../components/ui/Button";
 import FormField from "../components/ui/FormField";
@@ -102,7 +103,7 @@ export default function SupportPage() {
     },
     onError: (err) => {
       setToastKind("error");
-      setToastText(t(err instanceof Error ? err.message : "error.generic"));
+      setToastText(tError(err));
     },
   });
 

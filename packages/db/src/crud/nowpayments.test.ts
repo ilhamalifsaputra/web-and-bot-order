@@ -34,6 +34,7 @@ import {
   upsertUser,
   bulkAddStock,
   cancelOrder,
+  createPaymentAttempt,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -92,6 +93,62 @@ async function makeManualDenom() {
     deliveryType: DeliveryType.MANUAL,
   });
 }
+
+// Financial Ledger M3 (Task 3b): the settlement now captures NOWPayments' own
+// payment id onto the confirmed Payment row. Its IPN reports how much arrived
+// (`actually_paid`) but never a fee it deducted, so `fee`/`netAmount` stay null
+// — Payment.fee's documented "not known", not a claim this rail is free.
+describe("deliverPaidNowpaymentsOrder — provider transaction id capture (Financial Ledger M3)", () => {
+  it("captures the gateway payment id as the Payment row's providerTransactionId, and no fee figures", async () => {
+    const order = await makePendingNowpaymentsOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.NOWPAYMENTS,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "NP-INVOICE-M3",
+    });
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-m3-capture-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    // The gateway's own id, kept distinct from the invoice id this shop quoted.
+    expect(confirmed.providerTransactionId).toBe("trx-m3-capture-1");
+    expect(confirmed.reference).toBe("NP-INVOICE-M3");
+    expect(confirmed.fee).toBeNull();
+    expect(confirmed.netAmount).toBeNull();
+  });
+
+  it("captures it on a WALLET_TOPUP settlement too — both call sites are wired, not just the product branch", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "10", currency: "USDT", method: PaymentMethod.NOWPAYMENTS, rate: "16000" }),
+    );
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.NOWPAYMENTS,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-m3-capture-topup-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe("trx-m3-capture-topup-1");
+  });
+});
 
 describe("deliverPaidNowpaymentsOrder", () => {
   it("delivers a pending order and claims the trx id", async () => {

@@ -35,7 +35,12 @@ describe("RevenueKpiCard", () => {
     // amount must not be shown a second time under a "USD" label.
     expect(screen.queryByText("USD")).not.toBeInTheDocument();
     expect(screen.queryByText("20.25 USD")).not.toBeInTheDocument();
-    expect(screen.getByText(/delivered today · product orders only/i)).toBeInTheDocument();
+    // The basis line names both legs of the figure: master's `salesRevenueByCurrency`
+    // adds the wallet credit spent on a sale to what was charged for it, so
+    // saying only "product orders" would understate what the number counts.
+    expect(
+      screen.getByText(/Delivered today · product sales only, charged amount plus wallet credit spent/i),
+    ).toBeInTheDocument();
   });
 
   it("shows a no-revenue message when every currency is null", async () => {

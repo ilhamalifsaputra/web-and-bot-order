@@ -71,6 +71,9 @@ export function NetSalesKpiCard() {
         ) : (
           <p className="text-sm text-ink-soft">No net sales yet today.</p>
         )}
+        <p className="mt-1 text-xs text-ink-soft">
+          Sold today, minus refunds paid out today — a refund keeps the day it was sold on, so this can be negative.
+        </p>
       </CardContent>
     </Card>
   );

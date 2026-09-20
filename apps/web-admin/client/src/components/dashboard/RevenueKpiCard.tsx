@@ -48,7 +48,9 @@ export function RevenueKpiCard() {
         ) : (
           <p className="text-sm text-ink-soft">No revenue yet today.</p>
         )}
-        <p className="mt-1 text-xs text-ink-soft">Delivered today · product orders only.</p>
+        <p className="mt-1 text-xs text-ink-soft">
+          Delivered today · product sales only, charged amount plus wallet credit spent.
+        </p>
       </CardContent>
     </Card>
   );

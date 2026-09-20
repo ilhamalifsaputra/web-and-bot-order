@@ -82,7 +82,7 @@ async function seedMixedScenario(now: Date) {
 }
 
 describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
-  it("revenueSummary matches a raw SUM(total_amount) grouped by currency, delivered-only", async () => {
+  it("revenueSummary matches a raw SUM(total_amount) grouped by currency, delivered product orders only", async () => {
     const now = new Date();
     await seedMixedScenario(now);
     const since = new Date(now.getTime() - 60_000);

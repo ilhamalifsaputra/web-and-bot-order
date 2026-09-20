@@ -38,7 +38,7 @@ why](#what-changed-and-why-for-shops-with-wallet-top-up-history).
 - [Order counts](#order-counts)
 - [Customer spend](#customer-spend)
 - [Wallet and cash](#wallet-and-cash)
-- [KNOWN INCONSISTENCY: the day boundary is not the same everywhere](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere)
+- [KNOWN INCONSISTENCY: the day boundary is not the same everywhere](#the-day-boundary-one-convention-on-the-web-another-in-the-bot)
 - [Dashboard Source-of-Truth Matrix](#dashboard-source-of-truth-matrix)
 - [What changed and why (for shops with wallet top-up history)](#what-changed-and-why-for-shops-with-wallet-top-up-history)
 - [Open items deliberately not fixed here](#open-items-deliberately-not-fixed-here)
@@ -141,7 +141,7 @@ state rather than a literal Rp0.
 
 **Timezone.** Values are stored UTC in the database. Bucket boundaries are
 **not** uniform across metrics — this is a known inconsistency, documented in
-full in [its own section below](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere).
+full in [its own section below](#the-day-boundary-one-convention-on-the-web-another-in-the-bot).
 Every row below names its boundary explicitly. Do not assume.
 
 **Discount treatment.** Two different rules, both correct for their own
@@ -195,7 +195,7 @@ Sales Today" remains an open, purely cosmetic, zero-data-risk option.
 | **Refund treatment** | **Not refund-aware.** This is a gross figure. A partial refund leaves the order `DELIVERED` and does not reduce it; a full refund removes the order from it entirely (see above). Use Net Sales for the refund-aware number. |
 | **Discount treatment** | Net of discounts — sums `Order.totalAmount`, which is post-`bulkDiscountAmount`/`discountAmount`. |
 | **Wallet credit** | Counted, as the second leg of the same sale (M8.5) — `salesRevenueByCurrency` adds `walletSpendByCurrency` over its own `where` clause. A sale paid entirely from credit used to report zero here. |
-| **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere). The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can legitimately disagree. Both windows are right-anchored at "now" rather than at a fixed close, so the gap is **not** a flat 7 hours: it's up to 7 hours' worth of orders before 17:00 UTC (when the Jakarta date has not yet rolled), widening to up to 17 hours' worth between 17:00 and 23:59 UTC (once it has). |
+| **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#the-day-boundary-one-convention-on-the-web-another-in-the-bot). The bucketed series now use this same boundary, so the card and the last bar of the chart beside it agree. The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can still legitimately disagree. Both windows are right-anchored at "now" rather than at a fixed close, so the gap is **not** a flat 7 hours: it's up to 7 hours' worth of orders before 17:00 UTC (when the Jakarta date has not yet rolled), widening to up to 17 hours' worth between 17:00 and 23:59 UTC (once it has). |
 | **Aggregation** | `SUM(Order.totalAmount)` grouped by currency over `deliveredAt ∈ [since, until]`, plus the `order_payment` wallet legs of those same orders, plus the order count behind it (which the wallet leg never changes). "Yesterday" is bounded at the same clock time as now (`yesterdaySameClock`) so a mid-day comparison is like-for-like, not today-so-far against a whole day. |
 | **Trend %** | `(today − yesterday) / yesterday × 100`, 1dp, `null` when yesterday was zero (no division by zero, and no "∞%"). |
 
@@ -331,9 +331,12 @@ reviewable at its single call site.
 These feed the Sales Analytics chart (`GET /api/dashboard/analytics`, `range` /
 `metric` / `currency` query params) and the Reports page.
 
-**All of them bucket on genuine UTC calendar boundaries** — unlike the Today
-KPIs above. This is the project's stated policy and the new Task 6c code
-follows it correctly from the start.
+**All of them bucket on the SHOP's calendar boundaries** (`config.TIMEZONE`),
+the same boundary the Today KPIs use. They bucketed on UTC until the
+`revenue-truth` change (see [the timezone
+section](#the-day-boundary-one-convention-on-the-web-another-in-the-bot));
+that is why the "Revenue Today" card and the last bar of the chart beside it
+can no longer disagree.
 
 ### Day-granularity series
 
@@ -349,8 +352,8 @@ source-of-truth definition, not evidence it's dashboard-visible.
 
 | | |
 |---|---|
-| **Window** | A **rolling last-N-days** window, not a calendar rollup: `since = addDays(now, -(days - 1))` then `setUTCHours(0,0,0,0)`. Default `days = 30`; the analytics route passes 30 for `range=30d` and 7 otherwise. |
-| **Bucket key** | `deliveredAt.toISOString().slice(0, 10)` — a genuine **UTC calendar day**, `YYYY-MM-DD`. (`refundsByDay` keys on `executedAt` instead.) |
+| **Window** | A **rolling last-N-days** window, not a calendar rollup: `recentDayWindow(days)` (`packages/core/src/datetime.ts`) returns shop-local midnight of the oldest day as a UTC instant, plus that window's bucket keys. `days` is normalized to a positive integer there, so `?days=7.5` behaves like 7 and `0`/negatives/`NaN`/`Infinity` like 1. Default `days = 30`; the analytics route passes 30 for `range=30d` and 7 otherwise. |
+| **Bucket key** | `dayKeyInZone(deliveredAt)` — the **shop calendar day**, `YYYY-MM-DD` in `config.TIMEZONE`. (`refundsByDay` keys on `executedAt` instead.) Days are stepped through the zone's own calendar, not by adding 86.400.000 ms, so an arbitrary DST zone cannot emit one key twice and skip the last day. |
 | **Zero-fill** | Every day in the window is pre-seeded, so an inactive day reports a real zero and the chart has no gaps. `profitByDay` seeds with a profit accumulator and reports `null`, not zero — see below. |
 | **Included states / kind** | `DELIVERED` + `kind: PRODUCT` for revenue/orders/combined. `refundsByDay`: `RefundExecutionStatus.COMPLETED`. `profitByDay`: delivered `OrderItem` lines, structurally immune to kind. |
 | **Refund treatment** | `refundsByDay` is the refund series (**not currently charted — no production caller**, see above); the others are gross and not refund-aware. There is deliberately **no** `netSalesByDay` — Net Sales shipped as a today-only KPI and a charted version was never asked for. |
@@ -364,7 +367,7 @@ source-of-truth definition, not evidence it's dashboard-visible.
 
 | | |
 |---|---|
-| **Bucket boundary** | luxon `DateTime.fromJSDate(at, { zone: "utc" }).startOf(granularity)`. So: **ISO week starting Monday 00:00 UTC**, **calendar month UTC**, **calendar year UTC**. Never a rolling window, never a locale-dependent week start. |
+| **Bucket boundary** | luxon `.setZone(config.TIMEZONE).startOf(granularity)`. So: **ISO week starting Monday 00:00 shop-local**, **calendar month shop-local**, **calendar year shop-local** — the same boundary the Day series and the Today KPIs use. Never a rolling window, never a locale-dependent week start. |
 | **Bucket label** | `week` → `"2026-W38"` (`kkkk-'W'WW`), `month` → `"2026-09"` (`yyyy-LL`), `year` → `"2026"` (`yyyy`). Lexicographically sortable so insertion order and string order agree; rendered verbatim as a chart axis tick with no formatter. `kkkk` is the **ISO week-year**, not the calendar year — 2027-01-01 belongs to ISO week `2026-W53`, and a naive `yyyy` label would mislabel it. |
 | **Window** | The last `count` periods, oldest→newest, **including the period in progress** — matching `revenueByDay`'s own convention (its window ends with today, not yesterday). |
 | **Default `count`** | `week: 12`, `month: 12`, `year: 5` (`DEFAULT_PERIOD_COUNT`). **These are a UI readability choice, not a data-correctness matter** — they set the default width of the chart window only, never which rows are real. 12 weeks ≈ a quarter; 12 months makes seasonality visible and puts this December next to last December; 5 years reads a multi-year trend without an axis of mostly pre-launch years. A shop younger than the window shows real zeros (zero-filled, never interpolated) for the years before it existed. |
@@ -700,58 +703,62 @@ that was never created would name the wrong problem.
 
 ---
 
-## KNOWN INCONSISTENCY: the day boundary is not the same everywhere
+## The day boundary: one convention on the web, another in the bot
 
-**This is current behavior being documented, not a recommendation, and not a
-fix.** It was found during M6 and deliberately left in place. Read this before
-comparing any two "today" figures.
+**This section described three live conventions when M6 wrote it. The
+`revenue-truth` change closed the web-admin half of the gap** — every bucketed
+series in `revenue.ts` now cuts its days, weeks, months and years on the shop's
+calendar, the same boundary the Today KPIs always used. M6's stated "UTC
+everywhere" policy is therefore **superseded for reporting boundaries**: the web
+admin is shop-local throughout, and the remaining divergence is the bot's.
 
-This project's stated, confirmed policy is **UTC everywhere** for reporting
-boundaries — no retroactive shift to `config.TIMEZONE`. **Part of the current
-code contradicts that policy, and predates the Financial Ledger work.**
+M6 deferred this deliberately, and named two conditions for doing it: it must be
+its own explicitly-scoped change, never folded silently into another, and it
+must come with its own before/after numbers. The first is met — this is that
+change, and it is the reason the branch exists. **The second is not: no
+production before/after figures were produced.** What moves is stated below;
+anyone reconciling historical reports across the change needs to read it.
 
-There are **three** different "start of today" conventions live in the codebase
-right now:
+There are **two** different "start of today" conventions live in the codebase
+now:
 
 | Convention | Computed by | Used by |
 |---|---|---|
 | **Jakarta-local midnight** (`config.TIMEZONE`-local 00:00, converted to a UTC instant) | `startOfDayUtc()` — `packages/core/src/datetime.ts:52-54`. **The name is misleading**: it is not UTC midnight. | `GET /api/dashboard/kpis` → Revenue Today/Yesterday, Refunds Today, Net Sales Today, Profit Today, Orders Today funnel. `GET /api/orders/kpis` → `revenueToday`. `customersKpis` → `newToday`, `activeToday`. |
 | **True UTC midnight** | `ensureUtc(new Date()).startOf("day")` | The **bot's** admin dashboard (`apps/order-bot/src/handlers/admin.ts`) — its "today's revenue"/"today's orders", and its period="today" report filter. |
-| **True UTC calendar day / ISO week / month / year** | `setUTCHours(0,0,0,0)` + `toISOString().slice(0,10)` (Day series); luxon `.startOf(granularity)` in UTC zone (Week/Month/Year) | **Every** `*ByDay` and `*ByPeriod` function in `revenue.ts`: `revenueByDay`, `ordersByDay`, `combinedRevenueByDay`, `refundsByDay`, `profitByDay`, `revenueByPeriod`, `ordersByPeriod`, `profitByPeriod`. |
 
-**Practical consequences, stated plainly:**
+The bucketed series used to be a third convention (true UTC calendar day / ISO
+week / month / year, via `setUTCHours(0,0,0,0)` + `toISOString().slice(0,10)`
+and luxon `.startOf()` in the UTC zone). They now use the first row's boundary:
+`recentDayWindow`/`dayKeyInZone` for the Day series and
+`.setZone(config.TIMEZONE).startOf(granularity)` for Week/Month/Year, covering
+`revenueByDay`, `ordersByDay`, `combinedRevenueByDay`, `refundsByDay`,
+`profitByDay`, `revenueByPeriod`, `ordersByPeriod` and `profitByPeriod`.
 
-- Jakarta is UTC+7, so the web admin's "today" starts **7 hours earlier** than
-  the chart's "today". Orders placed between 17:00 and 23:59 UTC fall on
-  *tomorrow* for the KPI cards and on *today* for the chart.
-- **The "Revenue Today" KPI card and the last point of the Revenue-by-Day chart
-  on the same dashboard can legitimately show different numbers.** Neither is
-  broken.
-- **The web admin's "today's revenue" and the bot admin's "today's revenue" can
-  legitimately disagree**, even though both call `revenueSummary` — they pass
-  different day boundaries.
+**What the shift moved, stated plainly:**
 
-**Why it was not fixed at M6:**
+- Jakarta is UTC+7, so a delivery between 17:00 and 23:59 UTC used to fall on
+  *today* for the chart and on *tomorrow* for the KPI cards. It now falls on the
+  same shop-local day for both. Re-running any `*ByDay`/`*ByPeriod` figure over
+  history therefore moves up to 7 hours' worth of orders out of each old bucket
+  and up to 7 hours' worth in — a real, user-visible change to already-published
+  chart and Reports-CSV numbers, not a rounding difference.
+- The affected figures are exactly the eight named above:
+  `revenueByDay`, `ordersByDay`, `combinedRevenueByDay`, `refundsByDay`,
+  `profitByDay`, `revenueByPeriod`, `ordersByPeriod`, `profitByPeriod` — so the
+  Sales Analytics chart at every range, and the Reports page chart and export.
+- **M8's parity report is unaffected**: it attributes pre/post deltas to the
+  `kind: PRODUCT` correction, and it ran before this change. Any *future* parity
+  run spanning this commit must account for the boundary move separately.
+- **The web admin's "today's revenue" and the bot admin's "today's revenue"
+  still legitimately disagree**, even though both call `revenueSummary` — they
+  pass different day boundaries. This is the one remaining divergence.
 
-1. Changing it shifts "today's revenue" by up to 7 hours' worth of orders
-   before 17:00 UTC, and up to 17 hours' worth between 17:00 and 23:59 UTC
-   (both bot-vs-web-admin windows are right-anchored at "now", not a fixed
-   close, so the gap widens once the Jakarta date rolls but the UTC one
-   hasn't — see the row above) — a real, user-visible number change entirely
-   unrelated to the `kind: PRODUCT` bug M6 exists to fix.
-2. M8's parity report must attribute every pre-fix/post-fix delta to the
-   documented `kind: PRODUCT` correction alone, with nothing unexplained.
-   Folding in an unrelated timezone-boundary change would contaminate that
-   attribution beyond repair.
-3. `customersKpis`'s Jakarta-local "today" for new/active customer counts is
-   arguably a *legitimate, separate* design choice (shop-operations framing, not
-   a financial-ledger metric). Conflating it with the revenue-boundary question
-   would overreach.
-
-**Status: candidate fix for a future, separate, explicitly-scoped milestone.**
-Not this one. When it is done it must be done as its own change with its own
-before/after numbers — **never silently folded into another change**, and never
-by renaming `startOfDayUtc` without changing its callers or vice versa.
+**Still open:** whether the bot's admin dashboard should move to the shop
+timezone too. It is the last true-UTC reporting boundary in the codebase, and it
+is not part of this change. Whoever does it should not rename `startOfDayUtc`
+without changing its callers, or vice versa — the name is misleading and fixing
+only one side of that would make things worse.
 
 ---
 
@@ -774,14 +781,14 @@ figures read `RefundExecution`. Counts are counts.
 | Profit Today | `profitSummarySince` | `packages/db/src/crud/revenue.ts` | Separate; USDT via per-order `fxRate` snapshot | n/a (OrderItem-rooted, immune) | No | ⚠️ Jakarta-local midnight |
 | Orders Today (funnel: total/delivered/pending/failed) | `ordersByStatusSince` | `packages/db/src/crud/reports.ts` | n/a (counts) | `PRODUCT` | Refunded orders leave `delivered`, stay in `total` | ⚠️ Jakarta-local midnight; windows on **`createdAt`** |
 | Order funnel (Reports page, lifetime) | `ordersByStatus` | `packages/db/src/crud/reports.ts` | n/a | `PRODUCT` | As above | Lifetime |
-| Revenue by Day | `revenueByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | `PRODUCT` | No | **UTC calendar day**, rolling last-N-days |
-| Orders by Day | `ordersByDay` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **UTC calendar day**, rolling |
-| Combined Revenue by Day | `combinedRevenueByDay` | `packages/db/src/crud/revenue.ts` | **Blended to IDR-equiv via per-order `fxRate` snapshot** (opt-in) | `PRODUCT` | No | **UTC calendar day**, rolling |
-| Refunds by Day (⚠️ no production caller today) | `refundsByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | n/a | Yes | **UTC calendar day**, rolling, on `executedAt` |
-| Profit by Day | `profitByDay` | `packages/db/src/crud/revenue.ts` | Separate; per-order `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **UTC calendar day**, rolling |
-| Revenue by Week/Month/Year | `revenueByPeriod` | `packages/db/src/crud/revenue.ts` | Separate, **plus** `revenueIdrEquiv` blend (opt-in) | `PRODUCT` | No | **UTC ISO week (Mon) / calendar month / calendar year** |
-| Orders by Week/Month/Year | `ordersByPeriod` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **UTC ISO week / month / year** |
-| Profit by Week/Month/Year | `profitByPeriod` | `packages/db/src/crud/revenue.ts` | Separate; `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **UTC ISO week / month / year** |
+| Revenue by Day | `revenueByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | `PRODUCT` | No | **Shop-calendar day**, rolling last-N-days |
+| Orders by Day | `ordersByDay` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **Shop-calendar day**, rolling |
+| Combined Revenue by Day | `combinedRevenueByDay` | `packages/db/src/crud/revenue.ts` | **Blended to IDR-equiv via per-order `fxRate` snapshot** (opt-in) | `PRODUCT` | No | **Shop-calendar day**, rolling |
+| Refunds by Day (⚠️ no production caller today) | `refundsByDay` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | n/a | Yes | **Shop-calendar day**, rolling, on `executedAt` |
+| Profit by Day | `profitByDay` | `packages/db/src/crud/revenue.ts` | Separate; per-order `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **Shop-calendar day**, rolling |
+| Revenue by Week/Month/Year | `revenueByPeriod` | `packages/db/src/crud/revenue.ts` | Separate, **plus** `revenueIdrEquiv` blend (opt-in) | `PRODUCT` | No | **Shop-local ISO week (Mon) / calendar month / calendar year** |
+| Orders by Week/Month/Year | `ordersByPeriod` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **Shop-local ISO week / month / year** |
+| Profit by Week/Month/Year | `profitByPeriod` | `packages/db/src/crud/revenue.ts` | Separate; `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **Shop-local ISO week / month / year** |
 | Top products (Reports) | `topProducts` | `packages/db/src/crud/revenue.ts` | IDR (catalog-central) | n/a (immune) | No | Rolling window from `since` |
 | Top products by margin (Dashboard) | `topProductsByMargin` | `packages/db/src/crud/revenue.ts` | IDR-equivalent; `profitIdrEquiv` **`null`** if any unit's cost unknown | n/a (immune) | No | Rolling window from `since` (default 30d) |
 | Orders-page `totalOrders` | `countOrders(db, {})` | `packages/db/src/crud/orders.ts` | n/a | **None — all kinds, deliberate** | No | Lifetime |

@@ -4233,6 +4233,22 @@ describe("admin handlers", () => {
     expect(audit!.details).toContain("Netflix Premium 1M");
   });
 
+  it("viewing the admin stock browser writes one audit row stating the count, never the credential text", async () => {
+    await bulkAddStock(prisma, sample.product.id, ["user@example.com:hunter2"]);
+    const total = await prisma.stockItem.count({ where: { productId: sample.product.id } });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:prod:stock:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:prod:stock:${sample.product.id}`.split(":"));
+
+    // The preview itself is unchanged: the admin still sees the plaintext.
+    expect(JSON.stringify(sink)).toContain("hunter2");
+
+    const rows = await prisma.auditLog.findMany({ where: { adminId: adminDbId, action: "stock_view" } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.details).toBe(`Viewed ${total} stock items in the admin bot.`);
+    expect(rows[0]!.details).not.toContain("hunter2");
+    expect(rows[0]!.details).not.toContain("user@example.com");
+  });
+
   // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"
   // button for SOLD rows, but a stale button (item sold between render and
   // tap) must still be refused rather than silently corrupting a delivered

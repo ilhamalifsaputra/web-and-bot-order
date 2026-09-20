@@ -63,7 +63,15 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // the only caller — see docs/audit-fitur-md-2026-07-04.md); these prefixes
 // must track the live paths or every non-super role silently loses its RBAC
 // grants (a real regression caught by the /api/* test-trio work).
-const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast"];
+// `/api/settlements` (task F1) is listed EXPLICITLY rather than left to
+// `canMutate`'s default-deny, even though the default already produces
+// super-only today. Recording a provider payout batch writes directly into the
+// double-entry ledger — it is the entry that drains `provider_clearing` into
+// `cash` — so it belongs with the money/structural surfaces beside
+// `/api/users`'s wallet adjustment, and naming it here means a later change
+// that adds it to `OPS_PREFIXES` has to argue with this list instead of
+// silently widening the grant.
+const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast", "/api/settlements"];
 // Operational routes — super + support. `/api/admin-tasks` (the Task 9b
 // queue: assign/start/complete/escalate on manual-ops tasks) sits here, not
 // in CONFIG_PREFIXES — it's an operational queue like Support/Orders, not a

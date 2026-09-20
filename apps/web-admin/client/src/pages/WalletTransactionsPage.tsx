@@ -39,6 +39,11 @@ const REASON_LABELS: Record<string, string> = {
   // rather than after the code — the humanizing fallback would render this as
   // "Unfulfilled credit", which reads as a credit that failed.
   unfulfilled_credit: "Credited to balance",
+  // Written by `creditOverpaymentToBalance` (task F2) when a buyer paid more than
+  // an order asked for and an admin handed the excess back. Labelled for what
+  // happened rather than after the code — the humanizing fallback would render
+  // this as "Overpaid credit", which reads as a credit that was overpaid.
+  overpaid_credit: "Overpayment returned",
 };
 
 function humanizeReason(reason: string): string {

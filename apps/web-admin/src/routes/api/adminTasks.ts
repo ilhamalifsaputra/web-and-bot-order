@@ -19,6 +19,7 @@
 import type { FastifyInstance } from "fastify";
 import { AdminTaskType, AdminTaskPriority, AdminTaskStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import {
   prisma,
   listAdminTasks,
@@ -147,7 +148,7 @@ export default async function adminTasksApiRoutes(app: FastifyInstance): Promise
         adminId: req.admin!.userId,
       });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true });
@@ -162,7 +163,7 @@ export default async function adminTasksApiRoutes(app: FastifyInstance): Promise
     try {
       await startAdminTask(prisma, { taskId, from: body.from, adminId: req.admin!.userId });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true });
@@ -177,7 +178,7 @@ export default async function adminTasksApiRoutes(app: FastifyInstance): Promise
     try {
       await completeAdminTask(prisma, { taskId, from: body.from, adminId: req.admin!.userId });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true });
@@ -192,7 +193,7 @@ export default async function adminTasksApiRoutes(app: FastifyInstance): Promise
     try {
       await escalateAdminTask(prisma, { taskId, from: body.from, adminId: req.admin!.userId });
     } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      if (e instanceof ValidationError) return reply.code(422).send(errorBody(e));
       throw e;
     }
     return reply.send({ ok: true });

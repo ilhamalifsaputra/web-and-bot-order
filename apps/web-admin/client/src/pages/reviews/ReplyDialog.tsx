@@ -55,7 +55,7 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): J
       toast.success(isEditing ? "Reply updated." : "Reply saved.");
       onOpenChange(false);
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   function handleSend() {

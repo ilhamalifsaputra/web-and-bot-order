@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { Decimal } from "@app/core/money";
 import { parseShopLocal } from "@app/core/datetime";
 import {
@@ -171,7 +172,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       });
     } catch (err) {
       if (err instanceof ValidationError) {
-        return reply.code(422).send({ error: err.message });
+        return reply.code(422).send(errorBody(err));
       }
       throw err;
     }
@@ -311,7 +312,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       updated = await updateVoucher(prisma, voucherId, args);
     } catch (err) {
       if (err instanceof ValidationError) {
-        return reply.code(422).send({ error: err.message });
+        return reply.code(422).send(errorBody(err));
       }
       if (err instanceof Error && err.message === "cannot change the code of a voucher that has been used") {
         return reply.code(409).send({ error: "Cannot change code: this voucher has already been used." });

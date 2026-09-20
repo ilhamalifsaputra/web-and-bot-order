@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -34,6 +34,7 @@ import {
   assignTicket,
   listTicketMessages,
   setSetting,
+  MIN_ORDER_AMOUNT_IDR_KEY,
   getSetting,
   getDecryptedSetting,
   deleteSetting,
@@ -42,6 +43,7 @@ import {
   markUnderpaid,
   recordUnmatchedTx,
   listAuditLogs,
+  USD_IDR_RATE_UPDATED_AT_KEY,
   setUserRole,
   setUserBanned,
   BINANCE_UID_KEY,
@@ -163,6 +165,16 @@ beforeEach(async () => {
   };
   // Existing suites model a CONFIGURED deploy — keep the first-run gate open.
   await setSetting(prisma, "setup_completed", "true");
+  // This seed's SKU costs Rp5.00, two orders of magnitude under
+  // `min_order_amount_idr`'s real default of Rp1.000 (packages/db/src/crud/
+  // orderMinimums.ts, M11), so leaving that default in force would make every
+  // order built here unfinalizable on every gateway — for a reason none of
+  // these tests are about. Written as an explicit "0" rather than left unset,
+  // because unset is what SELECTS the default: this seed declares a shop with
+  // no minimum, it does not bypass one. Same choice as the shared fixture in
+  // tests/helpers/sampleData.ts; the guard has its own coverage in
+  // packages/db/src/crud/orderMinimums.test.ts.
+  await setSetting(prisma, MIN_ORDER_AMOUNT_IDR_KEY, "0");
 });
 
 // ---- helpers --------------------------------------------------------------
@@ -5870,6 +5882,113 @@ describe("settings: USDT rate from the market", () => {
   it("refresh rejects bad CSRF", async () => {
     const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
+  });
+
+  // M12 / audit P0-2: a hand-typed rate is just as much a re-confirmation of
+  // the rate's freshness as a market refresh is, so it must stamp the same key
+  // — otherwise a shop running on a manually-set rate would have every USDT
+  // order refused once the TTL elapsed after its last automatic refresh.
+  it("a manual rate edit stamps usd_idr_rate_updated_at and still audits the change", async () => {
+    await setSetting(prisma, "usd_idr_rate_updated_at", new Date(Date.now() - 86_400_000).toISOString());
+    const before = Date.now();
+
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "16750",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16750");
+
+    const stamp = await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY);
+    expect(Date.parse(stamp!)).toBeGreaterThanOrEqual(before - 1_000);
+
+    // The audit trail for this field must read exactly as it did before the
+    // stamping branch existed — a shop admin still sees what was changed.
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("usd_idr_rate"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).toBe('Changed setting "usd_idr_rate" to "16750".');
+  });
+
+  it("clearing the rate by hand does not claim the (now absent) rate was just confirmed", async () => {
+    const stale = new Date(Date.now() - 86_400_000).toISOString();
+    await setSetting(prisma, "usd_idr_rate_updated_at", stale);
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("");
+    expect(await getSetting(prisma, USD_IDR_RATE_UPDATED_AT_KEY)).toBe(stale);
+  });
+
+  // M13 / audit P0-3. The manual button deliberately gets NO admin DM on a
+  // rejection — the admin who pressed it is reading the answer on screen, and
+  // DMing every admin about a failure one of them triggered on purpose is
+  // exactly how an alert channel becomes noise. What it does get: a specific,
+  // actionable error naming the check that failed, and an audit entry, because
+  // "I pressed update and the rate did not move" is a real support question.
+  it("a rate outside the sanity band is refused with a specific reason, the old rate stands, and no admin is DMed", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    await setSetting(prisma, "usd_idr_rate_updated_at", new Date().toISOString());
+    // The deviation cap is measured market-to-market since D10, against
+    // `usd_idr_market_rate` — the last PRE-spread figure a refresh accepted — and
+    // an ABSENT reference deliberately skips the cap for one refresh (the same
+    // deploy grace the freshness stamp gives a missing stamp). So this test has to
+    // establish a reference, or it exercises the grace path rather than the band
+    // and the refresh it expects to be refused is accepted.
+    await setSetting(prisma, "usd_idr_market_rate", "16000");
+    setFxRateFetcher(async () => new Decimal("17500")); // +9.4%, past the 5% default
+
+    const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { status: string; error: string };
+    expect(body.status).toBe("rejected");
+    expect(body.error).toContain("%");
+    expect(body.error).toContain("16000");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16000");
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ADMIN_FX_RATE_REJECTED } }),
+    ).toBe(0);
+
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => (l.details ?? "").includes("refused as implausible"));
+    expect(entry).toBeTruthy();
+  });
+
+  // Whole-branch review A4. Typing the rate in is the documented remedy for a
+  // refresh the sanity band keeps refusing (the rejection DM says so), so it has
+  // to end the episode: otherwise the streak counter the next DM quotes keeps
+  // climbing from a run that is over, and the dedupe marker keeps suppressing a
+  // genuinely new failure.
+  it("typing the rate in by hand ends the refusal streak and re-arms the rejection alert", async () => {
+    await setSetting(prisma, "fx_refresh_failures", "7");
+    await setSetting(prisma, "fx_rejected_alerted_for", "delta_too_large");
+    await setSetting(prisma, "fx_stale_alerted_for", new Date().toISOString());
+
+    const res = await post("/api/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "usd_idr_rate", value: "16500",
+    });
+    expect(res.statusCode).toBe(200);
+
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16500");
+    expect(await getSetting(prisma, "fx_refresh_failures")).toBe("0");
+    expect(await getSetting(prisma, "fx_rejected_alerted_for")).toBe("");
+    expect(await getSetting(prisma, "fx_stale_alerted_for")).toBe("");
+  });
+
+  it("the sanity-band fields are editable from the settings page", async () => {
+    for (const [key, value] of [
+      ["fx_rate_min", "9000"],
+      ["fx_rate_max", "30000"],
+      ["fx_rate_max_delta_pct", "8"],
+      ["fx_rate_max_age_hours", "24"],
+      ["usdt_spread_bps", "150"],
+    ] as const) {
+      const res = await post("/api/settings/edit", seed.cookie, { csrf_token: seed.csrf, key, value });
+      expect(res.statusCode, `${key} should be editable`).toBe(200);
+      expect(await getSetting(prisma, key)).toBe(value);
+    }
   });
 });
 

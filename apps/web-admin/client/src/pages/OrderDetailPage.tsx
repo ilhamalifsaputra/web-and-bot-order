@@ -3,8 +3,8 @@ import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
-import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { OrderUnitsCard, type StockReplacementRow } from "../components/orders/OrderUnitsCard";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@/components/ui/card";
-import { RefreshCw, Check, X, CircleDollarSign, Send, MailX, Eye, EyeOff } from "lucide-react";
+import { RefreshCw, Check, X, CircleDollarSign, Send, MailX, Eye, EyeOff, HandCoins } from "lucide-react";
+import { toast } from "sonner";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { useSse } from "../hooks/useSse";
@@ -133,6 +135,30 @@ interface OrderDetailData {
   customerDataFields: CustomerDataField[];
   /** The buyer's answers, one map per unit. */
   customerData: CustomerDataUnit[];
+  /** Every "this account is dead" request ever opened against a unit of this
+   * order (M20). Empty for the overwhelming majority of orders. `optional`
+   * only because older cached/mocked responses predate the field — the live
+   * route always sends at least `[]`. */
+  stockReplacements?: StockReplacementRow[];
+  /** What a payment rail recorded the buyer OVERPAYING on this order, or null
+   * (task F2) — null for the overwhelming majority of orders.
+   *
+   * Every figure here is derived server-side from the rail's own
+   * processed-transaction row; the client never sends an amount back, and the
+   * action route has no field that could accept one. `optional` only because
+   * older cached/mocked responses predate the field. */
+  overpayment?: {
+    /** Which rail's record this came from — named so an admin can check it. */
+    gateway: string;
+    receivedAmount: string;
+    /** What the order actually billed: the QRIS charge on TokoPay (whose admin
+     * fee is a buyer-side surcharge), the bare total everywhere else. */
+    expectedAmount: string;
+    excess: string;
+    currency: string;
+    /** True once the excess has been handed back. */
+    credited: boolean;
+  } | null;
 }
 
 function useOrderDetail(orderId: string) {
@@ -205,31 +231,53 @@ export function OrderDetailPage() {
   const approve = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/approve`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const reject = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/reject`, { reason: rejectReason }),
     onSuccess: () => { refresh(); setRejectReason(""); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const creditBalance = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/credit-balance`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const resend = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/resend`, {}),
     onSuccess: () => { setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const fulfill = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/fulfill`, { content: fulfillContent }),
     onSuccess: () => { refresh(); setFulfillContent(""); setActionError(null); },
-    onError: (e: Error) => setActionError(describeError(e.message)),
+    onError: (e: Error) => setActionError(describeError(e)),
+  });
+
+  /** Hand the buyer back what they overpaid (task F2).
+   *
+   * The body is deliberately empty: the amount is derived server-side from the
+   * rail's own record, and there is no field on that route that could accept one
+   * from here. The response carries the figure back so the toast can name what
+   * actually moved — the admin never chose it and has no other way to see it. */
+  const creditOverpayment = useMutation({
+    mutationFn: () =>
+      apiPost<{ credited: string; currency: string }>(
+        `/api/orders/${orderId}/credit-overpayment`,
+        {},
+      ),
+    onSuccess: (res) => {
+      refresh();
+      setActionError(null);
+      toast.success(
+        `Returned ${formatCurrencyDisplay(res.credited, res.currency as "IDR" | "USDT" | "USD")} to the buyer's wallet balance.`,
+      );
+    },
+    onError: (e: Error) => setActionError(describeError(e)),
   });
 
   const reveal = useMutation({
@@ -259,6 +307,14 @@ export function OrderDetailPage() {
   }
 
   const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, hasDeliveredContent, customerDataFields, customerData } = data;
+  const stockReplacements = data.stockReplacements ?? [];
+  const overpayment = data.overpayment ?? null;
+  /** Offer the action only while there really is something to hand back — the
+   *  same two conditions `creditOverpaymentToBalance` refuses on, so the button
+   *  is never shown for a call that would certainly come back 422. A zero excess
+   *  can happen on a flagged-but-stale rail row. */
+  const canReturnOverpayment =
+    overpayment !== null && !overpayment.credited && /[1-9]/.test(overpayment.excess);
   const isWalletTopup = order.kind === "WALLET_TOPUP";
   // A top-up never reserves a stockItem/credentials to resend — there's
   // nothing here for the outbox's account-credentials DM to attach.
@@ -385,6 +441,66 @@ export function OrderDetailPage() {
         </Card>
       </div>
 
+      {/* Overpayment (task F2) — rendered only for the rare order a rail flagged.
+          Its own card rather than a row in Payment above, because it is the one
+          thing on this page that says the shop is holding money that is not
+          its own, and because the action lives with the figures that justify it:
+          an admin should be able to check the rail's own numbers before handing
+          anything back, not trust a button. */}
+      {overpayment !== null && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle as="h2">Overpayment</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            <p className="text-ink-soft">
+              The buyer paid more than this order asked for. {overpayment.gateway} recorded{" "}
+              {formatCurrencyDisplay(overpayment.receivedAmount, overpayment.currency as "IDR" | "USDT" | "USD")}{" "}
+              arriving against a bill of{" "}
+              {formatCurrencyDisplay(overpayment.expectedAmount, overpayment.currency as "IDR" | "USDT" | "USD")}.
+            </p>
+            <div className="flex justify-between border-t border-line pt-2">
+              <span className="font-medium text-ink">Excess</span>
+              <span className="font-mono font-semibold">
+                {formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")}
+              </span>
+            </div>
+            {overpayment.credited ? (
+              <p className="text-ink-soft">
+                Already returned to the buyer's wallet balance — it shows on the Wallet Ledger as
+                "Overpayment returned".
+              </p>
+            ) : canReturnOverpayment ? (
+              <ConfirmDialog
+                trigger={
+                  <Button size="sm" disabled={creditOverpayment.isPending}>
+                    <HandCoins className="h-4 w-4" />
+                    Return{" "}
+                    {formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")}{" "}
+                    to the buyer
+                  </Button>
+                }
+                title="Return the overpayment to the buyer?"
+                description={`The buyer gets ${formatCurrencyDisplay(overpayment.excess, overpayment.currency as "IDR" | "USDT" | "USD")} as wallet balance, spendable on their next order. The amount comes from ${overpayment.gateway}'s own record and cannot be changed here. This can only be done once, and it cannot be undone.`}
+                confirmLabel="Return it"
+                variant="default"
+                onConfirm={() => creditOverpayment.mutate()}
+              />
+            ) : (
+              // A flagged row whose derived excess is zero: the rail recorded an
+              // amount at or below what the order billed, so there is nothing to
+              // return. Said plainly rather than offering a button that would be
+              // refused.
+              <p className="text-ink-soft">
+                {overpayment.gateway}'s record does not actually show the buyer paying more than the
+                order billed, so there is nothing to return. If they really did overpay, the rail's
+                record is what needs looking at first.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Guest contact — only rendered for guest orders (progressive
           disclosure: a registered buyer already has a name and a Telegram id
           in the card above). For a manually-fulfilled guest order this email
@@ -423,39 +539,25 @@ export function OrderDetailPage() {
 
       {/* Items table — a wallet top-up has zero OrderItem rows by design (it
           credits the buyer's wallet balance, not a SKU), so the table is
-          replaced with a plain note instead of an empty product grid. */}
+          replaced with a plain note instead of an empty product grid.
+          Everything else (including the per-unit replacement actions M20 added)
+          lives in OrderUnitsCard, shared with the support ticket page. */}
       {isWalletTopup ? (
         <EmptyState
           title="No items — this is a wallet top-up"
           description={`This order credited the buyer's wallet balance directly (${order.currency}); it never had products to deliver.`}
         />
       ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle as="h2">Items ({order.items.length})</CardTitle>
-            {canRevealStock && <CardAction>{revealButton("credentials")}</CardAction>}
-          </CardHeader>
-          <CardContent>
-            <DataTable
-              nested
-              columns={[
-                { key: "product", header: "Product", render: item => <span className="block max-w-[240px] truncate text-sm" title={item.product.name}>{item.product.name}</span> },
-                { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
-                { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
-                ...(isManualOrder
-                  ? []
-                  // Credentials are email:password blobs an admin must read in
-                  // full, so they wrap instead of truncating. TableCell is
-                  // whitespace-nowrap by default, hence the explicit override —
-                  // without it break-all has nothing to act on.
-                  : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">{item.stockItem ? (shown ? (revealedById.get(item.id) ?? "—") : item.stockItem.credentials) : "—"}</span> }]),
-              ]}
-              data={order.items}
-              keyExtractor={item => item.id}
-              empty={<EmptyState title="No items" />}
-            />
-          </CardContent>
-        </Card>
+        <OrderUnitsCard
+          orderId={orderId ?? ""}
+          units={order.items}
+          replacements={stockReplacements}
+          isDelivered={isDelivered}
+          showCredentials={!isManualOrder}
+          revealedCredentials={shown ? revealedById : undefined}
+          headerAction={canRevealStock ? revealButton("credentials") : undefined}
+          onRefetched={() => setRevealed(null)}
+        />
       )}
 
       {/* Buyer-submitted custom checkout info (manual_with_info orders only) */}

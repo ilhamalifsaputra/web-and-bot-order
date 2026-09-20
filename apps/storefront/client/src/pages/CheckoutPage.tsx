@@ -55,6 +55,7 @@ import { useIdempotentPost } from "../api/idempotency";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { humanError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
@@ -78,20 +79,14 @@ import Input from "../components/ui/Input";
 import Alert from "../components/ui/Alert";
 import { cn } from "../components/ui/cn";
 
-/**
- * Turn whatever an API rejection carried into something a shopper can read.
- *
- * The server's own failures arrive as i18n keys ("error.rate_limited",
- * "web.guest_email_invalid"), which `t()` renders. Anything else is the API
- * client's developer-facing fallback ("/api/v1/checkout responded 500") or a
- * network error, and `t()` would hand that string straight back — so those
- * become the generic apology instead. Guest checkout widened the set of
- * failures this page can hit (throttles on an anonymous read, a session
- * minted mid-request), which is what makes the distinction worth making.
- */
-function humanError(message: string): string {
-  return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
-}
+// `humanError` — "turn whatever an API rejection carried into something a shopper
+// can read" — lived here as a local helper taking the rejection's MESSAGE, and
+// again, identically, in InstantBuyPage and WalletTopupPage. Whole-branch review
+// F4a moved it to lib/errors.ts and changed it to take the ERROR: the message
+// alone has lost the figures half these refusals quote ("below the minimum this
+// payment method accepts ({min} {currency})"), which the buyer then read as
+// braces. Its i18n-key-vs-developer-string reasoning is unchanged and documented
+// there.
 
 /**
  * Info-collection step (Task 6, item 1): for the ONE manual_with_info line a
@@ -263,7 +258,11 @@ export default function CheckoutPage() {
   const [totals, setTotals] = useState<CheckoutData | null>(null);
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
-  const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
+  // The whole rejection, not just its key: the figures its copy quotes ride on
+  // the Error itself (`errorArgs`, F4a). `placeOrderErrorKey` below is derived
+  // from it for the two places that branch on WHICH failure this was.
+  const [placeOrderError, setPlaceOrderError] = useState<unknown>(null);
+  const placeOrderErrorKey = placeOrderError instanceof Error ? placeOrderError.message : null;
   // Guest checkout only — a registered buyer never sees the field, and the
   // value is never sent for them (the server ignores it anyway).
   const [guestEmail, setGuestEmail] = useState("");
@@ -374,7 +373,7 @@ export default function CheckoutPage() {
       else navigate(resp.pay_url);
     },
     onError: (err) => {
-      setPlaceOrderErrorKey((err as Error).message);
+      setPlaceOrderError(err);
       // Guest checkout establishes the session BEFORE it tries to place the
       // order, and establishing it migrates the cookie cart into CartItem rows
       // and clears the cookie (routes/auth.ts establishSession). That ordering
@@ -431,7 +430,7 @@ export default function CheckoutPage() {
         <EmptyState
           icon={AlertTriangle}
           title={t("web.checkout_unavailable")}
-          description={humanError((error as Error).message)}
+          description={humanError(error)}
           action={{ label: t("web.back_to_cart"), to: "/cart" }}
           secondaryAction={{ label: t("web.nav_products"), to: "/products" }}
         />
@@ -497,7 +496,7 @@ export default function CheckoutPage() {
           column away from the input the buyer has to fix. */}
       {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
         <Alert variant="banner" tone="error">
-          {humanError(placeOrderErrorKey)}
+          {humanError(placeOrderError)}
         </Alert>
       )}
 

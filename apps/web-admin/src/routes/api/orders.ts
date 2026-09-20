@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { OrderStatus, OrderKind, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { errorBody } from "@app/core/errorBody";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
@@ -27,7 +28,10 @@ import {
   countDelivered,
   countCancelled,
   customerLabel,
+  listStockReplacementsForOrder,
+  findOverpaidExcess,
   type OrderFilter,
+  type StockReplacementWithRefund,
 } from "@app/db";
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
@@ -127,6 +131,44 @@ function serializeMoneyView(mv: ReturnType<typeof orderMoneyView>) {
   };
 }
 
+/**
+ * One replacement request as the order-detail page reads it (M20).
+ *
+ * Deliberately not the DB row spread verbatim: `notes` (the admin's private
+ * handling notes) and `requestedBy` are not rendered by any surface yet and
+ * stay server-side, and the two StockItem ids come across as ids only — a
+ * credential itself reaches the buyer through the notification outbox and
+ * appears in this response only in the Items table's own `credentials` field,
+ * which is already gated to non-readonly roles.
+ *
+ * `requestedAt`/`resolvedAt` follow this file's existing convention of sending
+ * a pre-formatted display string in the shop's TIMEZONE beside the raw ISO
+ * value, so the client never formats a UTC timestamp in the browser's own zone.
+ */
+function serializeStockReplacement(row: StockReplacementWithRefund) {
+  return {
+    id: row.id,
+    orderItemId: row.orderItemId,
+    status: row.status,
+    reason: row.reason,
+    originalStockItemId: row.originalStockItemId,
+    replacementStockItemId: row.replacementStockItemId,
+    supportTicketId: row.supportTicketId,
+    requestedAt: row.createdAt,
+    requestedAtDisplay: displayDateTime(row.createdAt),
+    resolvedAt: row.resolvedAt,
+    resolvedAtDisplay: displayDateTime(row.resolvedAt),
+    refund: row.refund
+      ? {
+          id: row.refund.id,
+          amount: row.refund.amount.toString(),
+          currency: row.refund.currency,
+          status: row.refund.status,
+        }
+      : null,
+  };
+}
+
 export default async function ordersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/orders", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
@@ -214,6 +256,17 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       ),
       deliveredContent: hasDeliveredContent ? MASKED_CREDENTIAL : null,
     };
+    // Every replacement request ever opened against any unit of this order
+    // (M20) — the Items table needs it to know which units already have one
+    // open (so it doesn't offer an action that would only be refused) and to
+    // show what each earlier request resolved to.
+    const stockReplacements = await listStockReplacementsForOrder(prisma, orderId);
+    // What a rail recorded the buyer overpaying, if any (task F2). Sent so the
+    // detail page can offer "Return overpayment" only when there is an
+    // uncredited excess — and so the admin sees the FIGURE rather than being
+    // asked to trust a button. The amount is always derived server-side from the
+    // rail's own record; nothing the client sends here is ever used as an amount.
+    const overpaidExcess = await findOverpaidExcess(prisma, orderId);
     return reply.send({
       order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
       hasDeliveredContent,
@@ -224,6 +277,24 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       ...computeOrderEligibility(order.status, order.user.telegramId),
       customerDataFields,
       customerData,
+      stockReplacements: stockReplacements.map(serializeStockReplacement),
+      // Null for the overwhelming majority of orders. Amounts are Decimal
+      // strings, formatted client-side like every other money field here.
+      overpayment:
+        overpaidExcess === null
+          ? null
+          : {
+              gateway: overpaidExcess.gateway,
+              receivedAmount: overpaidExcess.receivedAmount.toString(),
+              expectedAmount: overpaidExcess.expectedAmount.toString(),
+              excess: overpaidExcess.excess.toString(),
+              currency: overpaidExcess.currency,
+              // True once the excess has been handed back. The client offers the
+              // action only while this is false AND `excess` is above zero — the
+              // same two conditions the service itself refuses on, so the button
+              // is never shown for a call that would certainly come back 422.
+              credited: overpaidExcess.creditedWalletTransactionId !== null,
+            },
     });
   });
 
@@ -302,7 +373,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -397,7 +468,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -426,7 +497,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         });
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(422).send({ error: e.message });
+          return reply.code(422).send(errorBody(e));
         }
         throw e;
       }
@@ -456,7 +527,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }
@@ -511,7 +582,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       });
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(422).send({ error: e.message });
+        return reply.code(422).send(errorBody(e));
       }
       throw e;
     }

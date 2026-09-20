@@ -34,7 +34,7 @@ import { enqueueOrderPipelineFailed, enqueueAdminOverpaid } from "./notification
 import { getSetting, getDecryptedSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
-import { parseMinAmount } from "./_minAmount";
+import { parseMinAmount, BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
 import { settleWalletTopup, isLateSettleableWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
@@ -50,8 +50,10 @@ export const BYBIT_BSC_DEPOSIT_ADDRESS_KEY = "bybit_bsc_deposit_address";
 // On/off toggle (web admin), independent of Internal Transfer's. Default ON:
 // only the literal "false" disables.
 export const BYBIT_BSC_ENABLED_KEY = "bybit_bsc_enabled";
-// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
-export const BYBIT_BSC_MIN_AMOUNT_KEY = "bybit_bsc_min_amount";
+// Declared in ./_minAmount (the leaf module that also parses it) so
+// orderMinimums.ts can read all six rails' keys without importing this
+// file — see that module's own comment for the import cycle that avoids.
+export { BYBIT_BSC_MIN_AMOUNT_KEY } from "./_minAmount";
 
 export interface BybitBscConfig {
   /** True only when depositAddress + apiKey + apiSecret are all present. */
@@ -141,7 +143,7 @@ export async function resolveBybitBscTrackerConfig(db: Db): Promise<BybitBscTrac
 
 /**
  * Create a direct order, then stamp it as a USDT/Bybit BSC deposit payment:
- * the central-IDR total converts once at `rate` (rounded 0.1) + unique
+ * the central-IDR total converts once at `rate` (rounded up to the next 0.01) + unique
  * cents, with the BSC auto-confirm payment window. No transfer note (BEP20
  * carries none).
  */
@@ -173,6 +175,11 @@ export async function createBybitBscOrder(
     currency: OrderCurrency.USDT,
     rate,
     method: PaymentMethod.BYBIT_BSC,
+    // The credit this order is about to spend, so the rail-minimum guard inside
+    // judges what the gateway will really be asked for rather than the total
+    // before the credit (whole-branch review D6). Passed unclamped; the spend
+    // itself is still `applyUsdtWalletToOrder`'s, two lines down.
+    walletAmount,
   });
   // Spend the USDT credit balance against the finalized USDT total (no-op when
   // walletAmount is unset). Re-read so callers see the updated walletUsed/total.
@@ -569,8 +576,20 @@ export async function deliverPaidBybitBscOrder(
           // interactive transaction on any failed statement; this call
           // cannot rescue the settlement from that, it only prevents the
           // benign race from doing so.
-          await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
-            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+          //
+          // Financial Ledger M3: the confirmation also captures the on-chain
+          // transaction hash, which is what `Payment.providerTransactionId` is
+          // reconciled against when a provider settlement report is matched. No
+          // `fee`/`netAmount` are passed: a BSC deposit reports no gateway cut
+          // at all (the gas the SENDER paid is not deducted from what reaches
+          // this shop), so both columns stay null — Payment.fee's documented
+          // "not known" (prisma/schema.prisma), which is deliberately NOT the
+          // same statement as a fee of zero.
+          await confirmPaymentAttempt(tx, {
+            paymentId: pendingPayment.id,
+            providerTransactionId: args.bybitTxId,
+          }).catch((err) =>
+            logger.warn({ err }, `Could not confirm the Payment ledger row for order ${settled.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
           );
         }
         // settleWalletTopup (packages/db/src/crud/wallet_topup.ts) already
@@ -606,9 +625,13 @@ export async function deliverPaidBybitBscOrder(
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
       if (pendingPayment) {
-        // See the WALLET_TOPUP branch above for what this .catch actually protects against.
-        await confirmPaymentAttempt(tx, { paymentId: pendingPayment.id }).catch((err) =>
-          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — the order is fully settled and unaffected; this only leaves that ledger row stuck PENDING for manual reconciliation`),
+        // See the WALLET_TOPUP branch above for what this .catch actually
+        // protects against, and for why no fee figures are captured here.
+        await confirmPaymentAttempt(tx, {
+          paymentId: pendingPayment.id,
+          providerTransactionId: args.bybitTxId,
+        }).catch((err) =>
+          logger.warn({ err }, `Could not confirm the Payment ledger row for order ${result.order.orderCode} — that row is left stuck PENDING and needs manual reconciliation. Whether the settlement itself survived depends on which failure this was, and this line cannot tell them apart: the benign race this catch exists for (another poller or webhook confirmed the same row first) leaves the order settled, but a real database error — a unique violation on providerTransactionId, say — has already aborted this interactive transaction in Postgres, so the settlement rolls back with it. Check whether the order actually reached its settled status before treating this as harmless`),
         );
       }
       // Overpayment: the buyer sent more USDT on-chain than the order total.

@@ -45,6 +45,7 @@ import { apiGet, apiPatch } from "../api/client";
 import type { OrderDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t, currentLang } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -100,19 +101,21 @@ export default function OrderDetailPage() {
 
   const [editMode, setEditMode] = useState(false);
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
-  const [infoErrorKey, setInfoErrorKey] = useState<string | null>(null);
+  // The rejection itself: a field error like `error.text_too_long` quotes the
+  // limit it was judged by, and that figure rides on the Error (F4a).
+  const [infoError, setInfoError] = useState<unknown>(null);
 
   const infoMutation = useMutation({
     mutationFn: (customerData: Array<Record<string, string>>) =>
       apiPatch<{ ok: boolean }>(`/api/v1/account/orders/${code}/info`, { customer_data: customerData }),
     onSuccess: () => {
       setEditMode(false);
-      setInfoErrorKey(null);
+      setInfoError(null);
       void refetch();
     },
     onError: (err) => {
       const key = (err as Error).message;
-      setInfoErrorKey(key);
+      setInfoError(err);
       void refetch();
       // The mid-edit race: the order left PROCESSING while the buyer was
       // editing (e.g. an admin fulfilled it). Editing is now locked — exit
@@ -156,18 +159,25 @@ export default function OrderDetailPage() {
   const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
   const showVoucher = Boolean(order.discount) && order.discount !== "0";
+  // Wallet credit is a reduction like the two above it, and it was the one row
+  // missing from this stack: an order paid from the balance printed a subtotal
+  // and its discounts above a Total that was lower by the whole credit, with
+  // nothing on the page accounting for the difference. The server now derives
+  // these figures so they reconcile exactly — see
+  // apps/storefront/src/routes/buyerOrderSummary.ts.
+  const showWallet = Boolean(order.wallet_credit) && order.wallet_credit !== "0";
   const qty = order.items.length;
   const fields = order.customer_data_fields;
 
   function startEdit(): void {
     setAnswers(Array.from({ length: qty }, (_, unitIdx) => ({ ...(order.customer_data[unitIdx] ?? {}) })));
-    setInfoErrorKey(null);
+    setInfoError(null);
     setEditMode(true);
   }
 
   function cancelEdit(): void {
     setEditMode(false);
-    setInfoErrorKey(null);
+    setInfoError(null);
   }
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
@@ -287,6 +297,11 @@ export default function OrderDetailPage() {
             <span>{t("web.voucher_discount")}</span> <span>−{formatIdr(order.discount)}</span>
           </div>
         )}
+        {showWallet && (
+          <div className="flex justify-between py-1 text-grass-dark">
+            <span>{t("web.wallet_credit_row")}</span> <span>−{formatIdr(order.wallet_credit)}</span>
+          </div>
+        )}
         <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">
           <span>{t("web.order_total")}</span> <Price value={order.total} fx={ctx?.fx} size="text-base" />
         </div>
@@ -303,9 +318,9 @@ export default function OrderDetailPage() {
             )}
           </div>
 
-          {infoErrorKey && (
+          {infoError !== null && (
             <Alert variant="banner" tone="error" className="mt-3">
-              {t(infoErrorKey)}
+              {tError(infoError)}
             </Alert>
           )}
 

@@ -18,6 +18,8 @@ import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
   revenueSummary,
+  grossSalesForNetSales,
+  refundTotalsSince,
   profitSummarySince,
   ordersByStatusSince,
   manualMatchQueueCounts,
@@ -34,6 +36,11 @@ import {
   revenueByDay,
   ordersByDay,
   combinedRevenueByDay,
+  revenueByPeriod,
+  ordersByPeriod,
+  profitByPeriod,
+  profitByDay,
+  type PeriodGranularity,
   resolveBotCredentials,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
@@ -78,6 +85,35 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   };
 }
 
+/**
+ * The same null-when-zero convention `shapeRevenue` above uses, for the
+ * two-currency money figures Task 6b adds (`refunds`, `netSales`): zero means
+ * "nothing to report", and the card renders its own empty state rather than a
+ * literal Rp0. These two carry no `usd` alias — only the revenue card renders
+ * the USDT figure a second time under a USD label.
+ *
+ * A consequence worth naming for `netSales`: a day whose refunds exactly cancel
+ * its gross sales reads the same as a day with no activity at all. That is the
+ * existing convention applied consistently rather than a second, different
+ * null rule invented for one field — and it is only the exact-zero knife edge,
+ * since a genuinely negative net figure is non-zero and renders in full.
+ */
+function shapeMoneyPair(idr: Decimal, usdt: Decimal) {
+  return {
+    idr: idr.isZero() ? null : idr.toString(),
+    usdt: usdt.isZero() ? null : usdt.toString(),
+  };
+}
+
+/**
+ * The calendar granularity a `range` query value asks for, or `null` for the
+ * two rolling daily windows (`7d`/`30d`) and for anything unrecognised — the
+ * daily path is the endpoint's original behavior and stays the default.
+ */
+function periodGranularity(range: string | undefined): PeriodGranularity | null {
+  return range === "week" || range === "month" || range === "year" ? range : null;
+}
+
 function trendPct(curr: Decimal, prev: Decimal): string | null {
   if (prev.isZero()) return null;
   return curr.minus(prev).div(prev).times(100).toDecimalPlaces(1).toString();
@@ -92,6 +128,10 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
     const todayRevenue = await revenueSummary(prisma, todayStart);
     const yesterdayRevenue = await revenueSummary(prisma, yesterdayStart, yesterdaySameClock);
+    const todayRefunds = await refundTotalsSince(prisma, todayStart);
+    // Net Sales' own gross basis — NOT `todayRevenue`. See the comment on the
+    // `netSales` field below, and grossSalesForNetSales' own doc comment.
+    const todayGrossForNet = await grossSalesForNetSales(prisma, todayStart);
     const profit = await profitSummarySince(prisma, todayStart);
     const orderStatus = await ordersByStatusSince(prisma, todayStart);
     const manualQueue = await manualMatchQueueCounts(prisma);
@@ -110,6 +150,29 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
           usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt)),
         },
       },
+      // Refunds actually paid out today, and today's gross sales net of them
+      // (Financial Ledger M6, Task 6b). This is the first thing on the
+      // dashboard that reflects a refund at all.
+      //
+      // The gross basis subtracted from is `grossSalesForNetSales`, NOT the
+      // `revenue` figure above, and the two genuinely differ on a day with a
+      // FULL refund: a fully-refunded order leaves DELIVERED for REFUNDED, so
+      // it drops out of "Revenue Today" (delivered-only, by design) while the
+      // sale itself still happened that day. Subtracting the payout from the
+      // figure it had already left charged the same refund twice and reported
+      // -Rp10.000 for a day that netted zero. `revenue` above is unchanged —
+      // only Net Sales' internal basis differs. See grossSalesForNetSales'
+      // doc comment for why Gross and Net are allowed to disagree here.
+      //
+      // Net Sales is a plain Decimal subtraction and is deliberately NOT clamped
+      // at zero: a refund can legitimately be for an order sold on an earlier
+      // day, so "more refunded today than sold today" is a real, negative
+      // signal an operator needs to see, not an error to be hidden behind a 0.
+      refunds: shapeMoneyPair(todayRefunds.refunds_idr, todayRefunds.refunds_usdt),
+      netSales: shapeMoneyPair(
+        todayGrossForNet.idr.minus(todayRefunds.refunds_idr),
+        todayGrossForNet.usdt.minus(todayRefunds.refunds_usdt),
+      ),
       profit,
       orders: {
         total: ordersTotal,
@@ -276,13 +339,37 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
   app.get("/api/dashboard/analytics", { preHandler: currentAdmin }, async (req) => {
     const q = req.query as Record<string, string | undefined>;
+    // `7d`/`30d` are rolling daily windows (the original two ranges, untouched);
+    // `week`/`month`/`year` are calendar rollups added by Task 6c. Anything
+    // unrecognised keeps the original default of a 7-day daily series.
+    const granularity = periodGranularity(q.range);
     const days = q.range === "30d" ? 30 : 7;
     const currency = q.currency ?? "idr";
     const metric = q.metric ?? "revenue";
 
+    if (metric === "profit") {
+      // There is no combined-PROFIT figure anywhere: only revenue has a
+      // currency blend (`combinedRevenueByDay`/`PeriodRevenue.revenueIdrEquiv`,
+      // both built on `Order.totalAmount`, which genuinely follows the order's
+      // currency). Profit is derived from catalog-central IDR unitPrice/
+      // costPrice per line, so a "combined profit" would have to be invented.
+      // Falling back to the IDR series reports a real number under a slightly
+      // narrower label instead; the card also hides the Combined option while
+      // Profit is selected, so this is a backstop for a hand-written query
+      // string, not the path a user clicks.
+      const rows = granularity ? await profitByPeriod(prisma, granularity) : await profitByDay(prisma, days);
+      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.profit_usdt : r.profit_idr }));
+    }
     if (metric === "orders") {
-      const rows = await ordersByDay(prisma, days);
+      const rows = granularity ? await ordersByPeriod(prisma, granularity) : await ordersByDay(prisma, days);
       return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.ordersUsdt : r.ordersIdr }));
+    }
+    if (granularity) {
+      const rows = await revenueByPeriod(prisma, granularity);
+      return rows.map((r) => ({
+        day: r.day,
+        value: currency === "combined" ? r.revenueIdrEquiv : currency === "usdt" ? r.revenue_usdt : r.revenue_idr,
+      }));
     }
     if (currency === "combined") {
       const rows = await combinedRevenueByDay(prisma, days);

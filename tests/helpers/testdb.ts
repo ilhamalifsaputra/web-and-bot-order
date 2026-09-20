@@ -35,7 +35,20 @@ export async function makeTestDb(): Promise<TestDb> {
 
   const schema = `test_${randomBytes(6).toString("hex")}`;
   const url = withSchema(baseUrl, schema);
-  const prisma = new PrismaClient({ datasourceUrl: url });
+  // Same `transactionOptions` the real client is built with (packages/db/src/
+  // client.ts). Left at Prisma's own defaults (maxWait 2000 / timeout 5000)
+  // this harness gave every test a NARROWER concurrency envelope than
+  // production has: a second caller blocked on a row lock — the intended
+  // behavior of the `SELECT ... FOR UPDATE` guards in `executeRefund`,
+  // `adjustWallet` and `replaceStockItem` — would give up with P2028 "Unable to
+  // start a transaction in the given time" after 2s instead of waiting its turn
+  // and meeting the guard it was supposed to meet. A test asserting on that
+  // guard would then be asserting on the harness's timeout, and would go
+  // red-or-green with machine load rather than with the code.
+  const prisma = new PrismaClient({
+    datasourceUrl: url,
+    transactionOptions: { maxWait: 5000, timeout: 10000 },
+  });
 
   try {
     // `prisma db push`'s schema-diffing logic issues the CREATE SCHEMA and all

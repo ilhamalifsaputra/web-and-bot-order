@@ -13,6 +13,7 @@ import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { SupportData, TicketDetailData } from "../api/types";
 import { t } from "../lib/i18n";
+import { tError } from "../lib/errors";
 import { useShopContext } from "../components/Layout";
 import { buildTicketTimeline } from "../lib/ticketTimeline";
 import { loadTicketDraft, clearTicketDraft } from "../lib/ticketDraft";
@@ -83,14 +84,14 @@ export default function TicketDetailPage() {
       clearTicketDraft(ticketId);
       refetch();
     },
-    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+    onError: (err) => setErrorText(tError(err)),
   });
 
   const closeMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/close`, {}),
     onSuccess: () => refetch(),
     onError: (err) => {
-      setErrorText(t(err instanceof Error ? err.message : "error.generic"));
+      setErrorText(tError(err));
       // A 409 here means the ticket was already closed out from under this
       // tap (double-click, or an admin closed it concurrently) — refetch so
       // the page re-renders into the real (closed) state instead of leaving
@@ -102,7 +103,7 @@ export default function TicketDetailPage() {
   const reopenMutation = useMutation({
     mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reopen`, {}),
     onSuccess: () => refetch(),
-    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+    onError: (err) => setErrorText(tError(err)),
   });
 
   function submitReply() {

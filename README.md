@@ -101,32 +101,39 @@ cd web-and-bot-order
 cp .env.example .env   # lalu isi sesuai bagian 2
 ```
 
-**3. Bangun image & siapkan database** (Postgres jalan lewat overlay
-`docker-compose.postgres.prod.yml` — `docker-compose.yml` sendirian tidak
-cukup lagi karena skemanya sekarang `postgresql`-only):
+**3. Nyalakan semuanya** — satu perintah. Postgres jalan lewat overlay
+`docker-compose.postgres.prod.yml` (`docker-compose.yml` sendirian tidak cukup
+lagi karena skemanya sekarang `postgresql`-only):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
 ```
 
-**4. Nyalakan layanan** (satu proses gabungan: panel admin + toko web + bot +
-pengiriman notifikasi + poller pembayaran, plus container `postgres`):
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d   # panel admin (8000) + toko web (8100) + bot + Postgres
-```
+Satu proses gabungan — panel admin (8000) + toko web (8100) + bot + pengiriman
+notifikasi + poller pembayaran — plus container `postgres`. **Tidak ada langkah
+database manual:** `--build` membangun image sekaligus bundle SPA React panel
+admin & toko web, lalu `docker-entrypoint.sh` — sebelum aplikasi start —
+menyelaraskan skema (`prisma db push`), men-seed chart of accounts ledger, dan
+menerapkan migrasi data-only rilis ini. Perinciannya, plus cara mengambil alih
+manual (`AUTO_MIGRATE=0`), ada di [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
 
 > 🛍️ Toko web (port 8100) ikut jalan dalam proses yang sama — tak perlu nyalakan
 > terpisah. Kalau hanya berjualan lewat bot Telegram, cukup jangan ekspos
 > port 8100 di nginx.
 
-**5. Cek:**
+**4. Cek:**
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml ps                  # "running"/"healthy"
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint   # langkah database
 docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs -f server       # log gabungan (Ctrl+C keluar)
 ```
+
+> ⚠️ Baca baris `entrypoint:` itu sekali. Skema yang gagal diterapkan membuat
+> container **menolak start** (tak mungkin terlewat), tapi seed chart of accounts
+> ledger dan migrasi data-only hanya memunculkan **WARNING** lalu tetap
+> melanjutkan start — supaya pertanyaan pembukuan tidak mematikan toko. Baris itu
+> satu-satunya tempat keduanya terlihat.
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
 - Toko web (jika dinyalakan): `http://IP-VPS-KAMU:8100/`
@@ -162,6 +169,8 @@ pnpm install
 cp .env.example .env            # isi sesuai bagian 2
 pnpm prisma:generate
 pnpm exec prisma db push
+pnpm seed-chart-of-accounts     # akun ledger (cash.*, wallet_liability.*, ...);
+                                # tanpa ini setiap posting ledger dilewati
 
 # Build React SPA panel admin & toko web (wajib sekali di awal, dan tiap kali
 # kode di apps/*/client berubah — hasil build di-gitignore)
@@ -251,20 +260,39 @@ di [`DOCS.md`](DOCS.md).
 ```bash
 git pull
 
-# Docker:
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml build
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml run --rm server pnpm exec prisma db push      # jika skema berubah
-docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d
+# Docker — satu perintah; ambil dump dulu (lihat catatan di bawah):
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml logs --since 10m server | grep entrypoint
 
 # Non-Docker:
 pnpm install && pnpm prisma:generate && pnpm exec prisma db push
+pnpm seed-chart-of-accounts                                        # akun ledger; idempoten
 pnpm --filter @app/web-admin-client build && pnpm --filter @app/storefront-client build
 pm2 restart bot-order
 ```
 
-> ⚠️ Bila ada perubahan struktur database, jalankan `prisma db push` **dulu** baru
-> kode baru — kalau terbalik muncul `P2022: column does not exist` (atau
-> `P2021: table does not exist` bila tabelnya berganti nama).
+> ⚙️ **Di jalur Docker tidak ada langkah database manual.** `--build` sekaligus
+> membangun bundle SPA React (panel admin + toko web) di builder stage Dockerfile,
+> lalu `docker-entrypoint.sh` menjalankan `prisma db push` → seed chart of accounts
+> ledger → migrasi data-only rilis ini, **sebelum** aplikasi start. Jadi urutan
+> "skema dulu, kode baru kemudian" dijamin secara struktural. Hanya push skema
+> yang fatal; dua langkah sesudahnya cuma **WARNING** — karena itu baris `grep
+> entrypoint` di atas ada di daftar perintah, bukan sebagai opsi. Cara mengambil
+> alih manual (`AUTO_MIGRATE=0`) dan kontrak idempotensi migrasi data-only ada di
+> [`docs/MIGRATIONS.md`](docs/MIGRATIONS.md).
+
+> ⚠️ **Ambil dump sebelum deploy.** Entrypoint tidak mengambil snapshot di jalur
+> Postgres (`pg_dump` harus jalan di dalam container `postgres`, dan container
+> `server` tidak punya akses Docker socket), jadi dump manual itu satu-satunya
+> titik rollback deploy. Yang dijamin entrypoint: `prisma db push` **menolak**
+> perubahan yang tidak bisa diterapkan tanpa membuang data — jadi push otomatis
+> tidak bisa menghapus baris sendiri, ia gagal dan container menolak start.
+> Prosedur restore: [`deploy/backup/README.md`](deploy/backup/README.md).
+
+> ⚠️ Di jalur **non-Docker**, urutan itu tetap tanggung jawab Anda: `prisma db
+> push` **dulu** baru kode baru — kalau terbalik muncul `P2022: column does not
+> exist` (atau `P2021: table does not exist` bila tabelnya berganti nama).
 
 > 🛠️ **Cek dulu `scripts/migrate-*.ts` sebelum `git pull` dieksekusi ulang ke
 > produksi.** Beberapa rilis menyertakan migrasi data **sekali-jalan** (bukan

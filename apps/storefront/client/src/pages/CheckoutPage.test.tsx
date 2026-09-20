@@ -51,6 +51,7 @@ const checkoutData: CheckoutData = {
   wallet_idr_enabled: true,
   wallet_usdt_enabled: true,
   is_guest: false,
+  below_all_minimums: false,
 };
 
 function renderCheckout(respond: (path: string) => unknown) {
@@ -191,6 +192,38 @@ describe("CheckoutPage", () => {
     (apiPost as Mock).mockRejectedValue(new Error("web.pay_method_unavailable"));
     fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
     expect(await screen.findByText("That payment method isn't available right now — pick another one.")).toBeInTheDocument();
+  });
+
+  // Whole-branch review F4a. The rail-minimum refusal names the figure it was
+  // judged against — "below the minimum this payment method accepts ({min}
+  // {currency})" — and the API layer now carries the server's `error_args` on the
+  // thrown Error so those braces are filled. Before this, the buyer read the
+  // braces themselves and was told nothing about how much more they needed.
+  it("fills the placeholders of an error that carries args, and never shows raw braces", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    const err = new Error("error.amount_below_rail_minimum") as Error & {
+      errorArgs?: Record<string, string>;
+    };
+    err.errorArgs = { min: "100000", currency: "IDR" };
+    (apiPost as Mock).mockRejectedValue(err);
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+    const rendered = await screen.findByText(/below the minimum this payment method accepts/);
+    expect(rendered).toHaveTextContent("(100000 IDR)");
+    expect(rendered.textContent).not.toMatch(/\{\w+\}/);
+  });
+
+  // The other half of the same change: a key with no args must render exactly as
+  // it did before. Passing an empty arg set through the formatter is how a
+  // template that legitimately contains braces-free copy would otherwise start
+  // rendering differently.
+  it("renders an args-free error exactly as before", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    (apiPost as Mock).mockRejectedValue(new Error("error.cart_empty"));
+    fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+    expect(await screen.findByText("Your cart is empty.")).toBeInTheDocument();
   });
 
   // Guest checkout: an empty cart used to bounce to /cart, which for an

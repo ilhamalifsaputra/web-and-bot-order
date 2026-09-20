@@ -57,6 +57,9 @@ import {
   getPaydisiniCreds,
   getNowpaymentsCreds,
   completeOrderWithWalletCredit,
+  settleFullyDiscountedOrder,
+  orderTotalClearsRailMinimum,
+  usdIdrQuoteIsFresh,
   enqueueNotification,
   claimGatewaySlot,
   commitGatewayResult,
@@ -111,6 +114,89 @@ function minAmountNote(ctx: MyContext, minAmount: Decimal.Value | null, currency
   if (!minAmount) return "";
   const formatted = currency === "USDT" ? price(minAmount) : formatIdr(minAmount);
   return "\n\n" + t(ctx, "checkout.min_amount_note", { min: formatted });
+}
+
+/** Which payment rails this shop has switched on AND this order's total can
+ *  actually be finalized on. */
+interface OfferableRails {
+  binance: boolean;
+  bybit: boolean;
+  bybitBsc: boolean;
+  tokopay: boolean;
+  paydisini: boolean;
+  nowpayments: boolean;
+  /** False when the total clears no configured rail at all. */
+  any: boolean;
+}
+
+/**
+ * Resolve the rails to offer for an order totalling `total` Rupiah (M11).
+ *
+ * Two questions, answered together because the confirmation screen, its
+ * re-render and the USDT submenu all need both and used to repeat the first
+ * one verbatim: is the rail configured at all, and can this total clear its
+ * minimum? The minimum half reads `orderTotalClearsRailMinimum` — the SAME
+ * helper `finalizeOrderPayment` throws from — so a button can never be offered
+ * for a rail that would refuse the order the moment it was tapped.
+ *
+ * A total of zero is never filtered: such an order needs no rail at all (it is
+ * settled from the shop's own books), and `orderConfirmKb` has already
+ * collapsed the screen to its single Complete Order button by then anyway.
+ *
+ * The USDT rails carry a THIRD condition beyond "configured" and "clears the
+ * minimum": the saved exchange rate must still be inside its quote lifetime
+ * (`usdIdrQuoteIsFresh`, the same read `finalizeOrderPayment`'s
+ * `assertFxQuoteIsFresh` throws from). A rate is only null here once
+ * `fx_rate_max_age_hours` has passed — two days by default — so between the
+ * quote TTL and that outer horizon a shop whose auto-update had died used to
+ * advertise every USDT button and refuse every single tap with
+ * `error.fx_quote_expired`. Hiding them instead gives the buyer the same
+ * "pay in Rupiah" screen an expired rate already produces, one lever earlier.
+ *
+ * `total` is the subtotal AFTER any wallet credit (`computeConfirmation`
+ * subtracts it before returning), which is what keeps this list on the same side
+ * of whole-branch review D6 as the finalize-time guard: both judge what is left
+ * to collect, not the total before the credit. The bot's credit is
+ * all-or-nothing — `toggleWalletCredit` refuses a balance that does not cover
+ * the whole order — so `total` here is either the full subtotal or exactly zero,
+ * and zero is the case this function never filters anyway. The narrow gap that
+ * remains is a confirmation bubble rendered before the balance moved, and it is
+ * closed at the other end: `finalizeOrderPayment` now runs the minimum against
+ * the post-credit remainder (see `PaymentChoice.walletAmount`, crud/pricing.ts).
+ */
+async function offerableRails(total: Decimal, rate: Decimal | null): Promise<OfferableRails> {
+  const [binanceCfg, bybitCfg, bybitBscCfg, tokopay, paydisini, nowpayments] = await Promise.all([
+    resolveBinanceInternalConfig(prisma),
+    resolveBybitConfig(prisma),
+    resolveBybitBscConfig(prisma),
+    getTokopayCreds(prisma),
+    getPaydisiniCreds(prisma),
+    getNowpaymentsCreds(prisma),
+  ]);
+  const usdtTotal = rate ? usdtFromIdr(total, rate) : null;
+  // A zero total never reaches finalizeOrderPayment, so no freshness check can
+  // refuse it — same non-filter as `clears` applies to the minimums below.
+  const usdtOfferable =
+    rate !== null && (!total.greaterThan(0) || (await usdIdrQuoteIsFresh(prisma)));
+  const clears = async (method: string, currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT) => {
+    if (!total.greaterThan(0)) return true;
+    if (currency === OrderCurrency.USDT && !usdtTotal) return true;
+    return orderTotalClearsRailMinimum(prisma, {
+      method,
+      currency,
+      idrAmount: total,
+      railAmount: currency === OrderCurrency.IDR ? total : usdtTotal!,
+    });
+  };
+  const rails = {
+    binance: binanceCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BINANCE_INTERNAL, OrderCurrency.USDT)),
+    bybit: bybitCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BYBIT, OrderCurrency.USDT)),
+    bybitBsc: bybitBscCfg.enabled && usdtOfferable && (await clears(PaymentMethod.BYBIT_BSC, OrderCurrency.USDT)),
+    tokopay: tokopay != null && (await clears(PaymentMethod.TOKOPAY, OrderCurrency.IDR)),
+    paydisini: paydisini != null && (await clears(PaymentMethod.PAYDISINI, OrderCurrency.IDR)),
+    nowpayments: nowpayments != null && usdtOfferable && (await clears(PaymentMethod.NOWPAYMENTS, OrderCurrency.USDT)),
+  };
+  return { ...rails, any: Object.values(rails).some(Boolean) };
 }
 
 function requireUser(ctx: MyContext) {
@@ -338,10 +424,10 @@ async function computeConfirmation(
     subtotal = new Decimal(0);
   } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate && subtotal.greaterThan(0)) {
     // The USDT amount the crud layer (finalizeOrderPayment) will actually
-    // charge — usdtFromIdr rounds to 0.1 USDT, and the WALLET method carries
-    // no unique cents, so covering this exact figure zeroes the order. Compare
-    // the balance against it (not against the IDR subtotal converted back),
-    // which is what left a stray Rp-remainder before.
+    // charge — usdtFromIdr rounds UP to the next 0.01 USDT, and the WALLET
+    // method carries no unique cents, so covering this exact figure zeroes the
+    // order. Compare the balance against it (not against the IDR subtotal
+    // converted back), which is what left a stray Rp-remainder before.
     const usdtTotal = usdtFromIdr(subtotal, rate);
     if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
       walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
@@ -479,12 +565,7 @@ export async function showOrderConfirmation(
     ctx.session.scratch.checkoutIntentId = randomUUID();
   }
 
-  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
-  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
-  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
-  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
-  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
+  const rails = await offerableRails(r.subtotal, rate);
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -494,25 +575,37 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
-      closing_line: r.closingLine,
+      closing_line: closingLineFor(ctx, r, rails),
     }),
     ckb.orderConfirmKb(
       productId,
       quantity,
       lang,
       r.voucherCode,
-      binanceEnabled && rate !== null,
-      bybitEnabled && rate !== null,
-      tokopayEnabled,
-      paydisiniEnabled,
-      nowpaymentsEnabled && rate !== null,
-      bybitBscEnabled && rate !== null,
+      rails.binance,
+      rails.bybit,
+      rails.tokopay,
+      rails.paydisini,
+      rails.nowpayments,
+      rails.bybitBsc,
       r.idrBalance,
       r.usdtBalance,
       r.walletDeduction,
       r.fullyCovered,
     ),
   );
+}
+
+/**
+ * The confirmation bubble's closing line. Normally "Proceed to payment?" (or
+ * the Complete Order prompt when nothing is left to pay), but when the order's
+ * total clears no configured rail's minimum, the screen would otherwise show a
+ * summary with no payment button and no explanation — so the slot that exists
+ * to say what happens next says exactly that instead (M11).
+ */
+function closingLineFor(ctx: MyContext, r: ConfirmRender, rails: OfferableRails): string {
+  if (!r.fullyCovered && !rails.any) return t(ctx, "checkout.no_method_for_total");
+  return r.closingLine;
 }
 
 /** Re-render confirmation as a fresh message (used after voucher entry). */
@@ -525,12 +618,7 @@ export async function renderOrderConfirmation(
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
-  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
-  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
-  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
-  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
-  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
+  const rails = await offerableRails(r.subtotal, rate);
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -540,7 +628,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
-      closing_line: r.closingLine,
+      closing_line: closingLineFor(ctx, r, rails),
     }),
     {
       parse_mode: "HTML",
@@ -549,12 +637,12 @@ export async function renderOrderConfirmation(
         quantity,
         lang,
         r.voucherCode,
-        binanceEnabled && rate !== null,
-        bybitEnabled && rate !== null,
-        tokopayEnabled,
-        paydisiniEnabled,
-        nowpaymentsEnabled && rate !== null,
-        bybitBscEnabled && rate !== null,
+        rails.binance,
+        rails.bybit,
+        rails.tokopay,
+        rails.paydisini,
+        rails.nowpayments,
+        rails.bybitBsc,
         r.idrBalance,
         r.usdtBalance,
         r.walletDeduction,
@@ -584,10 +672,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
 
-  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
-  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
-  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
+  const rails = await offerableRails(r.subtotal, rate);
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -597,17 +682,9 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
-      closing_line: r.closingLine,
+      closing_line: closingLineFor(ctx, r, rails),
     }),
-    ckb.usdtMethodsKb(
-      productId,
-      quantity,
-      lang,
-      binanceEnabled && rate !== null,
-      bybitEnabled && rate !== null,
-      nowpaymentsEnabled && rate !== null,
-      bybitBscEnabled && rate !== null,
-    ),
+    ckb.usdtMethodsKb(productId, quantity, lang, rails.binance, rails.bybit, rails.nowpayments, rails.bybitBsc),
   );
 }
 
@@ -1109,6 +1186,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
         currency: OrderCurrency.USDT,
         rate,
         method: PaymentMethod.NOWPAYMENTS,
+        // The credit the next line is about to spend, so the rail-minimum guard
+        // inside judges what NOWPayments will really be invoiced for rather than
+        // the total before the credit (whole-branch review D6).
+        ...(useWalletUsdt ? { walletAmount: user.walletBalanceUsdt } : {}),
       });
       if (useWalletUsdt) await applyUsdtWalletToOrder(tx, created.id, user.walletBalanceUsdt);
       return useWalletUsdt ? getOrder(tx, created.id) : finalized;
@@ -1604,6 +1685,41 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
  * the credit, and delivers it in the same request via
  * completeOrderWithWalletCredit (packages/db/src/crud/wallet_checkout.ts).
  */
+/**
+ * Create and settle an order a discount alone already covers (M11) — the
+ * no-credit twin of `completeOrderWithWalletCredit`, in the same shape so
+ * `completeOrderWithWallet` can hand either result to the same delivery tail.
+ *
+ * No `walletAmount` is passed: the buyer never asked to spend credit, and there
+ * is nothing left to spend it on. `settleFullyDiscountedOrder` re-derives the
+ * "nothing left to collect" claim from the row this just created, so a voucher
+ * that stopped covering the price between the screen and this call fails here
+ * rather than delivering goods nobody paid for. Runs inside the caller's
+ * transaction so that failure rolls the order back with it.
+ */
+async function settleDiscountCoveredOrder(
+  tx: Db,
+  args: {
+    user: { id: number; role: string };
+    productId: number;
+    quantity: number;
+    voucherCode: string | null;
+    customerData: string | null;
+    checkoutIntentId?: string;
+  },
+): Promise<Awaited<ReturnType<typeof completeOrderWithWalletCredit>>> {
+  const created = await createOrderDirect(tx, {
+    user: args.user,
+    productId: args.productId,
+    quantity: args.quantity,
+    voucherCode: args.voucherCode,
+    customerData: args.customerData,
+    checkoutIntentId: args.checkoutIntentId,
+  });
+  if (!created) throw new ValidationError("error.order_not_found");
+  return settleFullyDiscountedOrder(tx, created.id);
+}
+
 export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -1622,12 +1738,22 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
 
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
-  if (!useWalletIdr && !useWalletUsdt) {
-    // Stale tap on an old bubble whose credit toggle no longer applies —
-    // re-render a fresh, correct confirmation instead of stranding the user.
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
-    await showOrderConfirmation(ctx, productId, quantity);
-    return;
+  const useWalletCredit = useWalletIdr || useWalletUsdt;
+  if (!useWalletCredit) {
+    // No credit toggled. That is legitimate for exactly one screen: the other
+    // case orderConfirmKb collapses to a single Complete Order button, where a
+    // voucher or bulk discount alone already covered the whole price (M11). Re-
+    // price the order here rather than trusting the tapped bubble, and only
+    // take the no-credit path when the total really is zero.
+    const priced = await computeConfirmation(ctx, productId, quantity, await currentUsdtRate());
+    if (!priced?.fullyCovered) {
+      // Genuinely a stale tap on an old bubble whose credit toggle no longer
+      // applies — re-render a fresh, correct confirmation instead of
+      // stranding the user.
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      await showOrderConfirmation(ctx, productId, quantity);
+      return;
+    }
   }
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
@@ -1643,21 +1769,30 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
   try {
     result = await prisma.$transaction(async (tx) => {
-      const r = await completeOrderWithWalletCredit(tx, {
-        user: {
-          id: user.id,
-          role: user.role,
-          walletBalance: user.walletBalance,
-          walletBalanceUsdt: user.walletBalanceUsdt,
-        },
-        productId,
-        quantity,
-        voucherCode,
-        currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
-        rate: rate ?? undefined,
-        customerData,
-        checkoutIntentId,
-      });
+      const r = useWalletCredit
+        ? await completeOrderWithWalletCredit(tx, {
+            user: {
+              id: user.id,
+              role: user.role,
+              walletBalance: user.walletBalance,
+              walletBalanceUsdt: user.walletBalanceUsdt,
+            },
+            productId,
+            quantity,
+            voucherCode,
+            currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
+            rate: rate ?? undefined,
+            customerData,
+            checkoutIntentId,
+          })
+        : await settleDiscountCoveredOrder(tx, {
+            user: { id: user.id, role: user.role },
+            productId,
+            quantity,
+            voucherCode,
+            customerData,
+            checkoutIntentId,
+          });
       // No external gateway call follows (unlike the buyNow<Rail> functions) —
       // this transaction IS the complete unit of "order created and paid", so
       // the audit row is written alongside it, mirroring logAdminAction's own
@@ -1666,7 +1801,9 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
         action: "order_create",
         customerId: user.id,
         targetId: r.order.id,
-        details: "Created order via Telegram checkout, paid in full with wallet credit.",
+        details: useWalletCredit
+          ? "Created order via Telegram checkout, paid in full with wallet credit."
+          : "Created order via Telegram checkout. A discount covered the whole price, so nothing was charged.",
       });
       return r;
     });

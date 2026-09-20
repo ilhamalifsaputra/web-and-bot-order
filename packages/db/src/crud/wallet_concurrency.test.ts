@@ -186,7 +186,7 @@ describe("adjustWallet under true Postgres concurrency", () => {
   });
 
   it("Case E — sanity control: a single non-concurrent call still behaves exactly as before", async () => {
-    const newBalance = await adjustWallet(prisma, userId, "12.5", { reason: "admin_adjust", adminId: 7 });
+    const { balance: newBalance } = await adjustWallet(prisma, userId, "12.5", { reason: "admin_adjust", adminId: 7 });
     expect(newBalance.toString()).toBe("12.5");
     expect((await balance()).toString()).toBe("12.5");
     const row = await prisma.walletTransaction.findFirstOrThrow({ where: { userId } });

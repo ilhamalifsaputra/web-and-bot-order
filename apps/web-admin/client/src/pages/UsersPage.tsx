@@ -209,7 +209,7 @@ export function UsersPage() {
       void queryClient.invalidateQueries({ queryKey: ["users"] });
       toast.success(vars.doBan ? "Customer suspended." : "Customer unbanned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const banTarget = data?.users.find((u) => u.id === banTargetId) ?? null;

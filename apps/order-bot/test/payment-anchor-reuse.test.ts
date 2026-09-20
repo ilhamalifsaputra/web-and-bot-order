@@ -62,6 +62,10 @@ const kb = () => new InlineKeyboard().text("X", "v1:noop");
 /** A PENDING_PAYMENT Binance-Internal order, the shape a text rail leaves behind. */
 async function makePendingOrder() {
   const order = await prisma.$transaction(async (tx) => {
+    // M11: the fixture SKU costs Rp5, which converts to 0.0 USDT at the rate
+    // below — finalizeOrderPayment now refuses to put a nothing-to-collect
+    // total on a gateway. Nothing in this file asserts on the amount.
+    await tx.denomination.update({ where: { id: sample.product.id }, data: { price: "80000" } });
     const created = await createOrderDirect(tx, {
       user: { id: sample.user.id, role: sample.user.role },
       productId: sample.product.id,

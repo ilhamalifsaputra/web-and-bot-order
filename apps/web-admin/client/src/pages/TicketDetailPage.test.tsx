@@ -86,11 +86,20 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function mockFetches(detail: unknown, admins: unknown = { admins: [ADMIN_ROW] }) {
+/** `order` is the GET /api/orders/:orderId response the per-unit replacement
+ *  card (M20) loads for a ticket's linked order. Left null for every test that
+ *  isn't about it, so that fetch rejects exactly as an unexpected one does and
+ *  the card simply renders nothing. */
+function mockFetches(
+  detail: unknown,
+  admins: unknown = { admins: [ADMIN_ROW] },
+  order: unknown = null,
+) {
   vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes("/api/admins")) return Promise.resolve(jsonResponse(admins));
     if (url.includes("/api/support/")) return Promise.resolve(jsonResponse(detail));
+    if (order !== null && url.includes("/api/orders/")) return Promise.resolve(jsonResponse(order));
     return Promise.reject(new Error(`Unexpected fetch: ${url}`));
   });
 }
@@ -151,6 +160,76 @@ describe("TicketDetailPage — order context panel", () => {
     expect(screen.getByText("Order Activity")).toBeInTheDocument();
     expect(screen.getByText("Approved order #55.")).toBeInTheDocument();
     expect(screen.getAllByText(/Rina/).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * M20: a ticket about a dead account has to be resolvable against the specific
+ * UNIT it is about, not the whole order — so the linked order's per-unit list
+ * (the same OrderUnitsCard the order detail page renders) appears inline here,
+ * and a request opened from it records the ticket it arrived on.
+ */
+describe("TicketDetailPage — linked order's units", () => {
+  const LINKED_TICKET = {
+    ...BASE_TICKET,
+    orderId: 55,
+    order: {
+      id: 55,
+      orderCode: "ORD-055",
+      createdAt: "2026-06-01T08:00:00.000Z",
+      createdAtDisplay: "2026-06-01",
+      items: [{ id: 1, quantity: 1, unitPrice: "50000", product: { id: 9, name: "Netflix 1 Bulan" } }],
+      voucher: null,
+    },
+  };
+
+  const ORDER_DETAIL = {
+    order: {
+      id: 55,
+      orderCode: "ORD-055",
+      items: [
+        {
+          id: 1,
+          quantity: 1,
+          unitPrice: "50000",
+          product: { id: 9, name: "Netflix 1 Bulan" },
+          stockItem: { id: 900, credentials: "rahasia@mail.com:pw" },
+        },
+      ],
+    },
+    isDelivered: true,
+    stockReplacements: [],
+  };
+
+  it("shows the linked order's units and records the ticket a new request came in on", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches({ ...BASE_DETAIL, ticket: LINKED_TICKET }, { admins: [ADMIN_ROW] }, ORDER_DETAIL);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true, status: "AWAITING_STOCK", credentialIssued: false });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByText("Units of Order ORD-055")).toBeInTheDocument());
+    // The credential itself is not put on screen here — this page needs the
+    // units and their replacement state, not the account.
+    expect(screen.queryByText("rahasia@mail.com:pw")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /report issue/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.type(within(dialog).getByPlaceholderText(/what was wrong/i), "akun tidak bisa login");
+    await user.click(within(dialog).getByRole("button", { name: /^report/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/orders/55/items/1/replace", {
+        reason: "akun tidak bisa login",
+        supportTicketId: 1,
+      }),
+    );
+  });
+
+  it("shows no per-unit list for a ticket with no linked order", async () => {
+    mockFetches(BASE_DETAIL);
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+    expect(screen.queryByText(/units of order/i)).not.toBeInTheDocument();
   });
 });
 

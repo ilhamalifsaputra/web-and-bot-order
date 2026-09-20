@@ -207,7 +207,7 @@ export function ReviewsPage() {
       invalidateAll();
       toast.success(hide ? "Review hidden." : "Review restored.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const setStatus = useMutation({
@@ -217,7 +217,7 @@ export function ReviewsPage() {
       invalidateAll();
       toast.success(status === "CLOSED" ? "Review marked closed." : "Review reopened.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const deleteReply = useMutation({
@@ -226,7 +226,7 @@ export function ReviewsPage() {
       invalidateAll();
       toast.success("Reply deleted.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const deleteReviewMutation = useMutation({
@@ -235,7 +235,7 @@ export function ReviewsPage() {
       invalidateAll();
       toast.success("Review deleted.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   function applyFilters() {

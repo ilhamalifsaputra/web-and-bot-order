@@ -57,6 +57,24 @@ export async function provisionPgTestSchema(prefix: string): Promise<PgTestSchem
       env: { ...process.env, DATABASE_URL_PRISMA: url },
       stdio: "ignore",
     });
+    // Seed the chart of accounts (Financial Ledger M3). Order settlement, wallet
+    // top-ups, manual wallet adjustments and referral commissions all post to the
+    // double-entry ledger now, so a schema without these 15 rows makes every
+    // app-level suite exercise those paths with the posting SKIPPED
+    // (`postOrSkipMissingAccount`) rather than performed — which passes, but tests
+    // a shop with no books instead of the real thing.
+    //
+    // Run as a subprocess, not an import: this module must not load any `@app/*`
+    // module, because its callers run before the `@app/db` Prisma singleton is
+    // constructed and an import here would bind that singleton to the wrong URL
+    // (see this file's header). A child process has its own singleton and its own
+    // DATABASE_URL_PRISMA, so the ordering constraint does not apply to it. This
+    // is the same reason `prisma db push` above is an `execSync` too.
+    execSync("pnpm exec tsx scripts/seed-chart-of-accounts.ts", {
+      cwd: ROOT,
+      env: { ...process.env, DATABASE_URL_PRISMA: url },
+      stdio: "ignore",
+    });
   } catch (err) {
     // db push can fail partway through (schema created, not all tables
     // landed) — best-effort drop it so a failed provision doesn't leave an

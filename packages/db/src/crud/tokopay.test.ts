@@ -35,9 +35,9 @@ import {
 } from "@app/db";
 import { OrderCurrency } from "@app/core/enums";
 import { config } from "@app/core/config";
-import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, FinancialTransactionType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { computeQrisAdminFee, qrisChargeAmount } from "@app/core/payments/tokopay";
 import { encryptCredentials } from "@app/core/credentialCrypto";
 
 let db: TestDb;
@@ -318,6 +318,99 @@ describe("deliverPaidTokopayOrder — Payment ledger confirmation (Task A2b)", (
 
     const rows = await prisma.payment.findMany({ where: { orderId: order.id } });
     expect(rows.length).toBe(0);
+  });
+});
+
+// Financial Ledger M3 (Task 3b): the settlement now also captures TokoPay's own
+// gateway trxId and its fee figures onto the confirmed Payment row. TokoPay is
+// the only one of the six rails with any fee-shaped figure at all, and
+// `computeQrisAdminFee` is a LOCAL estimate of the surcharge the buyer pays ON
+// TOP of the order total — not a cut TokoPay reports having deducted — so it is
+// captured as DATA and deliberately posts no `FEE` ledger transaction. The last
+// test in this block is what pins that decision in code rather than only in a
+// comment; see crud/tokopay.ts's call site for the accounting reasoning.
+describe("deliverPaidTokopayOrder — provider transaction id + fee capture (Financial Ledger M3)", () => {
+  it("captures the gateway trxId, the estimated QRIS admin fee and the expected net receipt", async () => {
+    const order = await makePendingTokopayOrder();
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+      reference: "TOKOPAY-INV-M3",
+    });
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-m3-capture-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    // The gateway's own id, kept distinct from the reference this shop quoted.
+    expect(confirmed.providerTransactionId).toBe("trx-m3-capture-1");
+    expect(confirmed.reference).toBe("TOKOPAY-INV-M3");
+    expect(new Decimal(confirmed.fee!).equals(computeQrisAdminFee(order.totalAmount))).toBe(true);
+    // netAmount is the order total, not `amount - fee`: the buyer's gross
+    // payment is totalAmount + adminFee, so the total IS what the shop nets.
+    expect(new Decimal(confirmed.netAmount!).equals(order.totalAmount)).toBe(true);
+  });
+
+  it("captures the same figures on a WALLET_TOPUP settlement — both call sites are wired, not just the product branch", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+    const attempt = await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-m3-capture-topup-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const confirmed = await prisma.payment.findUniqueOrThrow({ where: { id: attempt.id } });
+    expect(confirmed.status).toBe("CONFIRMED");
+    expect(confirmed.providerTransactionId).toBe("trx-m3-capture-topup-1");
+    expect(new Decimal(confirmed.fee!).equals(computeQrisAdminFee(order.totalAmount))).toBe(true);
+    expect(new Decimal(confirmed.netAmount!).equals(order.totalAmount)).toBe(true);
+  });
+
+  it("posts NO FEE financial transaction — the estimated admin fee is captured data, never a ledger event", async () => {
+    const order = await makePendingTokopayOrder();
+    await createPaymentAttempt(prisma, {
+      orderId: order.id,
+      method: PaymentMethod.TOKOPAY,
+      amount: order.totalAmount,
+      currency: order.currency,
+    });
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-m3-no-fee-posting-1",
+      amount: qrisChargeAmount(order.totalAmount),
+    });
+    expect(result.status).toBe("delivered");
+
+    // The order's revenue posting DID happen (so this is not vacuously true
+    // because nothing posted at all — resetDb seeds the chart of accounts).
+    const postings = await prisma.financialTransaction.findMany({ where: { referenceId: order.id, referenceType: "order" } });
+    expect(postings.map((p) => p.type)).toEqual([FinancialTransactionType.ORDER_PAYMENT]);
+
+    expect(await prisma.financialTransaction.count({ where: { type: FinancialTransactionType.FEE } })).toBe(0);
+    // And nothing was booked against the seeded-but-deliberately-unused
+    // payment_fee accounts either.
+    const feeAccounts = await prisma.ledgerAccount.findMany({ where: { code: { startsWith: "payment_fee." } }, select: { id: true } });
+    expect(feeAccounts.length).toBeGreaterThan(0);
+    expect(await prisma.ledgerEntry.count({ where: { accountId: { in: feeAccounts.map((a) => a.id) } } })).toBe(0);
   });
 });
 

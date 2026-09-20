@@ -302,7 +302,7 @@ export function SupportPage() {
       invalidateAll();
       toast.success("Ticket assigned.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const close = useMutation({
@@ -312,7 +312,7 @@ export function SupportPage() {
       invalidateAll();
       toast.success("Ticket closed.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const resolve = useMutation({
@@ -321,7 +321,7 @@ export function SupportPage() {
       invalidateAll();
       toast.success("Ticket marked resolved.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const reopen = useMutation({
@@ -330,7 +330,7 @@ export function SupportPage() {
       invalidateAll();
       toast.success("Ticket reopened.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const classify = useMutation({
@@ -340,7 +340,7 @@ export function SupportPage() {
       invalidateAll();
       toast.success("Ticket category updated.");
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   const bulkAction = useMutation({
@@ -368,7 +368,7 @@ export function SupportPage() {
           : `${verb} ${result.succeeded.length} ticket${result.succeeded.length === 1 ? "" : "s"}.`,
       );
     },
-    onError: (e: Error) => toast.error(describeError(e.message)),
+    onError: (e: Error) => toast.error(describeError(e)),
   });
 
   if (isError) {

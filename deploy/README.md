@@ -58,6 +58,59 @@ compose `command` runs the same combined server. Verify after deploy:
 `docker compose config` (service resolves) and `docker compose ps` (`server`
 healthcheck green on `/login`).
 
+## Releasing — the database steps are automatic
+
+A release deploys with one command:
+
+```bash
+COMPOSE="docker compose -f docker-compose.yml -f docker-compose.postgres.prod.yml"
+DATABASE_URL_PRISMA=postgresql://engine-marker deploy/backup/backup.sh   # see "Take a dump first"
+$COMPOSE up -d --build
+$COMPOSE logs --since 10m server | grep entrypoint                       # READ these lines
+```
+
+`--build` also builds the React SPA bundles (admin + storefront) in the
+Dockerfile's builder stage — they are gitignored, so there is no separate client
+build step on the Docker path. Then `docker-entrypoint.sh` runs, before the app
+process starts and on every start path (`up`, `restart`, and the automatic restart
+after a crash):
+
+1. `prisma db push --skip-generate` — never with `--accept-data-loss`, so a change
+   that would drop rows fails the push and **the container refuses to start**.
+   This is the only fatal step.
+2. The ledger chart-of-accounts seed (`scripts/seed-chart-of-accounts.ts`). Every
+   ledger posting resolves its account by `code`, so on a database where this has
+   never run, order settlements, wallet top-ups and referral commissions record
+   nothing at all. Idempotent upsert; a no-op once seeded.
+3. The release's data-only migrations (the `$DATA_MIGRATIONS` list in
+   `docker-entrypoint.sh`) via `prisma db execute` — `db push` only syncs
+   structure, never rows.
+
+**Why step 3 of the deploy command is `grep entrypoint`:** steps 2 and 3 above only
+**warn** on failure and let start-up continue, because the schema is already pushed
+by then and a container that refuses to start cannot be used to repair anything.
+The seed also exits non-zero for a *drifted chart* — an account classified
+differently from `CHART_OF_ACCOUNTS`, or an active account the chart no longer
+lists — which is an accounting decision about rows that may already carry posted
+entries, not a deploy failure. Those warnings are visible nowhere else.
+
+Opting out: `AUTO_MIGRATE=0` in `.env`, or `deploy/backup/restore.sh`'s
+`data/SKIP_AUTO_MIGRATE` sentinel for one boot after a rollback. Then the steps are
+yours: `$COMPOSE run --rm server pnpm exec prisma db push --schema
+prisma/schema.prisma` and `$COMPOSE run --rm server pnpm seed-chart-of-accounts`.
+Full reference: `docs/MIGRATIONS.md`.
+
+### Take a dump first
+
+The entrypoint takes **no** pre-deploy snapshot on the Postgres path. The Postgres
+branch of `deploy/backup/backup.sh` dumps by running `pg_dump` *inside* the
+`postgres` container over a Docker socket the `server` container does not have, and
+shipping `postgresql-client` in the app image would give a client older than the
+`postgres:16` server. So the dump runs on the host, and it is the only rollback
+point a deploy has — see **Backup — Postgres** and **Restore — Postgres** in
+[`backup/README.md`](backup/README.md). What the entrypoint does guarantee is that
+`db push` refuses any change it cannot apply without dropping data.
+
 ## Deployment checklist (public release)
 
 - [ ] nginx installed, `nginx -t` clean, 80→443 redirect works.
@@ -66,15 +119,24 @@ healthcheck green on `/login`).
 - [ ] `docker compose ps` — all 4 services up, healthchecks green.
 - [ ] `GET /healthz` (admin + shop) → 200; `GET /login` → 200.
 - [ ] Backup cron active (`deploy/backup/README.md`); one restore rehearsed.
+- [ ] `logs --since 10m server | grep entrypoint` read: schema pushed, ledger
+      chart of accounts seeded, data-only migrations applied, **no `WARNING`**.
 
 ## 502 runbook
 
 A 502/504 from nginx means the upstream app didn't answer. Triage in order:
 
-1. **Is the app up?** `docker compose ps` — is web-admin/storefront `Up`/healthy?
-   - Down/restarting → `docker compose logs --tail=100 web-admin`. Common: DB
-     migration mismatch (`P2022`) — apply schema then restart (CLAUDE.md), or a
-     boot crash (bad `.env`).
+1. **Is the app up?** `docker compose ps` — is `server` `Up`/healthy?
+   - Down/restarting → `docker compose logs --tail=100 server`, and look for
+     `entrypoint:` lines first. A refused schema push stops the container on
+     purpose (`prisma db push` never gets `--accept-data-loss`, so a change that
+     would drop rows fails loudly instead of deleting data) — that log line names
+     the change; make it additive and deploy again, or set `AUTO_MIGRATE=0` and
+     resolve it by hand (`docs/MIGRATIONS.md`). Otherwise: a boot crash (bad
+     `.env`), or Postgres not reachable.
+   - A `P2022 column ... does not exist` at runtime now means the schema step was
+     skipped, not forgotten — check for `AUTO_MIGRATE=0` in `.env` and for a
+     leftover `data/SKIP_AUTO_MIGRATE` sentinel from a rollback.
 2. **Is it listening on the expected port?** `curl -I http://127.0.0.1:8000/healthz`
    from the host. 200 → nginx/proxy_pass port mismatch. Connection refused →
    app not bound (check `WEB_HOST=0.0.0.0` inside the container).

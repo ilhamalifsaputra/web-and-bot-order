@@ -1201,6 +1201,198 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
   });
 });
 
+// ---- orders API: masked credentials on detail + audited reveal ------------
+
+describe("orders API — credential masking and audited reveal", () => {
+  const MASK = "••••••••";
+
+  async function makeAutoDeliveredOrder(): Promise<{ orderId: number; orderCode: string; secret: string }> {
+    const orderId = await makePendingOrder();
+    return approveAndReadSecret(orderId);
+  }
+
+  async function approveAndReadSecret(orderId: number): Promise<{ orderId: number; orderCode: string; secret: string }> {
+    const approve = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approve.statusCode).toBe(200);
+    const order = (await getOrder(prisma, orderId))!;
+    const secret = order.items[0]!.stockItem!.credentials; // getOrder decrypts
+    expect(secret).toBeTruthy();
+    return { orderId, orderCode: order.orderCode, secret };
+  }
+
+  async function makeManualDeliveredOrder(content: string): Promise<{ orderId: number; orderCode: string }> {
+    const orderId = await makeProcessingOrder();
+    const fulfil = await post(`/api/orders/${orderId}/fulfill`, seed.cookie, { csrf_token: seed.csrf, content });
+    expect(fulfil.statusCode).toBe(200);
+    return { orderId, orderCode: (await getOrder(prisma, orderId))!.orderCode };
+  }
+
+  it("GET detail masks an auto order's stock credentials and never carries the plaintext", async () => {
+    const { orderId, secret } = await makeAutoDeliveredOrder();
+    const res = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(secret);
+    const data = res.json() as {
+      order: { items: { stockItem: { credentials: string } | null }[]; deliveredContent: string | null };
+      hasDeliveredContent: boolean;
+    };
+    expect(data.order.items[0]!.stockItem!.credentials).toBe(MASK);
+    expect(data.order.deliveredContent).toBeNull();
+    expect(data.hasDeliveredContent).toBe(false);
+  });
+
+  it("GET detail masks a manual order's deliveredContent and flags that it exists", async () => {
+    const { orderId } = await makeManualDeliveredOrder("user:x pass:secret-y");
+    const res = await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("secret-y");
+    const data = res.json() as { order: { deliveredContent: string | null }; hasDeliveredContent: boolean };
+    expect(data.order.deliveredContent).toBe(MASK);
+    expect(data.hasDeliveredContent).toBe(true);
+  });
+
+  it("GET detail does not write an audit row (only the reveal route does)", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    await get(`/api/orders/${orderId}`, seed.cookie);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal returns an auto order's plaintext credentials per item and audits exactly once without the secret", async () => {
+    const { orderId, orderCode, secret } = await makeAutoDeliveredOrder();
+    const itemId = (await getOrder(prisma, orderId))!.items[0]!.id;
+
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ credentials: [{ id: itemId, text: secret }], deliveredContent: null });
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_credentials_revealed" } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.adminId).toBe(seed.adminId);
+    expect(audit[0]!.targetType).toBe("order");
+    expect(audit[0]!.targetId).toBe(orderId);
+    expect(audit[0]!.details).toBe(`Revealed the delivered credentials for order ${orderCode}.`);
+    expect(audit[0]!.details).not.toContain(secret);
+  });
+
+  it("POST reveal returns a manual order's deliveredContent and audits without the content", async () => {
+    const { orderId } = await makeManualDeliveredOrder("user:x pass:secret-y");
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ credentials: [], deliveredContent: "user:x pass:secret-y" });
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_credentials_revealed", targetId: orderId } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.details).not.toContain("secret-y");
+  });
+
+  // Only a DELIVERED order has actually handed its credentials over — a
+  // pending/cancelled order can still carry a reserved (or stale) stock pointer.
+  it("POST reveal refuses a not-yet-delivered order (422), reveals nothing and writes no audit row", async () => {
+    const orderId = await makePendingOrder(); // PENDING_VERIFICATION with reserved stock
+    const secret = (await getOrder(prisma, orderId))!.items[0]!.stockItem!.credentials;
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
+    expect((res.json() as { error: string }).error).toMatch(/delivered/i);
+    expect(res.body).not.toContain(secret);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal refuses a CANCELLED order even when its item still points at a stock row", async () => {
+    const orderId = await makePendingOrder();
+    const secret = (await getOrder(prisma, orderId))!.items[0]!.stockItem!.credentials;
+    await prisma.order.update({ where: { id: orderId }, data: { status: "CANCELLED" } });
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
+    expect(res.body).not.toContain(secret);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal omits an item whose stock row now belongs to another order, but reveals the rest", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
+    await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+    const { secret: firstSecret } = await approveAndReadSecret(order.id);
+    const items = (await getOrder(prisma, order.id))!.items;
+    expect(items.length).toBe(2);
+    const [keep, stale] = items;
+    const otherOrderId = await makePendingOrder();
+    // The stale item's stock row was released and re-sold to another buyer.
+    await prisma.stockItem.update({ where: { id: stale!.stockItem!.id }, data: { orderId: otherOrderId } });
+
+    const res = await post(`/api/orders/${order.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { credentials: { id: number; text: string }[] };
+    expect(body.credentials).toEqual([{ id: keep!.id, text: keep!.stockItem!.credentials }]);
+    expect(res.body).not.toContain(stale!.stockItem!.credentials);
+    expect(firstSecret).toBeTruthy();
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed", targetId: order.id } })).toBe(1);
+  });
+
+  it("POST reveal writes no audit row when nothing is left to reveal", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    const item = (await getOrder(prisma, orderId))!.items[0]!;
+    await prisma.stockItem.update({ where: { id: item.stockItem!.id }, data: { orderId: null } });
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ credentials: [], deliveredContent: null });
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal audits every call, including repeat reveals of the same order", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed", targetId: orderId } })).toBe(2);
+  });
+
+  it("POST reveal returns 404 for an unknown order and writes no audit row", async () => {
+    const res = await post(`/api/orders/999999/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(404);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal surfaces a malformed CREDENTIAL_ENCRYPTION_KEY as a JSON 500 and writes no audit row", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    const originalKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
+    try {
+      const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(500);
+      expect(res.headers["content-type"]).toContain("application/json");
+      expect((res.json() as { error: string }).error).toMatch(/CREDENTIAL_ENCRYPTION_KEY/);
+    } finally {
+      if (originalKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+      else process.env.CREDENTIAL_ENCRYPTION_KEY = originalKey;
+    }
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal rejects bad CSRF (403) and writes no audit row", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: "wrong-token" });
+    expect(res.statusCode).toBe(403);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal requires auth (anon → 401)", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    const res = await post(`/api/orders/${orderId}/reveal`, null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("POST reveal refuses a read-only admin (403) and writes no audit row", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+    try {
+      const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(403);
+      expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+    } finally {
+      await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    }
+  });
+});
+
 // ---- Orders admin-page refactor: pagination, KPIs, cancel, bulk-action ----
 
 function postJsonOrders(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown> = {}) {
@@ -3891,6 +4083,17 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
     });
 
+    it("audits a count sentence and never echoes the admin-typed note (which may hold a pasted credential)", async () => {
+      const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+      const ids = items.slice(0, 2).map((i) => i.id);
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids, note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
+      expect(audit!.details).toBe("Marked 2 stock items dead.");
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
+    });
+
     it("rejects an empty ids array with 400", async () => {
       const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [] });
       expect(res.statusCode).toBe(400);
@@ -3949,6 +4152,16 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
       expect(audit).toBeTruthy();
       expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("audits a sentence naming the item and never echoes the admin-typed note", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit!.details).toBe(`Marked stock item #${item.id} dead.`);
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
     });
 
     it("rejects a non-existent stock item id with 404", async () => {
@@ -4035,6 +4248,16 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.note).toBe("checked ok");
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_edit_note", targetId: item.id } });
       expect(audit).toBeTruthy();
+    });
+
+    it("audits a sentence naming the item and never echoes the note text", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/note`, seed.cookie, seed.csrf, { note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_edit_note", targetId: item.id } });
+      expect(audit!.details).toBe(`Updated the note on stock item #${item.id}.`);
+      expect(audit!.details).not.toContain("hunter2");
+      expect(audit!.details).not.toContain("user@example.com");
     });
 
     it("rejects a non-existent stock item id with 404", async () => {

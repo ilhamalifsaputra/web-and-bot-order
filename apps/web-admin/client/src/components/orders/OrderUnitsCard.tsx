@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { DataTable } from "../shared/DataTable";
 import { EmptyState } from "../shared/EmptyState";
@@ -7,7 +7,7 @@ import { ConfirmDialog } from "../shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -90,6 +90,17 @@ interface OrderUnitsCardProps {
   /** Set when the complaint arrived on a support ticket, so the request records
    *  which ticket it came in on (StockReplacement.supportTicketId). */
   supportTicketId?: number;
+  /** Plaintext credentials by OrderItem id once an admin has used the audited
+   *  Reveal on the order page; undefined while still masked (the GET response
+   *  carries only a mask, never the credential). An id missing from the map shows
+   *  "—" — the reveal skipped that unit. */
+  revealedCredentials?: Map<number, string>;
+  /** The Show/Hide button the order page renders in this card's header. */
+  headerAction?: ReactNode;
+  /** Called whenever this card re-reads the order after an action: a replacement
+   *  changes which credential a unit holds, so the page drops any revealed text
+   *  rather than keep showing the retired account. */
+  onRefetched?: () => void;
 }
 
 /** A unit plus everything known about complaints against it. */
@@ -146,6 +157,9 @@ export function OrderUnitsCard({
   title,
   showCredentials = true,
   supportTicketId,
+  revealedCredentials,
+  headerAction,
+  onRefetched,
 }: OrderUnitsCardProps): JSX.Element {
   const qc = useQueryClient();
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -176,6 +190,7 @@ export function OrderUnitsCard({
    *  an audit row the ticket page renders in "Order Activity" — so when this
    *  card is rendered inside a ticket, that ticket is refreshed too. */
   const refresh = () => {
+    onRefetched?.();
     void qc.invalidateQueries({ queryKey: ["order", orderId] });
     if (supportTicketId != null) {
       void qc.invalidateQueries({ queryKey: ["ticket", String(supportTicketId)] });
@@ -306,6 +321,7 @@ export function OrderUnitsCard({
     <Card>
       <CardHeader>
         <CardTitle as="h2">{title ?? `Items (${units.length})`}</CardTitle>
+        {headerAction && <CardAction>{headerAction}</CardAction>}
       </CardHeader>
       <CardContent>
         {selectedIds.size > 0 && (
@@ -379,7 +395,11 @@ export function OrderUnitsCard({
                     header: "Credentials",
                     render: (row: UnitRow) => (
                       <span className="block max-w-[280px] font-mono text-xs break-all whitespace-normal text-ink-soft">
-                        {row.stockItem?.credentials ?? "—"}
+                        {row.stockItem
+                          ? revealedCredentials
+                            ? (revealedCredentials.get(row.id) ?? "—")
+                            : row.stockItem.credentials
+                          : "—"}
                       </span>
                     ),
                   },

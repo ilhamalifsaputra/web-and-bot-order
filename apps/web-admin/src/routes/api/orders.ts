@@ -7,6 +7,7 @@ import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { startOfDayUtc } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import {
   prisma,
   listOrders,
@@ -35,6 +36,7 @@ import {
 import { currentAdmin, csrfProtect, blockReadonlyReads } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
 import { displayDate, displayDateTime } from "../../dateDisplay";
+import { MASKED_CREDENTIAL, CREDENTIAL_KEY_ERROR_MESSAGE } from "./stock";
 
 const STATUS_VALUES = Object.values(OrderStatus) as string[];
 const PAGE_SIZE_OPTIONS = [20, 50, 100];
@@ -243,6 +245,17 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // fields (customerDataFields.length === 0 ⇒ nothing to render).
     const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
     const customerData = parseCustomerData(order.customerData);
+    // getOrder decrypts stock credentials for the delivery paths; this page
+    // load must not leak them (or the hand-typed deliveredContent) — the
+    // audited POST /api/orders/:orderId/reveal below is the only way to read them.
+    const hasDeliveredContent = order.deliveredContent != null;
+    const masked = {
+      ...order,
+      items: order.items.map((item) =>
+        item.stockItem ? { ...item, stockItem: { ...item.stockItem, credentials: MASKED_CREDENTIAL } } : item,
+      ),
+      deliveredContent: hasDeliveredContent ? MASKED_CREDENTIAL : null,
+    };
     // Every replacement request ever opened against any unit of this order
     // (M20) — the Items table needs it to know which units already have one
     // open (so it doesn't offer an action that would only be refused) and to
@@ -255,7 +268,8 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     // rail's own record; nothing the client sends here is ever used as an amount.
     const overpaidExcess = await findOverpaidExcess(prisma, orderId);
     return reply.send({
-      order: { ...order, createdAtDisplay: displayDateTime(order.createdAt) },
+      order: { ...masked, createdAtDisplay: displayDateTime(order.createdAt) },
+      hasDeliveredContent,
       money: serializeMoneyView(orderMoneyView(order)),
       // isDelivered/canAct/canCredit/canFulfill/canReject/canResend — one
       // shared eligibility function (packages/db/src/crud/orders.ts) so the
@@ -282,6 +296,52 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
               credited: overpaidExcess.creditedWalletTransactionId !== null,
             },
     });
+  });
+
+  // Explicit, audited reveal of an order's delivered credentials (every
+  // stock item's account plus the hand-typed deliveredContent) — the
+  // counterpart of the masked GET above, mirroring POST
+  // /api/stock/item/:stockId/reveal. csrfProtect also refuses the readonly
+  // role (canMutate). Every call that reveals something is audited, repeats
+  // included. Only a DELIVERED order reveals (PARTIALLY_DELIVERED exists in the
+  // enum but nothing produces it yet), and a stock row is only revealed when
+  // it still belongs to this order — a released row re-sold to another buyer
+  // must never leak through a stale OrderItem.stockItemId.
+  app.post("/api/orders/:orderId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = Number((req.params as { orderId: string }).orderId);
+    let order: Awaited<ReturnType<typeof getOrder>>;
+    try {
+      order = await getOrder(prisma, orderId);
+    } catch (e) {
+      if (e instanceof CredentialKeyConfigError) {
+        logger.error({ err: e }, "Order credential reveal failed — credential encryption is not configured correctly");
+        return reply.code(500).send({ error: CREDENTIAL_KEY_ERROR_MESSAGE });
+      }
+      throw e;
+    }
+    if (!order) return reply.code(404).send({ error: "Order not found." });
+    if (order.status !== OrderStatus.DELIVERED) {
+      return reply.code(422).send({ error: "Only a delivered order's credentials can be revealed." });
+    }
+
+    const credentials = order.items.flatMap((item) =>
+      item.stockItem && item.stockItem.orderId === order.id ? [{ id: item.id, text: item.stockItem.credentials }] : [],
+    );
+    const deliveredContent = order.deliveredContent ?? null;
+    // Nothing to show (e.g. a wallet top-up, or every stock row re-assigned):
+    // no secret left the server, so there is nothing to audit either.
+    if (credentials.length === 0 && deliveredContent === null) {
+      return reply.send({ credentials, deliveredContent });
+    }
+
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "order_credentials_revealed",
+      targetType: "order",
+      targetId: orderId,
+      details: `Revealed the delivered credentials for order ${order.orderCode}.`, // never the credentials themselves
+    });
+    return reply.send({ credentials, deliveredContent });
   });
 
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {

@@ -11,8 +11,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { RefreshCw, Check, X, CircleDollarSign, Send, MailX, HandCoins } from "lucide-react";
+import { Card, CardHeader, CardTitle, CardAction, CardContent } from "@/components/ui/card";
+import { RefreshCw, Check, X, CircleDollarSign, Send, MailX, Eye, EyeOff, HandCoins } from "lucide-react";
 import { toast } from "sonner";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { apiGet, apiPost } from "../api/client";
@@ -24,7 +24,15 @@ interface OrderItem {
   quantity: number;
   unitPrice: string;
   product: { id: number; name: string };
+  /** `credentials` is only ever the server's masked placeholder here — the
+   * real value comes from POST /api/orders/:orderId/reveal. */
   stockItem: { id: number; credentials: string } | null;
+}
+
+/** POST /api/orders/:orderId/reveal's response — the audited, plaintext view. */
+interface RevealedOrderSecrets {
+  credentials: { id: number; text: string }[];
+  deliveredContent: string | null;
 }
 
 interface OrderDetail {
@@ -55,7 +63,8 @@ interface OrderDetail {
   voucher: { code: string; type: string } | null;
   /** Set only by a manual/manual_with_info fulfilment (fulfillManualOrder) —
    * always null for auto-delivered orders, which deliver via stockItem
-   * instead. The admin's own audit view of what was sent to the buyer. */
+   * instead. Only the masked placeholder (or null) arrives here; the real
+   * text is fetched via the audited reveal route. */
   deliveredContent: string | null;
   /** The base GET /api/orders/:orderId response already carries these
    * (getOrder's `include: fullInclude` returns every Order scalar column,
@@ -108,6 +117,9 @@ type CustomerDataUnit = Record<string, string>;
 interface OrderDetailData {
   order: OrderDetail;
   money: MoneyView;
+  /** True when a manual fulfilment stored deliveredContent (the payload itself
+   * only carries the masked placeholder for it). */
+  hasDeliveredContent: boolean;
   isDelivered: boolean;
   canAct: boolean;
   canCredit: boolean;
@@ -208,6 +220,11 @@ export function OrderDetailPage() {
   const [rejectReason, setRejectReason] = useState("");
   const [fulfillContent, setFulfillContent] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // Plaintext credentials/delivered content for this order, present only after
+  // an explicit Show click (one audited fetch reveals everything at once).
+  // Held in component state only — never cached in react-query or storage —
+  // and tagged with its order id so navigating to another order can't show it.
+  const [revealed, setRevealed] = useState<(RevealedOrderSecrets & { orderId: string }) | null>(null);
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ["order", orderId] });
 
@@ -263,6 +280,17 @@ export function OrderDetailPage() {
     onError: (e: Error) => setActionError(describeError(e)),
   });
 
+  const reveal = useMutation({
+    mutationFn: () => apiPost<RevealedOrderSecrets>(`/api/orders/${orderId}/reveal`, {}),
+    onSuccess: (result) => { setRevealed({ ...result, orderId: orderId ?? "" }); setActionError(null); },
+    onError: (e: Error) => setActionError(describeError(e.message)),
+  });
+  const shown = revealed && revealed.orderId === orderId ? revealed : null;
+  const toggleReveal = () => {
+    if (shown) setRevealed(null);
+    else reveal.mutate();
+  };
+
   if (isError) {
     return (
       <PageLayout title="Order Detail">
@@ -278,7 +306,7 @@ export function OrderDetailPage() {
     );
   }
 
-  const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, customerDataFields, customerData } = data;
+  const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, hasDeliveredContent, customerDataFields, customerData } = data;
   const stockReplacements = data.stockReplacements ?? [];
   const overpayment = data.overpayment ?? null;
   /** Offer the action only while there really is something to hand back — the
@@ -299,6 +327,22 @@ export function OrderDetailPage() {
   // noise, so hide it there; a real auto order keeps the column exactly as
   // before.
   const isManualOrder = order.items.length > 0 && order.items.every(i => i.stockItem === null);
+  // Mirrors the reveal route's rule (server-computed isDelivered): a pending
+  // order can hold a reserved stock row, but nothing has been delivered yet.
+  const canRevealStock = isDelivered && order.items.some(i => i.stockItem !== null);
+  const revealedById = new Map((shown?.credentials ?? []).map(c => [c.id, c.text]));
+  // One button per card that shows a secret, all bound to the same toggle.
+  const revealButton = (noun: string) => (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={reveal.isPending}
+      aria-label={shown ? `Hide delivered ${noun}` : `Show delivered ${noun}`}
+      onClick={toggleReveal}
+    >
+      {shown ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+    </Button>
+  );
   // Guest buyers have no name to fall back on, so the Customer row would
   // otherwise render a bare dash — label them explicitly instead, and give
   // their one contact channel its own card below.
@@ -510,6 +554,9 @@ export function OrderDetailPage() {
           replacements={stockReplacements}
           isDelivered={isDelivered}
           showCredentials={!isManualOrder}
+          revealedCredentials={shown ? revealedById : undefined}
+          headerAction={canRevealStock ? revealButton("credentials") : undefined}
+          onRefetched={() => setRevealed(null)}
         />
       )}
 
@@ -539,11 +586,14 @@ export function OrderDetailPage() {
 
       {/* Delivered content (manual fulfilment's own audit view — auto orders
           never set this, they deliver via stockItem.credentials above) */}
-      {isDelivered && order.deliveredContent != null && (
+      {isDelivered && hasDeliveredContent && (
         <Card className="mt-6">
-          <CardHeader><CardTitle>Delivered Content</CardTitle></CardHeader>
+          <CardHeader>
+            <CardTitle>Delivered Content</CardTitle>
+            <CardAction>{revealButton("content")}</CardAction>
+          </CardHeader>
           <CardContent>
-            <pre className="whitespace-pre-wrap break-words font-mono text-xs text-ink">{order.deliveredContent}</pre>
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs text-ink">{shown ? (shown.deliveredContent ?? "—") : order.deliveredContent}</pre>
           </CardContent>
         </Card>
       )}

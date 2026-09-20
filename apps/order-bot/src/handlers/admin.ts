@@ -502,6 +502,16 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");
     return `${icon} #${it.id} — ${preview}`;
   });
+  // The previews above are decrypted plaintext, so record the view (count only,
+  // never the text) before showing them — the web equivalents are audited too.
+  const admin = await getUserByTelegramId(prisma, ctx.from!.id);
+  await logAdminAction(prisma, {
+    adminId: requireAdminId(admin),
+    action: "stock_view",
+    targetType: "product",
+    targetId: productId,
+    details: `Viewed ${items.length} stock ${items.length === 1 ? "item" : "items"} in the admin bot.`,
+  });
   const text =
     `📦 <b>Stock items for ${esc(p.name)}</b>\n` +
     `Total shown: ${items.length}\n\n` +

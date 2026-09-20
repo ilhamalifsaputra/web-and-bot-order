@@ -72,6 +72,48 @@ describe("GET /api/reports", () => {
     expect(body.days).toBe(30);
   });
 
+  it("funnel counts product orders only — a wallet top-up is not a sale — and sums every status it has", async () => {
+    const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const mk = (code: string, status: string, kind = "PRODUCT") =>
+      prisma.order.create({
+        data: { orderCode: code, userId: user.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status, kind },
+      });
+    await mk("ORD-F1", "DELIVERED");
+    await mk("ORD-F2", "DELIVERED");
+    await mk("ORD-F3", "PENDING_PAYMENT");
+    await mk("ORD-F4", "PAID");
+    await mk("ORD-TOPUP", "DELIVERED", "WALLET_TOPUP");
+
+    const body = (await get("/api/reports", cookie)).json() as { funnel: { status: string; count: number }[] };
+    const byStatus = Object.fromEntries(body.funnel.map((f) => [f.status, f.count]));
+    expect(byStatus).toEqual({ DELIVERED: 2, PENDING_PAYMENT: 1, PAID: 1 });
+  });
+
+  it("top products report revenue net of order discounts, matching the dashboard's Top Products list", async () => {
+    const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, { productId: parent.id, name: "Disc item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-D", userId: user.id, subtotalAmount: "20000", discountAmount: "5000", totalAmount: "15000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: denom.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const reports = (await get("/api/reports", cookie)).json() as { products: { productId: number; revenue: string }[] };
+    const dashboard = (await get("/api/dashboard/top-products?days=30", cookie)).json() as { productId: number; revenueIdrEquiv: string }[];
+    expect(reports.products).toEqual([expect.objectContaining({ productId: denom.id, revenue: "15000" })]);
+    expect(reports.products[0].revenue).toBe(dashboard[0].revenueIdrEquiv);
+  });
+
+  it("treats a fractional ?days like its whole part, so the window still starts on a local midnight", async () => {
+    const whole = (await get("/api/reports?days=7", cookie)).json() as { daily: { day: string }[]; days: number };
+    const fractional = (await get("/api/reports?days=7.5", cookie)).json() as { daily: { day: string }[]; days: number };
+    expect(fractional.daily.map((d) => d.day)).toEqual(whole.daily.map((d) => d.day));
+    expect(whole.daily).toHaveLength(7);
+    // The echoed window size is the normalized one, not the raw 7.5.
+    expect(fractional.days).toBe(7);
+  });
+
   it("requires auth (anon → 401)", async () => {
     const res = await get("/api/reports", null);
     expect(res.statusCode).toBe(401);

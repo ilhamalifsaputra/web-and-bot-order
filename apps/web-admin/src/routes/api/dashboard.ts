@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { OrderStatus } from "@app/core/enums";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
 import {
   TOKOPAY_POLL_STALE_MS,
@@ -74,14 +75,37 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   return {
     idr: idr.isZero() ? null : idr.toString(),
     usdt: usdt.isZero() ? null : usdt.toString(),
-    usd: usdt.isZero() ? null : usdt.toString(), // 1 USDT ≈ 1 USD, same figure under a second label
   };
 }
 
-function trendPct(curr: Decimal, prev: Decimal): string | null {
-  if (prev.isZero()) return null;
+/**
+ * Smallest yesterday-so-far revenue a "% vs same time yesterday" figure is
+ * shown against. Below it a single small sale swings the percentage into the
+ * thousands (Rp500 → Rp75.000 reads "+14,900%"), which says nothing about how
+ * the shop is doing. IDR 10.000 is roughly the price of the cheapest
+ * denominations and 1 USDT the equivalent for the crypto rails: one ordinary
+ * sale yesterday is enough to compare against, less than that is noise.
+ */
+const TREND_MIN_BASE = { idr: new Decimal(10_000), usdt: new Decimal(1) } as const;
+
+function trendPct(curr: Decimal, prev: Decimal, minBase: Decimal): string | null {
+  if (prev.isZero() || prev.lt(minBase)) return null;
   return curr.minus(prev).div(prev).times(100).toDecimalPlaces(1).toString();
 }
+
+// Buckets for the "Orders Today" card. Everything not named here (PAID,
+// CONFIRMED, PROCESSING, REFUNDED, EXPIRED, PARTIALLY_DELIVERED, ...) lands in
+// `other`, which is computed by exclusion so the parts sum to the total even
+// when a new status is added to the enum.
+const DELIVERED_STATUSES: string[] = [OrderStatus.DELIVERED];
+const PENDING_STATUSES: string[] = [
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.PENDING_VERIFICATION,
+  OrderStatus.UNDERPAID,
+];
+const FAILED_STATUSES: string[] = [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.FAILED];
 
 export default async function dashboardApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/dashboard/kpis", { preHandler: currentAdmin }, async () => {
@@ -101,21 +125,25 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const ordersTotal = orderStatus.reduce((sum, s) => sum + s.count, 0);
     const byStatus = (statuses: string[]) =>
       orderStatus.filter((s) => statuses.includes(s.status)).reduce((sum, s) => sum + s.count, 0);
+    const delivered = byStatus(DELIVERED_STATUSES);
+    const pending = byStatus(PENDING_STATUSES);
+    const failed = byStatus(FAILED_STATUSES);
 
     return {
       revenue: {
         ...shapeRevenue(todayRevenue),
         trendPct: {
-          idr: trendPct(new Decimal(todayRevenue.revenue_idr), new Decimal(yesterdayRevenue.revenue_idr)),
-          usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt)),
+          idr: trendPct(new Decimal(todayRevenue.revenue_idr), new Decimal(yesterdayRevenue.revenue_idr), TREND_MIN_BASE.idr),
+          usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt), TREND_MIN_BASE.usdt),
         },
       },
       profit,
       orders: {
         total: ordersTotal,
-        delivered: byStatus(["DELIVERED"]),
-        pending: byStatus(["PENDING_PAYMENT", "PAYMENT_DETECTED", "CONFIRMING", "PENDING_VERIFICATION", "UNDERPAID"]),
-        failed: byStatus(["CANCELLED", "REJECTED", "FAILED"]),
+        delivered,
+        pending,
+        failed,
+        other: ordersTotal - delivered - pending - failed,
       },
       pendingActions: {
         toReview,
@@ -282,7 +310,12 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
     if (metric === "orders") {
       const rows = await ordersByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.ordersUsdt : r.ordersIdr }));
+      // An order is an order whatever it was paid in, so "combined" is the sum
+      // of both currencies' counts (unlike revenue, there is nothing to convert).
+      return rows.map((r) => ({
+        day: r.day,
+        value: currency === "usdt" ? r.ordersUsdt : currency === "combined" ? r.ordersIdr + r.ordersUsdt : r.ordersIdr,
+      }));
     }
     if (currency === "combined") {
       const rows = await combinedRevenueByDay(prisma, days);

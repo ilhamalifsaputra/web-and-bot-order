@@ -46,9 +46,9 @@ const SALES_ONLY = { kind: OrderKind.PRODUCT } as const;
  * deliberately excluded: it's a payment method (money the shop already
  * holds), not a discount, so it doesn't reduce banked revenue.
  *
- * `order` is optional so callers that only need gross line revenue (e.g.
- * `topProducts`) can omit it and keep the pre-fix behavior; every caller
- * feeding `profitSummarySince`/`topProductsByMargin` must pass it.
+ * `order` is optional so a caller that only needs gross line revenue can omit
+ * it; every current caller (`topProducts`, `topProductsByMargin`,
+ * `profitSummarySince`) passes it so they all report the same net figure.
  *
  * `OrderItem.unitPrice` is ALWAYS the catalog's central-IDR
  * `Denomination.price`, written once at order creation (orders.ts
@@ -214,16 +214,12 @@ export interface TopProduct {
  * `profitSummarySince` in this file — every windowed query in this module
  * takes its bound the same way rather than three different conventions.
  *
- * Revenue is GROSS (unit_price × quantity, no order-level discount proration)
- * — deliberately, not a bug. `orderItemRevenueIdr`'s proration (M-1) needs
- * each line's parent `order.subtotalAmount`/`bulkDiscountAmount`/
- * `discountAmount`, which isn't summable through `groupBy`'s `_sum` (it only
- * sums a stored column, never unitPrice×quantity, let alone a
- * discount-prorated variant of it). Ranking is unaffected either way — it
- * was already by quantity sold, not revenue, before this fix — so this stays
- * consistent with the pre-existing "topProducts is gross, topProductsByMargin
- * is net" split documented on orderItemRevenueIdr above. A caller that needs
- * discount-aware profit per product already has `topProductsByMargin`.
+ * Revenue is NET of order-level discounts (`orderItemRevenueIdr` with the
+ * parent order's discount columns), the same basis as `topProductsByMargin`,
+ * so the Reports page's Top Products table and the dashboard's Top Products
+ * list agree. The discount can't be summed through `groupBy`, which is why the
+ * ranking (by quantity) stays a `groupBy` and only the revenue is filled in
+ * from the second query below, over just the top N products' rows.
  *
  * The revenue figure is filled in with a second query scoped to just the top
  * N product ids (not the whole table), so the "no full-table scan" property
@@ -248,7 +244,12 @@ export async function topProducts(db: Db, since: Date, limit = 10): Promise<TopP
         productId: { in: productIds },
         order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
       },
-      select: { productId: true, quantity: true, unitPrice: true },
+      select: {
+        productId: true,
+        quantity: true,
+        unitPrice: true,
+        order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
+      },
     }),
     // OrderItem is keyed by denomination (column is `product_id`).
     db.denomination.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } }),

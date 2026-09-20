@@ -231,7 +231,11 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
   // stock item's account plus the hand-typed deliveredContent) — the
   // counterpart of the masked GET above, mirroring POST
   // /api/stock/item/:stockId/reveal. csrfProtect also refuses the readonly
-  // role (canMutate). Every call is audited, repeats included.
+  // role (canMutate). Every call that reveals something is audited, repeats
+  // included. Only a DELIVERED order reveals (PARTIALLY_DELIVERED exists in the
+  // enum but nothing produces it yet), and a stock row is only revealed when
+  // it still belongs to this order — a released row re-sold to another buyer
+  // must never leak through a stale OrderItem.stockItemId.
   app.post("/api/orders/:orderId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
     let order: Awaited<ReturnType<typeof getOrder>>;
@@ -245,6 +249,19 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       throw e;
     }
     if (!order) return reply.code(404).send({ error: "Order not found." });
+    if (order.status !== OrderStatus.DELIVERED) {
+      return reply.code(422).send({ error: "Only a delivered order's credentials can be revealed." });
+    }
+
+    const credentials = order.items.flatMap((item) =>
+      item.stockItem && item.stockItem.orderId === order.id ? [{ id: item.id, text: item.stockItem.credentials }] : [],
+    );
+    const deliveredContent = order.deliveredContent ?? null;
+    // Nothing to show (e.g. a wallet top-up, or every stock row re-assigned):
+    // no secret left the server, so there is nothing to audit either.
+    if (credentials.length === 0 && deliveredContent === null) {
+      return reply.send({ credentials, deliveredContent });
+    }
 
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -253,12 +270,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       targetId: orderId,
       details: `Revealed the delivered credentials for order ${order.orderCode}.`, // never the credentials themselves
     });
-    return reply.send({
-      credentials: order.items.flatMap((item) =>
-        item.stockItem ? [{ id: item.id, text: item.stockItem.credentials }] : [],
-      ),
-      deliveredContent: order.deliveredContent ?? null,
-    });
+    return reply.send({ credentials, deliveredContent });
   });
 
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {

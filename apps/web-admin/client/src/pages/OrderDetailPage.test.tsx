@@ -739,6 +739,37 @@ describe("OrderDetailPage — credential reveal", () => {
     expect(screen.getByRole("button", { name: "Show delivered credentials" })).toBeInTheDocument();
   });
 
+  // A pending order can hold a reserved stock row, but nothing has been
+  // delivered yet — the server refuses the reveal, so the button isn't offered.
+  it("offers no reveal button while the order is not delivered, even with a reserved stock row", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...AUTO_DELIVERED_DATA,
+          order: { ...AUTO_DELIVERED_DATA.order, status: "PENDING_VERIFICATION" },
+          isDelivered: false,
+          canAct: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /show delivered/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the server's message when the reveal route refuses the order", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockDetail();
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error("Only a delivered order's credentials can be revealed."));
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Show delivered credentials" }));
+    expect(await screen.findByText("Only a delivered order's credentials can be revealed.")).toBeInTheDocument();
+    expect(screen.getByText(MASK)).toBeInTheDocument();
+  });
+
   it("offers no reveal button for an order with no credentials to reveal", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(ORDER_DETAIL_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),

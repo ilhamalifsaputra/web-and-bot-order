@@ -271,7 +271,9 @@ export function OrderDetailPage() {
   // noise, so hide it there; a real auto order keeps the column exactly as
   // before.
   const isManualOrder = order.items.length > 0 && order.items.every(i => i.stockItem === null);
-  const hasStockCredentials = order.items.some(i => i.stockItem !== null);
+  // Mirrors the reveal route's rule (server-computed isDelivered): a pending
+  // order can hold a reserved stock row, but nothing has been delivered yet.
+  const canRevealStock = isDelivered && order.items.some(i => i.stockItem !== null);
   const revealedById = new Map((shown?.credentials ?? []).map(c => [c.id, c.text]));
   // One button per card that shows a secret, all bound to the same toggle.
   const revealButton = (noun: string) => (
@@ -431,7 +433,7 @@ export function OrderDetailPage() {
         <Card>
           <CardHeader>
             <CardTitle as="h2">Items ({order.items.length})</CardTitle>
-            {hasStockCredentials && <CardAction>{revealButton("credentials")}</CardAction>}
+            {canRevealStock && <CardAction>{revealButton("credentials")}</CardAction>}
           </CardHeader>
           <CardContent>
             <DataTable

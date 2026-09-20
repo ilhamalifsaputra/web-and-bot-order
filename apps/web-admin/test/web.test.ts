@@ -1196,6 +1196,10 @@ describe("orders API — credential masking and audited reveal", () => {
 
   async function makeAutoDeliveredOrder(): Promise<{ orderId: number; orderCode: string; secret: string }> {
     const orderId = await makePendingOrder();
+    return approveAndReadSecret(orderId);
+  }
+
+  async function approveAndReadSecret(orderId: number): Promise<{ orderId: number; orderCode: string; secret: string }> {
     const approve = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
     expect(approve.statusCode).toBe(200);
     const order = (await getOrder(prisma, orderId))!;
@@ -1267,6 +1271,59 @@ describe("orders API — credential masking and audited reveal", () => {
     const audit = await prisma.auditLog.findMany({ where: { action: "order_credentials_revealed", targetId: orderId } });
     expect(audit.length).toBe(1);
     expect(audit[0]!.details).not.toContain("secret-y");
+  });
+
+  // Only a DELIVERED order has actually handed its credentials over — a
+  // pending/cancelled order can still carry a reserved (or stale) stock pointer.
+  it("POST reveal refuses a not-yet-delivered order (422), reveals nothing and writes no audit row", async () => {
+    const orderId = await makePendingOrder(); // PENDING_VERIFICATION with reserved stock
+    const secret = (await getOrder(prisma, orderId))!.items[0]!.stockItem!.credentials;
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
+    expect((res.json() as { error: string }).error).toMatch(/delivered/i);
+    expect(res.body).not.toContain(secret);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal refuses a CANCELLED order even when its item still points at a stock row", async () => {
+    const orderId = await makePendingOrder();
+    const secret = (await getOrder(prisma, orderId))!.items[0]!.stockItem!.credentials;
+    await prisma.order.update({ where: { id: orderId }, data: { status: "CANCELLED" } });
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
+    expect(res.body).not.toContain(secret);
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
+  });
+
+  it("POST reveal omits an item whose stock row now belongs to another order, but reveals the rest", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
+    await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+    const { secret: firstSecret } = await approveAndReadSecret(order.id);
+    const items = (await getOrder(prisma, order.id))!.items;
+    expect(items.length).toBe(2);
+    const [keep, stale] = items;
+    const otherOrderId = await makePendingOrder();
+    // The stale item's stock row was released and re-sold to another buyer.
+    await prisma.stockItem.update({ where: { id: stale!.stockItem!.id }, data: { orderId: otherOrderId } });
+
+    const res = await post(`/api/orders/${order.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { credentials: { id: number; text: string }[] };
+    expect(body.credentials).toEqual([{ id: keep!.id, text: keep!.stockItem!.credentials }]);
+    expect(res.body).not.toContain(stale!.stockItem!.credentials);
+    expect(firstSecret).toBeTruthy();
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed", targetId: order.id } })).toBe(1);
+  });
+
+  it("POST reveal writes no audit row when nothing is left to reveal", async () => {
+    const { orderId } = await makeAutoDeliveredOrder();
+    const item = (await getOrder(prisma, orderId))!.items[0]!;
+    await prisma.stockItem.update({ where: { id: item.stockItem!.id }, data: { orderId: null } });
+    const res = await post(`/api/orders/${orderId}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ credentials: [], deliveredContent: null });
+    expect(await prisma.auditLog.count({ where: { action: "order_credentials_revealed" } })).toBe(0);
   });
 
   it("POST reveal audits every call, including repeat reveals of the same order", async () => {

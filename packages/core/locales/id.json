@@ -287,6 +287,7 @@
   "error.stock_replacement_nothing_to_refund": "Akun ini tidak dibayar sepeser pun oleh pembeli pada pesanan {orderCode}, jadi tidak ada yang bisa direfund — ganti saja akunnya begitu stok tersedia.",
   "error.illegal_stock_replacement_status_transition": "Status permintaan penggantian ini tidak dapat berubah dari {from} ke {to}.",
   "error.review_already_exists": "Pesanan ini sudah di-review.",
+  "error.review_product_not_in_order": "Produk itu bukan bagian dari pesanan ini, jadi tidak bisa di-review dari sini.",
   "error.review_requires_delivered": "Hanya pesanan yang sudah delivered yang dapat di-review.",
   "error.text_required": "Kirim pesan teks.",
   "error.text_too_long": "Pesan terlalu panjang (maksimum {max} karakter).",

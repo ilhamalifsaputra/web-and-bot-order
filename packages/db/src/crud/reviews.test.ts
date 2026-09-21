@@ -494,6 +494,8 @@ describe("createReview — sentiment assignment", () => {
           subtotalAmount: "5",
           totalAmount: "5",
           status: "DELIVERED",
+          // A review is only accepted for a denomination that is on the order.
+          items: { create: [{ productId: product.id, unitPrice: "5", warrantyDaysSnapshot: 0 }] },
         },
       });
       return { userId: user.id, orderId: order.id };
@@ -519,5 +521,57 @@ describe("createReview — sentiment assignment", () => {
       expect(review.status).toBe("PENDING_REPLY");
       expect(review.source).toBe("CUSTOMER");
     }
+  });
+});
+
+
+describe("createReview — the reviewed denomination must be on the order", () => {
+  async function deliveredOrderWith(denominationId: number) {
+    const user = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-${Math.random()}`,
+        userId: user.id,
+        subtotalAmount: "5",
+        totalAmount: "5",
+        status: "DELIVERED",
+        items: { create: [{ productId: denominationId, unitPrice: "5", warrantyDaysSnapshot: 0 }] },
+      },
+    });
+    return { userId: user.id, orderId: order.id };
+  }
+
+  async function twoDenominations() {
+    const cat = await createCategory(prisma, `c${Math.random()}`);
+    const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "P" });
+    const make = (name: string) =>
+      createDenomination(prisma, { productId: parent.id, name, type: "SHARED", durationLabel: "1 Month", price: "5" });
+    return { ordered: await make("Ordered"), other: await make("Other") };
+  }
+
+  it("rejects a denomination that was not in the order and stores nothing", async () => {
+    const { ordered, other } = await twoDenominations();
+    const { userId, orderId } = await deliveredOrderWith(ordered.id);
+    await expect(
+      createReview(prisma, { userId, orderId, productId: other.id, rating: 5, comment: null }),
+    ).rejects.toMatchObject({ key: "error.review_product_not_in_order" });
+    expect(await prisma.review.count({ where: { orderId } })).toBe(0);
+  });
+
+  it("rejects a denomination id that does not exist at all", async () => {
+    const { ordered } = await twoDenominations();
+    const { userId, orderId } = await deliveredOrderWith(ordered.id);
+    await expect(
+      createReview(prisma, { userId, orderId, productId: 987654321, rating: 5, comment: null }),
+    ).rejects.toMatchObject({ key: "error.review_product_not_in_order" });
+  });
+
+  it("accepts a denomination that is one of the order's lines", async () => {
+    const { ordered } = await twoDenominations();
+    const { userId, orderId } = await deliveredOrderWith(ordered.id);
+    const review = await createReview(prisma, { userId, orderId, productId: ordered.id, rating: 4, comment: "ok" });
+    expect(review).toMatchObject({ orderId, productId: ordered.id, rating: 4 });
   });
 });

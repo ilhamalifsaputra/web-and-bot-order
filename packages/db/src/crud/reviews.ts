@@ -39,6 +39,8 @@ export async function createReview(
     comment: string | null;
   },
 ) {
+  // Ids arrive as `Number(body.x)` from the web route — NaN must be a refusal, not a Prisma crash.
+  if (!Number.isInteger(args.orderId)) throw new ValidationError("error.order_not_found");
   const order = await db.order.findUnique({ where: { id: args.orderId } });
   if (!order || order.userId !== args.userId) {
     throw new ValidationError("error.order_not_found");
@@ -46,6 +48,16 @@ export async function createReview(
   if (order.status !== OrderStatus.DELIVERED) {
     throw new ValidationError("error.review_requires_delivered");
   }
+  // OrderItem.productId holds the denomination id. A review may only rate a
+  // denomination the buyer actually received on THIS order — otherwise any
+  // delivered order could be used to rate (or bomb) an unrelated product.
+  const line = Number.isInteger(args.productId)
+    ? await db.orderItem.findFirst({
+        where: { orderId: args.orderId, productId: args.productId },
+        select: { id: true },
+      })
+    : null;
+  if (!line) throw new ValidationError("error.review_product_not_in_order");
   try {
     return await db.review.create({
       data: {

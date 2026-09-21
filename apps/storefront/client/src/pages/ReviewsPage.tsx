@@ -19,11 +19,13 @@ import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { humanError } from "../lib/errors";
 import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Stars from "../components/shop/Stars";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
+import Alert from "../components/ui/Alert";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
 import FormField from "../components/ui/FormField";
@@ -127,6 +129,9 @@ export default function ReviewsPage() {
   const submitMutation = useMutation({
     mutationFn: (vars: ReviewSubmission) => apiPost<{ ok: boolean }>("/api/v1/account/reviews", vars),
     onSuccess: () => refetch(),
+    // A refused review (already reviewed, product not on the order, …) must be
+    // shown — a refetch alone would leave the card sitting there as if unsent.
+    onError: () => refetch(),
   });
 
   if (!data) {
@@ -144,6 +149,14 @@ export default function ReviewsPage() {
   return (
     <>
       <h1 className="page-title mb-6">{t("web.account_reviews")}</h1>
+
+      {/* Page-level, not inside the pending list: a refused review's card can
+          vanish on the refetch (e.g. already reviewed), taking a nested banner with it. */}
+      {submitMutation.isError && (
+        <Alert variant="banner" tone="error">
+          {humanError(submitMutation.error)}
+        </Alert>
+      )}
 
       {data.pending.length > 0 && (
         <section className="mb-8">

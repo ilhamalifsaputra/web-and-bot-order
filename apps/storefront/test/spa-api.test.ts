@@ -2606,9 +2606,7 @@ describe("/api/v1/account twins", () => {
       expect(res.statusCode).toBe(404);
     });
 
-    // Migrated from the deleted account.ts — same "never had a Nunjucks-era
-    // HTTP test" gap as the order-detail test above.
-    it("reviews: create, then a dupe or a bad order_id swallow silently (matches the deleted HTML handler 1:1)", async () => {
+    it("reviews: create, then a dupe, a bad order_id or a denomination not on the order each answer 400 with the reason", async () => {
       const stock = await prisma.stockItem.create({ data: { productId: denomId, credentials: "x", status: "SOLD" } });
       const order = await prisma.order.create({
         data: {
@@ -2650,17 +2648,56 @@ describe("/api/v1/account twins", () => {
       const stored = await prisma.review.findFirst({ where: { orderId: order.id } });
       expect(stored).toMatchObject({ rating: 4, comment: "great" });
 
-      // Dupe (unique userId+orderId) and a bad order_id both throw
-      // ValidationError inside createReview — the route just swallows it and
-      // reports ok:true either way (bounce-back UX, not a real error).
+      // Each refusal is a ValidationError inside createReview. The route used
+      // to swallow them all into ok:true, so the buyer's form said "sent" for a
+      // review that was never stored — now it reports the key (like every
+      // sibling account route) for the form to show.
       const dupe = await app.inject({
         method: "POST",
         url: "/api/v1/account/reviews",
         headers: { cookie, "x-csrf-token": csrf },
         payload: { order_id: order.id, product_id: denomId, rating: 2 },
       });
-      expect(dupe.statusCode).toBe(200);
+      expect(dupe.statusCode).toBe(400);
+      expect(dupe.json()).toEqual({ error: "error.review_already_exists" });
       expect(await prisma.review.count({ where: { orderId: order.id } })).toBe(1); // no 2nd row
+
+      // A denomination the order does not contain cannot be rated from it.
+      const otherOrder = await prisma.order.create({
+        data: {
+          orderCode: `ORD-REV2-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+          items: { create: [{ productId: denomId, unitPrice: "40000", warrantyDaysSnapshot: 30 }] },
+        },
+      });
+      const otherDenom = await createDenomination(prisma, {
+        productId: (await prisma.denomination.findUniqueOrThrow({ where: { id: denomId } })).productId,
+        name: "Not On The Order",
+        type: "SHARED",
+        durationLabel: "3 Months",
+        price: "90000",
+      });
+      const wrongProduct = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: otherOrder.id, product_id: otherDenom.id, rating: 1, comment: "not mine" },
+      });
+      expect(wrongProduct.statusCode).toBe(400);
+      expect(wrongProduct.json()).toEqual({ error: "error.review_product_not_in_order" });
+      expect(await prisma.review.count({ where: { orderId: otherOrder.id } })).toBe(0);
+
+      // Missing ids are a 400 refusal too, not a Prisma crash.
+      const noIds = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { rating: 3 },
+      });
+      expect(noIds.statusCode).toBe(400);
 
       const badOrder = await app.inject({
         method: "POST",
@@ -2668,8 +2705,8 @@ describe("/api/v1/account twins", () => {
         headers: { cookie, "x-csrf-token": csrf },
         payload: { order_id: 999999, product_id: denomId, rating: 3 },
       });
-      expect(badOrder.statusCode).toBe(200);
-      expect(badOrder.json()).toEqual({ ok: true });
+      expect(badOrder.statusCode).toBe(400);
+      expect(badOrder.json()).toEqual({ error: "error.order_not_found" });
     });
 
     // Migrated from the deleted account.ts — same "never had a Nunjucks-era

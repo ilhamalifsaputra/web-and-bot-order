@@ -287,6 +287,7 @@
   "error.stock_replacement_nothing_to_refund": "This account cost the buyer nothing on order {orderCode}, so there is nothing to refund — replace it once stock is back instead.",
   "error.illegal_stock_replacement_status_transition": "This replacement request's status cannot move from {from} to {to}.",
   "error.review_already_exists": "You have already reviewed this order.",
+  "error.review_product_not_in_order": "That product is not part of this order, so it cannot be reviewed from it.",
   "error.review_requires_delivered": "Only delivered orders can be reviewed.",
   "error.text_required": "Please send a text message.",
   "error.text_too_long": "Message too long (maximum {max} characters).",

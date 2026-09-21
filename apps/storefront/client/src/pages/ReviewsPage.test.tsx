@@ -72,6 +72,35 @@ describe("ReviewsPage", () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
   });
 
+  it("shows the server's reason when a review is refused, instead of pretending it was sent", async () => {
+    renderReviews();
+    await screen.findByText("Netflix");
+    // apiError() throws the server's i18n key as the message.
+    (apiPost as Mock).mockRejectedValue(new Error("error.review_product_not_in_order"));
+    fireEvent.click(screen.getByRole("button", { name: "Send review" }));
+    expect(
+      await screen.findByText("That product is not part of this order, so it cannot be reviewed from it."),
+    ).toBeInTheDocument();
+  });
+
+  it("falls back to the generic message when the failure carries no key of ours (never a raw path)", async () => {
+    renderReviews();
+    await screen.findByText("Netflix");
+    (apiPost as Mock).mockRejectedValue(new Error("/api/v1/account/reviews responded 500"));
+    fireEvent.click(screen.getByRole("button", { name: "Send review" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(screen.queryByText(/responded 500/)).not.toBeInTheDocument();
+  });
+
+  it("shows no error banner after a successful submit", async () => {
+    renderReviews();
+    await screen.findByText("Netflix");
+    (apiPost as Mock).mockResolvedValue({ ok: true });
+    fireEvent.click(screen.getByRole("button", { name: "Send review" }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   // STO-016: the empty state used to be a dead end — it now offers a way
   // back to the catalog.
   it("shows the empty state with a Continue shopping CTA when there are no reviews yet", async () => {

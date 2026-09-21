@@ -41,7 +41,7 @@ export interface DashboardKpis {
   revenue: {
     idr: string | null;
     usdt: string | null;
-    usd: string | null;
+    /** % vs the same clock time yesterday; null when yesterday's base is zero or too small to compare against. */
     trendPct: { idr: string | null; usdt: string | null };
   };
   /** Refunds actually paid out today, per currency — COMPLETED
@@ -53,7 +53,9 @@ export interface DashboardKpis {
    *  earlier day, so this can legitimately be negative and must render as such. */
   netSales: { idr: string | null; usdt: string | null };
   profit: { idr: CurrencyProfit | null; usdt: CurrencyProfit | null };
-  orders: { total: number; delivered: number; pending: number; failed: number };
+  /** Product orders created today. `other` (paid/processing/refunded/expired/...) is
+   * everything the other three skip, so the four parts sum to `total`. */
+  orders: { total: number; delivered: number; pending: number; failed: number; other: number };
   pendingActions: {
     toReview: number;
     refundDecisions: number;

@@ -57,4 +57,18 @@ describe("ReportsPage", () => {
     render(<ReportsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
+
+  it("labels each card with the basis it is computed on", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(MOCK_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ReportsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Netflix 1mo")).toBeInTheDocument());
+    // The status funnel is all-time, unlike the "Last N days" cards around it.
+    expect(screen.getByText("Orders by Status — all time · product orders")).toBeInTheDocument();
+    // Top Products revenue is net of discounts, like the dashboard's list.
+    expect(screen.getByText("Net revenue (IDR)")).toBeInTheDocument();
+    // usedCount is a currently-held figure, like the Vouchers page's KPI.
+    expect(screen.getByText("Uses (currently held)")).toBeInTheDocument();
+  });
 });

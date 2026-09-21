@@ -2,7 +2,7 @@ import "./setup-env";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { DateTime } from "@app/core/datetime";
+import { DateTime, startOfDayUtc } from "@app/core/datetime";
 import {
   prisma,
   initDb,
@@ -160,6 +160,80 @@ describe("GET /api/dashboard/kpis", () => {
     // Zero, rendered as null by this endpoint's own zero-means-null convention:
     // exactly as much was sold today as was handed back. Never "-10000".
     expect(body.netSales).toEqual({ idr: null, usdt: null });
+  });
+
+  it("puts every status the delivered/pending/failed buckets skip into `other`, so the parts always sum to the total", async () => {
+    const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const statuses = [
+      "DELIVERED",
+      "PENDING_PAYMENT",
+      "UNDERPAID",
+      "CANCELLED",
+      "FAILED",
+      // None of these five belong to delivered/pending/failed:
+      "PAID",
+      "CONFIRMED",
+      "PROCESSING",
+      "REFUNDED",
+      "EXPIRED",
+    ];
+    for (const [i, status] of statuses.entries()) {
+      await prisma.order.create({
+        data: { orderCode: `ORD-S${i}`, userId: user.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status },
+      });
+    }
+    // A settled wallet top-up is not a product order and must not enter any bucket.
+    await prisma.order.create({
+      data: { orderCode: "ORD-TOPUP", userId: user.id, subtotalAmount: "50000", totalAmount: "50000", currency: "IDR", status: "DELIVERED", kind: "WALLET_TOPUP" },
+    });
+
+    const { orders } = (await get("/api/dashboard/kpis", cookie)).json();
+    expect(orders).toEqual({ total: 10, delivered: 1, pending: 2, failed: 2, other: 5 });
+    expect(orders.total).toBe(orders.delivered + orders.pending + orders.failed + orders.other);
+  });
+
+  it("does not repeat the USDT figure under a second, fabricated USD label", async () => {
+    const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({
+      data: { orderCode: "ORD-U", userId: user.id, subtotalAmount: "1", totalAmount: "20.25", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() },
+    });
+    const { revenue } = (await get("/api/dashboard/kpis", cookie)).json();
+    expect(revenue.usdt).toBe("20.25");
+    expect(revenue).not.toHaveProperty("usd");
+  });
+
+  describe("revenue trend vs the same clock time yesterday", () => {
+    const yesterday = () => new Date(startOfDayUtc(new Date(Date.now() - 86_400_000)).getTime() + 1);
+
+    async function seedRevenue(user: { id: number }, code: string, amount: string, deliveredAt: Date) {
+      await prisma.order.create({
+        data: { orderCode: code, userId: user.id, subtotalAmount: amount, totalAmount: amount, currency: "IDR", status: "DELIVERED", deliveredAt },
+      });
+    }
+
+    it("reports the percentage when yesterday's base is large enough to compare against", async () => {
+      const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await seedRevenue(user, "ORD-Y", "50000", yesterday());
+      await seedRevenue(user, "ORD-T", "75000", new Date());
+      const { revenue } = (await get("/api/dashboard/kpis", cookie)).json();
+      expect(revenue.trendPct.idr).toBe("50");
+    });
+
+    it("suppresses the percentage when yesterday's base is below the comparison floor, instead of showing an absurd figure", async () => {
+      const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await seedRevenue(user, "ORD-Y", "500", yesterday());
+      await seedRevenue(user, "ORD-T", "75000", new Date());
+      const { revenue } = (await get("/api/dashboard/kpis", cookie)).json();
+      expect(revenue.idr).toBe("75000");
+      expect(revenue.trendPct.idr).toBeNull();
+    });
+
+    it("suppresses the percentage when there was no revenue yesterday at all", async () => {
+      const user = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+      await seedRevenue(user, "ORD-T", "75000", new Date());
+      const { revenue } = (await get("/api/dashboard/kpis", cookie)).json();
+      expect(revenue.trendPct.idr).toBeNull();
+    });
   });
 });
 
@@ -546,6 +620,20 @@ describe("GET /api/dashboard/analytics", () => {
 
     const res = await get("/api/dashboard/analytics?metric=orders", cookie);
     expect(res.json()[6].value).toBe(1);
+  });
+
+  it("counts orders of both currencies when metric=orders and currency=combined, instead of falling through to IDR only", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const now = new Date();
+    await prisma.order.create({ data: { orderCode: "ORD-I1", userId: buyer.id, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: "ORD-I2", userId: buyer.id, subtotalAmount: "1", totalAmount: "6000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: "ORD-U1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+
+    const combined = await get("/api/dashboard/analytics?metric=orders&currency=combined", cookie);
+    expect(combined.json()[6].value).toBe(3);
+    // The per-currency views keep their own split.
+    expect((await get("/api/dashboard/analytics?metric=orders&currency=idr", cookie)).json()[6].value).toBe(2);
+    expect((await get("/api/dashboard/analytics?metric=orders&currency=usdt", cookie)).json()[6].value).toBe(1);
   });
 
   it("switches to the IDR-equivalent combined series when currency=combined", async () => {

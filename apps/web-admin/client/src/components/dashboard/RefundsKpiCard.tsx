@@ -51,6 +51,7 @@ export function RefundsKpiCard() {
         ) : (
           <p className="text-sm text-ink-soft">No refunds yet today.</p>
         )}
+        <p className="mt-1 text-xs text-ink-soft">Paid out today · the payout itself, not the amount requested.</p>
       </CardContent>
     </Card>
   );

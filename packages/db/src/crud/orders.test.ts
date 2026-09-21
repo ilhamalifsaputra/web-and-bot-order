@@ -290,6 +290,16 @@ describe("shopFulfilmentStats — exclude WALLET_TOPUP", () => {
 
     expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 1, customers: 1 });
   });
+
+  // The all-top-up case separately: "customers served" must read 0, not 1, for
+  // a shop whose only delivered rows are deposits — the groupBy still returns a
+  // row per userId, so a filter missing from the second query alone would pass
+  // the mixed case above.
+  it("counts no customers for a buyer who has only ever topped up", async () => {
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    expect(await shopFulfilmentStats(prisma)).toEqual({ deliveredOrders: 0, customers: 0 });
+  });
 });
 
 // Orders admin-page refactor: computeOrderEligibility is the single source

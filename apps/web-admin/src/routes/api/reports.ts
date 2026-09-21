@@ -20,7 +20,7 @@ function csvRow(fields: string[]): string {
 export default async function reportsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/reports", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const days = Math.min(Math.max(Number(q.days) || 30, 7), 90);
+    const days = Math.min(Math.max(Math.trunc(Number(q.days)) || 30, 7), 90);
 
     const [daily, products, funnel, vouchers] = await Promise.all([
       revenueByDay(prisma, days),
@@ -49,7 +49,7 @@ export default async function reportsApiRoutes(app: FastifyInstance): Promise<vo
   // CSV download — mirrors /api/orders/export's pattern (routes/api/orders.ts).
   app.get("/api/reports/export", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const days = Math.min(Math.max(Number(q.days) || 30, 7), 90);
+    const days = Math.min(Math.max(Math.trunc(Number(q.days)) || 30, 7), 90);
     const daily = await revenueByDay(prisma, days);
 
     const header = ["Date", "Revenue (IDR)", "Revenue (USDT)", "Orders"];

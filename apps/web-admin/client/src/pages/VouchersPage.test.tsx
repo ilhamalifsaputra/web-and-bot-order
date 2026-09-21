@@ -168,7 +168,7 @@ describe("VouchersPage", () => {
     expect(screen.getByText("5")).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
     expect(screen.getByText("Scheduled")).toBeInTheDocument();
-    expect(screen.getByText("Total Redemptions")).toBeInTheDocument();
+    expect(screen.getByText("Redemptions (currently held)")).toBeInTheDocument();
   });
 
   it("shows empty state when no vouchers", async () => {

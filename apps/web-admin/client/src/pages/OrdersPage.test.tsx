@@ -202,6 +202,13 @@ describe("OrdersPage", () => {
     await waitFor(() => expect(within(statCard("Total Orders")).getByText("67")).toBeInTheDocument());
     expect(within(statCard("Awaiting Fulfillment")).getByText("12")).toBeInTheDocument();
     expect(within(statCard("Delivered")).getByText("51")).toBeInTheDocument();
+    // The KPI row says which tile is product-only and which count every order.
+    expect(screen.getByText(/Revenue Today counts product sales only/)).toBeInTheDocument();
+    // Delivered mirrors its status tab, so it must NOT claim to be product-only.
+    expect(within(statCard("Delivered")).getByText("Delivered")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/including wallet top-up orders/i),
+    );
     // The inline header stats line (distinct text from the KPI cards).
     expect(screen.getByText(/67 Orders · 12 Awaiting Fulfillment · 4 Processing · 51 Delivered/)).toBeInTheDocument();
   });
@@ -240,6 +247,23 @@ describe("OrdersPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/orders?status=PROCESSING", expect.objectContaining({ credentials: "include" })),
     );
+  });
+
+  it("pre-filters by a comma-separated ?status= list, as the dashboard's Pending Payments card links", async () => {
+    const fetchSpy = mockFetchRouter();
+    render(
+      <WrapperAt initialEntries={["/orders?status=PENDING_PAYMENT,PAYMENT_DETECTED,CONFIRMING"]}>
+        <OrdersPage />
+      </WrapperAt>,
+    );
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/orders?status=PENDING_PAYMENT%2CPAYMENT_DETECTED%2CCONFIRMING",
+        expect.objectContaining({ credentials: "include" }),
+      ),
+    );
+    // The status select names the list instead of rendering blank.
+    expect(screen.getByText("Several statuses")).toBeInTheDocument();
   });
 
   it("pre-filters by the ?q= query param on load (Support's Order History row action)", async () => {

@@ -45,4 +45,15 @@ describe("RefundsKpiCard", () => {
     renderWithQuery();
     await waitFor(() => expect(screen.getByText("No refunds yet today.")).toBeInTheDocument());
   });
+
+  // Every card on this dashboard states its own "today" basis, because they
+  // genuinely differ: this one buckets on the payout's own executedAt, while
+  // Revenue/Profit bucket on deliveredAt and Orders Today on createdAt.
+  it("says the figure is what was paid out today, not what was requested", async () => {
+    stubKpis({ refunds: { idr: "2000", usdt: null } });
+    renderWithQuery();
+    await waitFor(() =>
+      expect(screen.getByText(/Paid out today · the payout itself, not the amount requested/)).toBeInTheDocument(),
+    );
+  });
 });

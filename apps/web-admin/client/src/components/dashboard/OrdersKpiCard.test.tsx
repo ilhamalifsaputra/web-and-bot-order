@@ -27,10 +27,18 @@ function renderWithOrders(orders: unknown) {
 
 describe("OrdersKpiCard", () => {
   it("shows the total prominently and the delivered/pending/failed breakdown", async () => {
-    renderWithOrders({ total: 12, delivered: 9, pending: 2, failed: 1 });
+    renderWithOrders({ total: 12, delivered: 9, pending: 2, failed: 1, other: 0 });
     await waitFor(() => expect(screen.getByText("12")).toBeInTheDocument());
     expect(screen.getByText(/9 delivered/)).toBeInTheDocument();
     expect(screen.getByText(/2 pending/)).toBeInTheDocument();
     expect(screen.getByText(/1 failed/)).toBeInTheDocument();
+  });
+
+  it("shows the processing/other bucket so the four parts add up to the total, and says what the card counts", async () => {
+    renderWithOrders({ total: 12, delivered: 5, pending: 2, failed: 1, other: 4 });
+    await waitFor(() => expect(screen.getByText("12")).toBeInTheDocument());
+    expect(screen.getByText(/5 delivered/)).toBeInTheDocument();
+    expect(screen.getByText(/4 processing \/ other/)).toBeInTheDocument();
+    expect(screen.getByText(/product orders created today/i)).toBeInTheDocument();
   });
 });

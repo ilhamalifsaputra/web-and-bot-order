@@ -21,10 +21,11 @@ export function ProfitKpiCard() {
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
-        {(isError || (data && !data.profit.idr && !data.profit.usdt)) && (
+        {isError && <p className="text-sm text-rust">Couldn't load profit.</p>}
+        {!isError && data && !data.profit.idr && !data.profit.usdt && (
           <p className="text-sm text-ink-soft">No profit yet today.</p>
         )}
-        {data && (data.profit.idr || data.profit.usdt) && (
+        {!isError && data && (data.profit.idr || data.profit.usdt) && (
           <>
             <CurrencyStack
               amounts={
@@ -42,6 +43,7 @@ export function ProfitKpiCard() {
                 marginLine("USDT", data.profit.usdt) &&
                 <p className="text-xs text-ink-soft">{marginLine("USDT", data.profit.usdt)}</p>}
             </div>
+            <p className="mt-1 text-xs text-ink-soft">Delivered today · product orders only.</p>
           </>
         )}
       </CardContent>

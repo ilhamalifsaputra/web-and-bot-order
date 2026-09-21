@@ -54,7 +54,6 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   return {
     idr: idr.isZero() ? null : idr.toString(),
     usdt: usdt.isZero() ? null : usdt.toString(),
-    usd: usdt.isZero() ? null : usdt.toString(), // 1 USDT ≈ 1 USD, same figure under a second label
   };
 }
 

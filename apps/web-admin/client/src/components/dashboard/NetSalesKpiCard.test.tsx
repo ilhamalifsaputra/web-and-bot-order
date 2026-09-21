@@ -80,4 +80,17 @@ describe("NetSalesKpiCard", () => {
     renderWithQuery();
     await waitFor(() => expect(screen.getByText("No net sales yet today.")).toBeInTheDocument());
   });
+
+  // The two halves of this figure are bucketed on different columns (the sale
+  // on deliveredAt, the payout on executedAt), which is exactly why it can go
+  // negative — so the card says so instead of leaving it to be discovered.
+  it("states its own basis, including why the figure can be negative", async () => {
+    stubKpis({ netSales: { idr: "52000", usdt: null } });
+    renderWithQuery();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Sold today, minus refunds paid out today — a sale counts on the day it was delivered and a refund on the day it is paid out, so this can be negative/),
+      ).toBeInTheDocument(),
+    );
+  });
 });

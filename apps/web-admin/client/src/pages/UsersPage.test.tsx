@@ -218,6 +218,26 @@ describe("UsersPage", () => {
     expect(citraCells[7]).toHaveTextContent("—");
   });
 
+  // Spend and account activity are different questions and the crud layer
+  // answers them differently (users.ts SPEND_KIND_FILTER vs
+  // orderStatsByUserIds' all-kinds totalOrders/lastOrderAt), so the three
+  // column headers must not all claim the same basis.
+  it("says Total Spent is product-only while Orders and Last Order count every order kind", async () => {
+    mockFetchRouter();
+    render(<UsersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(
+      screen.getByText(/Total Spent counts delivered product orders only/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Total Spent")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/Delivered product orders only/i),
+    );
+    for (const header of ["Orders", "Last Order"]) {
+      expect(screen.getByText(header)).toHaveAttribute("title", expect.stringMatching(/wallet top-up/i));
+    }
+  });
+
   it("shows the Banned badge for a banned row, New Customer for a recently-joined row, and Returning otherwise", async () => {
     mockFetchRouter({
       users: {

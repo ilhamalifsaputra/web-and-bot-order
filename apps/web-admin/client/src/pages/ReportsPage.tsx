@@ -59,7 +59,7 @@ export function ReportsPage() {
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Card>
                 <CardContent>
-                  <p className="text-xs font-medium uppercase tracking-wider text-ink-soft">30-day Revenue (IDR)</p>
+                  <p className="text-xs font-medium uppercase tracking-wider text-ink-soft">{data.days}-day Revenue (IDR)</p>
                   <p className="mt-1 font-display text-2xl font-semibold text-ink">
                     {formatCurrencyDisplay(data.totalIdr, "IDR")}
                   </p>
@@ -68,7 +68,7 @@ export function ReportsPage() {
               {data.totalUsdt && (
                 <Card>
                   <CardContent>
-                    <p className="text-xs font-medium uppercase tracking-wider text-ink-soft">30-day Revenue (USDT)</p>
+                    <p className="text-xs font-medium uppercase tracking-wider text-ink-soft">{data.days}-day Revenue (USDT)</p>
                     <p className="mt-1 font-display text-2xl font-semibold text-ink">
                       {formatCurrencyDisplay(data.totalUsdt, "USDT")}
                     </p>
@@ -99,7 +99,7 @@ export function ReportsPage() {
 
             {/* Order funnel */}
             <Card>
-              <CardHeader><CardTitle>Orders by Status</CardTitle></CardHeader>
+              <CardHeader><CardTitle>Orders by Status — all time · product orders</CardTitle></CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
                   {data.funnel.map(({ status, count }) => (
@@ -122,7 +122,7 @@ export function ReportsPage() {
                     columns={[
                       { key: "product", header: "Product", render: (p) => <span className="block max-w-[240px] truncate text-ink" title={p.name}>{p.name}</span> },
                       { key: "sold", header: "Sold", render: (p) => <span className="text-ink-soft">{p.qty}</span> },
-                      { key: "revenue", header: "Revenue (IDR)", render: (p) => <span className="text-ink">{formatCurrencyDisplay(p.revenue, "IDR")}</span> },
+                      { key: "revenue", header: "Net revenue (IDR)", render: (p) => <span className="text-ink">{formatCurrencyDisplay(p.revenue, "IDR")}</span> },
                     ]}
                     data={data.products}
                     keyExtractor={(p) => p.productId}
@@ -141,7 +141,7 @@ export function ReportsPage() {
                     nested
                     columns={[
                       { key: "code", header: "Code", render: (v) => <span className="font-mono text-xs text-ink">{v.code}</span> },
-                      { key: "uses", header: "Uses", render: (v) => <span className="text-ink-soft">{v.usedCount}{v.usageLimit != null ? ` / ${v.usageLimit}` : ""}</span> },
+                      { key: "uses", header: <span title="Currently held: a cancelled or expired order releases its use.">Uses (currently held)</span>, render: (v) => <span className="text-ink-soft">{v.usedCount}{v.usageLimit != null ? ` / ${v.usageLimit}` : ""}</span> },
                       { key: "active", header: "Active", render: (v) => <span className="text-ink-soft">{v.isActive ? "Yes" : "No"}</span> },
                     ]}
                     data={data.vouchers}

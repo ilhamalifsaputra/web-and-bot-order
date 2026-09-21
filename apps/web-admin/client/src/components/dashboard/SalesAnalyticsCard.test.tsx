@@ -129,4 +129,52 @@ describe("SalesAnalyticsCard", () => {
     renderCard();
     await waitFor(() => expect(screen.getByText("No data for this range.")).toBeInTheDocument());
   });
+
+  it("labels the series so the y-axis is never a bare number: currency for revenue, order scope for orders", async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText("Delivered revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Combined" }));
+    await waitFor(() =>
+      expect(screen.getByText("Delivered revenue (IDR equivalent) · per delivery day (UTC)")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Orders" }));
+    // Orders + Combined is the sum over both currencies (the server does the summing).
+    await waitFor(() =>
+      expect(screen.getByText("Delivered product orders (all currencies) · per delivery day (UTC)")).toBeInTheDocument(),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/dashboard/analytics?range=7d&currency=combined&metric=orders",
+      expect.anything(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "USDT" }));
+    await waitFor(() =>
+      expect(screen.getByText("Delivered product orders (paid in USDT) · per delivery day (UTC)")).toBeInTheDocument(),
+    );
+  });
+
+  it("says what a bucket covers for each calendar range (and that it is cut in UTC), instead of claiming 'per delivery day' for a monthly rollup", async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText("Delivered revenue (IDR) · per delivery day (UTC)")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Week" }));
+    await waitFor(() =>
+      expect(screen.getByText("Delivered revenue (IDR) · per ISO week (Monday start, UTC)")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Month" }));
+    await waitFor(() =>
+      expect(screen.getByText("Delivered revenue (IDR) · per calendar month (UTC)")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Year" }));
+    await waitFor(() =>
+      expect(screen.getByText("Delivered revenue (IDR) · per calendar year (UTC)")).toBeInTheDocument(),
+    );
+  });
+
+  it("labels the Profit series as net profit in its own currency, never as revenue", async () => {
+    renderCard();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Profit" }));
+    await waitFor(() => expect(screen.getByText("Net profit (IDR) · per delivery day (UTC)")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "USDT" }));
+    await waitFor(() => expect(screen.getByText("Net profit (USDT) · per delivery day (UTC)")).toBeInTheDocument());
+  });
 });

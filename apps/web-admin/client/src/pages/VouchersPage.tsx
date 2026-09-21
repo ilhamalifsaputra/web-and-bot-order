@@ -497,7 +497,13 @@ export function VouchersPage() {
         <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
         <StatCard label="Scheduled" value={data?.stats.scheduled ?? 0} icon={CalendarClock} tone="warning" isLoading={!data} />
         <StatCard label="Expired" value={data?.stats.expired ?? 0} icon={Ban} isLoading={!data} />
-        <StatCard label="Total Redemptions" value={data?.stats.totalRedemptions ?? 0} icon={Repeat} isLoading={!data} />
+        <StatCard
+          label="Redemptions (currently held)"
+          hint="Redemptions still held by an order. A cancelled, rejected or expired order releases its redemption, so this can go down."
+          value={data?.stats.totalRedemptions ?? 0}
+          icon={Repeat}
+          isLoading={!data}
+        />
       </div>
 
       {showForm && (

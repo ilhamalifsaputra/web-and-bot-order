@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { OrderStatus } from "@app/core/enums";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
 import {
   TOKOPAY_POLL_STALE_MS,
@@ -81,7 +82,6 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
   return {
     idr: idr.isZero() ? null : idr.toString(),
     usdt: usdt.isZero() ? null : usdt.toString(),
-    usd: usdt.isZero() ? null : usdt.toString(), // 1 USDT ≈ 1 USD, same figure under a second label
   };
 }
 
@@ -89,8 +89,10 @@ function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal }) {
  * The same null-when-zero convention `shapeRevenue` above uses, for the
  * two-currency money figures Task 6b adds (`refunds`, `netSales`): zero means
  * "nothing to report", and the card renders its own empty state rather than a
- * literal Rp0. These two carry no `usd` alias — only the revenue card renders
- * the USDT figure a second time under a USD label.
+ * literal Rp0. Identical in shape to `shapeRevenue` now that the revenue
+ * payload's fabricated `usd` alias (a verbatim copy of `usdt` under a second
+ * currency's name) is gone; kept separate only because `shapeRevenue` takes a
+ * revenueSummary row while these two take the pair directly.
  *
  * A consequence worth naming for `netSales`: a day whose refunds exactly cancel
  * its gross sales reads the same as a day with no activity at all. That is the
@@ -114,10 +116,34 @@ function periodGranularity(range: string | undefined): PeriodGranularity | null 
   return range === "week" || range === "month" || range === "year" ? range : null;
 }
 
-function trendPct(curr: Decimal, prev: Decimal): string | null {
-  if (prev.isZero()) return null;
+/**
+ * Smallest yesterday-so-far revenue a "% vs same time yesterday" figure is
+ * shown against. Below it a single small sale swings the percentage into the
+ * thousands (Rp500 → Rp75.000 reads "+14,900%"), which says nothing about how
+ * the shop is doing. IDR 10.000 is roughly the price of the cheapest
+ * denominations and 1 USDT the equivalent for the crypto rails: one ordinary
+ * sale yesterday is enough to compare against, less than that is noise.
+ */
+const TREND_MIN_BASE = { idr: new Decimal(10_000), usdt: new Decimal(1) } as const;
+
+function trendPct(curr: Decimal, prev: Decimal, minBase: Decimal): string | null {
+  if (prev.isZero() || prev.lt(minBase)) return null;
   return curr.minus(prev).div(prev).times(100).toDecimalPlaces(1).toString();
 }
+
+// Buckets for the "Orders Today" card. Everything not named here (PAID,
+// CONFIRMED, PROCESSING, REFUNDED, PARTIALLY_DELIVERED, ...) lands in
+// `other`, which is computed by exclusion so the parts sum to the total even
+// when a new status is added to the enum.
+const DELIVERED_STATUSES: string[] = [OrderStatus.DELIVERED];
+const PENDING_STATUSES: string[] = [
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.PENDING_VERIFICATION,
+  OrderStatus.UNDERPAID,
+];
+const FAILED_STATUSES: string[] = [OrderStatus.CANCELLED, OrderStatus.REJECTED, OrderStatus.FAILED];
 
 export default async function dashboardApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/dashboard/kpis", { preHandler: currentAdmin }, async () => {
@@ -141,13 +167,16 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const ordersTotal = orderStatus.reduce((sum, s) => sum + s.count, 0);
     const byStatus = (statuses: string[]) =>
       orderStatus.filter((s) => statuses.includes(s.status)).reduce((sum, s) => sum + s.count, 0);
+    const delivered = byStatus(DELIVERED_STATUSES);
+    const pending = byStatus(PENDING_STATUSES);
+    const failed = byStatus(FAILED_STATUSES);
 
     return {
       revenue: {
         ...shapeRevenue(todayRevenue),
         trendPct: {
-          idr: trendPct(new Decimal(todayRevenue.revenue_idr), new Decimal(yesterdayRevenue.revenue_idr)),
-          usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt)),
+          idr: trendPct(new Decimal(todayRevenue.revenue_idr), new Decimal(yesterdayRevenue.revenue_idr), TREND_MIN_BASE.idr),
+          usdt: trendPct(new Decimal(todayRevenue.revenue_usdt), new Decimal(yesterdayRevenue.revenue_usdt), TREND_MIN_BASE.usdt),
         },
       },
       // Refunds actually paid out today, and today's gross sales net of them
@@ -176,9 +205,10 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       profit,
       orders: {
         total: ordersTotal,
-        delivered: byStatus(["DELIVERED"]),
-        pending: byStatus(["PENDING_PAYMENT", "PAYMENT_DETECTED", "CONFIRMING", "PENDING_VERIFICATION", "UNDERPAID"]),
-        failed: byStatus(["CANCELLED", "REJECTED", "FAILED"]),
+        delivered,
+        pending,
+        failed,
+        other: ordersTotal - delivered - pending - failed,
       },
       pendingActions: {
         toReview,
@@ -362,7 +392,13 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     }
     if (metric === "orders") {
       const rows = granularity ? await ordersByPeriod(prisma, granularity) : await ordersByDay(prisma, days);
-      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.ordersUsdt : r.ordersIdr }));
+      // An order is an order whatever it was paid in, so "combined" is the sum
+      // of both currencies' counts (unlike revenue, there is nothing to
+      // convert). Without this branch Combined silently served the IDR series.
+      return rows.map((r) => ({
+        day: r.day,
+        value: currency === "usdt" ? r.ordersUsdt : currency === "combined" ? r.ordersIdr + r.ordersUsdt : r.ordersIdr,
+      }));
     }
     if (granularity) {
       const rows = await revenueByPeriod(prisma, granularity);

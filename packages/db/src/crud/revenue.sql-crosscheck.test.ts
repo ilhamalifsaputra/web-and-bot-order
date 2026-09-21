@@ -85,7 +85,7 @@ async function seedMixedScenario(now: Date) {
 }
 
 describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
-  it("revenueSummary matches a raw SUM(total_amount) grouped by currency, delivered-only", async () => {
+  it("revenueSummary matches a raw SUM(total_amount) grouped by currency, delivered product orders only", async () => {
     const now = new Date();
     await seedMixedScenario(now);
     const since = new Date(now.getTime() - 60_000);
@@ -94,15 +94,23 @@ describe("revenue.ts matches an independently-recomputed SQL aggregate", () => {
       `SELECT status, kind, currency, total_amount FROM orders`,
     );
     const expected = { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 };
+    let topupsSkipped = 0;
     for (const r of rows) {
       if (r.status !== "DELIVERED") continue;
       // Sales only: a wallet top-up is the buyer's own money parked in their
       // wallet, never shop revenue (Financial Ledger M6, Task 6a).
-      if (r.kind !== OrderKind.PRODUCT) continue;
+      if (r.kind !== OrderKind.PRODUCT) {
+        topupsSkipped += 1;
+        continue;
+      }
       if (r.currency === "IDR") expected.idr = expected.idr.plus(r.total_amount);
       else expected.usdt = expected.usdt.plus(r.total_amount);
       expected.orders += 1;
     }
+    // The seed really does contain a settled top-up, so the branch above is
+    // exercised rather than silently dead — without this the whole cross-check
+    // would still pass if `seedMixedScenario` ever stopped seeding one.
+    expect(topupsSkipped).toBe(1);
 
     const result = await revenueSummary(prisma, since);
     expect(result.revenue_idr.toString()).toBe(expected.idr.toString());

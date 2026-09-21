@@ -325,6 +325,22 @@ describe("topProducts", () => {
     const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
     expect(result).toHaveLength(10);
   });
+
+  it("reports revenue net of order-level discounts, the same basis as topProductsByMargin (Reports and the dashboard list must agree)", async () => {
+    const now = new Date();
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Disc", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "6000" });
+    // 3 units at 10000 = 30000 subtotal, minus 3000 bulk + 3000 voucher discount.
+    const order = await prisma.order.create({
+      data: { orderCode: `ORD-disc-${Math.random()}`, userId, subtotalAmount: "30000", bulkDiscountAmount: "3000", discountAmount: "3000", totalAmount: "24000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 3, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const since = new Date(now.getTime() - 60_000);
+    const [top] = await topProducts(prisma, since, 10);
+    const [margin] = await topProductsByMargin(prisma, since, 10);
+    expect(top?.revenue).toBe("24000");
+    expect(top?.revenue).toBe(margin?.revenueIdrEquiv);
+  });
 });
 
 describe("topProductsByMargin", () => {

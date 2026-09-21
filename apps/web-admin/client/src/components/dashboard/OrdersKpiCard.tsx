@@ -15,8 +15,10 @@ export function OrdersKpiCard() {
           <>
             <p className="font-display text-3xl font-semibold text-ink">{data.orders.total}</p>
             <p className="mt-1 text-xs text-ink-soft">
-              {data.orders.delivered} delivered · {data.orders.pending} pending · {data.orders.failed} failed
+              {data.orders.delivered} delivered · {data.orders.pending} pending · {data.orders.failed} failed ·{" "}
+              {data.orders.other} processing / other
             </p>
+            <p className="mt-1 text-xs text-ink-soft">Product orders created today (wallet top-ups excluded).</p>
           </>
         )}
       </CardContent>

@@ -160,10 +160,11 @@ purpose:
   discountAmount) × (lineGross / orderSubtotal)`. `walletUsed` is deliberately
   **excluded** from this — it is a payment method (money the shop already
   holds), not a discount, so it does not reduce banked revenue.
-  `topProducts` is the one deliberate exception: its revenue is **gross**, by
-  design, because its ranking is by quantity sold and the proration is not
-  expressible through `groupBy._sum`. Use `topProductsByMargin` when you need
-  the discount-aware figure.
+  `topProducts` (the Reports page) and `topProductsByMargin` (the dashboard
+  list) both use it, so the same product reports the same revenue on both. The
+  ranking of `topProducts` is still a `groupBy` by quantity sold; only its
+  revenue figure is filled in from a second query that carries each line's
+  parent-order discount columns.
 
 **Unknown cost is never zero.** `Denomination.costPrice` is nullable. Every
 profit metric excludes cost-unknown lines from both the profit sum and the
@@ -191,13 +192,13 @@ Sales Today" remains an open, purely cosmetic, zero-data-risk option.
 | **Included states** | `Order.status = DELIVERED` only. |
 | **Excluded states** | Everything else, including `REFUNDED`. A fully refunded order leaves `DELIVERED` (`executeRefund` moves it to `REFUNDED`) and therefore drops out of this figure entirely — that is intentional for a *gross delivered* number, and it is exactly why Net Sales needs its own separate basis (below). `PARTIALLY_DELIVERED` is not counted. |
 | **Kind filter** | `kind: PRODUCT`, hard-coded in `salesRevenueByCurrency`, not caller-optional. A top-up is never revenue by definition, so no caller of a function named "revenue" has a legitimate reason to get them mixed in. |
-| **Currency** | IDR and USDT kept strictly separate. Never blended. The API additionally echoes the USDT figure under a `usd` key (1 USDT ≈ 1 USD, the same number under a second label) — it is not a second, independently computed figure. |
+| **Currency** | IDR and USDT kept strictly separate. Never blended. The API used to echo the USDT figure under a second `usd` key (the same number under another currency's name); that fabricated duplicate has been removed, so the payload carries `idr` and `usdt` only. |
 | **Refund treatment** | **Not refund-aware.** This is a gross figure. A partial refund leaves the order `DELIVERED` and does not reduce it; a full refund removes the order from it entirely (see above). Use Net Sales for the refund-aware number. |
 | **Discount treatment** | Net of discounts — sums `Order.totalAmount`, which is post-`bulkDiscountAmount`/`discountAmount`. |
 | **Wallet credit** | Counted, as the second leg of the same sale (M8.5) — `salesRevenueByCurrency` adds `walletSpendByCurrency` over its own `where` clause. A sale paid entirely from credit used to report zero here. |
 | **Timezone** | ⚠️ **Jakarta-local midnight**, not UTC. The route passes `startOfDayUtc()` (`packages/core/src/datetime.ts:52-54`), which despite its name computes `config.TIMEZONE`-local midnight converted to a UTC instant. See [the timezone section](#known-inconsistency-the-day-boundary-is-not-the-same-everywhere). The **bot's** admin dashboard calls the same function with a **true UTC** midnight instead — the two "today's revenue" figures can legitimately disagree. Both windows are right-anchored at "now" rather than at a fixed close, so the gap is **not** a flat 7 hours: it's up to 7 hours' worth of orders before 17:00 UTC (when the Jakarta date has not yet rolled), widening to up to 17 hours' worth between 17:00 and 23:59 UTC (once it has). |
 | **Aggregation** | `SUM(Order.totalAmount)` grouped by currency over `deliveredAt ∈ [since, until]`, plus the `order_payment` wallet legs of those same orders, plus the order count behind it (which the wallet leg never changes). "Yesterday" is bounded at the same clock time as now (`yesterdaySameClock`) so a mid-day comparison is like-for-like, not today-so-far against a whole day. |
-| **Trend %** | `(today − yesterday) / yesterday × 100`, 1dp, `null` when yesterday was zero (no division by zero, and no "∞%"). |
+| **Trend %** | `(today − yesterday) / yesterday × 100`, 1dp, `null` when yesterday was zero (no division by zero, and no "∞%") and also when yesterday's base is below the floor (Rp10.000 or 1 USDT, `TREND_MIN_BASE` in `dashboard.ts`) so a tiny base cannot produce an absurd percentage. |
 
 `revenueSummary().orders` is a count of **sales**, not of all delivered order
 rows — it inherits the same `kind: PRODUCT` filter. It is not the same number
@@ -453,10 +454,10 @@ number off this dashboard.
 |---|---|
 | **Business definition** | How product orders are distributed across the order funnel: how many reached each status. |
 | **Source of truth** | `ordersByStatus` (lifetime, feeds the Reports page's order funnel alongside `revenueByDay`/`topProducts`/`voucherUsage`); `ordersByStatusSince` (windowed, feeds `GET /api/dashboard/kpis` → `orders` → `OrdersKpiCard`). |
-| **Included states** | All statuses — the grouping *is* the answer. The dashboard route then folds them into display buckets: `delivered` = `DELIVERED`; `pending` = `PENDING_PAYMENT`, `PAYMENT_DETECTED`, `CONFIRMING`, `PENDING_VERIFICATION`, `UNDERPAID`; `failed` = `CANCELLED`, `REJECTED`, `FAILED`. `total` is the sum of **every** status, including ones outside those three buckets. |
+| **Included states** | All statuses — the grouping *is* the answer. The dashboard route then folds them into display buckets: `delivered` = `DELIVERED`; `pending` = `PENDING_PAYMENT`, `PAYMENT_DETECTED`, `CONFIRMING`, `PENDING_VERIFICATION`, `UNDERPAID`; `failed` = `CANCELLED`, `REJECTED`, `FAILED`. `other` is everything outside those three buckets (for example `REFUNDED`, `PAID`, `CONFIRMED`, `PROCESSING`), computed by exclusion, so `total = delivered + pending + failed + other`. |
 | **Kind filter** | `kind: PRODUCT` (Task 6a). A settled `WALLET_TOPUP` reaches `DELIVERED` like any sale and would otherwise inflate the funnel's delivered leg with money the buyer has not spent. |
 | **Currency** | Not applicable — counts. |
-| **Refund treatment** | A refunded order appears under `REFUNDED`, which is in none of the three display buckets, so it silently leaves `delivered` without joining `pending` or `failed` while still counting toward `total`. |
+| **Refund treatment** | A refunded order appears under `REFUNDED`, which is in none of the three named buckets, so it leaves `delivered` and lands in `other` while still counting toward `total`. |
 | **Timezone** | ⚠️ `ordersByStatusSince` is called with `startOfDayUtc()` → **Jakarta-local midnight**. |
 | **Aggregation** | `GROUP BY status`, `COUNT(*)`. Note `ordersByStatusSince` windows on **`createdAt`**, not `deliveredAt` — "orders *placed* today", which is a deliberately different question from Revenue Today's "orders *delivered* today". The two cards on the same dashboard row therefore window on different columns. |
 
@@ -768,7 +769,7 @@ figures read `RefundExecution`. Counts are counts.
 
 | Metric | Source function | File | Currency handling | Kind filter | Refund-aware? | Timezone convention |
 |---|---|---|---|---|---|---|
-| Revenue Today / Yesterday (= Gross Sales) | `revenueSummary` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate (+ `usd` alias of the USDT figure) | `PRODUCT` | No — gross | ⚠️ Jakarta-local midnight (`startOfDayUtc`) |
+| Revenue Today / Yesterday (= Gross Sales) | `revenueSummary` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate | `PRODUCT` | No — gross | ⚠️ Jakarta-local midnight (`startOfDayUtc`) |
 | Refunds Today | `refundTotalsSince` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate, from `RefundExecution.currency` | n/a (refund-rooted) | Yes — is the refund figure | ⚠️ Jakarta-local midnight; buckets on `executedAt` |
 | Net Sales Today | `grossSalesForNetSales` − `refundTotalsSince` | `revenue.ts` + `apps/web-admin/src/routes/api/dashboard.ts` | IDR/USDT separate, subtracted per currency | `PRODUCT` | **Yes** | ⚠️ Jakarta-local midnight |
 | Profit Today | `profitSummarySince` | `packages/db/src/crud/revenue.ts` | Separate; USDT via per-order `fxRate` snapshot | n/a (OrderItem-rooted, immune) | No | ⚠️ Jakarta-local midnight |
@@ -782,11 +783,13 @@ figures read `RefundExecution`. Counts are counts.
 | Revenue by Week/Month/Year | `revenueByPeriod` | `packages/db/src/crud/revenue.ts` | Separate, **plus** `revenueIdrEquiv` blend (opt-in) | `PRODUCT` | No | **UTC ISO week (Mon) / calendar month / calendar year** |
 | Orders by Week/Month/Year | `ordersByPeriod` | `packages/db/src/crud/revenue.ts` | Split by currency (counts) | `PRODUCT` | No | **UTC ISO week / month / year** |
 | Profit by Week/Month/Year | `profitByPeriod` | `packages/db/src/crud/revenue.ts` | Separate; `fxRate` snapshot; `null` when all cost unknown | n/a (immune) | No | **UTC ISO week / month / year** |
-| Top products (Reports) | `topProducts` | `packages/db/src/crud/revenue.ts` | IDR (catalog-central) | n/a (immune) | No | Rolling window from `since` |
+| Top products (Reports) | `topProducts` | `packages/db/src/crud/revenue.ts` | IDR (catalog-central), **net of order-level discounts** (same basis as `topProductsByMargin`) | n/a (immune) | No | Rolling window from `since` |
 | Top products by margin (Dashboard) | `topProductsByMargin` | `packages/db/src/crud/revenue.ts` | IDR-equivalent; `profitIdrEquiv` **`null`** if any unit's cost unknown | n/a (immune) | No | Rolling window from `since` (default 30d) |
 | Orders-page `totalOrders` | `countOrders(db, {})` | `packages/db/src/crud/orders.ts` | n/a | **None — all kinds, deliberate** | No | Lifetime |
 | Orders-page `delivered` / `cancelled` badges | `countDelivered` / `countCancelled` | `packages/db/src/crud/orders.ts` | n/a | **None — all kinds, deliberate** | A refunded order leaves `delivered` | Lifetime |
 | Operation Center / Pending Actions counts | `countPendingPaymentLike`, `countProcessing`, `countPendingVerifications`, `countUnderpaid`, `countExpiredPending`, `countAwaitingManualFulfillment` | `packages/db/src/crud/orders.ts` | n/a | **None — all kinds, deliberate** (`countAwaitingManualFulfillment` is structurally immune) | No | Point-in-time; `countExpiredPending` takes an explicit `now` |
+| Payments page tiles (`todayCount`, Unmatched, Failed Deliveries) | `countLedgerRowsToday`, `ledgerOutcomeCounts` (`manualMatchQueueCounts` derives from the latter, so the dashboard's Failed Deliveries card agrees) | `packages/db/src/crud/reports.ts` | n/a (counts; the gateway ledgers store no currency) | n/a (ledger-rooted: rows of all five gateway tables, whatever the order kind) | No | `todayCount` is ⚠️ Jakarta-local midnight (`startOfDayUtc`); the outcome counts are lifetime |
+| Payments page "Underpaid Orders" badge | `countUnderpaid` (the listed rows are capped at 50; the badge is not) | `packages/db/src/crud/orders.ts` | n/a | **None — all kinds, deliberate** | No | Point-in-time |
 | Customer "Total Spent" | `userTotalSpent` / `totalSpentByUserIds` | `packages/db/src/crud/users.ts` | IDR/USDT separate | `PRODUCT` | No | Lifetime |
 | Customers KPI row (`totalRevenue`, `returningCustomers`) | `customersKpis` | `packages/db/src/crud/users.ts` | IDR/USDT separate | `PRODUCT` | No | Lifetime |
 | Customers KPI row (`newToday`, `activeToday`) | `customersKpis` | `packages/db/src/crud/users.ts` | n/a | n/a (reads `User.createdAt`/`lastSeenAt`) | n/a | ⚠️ Jakarta-local midnight |

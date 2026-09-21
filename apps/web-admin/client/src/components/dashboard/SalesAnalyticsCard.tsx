@@ -49,6 +49,39 @@ const METRIC_OPTIONS: Array<{ value: AnalyticsMetric; label: string }> = [
   { value: "profit", label: "Profit" },
 ];
 
+/** Short unit for the y-axis itself. Profit is reported per currency from
+ *  catalog-central IDR figures, so it carries the same unit revenue does. */
+function axisUnit(metric: AnalyticsMetric, currency: AnalyticsCurrency): string {
+  if (metric === "orders") return "Orders";
+  return currency === "combined" ? "IDR equiv." : currency.toUpperCase();
+}
+
+/** What the plotted value is, so the series never reads as a bare number. */
+function seriesLabel(metric: AnalyticsMetric, currency: AnalyticsCurrency): string {
+  const ccy = currency.toUpperCase();
+  if (metric === "orders") {
+    if (currency === "combined") return "Delivered product orders (all currencies)";
+    return `Delivered product orders (paid in ${ccy})`;
+  }
+  if (metric === "profit") {
+    // The route falls back to the IDR series when Combined is asked for, so say
+    // IDR rather than promise a blend that does not exist.
+    return currency === "usdt" ? "Net profit (USDT)" : "Net profit (IDR)";
+  }
+  if (currency === "combined") return "Delivered revenue (IDR equivalent)";
+  return `Delivered revenue (${ccy})`;
+}
+
+/** What one point on the x-axis covers. Every bucketed series is cut on UTC
+ *  calendar boundaries (the metrics contract's "UTC everywhere" policy), NOT on
+ *  the shop-local midnight the "Today" KPI cards use, so say so. */
+function bucketLabel(range: AnalyticsRange): string {
+  if (range === "week") return "per ISO week (Monday start, UTC)";
+  if (range === "month") return "per calendar month (UTC)";
+  if (range === "year") return "per calendar year (UTC)";
+  return "per delivery day (UTC)";
+}
+
 export function SalesAnalyticsCard() {
   const [range, setRange] = useState<AnalyticsRange>("7d");
   const [currency, setCurrency] = useState<AnalyticsCurrency>("idr");
@@ -79,6 +112,8 @@ export function SalesAnalyticsCard() {
   // cost) carries no plottable point, so it reads as "no data" rather than as a
   // chart with an invisible line.
   const hasPlottableValue = chartData.some((p) => p.value !== null);
+  const yLabel = seriesLabel(metric, currency);
+  const yUnit = axisUnit(metric, currency);
 
   return (
     <Card>
@@ -96,18 +131,26 @@ export function SalesAnalyticsCard() {
         {isError && <p className="text-sm text-rust">Couldn't load analytics.</p>}
         {data && !hasPlottableValue && <EmptyState title="No data for this range." />}
         {data && hasPlottableValue && (
-          <div className="h-64 w-full overflow-x-auto">
-            <div className="h-full min-w-[480px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 12 }}>
-                  <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" width={56} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="value" stroke="var(--color-pine)" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
+          <>
+            <p className="mb-1 text-xs text-ink-soft">{yLabel} · {bucketLabel(range)}</p>
+            <div className="h-64 w-full overflow-x-auto">
+              <div className="h-full min-w-[480px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 12 }}>
+                    <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" />
+                    <YAxis
+                      tick={{ fontSize: 11 }}
+                      stroke="var(--color-ink-faint)"
+                      width={72}
+                      label={{ value: yUnit, angle: -90, position: "insideLeft", style: { fontSize: 11, textAnchor: "middle" } }}
+                    />
+                    <Tooltip />
+                    <Line type="monotone" dataKey="value" stroke="var(--color-pine)" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
             </div>
-          </div>
+          </>
         )}
       </CardContent>
     </Card>

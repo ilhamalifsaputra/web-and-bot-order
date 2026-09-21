@@ -867,21 +867,6 @@ export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null;
   return db.processedBinanceTx.count({ where });
 }
 
-/** Count of ledger rows per outcome — drives the summary cards. */
-export async function processedTxOutcomeCounts(db: Db): Promise<Record<string, number>> {
-  const grouped = await db.processedBinanceTx.groupBy({ by: ["outcome"], _count: { _all: true } });
-  const counts: Record<string, number> = {};
-  for (const g of grouped) counts[g.outcome] = g._count._all;
-  return counts;
-}
-
-/** Count of ledger rows created today (shop's configured TIMEZONE), for the
- *  Payments page's "Today's Transactions" KPI — always accurate regardless
- *  of ledger pagination, unlike counting rows on the current page. */
-export function countProcessedBinanceTxToday(db: Db, now: Date = new Date()): Promise<number> {
-  return db.processedBinanceTx.count({ where: { createdAt: { gte: startOfDayUtc(now) } } });
-}
-
 /**
  * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
  * Flips UNDERPAID → PENDING_VERIFICATION then runs the normal approve/deliver

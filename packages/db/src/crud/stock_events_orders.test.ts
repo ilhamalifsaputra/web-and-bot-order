@@ -44,7 +44,7 @@ beforeEach(async () => {
 async function reduceStockTo(productId: number, keep: number) {
   const items = await prisma.stockItem.findMany({ where: { productId }, orderBy: { id: "asc" } });
   for (const item of items.slice(keep)) {
-    await markStockDead(prisma, item.id, "test: reduced to force one shared row");
+    await markStockDead(prisma, item.id, "test: reduced to force one shared row", sample.user.id);
   }
 }
 

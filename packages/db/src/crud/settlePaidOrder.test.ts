@@ -1340,7 +1340,7 @@ describe("approveOrder substitution events", () => {
     const order = await makePendingVerificationOrder(sample.product.id, 1);
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
     const deadRowId = item.stockItemId!;
-    expect(await markStockDead(prisma, deadRowId, "test: supplier revoked it")).toBe(1);
+    expect(await markStockDead(prisma, deadRowId, "test: supplier revoked it", sample.user.id)).toBe(1);
 
     const { credentials } = await approveOrder(prisma, order.id, { adminId });
 

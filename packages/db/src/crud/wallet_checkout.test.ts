@@ -200,7 +200,7 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
     // Mark all 5 seeded stock items dead so none remain available (same
     // technique as order_creation.test.ts's own out-of-stock test).
     const items = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
-    for (const it of items) await markStockDead(prisma, it.id, "test");
+    for (const it of items) await markStockDead(prisma, it.id, "test", sample.user.id);
     await adjustWallet(prisma, sample.user.id, "5", { currency: "USDT", reason: "admin_adjust" });
     const user = await freshUser();
 
@@ -418,7 +418,7 @@ describe("completeCartOrderWithWalletCredit — USDT track", () => {
 
   it("out of stock at completion time: throws, wallet untouched", async () => {
     const items = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
-    for (const it of items) await markStockDead(prisma, it.id, "test");
+    for (const it of items) await markStockDead(prisma, it.id, "test", sample.user.id);
     await adjustWallet(prisma, sample.user.id, "5", { currency: "USDT", reason: "admin_adjust" });
     await addToCart(prisma, sample.user.id, sample.product.id, 1);
     const user = await freshUser();

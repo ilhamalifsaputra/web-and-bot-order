@@ -543,8 +543,7 @@ describe("admin conversations", () => {
     const before = await prisma.stockItem.findMany({ where: { productId: sample.product.id }, select: { id: true } });
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
-    const conv = new FakeConversation([msg(sink, { text: "new1@x.com:pw1
-new2@x.com:pw2" })]);
+    const conv = new FakeConversation([msg(sink, { text: "new1@x.com:pw1\nnew2@x.com:pw2" })]);
     await stockUploadConversation(conv.asMyConversation(), entry);
 
     const knownIds = before.map((r) => r.id);

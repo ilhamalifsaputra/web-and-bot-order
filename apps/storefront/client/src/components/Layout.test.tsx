@@ -205,7 +205,7 @@ describe("Layout", () => {
     it("carries the trust footer", async () => {
       const { drawer } = await openDrawer();
       expect(within(drawer).getByText("Trusted digital marketplace")).toBeInTheDocument();
-      expect(within(drawer).getByText("Instant delivery")).toBeInTheDocument();
+      expect(within(drawer).getByText("Automatic delivery where available")).toBeInTheDocument();
       expect(within(drawer).getByText("Warranty per plan")).toBeInTheDocument();
     });
 
@@ -274,7 +274,7 @@ describe("Layout", () => {
     expect(screen.getByText("Quick Links")).toBeInTheDocument();
     expect(screen.getByText("Contact")).toBeInTheDocument();
     // Copyright/trust bar still renders beneath the columns.
-    expect(screen.getByText("Instant delivery · QRIS & USDT payments")).toBeInTheDocument();
+    expect(screen.getByText("Automatic delivery where available · QRIS & USDT payments")).toBeInTheDocument();
   });
 
   it("hides the whole contact column when neither WhatsApp nor Telegram is configured", async () => {

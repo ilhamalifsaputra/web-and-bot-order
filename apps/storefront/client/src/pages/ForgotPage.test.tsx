@@ -70,7 +70,7 @@ describe("ForgotPage", () => {
   // with zero route to the policies.
   it("renders the brand panel's trust strip and policy links", () => {
     renderForgot();
-    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("Automatic delivery where available")).toBeInTheDocument();
     expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
     expect(screen.getByText("Warranty per plan")).toBeInTheDocument();
     expect(screen.getByText("Help via support ticket")).toBeInTheDocument();

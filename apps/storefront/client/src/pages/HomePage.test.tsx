@@ -80,7 +80,7 @@ describe("HomePage", () => {
 
   it("renders the hero, a product card, and a category pill", async () => {
     renderHome(homeFixture());
-    expect(await screen.findByText("Digital products, delivered instantly")).toBeInTheDocument();
+    expect(await screen.findByText("Digital products, delivered automatically after payment (where available)")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Netflix Premium" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /View products/ })).toHaveAttribute("href", "/c/streaming");
   });
@@ -251,8 +251,17 @@ describe("HomePage", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(labels).toEqual(
-      expect.arrayContaining(["Instant delivery", "QRIS & USDT", "Warranty per plan", "Help via support ticket"]),
+      expect.arrayContaining(["Automatic delivery where available", "QRIS & USDT", "Warranty per plan", "Help via support ticket"]),
     );
+  });
+
+  // "Instant delivery" is only true per product (auto plan with stock — the
+  // ProductCard chip); the page-level copy must not promise it for everything.
+  it("makes no blanket 'instant' promise anywhere on the home page", async () => {
+    // Out of stock, so the (legitimately gated) product-card chip is absent too.
+    const { container } = renderHome(homeFixture({ products: [{ ...product, available: 0 }] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(container.textContent ?? "").not.toMatch(/delivered instantly|Instant delivery/i);
   });
 
   it("shows a hero product-preview composition when at least two products are available, linking each card to its product", async () => {

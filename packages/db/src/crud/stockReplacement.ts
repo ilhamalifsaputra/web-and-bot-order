@@ -82,10 +82,12 @@
  * that is the sign the payout stopped going through `executeRefund`.
  */
 import {
+  DeadReason,
   OrderStatus,
   RefundExecutionMethod,
   RefundStatus,
   StockActorType,
+  StockEventType,
   StockReplacementStatus,
   StockStatus,
   TERMINAL_STOCK_REPLACEMENT_STATUSES,
@@ -101,7 +103,7 @@ import { enqueueOrderDeliveredDm } from "./notifications";
 import { enqueueBuyerOrderReadyEmailIfGuest, getOrder } from "./orders";
 import { createRefund, createRefundItem, executeRefund, transitionRefundStatus } from "./refunds";
 import { allocateOneAvailableStock } from "./stock";
-import type { StockEventActor } from "./stockEvents";
+import { recordStockEvent, type StockEventActor } from "./stockEvents";
 
 /** What `listStockReplacementsForOrder` hands back per request: the row itself
  *  plus the refund that stood in for a replacement, when one did. */
@@ -276,11 +278,17 @@ async function claimStockReplacementStatus(
  * that names this row and runs inside that transaction, so two replacements
  * against one credential are serialized (and the `status: SOLD` guard turns the
  * loser away regardless).
+ *
+ * Writes the MARKED_DEAD event in the same transaction, attributed to the admin
+ * running the replacement. The reason code is OTHER: the free-text complaint
+ * the request carries does not map onto any `DeadReason`, and the request id in
+ * the event's meta is the link back to it.
  */
 async function killDeliveredStockItem(
   db: Db,
   stockItemId: number,
   stockReplacementId: number,
+  context: { adminId: number; orderId: number; orderItemId: number },
 ): Promise<void> {
   const existing = await db.stockItem.findUnique({
     where: { id: stockItemId },
@@ -302,6 +310,17 @@ async function killDeliveredStockItem(
     // covered by two live accounts.
     throw new ValidationError("error.stock_replacement_item_not_sold");
   }
+  await recordStockEvent(db, {
+    stockItemId,
+    eventType: StockEventType.MARKED_DEAD,
+    fromStatus: StockStatus.SOLD,
+    toStatus: StockStatus.DEAD,
+    orderId: context.orderId,
+    orderItemId: context.orderItemId,
+    actor: { type: StockActorType.ADMIN, adminId: context.adminId },
+    reasonCode: DeadReason.OTHER,
+    meta: { stockReplacementId },
+  });
 }
 
 /**
@@ -466,6 +485,15 @@ async function issueReplacementCredential(
     where: { id: reserved.id },
     data: { status: StockStatus.SOLD, soldAt: new Date() },
   });
+  await recordStockEvent(db, {
+    stockItemId: sold.id,
+    eventType: StockEventType.SOLD,
+    fromStatus: StockStatus.RESERVED,
+    toStatus: StockStatus.SOLD,
+    orderId: item.order.id,
+    orderItemId: item.id,
+    actor,
+  });
   await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: sold.id } });
   const notice = await notifyBuyerOfRedelivery(db, item);
   return { stockItem: sold, notice };
@@ -565,7 +593,11 @@ export async function replaceStockItem(
       },
     });
 
-    await killDeliveredStockItem(tx, item.stockItem.id, replacementRow.id);
+    await killDeliveredStockItem(tx, item.stockItem.id, replacementRow.id, {
+      adminId: args.executedBy,
+      orderId: item.order.id,
+      orderItemId: item.id,
+    });
 
     const issued = await issueReplacementCredential(tx, item, {
       type: StockActorType.ADMIN,

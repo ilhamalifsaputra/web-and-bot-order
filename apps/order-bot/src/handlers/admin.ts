@@ -526,11 +526,13 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
   // trail back to the admin who made it.
   const count = await prisma.$transaction(async (tx) => {
     const stockItem = await tx.stockItem.findUnique({ where: { id: stockId }, include: { product: true } });
-    const updated = await markStockDead(tx, stockId, "marked dead by admin");
-    if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
+    // Resolved before the update: its MARKED_DEAD event names this admin.
     const admin = await getUserByTelegramId(tx, adminTg);
+    const adminId = requireAdminId(admin);
+    const updated = await markStockDead(tx, stockId, "marked dead by admin", adminId);
+    if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
     await logAdminAction(tx, {
-      adminId: requireAdminId(admin),
+      adminId,
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,

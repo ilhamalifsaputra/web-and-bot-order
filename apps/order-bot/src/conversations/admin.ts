@@ -162,9 +162,10 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
 
   const adminTg = ctx.from!.id;
   const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
-    const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
+    // Resolved before the insert: each new stock row's IMPORTED event names this admin.
     const admin = await getUserByTelegramId(tx, adminTg);
     const adminId = requireAdminId(admin);
+    const { added: n, skipped } = await bulkAddStock(tx, productId, credentials, adminId);
     await logAdminAction(tx, {
       adminId,
       action: "stock_upload",

@@ -23,6 +23,9 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
+  // The fixture's own import wrote IMPORTED events; these tests exercise the
+  // writer against an empty ledger.
+  await prisma.stockItemEvent.deleteMany();
 });
 
 const firstStockId = async () =>

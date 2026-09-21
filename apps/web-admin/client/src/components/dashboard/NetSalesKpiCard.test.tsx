@@ -89,7 +89,7 @@ describe("NetSalesKpiCard", () => {
     renderWithQuery();
     await waitFor(() =>
       expect(
-        screen.getByText(/Sold today, minus refunds paid out today .* can be negative/),
+        screen.getByText(/Sold today, minus refunds paid out today — a sale counts on the day it was delivered and a refund on the day it is paid out, so this can be negative/),
       ).toBeInTheDocument(),
     );
   });

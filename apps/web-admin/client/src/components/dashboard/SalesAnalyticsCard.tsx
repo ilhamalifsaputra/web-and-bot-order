@@ -60,8 +60,8 @@ function axisUnit(metric: AnalyticsMetric, currency: AnalyticsCurrency): string 
 function seriesLabel(metric: AnalyticsMetric, currency: AnalyticsCurrency): string {
   const ccy = currency.toUpperCase();
   if (metric === "orders") {
-    if (currency === "combined") return "Delivered orders (all currencies)";
-    return `Delivered orders (paid in ${ccy})`;
+    if (currency === "combined") return "Delivered product orders (all currencies)";
+    return `Delivered product orders (paid in ${ccy})`;
   }
   if (metric === "profit") {
     // The route falls back to the IDR series when Combined is asked for, so say

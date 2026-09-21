@@ -140,7 +140,7 @@ describe("SalesAnalyticsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Orders" }));
     // Orders + Combined is the sum over both currencies (the server does the summing).
     await waitFor(() =>
-      expect(screen.getByText("Delivered orders (all currencies) · per delivery day (UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered product orders (all currencies) · per delivery day (UTC)")).toBeInTheDocument(),
     );
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/dashboard/analytics?range=7d&currency=combined&metric=orders",
@@ -148,7 +148,7 @@ describe("SalesAnalyticsCard", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "USDT" }));
     await waitFor(() =>
-      expect(screen.getByText("Delivered orders (paid in USDT) · per delivery day (UTC)")).toBeInTheDocument(),
+      expect(screen.getByText("Delivered product orders (paid in USDT) · per delivery day (UTC)")).toBeInTheDocument(),
     );
   });
 

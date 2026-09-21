@@ -3,7 +3,7 @@ import { StatCard } from "../../components/shared/StatCard";
 import { CurrencyStack, type CurrencyAmount } from "../../components/shared/CurrencyAmount";
 import { useOrdersKpis } from "../../hooks/useOrdersKpis";
 
-const ALL_KINDS = "Counts every order in the list below, including wallet top-up orders.";
+const ALL_KINDS = "Counts every order, including wallet top-up orders, across the whole shop (not just the filtered list below).";
 
 export function OrdersKpiRow(): JSX.Element {
   const { data, isLoading } = useOrdersKpis();
@@ -47,8 +47,8 @@ export function OrdersKpiRow(): JSX.Element {
         <StatCard label="Cancelled" hint={ALL_KINDS} value={data?.cancelled ?? 0} icon={XCircle} tone="danger" isLoading={isLoading} />
       </div>
       <p className="mt-2 text-xs text-ink-soft">
-        Revenue Today counts product sales only; every other tile counts every order in the list below, including
-        wallet top-ups, so each one matches its status tab.
+        Revenue Today counts product sales only; every other tile counts every order across the whole shop,
+        including wallet top-ups, so each one matches its status tab (they do not follow the filters below).
       </p>
     </div>
   );

@@ -327,10 +327,9 @@ export interface ManualMatchQueueCounts {
  * Ledger rows per outcome across all five payment-method idempotency tables
  * (Binance, Bybit, TokoPay, PayDisini, NOWPayments) — the same set of tables
  * `listCombinedLedger` merges, so a count here and a filter of that ledger by
- * the same outcome always agree. Generalizes the Binance-only
- * `processedTxOutcomeCounts()` (binance_internal.ts), which the Payments page
- * used to read for its tiles and outcome dropdown while its ledger spanned
- * every gateway. Includes outcomes outside `TX_OUTCOMES` (e.g. the QRIS-only
+ * the same outcome always agree. The Payments tiles and outcome
+ * dropdown read this (they once read a Binance-only helper while the ledger
+ * spanned every gateway). Includes outcomes outside `TX_OUTCOMES` (e.g. the QRIS-only
  * "stale") under their own key.
  */
 export async function ledgerOutcomeCounts(db: Db): Promise<Record<string, number>> {

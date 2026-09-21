@@ -206,7 +206,7 @@ describe("Layout", () => {
       const { drawer } = await openDrawer();
       expect(within(drawer).getByText("Trusted digital marketplace")).toBeInTheDocument();
       expect(within(drawer).getByText("Instant delivery")).toBeInTheDocument();
-      expect(within(drawer).getByText("Warranty included")).toBeInTheDocument();
+      expect(within(drawer).getByText("Warranty per plan")).toBeInTheDocument();
     });
 
     it("closes on Escape and returns focus to the hamburger button", async () => {

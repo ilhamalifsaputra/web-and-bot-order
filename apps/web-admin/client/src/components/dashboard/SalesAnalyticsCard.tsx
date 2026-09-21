@@ -72,13 +72,14 @@ function seriesLabel(metric: AnalyticsMetric, currency: AnalyticsCurrency): stri
   return `Delivered revenue (${ccy})`;
 }
 
-/** What one point on the x-axis covers. The two rolling ranges bucket by the
- *  shop's calendar day; the other three are shop-calendar rollups. */
+/** What one point on the x-axis covers. Every bucketed series is cut on UTC
+ *  calendar boundaries (the metrics contract's "UTC everywhere" policy), NOT on
+ *  the shop-local midnight the "Today" KPI cards use, so say so. */
 function bucketLabel(range: AnalyticsRange): string {
-  if (range === "week") return "per ISO week (Monday start)";
-  if (range === "month") return "per calendar month";
-  if (range === "year") return "per calendar year";
-  return "per delivery day";
+  if (range === "week") return "per ISO week (Monday start, UTC)";
+  if (range === "month") return "per calendar month (UTC)";
+  if (range === "year") return "per calendar year (UTC)";
+  return "per delivery day (UTC)";
 }
 
 export function SalesAnalyticsCard() {

@@ -10,10 +10,40 @@
  * stock browser, neither of which should carry plaintext through unrelated
  * code paths. `revealStockCredentials` is the sole explicit-reveal read.
  */
-import { StockStatus, StockEventType } from "@app/core/enums";
+import { StockStatus, StockEventType, StockActorType, DeadReason } from "@app/core/enums";
 import { encryptCredentials, decryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
-import { recordStockEvent, type StockEventActor } from "./stockEvents";
+import { recordStockEvent, recordStockEvents, type StockEventActor } from "./stockEvents";
+
+/** Runs `fn` on the caller's transaction, or opens one when handed a bare client. */
+async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
+  // A `Tx` has no `$transaction` (Prisma strips it from the interactive
+  // transaction client), so its presence is what distinguishes the bare client.
+  if ("$transaction" in db && typeof db.$transaction === "function") {
+    return db.$transaction((tx) => fn(tx));
+  }
+  return fn(db);
+}
+
+/** An admin's action, or SYSTEM when there is no admin to attribute it to. */
+function adminActor(adminId: number | null | undefined): StockEventActor {
+  return adminId == null
+    ? { type: StockActorType.SYSTEM }
+    : { type: StockActorType.ADMIN, adminId };
+}
+
+/**
+ * Row-lock the named stock rows for the rest of the transaction, in id order so
+ * two overlapping bulk calls cannot deadlock each other. Without it, the status
+ * this reads and the status the update sees could differ (an order reserving
+ * the row in between), and the event would name the wrong prior status.
+ */
+async function lockStockRows(tx: Db, ids: number[]): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM stock_items WHERE id = ANY(${ids}::int[]) ORDER BY id FOR UPDATE`;
+}
+
+/** Namespace half of the two-key advisory lock `bulkAddStock` takes per denomination. */
+const STOCK_IMPORT_LOCK_NAMESPACE = 0x53544b31; // "STK1"
 
 /**
  * Bulk-insert AVAILABLE stock, deduping against the incoming batch itself
@@ -36,31 +66,94 @@ export async function bulkAddStock(
   db: Db,
   productId: number,
   credentials: string[],
+  adminId?: number | null,
 ): Promise<{ added: number; skipped: number }> {
   if (credentials.length === 0) return { added: 0, skipped: 0 };
 
-  const deduped = [...new Set(credentials)];
-  const existingRows = await db.stockItem.findMany({
-    where: {
-      productId,
-      deletedAt: null,
-      status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
-    },
-    select: { credentials: true },
-  });
-  const existing = new Set(existingRows.map((r) => decryptCredentials(r.credentials)));
-  const fresh = deduped.filter((c) => !existing.has(c));
+  return inTransaction(db, async (tx) => {
+    // Serialize imports per denomination: the dedup read below and the insert
+    // are only atomic together under this lock. Two concurrent uploads of the
+    // same credential would otherwise both read "not there yet" and both insert
+    // it (Postgres runs writers in parallel; nothing serializes them for us).
+    // Transaction-scoped, so it releases itself on commit or rollback, and the
+    // statements after it each take a fresh READ COMMITTED snapshot, so the
+    // second caller's dedup read sees the first caller's committed rows.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(${STOCK_IMPORT_LOCK_NAMESPACE}::int, ${productId}::int)`;
 
-  if (fresh.length === 0) return { added: 0, skipped: credentials.length };
+    const deduped = [...new Set(credentials)];
+    const existingRows = await tx.stockItem.findMany({
+      where: {
+        productId,
+        deletedAt: null,
+        status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
+      },
+      select: { credentials: true },
+    });
+    const existing = new Set(existingRows.map((r) => decryptCredentials(r.credentials)));
+    const fresh = deduped.filter((c) => !existing.has(c));
 
-  const res = await db.stockItem.createMany({
-    data: fresh.map((c) => ({
-      productId,
-      credentials: encryptCredentials(c),
-      status: StockStatus.AVAILABLE,
-    })),
+    if (fresh.length === 0) return { added: 0, skipped: credentials.length };
+
+    // createMany returns no ids, and each new row needs its own IMPORTED event.
+    const created = await tx.stockItem.createManyAndReturn({
+      data: fresh.map((c) => ({
+        productId,
+        credentials: encryptCredentials(c),
+        status: StockStatus.AVAILABLE,
+      })),
+      select: { id: true },
+    });
+    const actor = adminActor(adminId);
+    await recordStockEvents(
+      tx,
+      created.map((row) => ({
+        stockItemId: row.id,
+        eventType: StockEventType.IMPORTED,
+        toStatus: StockStatus.AVAILABLE,
+        actor,
+      })),
+    );
+    return { added: created.length, skipped: credentials.length - created.length };
   });
-  return { added: res.count, skipped: credentials.length - res.count };
+}
+
+/**
+ * Flip the still-AVAILABLE/RESERVED rows among `ids` to DEAD and record one
+ * MARKED_DEAD event per row that actually changed, carrying that row's own
+ * prior status. The rows are locked first, so the status the event names is
+ * the status the update really replaced.
+ *
+ * The admin's `note` stays out of the event on purpose — admins paste
+ * credentials into it. The reason is OTHER because no caller collects a
+ * structured one yet.
+ */
+async function markDead(db: Db, ids: number[], note: string, adminId: number): Promise<number> {
+  return inTransaction(db, async (tx) => {
+    await lockStockRows(tx, ids);
+    const eligible = { deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } };
+    const rows = await tx.stockItem.findMany({
+      where: { id: { in: ids }, ...eligible },
+      select: { id: true, status: true },
+    });
+    if (!rows.length) return 0;
+    const res = await tx.stockItem.updateMany({
+      where: { id: { in: rows.map((r) => r.id) }, ...eligible },
+      data: { status: StockStatus.DEAD, note },
+    });
+    const actor = adminActor(adminId);
+    await recordStockEvents(
+      tx,
+      rows.map((r) => ({
+        stockItemId: r.id,
+        eventType: StockEventType.MARKED_DEAD,
+        fromStatus: r.status,
+        toStatus: StockStatus.DEAD,
+        actor,
+        reasonCode: DeadReason.OTHER,
+      })),
+    );
+    return res.count;
+  });
 }
 
 /**
@@ -70,12 +163,8 @@ export async function bulkAddStock(
  * item was updated, 0 if it wasn't eligible (already SOLD/DEAD, or the id
  * doesn't exist) — callers must check this instead of assuming success.
  */
-export async function markStockDead(db: Db, stockId: number, note: string): Promise<number> {
-  const res = await db.stockItem.updateMany({
-    where: { id: stockId, deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
-    data: { status: StockStatus.DEAD, note },
-  });
-  return res.count;
+export async function markStockDead(db: Db, stockId: number, note: string, adminId: number): Promise<number> {
+  return markDead(db, [stockId], note, adminId);
 }
 
 /**
@@ -87,13 +176,36 @@ export async function bulkMarkStockDead(
   db: Db,
   ids: number[],
   note: string,
+  adminId: number,
 ): Promise<number> {
   if (!ids.length) return 0;
-  const res = await db.stockItem.updateMany({
-    where: { id: { in: ids }, deletedAt: null, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
-    data: { status: StockStatus.DEAD, note },
+  return markDead(db, ids, note, adminId);
+}
+
+/**
+ * Soft-delete the deletable rows among `ids` and record one SOFT_DELETED event
+ * per row that actually was. A soft delete changes no status, so the event
+ * carries none; the row's status is still on the row.
+ */
+async function softDelete(db: Db, ids: number[], adminId: number): Promise<number> {
+  return inTransaction(db, async (tx) => {
+    await lockStockRows(tx, ids);
+    // SOLD rows and any row an order item points at are never deletable, so a
+    // delivered credential can't be removed out from under an order.
+    const deletable = { deletedAt: null, status: { not: StockStatus.SOLD }, orderItems: { none: {} } };
+    const rows = await tx.stockItem.findMany({ where: { id: { in: ids }, ...deletable }, select: { id: true } });
+    if (!rows.length) return 0;
+    const res = await tx.stockItem.updateMany({
+      where: { id: { in: rows.map((r) => r.id) }, ...deletable },
+      data: { deletedAt: new Date(), deletedByAdminId: adminId },
+    });
+    const actor = adminActor(adminId);
+    await recordStockEvents(
+      tx,
+      rows.map((r) => ({ stockItemId: r.id, eventType: StockEventType.SOFT_DELETED, actor })),
+    );
+    return res.count;
   });
-  return res.count;
 }
 
 /**
@@ -107,16 +219,7 @@ export async function bulkMarkStockDead(
  */
 export async function bulkDeleteStock(db: Db, ids: number[], adminId: number): Promise<number> {
   if (!ids.length) return 0;
-  const res = await db.stockItem.updateMany({
-    where: {
-      id: { in: ids },
-      deletedAt: null,
-      status: { not: StockStatus.SOLD },
-      orderItems: { none: {} },
-    },
-    data: { deletedAt: new Date(), deletedByAdminId: adminId },
-  });
-  return res.count;
+  return softDelete(db, ids, adminId);
 }
 
 /**
@@ -126,11 +229,7 @@ export async function bulkDeleteStock(db: Db, ids: number[], adminId: number): P
  * doesn't exist.
  */
 export async function deleteStockItem(db: Db, stockId: number, adminId: number): Promise<boolean> {
-  const res = await db.stockItem.updateMany({
-    where: { id: stockId, deletedAt: null, status: { not: StockStatus.SOLD }, orderItems: { none: {} } },
-    data: { deletedAt: new Date(), deletedByAdminId: adminId },
-  });
-  return res.count === 1;
+  return (await softDelete(db, [stockId], adminId)) === 1;
 }
 
 /**
@@ -149,15 +248,23 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
 
 /**
  * The single explicit-reveal read: decrypts ONE stock item's credential for
- * an admin who just asked to see it. Callers MUST audit this as
- * `credential_revealed` (see apps/web-admin/src/routes/api/stock.ts) — this
- * function itself does not write the audit row, since it has no admin id to
- * attribute it to. Returns null if the id doesn't exist.
+ * an admin who just asked to see it, and records a CREDENTIAL_REVEALED event
+ * for every reveal (repeats included). Callers MUST also write the
+ * `credential_revealed` audit row (see apps/web-admin/src/routes/api/stock.ts)
+ * — that is what shop admins read; the event is the per-row traceability
+ * trail — and should do both in one transaction. Nothing is recorded when the
+ * decrypt throws. Returns null if the id doesn't exist or is soft-deleted.
  */
-export async function revealStockCredentials(db: Db, stockId: number): Promise<string | null> {
+export async function revealStockCredentials(db: Db, stockId: number, adminId: number): Promise<string | null> {
   const item = await db.stockItem.findFirst({ where: { id: stockId, deletedAt: null }, select: { credentials: true } });
   if (!item) return null;
-  return decryptCredentials(item.credentials);
+  const credentials = decryptCredentials(item.credentials);
+  await recordStockEvent(db, {
+    stockItemId: stockId,
+    eventType: StockEventType.CREDENTIAL_REVEALED,
+    actor: adminActor(adminId),
+  });
+  return credentials;
 }
 
 export function listStockItemsForProduct(db: Db, productId: number, limit = 30) {

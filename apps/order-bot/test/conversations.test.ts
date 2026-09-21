@@ -17,7 +17,7 @@ import {
   DIGIFLAZZ_MARKUP_TYPE_KEY,
   DIGIFLAZZ_MARKUP_VALUE_KEY,
 } from "@app/db";
-import { NotificationEvent, OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
+import { NotificationEvent, OrderStatus, SenderType, StockActorType, StockEventType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   makeCtx,
@@ -537,6 +537,28 @@ describe("admin conversations", () => {
 
     expect(await prisma.stockItem.count({ where: { productId: sample.product.id } })).toBe(before + 2);
     expect(await prisma.auditLog.count({ where: { action: "stock_upload" } })).toBe(1);
+  });
+
+  it("stockUpload: each new row's IMPORTED event is attributed to the uploading admin (admin resolved before the insert)", async () => {
+    const before = await prisma.stockItem.findMany({ where: { productId: sample.product.id }, select: { id: true } });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "new1@x.com:pw1
+new2@x.com:pw2" })]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    const knownIds = before.map((r) => r.id);
+    const added = await prisma.stockItem.findMany({ where: { productId: sample.product.id, id: { notIn: knownIds } } });
+    expect(added).toHaveLength(2);
+    for (const row of added) {
+      const events = await prisma.stockItemEvent.findMany({ where: { stockItemId: row.id } });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        eventType: StockEventType.IMPORTED,
+        actorType: StockActorType.ADMIN,
+        actorAdminId: adminDbId,
+      });
+    }
   });
 
   it("stockUpload: restock broadcast names both the product type and the denomination", async () => {

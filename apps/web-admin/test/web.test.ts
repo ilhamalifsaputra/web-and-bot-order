@@ -10,6 +10,7 @@ import { localize } from "@app/core/datetime";
 import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import {
   prisma,
+  countUnderpaid,
   initDb,
   upsertUser,
   createCategory,
@@ -1503,8 +1504,9 @@ describe("GET /api/orders/kpis", () => {
       cancelled: expect.any(Number),
     });
     // shapeRevenue nulls out a zero currency (dashboard.ts convention) — just
-    // assert the three keys are present, not truthy.
-    expect(Object.keys(body.revenueToday).sort()).toEqual(["idr", "usd", "usdt"]);
+    // assert the two real keys are present, not truthy, and that no fabricated
+    // USD duplicate of the USDT figure is shipped.
+    expect(Object.keys(body.revenueToday).sort()).toEqual(["idr", "usdt"]);
     expect(body.delivered).toBeGreaterThanOrEqual(1);
     expect(body.totalOrders).toBeGreaterThanOrEqual(2);
   });
@@ -6337,6 +6339,60 @@ describe("payments", () => {
     expect(tokopayRow?.gateway).toBe("tokopay");
     const binanceRow = data.ledger.find((tx) => tx.reference === "BN-FAIL-1");
     expect(binanceRow?.gateway).toBe("binance");
+  });
+
+  // T2c: the tiles used to read only the Binance ledger while the ledger table
+  // below them spans every gateway, so "Failed 0" could sit above failed
+  // TokoPay rows. Deltas against a baseline read, because this file's DB is
+  // shared by every test in it.
+  it("GET /api/payments tiles count today's rows, unmatched rows and failed rows across every gateway", async () => {
+    const tiles = async () => {
+      const res = await get("/api/payments", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const d = JSON.parse(res.body) as { todayCount: number; counts: Record<string, number> };
+      return { today: d.todayCount, unmatched: d.counts["unmatched"] ?? 0, failed: d.counts["delivery_failed"] ?? 0 };
+    };
+    const before = await tiles();
+    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "T2C-BN-OK", amount: "1.00", outcome: "matched" } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "T2C-BY-UN", amount: "1.00", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "T2C-TP-FAIL", amount: "50000", outcome: "delivery_failed" } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "T2C-PD-FAIL", amount: "50000", outcome: "delivery_failed" } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: "T2C-NP-UN", amount: "5", outcome: "unmatched" } });
+    // Recorded on an earlier day: still counts as unmatched/failed (an open
+    // queue has no expiry) but is not one of today's transactions.
+    await prisma.processedTokopayTx.create({ data: { trxId: "T2C-TP-OLD-FAIL", amount: "50000", outcome: "delivery_failed", createdAt: threeDaysAgo } });
+
+    const after = await tiles();
+    expect(after.today - before.today).toBe(5);
+    expect(after.unmatched - before.unmatched).toBe(2);
+    expect(after.failed - before.failed).toBe(3);
+  });
+
+  // T2c: the "Underpaid Orders" badge was `underpaid.length` of a list capped
+  // at 50, so it disagreed with the dashboard's countUnderpaid above 50.
+  it("GET /api/payments reports the true underpaid count next to the capped list", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const now = Date.now();
+    await prisma.order.createMany({
+      data: Array.from({ length: 52 }, (_, i) => ({
+        orderCode: `ORD-T2C-UP-${i}`,
+        userId: user.id,
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        currency: "IDR",
+        status: "UNDERPAID",
+        createdAt: new Date(now - i * 1000),
+      })),
+    });
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { underpaid: unknown[]; underpaidCount: number };
+    expect(data.underpaid).toHaveLength(50);
+    expect(data.underpaidCount).toBe(await countUnderpaid(prisma));
+    expect(data.underpaidCount).toBeGreaterThanOrEqual(52);
   });
 
   // T5: wallet top-ups already wrote ledger rows here, but the rows carried

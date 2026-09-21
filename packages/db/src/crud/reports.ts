@@ -6,7 +6,7 @@
 import { OrderStatus, OrderKind } from "@app/core/enums";
 import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
-import { addDays } from "@app/core/datetime";
+import { addDays, startOfDayUtc } from "@app/core/datetime";
 import { getSetting } from "./settings";
 import type { Db } from "./_types";
 
@@ -324,13 +324,15 @@ export interface ManualMatchQueueCounts {
 }
 
 /**
- * Counts of `unmatched` / `delivery_failed` ledger rows across all five
- * payment-method idempotency tables (Binance, Bybit, TokoPay, Paydisini,
- * NOWPayments) — generalizes the Binance-only `processedTxOutcomeCounts()`
- * (binance_internal.ts) for the dashboard's cross-provider "manual
- * approvals" / "failed deliveries" counts.
+ * Ledger rows per outcome across all five payment-method idempotency tables
+ * (Binance, Bybit, TokoPay, PayDisini, NOWPayments) — the same set of tables
+ * `listCombinedLedger` merges, so a count here and a filter of that ledger by
+ * the same outcome always agree. The Payments tiles and outcome
+ * dropdown read this (they once read a Binance-only helper while the ledger
+ * spanned every gateway). Includes outcomes outside `TX_OUTCOMES` (e.g. the QRIS-only
+ * "stale") under their own key.
  */
-export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+export async function ledgerOutcomeCounts(db: Db): Promise<Record<string, number>> {
   const groups = await Promise.all([
     db.processedBinanceTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
     db.processedBybitTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
@@ -339,15 +341,41 @@ export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCo
     db.processedNowpaymentsTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
   ]);
 
-  let unmatched = 0;
-  let deliveryFailed = 0;
+  const counts: Record<string, number> = {};
   for (const grouped of groups) {
-    for (const g of grouped) {
-      if (g.outcome === "unmatched") unmatched += g._count._all;
-      if (g.outcome === "delivery_failed") deliveryFailed += g._count._all;
-    }
+    for (const g of grouped) counts[g.outcome] = (counts[g.outcome] ?? 0) + g._count._all;
   }
-  return { unmatched, deliveryFailed };
+  return counts;
+}
+
+/**
+ * Ledger rows of ANY outcome recorded today (the shop's `TIMEZONE` day, via
+ * `startOfDayUtc` — the same "today" the dashboard uses) across all five
+ * gateway tables. The Payments page's "Today's Transactions" tile: how many
+ * payment records the gateways wrote today, not how many were delivered.
+ * Counted in the database, so it is unaffected by ledger pagination.
+ */
+export async function countLedgerRowsToday(db: Db, now: Date = new Date()): Promise<number> {
+  const where = { createdAt: { gte: startOfDayUtc(now) } };
+  const counts = await Promise.all([
+    db.processedBinanceTx.count({ where }),
+    db.processedBybitTx.count({ where }),
+    db.processedTokopayTx.count({ where }),
+    db.processedPaydisiniTx.count({ where }),
+    db.processedNowpaymentsTx.count({ where }),
+  ]);
+  return counts.reduce((sum, n) => sum + n, 0);
+}
+
+/**
+ * Counts of `unmatched` / `delivery_failed` ledger rows across all five
+ * payment-method idempotency tables — the dashboard's cross-provider "manual
+ * approvals" / "failed deliveries" counts. Built on `ledgerOutcomeCounts` so
+ * the dashboard and the Payments page's tiles cannot drift apart.
+ */
+export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+  const counts = await ledgerOutcomeCounts(db);
+  return { unmatched: counts["unmatched"] ?? 0, deliveryFailed: counts["delivery_failed"] ?? 0 };
 }
 
 /**

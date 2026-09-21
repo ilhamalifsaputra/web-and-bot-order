@@ -132,7 +132,7 @@ function trendPct(curr: Decimal, prev: Decimal, minBase: Decimal): string | null
 }
 
 // Buckets for the "Orders Today" card. Everything not named here (PAID,
-// CONFIRMED, PROCESSING, REFUNDED, EXPIRED, PARTIALLY_DELIVERED, ...) lands in
+// CONFIRMED, PROCESSING, REFUNDED, PARTIALLY_DELIVERED, ...) lands in
 // `other`, which is computed by exclusion so the parts sum to the total even
 // when a new status is added to the enum.
 const DELIVERED_STATUSES: string[] = [OrderStatus.DELIVERED];

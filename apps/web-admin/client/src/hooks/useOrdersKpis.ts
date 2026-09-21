@@ -3,7 +3,7 @@ import { apiGet } from "../api/client";
 
 export interface OrdersKpis {
   totalOrders: number;
-  revenueToday: { idr: string | null; usdt: string | null; usd: string | null };
+  revenueToday: { idr: string | null; usdt: string | null };
   /** Status PROCESSING — paid, awaiting manual hand-delivery. */
   awaitingFulfillment: number;
   /** Status CONFIRMED/PAID — payment confirming/confirmed, auto-settling. */

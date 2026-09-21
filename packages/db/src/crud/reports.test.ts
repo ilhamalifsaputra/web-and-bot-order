@@ -7,6 +7,8 @@ import {
   ordersByStatus,
   ordersByStatusSince,
   manualMatchQueueCounts,
+  ledgerOutcomeCounts,
+  countLedgerRowsToday,
   listCombinedLedger,
   recentOrders,
   reconcileFinances,
@@ -125,6 +127,48 @@ describe("manualMatchQueueCounts", () => {
 
     const result = await manualMatchQueueCounts(prisma);
     expect(result).toEqual({ unmatched: 2, deliveryFailed: 2 });
+  });
+});
+
+describe("ledgerOutcomeCounts", () => {
+  it("counts rows per outcome across all five gateway tables, including failed rows that are not on Binance", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: `bn-${Math.random()}`, amount: "1", outcome: "matched" } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: `by-${Math.random()}`, amount: "1", outcome: "unmatched" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${Math.random()}`, amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${Math.random()}`, amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: `pd-${Math.random()}`, amount: "1", outcome: "unmatched" } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: `np-${Math.random()}`, amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: `np-${Math.random()}`, amount: "1", outcome: "matched" } });
+
+    expect(await ledgerOutcomeCounts(prisma)).toEqual({ matched: 2, unmatched: 2, delivery_failed: 3 });
+  });
+
+  it("is empty when no gateway has recorded anything", async () => {
+    expect(await ledgerOutcomeCounts(prisma)).toEqual({});
+  });
+});
+
+describe("countLedgerRowsToday", () => {
+  const now = new Date("2026-06-15T06:00:00.000Z");
+  const twoDaysAgo = new Date("2026-06-13T06:00:00.000Z");
+
+  it("counts today's rows of every outcome across all five gateway tables and skips earlier days", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-today", amount: "1", outcome: "matched", createdAt: now } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "by-today", amount: "1", outcome: "unmatched", createdAt: now } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-today", amount: "1", outcome: "delivery_failed", createdAt: now } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: "pd-today", amount: "1", outcome: "matched", createdAt: now } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: "np-today", amount: "1", outcome: "dismissed", createdAt: now } });
+    // Older rows, one per table, must not count.
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-old", amount: "1", outcome: "matched", createdAt: twoDaysAgo } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-old", amount: "1", outcome: "delivery_failed", createdAt: twoDaysAgo } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: "np-old", amount: "1", outcome: "matched", createdAt: twoDaysAgo } });
+
+    expect(await countLedgerRowsToday(prisma, now)).toBe(5);
+  });
+
+  it("counts a day that only non-Binance gateways have rows on", async () => {
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-only", amount: "1", outcome: "matched", createdAt: now } });
+    expect(await countLedgerRowsToday(prisma, now)).toBe(1);
   });
 });
 

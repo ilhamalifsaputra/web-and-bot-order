@@ -876,6 +876,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       if (err instanceof Error && err.message === "cannot delete a denomination with order history") {
         return reply.code(409).send({ error: "Cannot delete a denomination with order history." });
       }
+      if (err instanceof ValidationError) return reply.code(409).send({ error: err.message });
       throw err;
     }
     await logAdminAction(prisma, {

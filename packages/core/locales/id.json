@@ -218,6 +218,7 @@
   "error.already_credited": "Pembayaran pesanan ini sudah ditambahkan ke credit balance pembeli.",
   "error.order_already_delivered": "Pesanan ini sudah diterima.",
   "error.order_not_found": "Pesanan tidak ditemukan.",
+  "error.denomination_has_stock_history": "Item ini punya riwayat stok dan tidak bisa dihapus; nonaktifkan saja.",
   "error.order_still_owing": "Pesanan ini masih ada jumlah yang harus dibayar, jadi tidak bisa diselesaikan tanpa pembayaran.",
   "error.order_item_not_found": "Item pesanan tidak ditemukan.",
   "error.order_not_processing": "Pesanan ini sudah tidak lagi menunggu diproses — mungkin sudah selesai diproses.",

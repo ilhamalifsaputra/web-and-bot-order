@@ -64,6 +64,7 @@ import {
   RefundExecutionMethod,
   RefundExecutionStatus,
   RefundStatus,
+  StockActorType,
 } from "@app/core/enums";
 import { computeQrisAdminFee, qrisChargeAmount } from "@app/core/payments/tokopay";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -1025,7 +1026,12 @@ describe("scenario 10 — an order cancelled before it ever settled, with credit
     expect(order.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect(new Decimal(order.walletUsed).toString()).toBe(walletSpend.toString());
 
-    await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled"));
+    await prisma.$transaction((tx) =>
+      cancelOrder(tx, order.id, "user_cancelled", {
+        type: StockActorType.CUSTOMER,
+        customerId: buyer.id,
+      }),
+    );
     expect((await getOrder(prisma, order.id))!.status).toBe(OrderStatus.CANCELLED);
 
     // ── the ledger: nothing was recognised, and nothing was reversed ──
@@ -1103,7 +1109,9 @@ describe("scenario 11 — a payment attempt that expires before settlement", () 
       adminId: ADMIN_ID,
     });
     expect(expired.status).toBe(PaymentStatus.EXPIRED);
-    await prisma.$transaction((tx) => cancelOrder(tx, failing.id, "expired"));
+    await prisma.$transaction((tx) =>
+      cancelOrder(tx, failing.id, "expired", { type: StockActorType.SYSTEM }),
+    );
     expect((await getOrder(prisma, failing.id))!.status).toBe(OrderStatus.CANCELLED);
 
     // ── the ledger has no record of it at all ──

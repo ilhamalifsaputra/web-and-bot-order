@@ -10,6 +10,8 @@ import {
   OrderStatus,
   OrderItemStatus,
   StockStatus,
+  StockEventType,
+  StockActorType,
   UserRole,
   DeliveryType,
   langCode,
@@ -25,7 +27,7 @@ import {
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
-import { utcStamp, addMinutes } from "@app/core/datetime";
+import { utcStamp, addMinutes, addDays } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
@@ -43,6 +45,7 @@ import {
   type EligibilityLine,
 } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
+import { recordStockEvent, type StockEventActor } from "./stockEvents";
 import { adjustWallet, getUser } from "./users";
 import { clearCart, getCart } from "./cart";
 import { getSetting } from "./settings";
@@ -762,34 +765,28 @@ export async function createOrderFromCart(
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
     }
   }
-  // Stock reservation is still one allocateOneAvailableStock call per unit
-  // (it's individually optimistic-locked — see its doc comment — so each
-  // unit's assignment genuinely depends on a fresh read of what's still
-  // AVAILABLE after every earlier unit in this same order reserved its row;
-  // that can't be batched without changing which stock item lands on which
-  // line). What CAN be batched is persisting the resulting OrderItem rows:
-  // collect one createMany input per unit here, across every line, and issue
-  // a single createMany after the loop instead of one create per unit — same
-  // rows, same stock assignments, same order, just one insert query instead
-  // of O(units) (M-7 fix, backend audit 2026-07-31).
+  // A checkout reservation is caused by the buyer, whoever clicked through to
+  // get here (bot, storefront, or an admin placing an order on their behalf
+  // still spends this buyer's stock).
+  const buyerActor: StockEventActor = { type: StockActorType.CUSTOMER, customerId: args.user.id };
+  // OrderItem rows are inserted BEFORE the stock they will hold (Fase 3b):
+  // the RESERVED event has to carry `orderItemId`, which only exists once the
+  // line row does. `createManyAndReturn` keeps that one insert per order
+  // (M-7's batching, backend audit 2026-07-31) while handing back the ids.
+  // Reserving after the line exists also closes the old window where a
+  // RESERVED stock row had no order line to point back at.
   const orderItemsData: Prisma.OrderItemCreateManyInput[] = [];
   for (const ci of cart) {
     const unit = q4(unitPrice(ci.product, isReseller, pricedAt));
-    const isManual = ci.product.deliveryType !== DeliveryType.AUTO;
     const warrantyDays = (ci.product as unknown as { warrantyDays: number }).warrantyDays;
     for (let k = 0; k < ci.quantity; k++) {
-      let stockItemId: number | null = null;
-      if (!isManual) {
-        const reserved = await allocateOneAvailableStock(db, ci.productId, order.id);
-        if (!reserved) {
-          throw new ValidationError("error.out_of_stock", { product: ci.product.name });
-        }
-        stockItemId = reserved.id;
-      }
       orderItemsData.push({
         orderId: order.id,
         productId: ci.productId,
-        stockItemId,
+        // Filled in by the reservation loop below for AUTO lines. MANUAL /
+        // MANUAL_WITH_INFO lines carry no stock and stay null — they are
+        // fulfilled by hand later (settlePaidOrder → fulfillManualOrder).
+        stockItemId: null,
         quantity: 1,
         unitPrice: unit,
         warrantyDaysSnapshot: warrantyDays,
@@ -802,8 +799,47 @@ export async function createOrderFromCart(
       });
     }
   }
-  if (orderItemsData.length > 0) {
-    await db.orderItem.createMany({ data: orderItemsData });
+  const createdItems =
+    orderItemsData.length > 0
+      ? await db.orderItem.createManyAndReturn({
+          data: orderItemsData,
+          select: { id: true, productId: true },
+        })
+      : [];
+  // createManyAndReturn promises no particular row order, and it doesn't need
+  // to: every unit of one denomination is interchangeable here (same price,
+  // same warranty snapshot, same delivery type), so each AUTO unit can take
+  // any not-yet-paired line of its own denomination. Consumed via shift() so
+  // a line is paired exactly once even if a cart somehow held the same
+  // denomination twice.
+  const unpairedItemIds = new Map<number, number[]>();
+  for (const row of createdItems) {
+    const existing = unpairedItemIds.get(row.productId);
+    if (existing) existing.push(row.id);
+    else unpairedItemIds.set(row.productId, [row.id]);
+  }
+  // Stock reservation is still one allocateOneAvailableStock call per unit
+  // (it's individually optimistic-locked — see its doc comment — so each
+  // unit's assignment genuinely depends on a fresh read of what's still
+  // AVAILABLE after every earlier unit in this same order reserved its row;
+  // that can't be batched without changing which stock item lands on which
+  // line).
+  for (const ci of cart) {
+    if (ci.product.deliveryType !== DeliveryType.AUTO) continue;
+    const lineItemIds = unpairedItemIds.get(ci.productId) ?? [];
+    for (let k = 0; k < ci.quantity; k++) {
+      const orderItemId = lineItemIds.shift();
+      if (orderItemId === undefined) {
+        throw new Error(
+          `Cannot reserve stock for order ${order.orderCode}: the cart line for product ${ci.productId} asked for ${ci.quantity} units, but fewer order-item rows came back from the batch insert than the line needs. Every AUTO unit must have its own order-item row to reserve against.`,
+        );
+      }
+      const reserved = await allocateOneAvailableStock(db, ci.productId, order.id, buyerActor, orderItemId);
+      if (!reserved) {
+        throw new ValidationError("error.out_of_stock", { product: ci.product.name });
+      }
+      await db.orderItem.update({ where: { id: orderItemId }, data: { stockItemId: reserved.id } });
+    }
   }
 
   // 8. Final totals
@@ -980,32 +1016,33 @@ export async function createOrderDirect(
     throw e;
   }
 
-  // Reserve stock atomically per unit for AUTO (Checkout-2/Stock-1 fix — see
-  // createOrderFromCart's matching loop for the full rationale); MANUAL creates
-  // stockless OrderItems.
-  for (let k = 0; k < args.quantity; k++) {
-    let stockItemId: number | null = null;
-    if (!isManual) {
-      const reserved = await allocateOneAvailableStock(db, args.productId, order.id);
+  // Lines first, stock second — same ordering (and same reason: the RESERVED
+  // event needs `orderItemId`) as createOrderFromCart's matching block; see
+  // its comments for the full rationale. MANUAL keeps stockless OrderItems.
+  const createdItems = await db.orderItem.createManyAndReturn({
+    data: Array.from({ length: args.quantity }, () => ({
+      orderId: order.id,
+      productId: args.productId,
+      stockItemId: null,
+      quantity: 1,
+      unitPrice: q4(unit),
+      warrantyDaysSnapshot: product.warrantyDays,
+      deliveryTypeSnapshot: product.deliveryType,
+      // Same as createOrderFromCart's loop — explicit PENDING, never a
+      // column default.
+      status: OrderItemStatus.PENDING,
+    })),
+    select: { id: true },
+  });
+  if (!isManual) {
+    const buyerActor: StockEventActor = { type: StockActorType.CUSTOMER, customerId: args.user.id };
+    for (const item of createdItems) {
+      const reserved = await allocateOneAvailableStock(db, args.productId, order.id, buyerActor, item.id);
       if (!reserved) {
         throw new ValidationError("error.out_of_stock", { product: product.name });
       }
-      stockItemId = reserved.id;
+      await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: reserved.id } });
     }
-    await db.orderItem.create({
-      data: {
-        orderId: order.id,
-        productId: args.productId,
-        stockItemId,
-        quantity: 1,
-        unitPrice: q4(unit),
-        warrantyDaysSnapshot: product.warrantyDays,
-        deliveryTypeSnapshot: product.deliveryType,
-        // Same as createOrderFromCart's loop — explicit PENDING, never a
-        // column default.
-        status: OrderItemStatus.PENDING,
-      },
-    });
   }
 
   if (voucher) {
@@ -1321,18 +1358,47 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
  * `creditOrderToBalance`-on-an-already-settled-order path has anything to post;
  * see `postOrderHoldReleasePosting` for the full rule and for why posting on the
  * other two paths would corrupt `wallet_liability`.
+ *
+ * Releasing a row ALSO clears the line's `OrderItem.stockItemId` (audit L-6,
+ * Fase 3b). Before that, a cancelled/expired/rejected order kept pointing at
+ * a row the next checkout immediately re-reserved, so two OrderItems ended up
+ * on one stock row — a duplicate pointer that made "who got this credential?"
+ * unanswerable and would break the unique claim column a later phase adds.
+ * The RESERVATION_RELEASED event written here is the trace that replaces the
+ * pointer: it keeps the order, the line and the actor on record.
  */
 async function releaseOrderHolds(
   db: Db,
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>,
+  actor: StockEventActor,
   occurredAt: Date = new Date(),
 ) {
   for (const item of order.items) {
     if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
-      await db.stockItem.update({
-        where: { id: item.stockItem.id },
+      // Release only a row THIS order still holds. `order` is a snapshot taken
+      // before this function ran, and the row can have moved on since: an
+      // expiry sweep can read O1, stall, and by the time it writes, a competing
+      // cancel has released the row and another buyer's checkout has
+      // re-reserved it. An unconditional update would steal that live
+      // reservation and log a release that never happened for this order, so
+      // the owner is part of the condition and the event and the pointer clear
+      // follow only the attempt that actually won.
+      const res = await db.stockItem.updateMany({
+        where: { id: item.stockItem.id, status: StockStatus.RESERVED, orderId: order.id },
         data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
       });
+      if (res.count !== 1) continue;
+      await recordStockEvent(db, {
+        stockItemId: item.stockItem.id,
+        eventType: StockEventType.RESERVATION_RELEASED,
+        fromStatus: StockStatus.RESERVED,
+        toStatus: StockStatus.AVAILABLE,
+        orderId: order.id,
+        orderItemId: item.id,
+        actor,
+        occurredAt,
+      });
+      await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: null } });
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {
@@ -1398,7 +1464,17 @@ async function assertNotPaidWithoutCredit(
   }
 }
 
-export async function cancelOrder(db: Db, orderId: number, reason: string) {
+/**
+ * Void a not-yet-delivered order and release everything it was holding.
+ *
+ * `actor` is required and explicit (Fase 3b): the stock ledger has to say who
+ * released each reservation, and `reason` is free text every caller formats
+ * differently — a buyer tap, an admin note, an expiry sweep — so it can't
+ * carry attribution. `reason` stays what it always was: the human-readable
+ * note appended to `adminNote` and the status-history meta (plus the
+ * `user_cancelled` anti-abuse guard below).
+ */
+export async function cancelOrder(db: Db, orderId: number, reason: string, actor: StockEventActor) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (
@@ -1428,7 +1504,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
     throw new ValidationError("error.cannot_cancel_after_proof");
   }
 
-  await releaseOrderHolds(db, order);
+  await releaseOrderHolds(db, order, actor);
   await db.order.update({
     where: { id: orderId },
     data: {
@@ -1514,7 +1590,7 @@ export async function creditOrderToBalance(
   // Release held stock + return the already-spent walletUsed (in order currency)
   // + roll back voucher usage. Distinct money from the paid amount credited above,
   // and separately posted (or not) by releaseOrderHolds itself.
-  await releaseOrderHolds(db, order, now);
+  await releaseOrderHolds(db, order, { type: StockActorType.ADMIN, adminId: args.adminId }, now);
 
   await db.order.update({
     where: { id: order.id },
@@ -1570,7 +1646,7 @@ export async function rejectOrder(
   // covers PROCESSING too) instead.
   await assertNotPaidWithoutCredit(db, order);
 
-  await releaseOrderHolds(db, order);
+  await releaseOrderHolds(db, order, { type: StockActorType.ADMIN, adminId: args.adminId });
   await db.order.update({
     where: { id: orderId },
     data: {
@@ -1658,12 +1734,29 @@ export async function approveOrder(
     data: { status: OrderItemStatus.DELIVERED },
   });
 
+  // adminId 0 is not a user id — it is how the auto-confirm pollers and the
+  // wallet-checkout path say "no human approved this" (see the audit-row
+  // branch further down). The stock ledger records that honestly as SYSTEM
+  // rather than inventing admin 0.
+  const actor: StockEventActor =
+    args.adminId === 0
+      ? { type: StockActorType.SYSTEM }
+      : { type: StockActorType.ADMIN, adminId: args.adminId };
+
   const credentials: string[] = [];
 
   for (const item of order.items) {
     let stock = item.stockItem;
+    // getOrder already decrypted whatever came off `order.items`; the
+    // substitution branch below re-reads its row straight off Prisma and so
+    // has to decrypt for itself. Keeping the plaintext in its own variable is
+    // what lets this stop calling decryptCredentials on an already-decrypted
+    // string (it used to lean on the legacy passthrough, which Fase 6's
+    // strict mode removes).
+    let credential = stock ? stock.credentials : null;
     if (!stock || stock.status !== StockStatus.RESERVED) {
-      const replacement = await allocateOneAvailableStock(db, item.productId, order.id);
+      const substitutedOut = stock;
+      const replacement = await allocateOneAvailableStock(db, item.productId, order.id, actor, item.id);
       if (!replacement) {
         throw new ValidationError("error.cannot_deliver_out_of_stock", {
           product: item.product.name,
@@ -1673,20 +1766,55 @@ export async function approveOrder(
         where: { id: item.id },
         data: { stockItemId: replacement.id },
       });
+      // The pair of events records the swap itself; neither row changes
+      // status because of it (the replacement's own AVAILABLE → RESERVED is
+      // already on its ledger, written by the allocation above), so both
+      // status columns stay null. `replacesStockItemId` is deliberately NOT
+      // set — that column carries warranty-replacement semantics (Fase 5e),
+      // not "the row originally reserved for this line went bad".
+      if (substitutedOut) {
+        await recordStockEvent(db, {
+          stockItemId: substitutedOut.id,
+          eventType: StockEventType.SUBSTITUTED_OUT,
+          orderId: order.id,
+          orderItemId: item.id,
+          actor,
+        });
+      }
+      await recordStockEvent(db, {
+        stockItemId: replacement.id,
+        eventType: StockEventType.SUBSTITUTED_IN,
+        orderId: order.id,
+        orderItemId: item.id,
+        actor,
+      });
       stock = replacement;
+      credential = decryptCredentials(replacement.credentials);
     }
+    // Warranty runs from the sale, using the days frozen onto the line at
+    // checkout. Zero days means the SKU carries no warranty, so leave the
+    // column null rather than stamping an already-expired instant.
+    const warrantyDays = Number(item.warrantyDaysSnapshot ?? 0);
     await db.stockItem.update({
       where: { id: stock.id },
-      data: { status: StockStatus.SOLD, soldAt: now },
+      data: {
+        status: StockStatus.SOLD,
+        soldAt: now,
+        soldToOrderId: order.id,
+        soldToOrderItemId: item.id,
+        warrantyUntil: warrantyDays > 0 ? addDays(now, warrantyDays) : null,
+      },
     });
-    // `stock` may already be plaintext here (when it came from `order.items`,
-    // which getOrder above already decrypted) or still be the raw encrypted
-    // envelope (the `replacement` branch just above, fetched straight off
-    // Prisma via allocateOneAvailableStock, bypassing getOrder). decryptCredentials
-    // is safe either way: a plaintext account string never happens to parse
-    // as our envelope JSON, so decrypting an already-plaintext value is a
-    // documented no-op (see its own doc comment).
-    credentials.push(decryptCredentials(stock.credentials));
+    await recordStockEvent(db, {
+      stockItemId: stock.id,
+      eventType: StockEventType.SOLD,
+      fromStatus: StockStatus.RESERVED,
+      toStatus: StockStatus.SOLD,
+      orderId: order.id,
+      orderItemId: item.id,
+      actor,
+    });
+    credentials.push(credential!);
   }
 
   await db.order.update({

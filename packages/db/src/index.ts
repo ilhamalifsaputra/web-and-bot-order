@@ -7,6 +7,7 @@ export * from "./crud/users";
 export * from "./crud/warmUserCache";
 export * from "./crud/catalog";
 export * from "./crud/stock";
+export * from "./crud/stockEvents";
 export * from "./crud/cart";
 export * from "./crud/vouchers";
 export * from "./crud/orders";

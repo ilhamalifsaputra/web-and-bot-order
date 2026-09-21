@@ -24,6 +24,12 @@ describe("describeError", () => {
     );
   });
 
+  it("maps error.denomination_has_stock_history to a readable sentence", () => {
+    expect(describeError("error.denomination_has_stock_history")).toBe(
+      "This item has stock history and cannot be deleted; deactivate it instead.",
+    );
+  });
+
   it("falls back to the raw string for an unknown key, so it's always safe to wrap any e.message", () => {
     expect(describeError("error.some_unmapped_key")).toBe("error.some_unmapped_key");
     expect(describeError("Failed to load")).toBe("Failed to load");

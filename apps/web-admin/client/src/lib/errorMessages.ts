@@ -53,6 +53,8 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "That admin account could not be found.",
   "error.admin_task_assignee_not_admin":
     "That user isn't an admin and can't be assigned tasks.",
+  "error.denomination_has_stock_history":
+    "This item has stock history and cannot be deleted; deactivate it instead.",
   "error.rate_limited":
     "You're doing that too quickly — wait a minute and try again.",
   // Account/stock replacement (M20's per-unit actions on the Items table).

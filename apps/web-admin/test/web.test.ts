@@ -692,9 +692,13 @@ describe("orders", () => {
     const [item1, item2] = items;
 
     // Item #2's reserved row vanishes (onDelete: SetNull clears stockItemId).
+    await prisma.stockItemEvent.deleteMany({ where: { stockItemId: item2!.stockItemId! } });
     await prisma.stockItem.delete({ where: { id: item2!.stockItemId! } });
     // Drain the rest of the AVAILABLE pool so item #2's replacement allocation
     // attempt has nothing to grab.
+    await prisma.stockItemEvent.deleteMany({
+      where: { stockItem: { productId: seed.productId, status: "AVAILABLE" } },
+    });
     await prisma.stockItem.deleteMany({
       where: { productId: seed.productId, status: "AVAILABLE" },
     });
@@ -2818,6 +2822,8 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 
   describe("DELETE /api/catalog/products/:id", () => {
     it("happy path: deletes an empty product and audits", async () => {
+      await prisma.stockItemEvent.deleteMany({ where: { stockItem: { productId: seed.catalogProductId } } });
+      await prisma.stockItem.deleteMany({ where: { productId: seed.catalogProductId } });
       await prisma.denomination.deleteMany({ where: { productId: seed.catalogProductId } });
       const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf);
       expect(res.statusCode).toBe(200);
@@ -2846,6 +2852,29 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     it("rejects bad CSRF with 403", async () => {
       const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, "bad-token");
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("DELETE /api/catalog/denominations/:id", () => {
+    it("refuses with 409 and the stock-history key when the denomination has stock", async () => {
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(409);
+      expect(res.json()).toEqual({ error: "error.denomination_has_stock_history" });
+      expect(await prisma.denomination.findUnique({ where: { id: seed.productId } })).not.toBeNull();
+    });
+
+    it("deletes a denomination that never held stock and audits", async () => {
+      const d = await createDenomination(prisma, {
+        productId: seed.catalogProductId,
+        name: "Blank",
+        type: ProductType.SHARED,
+        durationLabel: "1 Month",
+        price: "1.00",
+      });
+      const res = await deleteJson(`/api/catalog/denominations/${d.id}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(await prisma.denomination.findUnique({ where: { id: d.id } })).toBeNull();
+      expect(await prisma.auditLog.findFirst({ where: { action: "denomination_delete", targetId: d.id } })).toBeTruthy();
     });
   });
 
@@ -4119,8 +4148,10 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [delId, sold.id] });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toEqual({ ok: true, count: 1, skipped: 1 });
-      expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
-      expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
+      const softDeleted = (await prisma.stockItem.findUnique({ where: { id: delId } }))!;
+      expect(softDeleted.deletedAt).not.toBeNull();
+      expect(softDeleted.deletedByAdminId).toBe(seed.adminId);
+      expect((await prisma.stockItem.findUnique({ where: { id: sold.id } }))!.deletedAt).toBeNull();
       const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
       expect(audit.length).toBe(1);
       expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
@@ -4203,7 +4234,9 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
       expect(res.statusCode).toBe(200);
-      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).toBeNull();
+      const softDeleted = (await prisma.stockItem.findUnique({ where: { id: item.id } }))!;
+      expect(softDeleted.deletedAt).not.toBeNull();
+      expect(softDeleted.deletedByAdminId).toBe(seed.adminId);
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
       expect(audit).toBeTruthy();
       expect((audit!.details ?? "").includes("@")).toBe(false);
@@ -4221,7 +4254,7 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       });
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, seed.csrf, {});
       expect(res.statusCode).toBe(409);
-      expect(await prisma.stockItem.findUnique({ where: { id: item.id } })).not.toBeNull();
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.deletedAt).toBeNull();
       const audit = await prisma.auditLog.findFirst({ where: { action: "stock_item_delete", targetId: item.id } });
       expect(audit).toBeNull();
     });
@@ -4237,6 +4270,17 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/delete`, seed.cookie, "bad-token", {});
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("soft-deleted stock item", () => {
+    it("is not found for dead, delete, note and reveal (404)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      await prisma.stockItem.update({ where: { id: item.id }, data: { deletedAt: new Date() } });
+      for (const action of ["dead", "delete", "note", "reveal"]) {
+        const res = await postJson(`/api/stock/item/${item.id}/${action}`, seed.cookie, seed.csrf, { note: "x", csrf_token: seed.csrf });
+        expect(res.statusCode, action).toBe(404);
+      }
     });
   });
 

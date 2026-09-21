@@ -10,6 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
+import { StockActorType } from "@app/core/enums";
 import {
   createOrderDirect,
   attachPaymentProof,
@@ -76,7 +77,10 @@ describe("soldCountForDenomination / soldCountsByDenomination", () => {
 
     // CANCELLED — created then cancelled before delivery.
     const toCancel = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 });
-    await cancelOrder(prisma, toCancel!.id, "user_cancelled");
+    await cancelOrder(prisma, toCancel!.id, "user_cancelled", {
+      type: StockActorType.CUSTOMER,
+      customerId: user.id,
+    });
 
     expect(await soldCountForDenomination(prisma, product.id)).toBe(0);
     const map = await soldCountsByDenomination(prisma, [product.id]);

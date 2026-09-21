@@ -23,6 +23,10 @@ import { Decimal } from "@app/core/money";
 let db: TestDb;
 let prisma: PrismaClient;
 let sample: SampleData;
+/** A REAL admin row, not a literal: releasing the order's stock reservation
+ *  writes a StockItemEvent whose actorAdminId is a real FK to User (Fase 3b),
+ *  unlike WalletTransaction.adminId, which is a plain nullable Int. */
+let adminId: number;
 
 beforeAll(async () => {
   db = await makeTestDb();
@@ -36,6 +40,10 @@ beforeEach(async () => {
   await prisma.walletTransaction.deleteMany();
   await prisma.processedBinanceTx.deleteMany();
   sample = await buildSampleData(prisma);
+  const admin = await prisma.user.create({
+    data: { telegramId: BigInt(880_000_000 + Math.floor(Math.random() * 1_000_000)), referralCode: `credit-admin-${Math.random()}`, role: "ADMIN" },
+  });
+  adminId = admin.id;
 });
 
 const balances = (userId: number) =>
@@ -54,7 +62,7 @@ describe("creditOrderToBalance", () => {
     }))!; // 5.00 IDR total, currency IDR
 
     const before = await balances(user.id);
-    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId: 7 });
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
 
     expect(res.currency).toBe("IDR");
     expect(new Decimal(res.credited).equals(order.totalAmount)).toBe(true);
@@ -74,7 +82,7 @@ describe("creditOrderToBalance", () => {
       where: { orderId: order.id, reason: "unfulfilled_credit" },
     });
     expect(led.currency).toBe("IDR");
-    expect(led.adminId).toBe(7);
+    expect(led.adminId).toBe(adminId);
   });
 
   it("credits the USDT balance for a USDT order — IDR untouched", async () => {
@@ -91,7 +99,7 @@ describe("creditOrderToBalance", () => {
     expect(order.currency).toBe("USDT");
 
     const before = await balances(user.id);
-    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId: 9 });
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId });
 
     expect(res.currency).toBe("USDT");
     const after = await balances(user.id);
@@ -115,7 +123,7 @@ describe("creditOrderToBalance", () => {
       quantity: 1,
     }))!;
     const before = await balances(user.id);
-    await creditOrderToBalance(prisma, { orderId: order.id, amount: "3.00", adminId: 1 });
+    await creditOrderToBalance(prisma, { orderId: order.id, amount: "3.00", adminId });
     const after = await balances(user.id);
     expect(Number(after.walletBalance) - Number(before.walletBalance)).toBeCloseTo(3);
   });
@@ -127,11 +135,11 @@ describe("creditOrderToBalance", () => {
       productId: product.id,
       quantity: 1,
     }))!;
-    await creditOrderToBalance(prisma, { orderId: order.id, adminId: 1 });
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId });
     const after1 = await balances(user.id);
 
     await expect(
-      creditOrderToBalance(prisma, { orderId: order.id, adminId: 1 }),
+      creditOrderToBalance(prisma, { orderId: order.id, adminId }),
     ).rejects.toMatchObject({ key: "error.order_terminal" });
 
     const after2 = await balances(user.id);
@@ -157,7 +165,7 @@ describe("creditOrderToBalance", () => {
     await creditOrderToBalance(prisma, {
       orderId: order.id,
       amount: "5.00",
-      adminId: 3,
+      adminId,
       binanceTxId: "CTX-1",
     });
 

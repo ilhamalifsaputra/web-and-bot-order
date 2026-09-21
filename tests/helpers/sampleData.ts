@@ -131,7 +131,11 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.order.deleteMany();
   await prisma.cartItem.deleteMany();
   await prisma.bulkPricing.deleteMany();
+  // StockItemEvent.stockItem is onDelete:Restrict (append-only ledger) —
+  // events go first; StockItem.importBatch needs the batch deleted after.
+  await prisma.stockItemEvent.deleteMany();
   await prisma.stockItem.deleteMany();
+  await prisma.stockImportBatch.deleteMany();
   await prisma.denomination.deleteMany();
   await prisma.product.deleteMany();
   await prisma.category.deleteMany();

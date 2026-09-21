@@ -346,6 +346,8 @@ export async function deleteCatalogProduct(db: Db, productId: number): Promise<v
 /** Explicit cascade: delete a product and all its denominations. */
 export async function deleteCatalogProductCascade(db: PrismaClient, productId: number): Promise<void> {
   await db.$transaction(async (tx) => {
+    const denoms = await tx.denomination.findMany({ where: { productId }, select: { id: true } });
+    for (const d of denoms) await assertNoStockHistory(tx, d.id);
     await tx.denomination.deleteMany({ where: { productId } });
     await tx.product.delete({ where: { id: productId } });
   });
@@ -517,15 +519,30 @@ export async function bulkSetPrices(db: Db, items: Array<{ id: number; price: st
 }
 
 /**
- * Delete a denomination (and its stock/cart/review/bulk-pricing rows, which
+ * Stock rows (even soft-deleted ones) and their event ledger are the audit
+ * trail for delivered credentials, so a denomination that ever held stock
+ * can only be deactivated, never deleted.
+ */
+async function assertNoStockHistory(db: Db, denominationId: number): Promise<void> {
+  const [stock, events] = await Promise.all([
+    db.stockItem.count({ where: { productId: denominationId } }),
+    db.stockItemEvent.count({ where: { stockItem: { productId: denominationId } } }),
+  ]);
+  if (stock > 0 || events > 0) throw new ValidationError("error.denomination_has_stock_history");
+}
+
+/**
+ * Delete a denomination (and its cart/review/bulk-pricing rows, which
  * cascade at the DB level). Refuses when it has order history — those rows
- * (`order_items`) do NOT cascade, so the financial record stays intact.
+ * (`order_items`) do NOT cascade, so the financial record stays intact — or
+ * stock history (see `assertNoStockHistory`).
  */
 export async function deleteDenomination(db: Db, denominationId: number): Promise<void> {
   const orderCount = await db.orderItem.count({ where: { productId: denominationId } });
   if (orderCount > 0) {
     throw new Error("cannot delete a denomination with order history");
   }
+  await assertNoStockHistory(db, denominationId);
   await db.denomination.delete({ where: { id: denominationId } });
 }
 
@@ -539,7 +556,7 @@ export async function lowStockDenominations(
   });
   const counts = await db.stockItem.groupBy({
     by: ["productId"],
-    where: { status: StockStatus.AVAILABLE },
+    where: { deletedAt: null, status: StockStatus.AVAILABLE },
     _count: { id: true },
   });
   const map = new Map<number, number>();

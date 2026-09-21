@@ -66,6 +66,9 @@ beforeEach(async () => {
   await prisma.orderItem.deleteMany();
   await prisma.orderStatusHistory.deleteMany();
   await prisma.order.deleteMany();
+  // StockItemEvent -> StockItem is onDelete:Restrict, so clear events and stock first.
+  await prisma.stockItemEvent.deleteMany();
+  await prisma.stockItem.deleteMany();
   await prisma.denomination.deleteMany();
   await prisma.product.deleteMany();
   await prisma.category.deleteMany();

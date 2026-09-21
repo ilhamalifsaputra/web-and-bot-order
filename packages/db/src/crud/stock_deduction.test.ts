@@ -22,7 +22,13 @@ import {
   setSetting,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { NotificationEvent, OrderStatus } from "@app/core/enums";
+import {
+  NotificationEvent,
+  OrderStatus,
+  StockActorType,
+  StockEventType,
+  StockStatus,
+} from "@app/core/enums";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
 let db: TestDb;
@@ -45,6 +51,9 @@ beforeEach(async () => {
 const count = (productId: number, status: string) =>
   prisma.stockItem.count({ where: { productId, status } });
 
+const eventsOfType = (eventType: string, orderId: number) =>
+  prisma.stockItemEvent.findMany({ where: { eventType, orderId }, orderBy: { id: "asc" } });
+
 describe("stock deduction", () => {
   it("checkout reserves one stock row per unit (AVAILABLE → RESERVED)", async () => {
     const { user, product } = sample;
@@ -63,6 +72,24 @@ describe("stock deduction", () => {
       expect(item.stockItem).not.toBeNull();
       expect(item.stockItem!.status).toBe("RESERVED");
       expect(item.stockItem!.orderId).toBe(order.id);
+    }
+
+    // Each reservation leaves exactly one RESERVED event, carrying the line
+    // it was reserved for and the buyer who caused it (Fase 3b).
+    const reserved = await eventsOfType(StockEventType.RESERVED, order.id);
+    expect(reserved).toHaveLength(2);
+    expect(new Set(reserved.map((e) => e.stockItemId))).toEqual(
+      new Set(order.items.map((i) => i.stockItemId)),
+    );
+    expect(new Set(reserved.map((e) => e.orderItemId))).toEqual(new Set(order.items.map((i) => i.id)));
+    for (const event of reserved) {
+      expect(event).toMatchObject({
+        fromStatus: StockStatus.AVAILABLE,
+        toStatus: StockStatus.RESERVED,
+        actorType: StockActorType.CUSTOMER,
+        actorCustomerId: user.id,
+        actorAdminId: null,
+      });
     }
   });
 
@@ -112,6 +139,31 @@ describe("stock deduction", () => {
     const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
     expect(history).toHaveLength(1);
     expect(history[0]!.status).toBe("DELIVERED");
+
+    // RESERVED → SOLD: one event per row, plus the sale's own back-references
+    // and the warranty window derived from the line's frozen warranty days.
+    const soldEvents = await eventsOfType(StockEventType.SOLD, created!.id);
+    expect(soldEvents).toHaveLength(2);
+    const items = await prisma.orderItem.findMany({ where: { orderId: created!.id }, orderBy: { id: "asc" } });
+    for (const item of items) {
+      const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: item.stockItemId! } });
+      expect(row.status).toBe(StockStatus.SOLD);
+      expect(row.soldToOrderId).toBe(created!.id);
+      expect(row.soldToOrderItemId).toBe(item.id);
+      // sampleData seeds warrantyDays 30 on the denomination.
+      expect(row.warrantyUntil!.getTime() - row.soldAt!.getTime()).toBe(30 * 86_400_000);
+      const event = soldEvents.find((e) => e.stockItemId === row.id)!;
+      expect(event).toMatchObject({
+        fromStatus: StockStatus.RESERVED,
+        toStatus: StockStatus.SOLD,
+        orderItemId: item.id,
+        actorType: StockActorType.ADMIN,
+        actorAdminId: user.id,
+      });
+    }
+    // No substitution happened, so nothing was swapped in or out.
+    expect(await eventsOfType(StockEventType.SUBSTITUTED_OUT, created!.id)).toHaveLength(0);
+    expect(await eventsOfType(StockEventType.SUBSTITUTED_IN, created!.id)).toHaveLength(0);
   });
 
   // Bot-2 fix (security audit, 2026-06-23): approveOrder claims
@@ -146,13 +198,37 @@ describe("stock deduction", () => {
 
     expect(await count(product.id, "AVAILABLE")).toBe(2);
     expect(await count(product.id, "RESERVED")).toBe(3);
-    await cancelOrder(prisma, created!.id, "user_cancelled");
+    const heldStockIds = (await prisma.orderItem.findMany({ where: { orderId: created!.id } })).map(
+      (i) => i.stockItemId,
+    );
+    await cancelOrder(prisma, created!.id, "user_cancelled", {
+      type: StockActorType.CUSTOMER,
+      customerId: user.id,
+    });
 
     expect(await count(product.id, "AVAILABLE")).toBe(5);
     expect(await count(product.id, "RESERVED")).toBe(0);
     const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
     expect(history).toHaveLength(1);
     expect(history[0]!.status).toBe("CANCELLED");
+
+    // Deliberate behavior change (audit L-6, Fase 3b): the cancelled order's
+    // lines stop pointing at the released rows, so the next checkout to
+    // reserve them doesn't produce two OrderItems on one stock row. The
+    // RESERVATION_RELEASED events are the surviving trace.
+    const itemsAfter = await prisma.orderItem.findMany({ where: { orderId: created!.id } });
+    expect(itemsAfter.map((i) => i.stockItemId)).toEqual([null, null, null]);
+    const released = await eventsOfType(StockEventType.RESERVATION_RELEASED, created!.id);
+    expect(released).toHaveLength(3);
+    expect(new Set(released.map((e) => e.stockItemId))).toEqual(new Set(heldStockIds));
+    for (const event of released) {
+      expect(event).toMatchObject({
+        fromStatus: StockStatus.RESERVED,
+        toStatus: StockStatus.AVAILABLE,
+        actorType: StockActorType.CUSTOMER,
+        actorCustomerId: user.id,
+      });
+    }
   });
 
   it("reject releases the reservation back to AVAILABLE", async () => {
@@ -170,6 +246,19 @@ describe("stock deduction", () => {
     const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
     expect(history).toHaveLength(1);
     expect(history[0]!.status).toBe("REJECTED");
+
+    // Same release path as cancel, but attributed to the rejecting admin.
+    const itemsAfter = await prisma.orderItem.findMany({ where: { orderId: created!.id } });
+    expect(itemsAfter.map((i) => i.stockItemId)).toEqual([null, null]);
+    const released = await eventsOfType(StockEventType.RESERVATION_RELEASED, created!.id);
+    expect(released).toHaveLength(2);
+    for (const event of released) {
+      expect(event).toMatchObject({
+        actorType: StockActorType.ADMIN,
+        actorAdminId: user.id,
+        actorCustomerId: null,
+      });
+    }
   });
 
   it("reject refunds wallet and rolls back voucher usage", async () => {
@@ -361,7 +450,12 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
     const created = await createOrderFromCart(prisma, { user });
     await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
 
-    await expect(cancelOrder(prisma, created!.id, "user_cancelled")).rejects.toMatchObject({
+    await expect(
+      cancelOrder(prisma, created!.id, "user_cancelled", {
+        type: StockActorType.CUSTOMER,
+        customerId: user.id,
+      }),
+    ).rejects.toMatchObject({
       key: "error.cannot_cancel_after_proof",
     });
     expect((await getOrder(prisma, created!.id))!.status).toBe(OrderStatus.PENDING_VERIFICATION);
@@ -375,7 +469,12 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
       const created = await createOrderFromCart(prisma, { user });
       await prisma.order.update({ where: { id: created!.id }, data: { status } });
 
-      await expect(cancelOrder(prisma, created!.id, "user_cancelled")).rejects.toMatchObject({
+      await expect(
+        cancelOrder(prisma, created!.id, "user_cancelled", {
+          type: StockActorType.CUSTOMER,
+          customerId: user.id,
+        }),
+      ).rejects.toMatchObject({
         key: "error.cannot_cancel_after_proof",
       });
       expect((await getOrder(prisma, created!.id))!.status).toBe(status);
@@ -388,7 +487,10 @@ describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight
     const created = await createOrderFromCart(prisma, { user });
     await prisma.order.update({ where: { id: created!.id }, data: { status: OrderStatus.PAYMENT_DETECTED } });
 
-    await cancelOrder(prisma, created!.id, "underpaid_cancelled by admin_id=1");
+    await cancelOrder(prisma, created!.id, "underpaid_cancelled by admin_id=1", {
+      type: StockActorType.ADMIN,
+      adminId: user.id,
+    });
     expect((await getOrder(prisma, created!.id))!.status).toBe(OrderStatus.CANCELLED);
   });
 });

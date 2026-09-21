@@ -82,6 +82,10 @@ async function makeDeliveredOrder(quantity = 1) {
   });
   await attachPaymentProof(prisma, created!.id, { fileId: "proof", txid: `TX-${created!.id}` });
   await approveOrder(prisma, created!.id, { adminId });
+  // Their IMPORTED events reference them (FK Restrict), so those go first.
+  await prisma.stockItemEvent.deleteMany({
+    where: { stockItem: { productId: sample.product.id, status: StockStatus.AVAILABLE } },
+  });
   await prisma.stockItem.deleteMany({
     where: { productId: sample.product.id, status: StockStatus.AVAILABLE },
   });

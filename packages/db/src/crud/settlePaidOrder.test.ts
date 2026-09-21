@@ -1372,9 +1372,10 @@ describe("approveOrder substitution events", () => {
     });
 
     // The replacement's own ledger: reserved by this approval, annotated as
-    // the row swapped in, then sold.
+    // the row swapped in, then sold. (The fixture's own IMPORTED event predates
+    // the order, so it is left out of this order-scoped chain.)
     const replacementEvents = await prisma.stockItemEvent.findMany({
-      where: { stockItemId: replacement.id },
+      where: { stockItemId: replacement.id, eventType: { not: StockEventType.IMPORTED } },
       orderBy: { id: "asc" },
     });
     expect(replacementEvents.map((e) => e.eventType)).toEqual([

@@ -8,7 +8,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { bulkDeleteStock, deleteStockItem, listAvailableCredentials } from "@app/db";
-import { StockStatus } from "@app/core/enums";
+import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -44,6 +44,10 @@ describe("bulkDeleteStock", () => {
     expect(await prisma.stockItem.count({ where: { productId: product.id, deletedAt: null } })).toBe(3);
     const gone = await prisma.stockItem.findMany({ where: { id: { in: ids } } });
     expect(gone.every((r) => r.deletedAt !== null && r.deletedByAdminId === sample.user.id)).toBe(true);
+    // Each deleted row carries exactly one SOFT_DELETED event naming the admin.
+    const events = await prisma.stockItemEvent.findMany({ where: { eventType: StockEventType.SOFT_DELETED } });
+    expect(events.map((e) => e.stockItemId).sort()).toEqual([...ids].sort());
+    expect(events.every((e) => e.actorType === StockActorType.ADMIN && e.actorAdminId === sample.user.id)).toBe(true);
   });
 
   it("never deletes SOLD rows even when selected", async () => {
@@ -126,6 +130,11 @@ describe("deleteStockItem", () => {
     const row = await prisma.stockItem.findUniqueOrThrow({ where: { id } });
     expect(row.deletedAt).not.toBeNull();
     expect(row.deletedByAdminId).toBe(sample.user.id);
+    const events = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: id!, eventType: StockEventType.SOFT_DELETED },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: sample.user.id });
   });
 
   it("returns false for an already soft-deleted item", async () => {

@@ -11,6 +11,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
+import { StockActorType } from "@app/core/enums";
 import {
   adjustWallet,
   createOrderFromCart,
@@ -72,7 +73,10 @@ describe("IDR order spends + refunds the IDR credit balance", () => {
     expect(debit.currency).toBe("IDR");
 
     // Cancel → credit balance back in IDR.
-    await cancelOrder(prisma, order.id, "user_cancelled");
+    await cancelOrder(prisma, order.id, "user_cancelled", {
+      type: StockActorType.CUSTOMER,
+      customerId: user.id,
+    });
     u = await balances(user.id);
     expect(Number(u.walletBalance)).toBeCloseTo(10); // refunded
     expect(Number(u.walletBalanceUsdt)).toBeCloseTo(7); // still untouched
@@ -115,7 +119,7 @@ describe("USDT order spends + refunds the USDT credit balance", () => {
     expect(debit.currency).toBe("USDT");
 
     // Cancel → credit balance back in USDT.
-    await cancelOrder(prisma, order.id, "expired");
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
     u = await balances(user.id);
     expect(Number(u.walletBalanceUsdt)).toBeCloseTo(7); // refunded
     expect(Number(u.walletBalance)).toBeCloseTo(10); // still untouched

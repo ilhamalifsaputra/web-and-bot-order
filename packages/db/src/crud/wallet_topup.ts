@@ -28,7 +28,7 @@
  * branch here is defense-in-depth, not the primary idempotency gate.
  */
 import { config } from "@app/core/config";
-import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { OrderCurrency, OrderKind, OrderStatus, PaymentMethod, StockActorType } from "@app/core/enums";
 import { computeUniqueCents, generatePaymentRef, quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
@@ -830,7 +830,10 @@ export async function creditUnderpaidTopupAnyway(
         occurredAt: new Date(),
       });
     }
-    await cancelOrder(tx, args.orderId, `underpaid_credited_anyway by admin_id=${args.adminId}`);
+    await cancelOrder(tx, args.orderId, `underpaid_credited_anyway by admin_id=${args.adminId}`, {
+      type: StockActorType.ADMIN,
+      adminId: args.adminId,
+    });
 
     if (anythingReceived) {
       logger.info(

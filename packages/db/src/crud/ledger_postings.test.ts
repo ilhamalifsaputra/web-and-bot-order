@@ -39,6 +39,7 @@ import {
   LedgerDirection,
   OrderStatus,
   PaymentMethod,
+  StockActorType,
 } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
@@ -78,8 +79,13 @@ let db: TestDb;
 let prisma: PrismaClient;
 let sample: SampleData;
 
-/** A fixed admin id for every acting-admin argument below. */
-const ADMIN_ID = 7;
+/**
+ * The acting admin for every acting-admin argument below. A real `User` row,
+ * not a literal: `StockItemEvent.actorAdminId` is a genuine FK to `User`, so
+ * the stock events the delivery and release paths now write would fail on a
+ * made-up id.
+ */
+let ADMIN_ID: number;
 
 /** A fixed settlement date, so a batch posting's `occurredAt` is asserted rather
  *  than guessed — it must be the provider's own date, never the import time. */
@@ -97,6 +103,16 @@ beforeEach(async () => {
   // has to: every settlement path below posts to it now) — see its own comment.
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
+  const admin = await prisma.user.create({
+    data: {
+      telegramId: 9_000_000_007,
+      username: "ledger-postings-admin",
+      fullName: "Ledger Postings Admin",
+      role: "ADMIN",
+      referralCode: `lpa${Math.random()}`,
+    },
+  });
+  ADMIN_ID = admin.id;
 });
 
 // ── Assertion helpers ──────────────────────────────────────────────────────
@@ -813,7 +829,10 @@ describe("wallet hold release — posts only when revenue was recognised", () =>
       walletAmount: "2.00",
     });
 
-    await cancelOrder(prisma, order.id, "admin_cancelled");
+    await cancelOrder(prisma, order.id, "admin_cancelled", {
+      type: StockActorType.ADMIN,
+      adminId: ADMIN_ID,
+    });
 
     expect(await allPostings()).toEqual([]);
   });

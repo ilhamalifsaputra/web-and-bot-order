@@ -85,6 +85,7 @@ import {
   OrderStatus,
   RefundExecutionMethod,
   RefundStatus,
+  StockActorType,
   StockReplacementStatus,
   StockStatus,
   TERMINAL_STOCK_REPLACEMENT_STATUSES,
@@ -100,6 +101,7 @@ import { enqueueOrderDeliveredDm } from "./notifications";
 import { enqueueBuyerOrderReadyEmailIfGuest, getOrder } from "./orders";
 import { createRefund, createRefundItem, executeRefund, transitionRefundStatus } from "./refunds";
 import { allocateOneAvailableStock } from "./stock";
+import type { StockEventActor } from "./stockEvents";
 
 /** What `listStockReplacementsForOrder` hands back per request: the row itself
  *  plus the refund that stood in for a replacement, when one did. */
@@ -455,8 +457,9 @@ async function notifyBuyerOfRedelivery(
 async function issueReplacementCredential(
   db: Db,
   item: Awaited<ReturnType<typeof loadUnit>>,
+  actor: StockEventActor,
 ): Promise<{ stockItem: StockItem; notice: ReplacementNotice } | null> {
-  const reserved = await allocateOneAvailableStock(db, item.productId, item.order.id);
+  const reserved = await allocateOneAvailableStock(db, item.productId, item.order.id, actor, item.id);
   if (!reserved) return null;
 
   const sold = await db.stockItem.update({
@@ -564,7 +567,10 @@ export async function replaceStockItem(
 
     await killDeliveredStockItem(tx, item.stockItem.id, replacementRow.id);
 
-    const issued = await issueReplacementCredential(tx, item);
+    const issued = await issueReplacementCredential(tx, item, {
+      type: StockActorType.ADMIN,
+      adminId: args.executedBy,
+    });
     const { index, total } = await unitPosition(tx, item.order.id, item.id);
     const which = `${index} of ${total}`;
 
@@ -658,7 +664,10 @@ export async function retryReplacementAllocation(
     }
 
     const item = await loadUnit(tx, existing.orderItemId);
-    const issued = await issueReplacementCredential(tx, item);
+    const issued = await issueReplacementCredential(tx, item, {
+      type: StockActorType.ADMIN,
+      adminId: args.executedBy,
+    });
     if (!issued) {
       return { replacement: existing, replacementStockItem: null, buyerNotified: false };
     }

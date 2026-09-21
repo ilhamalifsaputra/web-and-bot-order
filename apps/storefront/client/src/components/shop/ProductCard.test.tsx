@@ -37,6 +37,16 @@ describe("ProductCard", () => {
     expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
+  it("says '1 review' (singular) for a single review", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={{ ...base, rating_count: 1 }} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("· 1 review")).toBeInTheDocument();
+    expect(screen.queryByText("· 1 reviews")).not.toBeInTheDocument();
+  });
+
   it("shows the bulk discount badge and hint when present", () => {
     const withBulk: ProductCardData = { ...base, bulk_discount: "15", bulk_min_qty: 3 };
     render(
@@ -117,6 +127,36 @@ describe("ProductCard", () => {
     render(
       <MemoryRouter>
         <ProductCard p={{ ...base, all_non_auto: true }} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
+  });
+
+  // Instant delivery is only true while there is something to deliver: an
+  // auto-delivery product with no available stock is out of stock, not instant.
+  it("hides the instant chip when an auto-delivery product has no available stock", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={{ ...base, available: 0, all_non_auto: false }} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();
+    expect(screen.getByText("Out of stock")).toBeInTheDocument();
+  });
+
+  it("shows the instant chip for an auto-delivery product with exactly one unit available", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={{ ...base, available: 1, all_non_auto: false }} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+  });
+
+  it("keeps the instant chip hidden for a manual-delivery product even when its stock figure is positive", () => {
+    render(
+      <MemoryRouter>
+        <ProductCard p={{ ...base, available: 10, all_non_auto: true }} fx="16000" lowThreshold={5} />
       </MemoryRouter>,
     );
     expect(screen.queryByText("Instant delivery")).not.toBeInTheDocument();

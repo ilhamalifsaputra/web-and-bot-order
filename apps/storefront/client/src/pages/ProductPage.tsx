@@ -23,7 +23,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { useDocumentTitle } from "../lib/useDocumentTitle";
-import { t } from "../lib/i18n";
+import { t, tCount } from "../lib/i18n";
 import { tError } from "../lib/errors";
 import { formatIdr } from "../lib/format";
 import { fadeUp } from "../lib/motion";
@@ -536,7 +536,7 @@ export default function ProductPage() {
           <div className="flex items-center gap-1.5 text-sm text-ink-soft mb-4">
             <Stars rating={product.rating ?? 0} cls="w-4 h-4" />{" "}
             <span className="font-medium text-ink">{String(Math.round((product.rating ?? 0) * 10) / 10)}</span>
-            <span className="text-ink-faint">· {t("web.review_count", { count: product.rating_count })}</span>
+            <span className="text-ink-faint">· {tCount("web.review_count", product.rating_count)}</span>
           </div>
         )}
         {reviews.length > 0 ? (

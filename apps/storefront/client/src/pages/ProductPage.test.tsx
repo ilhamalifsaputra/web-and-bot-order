@@ -326,6 +326,15 @@ describe("ProductPage", () => {
     expect(screen.getByText("· 12 reviews")).toBeInTheDocument();
   });
 
+  it("says '1 review' (singular) in the aggregate summary for a single review", async () => {
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      product: { ...productData.product, rating: 5, rating_count: 1 },
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByText("· 1 review")).toBeInTheDocument();
+  });
+
   it("omits the aggregate rating summary when the product has no ratings yet", async () => {
     renderProduct("netflix-premium", () => ({
       ...productData,

@@ -781,6 +781,7 @@
   "web.state_forbidden_body": "You don't have access to this page. If you think this is a mistake, contact support.",
   "web.related_products": "You might also like",
   "web.review_count": "{count} reviews",
+  "web.review_count_one": "{count} review",
   "web.reviews": "Customer reviews",
   "web.search_empty": "Nothing found — try another keyword.",
   "web.search_placeholder": "Search products…",

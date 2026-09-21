@@ -781,6 +781,7 @@
   "web.state_forbidden_body": "Kamu tidak punya akses ke halaman ini. Kalau menurutmu ini keliru, hubungi bantuan.",
   "web.related_products": "Mungkin kamu juga suka",
   "web.review_count": "{count} ulasan",
+  "web.review_count_one": "{count} ulasan",
   "web.reviews": "Ulasan pembeli",
   "web.search_empty": "Tidak ketemu — coba kata kunci lain.",
   "web.search_placeholder": "Cari produk…",

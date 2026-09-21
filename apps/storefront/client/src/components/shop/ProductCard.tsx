@@ -6,7 +6,7 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Tag, Zap } from "lucide-react";
-import { t } from "../../lib/i18n";
+import { t, tCount } from "../../lib/i18n";
 import { pressable } from "../../lib/motion";
 import DefaultThumb, { type ThumbnailKind } from "./DefaultThumb";
 import FlashBadge, { FlashWasPrice } from "./FlashBadge";
@@ -125,9 +125,12 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             placeholder (fails WCAG AA); white on bg-grass-dark is ~5:1.
             Still the grass family (positive capability), never off-palette
             amber — same treatment as the sibling bulk-discount badge above.
-            Gated on !all_non_auto: when every denomination is manual delivery
-            nothing is delivered instantly, so the pill would mislead the buyer. */}
-        {!p.all_non_auto && (
+            Gated on !all_non_auto AND available > 0: when every denomination is
+            manual delivery nothing is delivered instantly, and an auto product
+            with no stock has nothing to deliver — either way the pill would
+            mislead the buyer. (Only auto denominations ever hold stock rows, so
+            `available > 0` also proves an auto plan is in stock on a mixed product.) */}
+        {!p.all_non_auto && p.available > 0 && (
           <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-grass-dark px-2.5 py-1 text-xs font-medium text-white">
             <Zap className="w-3 h-3" /> {t("web.badge_instant")}
           </span>
@@ -149,7 +152,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
         {p.rating_count > 0 && (
           <div className="flex items-center gap-1.5 text-xs text-ink-soft mt-1">
             <Stars rating={p.rating ?? 0} /> <span>{String(Math.round((p.rating ?? 0) * 10) / 10)}</span>
-            <span className="text-ink-faint">· {t("web.review_count", { count: p.rating_count })}</span>
+            <span className="text-ink-faint">· {tCount("web.review_count", p.rating_count)}</span>
           </div>
         )}
 

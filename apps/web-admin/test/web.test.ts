@@ -1503,8 +1503,9 @@ describe("GET /api/orders/kpis", () => {
       cancelled: expect.any(Number),
     });
     // shapeRevenue nulls out a zero currency (dashboard.ts convention) — just
-    // assert the three keys are present, not truthy.
-    expect(Object.keys(body.revenueToday).sort()).toEqual(["idr", "usd", "usdt"]);
+    // assert the two real keys are present, not truthy, and that no fabricated
+    // USD duplicate of the USDT figure is shipped.
+    expect(Object.keys(body.revenueToday).sort()).toEqual(["idr", "usdt"]);
     expect(body.delivered).toBeGreaterThanOrEqual(1);
     expect(body.totalOrders).toBeGreaterThanOrEqual(2);
   });

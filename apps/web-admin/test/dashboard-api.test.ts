@@ -175,7 +175,7 @@ describe("GET /api/dashboard/kpis", () => {
       "CONFIRMED",
       "PROCESSING",
       "REFUNDED",
-      "EXPIRED",
+      "PARTIALLY_DELIVERED",
     ];
     for (const [i, status] of statuses.entries()) {
       await prisma.order.create({

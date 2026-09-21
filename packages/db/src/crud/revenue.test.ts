@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import {
   OrderStatus,
@@ -7,8 +7,7 @@ import {
   RefundExecutionStatus,
   RefundStatus,
 } from "@app/core/enums";
-import { config } from "@app/core/config";
-import { DateTime, dayKeyInZone } from "@app/core/datetime";
+import { DateTime } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
@@ -85,12 +84,6 @@ beforeEach(async () => {
   parentProductId = parentProduct.id;
   parentProductName = parentProduct.name;
 });
-
-/** "Now" on the shop's own calendar (config.TIMEZONE) — the calendar every
- *  bucketed series in revenue.ts cuts its days, weeks, months and years on. A
- *  fixture built from `shopNow()` would sit on the wrong side of the
- *  boundary for 7 hours of every Jakarta day. */
-const shopNow = () => DateTime.now().setZone(config.TIMEZONE);
 
 describe("revenueByDay", () => {
   it("keeps a delivered USDT order's total out of the IDR bucket for the same day", async () => {
@@ -475,105 +468,6 @@ describe("combinedRevenueByDay", () => {
   });
 });
 
-// Every bucketed series in revenue.ts cuts its buckets on the SHOP's calendar
-// (config.TIMEZONE = Asia/Jakarta, UTC+7), not UTC — see SHOP_DAY_BUCKETS in
-// revenue.ts. Bucketing on the UTC date used to be wrong twice over: the keys
-// filed a WIB shop's 00:00–06:59 local deliveries under the previous day, and
-// the `since` bound was UTC midnight, so the same orders fell outside the query
-// on the window's first day entirely.
-describe("bucket boundaries follow the shop timezone", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("files an order delivered at 18:30Z under the next day and one at 16:30Z under that day (TIMEZONE=Asia/Jakarta)", async () => {
-    // 2026-03-14T18:30Z is 01:30 on the 15th locally, 2026-03-14T16:30Z is
-    // 23:30 on the 14th. Under UTC bucketing both landed on "2026-03-14".
-    const product = await createDenomination(prisma, { productId: parentProductId, name: "1 Month", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
-    const lateEvening = new Date("2026-03-14T18:30:00.000Z");
-    const afternoon = new Date("2026-03-14T16:30:00.000Z");
-
-    for (const [deliveredAt, total] of [[afternoon, "40000"], [lateEvening, "70000"]] as const) {
-      const order = await prisma.order.create({
-        data: { orderCode: `ORD-tz-${Math.random()}`, userId, subtotalAmount: total, totalAmount: total, currency: "IDR", status: "DELIVERED", deliveredAt },
-      });
-      await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: total, warrantyDaysSnapshot: 30 } });
-    }
-    const usdtOrder = await prisma.order.create({
-      data: { orderCode: `ORD-tz-usdt-${Math.random()}`, userId, subtotalAmount: "160000", totalAmount: "10", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: lateEvening },
-    });
-    await prisma.orderItem.create({ data: { orderId: usdtOrder.id, productId: product.id, quantity: 1, unitPrice: "160000", warrantyDaysSnapshot: 30 } });
-
-    // "Now" is mid-morning on the 15th in Jakarta, so a 2-day window is
-    // exactly the 14th and the 15th.
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-15T03:00:00.000Z"));
-
-    expect(await revenueByDay(prisma, 2)).toEqual([
-      { day: "2026-03-14", revenue_idr: "40000", revenue_usdt: "0", orders: 1 },
-      { day: "2026-03-15", revenue_idr: "70000", revenue_usdt: "10", orders: 2 },
-    ]);
-    expect(await ordersByDay(prisma, 2)).toEqual([
-      { day: "2026-03-14", ordersIdr: 1, ordersUsdt: 0 },
-      { day: "2026-03-15", ordersIdr: 1, ordersUsdt: 1 },
-    ]);
-    expect(await combinedRevenueByDay(prisma, 2)).toEqual([
-      { day: "2026-03-14", revenueIdrEquiv: "40000" },
-      // 70000 + 10 USDT × 16000 = 230000
-      { day: "2026-03-15", revenueIdrEquiv: "230000" },
-    ]);
-    // profitByDay is OrderItem-rooted but buckets on the same parent order's
-    // deliveredAt, so it must split the two days identically: 40000 - 5000 on
-    // the 14th; on the 15th the IDR line is 70000 - 5000 and the USDT line
-    // converts through its own 16000 snapshot (10 - 5000/16000 = 9.6875).
-    expect(await profitByDay(prisma, 2)).toEqual([
-      { day: "2026-03-14", profit_idr: "35000", profit_usdt: null },
-      { day: "2026-03-15", profit_idr: "65000", profit_usdt: "9.6875" },
-    ]);
-  });
-
-  it("keeps a sale made in the shop's early-morning hours in today's bucket instead of yesterday's", async () => {
-    // 2026-03-15T00:30 Jakarta = 2026-03-14T17:30Z. A single-day window must
-    // still contain it: with a UTC-midnight `since`, that order was both
-    // filtered out of the query AND keyed to the wrong day.
-    const deliveredAt = new Date("2026-03-14T17:30:00.000Z");
-    await prisma.order.create({
-      data: { orderCode: `ORD-early-${Math.random()}`, userId, subtotalAmount: "12345", totalAmount: "12345", currency: "IDR", status: "DELIVERED", deliveredAt },
-    });
-
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-15T03:00:00.000Z"));
-
-    expect(await revenueByDay(prisma, 1)).toEqual([
-      { day: "2026-03-15", revenue_idr: "12345", revenue_usdt: "0", orders: 1 },
-    ]);
-  });
-
-  it("starts an ISO week at Monday 00:00 in the shop's zone, not Monday 00:00 UTC", async () => {
-    // 2026-03-15 is a Sunday. 2026-03-15T17:30Z is already Monday 00:30 in
-    // Jakarta, so it belongs to the NEXT ISO week; 2026-03-15T16:30Z is still
-    // Sunday 23:30 locally and belongs to the previous one. Under UTC
-    // boundaries both would have landed in the week of the 15th.
-    for (const [deliveredAt, total] of [
-      [new Date("2026-03-15T16:30:00.000Z"), "11000"],
-      [new Date("2026-03-15T17:30:00.000Z"), "22000"],
-    ] as const) {
-      await prisma.order.create({
-        data: { orderCode: `ORD-wk-${Math.random()}`, userId, subtotalAmount: total, totalAmount: total, currency: "IDR", status: "DELIVERED", deliveredAt },
-      });
-    }
-
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-16T03:00:00.000Z"));
-
-    const weeks = await revenueByPeriod(prisma, "week", 2);
-    expect(weeks.map((w) => ({ day: w.day, revenue_idr: w.revenue_idr }))).toEqual([
-      { day: "2026-W11", revenue_idr: "11000" },
-      { day: "2026-W12", revenue_idr: "22000" },
-    ]);
-  });
-});
-
 describe("status exclusion", () => {
   it("only DELIVERED orders contribute to revenue, profit, or top-products — every other status is excluded", async () => {
     const now = new Date();
@@ -869,10 +763,9 @@ describe("refund totals from RefundExecution", () => {
   });
 
   describe("refundsByDay", () => {
-    // The shop's calendar day, the same key refundsByDay itself buckets on.
-    const dayKey = (d: Date) => dayKeyInZone(d);
+    const dayKey = (d: Date) => d.toISOString().slice(0, 10);
 
-    it("buckets payouts by executedAt's shop-calendar day, per currency, leaving the day between them at zero", async () => {
+    it("buckets payouts by executedAt's UTC day, per currency, leaving the day between them at zero", async () => {
       const now = new Date();
       const twoDaysAgo = new Date(now.getTime() - 2 * 86_400_000);
       await payOutRefund({ amount: "2000" });
@@ -1100,8 +993,8 @@ describe("period-bucketed analytics (Task 6c)", () => {
   }
 
   describe("revenueByPeriod", () => {
-    it("splits two sales one second apart across the Monday-00:00 shop-local ISO week boundary into adjacent buckets", async () => {
-      const thisWeek = shopNow().startOf("week");
+    it("splits two sales one second apart across the Monday-00:00-UTC ISO week boundary into adjacent buckets", async () => {
+      const thisWeek = DateTime.utc().startOf("week");
       await makeSale(thisWeek.toJSDate(), { amount: "54000" });
       await makeSale(thisWeek.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
 
@@ -1117,7 +1010,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("splits two sales one second apart across a calendar-month boundary into adjacent buckets", async () => {
-      const thisMonth = shopNow().startOf("month");
+      const thisMonth = DateTime.utc().startOf("month");
       await makeSale(thisMonth.toJSDate(), { amount: "54000" });
       await makeSale(thisMonth.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
 
@@ -1131,7 +1024,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("splits two sales one second apart across a calendar-year boundary into adjacent buckets", async () => {
-      const thisYear = shopNow().startOf("year");
+      const thisYear = DateTime.utc().startOf("year");
       await makeSale(thisYear.toJSDate(), { amount: "54000" });
       await makeSale(thisYear.minus({ seconds: 1 }).toJSDate(), { amount: "10000" });
 
@@ -1156,7 +1049,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("keeps a USDT sale's total out of the IDR figure while blending it into the IDR-equivalent via that order's own fxRate", async () => {
-      const now = shopNow().startOf("week").toJSDate();
+      const now = DateTime.utc().startOf("week").toJSDate();
       await makeSale(now, { amount: "54000" });
       await makeSale(now, { amount: "3.43", currency: "USDT" });
 
@@ -1171,7 +1064,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("excludes a settled wallet top-up from every figure it reports (kind: PRODUCT)", async () => {
-      const now = shopNow().startOf("week").toJSDate();
+      const now = DateTime.utc().startOf("week").toJSDate();
       await makeSale(now, { amount: "54000" });
       await makeSale(now, { amount: "100000", kind: OrderKind.WALLET_TOPUP });
       await makeSale(now, { amount: "7", currency: "USDT", kind: OrderKind.WALLET_TOPUP });
@@ -1194,7 +1087,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
 
   describe("ordersByPeriod", () => {
     it("splits counts across the ISO week boundary and keeps currencies apart", async () => {
-      const thisWeek = shopNow().startOf("week");
+      const thisWeek = DateTime.utc().startOf("week");
       await makeSale(thisWeek.toJSDate());
       await makeSale(thisWeek.toJSDate(), { amount: "3.43", currency: "USDT" });
       await makeSale(thisWeek.minus({ seconds: 1 }).toJSDate());
@@ -1215,7 +1108,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("excludes a settled wallet top-up from the counts (kind: PRODUCT)", async () => {
-      const now = shopNow().startOf("month").toJSDate();
+      const now = DateTime.utc().startOf("month").toJSDate();
       await makeSale(now);
       await makeSale(now, { amount: "100000", kind: OrderKind.WALLET_TOPUP });
 
@@ -1226,7 +1119,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
 
   describe("profitByPeriod", () => {
     it("buckets net profit per ISO week, keeping a sale one second before the Monday boundary in the previous week", async () => {
-      const thisWeek = shopNow().startOf("week");
+      const thisWeek = DateTime.utc().startOf("week");
       // This week: revenue 2 x 10000 = 20000, cost 2 x 6000 = 12000 -> 8000.
       await makeSaleWithItem(thisWeek.toJSDate(), {
         unitPrice: "10000", costPrice: "6000", quantity: 2, subtotalAmount: "20000", totalAmount: "20000",
@@ -1249,7 +1142,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("buckets net profit per calendar month", async () => {
-      const thisMonth = shopNow().startOf("month");
+      const thisMonth = DateTime.utc().startOf("month");
       await makeSaleWithItem(thisMonth.toJSDate(), {
         unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
       });
@@ -1267,7 +1160,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("converts a USDT-settled period's revenue AND cost through that order's own fxRate, never blending the two currencies", async () => {
-      const thisYear = shopNow().startOf("year");
+      const thisYear = DateTime.utc().startOf("year");
       await makeSaleWithItem(thisYear.toJSDate(), {
         // unitPrice/costPrice are catalog-central IDR even for a USDT order —
         // 160000 IDR / 16000 = 10 USDT-equiv revenue, 32000 / 16000 = 2 cost.
@@ -1289,7 +1182,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("excludes a cost-unknown item from both the revenue and the cost sum, reaching the same figure profitSummarySince does for the same data", async () => {
-      const thisWeek = shopNow().startOf("week");
+      const thisWeek = DateTime.utc().startOf("week");
       await makeSaleWithItem(thisWeek.toJSDate(), {
         unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
       });
@@ -1306,7 +1199,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("reports null for a period whose only delivered items have unknown cost, where profitSummarySince's richer shape reports 0 alongside an excluded count", async () => {
-      const thisWeek = shopNow().startOf("week");
+      const thisWeek = DateTime.utc().startOf("week");
       await makeSaleWithItem(thisWeek.toJSDate(), {
         unitPrice: "5000", costPrice: null, subtotalAmount: "5000", totalAmount: "5000",
       });
@@ -1321,7 +1214,7 @@ describe("period-bucketed analytics (Task 6c)", () => {
     });
 
     it("prorates the order's bulkDiscountAmount + discountAmount into the bucket, so a discounted period that lost money reports the loss (M-1)", async () => {
-      const thisWeek = shopNow().startOf("week");
+      const thisWeek = DateTime.utc().startOf("week");
       await makeSaleWithItem(thisWeek.toJSDate(), {
         unitPrice: "10000", costPrice: "8000", subtotalAmount: "10000", totalAmount: "7000",
         bulkDiscountAmount: "1000", discountAmount: "2000",
@@ -1334,41 +1227,41 @@ describe("period-bucketed analytics (Task 6c)", () => {
   });
 
   describe("profitByDay", () => {
-    it("returns one bucket per shop-calendar day, oldest→newest, with null for days that had no delivered items", async () => {
-      const todayLocal = shopNow().startOf("day");
-      await makeSaleWithItem(todayLocal.toJSDate(), {
+    it("returns one bucket per UTC day, oldest→newest, with null for days that had no delivered items", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
         unitPrice: "10000", costPrice: "6000", subtotalAmount: "10000", totalAmount: "10000",
       });
 
       const rows = await profitByDay(prisma, 3);
       expect(rows.map((r) => r.day)).toEqual([
-        todayLocal.minus({ days: 2 }).toFormat("yyyy-LL-dd"),
-        todayLocal.minus({ days: 1 }).toFormat("yyyy-LL-dd"),
-        todayLocal.toFormat("yyyy-LL-dd"),
+        todayUtc.minus({ days: 2 }).toFormat("yyyy-LL-dd"),
+        todayUtc.minus({ days: 1 }).toFormat("yyyy-LL-dd"),
+        todayUtc.toFormat("yyyy-LL-dd"),
       ]);
       expect(rows[0]!.profit_idr).toBeNull();
       expect(rows[1]!.profit_idr).toBeNull();
       expect(rows[2]!.profit_idr).toBe("4000");
     });
 
-    it("reaches the same IDR figure profitSummarySince does for a single shop-calendar day's data", async () => {
-      const todayLocal = shopNow().startOf("day");
-      await makeSaleWithItem(todayLocal.toJSDate(), {
+    it("reaches the same IDR figure profitSummarySince does for a single UTC day's data", async () => {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
         unitPrice: "10000", costPrice: "6000", quantity: 2, subtotalAmount: "20000", totalAmount: "20000",
       });
-      await makeSaleWithItem(todayLocal.toJSDate(), {
+      await makeSaleWithItem(todayUtc.toJSDate(), {
         unitPrice: "5000", costPrice: null, subtotalAmount: "5000", totalAmount: "5000",
       });
 
       const rows = await profitByDay(prisma, 1);
-      const summary = await profitSummarySince(prisma, todayLocal.toJSDate());
+      const summary = await profitSummarySince(prisma, todayUtc.toJSDate());
       expect(rows[0]!.profit_idr).toBe(summary.idr!.netProfit);
       expect(rows[0]!.profit_idr).toBe("8000");
     });
 
     it("converts a USDT-settled day through that order's own fxRate and leaves the IDR bucket absent", async () => {
-      const todayLocal = shopNow().startOf("day");
-      await makeSaleWithItem(todayLocal.toJSDate(), {
+      const todayUtc = DateTime.utc().startOf("day");
+      await makeSaleWithItem(todayUtc.toJSDate(), {
         unitPrice: "160000", costPrice: "32000", subtotalAmount: "160000", totalAmount: "10", currency: "USDT",
       });
 
@@ -1601,15 +1494,15 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
 
   describe("the bucketed series", () => {
     it("revenueByDay buckets the credit on the ORDER's delivered day, not the wallet row's own createdAt", async () => {
-      const todayLocal = shopNow().startOf("day");
+      const todayUtc = DateTime.utc().startOf("day");
       // Checkout (and therefore the wallet debit) happened two days before
       // delivery. An implementation keyed on the WalletTransaction's own
       // createdAt would put this sale's credit on the wrong day.
       await makeWalletPaidSale({
-        deliveredAt: todayLocal.plus({ hours: 5 }).toJSDate(),
+        deliveredAt: todayUtc.plus({ hours: 5 }).toJSDate(),
         gateway: "20000",
         walletSpend: "34000",
-        walletRowAt: todayLocal.minus({ days: 2 }).toJSDate(),
+        walletRowAt: todayUtc.minus({ days: 2 }).toJSDate(),
       });
 
       const days = await revenueByDay(prisma, 3);
@@ -1620,9 +1513,9 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
     });
 
     it("revenueByDay asks the wallet query only about ITS OWN window's orders", async () => {
-      const todayLocal = shopNow().startOf("day");
+      const todayUtc = DateTime.utc().startOf("day");
       await makeWalletPaidSale({
-        deliveredAt: todayLocal.plus({ hours: 3 }).toJSDate(),
+        deliveredAt: todayUtc.plus({ hours: 3 }).toJSDate(),
         gateway: "1000",
         walletSpend: "4000",
       });
@@ -1632,7 +1525,7 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
       // own order ids, so a future change to that parameter cannot silently
       // widen the scan back to every wallet-paid order in history.
       await makeWalletPaidSale({
-        deliveredAt: todayLocal.minus({ days: 10 }).toJSDate(),
+        deliveredAt: todayUtc.minus({ days: 10 }).toJSDate(),
         gateway: "7000",
         walletSpend: "9000",
       });
@@ -1686,7 +1579,7 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
     });
 
     it("revenueByPeriod holds its blended figure to that same guard", async () => {
-      const thisMonth = shopNow().startOf("month").plus({ hours: 6 });
+      const thisMonth = DateTime.utc().startOf("month").plus({ hours: 6 });
       await makeWalletPaidSale({
         deliveredAt: thisMonth.toJSDate(),
         gateway: "1000",
@@ -1705,7 +1598,7 @@ describe("wallet-spent credit counts as revenue (Financial Ledger M8.5)", () => 
     });
 
     it("revenueByPeriod counts the credit spent in the order's own calendar period, per currency and blended", async () => {
-      const thisMonth = shopNow().startOf("month").plus({ hours: 6 });
+      const thisMonth = DateTime.utc().startOf("month").plus({ hours: 6 });
       await makeWalletPaidSale({
         deliveredAt: thisMonth.toJSDate(),
         gateway: "20000",

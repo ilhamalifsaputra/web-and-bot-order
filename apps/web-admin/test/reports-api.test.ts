@@ -105,7 +105,7 @@ describe("GET /api/reports", () => {
     expect(reports.products[0]?.revenue).toBe(dashboard[0]?.revenueIdrEquiv);
   });
 
-  it("treats a fractional ?days like its whole part, so the window still starts on a local midnight", async () => {
+  it("treats a fractional ?days like its whole part, so the chart and the echoed window size are always whole days", async () => {
     const whole = (await get("/api/reports?days=7", cookie)).json() as { daily: { day: string }[]; days: number };
     const fractional = (await get("/api/reports?days=7.5", cookie)).json() as { daily: { day: string }[]; days: number };
     expect(fractional.daily.map((d) => d.day)).toEqual(whole.daily.map((d) => d.day));

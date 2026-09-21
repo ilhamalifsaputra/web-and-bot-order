@@ -9,8 +9,7 @@
 import { OrderStatus, OrderKind, RefundExecutionStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
-import { config } from "@app/core/config";
-import { DateTime, dayKeyInZone, recentDayWindow } from "@app/core/datetime";
+import { addDays, DateTime } from "@app/core/datetime";
 import { idChunks } from "./_idChunks";
 import type { Db } from "./_types";
 
@@ -42,26 +41,6 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
  * `OrderItem` rows, so they were already immune.
  */
 const ORDER_KIND_SALES_FILTER = { kind: OrderKind.PRODUCT } as const;
-
-/**
- * SHOP_DAY_BUCKETS — every bucketed series in this module (`*ByDay` and
- * `*ByPeriod`) cuts its days, weeks, months and years on the SHOP's calendar
- * (`config.TIMEZONE`), not UTC: `recentDayWindow`/`dayKeyInZone` for the daily
- * series, `SHOP_ZONE` below for the calendar rollups.
- *
- * Bucketing on the UTC date was wrong twice over for a UTC+7 shop. The keys
- * filed 00:00–06:59 local deliveries under the previous day, AND the `since`
- * bound was UTC midnight, so those same orders fell outside the query on the
- * window's first day entirely. It also meant the "Revenue Today" KPI (which
- * has always used `startOfDayUtc`, i.e. shop-local midnight) and the last bar
- * of the chart beside it covered different windows and could legitimately
- * disagree. They now agree.
- *
- * Note for `docs/sales-metrics-contract.md` readers: that document described
- * the previous UTC behaviour and named the shift as a separate, explicitly
- * scoped change. This is that change — the doc is updated with it.
- */
-const SHOP_ZONE = () => config.TIMEZONE;
 
 /**
  * IDR revenue for one delivered OrderItem line: unitPrice × quantity, minus
@@ -499,7 +478,7 @@ export async function grossSalesForNetSales(
 }
 
 export interface DayRevenue {
-  day: string; // YYYY-MM-DD in the shop's timezone — see SHOP_DAY_BUCKETS
+  day: string; // YYYY-MM-DD (UTC)
   revenue_idr: string;
   revenue_usdt: string;
   orders: number;
@@ -507,8 +486,8 @@ export interface DayRevenue {
 
 /**
  * Daily delivered revenue for the last `days` days, oldest→newest, with empty
- * days filled with zero so the sparkline has no gaps. Days are the shop's own
- * calendar days — see SHOP_DAY_BUCKETS above.
+ * days filled with zero so the sparkline has no gaps. Buckets by UTC date; the
+ * dashboard is single-operator so a TZ-exact daily cut isn't worth a raw query.
  *
  * Split by `currency` (mirrors `salesRevenueByCurrency` above) — summing
  * `totalAmount` across orders regardless of currency would add a USDT order's
@@ -516,7 +495,9 @@ export interface DayRevenue {
  * equivalent of the "Rp3" display bug.
  */
 export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
-  const { since, keys } = recentDayWindow(days);
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
 
   const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
@@ -531,10 +512,14 @@ export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
   const walletSpend = await walletSpendByOrder(db, where, orders.map((o) => o.id));
 
   const buckets = new Map<string, { idr: Decimal; usdt: Decimal; orders: number }>();
-  for (const key of keys) buckets.set(key, { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 });
+  for (let i = 0; i < days; i++) {
+    const d = addDays(since, i);
+    buckets.set(d.toISOString().slice(0, 10), { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 });
+  }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const b = buckets.get(dayKeyInZone(o.deliveredAt));
+    const key = o.deliveredAt.toISOString().slice(0, 10);
+    const b = buckets.get(key);
     if (!b) continue; // outside the window (shouldn't happen)
     if (o.currency === "IDR") b.idr = b.idr.plus(o.totalAmount);
     else b.usdt = b.usdt.plus(o.totalAmount);
@@ -765,10 +750,11 @@ export interface DayOrderCounts {
 
 /** Daily delivered-order counts for the last `days` days, oldest→newest,
  * split by currency — the order-count counterpart to revenueByDay, for the
- * Sales Analytics chart's "Orders" metric. Empty days are filled with zero,
- * and days are the shop's own calendar days (see SHOP_DAY_BUCKETS). */
+ * Sales Analytics chart's "Orders" metric. Empty days are filled with zero. */
 export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> {
-  const { since, keys } = recentDayWindow(days);
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
 
   const orders = await db.order.findMany({
     where: { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } },
@@ -776,10 +762,13 @@ export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> 
   });
 
   const buckets = new Map<string, { idr: number; usdt: number }>();
-  for (const key of keys) buckets.set(key, { idr: 0, usdt: 0 });
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), { idr: 0, usdt: 0 });
+  }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const b = buckets.get(dayKeyInZone(o.deliveredAt));
+    const key = o.deliveredAt.toISOString().slice(0, 10);
+    const b = buckets.get(key);
     if (!b) continue;
     if (o.currency === "IDR") b.idr += 1;
     else b.usdt += 1;
@@ -801,11 +790,12 @@ export interface DayCombinedRevenue {
  * `OrderItem.unitPrice` — see orderItemRevenueIdr), so multiplying by fxRate
  * here is correct. This is the one place this function intentionally blends
  * currencies — the "Combined" filter the user explicitly opts into, as
- * opposed to revenueByDay's per-currency split. Days are the shop's own
- * calendar days (see SHOP_DAY_BUCKETS).
+ * opposed to revenueByDay's per-currency split.
  */
 export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombinedRevenue[]> {
-  const { since, keys } = recentDayWindow(days);
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
 
   const where = { status: OrderStatus.DELIVERED, ...ORDER_KIND_SALES_FILTER, deliveredAt: { gte: since } };
   const orders = await db.order.findMany({
@@ -816,10 +806,12 @@ export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombin
   const walletSpend = await walletSpendByOrder(db, where, orders.map((o) => o.id));
 
   const buckets = new Map<string, Decimal>();
-  for (const key of keys) buckets.set(key, new Decimal(0));
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), new Decimal(0));
+  }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
-    const key = dayKeyInZone(o.deliveredAt);
+    const key = o.deliveredAt.toISOString().slice(0, 10);
     const current = buckets.get(key);
     if (!current) continue;
     const idrEquiv = o.currency === "USDT" && o.fxRate != null
@@ -895,7 +887,7 @@ export async function refundTotalsSince(
 }
 
 export interface DayRefunds {
-  day: string; // YYYY-MM-DD in the shop's timezone — see SHOP_DAY_BUCKETS
+  day: string; // YYYY-MM-DD (UTC)
   refunds_idr: string;
   refunds_usdt: string;
 }
@@ -904,9 +896,9 @@ export interface DayRefunds {
  * Daily refund payouts for the last `days` days, oldest→newest, with empty days
  * filled with zero — the refund counterpart to `revenueByDay`, and deliberately
  * the same shape so a chart can line the two series up day-for-day without
- * re-aligning anything. Same shop-calendar day bucketing (see
- * SHOP_DAY_BUCKETS), same per-currency split (a USDT payout's small decimal
- * must never land in the Rupiah figure), same 4dp-quantized string output.
+ * re-aligning anything. Same UTC-date bucketing, same per-currency split (a
+ * USDT payout's small decimal must never land in the Rupiah figure), same
+ * 4dp-quantized string output.
  *
  * See `refundTotalsSince` above for why this reads COMPLETED
  * `RefundExecution.amount` bucketed on `executedAt`, and not `Refund.amount` or
@@ -921,7 +913,9 @@ export interface DayRefunds {
  * series" should not have to grep to learn the answer is "nowhere yet".
  */
 export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
-  const { since, keys } = recentDayWindow(days);
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
 
   const executions = await db.refundExecution.findMany({
     where: { status: RefundExecutionStatus.COMPLETED, executedAt: { gte: since } },
@@ -929,12 +923,14 @@ export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
   });
 
   const buckets = new Map<string, { idr: Decimal; usdt: Decimal }>();
-  for (const key of keys) buckets.set(key, { idr: new Decimal(0), usdt: new Decimal(0) });
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), { idr: new Decimal(0), usdt: new Decimal(0) });
+  }
   for (const e of executions) {
     // Nullable in the schema (it is only stamped once an attempt reaches a
     // terminal status), so a row with no payout time has no day to belong to.
     if (!e.executedAt) continue;
-    const b = buckets.get(dayKeyInZone(e.executedAt));
+    const b = buckets.get(e.executedAt.toISOString().slice(0, 10));
     if (!b) continue; // outside the window (shouldn't happen)
     if (e.currency === "IDR") b.idr = b.idr.plus(e.amount);
     else b.usdt = b.usdt.plus(e.amount);
@@ -959,14 +955,13 @@ export async function refundsByDay(db: Db, days = 30): Promise<DayRefunds[]> {
  * rollup, so retrofitting one into the other would have made both harder to
  * reason about.
  *
- * Boundaries are the SHOP's calendar boundaries — ISO week (Monday 00:00
- * shop-local), calendar month, calendar year — via luxon's `startOf` in
- * `SHOP_ZONE()`, so a week/month/year here starts at the same instant the
- * daily buckets and the "Today" KPIs do (see SHOP_DAY_BUCKETS). Using luxon
- * rather than hand-rolled ISO-week math also avoids getting ISO week
- * NUMBERING subtly wrong around new year: 2027-01-01 belongs to ISO week
+ * Boundaries are UTC calendar boundaries — ISO week (Monday 00:00 UTC),
+ * calendar month, calendar year — via luxon's `startOf`, matching this
+ * module's existing "UTC in the DB, localize only on display" convention and
+ * avoiding hand-rolled ISO-week math (ISO week NUMBERING in particular is
+ * easy to get subtly wrong around new year: 2027-01-01 belongs to ISO week
  * 2026-W53, which luxon's `kkkk` week-year token handles and a naive
- * `yyyy`-based label would not.
+ * `yyyy`-based label would not).
  * ========================================================================== */
 
 export type PeriodGranularity = "week" | "month" | "year";
@@ -1025,10 +1020,9 @@ const PERIOD_LABEL_FORMAT: Record<PeriodGranularity, string> = {
 const periodStep = (granularity: PeriodGranularity, n: number) =>
   granularity === "week" ? { weeks: n } : granularity === "month" ? { months: n } : { years: n };
 
-/** The label of the shop-calendar period `at` falls in. */
+/** The label of the UTC calendar period `at` falls in. */
 function periodLabel(at: Date, granularity: PeriodGranularity): string {
   return DateTime.fromJSDate(at, { zone: "utc" })
-    .setZone(SHOP_ZONE())
     .startOf(granularity)
     .toFormat(PERIOD_LABEL_FORMAT[granularity]);
 }
@@ -1040,16 +1034,9 @@ function periodLabel(at: Date, granularity: PeriodGranularity): string {
  * yesterday). `since` is the first bucket's own start instant, so one bulk
  * query with `deliveredAt >= since` covers every bucket; the buckets are then
  * filled by reducing in JS, never with a query per bucket.
- *
- * `since` is the shop-local start of the oldest bucket converted to a UTC
- * instant — the same relationship `recentDayWindow.since` has to its first
- * day, so a shop-local boundary is never queried as a UTC one.
  */
 function periodWindow(granularity: PeriodGranularity, count: number): { since: Date; labels: string[] } {
-  const first = DateTime.now()
-    .setZone(SHOP_ZONE())
-    .startOf(granularity)
-    .plus(periodStep(granularity, -(count - 1)));
+  const first = DateTime.utc().startOf(granularity).plus(periodStep(granularity, -(count - 1)));
   const labels: string[] = [];
   for (let i = 0; i < count; i++) {
     labels.push(first.plus(periodStep(granularity, i)).toFormat(PERIOD_LABEL_FORMAT[granularity]));
@@ -1307,7 +1294,7 @@ const shapeBucketProfit = (acc: ProfitAccumulator): string | null =>
   acc.costKnownItems === 0 ? null : q4(acc.revenue.minus(acc.cost)).toString();
 
 export interface DayProfit {
-  day: string; // YYYY-MM-DD, shop timezone — matching revenueByDay exactly
+  day: string; // YYYY-MM-DD (UTC), matching revenueByDay's convention exactly
   profit_idr: string | null;
   profit_usdt: string | null;
 }
@@ -1323,7 +1310,9 @@ export interface DayProfit {
  * `shapeBucketProfit`.
  */
 export async function profitByDay(db: Db, days = 30): Promise<DayProfit[]> {
-  const { since, keys } = recentDayWindow(days);
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
 
   const items = await db.orderItem.findMany({
     where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
@@ -1331,11 +1320,13 @@ export async function profitByDay(db: Db, days = 30): Promise<DayProfit[]> {
   });
 
   const buckets = new Map<string, ProfitBucket>();
-  for (const key of keys) buckets.set(key, emptyProfitBucket());
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), emptyProfitBucket());
+  }
   for (const item of items) {
     const deliveredAt = item.order.deliveredAt;
     if (!deliveredAt) continue;
-    const bucket = buckets.get(dayKeyInZone(deliveredAt));
+    const bucket = buckets.get(deliveredAt.toISOString().slice(0, 10));
     if (!bucket) continue; // outside the window (shouldn't happen)
     accumulateLineProfit(bucket, item);
   }

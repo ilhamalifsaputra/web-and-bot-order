@@ -78,10 +78,6 @@ async function payOutRefund(orderId: number, amount: string) {
   });
 }
 
-/** "Now" on the shop's own calendar — the calendar the bucketed series label
- *  their periods on (revenue.ts's SHOP_DAY_BUCKETS). */
-const shopNow = () => DateTime.now().setZone(config.TIMEZONE);
-
 describe("GET /api/dashboard/kpis", () => {
   it("anon gets a JSON 401", async () => {
     const res = await get("/api/dashboard/kpis", null);
@@ -680,7 +676,7 @@ describe("GET /api/dashboard/analytics", () => {
 
       const body = (await get("/api/dashboard/analytics?range=month", cookie)).json();
       expect(body).toHaveLength(12);
-      expect(body[11].day).toBe(shopNow().toFormat("yyyy-LL"));
+      expect(body[11].day).toBe(DateTime.utc().toFormat("yyyy-LL"));
       expect(body[11].value).toBe("5000");
     });
 
@@ -690,14 +686,14 @@ describe("GET /api/dashboard/analytics", () => {
 
       const body = (await get("/api/dashboard/analytics?range=week&metric=orders", cookie)).json();
       expect(body).toHaveLength(12);
-      expect(body[11].day).toBe(shopNow().toFormat("kkkk-'W'WW"));
+      expect(body[11].day).toBe(DateTime.utc().toFormat("kkkk-'W'WW"));
       expect(body[11].value).toBe(1);
     });
 
     it("returns 5 yearly revenue buckets when range=year", async () => {
       const body = (await get("/api/dashboard/analytics?range=year", cookie)).json();
       expect(body).toHaveLength(5);
-      expect(body[4].day).toBe(shopNow().toFormat("yyyy"));
+      expect(body[4].day).toBe(DateTime.utc().toFormat("yyyy"));
     });
 
     it("blends currencies for a calendar range when currency=combined", async () => {

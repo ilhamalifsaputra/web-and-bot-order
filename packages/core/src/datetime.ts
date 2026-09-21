@@ -53,49 +53,4 @@ export const parseShopLocal = (input: string, zone: string = config.TIMEZONE): D
 export const startOfDayUtc = (from: Date = new Date(), zone: string = config.TIMEZONE): Date =>
   DateTime.fromJSDate(from, { zone: "utc" }).setZone(zone).startOf("day").toUTC().toJSDate();
 
-/**
- * The calendar date ("YYYY-MM-DD") a stored UTC instant falls on in `zone`
- * (default config.TIMEZONE) — the day-bucket key for the admin's daily
- * series. Bucketing on `toISOString().slice(0, 10)` instead filed a WIB
- * shop's 00:00–06:59 local sales under the previous day, so a chart's last
- * bar and a `startOfDayUtc`-based "Today" KPI covered different windows.
- */
-export const dayKeyInZone = (d: Date, zone: string = config.TIMEZONE): string =>
-  DateTime.fromJSDate(d, { zone: "utc" }).setZone(zone).toFormat("yyyy-LL-dd");
-
-export interface DayWindow {
-  /** Midnight in `zone` of the window's oldest day, as a UTC instant. */
-  since: Date;
-  /** One `dayKeyInZone` key per day, oldest→newest. */
-  keys: string[];
-}
-
-/**
- * The last `days` calendar days in `zone` (default config.TIMEZONE), ending
- * with the day `from` falls on: a timezone-aligned `since` bound plus the
- * matching `dayKeyInZone` bucket keys, so the first and last bucket are whole
- * local days rather than UTC-clipped ones.
- *
- * Days are stepped through the zone's own calendar instead of by adding
- * 86_400_000 ms each time, which in a zone with DST drifts an hour per
- * transition and so emits one key twice while never reaching the last day.
- */
-export const recentDayWindow = (
-  days: number,
-  from: Date = new Date(),
-  zone: string = config.TIMEZONE,
-): DayWindow => {
-  // Callers pass unvalidated query values (`?days=7.5`, NaN, Infinity): a
-  // fractional count would start the window off-midnight and Infinity would
-  // never finish the loop below, so anything unusable becomes one day.
-  const count = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : 1;
-  const oldest = DateTime.fromJSDate(from, { zone: "utc" })
-    .setZone(zone)
-    .startOf("day")
-    .minus({ days: count - 1 });
-  const keys: string[] = [];
-  for (let i = 0; i < count; i++) keys.push(oldest.plus({ days: i }).toFormat("yyyy-LL-dd"));
-  return { since: oldest.toUTC().toJSDate(), keys };
-};
-
 export { DateTime };

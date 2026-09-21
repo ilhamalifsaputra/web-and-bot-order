@@ -41,17 +41,6 @@ export interface Category {
  * anyway — only emoji/slug/name/description). */
 export type HomeCategory = Category;
 
-/** Honest home-page figures (apps/storefront/src/pageData.ts) — currently
- * unused by home.njk's markup (the stats band was replaced by the static
- * "Our Promise" section, design.md §4.8), kept here only to mirror the API
- * payload 1:1. */
-export interface HomeStats {
-  has_data: boolean;
-  customers: number;
-  orders: number;
-  satisfaction: number | null;
-}
-
 /** A real delivered-order review shown in the homepage testimonials grid. */
 export interface Testimonial {
   name: string;
@@ -66,7 +55,6 @@ export interface HomePageData {
   hero_image: string | null;
   categories: HomeCategory[];
   products: ProductCardData[];
-  stats: HomeStats;
   testimonials: Testimonial[];
   low_threshold: number;
   bot_username: string;

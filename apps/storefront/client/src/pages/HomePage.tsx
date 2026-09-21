@@ -1,13 +1,12 @@
 /**
  * TSX port of apps/storefront/views/home.njk (design.md §4.8) — hero, features,
- * categories, featured products, upcoming services, "Our Promise", real
+ * categories, featured products, "Our Promise", real
  * testimonials, FAQ, and contact. Markup/classes copied verbatim apart from
  * the mechanical Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  *
- * Note: home.njk's stats band was already replaced by the static "Our
- * Promise" section (design.md §4.8, "not customer-count promises") before
- * this port — HomePageData.stats is fetched (API parity) but, like the NJK,
- * never rendered.
+ * Note: home.njk's stats band was replaced by the static "Our Promise"
+ * section (design.md §4.8, "not customer-count promises"), and the API no
+ * longer computes any home-page figures.
  */
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
@@ -29,7 +28,6 @@ import {
   PackageSearch,
   QrCode,
   RotateCcw,
-  Share2,
   Shield,
   ShieldCheck,
   ShoppingBag,
@@ -464,33 +462,6 @@ export default function HomePage() {
             />
           </div>
         )}
-      </section>
-
-      {/* Layanan mendatang (rencana integrasi — statis, tanpa backend) */}
-      <section className="mt-16 reveal">
-        <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.upcoming_kicker")}</p>
-        <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.upcoming_title")}</h2>
-        <p className="mt-2 text-ink-soft">{t("web.upcoming_sub")}</p>
-        <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          {/* Hand-rolled, not <Card>: the dashed border marks the teaser
-              non-interactive (pinned by a test) and `.card` hardcodes
-              `border: 1px solid` at plain-class precedence, which
-              `border-dashed` can't override. violet → pine family (no new hue). */}
-          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
-              <Share2 className="h-6 w-6" />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="font-semibold text-ink">{t("web.sosmed_title")}</h3>
-                <span className="inline-flex items-center gap-1 rounded-full bg-amberx-tint px-2.5 py-1 text-xs font-medium text-amberx">
-                  <Clock className="h-3.5 w-3.5" /> {t("web.coming_soon")}
-                </span>
-              </div>
-              <p className="mt-1 text-sm text-ink-soft">{t("web.sosmed_desc")}</p>
-            </div>
-          </div>
-        </div>
       </section>
 
       {/* 5. Our Promise (replaces vanity numbers) */}

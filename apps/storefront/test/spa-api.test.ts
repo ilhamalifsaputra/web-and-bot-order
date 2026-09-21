@@ -559,13 +559,14 @@ describe("GET /api/v1/pages/context", () => {
 });
 
 describe("GET /api/v1/pages/*", () => {
-  it("home returns cards + stats + categories", async () => {
+  it("home returns cards + categories and no customer/order figures", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
     expect(body.categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(true);
-    expect(body.stats).toHaveProperty("has_data");
+    // The stats block was never rendered and only invited an unsupported "N customers" claim.
+    expect(body).not.toHaveProperty("stats");
     expect(typeof body.low_threshold).toBe("number");
   });
 

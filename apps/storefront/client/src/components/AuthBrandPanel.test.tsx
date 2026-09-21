@@ -34,8 +34,8 @@ describe("AuthBrandPanel", () => {
     renderPanel();
     expect(await screen.findByText("Instant delivery")).toBeInTheDocument();
     expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
-    expect(screen.getByText("Warranty included")).toBeInTheDocument();
-    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByText("Warranty per plan")).toBeInTheDocument();
+    expect(screen.getByText("Help via support ticket")).toBeInTheDocument();
     // The trust claims are a real list, laid out as a stack (orientation="column").
     const list = screen.getByText("Instant delivery").closest("ul")!;
     expect(list.className).toContain("space-y-3");

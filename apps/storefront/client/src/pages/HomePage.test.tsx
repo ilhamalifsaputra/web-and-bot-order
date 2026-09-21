@@ -48,7 +48,6 @@ function homeFixture(overrides: Partial<HomePageData> = {}): HomePageData {
       { id: 1, name: "Streaming", slug: "streaming", emoji: "🎬", description: null, image: "", sortOrder: 0, isActive: true },
     ],
     products: [product],
-    stats: { has_data: false, customers: 0, orders: 0, satisfaction: null },
     testimonials: [],
     low_threshold: 5,
     bot_username: "tokobot",
@@ -98,13 +97,16 @@ describe("HomePage", () => {
     expect(ticketLink.className).toContain("hover:shadow-lift");
   });
 
-  it("renders the static Our Promise section regardless of stats.has_data (home.njk no longer has a data-driven stats band)", async () => {
-    renderHome(homeFixture({ stats: { has_data: true, customers: 120, orders: 340, satisfaction: 96 } }));
+  it("renders the static Our Promise section with always-true wording and no customer-count or timing claims", async () => {
+    const { container } = renderHome(homeFixture());
     expect(await screen.findByText("What every order comes with")).toBeInTheDocument();
-    expect(screen.getByText("Delivered in minutes")).toBeInTheDocument();
-    // The raw numbers never appear — the section is static value-props either way.
-    expect(screen.queryByText("120")).not.toBeInTheDocument();
-    expect(screen.queryByText("340")).not.toBeInTheDocument();
+    expect(screen.getByText("Automatic delivery")).toBeInTheDocument();
+    expect(screen.getByText("Warranty as listed")).toBeInTheDocument();
+    // Nothing on the home page may promise what the shop cannot prove.
+    const text = container.textContent ?? "";
+    for (const claim of [/10,000/, /24\/7/, /24 hours/i, /under (an|1) hour/i, /Trusted by thousands/i, /Delivered in minutes/i, /1[–-]10 minutes/]) {
+      expect(text).not.toMatch(claim);
+    }
   });
 
   it("renders the four how-it-works steps as an ordered list", async () => {
@@ -170,15 +172,15 @@ describe("HomePage", () => {
     expect(screen.getByText("Telegram")).toBeInTheDocument();
   });
 
-  // Task 6 (Digiflazz instant-buy pilot): the "Top Up Game" placeholder card
-  // is gone — the real category (once it exists with active products) shows
-  // up in the live "Kategori" grid instead, same as any other category. The
-  // sibling "Sosmed" placeholder is untouched.
-  it("gives the one remaining 'coming soon' teaser card a dashed border so it reads as non-interactive", async () => {
+  // The "Coming soon: Social Media Services" teaser advertised a service line
+  // that does not exist, so the whole "Coming up" section is gone.
+  it("does not advertise services that are not offered (no 'coming soon' teaser section)", async () => {
     const { container } = renderHome(homeFixture());
     await screen.findByRole("heading", { name: "Netflix Premium" });
-    const teasers = container.querySelectorAll(".border-dashed");
-    expect(teasers.length).toBe(1);
+    expect(screen.queryByText("Social Media Services")).not.toBeInTheDocument();
+    expect(screen.queryByText("Coming soon")).not.toBeInTheDocument();
+    expect(screen.queryByText("Coming up")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".border-dashed").length).toBe(0);
   });
 
   // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never
@@ -249,7 +251,7 @@ describe("HomePage", () => {
       .getAllByRole("listitem")
       .map((li) => li.textContent);
     expect(labels).toEqual(
-      expect.arrayContaining(["Instant delivery", "QRIS & USDT", "Warranty included", "24/7 support"]),
+      expect.arrayContaining(["Instant delivery", "QRIS & USDT", "Warranty per plan", "Help via support ticket"]),
     );
   });
 

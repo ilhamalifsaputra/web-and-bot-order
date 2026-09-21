@@ -298,12 +298,12 @@ reviewable at its single call site.
 | **Timezone** | ⚠️ Jakarta-local midnight (route passes `startOfDayUtc()`). |
 | **Aggregation** | Sum over delivered lines since `since`, per currency. |
 
-### `botOverallStats` — the bot's customer-facing shop stats
+### `botOverallStats` — no longer shown anywhere (kept for two tests)
 
 | | |
 |---|---|
-| **Business definition** | Lifetime shop totals shown to *buyers* on the bot's own dashboard: "X items sold · Rp Y total revenue · Z users". |
-| **Source of truth** | `botOverallStats` — `packages/db/src/crud/revenue.ts`. Called from `apps/order-bot/src/handlers/customer.ts`. |
+| **Business definition** | Lifetime shop totals: "X items sold · Rp Y total revenue · Z users". **No app code calls it any more (T4, `buyer-copy-truth`):** the bot's buyer home screen used to print these business-private figures (and `total_users` counts admins and blocked accounts), so the block was removed. The function stays only because `revenue.test.ts` and `ledger.regression.test.ts` still pin its arithmetic; if it is ever shown again it must be admin-only. |
+| **Source of truth** | `botOverallStats` — `packages/db/src/crud/revenue.ts`. No app caller. |
 | **Included states** | `DELIVERED` (both the revenue half, via `salesRevenueByCurrency`, and the `items_sold` half). |
 | **Kind filter** | `revenue_idr`/`revenue_usdt`: `kind: PRODUCT` (Task 6a fix) — this is a "total revenue" figure shown to buyers, so a top-up must not inflate it. `items_sold`: no filter, structurally immune (aggregates `OrderItem.quantity`). `total_users`: `COUNT(User)`, not order-derived at all. |
 | **Currency** | Separate IDR/USDT, rendered by the bot's own `mixedAmount` formatter. |
@@ -316,8 +316,8 @@ reviewable at its single call site.
 
 | | |
 |---|---|
-| **Business definition** | Site-wide proof-of-life figures on the storefront home: how many orders have actually been delivered, and how many distinct customers have bought. |
-| **Source of truth** | `shopFulfilmentStats` — `packages/db/src/crud/orders.ts`. Called from `apps/storefront/src/pageData.ts`. |
+| **Business definition** | Site-wide figures: how many orders have actually been delivered, and how many distinct customers have bought. **The storefront home no longer computes or sends them (T4, `buyer-copy-truth`):** they were never rendered and only invited an unsupported "N customers" claim. |
+| **Source of truth** | `shopFulfilmentStats` — `packages/db/src/crud/orders.ts`. No app caller; kept because `orders.test.ts` and `ledger.regression.test.ts` pin it. |
 | **Included states** | `DELIVERED`. |
 | **Kind filter** | `kind: PRODUCT` on **both** queries, as of the Task 6a review's I-1 fix (commit `997fd500`). Before that, a settled wallet top-up counted as a delivered order *and* made its owner a "customer" on a page whose own doc comments promise "Real numbers… stays honest". |
 | **Currency** | Not applicable — counts, not money. |
@@ -796,8 +796,8 @@ figures read `RefundExecution`. Counts are counts.
 | Customers "Orders" / "Last Order" columns | `orderStatsByUserIds.totalOrders` / `.lastOrderAt` | `packages/db/src/crud/users.ts` | n/a | **None — all kinds, deliberate** | No | Lifetime |
 | "RETURNING" badge | `orderStatsByUserIds.deliveredOrders` | `packages/db/src/crud/users.ts` | n/a | `PRODUCT` | No | Lifetime |
 | Customers sort-by-spend ordering | `rankUserIdsBySpend` (private) | `packages/db/src/crud/users.ts` | **IDR-only ranking**, gateway + IDR wallet legs (IDR-only is pre-existing and deliberate — see note above, not a bug) | `PRODUCT` | No | Lifetime |
-| Storefront home fulfilment stats | `shopFulfilmentStats` | `packages/db/src/crud/orders.ts` | n/a | `PRODUCT` | No | Lifetime |
-| Bot customer dashboard stats | `botOverallStats` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate; `items_sold` immune; `total_users` not order-derived | `PRODUCT` on revenue | No | Lifetime |
+| Storefront home fulfilment stats (no longer sent — no app caller) | `shopFulfilmentStats` | `packages/db/src/crud/orders.ts` | n/a | `PRODUCT` | No | Lifetime |
+| Bot shop stats (unused — no app caller; two tests pin it) | `botOverallStats` | `packages/db/src/crud/revenue.ts` | IDR/USDT separate; `items_sold` immune; `total_users` not order-derived | `PRODUCT` on revenue | No | Lifetime |
 | Bot admin dashboard "today's revenue/orders" | `revenueSummary` | `packages/db/src/crud/revenue.ts`, called from `apps/order-bot/src/handlers/admin.ts` | IDR/USDT separate | `PRODUCT` | No | **True UTC midnight** — differs from the web admin's same-named figure |
 | Wallet Funding | `WalletTransaction` (`wallet_topup`) / `User.walletBalance*` | `packages/db/src/crud/users.ts`, `wallet_topup.ts` | Per currency | **Never an Order sales aggregate** | n/a | *No dashboard card exists today* |
 | Cash Position | `trialBalance` | `packages/db/src/crud/ledger.ts` | One currency per call, never summed | **Not Order-derived at all** | Ledger-complete | *No production caller today* |

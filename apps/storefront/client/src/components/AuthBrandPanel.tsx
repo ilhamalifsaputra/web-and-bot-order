@@ -5,7 +5,7 @@
  * card floated on a flat background read as unfinished ("login page kosong
  * banget", the shop owner's complaint). This panel fills that space with
  * material the shop already owns: its own name/logo, the same trust strip
- * HomePage's hero uses (badge_instant / "QRIS & USDT" / feat_warranty /
+ * HomePage's hero uses (trust_instant / "QRIS & USDT" / feat_warranty /
  * badge_support), and the footer's policy links — no invented marketing copy.
  *
  * It also fixes a side effect of living outside <Layout/>: with no footer,
@@ -65,7 +65,7 @@ export default function AuthBrandPanel({ className = "" }: { className?: string 
         orientation="column"
         className="mt-6 text-pine-tint"
         items={[
-          { icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.badge_instant") },
+          { icon: <Zap className="h-4 w-4 shrink-0 text-grass" />, label: t("web.trust_instant") },
           { icon: <Shield className="h-4 w-4 shrink-0 text-grass" />, label: "QRIS & USDT" },
           { icon: <CheckCircle className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.feat_warranty") },
           { icon: <Headphones className="h-4 w-4 shrink-0 text-pine-tint" />, label: t("web.badge_support") },

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { describe, it, expect, afterEach } from "vitest";
-import { t, currentLang } from "./i18n";
+import { t, tCount, currentLang } from "./i18n";
 
 afterEach(() => {
   document.documentElement.lang = "";
@@ -15,6 +15,19 @@ describe("currentLang", () => {
   it("falls back to en for unsupported values (e.g. the raw __LANG__ placeholder)", () => {
     document.documentElement.lang = "__LANG__";
     expect(currentLang()).toBe("en");
+  });
+});
+
+describe("tCount", () => {
+  it("uses the _one variant for exactly 1 and the plain key otherwise", () => {
+    expect(tCount("web.review_count", 1, {}, "en")).toBe("1 review");
+    expect(tCount("web.review_count", 0, {}, "en")).toBe("0 reviews");
+    expect(tCount("web.review_count", 2, {}, "en")).toBe("2 reviews");
+    expect(tCount("web.review_count", 1, {}, "id")).toBe("1 ulasan");
+  });
+
+  it("falls back to the plain key when there is no _one variant", () => {
+    expect(tCount("web.stock_left", 1, {}, "en")).toBe("1 left");
   });
 });
 

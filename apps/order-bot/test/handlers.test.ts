@@ -76,6 +76,7 @@ import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb, gameVariantPickerKb, gameRegionPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
+import { showFaq } from "../src/handlers/static";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
 import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
@@ -397,6 +398,37 @@ describe("customer handlers", () => {
     await customer.browseDenomination(ctx, sample.product.id);
     expect((ctx.session.scratch as { variantId?: number }).variantId).toBe(sample.product.id);
     expect(JSON.stringify(sink)).toContain("Netflix");
+  });
+
+  // The old footer ("Updated HH:mm:ss WIB") was the moment of rendering, not the
+  // age of any data — it made a stale screen look freshly checked.
+  it("browseDenomination and the plan picker no longer print a render-time 'Updated … WIB' line, and label the sold count all-time", async () => {
+    const detail = customerCtx();
+    await customer.browseDenomination(detail.ctx, sample.product.id);
+    const detailText = JSON.stringify(detail.sink);
+    expect(detailText).not.toMatch(/Updated \d{2}:\d{2}:\d{2}/);
+    expect(detailText).not.toContain("WIB");
+    expect(detailText).toContain("Sold (all-time)");
+
+    // A second plan makes the Product a real picker instead of collapsing to detail.
+    await createDenomination(prisma, {
+      productId: sample.parentProduct.id, name: "Second Plan", type: "SHARED", durationLabel: "3 Months", price: "12.00",
+    });
+    const picker = customerCtx();
+    await customer.browseProduct(picker.ctx, sample.parentProduct.id);
+    const pickerText = JSON.stringify(picker.sink);
+    expect(pickerText).not.toMatch(/Updated \d{2}:\d{2}:\d{2}/);
+    expect(pickerText).not.toContain("WIB");
+    expect(pickerText).toContain("sold (all-time)");
+  });
+
+  it("renders the buyer FAQ without a fixed delivery time or a blanket warranty period", async () => {
+    const { ctx, sink } = customerCtx();
+    await showFaq(ctx);
+    const text = JSON.stringify(sink);
+    expect(text).toContain("FAQ");
+    expect(text).not.toMatch(/30 minutes|30-day|30 hari|30 menit/);
+    expect(text).toContain("each plan");
   });
 
   it("browseDenomination renders the product's own photo as a photo+caption bubble when webImageUrl is set", async () => {
@@ -4405,6 +4437,21 @@ describe("admin handlers", () => {
 // ===========================================================================
 
 describe("callback router", () => {
+  // The shop-wide "BOT Stats" block (items sold, total revenue, total users) is
+  // the owner's business figures — and its user count includes admins and
+  // blocked accounts — so it must never be shown to a buyer.
+  it("the buyer home screen shows the buyer's own totals only, never shop-wide stats", async () => {
+    await makeOrder();
+    const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
+    await routeCallback(ctx);
+    const text = JSON.stringify(calls(sink, "reply").map((c) => c.args));
+    expect(text).toContain("User Info");
+    expect(text).toContain("Transactions");
+    for (const leaked of ["BOT Stats", "Items Sold", "Total Transactions", "Total Users"]) {
+      expect(text).not.toContain(leaked);
+    }
+  });
+
   it("dispatches v1:menu:main to the customer dashboard, sending a fresh message (Home now pins a persistent reply keyboard, which can't ride an edit)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await routeCallback(ctx);

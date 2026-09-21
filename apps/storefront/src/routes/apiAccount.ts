@@ -369,7 +369,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
           comment: (req.body?.comment ?? "").trim().slice(0, 1000) || null,
         });
       } catch (e) {
-        if (!(e instanceof ValidationError)) throw e; // bad order/dupe → just bounce
+        // Bad order, not delivered, wrong product or a dupe: tell the form so it can
+        // say so — answering ok:true made a refused review look sent.
+        if (e instanceof ValidationError) return reply.code(400).send(errorBody(e));
+        throw e;
       }
       return reply.send({ ok: true });
     },

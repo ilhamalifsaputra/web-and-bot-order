@@ -24,8 +24,6 @@ import {
   activeBulkPricingByDenomination,
   listReviews,
   featuredReviews,
-  overallRating,
-  shopFulfilmentStats,
   type CatalogProduct,
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, defaultThumbKind, webpSrcset } from "./images";
@@ -50,7 +48,7 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 
 /** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
 export async function homePageData() {
-  const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
+  const [categories, products, stock, ratings, bulk, reviews, waNumber, heroUrl] =
     await Promise.all([
       listActiveCategories(prisma),
       listNewestCatalogProducts(prisma, 12),
@@ -58,8 +56,6 @@ export async function homePageData() {
       productRatingSummaries(prisma),
       activeBulkPricingByDenomination(prisma),
       featuredReviews(prisma, 4),
-      overallRating(prisma),
-      shopFulfilmentStats(prisma),
       // WhatsApp button on the contact section — set in web-admin Settings ›
       // Website; empty/unset hides the button.
       getSetting(prisma, "support_whatsapp"),
@@ -68,16 +64,6 @@ export async function homePageData() {
     ]);
   const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
   const cards = shapeProducts(products, stock, ratingByDenom, bulk);
-
-  // Honest home-page figures: only show real numbers once a handful of orders
-  // have actually shipped; before that the band falls back to value props so
-  // we never display "0 customers". Satisfaction = visible-review average.
-  const stats = {
-    has_data: fulfil.deliveredOrders >= 5,
-    customers: fulfil.customers,
-    orders: fulfil.deliveredOrders,
-    satisfaction: rating.count > 0 && rating.avg ? Math.round((rating.avg / 5) * 100) : null,
-  };
 
   // Real testimonials from delivered-order reviews (≥4★ with a comment).
   const testimonials = reviews
@@ -100,7 +86,6 @@ export async function homePageData() {
     // so this passes the raw (always-null-today) Category.image column through.
     categories,
     products: cards,
-    stats,
     testimonials,
     low_threshold: config.LOW_STOCK_THRESHOLD,
     bot_username: await resolveBotUsername(),

@@ -45,3 +45,14 @@ export function t(key: string, args: Record<string, unknown> = {}, lang = curren
   if (Object.keys(args).length === 0) return template;
   return format(template, args);
 }
+
+/**
+ * `t()` for a message that counts things: uses the `<key>_one` variant when
+ * `count` is exactly 1 (and one exists), else the plain key. The locales carry
+ * no plural machinery, and English needs it ("1 review", not "1 reviews").
+ */
+export function tCount(key: string, count: number, args: Record<string, unknown> = {}, lang = currentLang()): string {
+  const oneKey = `${key}_one`;
+  const hasOne = LOCALES[lang in LOCALES ? lang : "en"]?.[oneKey] !== undefined || LOCALES.en?.[oneKey] !== undefined;
+  return t(count === 1 && hasOne ? oneKey : key, { count, ...args }, lang);
+}

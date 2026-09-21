@@ -122,7 +122,7 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
 
-  it("shows today's total / pending / failed stat cards from server-provided fields", async () => {
+  it("shows today's total / unmatched / failed-deliveries stat cards from server-provided fields", async () => {
     const ledger = [
       { id: 1, gateway: "binance", reference: "TX1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z" },
     ];
@@ -142,10 +142,16 @@ describe("PaymentsPage", () => {
     const todayCard = screen.getByText("Today's Transactions").closest('[data-slot="card"]') as HTMLElement;
     expect(within(todayCard).getByText("7")).toBeInTheDocument();
 
-    const pendingCard = screen.getByText("Pending").closest('[data-slot="card"]') as HTMLElement;
-    expect(within(pendingCard).getByText("3")).toBeInTheDocument();
+    // The tile counts `unmatched` ledger rows (transfers waiting for an admin
+    // to match them), not "pending" anything, so it says so.
+    expect(screen.queryByText("Pending")).not.toBeInTheDocument();
+    const unmatchedCard = screen.getByText("Unmatched").closest('[data-slot="card"]') as HTMLElement;
+    expect(within(unmatchedCard).getByText("3")).toBeInTheDocument();
 
-    const failedCard = screen.getByText("Failed").closest('[data-slot="card"]') as HTMLElement;
+    // Named after the dashboard card that links here, since both count
+    // `delivery_failed` rows across every gateway.
+    expect(screen.queryByText("Failed")).not.toBeInTheDocument();
+    const failedCard = screen.getByText("Failed Deliveries").closest('[data-slot="card"]') as HTMLElement;
     expect(within(failedCard).getByText("2")).toBeInTheDocument();
   });
 
@@ -697,6 +703,28 @@ const PENDING_INTERNAL = {
 };
 
 describe("PaymentsPage — underpaid order resolution", () => {
+  it("shows the server's true underpaid total on the badge, not the length of the capped list", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], underpaidCount: 63, pendingInternal: [] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    const heading = screen.getByText("Underpaid Orders").closest('[data-slot="card-title"]') as HTMLElement;
+    expect(within(heading).getByText("63")).toBeInTheDocument();
+    expect(within(heading).queryByText("1")).not.toBeInTheDocument();
+    // Only one row is listed, so say the list is shorter than the total.
+    expect(screen.getByText("Showing the 1 most recent of 63.")).toBeInTheDocument();
+  });
+
+  it("says nothing about a truncated list when every underpaid order is listed", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], underpaidCount: 1, pendingInternal: [] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    const heading = screen.getByText("Underpaid Orders").closest('[data-slot="card-title"]') as HTMLElement;
+    expect(within(heading).getByText("1")).toBeInTheDocument();
+    expect(screen.queryByText(/most recent of/)).not.toBeInTheDocument();
+  });
+
   it("lists underpaid orders and delivers one anyway", async () => {
     const user = userEvent.setup();
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });

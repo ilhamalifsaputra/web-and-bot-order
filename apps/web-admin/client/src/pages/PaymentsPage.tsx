@@ -154,6 +154,7 @@ interface PaymentsData {
   enabled: boolean;
   ledger: TxRow[];
   total: number;
+  /** Ledger rows of any outcome recorded today, across all five gateways. */
   todayCount: number;
   page: number;
   hasNext: boolean;
@@ -161,9 +162,13 @@ interface PaymentsData {
   /** Order kinds the ledger can be filtered by, sent by the server so the
    *  dropdown and the server's validation share one list. */
   kinds?: readonly string[];
+  /** Ledger rows per outcome across all five gateways (tiles + dropdown labels). */
   counts: Record<string, number>;
   health: PaymentsHealth;
+  /** At most the 50 most recent underpaid orders. */
   underpaid: UnderpaidOrderRow[];
+  /** Every underpaid order, uncapped — what the badge shows. */
+  underpaidCount?: number;
   pendingInternal: PendingInternalOrderRow[];
 }
 
@@ -258,6 +263,8 @@ export function PaymentsPage() {
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
+  // The list is capped server-side; the badge must show the real total.
+  const underpaidTotal = data?.underpaidCount ?? underpaid.length;
   const pendingInternal = data?.pendingInternal ?? [];
 
   // Every mutation below moves money or an order's state, and every one of the
@@ -436,19 +443,22 @@ export function PaymentsPage() {
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label="Today's Transactions"
+          hint="Payment records of any outcome written today across every gateway."
           value={data?.todayCount ?? 0}
           icon={Clock}
           isLoading={!data}
         />
         <StatCard
-          label="Pending"
+          label="Unmatched"
+          hint="Transfers, across every gateway, that no order has been matched to yet."
           value={data?.counts["unmatched"] ?? 0}
           icon={Hourglass}
           tone="warning"
           isLoading={!data}
         />
         <StatCard
-          label="Failed"
+          label="Failed Deliveries"
+          hint="Paid transfers, across every gateway, whose order could not be delivered."
           value={data?.counts["delivery_failed"] ?? 0}
           icon={XCircle}
           tone="danger"
@@ -521,10 +531,13 @@ export function PaymentsPage() {
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
               Underpaid Orders
-              <span className="rounded-full bg-amberx-tint px-1.5 py-0.5 text-xs font-semibold text-amberx">{underpaid.length}</span>
+              <span className="rounded-full bg-amberx-tint px-1.5 py-0.5 text-xs font-semibold text-amberx">{underpaidTotal}</span>
             </CardTitle>
           </CardHeader>
           <CardContent>
+          {underpaidTotal > underpaid.length && (
+            <p className="mb-2 text-xs text-ink-soft">Showing the {underpaid.length} most recent of {underpaidTotal}.</p>
+          )}
           <DataTable
             nested
             columns={[

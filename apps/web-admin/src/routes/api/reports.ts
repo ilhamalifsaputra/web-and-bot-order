@@ -17,10 +17,15 @@ function csvRow(fields: string[]): string {
   return fields.map(csvField).join(",") + "\r\n";
 }
 
+/** `?days` clamped to 7-90, defaulting to 30 when missing or not a number. */
+function parseDays(raw: string | undefined): number {
+  return Math.min(Math.max(Math.trunc(Number(raw)) || 30, 7), 90);
+}
+
 export default async function reportsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/reports", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const days = Math.min(Math.max(Math.trunc(Number(q.days)) || 30, 7), 90);
+    const days = parseDays(q.days);
 
     const [daily, products, funnel, vouchers] = await Promise.all([
       revenueByDay(prisma, days),
@@ -49,7 +54,7 @@ export default async function reportsApiRoutes(app: FastifyInstance): Promise<vo
   // CSV download — mirrors /api/orders/export's pattern (routes/api/orders.ts).
   app.get("/api/reports/export", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const days = Math.min(Math.max(Math.trunc(Number(q.days)) || 30, 7), 90);
+    const days = parseDays(q.days);
     const daily = await revenueByDay(prisma, days);
 
     const header = ["Date", "Revenue (IDR)", "Revenue (USDT)", "Orders"];

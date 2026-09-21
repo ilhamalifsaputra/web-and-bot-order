@@ -114,7 +114,7 @@ const ORDERS_DATA = {
 
 const KPIS_DATA = {
   totalOrders: 67,
-  revenueToday: { idr: "1250000", usdt: "20.25", usd: "20.25" },
+  revenueToday: { idr: "1250000", usdt: "20.25" },
   awaitingFulfillment: 12,
   processing: 4,
   delivered: 51,

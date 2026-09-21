@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod, NotificationEvent, StockActorType, StockEventType } from "@app/core/enums";
 import {
   prisma,
   countUnderpaid,
@@ -2824,8 +2824,12 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 
   describe("DELETE /api/catalog/products/:id", () => {
     it("happy path: deletes an empty product and audits", async () => {
-      await prisma.stockItemEvent.deleteMany({ where: { stockItem: { productId: seed.catalogProductId } } });
-      await prisma.stockItem.deleteMany({ where: { productId: seed.catalogProductId } });
+      // StockItem.productId holds a DENOMINATION id, so reach the rows through
+      // the denominations of this catalog product (matching on the catalog
+      // product id itself only worked when the two serial ids happened to agree).
+      const ofThisProduct = { product: { productId: seed.catalogProductId } };
+      await prisma.stockItemEvent.deleteMany({ where: { stockItem: ofThisProduct } });
+      await prisma.stockItem.deleteMany({ where: ofThisProduct });
       await prisma.denomination.deleteMany({ where: { productId: seed.catalogProductId } });
       const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf);
       expect(res.statusCode).toBe(200);
@@ -3742,11 +3746,12 @@ describe("stock", () => {
     }
   });
 
-  // Data-1: bulkAddStock is called inside prisma.$transaction (see
-  // routes/api/stock.ts) so two concurrent uploads of the SAME fresh
-  // credential can't both pass the "not already present" check and both
-  // insert — SQLite's single-writer transaction serializes them, so the
-  // second one sees the first one's row and skips it as a duplicate.
+  // Data-1: two concurrent uploads of the SAME fresh credential must not both
+  // pass the "not already present" check and both insert. Postgres runs the
+  // two transactions in parallel, so what serializes them is bulkAddStock's own
+  // per-denomination advisory lock (crud/stock.ts); the second upload then sees
+  // the first one's committed row and skips it as a duplicate. The repeated,
+  // deterministic version of this race lives in crud/stock_concurrency.test.ts.
   it("two concurrent bulk-adds of the same credential never create duplicate AVAILABLE rows", async () => {
     const dupCred = `race${counter}@e.com:p`;
     const before = await countAvailableStock(prisma, seed.productId);
@@ -4322,6 +4327,235 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/note`, seed.cookie, "bad-token", { note: "x" });
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  // Fase 3c: each admin stock mutation writes its StockItemEvent in the SAME
+  // transaction as the status change and the audit row. The rollback cases make
+  // the audit insert fail (a Postgres trigger in the per-file test schema) and
+  // check the change and the event vanished with it.
+  describe("stock events written by the admin routes", () => {
+    const eventsOfType = (stockItemId: number, eventType: string) =>
+      prisma.stockItemEvent.findMany({ where: { stockItemId, eventType } });
+    const available = (n: number) =>
+      prisma.stockItem.findMany({
+        where: { productId: seed.productId, status: "AVAILABLE" },
+        orderBy: { id: "asc" },
+        take: n,
+      });
+
+    async function failAuditInsertsFor(action: string) {
+      await prisma.$executeRawUnsafe(
+        `CREATE OR REPLACE FUNCTION test_fail_audit() RETURNS trigger AS $$ BEGIN IF NEW.action = '${action}' THEN RAISE EXCEPTION 'forced audit failure'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`,
+      );
+      await prisma.$executeRawUnsafe(
+        `CREATE TRIGGER test_fail_audit BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION test_fail_audit()`,
+      );
+    }
+    async function restoreAuditInserts() {
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS test_fail_audit ON audit_logs`);
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS test_fail_audit()`);
+    }
+
+    it("bulk-add writes an IMPORTED event per new row, attributed to the logged-in admin", async () => {
+      const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
+        csrf_token: seed.csrf,
+        credentials: "ev1@e.com:p\nev2@e.com:p",
+      });
+      expect(res.statusCode).toBe(200);
+
+      const events = await prisma.stockItemEvent.findMany({
+        where: { eventType: StockEventType.IMPORTED, actorAdminId: seed.adminId },
+      });
+      expect(events).toHaveLength(2);
+      for (const e of events) {
+        expect(e).toMatchObject({ actorType: StockActorType.ADMIN, fromStatus: null, toStatus: "AVAILABLE" });
+      }
+    });
+
+    it("a failing audit insert rolls a bulk-add back: no rows, no events", async () => {
+      const rowsBefore = await prisma.stockItem.count({ where: { productId: seed.productId } });
+      const eventsBefore = await prisma.stockItemEvent.count();
+      await failAuditInsertsFor("stock_upload");
+      try {
+        const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
+          csrf_token: seed.csrf,
+          credentials: "rb1@e.com:p\nrb2@e.com:p",
+        });
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await prisma.stockItem.count({ where: { productId: seed.productId } })).toBe(rowsBefore);
+      expect(await prisma.stockItemEvent.count()).toBe(eventsBefore);
+    });
+
+    it("dead: writes MARKED_DEAD for the admin with no note in it; a refused (SOLD) item writes no event", async () => {
+      const [item, soldItem] = await available(2);
+      await prisma.stockItem.update({ where: { id: soldItem!.id }, data: { status: "SOLD", soldAt: new Date() } });
+
+      const res = await postJson(`/api/stock/item/${item!.id}/dead`, seed.cookie, seed.csrf, { note: "user@example.com:hunter2" });
+      expect(res.statusCode).toBe(200);
+      const refused = await postJson(`/api/stock/item/${soldItem!.id}/dead`, seed.cookie, seed.csrf, { note: "mis-tap" });
+      expect(refused.statusCode).toBe(409);
+
+      const events = await eventsOfType(item!.id, StockEventType.MARKED_DEAD);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        fromStatus: "AVAILABLE",
+        toStatus: "DEAD",
+        actorType: StockActorType.ADMIN,
+        actorAdminId: seed.adminId,
+      });
+      expect(JSON.stringify(events)).not.toContain("hunter2");
+      expect(await eventsOfType(soldItem!.id, StockEventType.MARKED_DEAD)).toHaveLength(0);
+    });
+
+    it("dead: a failing audit insert rolls the status change and its event back", async () => {
+      const [item] = await available(1);
+      await failAuditInsertsFor("stock_mark_dead");
+      try {
+        const res = await postJson(`/api/stock/item/${item!.id}/dead`, seed.cookie, seed.csrf, { note: "x" });
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: item!.id } })).status).toBe("AVAILABLE");
+      expect(await eventsOfType(item!.id, StockEventType.MARKED_DEAD)).toHaveLength(0);
+    });
+
+    it("bulk-dead: writes MARKED_DEAD only for the ids that actually changed", async () => {
+      const [a, b, sold] = await available(3);
+      await prisma.stockItem.update({ where: { id: sold!.id }, data: { status: "SOLD", soldAt: new Date() } });
+
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, {
+        ids: [a!.id, b!.id, sold!.id],
+        note: "batch",
+      });
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+
+      const events = await prisma.stockItemEvent.findMany({
+        where: { eventType: StockEventType.MARKED_DEAD },
+        orderBy: { stockItemId: "asc" },
+      });
+      expect(events.map((e) => e.stockItemId)).toEqual([a!.id, b!.id]);
+      expect(events.every((e) => e.actorAdminId === seed.adminId)).toBe(true);
+    });
+
+    it("bulk-dead: a failing audit insert rolls every status change and event back", async () => {
+      const [a, b] = await available(2);
+      await failAuditInsertsFor("stock_bulk_dead");
+      try {
+        const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [a!.id, b!.id] });
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await prisma.stockItem.count({ where: { id: { in: [a!.id, b!.id] }, status: "AVAILABLE" } })).toBe(2);
+      expect(await prisma.stockItemEvent.count({ where: { eventType: StockEventType.MARKED_DEAD } })).toBe(0);
+    });
+
+    it("delete: writes SOFT_DELETED for the admin; a refused (SOLD) item writes no event", async () => {
+      const [item, soldItem] = await available(2);
+      await prisma.stockItem.update({ where: { id: soldItem!.id }, data: { status: "SOLD", soldAt: new Date() } });
+
+      expect((await postJson(`/api/stock/item/${item!.id}/delete`, seed.cookie, seed.csrf, {})).statusCode).toBe(200);
+      expect((await postJson(`/api/stock/item/${soldItem!.id}/delete`, seed.cookie, seed.csrf, {})).statusCode).toBe(409);
+
+      const events = await eventsOfType(item!.id, StockEventType.SOFT_DELETED);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: seed.adminId });
+      expect(await eventsOfType(soldItem!.id, StockEventType.SOFT_DELETED)).toHaveLength(0);
+    });
+
+    it("delete: a failing audit insert rolls the soft delete and its event back", async () => {
+      const [item] = await available(1);
+      await failAuditInsertsFor("stock_item_delete");
+      try {
+        const res = await postJson(`/api/stock/item/${item!.id}/delete`, seed.cookie, seed.csrf, {});
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: item!.id } })).deletedAt).toBeNull();
+      expect(await eventsOfType(item!.id, StockEventType.SOFT_DELETED)).toHaveLength(0);
+    });
+
+    it("bulk-delete: writes SOFT_DELETED only for the ids actually deleted, and rolls back with a failing audit insert", async () => {
+      const [a, b, sold] = await available(3);
+      await prisma.stockItem.update({ where: { id: sold!.id }, data: { status: "SOLD", soldAt: new Date() } });
+
+      await failAuditInsertsFor("stock_bulk_delete");
+      try {
+        const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [a!.id, b!.id, sold!.id] });
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await prisma.stockItem.count({ where: { id: { in: [a!.id, b!.id] }, deletedAt: null } })).toBe(2);
+      expect(await prisma.stockItemEvent.count({ where: { eventType: StockEventType.SOFT_DELETED } })).toBe(0);
+
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [a!.id, b!.id, sold!.id] });
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2, skipped: 1 });
+      const events = await prisma.stockItemEvent.findMany({
+        where: { eventType: StockEventType.SOFT_DELETED },
+        orderBy: { stockItemId: "asc" },
+      });
+      expect(events.map((e) => e.stockItemId)).toEqual([a!.id, b!.id]);
+    });
+
+    it("note: audits the edit and writes no stock event", async () => {
+      const [item] = await available(1);
+      const before = await prisma.stockItemEvent.count({ where: { stockItemId: item!.id } });
+
+      const res = await postJson(`/api/stock/item/${item!.id}/note`, seed.cookie, seed.csrf, { note: "rotated" });
+      expect(res.statusCode).toBe(200);
+
+      expect(await prisma.auditLog.count({ where: { action: "stock_edit_note", targetId: item!.id } })).toBe(1);
+      expect(await prisma.stockItemEvent.count({ where: { stockItemId: item!.id } })).toBe(before);
+    });
+
+    it("note: a failing audit insert rolls the note back", async () => {
+      const [item] = await available(1);
+      await prisma.stockItem.update({ where: { id: item!.id }, data: { note: "original" } });
+      await failAuditInsertsFor("stock_edit_note");
+      try {
+        const res = await postJson(`/api/stock/item/${item!.id}/note`, seed.cookie, seed.csrf, { note: "changed" });
+        expect(res.statusCode).toBe(500);
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: item!.id } })).note).toBe("original");
+    });
+
+    it("reveal: writes CREDENTIAL_REVEALED next to the audit row, and a 404 writes neither", async () => {
+      const [item] = await available(1);
+      const plain = decryptCredentials(item!.credentials);
+
+      const res = await post(`/api/stock/item/${item!.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(res.statusCode).toBe(200);
+      const missing = await post(`/api/stock/item/999999/reveal`, seed.cookie, { csrf_token: seed.csrf });
+      expect(missing.statusCode).toBe(404);
+
+      const events = await eventsOfType(item!.id, StockEventType.CREDENTIAL_REVEALED);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ actorType: StockActorType.ADMIN, actorAdminId: seed.adminId });
+      expect(JSON.stringify(events)).not.toContain(plain);
+      expect(await prisma.auditLog.count({ where: { action: "credential_revealed", targetId: item!.id } })).toBe(1);
+      expect(await prisma.auditLog.count({ where: { action: "credential_revealed", targetId: 999999 } })).toBe(0);
+    });
+
+    it("reveal: a failing audit insert withholds the credential and rolls the event back", async () => {
+      const [item] = await available(1);
+      await failAuditInsertsFor("credential_revealed");
+      try {
+        const res = await post(`/api/stock/item/${item!.id}/reveal`, seed.cookie, { csrf_token: seed.csrf });
+        expect(res.statusCode).toBe(500);
+        expect(res.body).not.toContain(decryptCredentials(item!.credentials));
+      } finally {
+        await restoreAuditInserts();
+      }
+      expect(await eventsOfType(item!.id, StockEventType.CREDENTIAL_REVEALED)).toHaveLength(0);
     });
   });
 

@@ -18,7 +18,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, cancelOrder, markStockDead, countAvailableStock, upsertUser } from "@app/db";
+import {
+  createOrderDirect,
+  cancelOrder,
+  markStockDead,
+  countAvailableStock,
+  upsertUser,
+  bulkAddStock,
+  createDenomination,
+} from "@app/db";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import { StockActorType, StockEventType } from "@app/core/enums";
 
 let db: TestDb;
@@ -55,7 +64,7 @@ async function makeBuyers(n: number) {
 async function reduceStockTo(productId: number, keep: number) {
   const items = await prisma.stockItem.findMany({ where: { productId }, orderBy: { id: "asc" } });
   for (const item of items.slice(keep)) {
-    await markStockDead(prisma, item.id, "test: reduced for concurrency scenario");
+    await markStockDead(prisma, item.id, "test: reduced for concurrency scenario", sample.user.id);
   }
 }
 
@@ -226,10 +235,82 @@ describe("createOrderDirect under true Postgres concurrency", () => {
       orderBy: { id: "asc" },
     });
     expect(trail.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED, // the fixture's own import of the row
       StockEventType.RESERVED,
       StockEventType.RESERVATION_RELEASED,
       StockEventType.RESERVED,
     ]);
-    expect(trail.map((e) => e.orderId)).toEqual([first!.id, first!.id, reReserved!.id]);
+    expect(trail.map((e) => e.orderId)).toEqual([null, first!.id, first!.id, reReserved!.id]);
+  });
+});
+
+describe("bulkAddStock under true Postgres concurrency", () => {
+  // Postgres runs writers in parallel, so nothing but bulkAddStock's own
+  // per-denomination advisory lock keeps two uploads of the same credential
+  // from both passing the dedup read and both inserting. A single racing pair
+  // can get lucky, so this repeats it: each round uses fresh credentials and
+  // an already-populated denomination (so the dedup read has real work to do,
+  // which is what widens the window between "read" and "insert").
+  const ROUNDS = 20;
+  const PER_BATCH = 5;
+
+  async function seedPopulatedDenomination(name: string) {
+    const denom = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name,
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(
+      prisma,
+      denom.id,
+      Array.from({ length: 40 }, (_, i) => `${name}-seed-${i}@x:pw`),
+    );
+    return denom;
+  }
+
+  async function rowsHolding(productId: number, credential: string) {
+    const rows = await prisma.stockItem.findMany({ where: { productId, deletedAt: null } });
+    return rows.filter((r) => decryptCredentials(r.credentials) === credential);
+  }
+
+  it("two concurrent bare-client calls with the same credentials always add each exactly once", async () => {
+    const denom = await seedPopulatedDenomination("race-bare");
+    for (let round = 0; round < ROUNDS; round++) {
+      const creds = Array.from({ length: PER_BATCH }, (_, i) => `bare-${round}-${i}@x:pw`);
+
+      const [a, b] = await Promise.all([
+        bulkAddStock(prisma, denom.id, creds, sample.user.id),
+        bulkAddStock(prisma, denom.id, creds, sample.user.id),
+      ]);
+
+      expect(a.added + b.added, `round ${round}: total added`).toBe(PER_BATCH);
+      expect(a.skipped + b.skipped, `round ${round}: total skipped`).toBe(PER_BATCH);
+      for (const c of creds) expect(await rowsHolding(denom.id, c), `round ${round}: ${c}`).toHaveLength(1);
+    }
+    // One IMPORTED event per row that exists — the loser of each race wrote none.
+    const rowCount = await prisma.stockItem.count({ where: { productId: denom.id } });
+    expect(rowCount).toBe(40 + ROUNDS * PER_BATCH);
+    expect(
+      await prisma.stockItemEvent.count({
+        where: { eventType: StockEventType.IMPORTED, stockItem: { productId: denom.id } },
+      }),
+    ).toBe(rowCount);
+  });
+
+  it("two concurrent calls inside their own transactions (the route's shape) add each exactly once", async () => {
+    const denom = await seedPopulatedDenomination("race-tx");
+    for (let round = 0; round < ROUNDS; round++) {
+      const creds = Array.from({ length: PER_BATCH }, (_, i) => `tx-${round}-${i}@x:pw`);
+
+      const [a, b] = await Promise.all([
+        prisma.$transaction((tx) => bulkAddStock(tx, denom.id, creds, sample.user.id)),
+        prisma.$transaction((tx) => bulkAddStock(tx, denom.id, creds, sample.user.id)),
+      ]);
+
+      expect(a.added + b.added, `round ${round}: total added`).toBe(PER_BATCH);
+      for (const c of creds) expect(await rowsHolding(denom.id, c), `round ${round}: ${c}`).toHaveLength(1);
+    }
   });
 });

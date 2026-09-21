@@ -229,13 +229,22 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
+    const adminId = req.admin!.userId;
     let added: number, skipped: number;
     try {
       ({ added, skipped } = await prisma.$transaction(async (tx) => {
-        const res = await bulkAddStock(tx, productId, creds);
-        // Same transaction as the insert: stock, subscriber DMs and the optional
-        // broadcast commit or roll back together. Web only enqueues outbox rows.
-        await afterStockAdded(tx, productId, res.added, req.admin!.userId);
+        const res = await bulkAddStock(tx, productId, creds, adminId);
+        // Same transaction as the insert: stock, its IMPORTED events, the audit
+        // row, subscriber DMs and the optional broadcast commit or roll back
+        // together. Web only enqueues outbox rows.
+        await logAdminAction(tx, {
+          adminId,
+          action: "stock_upload",
+          targetType: "product",
+          targetId: productId,
+          details: `Added ${res.added} stock items; skipped ${res.skipped} duplicates.`,
+        });
+        await afterStockAdded(tx, productId, res.added, adminId);
         return res;
       }));
     } catch (e) {
@@ -245,13 +254,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_upload",
-      targetType: "product",
-      targetId: productId,
-      details: `Added ${added} stock items; skipped ${skipped} duplicates.`,
-    });
     logger.info(
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
@@ -295,13 +297,18 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
     const note = (typeof body.note === "string" ? body.note.trim() : "") || "bulk marked dead via web";
 
-    const count = await bulkMarkStockDead(prisma, ids, note);
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_bulk_dead",
-      targetType: "product",
-      targetId: productId,
-      details: `Marked ${count} stock ${count === 1 ? "item" : "items"} dead.`, // never the note — admins paste credentials into it
+    const adminId = req.admin!.userId;
+    // One transaction: the status change, its MARKED_DEAD events and the audit row stand or fall together.
+    const count = await prisma.$transaction(async (tx) => {
+      const n = await bulkMarkStockDead(tx, ids, note, adminId);
+      await logAdminAction(tx, {
+        adminId,
+        action: "stock_bulk_dead",
+        targetType: "product",
+        targetId: productId,
+        details: `Marked ${n} stock ${n === 1 ? "item" : "items"} dead.`, // never the note — admins paste credentials into it
+      });
+      return n;
     });
     logger.info(`Bulk-marked ${count} stock items dead on product ${productId}`);
     return reply.send({ ok: true, count });
@@ -316,13 +323,17 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
     if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
 
-    const count = await bulkDeleteStock(prisma, ids, req.admin!.userId);
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_bulk_delete",
-      targetType: "product",
-      targetId: productId,
-      details: `Deleted ${count} of ${ids.length} requested stock items.`, // never the credentials
+    const adminId = req.admin!.userId;
+    const count = await prisma.$transaction(async (tx) => {
+      const n = await bulkDeleteStock(tx, ids, adminId);
+      await logAdminAction(tx, {
+        adminId,
+        action: "stock_bulk_delete",
+        targetType: "product",
+        targetId: productId,
+        details: `Deleted ${n} of ${ids.length} requested stock items.`, // never the credentials
+      });
+      return n;
     });
     logger.info(`Bulk-deleted ${count} stock items on product ${productId}`);
     return reply.send({ ok: true, count, skipped: ids.length - count });
@@ -335,17 +346,22 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
-    const count = await markStockDead(prisma, stockId, note || "marked dead via web");
+    const adminId = req.admin!.userId;
+    const count = await prisma.$transaction(async (tx) => {
+      const n = await markStockDead(tx, stockId, note || "marked dead via web", adminId);
+      if (n === 0) return 0; // nothing changed, so nothing to audit
+      await logAdminAction(tx, {
+        adminId,
+        action: "stock_mark_dead",
+        targetType: "stock_item",
+        targetId: stockId,
+        details: `Marked stock item #${stockId} dead.`, // never the note — admins paste credentials into it
+      });
+      return n;
+    });
     if (count === 0) {
       return reply.code(409).send({ error: "This item is already sold or dead and can no longer be changed." });
     }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_mark_dead",
-      targetType: "stock_item",
-      targetId: stockId,
-      details: `Marked stock item #${stockId} dead.`, // never the note — admins paste credentials into it
-    });
     return reply.send({ ok: true });
   });
 
@@ -364,17 +380,21 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
-    const deleted = await deleteStockItem(prisma, stockId, req.admin!.userId);
+    const adminId = req.admin!.userId;
+    const deleted = await prisma.$transaction(async (tx) => {
+      if (!(await deleteStockItem(tx, stockId, adminId))) return false;
+      await logAdminAction(tx, {
+        adminId,
+        action: "stock_item_delete",
+        targetType: "stock_item",
+        targetId: stockId,
+        details: `Deleted stock item.`, // never the credentials
+      });
+      return true;
+    });
     if (!deleted) {
       return reply.code(409).send({ error: "This item has been sold or is linked to an order and cannot be deleted." });
     }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_item_delete",
-      targetType: "stock_item",
-      targetId: stockId,
-      details: `Deleted stock item.`, // never the credentials
-    });
     return reply.send({ ok: true });
   });
 
@@ -385,13 +405,15 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
-    await setStockNote(prisma, stockId, note || null);
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "stock_edit_note",
-      targetType: "stock_item",
-      targetId: stockId,
-      details: `Updated the note on stock item #${stockId}.`, // never the note — admins paste credentials into it
+    await prisma.$transaction(async (tx) => {
+      await setStockNote(tx, stockId, note || null);
+      await logAdminAction(tx, {
+        adminId: req.admin!.userId,
+        action: "stock_edit_note",
+        targetType: "stock_item",
+        targetId: stockId,
+        details: `Updated the note on stock item #${stockId}.`, // never the note — admins paste credentials into it
+      });
     });
     return reply.send({ ok: true });
   });
@@ -411,9 +433,24 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
   // its null return doubles as "no such stock item".
   app.post("/api/stock/item/:stockId/reveal", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
+    const adminId = req.admin!.userId;
     let credentials: string | null;
     try {
-      credentials = await revealStockCredentials(prisma, stockId);
+      // One transaction: the reveal's CREDENTIAL_REVEALED event and its audit row
+      // exist together or not at all — and neither exists for a missing item or a
+      // failed decrypt.
+      credentials = await prisma.$transaction(async (tx) => {
+        const revealed = await revealStockCredentials(tx, stockId, adminId);
+        if (revealed === null) return null;
+        await logAdminAction(tx, {
+          adminId,
+          action: "credential_revealed",
+          targetType: "stock_item",
+          targetId: stockId,
+          details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves
+        });
+        return revealed;
+      });
     } catch (e) {
       if (e instanceof CredentialKeyConfigError) {
         logger.error({ err: e }, "Credential reveal failed — credential encryption is not configured correctly");
@@ -422,14 +459,6 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       throw e;
     }
     if (credentials === null) return reply.code(404).send({ error: "Stock item not found." });
-
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "credential_revealed",
-      targetType: "stock_item",
-      targetId: stockId,
-      details: `Admin revealed credentials for stock item #${stockId}.`, // never the credentials themselves
-    });
     return reply.send({ ok: true, credentials });
   });
 

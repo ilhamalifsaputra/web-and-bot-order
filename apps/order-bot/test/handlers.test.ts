@@ -60,7 +60,7 @@ import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/p
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod, PaymentStatus, PaymentExpiryReason, StockStatus, UserRole, TicketStatus, DeliveryType, CategoryGroup, NotificationEvent, FinancialTransactionType, LedgerDirection, StockEventType, StockActorType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { formatIdr } from "@app/core/formatters";
@@ -4318,6 +4318,16 @@ describe("admin handlers", () => {
     const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item!.id } });
     expect(audit).toBeTruthy();
     expect(audit!.details).toContain("Netflix Premium 1M");
+    // The same admin, same transaction: the traceability event names who did it.
+    const event = await prisma.stockItemEvent.findFirstOrThrow({
+      where: { stockItemId: item!.id, eventType: StockEventType.MARKED_DEAD },
+    });
+    expect(event).toMatchObject({
+      fromStatus: StockStatus.AVAILABLE,
+      toStatus: StockStatus.DEAD,
+      actorType: StockActorType.ADMIN,
+      actorAdminId: adminDbId,
+    });
   });
 
   it("viewing the admin stock browser writes one audit row stating the count, never the credential text", async () => {
@@ -4350,6 +4360,7 @@ describe("admin handlers", () => {
 
     expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("SOLD");
     expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item.id } })).toBe(0);
+    expect(await prisma.stockItemEvent.count({ where: { stockItemId: item.id, eventType: StockEventType.MARKED_DEAD } })).toBe(0);
 
     const answers = calls(sink, "answerCallbackQuery");
     expect(answers.length).toBe(1);

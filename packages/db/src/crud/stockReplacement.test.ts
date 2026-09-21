@@ -16,6 +16,9 @@ import {
   RefundExecutionMethod,
   RefundExecutionStatus,
   RefundStatus,
+  DeadReason,
+  StockActorType,
+  StockEventType,
   StockReplacementStatus,
   StockStatus,
 } from "@app/core/enums";
@@ -78,6 +81,10 @@ async function makeDeliveredOrder(quantity = 1, voucherCode?: string) {
   // spares lying around and every request would silently find one. Drain them,
   // making "there is nothing to replace it with" the default and `restock()`
   // the explicit opt-in — which is the state most of this file is about.
+  // Their IMPORTED events reference them (FK Restrict), so those go first.
+  await prisma.stockItemEvent.deleteMany({
+    where: { stockItem: { productId: sample.product.id, status: StockStatus.AVAILABLE } },
+  });
   await prisma.stockItem.deleteMany({
     where: { productId: sample.product.id, status: StockStatus.AVAILABLE },
   });
@@ -163,6 +170,64 @@ describe("replaceStockItem — replacement stock available", () => {
 
     const reloadedItem = await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } });
     expect(reloadedItem.stockItemId).toBe(replacementStockItem!.id);
+  });
+
+  it("records the swap in the stock event ledger: MARKED_DEAD for the retired credential, SOLD for its replacement", async () => {
+    const { order, items } = await makeDeliveredOrder(1);
+    const item = items[0]!;
+    const originalStockId = item.stockItemId!;
+    await restock(1);
+
+    const { replacement, replacementStockItem } = await replaceStockItem(prisma, {
+      orderItemId: item.id,
+      reason: "password changed by the account owner",
+      executedBy: adminId,
+    });
+
+    const retired = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: originalStockId },
+      orderBy: { id: "asc" },
+    });
+    expect(retired.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED,
+      StockEventType.RESERVED,
+      StockEventType.SOLD,
+      StockEventType.MARKED_DEAD,
+    ]);
+    expect(retired.at(-1)).toMatchObject({
+      fromStatus: StockStatus.SOLD,
+      toStatus: StockStatus.DEAD,
+      orderId: order.id,
+      orderItemId: item.id,
+      actorType: StockActorType.ADMIN,
+      actorAdminId: adminId,
+      reasonCode: DeadReason.OTHER,
+      meta: { stockReplacementId: replacement.id },
+    });
+    // The buyer's free-text complaint and the credential stay out of the ledger.
+    expect(JSON.stringify(retired)).not.toContain("password changed");
+
+    const issued = await prisma.stockItemEvent.findMany({
+      where: { stockItemId: replacementStockItem!.id },
+      orderBy: { id: "asc" },
+    });
+    expect(issued.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED,
+      StockEventType.RESERVED,
+      StockEventType.SOLD,
+    ]);
+    expect(issued.at(-1)).toMatchObject({
+      fromStatus: StockStatus.RESERVED,
+      toStatus: StockStatus.SOLD,
+      orderId: order.id,
+      orderItemId: item.id,
+      actorType: StockActorType.ADMIN,
+      actorAdminId: adminId,
+    });
+    // Both ledgers chain: each event starts where the previous one ended.
+    for (const chain of [retired, issued]) {
+      for (let i = 1; i < chain.length; i++) expect(chain[i]!.fromStatus).toBe(chain[i - 1]!.toStatus);
+    }
   });
 
   it("redelivers through the notification outbox, the same ORDER_DELIVERED_DM row the resend path enqueues", async () => {

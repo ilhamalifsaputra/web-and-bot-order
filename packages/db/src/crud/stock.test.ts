@@ -157,7 +157,7 @@ describe("markStockDead", () => {
       where: { productId: product.id, status: StockStatus.AVAILABLE },
     }))!;
 
-    const count = await markStockDead(prisma, item.id, "confirmed dead");
+    const count = await markStockDead(prisma, item.id, "confirmed dead", sample.user.id);
 
     expect(count).toBe(1);
     const after = await prisma.stockItem.findUnique({ where: { id: item.id } });
@@ -172,7 +172,7 @@ describe("markStockDead", () => {
     }))!;
     await prisma.stockItem.update({ where: { id: item.id }, data: { status: StockStatus.RESERVED } });
 
-    const count = await markStockDead(prisma, item.id, "confirmed dead");
+    const count = await markStockDead(prisma, item.id, "confirmed dead", sample.user.id);
 
     expect(count).toBe(1);
     expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe(StockStatus.DEAD);
@@ -188,7 +188,7 @@ describe("markStockDead", () => {
       data: { status: StockStatus.SOLD, soldAt: new Date() },
     });
 
-    const count = await markStockDead(prisma, item.id, "mis-tap by admin");
+    const count = await markStockDead(prisma, item.id, "mis-tap by admin", sample.user.id);
 
     expect(count).toBe(0);
     const after = await prisma.stockItem.findUnique({ where: { id: item.id } });
@@ -204,14 +204,14 @@ describe("markStockDead", () => {
     }))!;
     await prisma.stockItem.update({ where: { id: item.id }, data: { status: StockStatus.DEAD, note: "first note" } });
 
-    const count = await markStockDead(prisma, item.id, "second note");
+    const count = await markStockDead(prisma, item.id, "second note", sample.user.id);
 
     expect(count).toBe(0);
     expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.note).toBe("first note");
   });
 
   it("returns count=0 for a non-existent stock id", async () => {
-    expect(await markStockDead(prisma, 999999, "n/a")).toBe(0);
+    expect(await markStockDead(prisma, 999999, "n/a", sample.user.id)).toBe(0);
   });
 
   it("uses the identical status filter as bulkMarkStockDead (SOLD excluded from both)", async () => {
@@ -222,8 +222,8 @@ describe("markStockDead", () => {
     });
     await prisma.stockItem.update({ where: { id: items[0]!.id }, data: { status: StockStatus.SOLD, soldAt: new Date() } });
 
-    const singleCount = await markStockDead(prisma, items[0]!.id, "x");
-    const bulkCount = await bulkMarkStockDead(prisma, [items[1]!.id], "x");
+    const singleCount = await markStockDead(prisma, items[0]!.id, "x", sample.user.id);
+    const bulkCount = await bulkMarkStockDead(prisma, [items[1]!.id], "x", sample.user.id);
 
     expect(singleCount).toBe(0);
     expect(bulkCount).toBe(1);

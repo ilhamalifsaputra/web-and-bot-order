@@ -129,12 +129,12 @@ describe("stock reads exclude soft-deleted rows", () => {
 
   it("getStockItem and revealStockCredentials treat it as not found", async () => {
     expect(await getStockItem(prisma, deletedId)).toBeNull();
-    expect(await revealStockCredentials(prisma, deletedId)).toBeNull();
+    expect(await revealStockCredentials(prisma, deletedId, sample.user.id)).toBeNull();
   });
 
   it("markStockDead / bulkMarkStockDead leave it untouched", async () => {
-    expect(await markStockDead(prisma, deletedId, "x")).toBe(0);
-    expect(await bulkMarkStockDead(prisma, [deletedId], "x")).toBe(0);
+    expect(await markStockDead(prisma, deletedId, "x", sample.user.id)).toBe(0);
+    expect(await bulkMarkStockDead(prisma, [deletedId], "x", sample.user.id)).toBe(0);
     const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: deletedId } });
     expect(row.status).toBe(StockStatus.AVAILABLE);
   });

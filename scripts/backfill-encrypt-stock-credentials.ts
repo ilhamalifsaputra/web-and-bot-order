@@ -8,11 +8,17 @@
  * (scripts/backfill-catalog-slugs.ts): same "idempotent, safe to re-run,
  * reports a per-run count" shape.
  *
- * Run it on the box that holds the SQLite DB, with `CREDENTIAL_ENCRYPTION_KEY`
- * set in the environment (same value the app will use), ideally with the
- * app stopped or at least no concurrent stock bulk-add in flight:
+ * Run it against the production Postgres database, with `DATABASE_URL_PRISMA`
+ * and `CREDENTIAL_ENCRYPTION_KEY` set in the environment (same values the app
+ * uses), ideally with the app stopped or at least no concurrent stock bulk-add
+ * in flight:
  *
  *   pnpm backfill-encrypt-stock-credentials
+ *
+ * Every row it rewrites also gets a REENCRYPTED stock event (actor SYSTEM),
+ * written in the same transaction as the rewrite, so a row's ledger shows when
+ * its credential stopped being stored in plaintext. Rows already encrypted get
+ * no event — nothing happened to them.
  *
  * This does NOT touch prisma/schema.prisma or run `db push` — the column
  * stays a plain TEXT `credentials` column; only its stored string content
@@ -21,13 +27,20 @@
  *
  * NEVER logs a credential value, plaintext or encrypted — only counts.
  */
-import { prisma, initDb } from "@app/db";
+import { pathToFileURL } from "node:url";
+import type { PrismaClient } from "@prisma/client";
+import { prisma, initDb, recordStockEvent } from "@app/db";
+import { StockActorType, StockEventType } from "@app/core/enums";
 import { encryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 
-async function main(): Promise<void> {
-  await initDb();
+export interface BackfillEncryptReport {
+  scanned: number;
+  encrypted: number;
+  alreadyEncrypted: number;
+}
 
-  const rows = await prisma.stockItem.findMany({ select: { id: true, credentials: true } });
+export async function backfillEncryptStockCredentials(db: PrismaClient): Promise<BackfillEncryptReport> {
+  const rows = await db.stockItem.findMany({ select: { id: true, credentials: true } });
   let encrypted = 0;
   let alreadyEncrypted = 0;
 
@@ -36,22 +49,45 @@ async function main(): Promise<void> {
       alreadyEncrypted++;
       continue;
     }
-    await prisma.stockItem.update({
-      where: { id: row.id },
-      data: { credentials: encryptCredentials(row.credentials) },
+    await db.$transaction(async (tx) => {
+      await tx.stockItem.update({
+        where: { id: row.id },
+        data: { credentials: encryptCredentials(row.credentials) },
+      });
+      await recordStockEvent(tx, {
+        stockItemId: row.id,
+        eventType: StockEventType.REENCRYPTED,
+        actor: { type: StockActorType.SYSTEM },
+        reasonCode: "PLAINTEXT_BACKFILL",
+      });
     });
     encrypted++;
   }
 
+  return { scanned: rows.length, encrypted, alreadyEncrypted };
+}
+
+async function main(): Promise<void> {
+  await initDb();
+
+  const { scanned, encrypted, alreadyEncrypted } = await backfillEncryptStockCredentials(prisma);
+
   console.log(
-    `[backfill-encrypt-stock-credentials] ${rows.length} row(s) scanned: ` +
+    `[backfill-encrypt-stock-credentials] ${scanned} row(s) scanned: ` +
       `${encrypted} encrypted, ${alreadyEncrypted} already encrypted (skipped).`,
   );
   await prisma.$disconnect();
 }
 
-main().catch(async (e) => {
-  console.error("[backfill-encrypt-stock-credentials] failed:", e instanceof Error ? e.message : e);
-  await prisma.$disconnect().catch(() => {});
-  process.exit(1);
-});
+// Guarded so importing this file (the test does) never opens the app's own
+// database connection or runs the backfill as a side effect. Same guard as
+// scripts/backfill-ledger-history.ts.
+const isMainModule =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMainModule) {
+  main().catch(async (e) => {
+    console.error("[backfill-encrypt-stock-credentials] failed:", e instanceof Error ? e.message : e);
+    await prisma.$disconnect().catch(() => {});
+    process.exit(1);
+  });
+}

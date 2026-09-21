@@ -1340,7 +1340,7 @@ describe("approveOrder substitution events", () => {
     const order = await makePendingVerificationOrder(sample.product.id, 1);
     const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
     const deadRowId = item.stockItemId!;
-    expect(await markStockDead(prisma, deadRowId, "test: supplier revoked it")).toBe(1);
+    expect(await markStockDead(prisma, deadRowId, "test: supplier revoked it", sample.user.id)).toBe(1);
 
     const { credentials } = await approveOrder(prisma, order.id, { adminId });
 
@@ -1372,9 +1372,10 @@ describe("approveOrder substitution events", () => {
     });
 
     // The replacement's own ledger: reserved by this approval, annotated as
-    // the row swapped in, then sold.
+    // the row swapped in, then sold. (The fixture's own IMPORTED event predates
+    // the order, so it is left out of this order-scoped chain.)
     const replacementEvents = await prisma.stockItemEvent.findMany({
-      where: { stockItemId: replacement.id },
+      where: { stockItemId: replacement.id, eventType: { not: StockEventType.IMPORTED } },
       orderBy: { id: "asc" },
     });
     expect(replacementEvents.map((e) => e.eventType)).toEqual([

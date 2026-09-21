@@ -94,7 +94,7 @@ describe("create order from cart", () => {
       where: { productId: product.id },
       take: 4,
     });
-    for (const it of items) await markStockDead(prisma, it.id, "test");
+    for (const it of items) await markStockDead(prisma, it.id, "test", sample.user.id);
     expect(await countAvailableStock(prisma, product.id)).toBe(1);
 
     // Request 3 — fails the availability check.

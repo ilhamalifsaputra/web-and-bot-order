@@ -48,8 +48,13 @@ async function reduceStockTo(productId: number, keep: number) {
   }
 }
 
+// The fixture's IMPORTED event predates every order; this file is about what the
+// order side adds to a row's ledger (the full chain is in stock_events.test.ts).
 const eventsFor = (stockItemId: number) =>
-  prisma.stockItemEvent.findMany({ where: { stockItemId }, orderBy: { id: "asc" } });
+  prisma.stockItemEvent.findMany({
+    where: { stockItemId, eventType: { not: StockEventType.IMPORTED } },
+    orderBy: { id: "asc" },
+  });
 
 describe("stock event ledger across an order's lifecycle", () => {
   it("reserve → cancel → re-reserve by another buyer → sold leaves one event per transition", async () => {

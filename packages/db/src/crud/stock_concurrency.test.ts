@@ -235,11 +235,12 @@ describe("createOrderDirect under true Postgres concurrency", () => {
       orderBy: { id: "asc" },
     });
     expect(trail.map((e) => e.eventType)).toEqual([
+      StockEventType.IMPORTED, // the fixture's own import of the row
       StockEventType.RESERVED,
       StockEventType.RESERVATION_RELEASED,
       StockEventType.RESERVED,
     ]);
-    expect(trail.map((e) => e.orderId)).toEqual([first!.id, first!.id, reReserved!.id]);
+    expect(trail.map((e) => e.orderId)).toEqual([null, first!.id, first!.id, reReserved!.id]);
   });
 });
 

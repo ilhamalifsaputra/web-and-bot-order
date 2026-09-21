@@ -8,8 +8,9 @@ import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
   prisma,
   resolveBinanceInternalConfig,
-  countProcessedBinanceTxToday,
-  processedTxOutcomeCounts,
+  countLedgerRowsToday,
+  ledgerOutcomeCounts,
+  countUnderpaid,
   getBinancePollHealth,
   TX_OUTCOMES,
   deliverUnderpaidOrder,
@@ -79,12 +80,25 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     // `listCombinedLedger` returns rows AND their total together: the `kind`
     // filter is applied to the cross-gateway merged set, so no per-table
     // count() could produce a total that agrees with it (see its doc comment).
-    const [ledgerPage, todayCount, counts, health, underpaid, pendingInternal] = await Promise.all([
+    //
+    // The three tile figures are computed over the SAME five gateway tables as
+    // that ledger, so a tile can never read 0 above rows it counts:
+    //  - `todayCount` ("Today's Transactions"): rows of any outcome recorded
+    //    today, all gateways.
+    //  - `counts.unmatched` ("Unmatched"): rows still waiting for an admin to
+    //    match them to an order, all-time.
+    //  - `counts.delivery_failed` ("Failed Deliveries"): rows whose order could
+    //    not be delivered, all-time — the figure the dashboard card links here with.
+    // `counts` also feeds the outcome dropdown's "(n)" labels.
+    const [ledgerPage, todayCount, counts, health, underpaid, underpaidCount, pendingInternal] = await Promise.all([
       listCombinedLedger(prisma, { outcome, q: search, kind, limit: PAGE_SIZE, offset }),
-      countProcessedBinanceTxToday(prisma),
-      processedTxOutcomeCounts(prisma),
+      countLedgerRowsToday(prisma),
+      ledgerOutcomeCounts(prisma),
       getBinancePollHealth(prisma),
       listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 }),
+      // The list above is capped at 50; the badge needs the real total, the
+      // same `countUnderpaid` the dashboard shows.
+      countUnderpaid(prisma),
       listPendingInternalOrders(prisma, new Date()),
     ]);
     const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
@@ -125,6 +139,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         staleMs: healthVerdict.staleMs,
       },
       underpaid: underpaidWithDisplay,
+      underpaidCount,
       pendingInternal: pendingInternalWithDisplay,
     });
   });

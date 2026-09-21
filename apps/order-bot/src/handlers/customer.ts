@@ -17,7 +17,6 @@ import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFiel
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  botOverallStats,
   userTotalSpent,
   listCatalogProducts,
   listActiveCategoriesByGroup,
@@ -189,7 +188,6 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
   const tg = ctx.from!;
   const name = esc([tg.first_name, tg.last_name].filter(Boolean).join(" ") || tg.username || "");
 
-  const stats = await botOverallStats(prisma);
   const spent = await userTotalSpent(prisma, info.id);
 
   const nowStr = localize(new Date(), "cccc, dd LLLL yyyy HH:mm:ss");
@@ -200,9 +198,6 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
     tg_id: tg.id,
     username: tg.username ? `@${tg.username}` : "—",
     spent: mixedAmount(spent.idr, spent.usdt),
-    items_sold: stats.items_sold,
-    total_revenue: mixedAmount(stats.revenue_idr, stats.revenue_usdt),
-    total_users: stats.total_users,
   });
 }
 
@@ -878,7 +873,6 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     name: esc(product.name),
     sold: t(ctx, "browse.sold_count", { count: sold }),
     plans: planLines.join("\n"),
-    updated: localize(new Date(), "HH:mm:ss"),
   });
   if (product.description) {
     text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
@@ -977,7 +971,6 @@ export async function browseDenomination(
     stock: stockDisplay,
     sold,
     rating: ratingStr,
-    updated: localize(new Date(), "HH:mm:ss"),
   });
   if (onSale) {
     text +=

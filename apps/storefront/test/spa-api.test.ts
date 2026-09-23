@@ -2499,6 +2499,15 @@ describe("/api/v1/account twins", () => {
       expect(await prisma.restockSubscription.count({ where: { userId: uid, productId: denomId } })).toBe(1);
       expect((await call(denomId)).json().result).toBe("already");
       expect((await call(999_999_999)).json().result).toBe("unavailable");
+
+      await prisma.restockSubscription.deleteMany({ where: { userId: uid, productId: denomId } });
+      await setSetting(prisma, "service_premium_apps_enabled", "false");
+      try {
+        expect((await call(denomId)).json().result).toBe("unavailable");
+        expect(await prisma.restockSubscription.count({ where: { userId: uid, productId: denomId } })).toBe(0);
+      } finally {
+        await deleteSetting(prisma, "service_premium_apps_enabled");
+      }
     });
 
     // Migrated from the deleted account.ts (docs/REACT_STOREFRONT_MIGRATION.md

@@ -16,7 +16,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { localize, addDays } from "@app/core/datetime";
-import { SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
+import { CategoryGroup, SenderType, OrderStatus, OrderKind, TicketStatus, zTicketCategory } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
@@ -55,6 +55,7 @@ import {
   setLoginCredentials,
   LOGIN_USERNAME_RE,
   getReferralSummary,
+  isServiceActive,
 } from "@app/db";
 import type { SupportTicketListSort, SupportTicketStatusFilter } from "@app/db";
 import {
@@ -748,7 +749,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
     // The SPA bounces back to the parent product detail (slug URL).
     const redirect = denom ? `/p/${denom.product.slug}` : "/";
-    if (!denom?.isActive) return reply.send({ ok: false, result: "unavailable", redirect });
+    if (!denom?.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) {
+      return reply.send({ ok: false, result: "unavailable", redirect });
+    }
     // Restock DMs go out over Telegram, so a web-only account can never be served.
     if (customer.user.telegramId == null) return reply.send({ ok: false, result: "needs_telegram", redirect });
     const isNew = await subscribeToRestock(prisma, customer.userId, denom.id);

@@ -16,6 +16,7 @@ export * from "./crud/referrals";
 export * from "./crud/reviews";
 export * from "./crud/support";
 export * from "./crud/settings";
+export * from "./crud/serviceAvailability";
 export * from "./crud/audit";
 export * from "./crud/reports";
 export * from "./crud/revenue";

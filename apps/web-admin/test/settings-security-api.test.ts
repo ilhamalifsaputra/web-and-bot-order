@@ -72,6 +72,29 @@ function getJson(url: string, c: string | null) {
 }
 
 describe("POST /api/settings/edit", () => {
+  it("exposes independent active service switches by default", async () => {
+    const res = await getJson("/api/settings", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().serviceStates).toEqual([
+      { id: "game_topup", label: "Top Up Game", enabled: true },
+      { id: "premium_apps", label: "Premium Apps", enabled: true },
+    ]);
+  });
+
+  it("persists a single service switch, audits it, and rejects non-boolean input", async () => {
+    const disabled = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", enabled: false });
+    expect(disabled.statusCode).toBe(200);
+    expect(await getSetting(prisma, "service_game_topup_enabled")).toBe("false");
+    expect((await getJson("/api/settings", cookie)).json().serviceStates).toEqual([
+      { id: "game_topup", label: "Top Up Game", enabled: false },
+      { id: "premium_apps", label: "Premium Apps", enabled: true },
+    ]);
+    expect(await prisma.auditLog.findFirst({ where: { action: "setting_set", details: { contains: "service_game_topup_enabled" } } })).toBeTruthy();
+    const invalid = await postJson("/api/settings/services/toggle", cookie, csrf, { service: "game_topup", enabled: "yes" });
+    expect(invalid.statusCode).toBe(400);
+    expect(await getSetting(prisma, "service_game_topup_enabled")).toBe("false");
+  });
+
   it("happy path: edits a whitelisted key and audits", async () => {
     const res = await postJson("/api/settings/edit", cookie, csrf, { key: "shop_name", value: "New Shop" });
     expect(res.statusCode).toBe(200);

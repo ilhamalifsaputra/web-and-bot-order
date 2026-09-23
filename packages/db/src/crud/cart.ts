@@ -30,7 +30,7 @@ export function cartCompositionLineOfCartItem(row: {
 export function getCart(db: Db, userId: number) {
   return db.cartItem.findMany({
     where: { userId },
-    include: { product: true },
+    include: { product: { include: { product: { include: { category: true } } } } },
     orderBy: { addedAt: "asc" },
   });
 }

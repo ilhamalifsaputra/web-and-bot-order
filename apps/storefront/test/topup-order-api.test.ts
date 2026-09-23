@@ -175,6 +175,22 @@ afterAll(async () => {
 
 // ------------------------------------------------------------------- preview
 describe("POST /api/v1/topup/preview", () => {
+  it("rejects a denomination whose customer service is disabled", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/topup/preview",
+        headers: { "x-forwarded-for": freshIp() },
+        payload: { denomination_id: denomId, qty: 1 },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "invalid_request" });
+    } finally {
+      await prisma.setting.delete({ where: { key: "service_premium_apps_enabled" } });
+    }
+  });
+
   // THE cross-check. Both routes must be pricing the same line through the
   // same computeTotals — anything that made this drift (a second bulk-discount
   // rule, a differently-capped voucher, a QRIS fee taken off a different base)

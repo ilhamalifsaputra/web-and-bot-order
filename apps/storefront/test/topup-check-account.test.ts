@@ -101,6 +101,19 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/topup/check-account", () => {
+  it("does not call the nickname provider for a disabled service", async () => {
+    await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    try {
+      const res = await postCheckAccount({ denomination_id: denomWithCheckId, id: "123456789" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ available: false });
+      expect(kokinpayMock.checkGameNickname).not.toHaveBeenCalled();
+    } finally {
+      await deleteSetting(prisma, "service_premium_apps_enabled");
+    }
+  });
+
   it("degrades to available:false when the denomination has no nicknameCheckGameCode override and no catalog match", async () => {
     await setSetting(prisma, KOKINPAY_API_KEY_KEY, "kp-key");
     const res = await postCheckAccount({ denomination_id: denomNoCheckId, id: "123456789" });

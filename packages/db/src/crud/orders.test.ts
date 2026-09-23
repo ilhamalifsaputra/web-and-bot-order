@@ -32,12 +32,51 @@ import {
   customerLabel,
   findUnderpaidReceived,
 } from "./orders";
-import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
+import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock, setSetting } from "@app/db";
 import { VoucherType, VoucherScope, OrderKind, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { createGuestUser } from "./webauth";
+
+describe("service activation at order creation", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("rejects a new direct purchase after Premium Apps is disabled while existing orders remain readable", async () => {
+    const first = await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 });
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    await expect(createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))
+      .rejects.toMatchObject({ key: "error.service_unavailable" });
+    expect((await getOrder(prisma, first!.id))?.id).toBe(first!.id);
+  });
+
+  it("rejects a stale cart checkout while disabled and restores it after reactivation", async () => {
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    await expect(createOrderFromCart(prisma, { user: sample.user }))
+      .rejects.toMatchObject({ key: "error.service_unavailable" });
+    await setSetting(prisma, "service_premium_apps_enabled", "true");
+    expect(await createOrderFromCart(prisma, { user: sample.user })).toBeTruthy();
+  });
+
+  it("blocks Game Top Up independently while legacy Premium Apps still sells", async () => {
+    const game = await createCategory(prisma, { name: "Game Service", group: "GAME_TOPUP" });
+    const parent = await createCatalogProduct(prisma, { categoryId: game.id, name: "Game Product" });
+    const sku = await createDenomination(prisma, {
+      productId: parent.id, name: "Game SKU", type: "SHARED", durationLabel: "Instant", price: "5",
+      deliveryType: "manual",
+    });
+    await setSetting(prisma, "service_game_topup_enabled", "false");
+    await expect(createOrderDirect(prisma, { user: sample.user, productId: sku.id, quantity: 1 }))
+      .rejects.toMatchObject({ key: "error.service_unavailable" });
+    expect(await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 })).toBeTruthy();
+  });
+});
 
 let db: TestDb;
 let prisma: PrismaClient;

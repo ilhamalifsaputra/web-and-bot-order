@@ -22,6 +22,7 @@ import {
   Users,
   Gamepad2,
   UserSearch,
+  Blocks,
 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -787,6 +788,9 @@ export function SettingsPage() {
   const [pendingToggle, setPendingToggle] = useState<
     { methodKey: string; label: string; nextEnabled: boolean } | null
   >(null);
+  const [pendingService, setPendingService] = useState<
+    { id: string; label: string; nextEnabled: boolean } | null
+  >(null);
 
   // Connection tests
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
@@ -870,6 +874,11 @@ export function SettingsPage() {
   const togglePayment = useMutation({
     mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
       apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
+    onSuccess: () => { invalidate(); markSaved(); },
+  });
+  const toggleService = useMutation({
+    mutationFn: ({ service, enabled }: { service: string; enabled: boolean }) =>
+      apiPost("/api/settings/services/toggle", { service, enabled }),
     onSuccess: () => { invalidate(); markSaved(); },
   });
 
@@ -992,6 +1001,7 @@ export function SettingsPage() {
   const kokinpayFields = fieldGroup(data.fields, KOKINPAY_KEYS);
 
   const generalVisible = showGeneral && sectionVisible("General", generalFields);
+  const servicesVisible = !query || matchesQuery("Services", query) || data.serviceStates.some((service) => matchesQuery(service.label, query));
   const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
   const joinGateVisible = showJoinGate && sectionVisible("Join Gate", joinGateFields);
   const smtpVisible = showSmtp && sectionVisible("Email (SMTP)", smtpFields);
@@ -1005,6 +1015,7 @@ export function SettingsPage() {
   const navIcon = (Icon: typeof SettingsIcon) => Icon;
   const topLinks: SettingsNavLink[] = [
     ...(showGeneral ? [{ id: "settings-general", label: "General", icon: navIcon(SettingsIcon), visible: generalVisible }] : []),
+    { id: "settings-services", label: "Services", icon: navIcon(Blocks), visible: servicesVisible },
     ...(showTelegram ? [{ id: "settings-telegram", label: "Telegram & Bot", icon: navIcon(Bot), visible: telegramVisible }] : []),
     ...(showJoinGate ? [{ id: "settings-joingate", label: "Join Gate", icon: navIcon(Users), visible: joinGateVisible }] : []),
     ...(showSmtp ? [{ id: "settings-email", label: "Email (SMTP)", icon: navIcon(Mail), visible: smtpVisible }] : []),
@@ -1081,6 +1092,32 @@ export function SettingsPage() {
                     onStatusChange={onStatusChange}
                   />
                 ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {servicesVisible && (
+            <Card id="settings-services">
+              <CardHeader>
+                <CardTitle as="h2">Services</CardTitle>
+                <p className="text-sm text-ink-soft">Control which service groups customers can browse and purchase.</p>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {data.serviceStates
+                  .filter((service) => !query || matchesQuery("Services", query) || matchesQuery(service.label, query))
+                  .map((service) => (
+                    <div key={service.id} className="flex items-center justify-between gap-4 py-4 first:pt-0 last:pb-0">
+                      <div>
+                        <p className="font-medium text-ink">{highlightMatch(service.label, query)}</p>
+                        <p className="text-sm text-ink-soft">{service.enabled ? "Available to customers" : "Hidden and unavailable for new orders"}</p>
+                      </div>
+                      <Switch
+                        aria-label={service.label}
+                        checked={service.enabled}
+                        onCheckedChange={(nextEnabled) => setPendingService({ id: service.id, label: service.label, nextEnabled })}
+                      />
+                    </div>
+                  ))}
               </CardContent>
             </Card>
           )}
@@ -1253,6 +1290,22 @@ export function SettingsPage() {
                 method: pendingToggle.methodKey,
                 enabled: pendingToggle.nextEnabled,
               });
+            }}
+          />
+
+          <SaveConfirmDialog
+            open={pendingService !== null}
+            onOpenChange={(open) => { if (!open) setPendingService(null); }}
+            title={pendingService ? `${pendingService.nextEnabled ? "Enable" : "Disable"} ${pendingService.label}?` : ""}
+            description={pendingService?.nextEnabled
+              ? "Customers can browse and place new orders for this service immediately."
+              : "This hides the service and blocks new orders. Existing orders continue processing."}
+            confirmLabel={pendingService?.nextEnabled ? "Enable" : "Disable"}
+            variant={pendingService?.nextEnabled ? "default" : "destructive"}
+            successMessage="Service availability updated"
+            onConfirm={async () => {
+              if (!pendingService) return;
+              await toggleService.mutateAsync({ service: pendingService.id, enabled: pendingService.nextEnabled });
             }}
           />
 

@@ -27,6 +27,10 @@ const SETTINGS_DATA = {
   payMethodState: {
     tokopay: { enabled: true, configured: true },
   },
+  serviceStates: [
+    { id: "game_topup", label: "Top Up Game", enabled: true },
+    { id: "premium_apps", label: "Premium Apps", enabled: false },
+  ],
   // Non-nullable verdict shape from evaluatePollHealth (packages/core/src/
   // payments/pollHealth.ts) — the server always returns a verdict, even when
   // the rail is disabled or has never run, so there is no null case here.
@@ -42,6 +46,25 @@ beforeEach(() => {
 });
 
 describe("SettingsPage", () => {
+  it("shows each customer service switch and saves a change through the services endpoint", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<SettingsPage />, { wrapper: Wrapper });
+    expect(await screen.findByRole("heading", { name: "Services" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Top Up Game" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Premium Apps" })).not.toBeChecked();
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("switch", { name: "Top Up Game" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Disable" }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("/api/settings/services/toggle"),
+      expect.objectContaining({ body: JSON.stringify({ service: "game_topup", enabled: false }) }),
+    ));
+  });
+
   it("shows a settings field label in the rendered page", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(SETTINGS_DATA), {

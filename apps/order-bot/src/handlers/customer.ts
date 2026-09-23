@@ -15,6 +15,7 @@ import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, CategoryGroup, customerStatusLabel } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
+import { CUSTOMER_SERVICES } from "@app/core/services";
 import {
   prisma,
   userTotalSpent,
@@ -44,6 +45,8 @@ import {
   setSetting,
   searchCatalog,
   listUserTickets,
+  activeServiceGroups,
+  isServiceActive,
   getTicketWithOrder,
   TICKET_REOPEN_WINDOW_DAYS,
   listTicketMessages,
@@ -323,7 +326,13 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
   delete sc(ctx).resolvedGameVariant;
   delete sc(ctx).resolvedGameRegion;
   delete sc(ctx).gameVariantDimensionSkipped;
-  await smartEdit(ctx, t(ctx, "browse.group_picker_title"), ckb.groupPickerKb(lang));
+  const enabledGroups = await activeServiceGroups(prisma);
+  const enabledServices = CUSTOMER_SERVICES.filter((service) => enabledGroups.has(service.group));
+  await smartEdit(
+    ctx,
+    t(ctx, "browse.group_picker_title"),
+    ckb.groupPickerKb(lang, enabledServices),
+  );
 }
 
 /**
@@ -335,6 +344,11 @@ export async function browseGroups(ctx: MyContext): Promise<void> {
  */
 export async function browseCategoriesInGroup(ctx: MyContext, group: string): Promise<void> {
   const lang = ctx.session.lang;
+  const service = CUSTOMER_SERVICES.find((entry) => entry.group === group);
+  if (!service) {
+    await browseGroups(ctx);
+    return;
+  }
   delete sc(ctx).categoryId;
   delete sc(ctx).productId;
   // Finding I5-followup (final-review): mirrors browseGroups — a stale tap on
@@ -352,7 +366,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
   sc(ctx).group = group;
 
   const categories = await listActiveCategoriesByGroup(prisma, group);
-  const groupLabel = t(ctx, group === CategoryGroup.GAME_TOPUP ? "browse.group_game_topup" : "browse.group_premium_apps");
+  const groupLabel = t(ctx, service.translationKey);
   if (!categories.length) {
     await smartEdit(ctx, t(ctx, "browse.category_picker_empty"), ckb.categoryPickerKb([], lang));
     return;
@@ -385,7 +399,7 @@ export async function browseCategoriesInGroup(ctx: MyContext, group: string): Pr
 export async function browseCategoryEntry(ctx: MyContext, categoryId: number, backTarget?: string): Promise<void> {
   sc(ctx).categoryId = categoryId;
   const category = await getCategory(prisma, categoryId);
-  if (!category || !category.isActive) {
+  if (!category || !category.isActive || !(await isServiceActive(prisma, category.group as CategoryGroup | null))) {
     await browseGroups(ctx);
     return;
   }
@@ -789,7 +803,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
 
   const product = await getCatalogProductWithDenominations(prisma, productId);
   const active = (product?.denominations ?? []).filter((d) => d.isActive);
-  if (!product || active.length === 0) {
+  if (!product || active.length === 0 || !(await isServiceActive(prisma, product.category.group as CategoryGroup | null))) {
     // Product emptied/deactivated between render and tap — don't strand the user.
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
@@ -915,7 +929,7 @@ export async function browseDenomination(
   let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
-    if (d === null) {
+    if (d === null || !(await isServiceActive(prisma, d.product.category.group as CategoryGroup | null))) {
       logger.warn(`Denomination ${denominationId} not found — likely deleted/deactivated between render and tap, showing a try-again screen instead of a crash`);
       // Expected-but-rare (denomination deleted/deactivated between render and
       // tap) — transient copy, no ref. Forward action so it isn't a dead end.
@@ -1405,6 +1419,13 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
 export async function subscribeRestock(ctx: MyContext, denominationId: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
+  const denomination = await getDenominationWithProduct(prisma, denominationId);
+  if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null))) {
+    const msg = t(ctx, denomination ? "error.service_unavailable" : "error.try_again");
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+    await smartEdit(ctx, msg, ckb.backToMain(lang));
+    return;
+  }
   const isNew = await subscribeToRestock(prisma, info.id, denominationId);
   const msg = t(ctx, isNew ? "browse.subscribed_restock" : "browse.already_subscribed");
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg });

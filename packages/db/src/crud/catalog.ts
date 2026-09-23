@@ -19,10 +19,11 @@ import { quantizeMoney } from "@app/core/formatters";
 import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
-import type { Category, Denomination, Product } from "@prisma/client";
+import type { Category, Denomination, Prisma, Product } from "@prisma/client";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 import { slugify } from "../migrate/slug";
+import { activeServiceGroups, isServiceActive } from "./serviceAvailability";
 
 // ---- Slugs ----
 
@@ -48,11 +49,12 @@ export async function ensureUniqueSlug(db: Db, kind: SlugKind, name: string): Pr
 
 // ---- Categories ----
 
-export function listActiveCategories(db: Db) {
-  return db.category.findMany({
+export async function listActiveCategories(db: Db) {
+  const [categories, groups] = await Promise.all([db.category.findMany({
     where: { isActive: true },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-  });
+  }), activeServiceGroups(db)]);
+  return categories.filter((category) => groups.has(category.group ?? CategoryGroup.PREMIUM_APPS));
 }
 
 /**
@@ -64,7 +66,8 @@ export function listActiveCategories(db: Db) {
  * before this feature) — a request for GAME_TOPUP (the new, opt-in bucket)
  * stays an exact match; a null-group category never appears there.
  */
-export function listActiveCategoriesByGroup(db: Db, group: string) {
+export async function listActiveCategoriesByGroup(db: Db, group: string) {
+  if (!(await isServiceActive(db, group as CategoryGroup))) return [];
   // Prisma/SQLite rejects `null` inside a String field's `in` filter, so the
   // PREMIUM_APPS fallback is expressed as an OR of two exact matches instead.
   return db.category.findMany({
@@ -126,8 +129,10 @@ export function getCategory(db: Db, categoryId: number) {
   return db.category.findUnique({ where: { id: categoryId } });
 }
 
-export function getCategoryBySlug(db: Db, slug: string) {
-  return db.category.findUnique({ where: { slug } });
+export async function getCategoryBySlug(db: Db, slug: string) {
+  const category = await db.category.findUnique({ where: { slug } });
+  if (!category || !(await isServiceActive(db, category.group as CategoryGroup | null))) return null;
+  return category;
 }
 
 /** Number of Products (mid-tier) in a category. */
@@ -282,14 +287,16 @@ export function getCatalogProductWithDenominations(db: Db, productId: number) {
 }
 
 /** A product by slug with its ACTIVE denominations (price asc) — storefront. */
-export function getCatalogProductBySlugWithDenominations(db: Db, slug: string) {
-  return db.product.findUnique({
+export async function getCatalogProductBySlugWithDenominations(db: Db, slug: string) {
+  const product = await db.product.findUnique({
     where: { slug },
     include: {
       category: true,
       denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
   });
+  if (!product || !(await isServiceActive(db, product.category.group as CategoryGroup | null))) return null;
+  return product;
 }
 
 /**
@@ -588,12 +595,12 @@ export type CatalogProduct = Product & {
  * that dimension at all). This backs the bot's Game Top Up variant/region
  * navigation layer once a variant+region has been resolved.
  */
-export function listCatalogProducts(
+export async function listCatalogProducts(
   db: Db,
   categoryId?: number,
   filter?: { gameVariant?: string | null; gameRegion?: string | null },
 ): Promise<CatalogProduct[]> {
-  return db.product.findMany({
+  const [products, groups] = await Promise.all([db.product.findMany({
     where: {
       isActive: true,
       isArchived: false,
@@ -607,7 +614,8 @@ export function listCatalogProducts(
       denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-  });
+  }), activeServiceGroups(db)]);
+  return products.filter((product) => groups.has(product.category.group ?? CategoryGroup.PREMIUM_APPS));
 }
 
 export interface GameVariantOption {
@@ -696,13 +704,7 @@ export async function listCategoryGameRegions(
 
 /** Newest active products (by newest active denomination) for the home grid. */
 export async function listNewestCatalogProducts(db: Db, limit = 12): Promise<CatalogProduct[]> {
-  const products = await db.product.findMany({
-    where: { isActive: true, isArchived: false, denominations: { some: { isActive: true, price: { gt: 0 } } } },
-    include: {
-      category: true,
-      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
-    },
-  });
+  const products = await listCatalogProducts(db);
   const recency = (p: CatalogProduct) =>
     Math.max(p.createdAt.getTime(), ...p.denominations.map((d) => d.createdAt.getTime()));
   return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
@@ -713,13 +715,22 @@ export async function listNewestCatalogProducts(db: Db, limit = 12): Promise<Cat
  * product detail). Returns active products with ≥1 active denomination, each
  * with its active denominations price-asc. Sorted by name, capped at `limit`.
  */
-export function searchCatalog(db: Db, query: string, limit = 24): Promise<CatalogProduct[]> {
+export async function searchCatalog(db: Db, query: string, limit = 24): Promise<CatalogProduct[]> {
   const q = query.trim();
-  if (!q) return Promise.resolve([]);
+  if (!q) return [];
+  const groups = await activeServiceGroups(db);
+  if (groups.size === 0) return [];
+  const categoryWhere: Prisma.CategoryWhereInput = {
+    OR: [
+      { group: { in: [...groups] } },
+      ...(groups.has(CategoryGroup.PREMIUM_APPS) ? [{ group: null }] : []),
+    ],
+  };
   return db.product.findMany({
     where: {
       isActive: true,
       isArchived: false,
+      category: { is: categoryWhere },
       denominations: { some: { isActive: true, price: { gt: 0 } } },
       OR: [{ name: { contains: q, mode: "insensitive" } }, { description: { contains: q, mode: "insensitive" } }],
     },
@@ -754,17 +765,23 @@ export async function listFlashSaleProducts(db: Db, now: Date = new Date()): Pro
  * set of rows whose window could possibly contain `now`.
  */
 export async function hasActiveFlashSale(db: Db, now: Date = new Date()): Promise<boolean> {
-  const candidates = await db.denomination.findMany({
-    where: {
-      isActive: true,
-      price: { gt: 0 },
-      flashDiscountPercent: { gt: 0 },
-      flashStartsAt: { lte: now },
-      flashEndsAt: { gt: now },
-    },
-    select: { flashDiscountPercent: true, flashStartsAt: true, flashEndsAt: true },
-  });
-  return candidates.some((d) => isFlashActive(d, now));
+  const [candidates, groups] = await Promise.all([
+    db.denomination.findMany({
+      where: {
+        isActive: true,
+        price: { gt: 0 },
+        flashDiscountPercent: { gt: 0 },
+        flashStartsAt: { lte: now },
+        flashEndsAt: { gt: now },
+      },
+      include: { product: { include: { category: true } } },
+    }),
+    activeServiceGroups(db),
+  ]);
+  return candidates.some((denomination) =>
+    groups.has(denomination.product.category.group ?? CategoryGroup.PREMIUM_APPS)
+    && isFlashActive(denomination, now),
+  );
 }
 
 // ---- Bulk pricing (keyed by denomination) ----

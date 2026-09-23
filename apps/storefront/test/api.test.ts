@@ -109,6 +109,30 @@ async function loginAs(identifier: string, password: string): Promise<{ cookie: 
 }
 
 describe("GET /api/v1/categories", () => {
+  it("hides a disabled service from discovery and direct catalog links, then restores it", async () => {
+    const stagedCart = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: denomId, qty: 1 },
+    });
+    const staleCartCookie = String(stagedCart.headers["set-cookie"]).split(";", 1)[0]!;
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    try {
+      const categories = await app.inject({ method: "GET", url: "/api/v1/categories" });
+      expect(categories.json().categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(false);
+      const products = await app.inject({ method: "GET", url: "/api/v1/products" });
+      expect(products.json().products.some((p: { slug: string }) => p.slug === productSlug)).toBe(false);
+      expect((await app.inject({ method: "GET", url: `/api/v1/products/${productSlug}` })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: `/api/v1/categories/${categorySlug}/products` })).statusCode).toBe(404);
+      expect((await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } })).statusCode).toBe(400);
+      const staleCart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: staleCartCookie } });
+      expect(staleCart.json().items).toEqual([]);
+    } finally {
+      await deleteSetting(prisma, "service_premium_apps_enabled");
+    }
+    expect((await app.inject({ method: "GET", url: `/api/v1/products/${productSlug}` })).statusCode).toBe(200);
+  });
+
   it("returns active categories", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/categories" });
     expect(res.statusCode).toBe(200);

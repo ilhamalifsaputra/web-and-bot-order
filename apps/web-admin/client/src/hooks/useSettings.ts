@@ -17,9 +17,16 @@ export interface PayMethodState {
   configured: boolean;
 }
 
+export interface ServiceState {
+  id: string;
+  label: string;
+  enabled: boolean;
+}
+
 export interface SettingsData {
   fields: SettingsField[];
   payMethodState: Record<string, PayMethodState>;
+  serviceStates: ServiceState[];
   /** Bybit Internal Transfer / Bybit BSC poller health, computed server-side
    * by `evaluatePollHealth` (packages/core/src/payments/pollHealth.ts) —
    * always a verdict, never the raw heartbeat, and never null: a disabled or

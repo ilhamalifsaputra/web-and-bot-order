@@ -74,6 +74,7 @@ import {
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
+import { CUSTOMER_SERVICES } from "@app/core/services";
 import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb, groupPickerKb, categoryPickerKb, gameVariantPickerKb, gameRegionPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import { showFaq } from "../src/handlers/static";
@@ -492,6 +493,14 @@ describe("customer handlers", () => {
     await customer.subscribeRestock(ctx, sample.product.id);
     const subs = await prisma.restockSubscription.count({ where: { userId: sample.user.id, productId: sample.product.id } });
     expect(subs).toBe(1);
+  });
+
+  it("subscribeRestock ignores a stale callback for a disabled service", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    const { ctx, sink } = customerCtx({ callbackData: `v1:restock:sub:${sample.product.id}` });
+    await customer.subscribeRestock(ctx, sample.product.id);
+    expect(await prisma.restockSubscription.count({ where: { userId: sample.user.id, productId: sample.product.id } })).toBe(0);
+    expect(sentIncludes(sink, "temporarily unavailable")).toBe(true);
   });
 
   it("viewWallet and viewReferral render without touching the DB", async () => {
@@ -1257,6 +1266,13 @@ describe("group and category pickers", () => {
       `v1:browse:grp:${CategoryGroup.PREMIUM_APPS}`,
     ]);
     expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:menu:main"]);
+  });
+
+  it("groupPickerKb omits disabled service groups", () => {
+    const kb = groupPickerKb("en", CUSTOMER_SERVICES.filter((service) => service.id === "premium_apps"));
+    const buttons = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
+    expect(buttons.some((button) => button.callback_data?.includes(CategoryGroup.GAME_TOPUP))).toBe(false);
+    expect(buttons.some((button) => button.callback_data?.includes(CategoryGroup.PREMIUM_APPS))).toBe(true);
   });
 
   it("categoryPickerKb lays categories out two per row plus a back/menu row", () => {
@@ -2506,6 +2522,25 @@ describe("browseDenomination — manual/manual_with_info SKUs are buyable (Task 
 // ===========================================================================
 
 describe("checkout handlers", () => {
+  it("showOrderConfirmation rejects a stale Buy callback for a disabled service before starting a conversation", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    const { ctx, sink } = customerCtx({ callbackData: `v1:buy:${sample.product.id}:1` });
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 1);
+    expect(sentIncludes(sink, "temporarily unavailable")).toBe(true);
+    expect(JSON.stringify(sink)).not.toContain("conversation.enter");
+  });
+
+  it("blocks stale confirmation re-renders and payment submenus after a service is disabled", async () => {
+    await setSetting(prisma, "service_premium_apps_enabled", "false");
+    const rerender = customerCtx();
+    await checkout.renderOrderConfirmation(rerender.ctx, sample.product.id, 1);
+    expect(sentIncludes(rerender.sink, "temporarily unavailable")).toBe(true);
+
+    const submenu = customerCtx({ callbackData: `v1:pay:usdt:${sample.product.id}:1` });
+    await checkout.showUsdtMethods(submenu.ctx, sample.product.id, 1);
+    expect(sentIncludes(submenu.sink, "temporarily unavailable")).toBe(true);
+  });
+
   it("showOrderConfirmation renders a summary and creates no order", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:buy:1:2" });
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);

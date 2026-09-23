@@ -16,13 +16,14 @@ import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
-import { UserRole } from "@app/core/enums";
+import { CategoryGroup, UserRole } from "@app/core/enums";
 import type { CartCompositionLine } from "@app/core/cartComposition";
 import {
   prisma,
   getCartWithDenominationProduct,
   getDenominationWithProduct,
   countAvailableStock,
+  activeServiceGroups,
 } from "@app/db";
 import type { Customer } from "../plugins/auth";
 import { productImage } from "../images";
@@ -165,10 +166,11 @@ export type GuestCartItem = {
 
 export async function loadGuestCartItems(req: FastifyRequest): Promise<GuestCartItem[]> {
   const lines = readGuestCart(req);
+  const groups = await activeServiceGroups(prisma);
   const resolved = await Promise.all(
     lines.map(async (l) => {
       const denom = await getDenominationWithProduct(prisma, l.p);
-      if (!denom || !denom.isActive) return null;
+      if (!denom || !denom.isActive || !groups.has(denom.product.category.group ?? CategoryGroup.PREMIUM_APPS)) return null;
       return { productId: l.p, quantity: l.q, product: denom } satisfies GuestCartItem;
     }),
   );
@@ -180,13 +182,19 @@ export async function loadCartLines(
   req: FastifyRequest,
   customer: Customer | null,
 ): Promise<CartLineView[]> {
+  const groups = await activeServiceGroups(prisma);
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
     // Join the parent Product so the line can show `Product - Denomination`.
     const rows = await getCartWithDenominationProduct(prisma, customer.userId);
+    const visibleRows = [];
+    for (const row of rows) {
+      if (row.product.isActive && groups.has(row.product.product.category.group ?? CategoryGroup.PREMIUM_APPS)) {
+        visibleRows.push(row);
+      }
+    }
     return Promise.all(
-      rows
-        .filter((r) => r.product.isActive)
+      visibleRows
         .map(async (r) => {
           const denom = r.product; // the Denomination (SKU)
           const parent = denom.product; // the mid-tier Product
@@ -221,7 +229,7 @@ export async function loadCartLines(
         getDenominationWithProduct(prisma, l.p),
         countAvailableStock(prisma, l.p),
       ]);
-      if (!denom || !denom.isActive) return null;
+      if (!denom || !denom.isActive || !groups.has(denom.product.category.group ?? CategoryGroup.PREMIUM_APPS)) return null;
       const parent = denom.product; // mid-tier Product (+ category)
       // Guests are never resellers, so the everyone price is the right one.
       const unit = effectiveUnitPrice(denom, false);

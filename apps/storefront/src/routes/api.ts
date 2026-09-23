@@ -18,7 +18,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
-import { OrderCurrency } from "@app/core/enums";
+import { CategoryGroup, OrderCurrency } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
@@ -27,7 +27,8 @@ import {
   listActiveCategories,
   listCatalogProducts,
   getCatalogProductBySlugWithDenominations,
-  getDenomination,
+  getDenominationWithProduct,
+  isServiceActive,
   addToCart,
   countAvailableStock,
   createGuestUser,
@@ -436,8 +437,8 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     if (!Number.isInteger(denominationId) || denominationId <= 0) {
       return reply.code(400).send({ error: "invalid_request" });
     }
-    const denom = await getDenomination(prisma, denominationId);
-    if (!denom || !denom.isActive) {
+    const denom = await getDenominationWithProduct(prisma, denominationId);
+    if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) {
       return reply.code(400).send({ error: "invalid_request" });
     }
     const qty = clampJsonQty(req.body?.qty);

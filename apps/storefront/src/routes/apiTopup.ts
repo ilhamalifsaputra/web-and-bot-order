@@ -50,8 +50,8 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import {
   prisma,
   createGuestUser,
-  getDenomination,
   getDenominationWithProduct,
+  isServiceActive,
   buildNicknameProviderEntries,
   resolveNicknameGate,
   findIdempotentResponse,
@@ -62,7 +62,7 @@ import {
 } from "@app/db";
 import { NicknameService } from "@app/core/nickname/service";
 import { logger } from "@app/core/logger";
-import { OrderCurrency } from "@app/core/enums";
+import { CategoryGroup, OrderCurrency } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Denomination } from "@prisma/client";
 import { optionalCustomer, type Customer } from "../plugins/auth";
@@ -113,11 +113,11 @@ interface TopupLineBody {
  * `error.out_of_stock` there, which is the only place that answer can't be
  * stale by the time it matters.
  */
-async function resolveTopupDenomination(rawId: unknown): Promise<Denomination | null> {
+async function resolveTopupDenomination(rawId: unknown) {
   const denominationId = Number(rawId);
   if (!Number.isInteger(denominationId) || denominationId <= 0) return null;
-  const denom = await getDenomination(prisma, denominationId);
-  if (!denom || !denom.isActive) return null;
+  const denom = await getDenominationWithProduct(prisma, denominationId);
+  if (!denom || !denom.isActive || !(await isServiceActive(prisma, denom.product.category.group as CategoryGroup | null))) return null;
   return denom;
 }
 
@@ -460,6 +460,9 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const denomination = await getDenominationWithProduct(prisma, denominationId);
+      if (!denomination || !(await isServiceActive(prisma, denomination.product.category.group as CategoryGroup | null))) {
+        return reply.send(NOT_AVAILABLE);
+      }
       // Shared prerequisite: a `gameCode` must resolve (admin override or
       // catalog auto-detect — see resolveNicknameGate's doc comment), or
       // there is nothing to look up. Checked together with the
@@ -470,7 +473,7 @@ const apiTopupRoutes: FastifyPluginAsync = async (app) => {
       // route, checkout.ts's gate, and nicknameCheck.ts's own defensive
       // re-check can never drift apart.
       const { gameCode } = resolveNicknameGate(denomination);
-      if (!denomination || !gameCode) return reply.send(NOT_AVAILABLE);
+      if (!gameCode) return reply.send(NOT_AVAILABLE);
 
       const server = typeof req.body?.server === "string" ? req.body.server.trim() || undefined : undefined;
 

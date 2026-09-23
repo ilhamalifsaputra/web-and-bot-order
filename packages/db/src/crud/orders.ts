@@ -15,6 +15,7 @@ import {
   UserRole,
   DeliveryType,
   langCode,
+  type CategoryGroup,
 } from "@app/core/enums";
 import { deriveOrderStatusFromItems } from "@app/core/orderItemStatus";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
@@ -35,6 +36,7 @@ import { publicChannelId } from "@app/core/runtime";
 import { decryptCredentials } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
+import { assertServiceActive } from "./serviceAvailability";
 import { isUniqueViolation } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import {
@@ -431,6 +433,7 @@ type CartLine = {
     // so this column is present at runtime; only the local type needed
     // widening to read it.
     productId: number;
+    product: { category: { group: string | null } };
   };
 };
 
@@ -594,6 +597,9 @@ export async function createOrderFromCart(
   const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
+  for (const line of cart) {
+    await assertServiceActive(db, line.product.product.category.group as CategoryGroup | null);
+  }
   // Total-units cap (M-7 fix) — checked first, before any per-line validation
   // or the order shell is even inserted, so an over-cap cart is rejected as
   // cheaply as possible (one cart read, one sum) rather than after sinking
@@ -897,8 +903,12 @@ export async function createOrderDirect(
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
-  const product = await db.denomination.findUnique({ where: { id: args.productId } });
+  const product = await db.denomination.findUnique({
+    where: { id: args.productId },
+    include: { product: { include: { category: true } } },
+  });
   if (!product) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  await assertServiceActive(db, product.product.category.group as CategoryGroup | null);
   // Quantity can arrive from a crafted callback (v1:payq:<pid>:<qty>), not
   // just the UI's clamped stepper — validate it server-side (Checkout-5 fix,
   // security audit 2026-06-23).

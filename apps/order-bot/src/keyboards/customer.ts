@@ -9,6 +9,7 @@ import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { CategoryGroup, DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
+import { CUSTOMER_SERVICES, type CustomerService } from "@app/core/services";
 import { t as coreT } from "@app/core/i18n";
 import { MAX_CART_ORDER_UNITS } from "@app/db";
 import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
@@ -353,16 +354,19 @@ export function denominationPickerKb(
 // ---------------------------------------------------------------------------
 
 /**
- * First step of the "🛍 Products" entry point — exactly two buckets
- * (Category.group is admin-set and drives this split; see CategoryGroup).
+ * First step of the "🛍 Products" entry point. Services, labels, and order
+ * come from the shared customer-service registry.
  * Tapping a group opens `categoryPickerKb` scoped to that group.
  */
-export function groupPickerKb(lang: string): InlineKeyboard {
+export function groupPickerKb(
+  lang: string,
+  services: readonly CustomerService[] = CUSTOMER_SERVICES,
+): InlineKeyboard {
   return ik([
-    [
-      { text: coreT("browse.group_game_topup", lang), data: cb("browse", "grp", CategoryGroup.GAME_TOPUP) },
-      { text: coreT("browse.group_premium_apps", lang), data: cb("browse", "grp", CategoryGroup.PREMIUM_APPS) },
-    ],
+    ...(services.length ? [services.map((service) => ({
+        text: coreT(service.translationKey, lang),
+        data: cb("browse", "grp", service.group),
+      }))] : []),
     [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);
 }

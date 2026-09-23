@@ -24,7 +24,9 @@ import {
   OWNER_EMAIL_RE,
   ENCRYPTED_SETTING_KEYS,
   setEncryptedSetting,
+  listServiceStates,
 } from "@app/db";
+import { CUSTOMER_SERVICES } from "@app/core/services";
 import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
 import { verifySmtp } from "@app/core/mailer";
 import {
@@ -488,6 +490,7 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     return reply.send({
       fields,
       payMethodState,
+      serviceStates: await listServiceStates(prisma),
       bybitHealth,
       bybitBscHealth,
       isOwner: req.admin!.role === "super",
@@ -505,6 +508,22 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       if (err instanceof FieldEditError) return reply.code(err.status).send({ error: err.message });
       throw err;
     }
+  });
+
+  app.post("/api/settings/services/toggle", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as { service?: unknown; enabled?: unknown };
+    const service = CUSTOMER_SERVICES.find((entry) => entry.id === body.service);
+    if (!service) return reply.code(400).send({ error: "Unknown service." });
+    if (typeof body.enabled !== "boolean") return reply.code(400).send({ error: "enabled must be a boolean." });
+
+    await setSetting(prisma, service.settingKey, String(body.enabled));
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "setting_set",
+      targetType: "setting",
+      details: `Changed setting "${service.settingKey}" to "${body.enabled}".`,
+    });
+    return reply.send({ ok: true });
   });
 
   // Settings-scoped export/import (Settings refinement §13 "Quick Actions" —

@@ -16,6 +16,7 @@
     "./errorBody": "./src/errorBody.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",
+    "./services": "./src/services.ts",
     "./cartComposition": "./src/cartComposition.ts",
     "./orderItemStatus": "./src/orderItemStatus.ts",
     "./deliveryFields": "./src/deliveryFields.ts",

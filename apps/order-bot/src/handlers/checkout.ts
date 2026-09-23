@@ -18,6 +18,7 @@ import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
 import {
   DeliveryType,
+  CategoryGroup,
   NotificationEvent,
   OrderCurrency,
   OrderStatus,
@@ -71,6 +72,7 @@ import {
   expirePaymentAttempt,
   getPendingPaymentAttempt,
   type Db,
+  isServiceActive,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -315,18 +317,33 @@ interface ConfirmRender {
   closingLine: string;
 }
 
+type CheckoutDenomination = NonNullable<Awaited<ReturnType<typeof getDenominationWithProduct>>>;
+
+/** Resolve a still-buyable denomination and replace stale checkout UI on failure. */
+async function availableCheckoutDenomination(ctx: MyContext, productId: number): Promise<CheckoutDenomination | null> {
+  const product = await getDenominationWithProduct(prisma, productId);
+  const key = product && await isServiceActive(prisma, product.product.category.group as CategoryGroup | null)
+    ? null
+    : product ? "error.service_unavailable" : "error.try_again";
+  if (!key) return product;
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
+  await smartEdit(ctx, t(ctx, key), ckb.backToMain(ctx.session.lang));
+  return null;
+}
+
 /** Compute the confirmation totals (shared by the inline path + voucher conv). */
 async function computeConfirmation(
   ctx: MyContext,
   productId: number,
   quantity: number,
   rate: Decimal | null,
+  loadedProduct?: CheckoutDenomination,
 ): Promise<ConfirmRender | null> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
   const [product, user] = await Promise.all([
-    getDenomination(prisma, productId),
+    loadedProduct ? Promise.resolve(loadedProduct) : availableCheckoutDenomination(ctx, productId),
     getUser(prisma, info.id),
   ]);
   if (product === null || user === null) return null;
@@ -471,15 +488,8 @@ export async function showOrderConfirmation(
 ): Promise<void> {
   const lang = ctx.session.lang;
 
-  const product = await getDenomination(prisma, productId);
-  if (product === null) {
-    // Product vanished between render and tap. Toast for immediacy, then edit
-    // the stale "Confirm & Pay" bubble into a recovery screen so the dead
-    // confirm button is replaced by a forward action (never strand the user).
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
-    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
-    return;
-  }
+  const product = await availableCheckoutDenomination(ctx, productId);
+  if (!product) return;
   // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
   // entirely for manual/manual_with_info) — running this check for a
   // non-auto product would always see 0 available and falsely reject every
@@ -520,7 +530,7 @@ export async function showOrderConfirmation(
   // (gameCode)` short-circuit) — zero behavior change, by construction, for
   // every unconfigured product, regardless of delivery type.
   if (!ctx.session.scratch.customerData) {
-    const withGame = await getDenominationWithProduct(prisma, productId);
+    const withGame = product;
     // Same rule as the storefront's own gate (apiTopup.ts POST
     // /topup/check-account) — shared via resolveNicknameGate so this gate
     // can never drift from the storefront's or nicknameCheck.ts's own copy.
@@ -552,7 +562,7 @@ export async function showOrderConfirmation(
   }
 
   const rate = await currentUsdtRate();
-  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  const r = await computeConfirmation(ctx, productId, quantity, rate, product);
   if (!r) return;
 
   // Mint the checkoutIntentId for this attempt the first time the "Confirm &
@@ -662,13 +672,6 @@ export async function renderOrderConfirmation(
  */
 export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const lang = ctx.session.lang;
-
-  const product = await getDenomination(prisma, productId);
-  if (product === null) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
-    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
-    return;
-  }
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
@@ -697,13 +700,6 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
  */
 export async function showWalletCreditMenu(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const lang = ctx.session.lang;
-
-  const product = await getDenomination(prisma, productId);
-  if (product === null) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
-    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
-    return;
-  }
   const rate = await currentUsdtRate();
   const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;

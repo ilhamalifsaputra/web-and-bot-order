@@ -18,6 +18,8 @@ import {
   countAvailableStock,
   countRestockSubscribers,
   bulkAddStock,
+  stockImportAuditDetails,
+  type BulkAddStockResult,
   bulkMarkStockDead,
   bulkDeleteStock,
   deleteStockItem,
@@ -248,10 +250,10 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
     const adminId = req.admin!.userId;
-    let added: number, skipped: number;
+    let res: BulkAddStockResult;
     try {
-      ({ added, skipped } = await prisma.$transaction(async (tx) => {
-        const res = await bulkAddStock(tx, productId, creds, adminId);
+      res = await prisma.$transaction(async (tx) => {
+        const r = await bulkAddStock(tx, productId, creds, { adminId });
         // Same transaction as the insert: stock, its IMPORTED events, the audit
         // row, subscriber DMs and the optional broadcast commit or roll back
         // together. Web only enqueues outbox rows.
@@ -260,11 +262,11 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
           action: "stock_upload",
           targetType: "product",
           targetId: productId,
-          details: `Added ${res.added} stock items; skipped ${res.skipped} duplicates.`,
+          details: stockImportAuditDetails(r),
         });
-        await afterStockAdded(tx, productId, res.added, adminId);
-        return res;
-      }));
+        await afterStockAdded(tx, productId, r.added, adminId);
+        return r;
+      });
     } catch (e) {
       if (e instanceof CredentialKeyConfigError) {
         logger.error({ err: e }, "Bulk stock upload failed — credential encryption is not configured correctly");
@@ -272,15 +274,37 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
+    const { added, skipped, duplicateInBatch, duplicateExisting, identityWarnings, unreadableExisting, batchId } = res;
     logger.info(
-      `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
+      `Bulk-added ${added} stock items to product ${productId} as import batch ${batchId} (skipped ${skipped} duplicate lines)`,
     );
+    if (unreadableExisting > 0) {
+      logger.warn(
+        { productId, batchId, unreadableExisting },
+        `Bulk stock upload to product ${productId} could not check ${unreadableExisting} existing stock rows for duplicates because they failed to decrypt; those rows need investigating.`,
+      );
+    }
 
-    const message =
-      skipped > 0
-        ? `Added ${added} stock item(s). Skipped ${skipped} duplicate(s).`
-        : `Added ${added} stock item(s).`;
-    return reply.send({ ok: true, added, skipped, message });
+    const parts = [`Added ${added} stock item(s) as import batch #${batchId}.`];
+    if (skipped > 0) parts.push(`Skipped ${skipped} duplicate(s).`);
+    if (identityWarnings > 0) {
+      parts.push(`${identityWarnings} added item(s) use an account that is already in stock with a different password.`);
+    }
+    if (unreadableExisting > 0) {
+      parts.push(`${unreadableExisting} existing item(s) could not be read, so they were not checked for duplicates.`);
+    }
+    const message = parts.join(" ");
+    return reply.send({
+      ok: true,
+      added,
+      skipped,
+      duplicateInBatch,
+      duplicateExisting,
+      identityWarnings,
+      unreadableExisting,
+      batchId,
+      message,
+    });
   });
 
   // Toggle the "broadcast to all customers when I add stock" flag on this

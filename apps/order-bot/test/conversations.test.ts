@@ -1,7 +1,7 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   upsertUser,
@@ -537,6 +537,46 @@ describe("admin conversations", () => {
 
     expect(await prisma.stockItem.count({ where: { productId: sample.product.id } })).toBe(before + 2);
     expect(await prisma.auditLog.count({ where: { action: "stock_upload" } })).toBe(1);
+  });
+
+  it("stockUpload: a .txt upload labels the import batch with the file name only", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("docfile1@x.com:pw\ndocfile2@x.com:pw"));
+    try {
+      const sink: SentCall[] = [];
+      const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+      const conv = new FakeConversation([msg(sink, { document: { file_id: "doc1", file_name: "supplier-batch.txt", file_size: 40 } })]);
+      await stockUploadConversation(conv.asMyConversation(), entry);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+    const batch = await prisma.stockImportBatch.findFirstOrThrow({ orderBy: { id: "desc" } });
+    expect(batch).toMatchObject({ sourceLabel: "supplier-batch.txt", rowsInserted: 2 });
+  });
+
+  it("stockUpload: a pasted upload has no source label", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    await stockUploadConversation(new FakeConversation([msg(sink, { text: "pasted1@x.com:pw" })]).asMyConversation(), entry);
+    expect((await prisma.stockImportBatch.findFirstOrThrow({ orderBy: { id: "desc" } })).sourceLabel).toBeNull();
+  });
+
+  it("stockUpload: reports the import batch, the duplicate count and an identity warning", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([
+      msg(sink, { text: "batchnew@x.com:pw\nuser1@example.com:pwd1\nuser1@example.com:changed" }),
+    ]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    const batch = await prisma.stockImportBatch.findFirstOrThrow({ orderBy: { id: "desc" } });
+    expect(batch).toMatchObject({ productId: sample.product.id, rowsSubmitted: 3, rowsInserted: 2, rowsDuplicate: 1 });
+    expect(sentIncludes(sink, `#${batch.id}`)).toBe(true);
+    expect(sentIncludes(sink, "(1 ")).toBe(true); // "(1 duplicates)" / "(1 duplikat)"
+    expect(sentIncludes(sink, "⚠️ 1 ")).toBe(true);
+    const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "stock_upload" }, orderBy: { id: "desc" } });
+    expect(audit.details).toBe(
+      `Added 2 stock items in import batch #${batch.id}; skipped 1 duplicate. 1 of the added items uses an account already in stock with a different password.`,
+    );
   });
 
   it("stockUpload: each new row's IMPORTED event is attributed to the uploading admin (admin resolved before the insert)", async () => {

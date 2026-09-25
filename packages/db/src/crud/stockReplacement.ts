@@ -301,6 +301,8 @@ async function killDeliveredStockItem(
     data: {
       status: StockStatus.DEAD,
       note: previous ? `${previous}\n${stamp}` : stamp,
+      // Same as markStockDead: a dead credential frees its claim for re-import.
+      activeCredentialKey: null,
     },
   });
   if (res.count !== 1) {

@@ -27,7 +27,12 @@ import {
   bulkAddStock,
   createDenomination,
 } from "@app/db";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import {
+  decryptCredentials,
+  encryptCredentials,
+  computeCredentialFingerprint,
+  computeIdentityFingerprint,
+} from "@app/core/credentialCrypto";
 import { StockActorType, StockEventType } from "@app/core/enums";
 
 let db: TestDb;
@@ -311,6 +316,113 @@ describe("bulkAddStock under true Postgres concurrency", () => {
 
       expect(a.added + b.added, `round ${round}: total added`).toBe(PER_BATCH);
       for (const c of creds) expect(await rowsHolding(denom.id, c), `round ${round}: ${c}`).toHaveLength(1);
+    }
+  });
+});
+
+describe("activeCredentialKey unique claim under true Postgres concurrency (Fase 5b)", () => {
+  // The advisory lock only serializes writers that take it. These tests pit
+  // bulkAddStock against a writer that does NOT, so the unique claim column is
+  // the only thing that can keep a credential from going live twice.
+  const cred = "claim-race@x.com:pw";
+  const claimKey = () => `${sample.product.id}:${computeCredentialFingerprint(cred)}`;
+
+  /** Opens a transaction that inserts a live row holding the claim, then waits for `finish` before committing or rolling back. */
+  function holdClaimInOpenTransaction() {
+    let finish!: (commit: boolean) => void;
+    const decided = new Promise<boolean>((r) => (finish = r));
+    let inserted!: () => void;
+    const insertedP = new Promise<void>((r) => (inserted = r));
+    const done = prisma
+      .$transaction(
+        async (tx) => {
+          await tx.stockItem.create({
+            data: {
+              productId: sample.product.id,
+              credentials: encryptCredentials(cred),
+              credentialFingerprint: computeCredentialFingerprint(cred),
+              identityFingerprint: computeIdentityFingerprint(cred),
+              activeCredentialKey: claimKey(),
+            },
+          });
+          inserted();
+          if (!(await decided)) throw new Error("rollback requested by the test");
+        },
+        { timeout: 20_000 },
+      )
+      .then(
+        () => "committed" as const,
+        () => "rolled back" as const,
+      );
+    return { insertedP, finish, done };
+  }
+
+  /** Resolves once some session of this test schema is blocked on a lock while inserting a stock row. */
+  async function importBlockedOnInsert(): Promise<void> {
+    const schema = (await prisma.$queryRaw<{ schema: string }[]>`SELECT current_schema() AS schema`)[0]!.schema;
+    const pattern = `%INSERT INTO "${schema}"."stock_items"%`;
+    for (let i = 0; i < 200; i++) {
+      const rows = await prisma.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM pg_stat_activity
+        WHERE wait_event_type = 'Lock' AND query LIKE ${pattern}`;
+      if (rows[0]!.n > 0) return;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error("The import never blocked on the claim's unique index.");
+  }
+
+  it("an import racing an uncommitted claim waits on the unique index and counts itself a duplicate", async () => {
+    const writer = holdClaimInOpenTransaction();
+    await writer.insertedP;
+
+    // Its dedup read can't see the uncommitted row, so it reaches the insert and blocks there.
+    const importing = bulkAddStock(prisma, sample.product.id, [cred], sample.user.id);
+    await importBlockedOnInsert();
+    writer.finish(true);
+
+    expect(await writer.done).toBe("committed");
+    expect(await importing).toMatchObject({ added: 0, duplicateExisting: 1 });
+    expect(await prisma.stockItem.count({ where: { activeCredentialKey: claimKey() } })).toBe(1);
+    const rows = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(rows.filter((r) => decryptCredentials(r.credentials) === cred)).toHaveLength(1);
+  });
+
+  it("if the racing claim rolls back instead, the waiting import wins", async () => {
+    const writer = holdClaimInOpenTransaction();
+    await writer.insertedP;
+
+    const importing = bulkAddStock(prisma, sample.product.id, [cred], sample.user.id);
+    await importBlockedOnInsert();
+    writer.finish(false);
+
+    expect(await writer.done).toBe("rolled back");
+    expect(await importing).toMatchObject({ added: 1, duplicateExisting: 0 });
+    expect(await prisma.stockItem.count({ where: { activeCredentialKey: claimKey() } })).toBe(1);
+  });
+
+  it("two concurrent raw inserts of one claim: exactly one commits, the other fails on the unique constraint", async () => {
+    const insert = () =>
+      prisma.stockItem.create({
+        data: { productId: sample.product.id, credentials: encryptCredentials(cred), activeCredentialKey: claimKey() },
+      });
+    const results = await Promise.allSettled([insert(), insert()]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as PromiseRejectedResult;
+    expect((rejected.reason as { code?: string }).code).toBe("P2002");
+  });
+
+  it("two concurrent identical imports: exactly one inserts, the other reports every line as an existing duplicate", async () => {
+    const creds = Array.from({ length: 5 }, (_, i) => `twin-import-${i}@x.com:pw`);
+    const [a, b] = await Promise.all([
+      bulkAddStock(prisma, sample.product.id, creds, sample.user.id),
+      bulkAddStock(prisma, sample.product.id, creds, sample.user.id),
+    ]);
+    const [winner, loser] = a.added > 0 ? [a, b] : [b, a];
+    expect(winner).toMatchObject({ added: 5, duplicateExisting: 0 });
+    expect(loser).toMatchObject({ added: 0, duplicateExisting: 5 });
+    for (const c of creds) {
+      const key = `${sample.product.id}:${computeCredentialFingerprint(c)}`;
+      expect(await prisma.stockItem.count({ where: { activeCredentialKey: key } })).toBe(1);
     }
   });
 });

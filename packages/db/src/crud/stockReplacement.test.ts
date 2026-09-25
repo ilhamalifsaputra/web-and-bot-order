@@ -28,6 +28,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { approveOrder, attachPaymentProof, createOrderDirect, getOrder } from "./orders";
 import { bulkAddStock } from "./stock";
+import { decryptCredentials } from "@app/core/credentialCrypto";
 import {
   STOCK_REPLACEMENT_LEGAL_TRANSITIONS,
   listStockReplacementsForOrder,
@@ -170,6 +171,29 @@ describe("replaceStockItem — replacement stock available", () => {
 
     const reloadedItem = await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } });
     expect(reloadedItem.stockItemId).toBe(replacementStockItem!.id);
+  });
+
+  it("the retired credential releases its claim key (so it can be re-imported); the replacement keeps its own", async () => {
+    const { items } = await makeDeliveredOrder(1);
+    const item = items[0]!;
+    const originalStockId = item.stockItemId!;
+    const originalPlain = decryptCredentials(
+      (await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } })).credentials,
+    );
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } })).activeCredentialKey).not.toBeNull();
+    await restock(1);
+
+    const { replacementStockItem } = await replaceStockItem(prisma, {
+      orderItemId: item.id,
+      reason: "password changed by the account owner",
+      executedBy: adminId,
+    });
+
+    expect((await prisma.stockItem.findUniqueOrThrow({ where: { id: originalStockId } })).activeCredentialKey).toBeNull();
+    expect(
+      (await prisma.stockItem.findUniqueOrThrow({ where: { id: replacementStockItem!.id } })).activeCredentialKey,
+    ).not.toBeNull();
+    expect(await bulkAddStock(prisma, sample.product.id, [originalPlain])).toMatchObject({ added: 1 });
   });
 
   it("records the swap in the stock event ledger: MARKED_DEAD for the retired credential, SOLD for its replacement", async () => {

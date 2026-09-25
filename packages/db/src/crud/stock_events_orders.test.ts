@@ -18,6 +18,7 @@ import {
   approveOrder,
   attachPaymentProof,
   markStockDead,
+  deleteStockItem,
   upsertUser,
 } from "@app/db";
 import { checkStockIntegrity } from "./stockIntegrity";
@@ -293,6 +294,30 @@ describe("stock event ledger across an order's lifecycle", () => {
       if (key === "legacyRowsWithoutEvents") continue;
       expect({ key, count: (finding as { count: number }).count }).toEqual({ key, count: 0 });
     }
+  });
+
+  it("cancelling an order whose reserved row an admin marked DEAD unlinks the line but keeps the row DEAD", async () => {
+    // Before: releaseOrderHolds only unlinked RESERVED rows, so the DEAD row
+    // stayed pointed at by a cancelled order forever — the integrity check
+    // reported it as pre-3b legacy data and soft-deleting the row was refused.
+    const { product, user } = sample;
+    const admin = await upsertUser(prisma, { telegramId: 777005, username: "admin-e", fullName: "Admin E" });
+    const order = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    const item = await prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
+    const rowId = item.stockItemId!;
+    expect(await markStockDead(prisma, rowId, "died while reserved", admin.id)).toBe(1);
+
+    await cancelOrder(prisma, order.id, "expired", { type: StockActorType.SYSTEM });
+
+    expect((await prisma.orderItem.findUniqueOrThrow({ where: { id: item.id } })).stockItemId).toBeNull();
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: rowId } });
+    expect(row.status).toBe(StockStatus.DEAD);
+    // No release is claimed for a row that was never released.
+    expect((await eventsFor(rowId)).map((e) => e.eventType)).toEqual([StockEventType.RESERVED, StockEventType.MARKED_DEAD]);
+
+    const report = await checkStockIntegrity(prisma);
+    expect(report.cancelledOrRejectedOrderItemsStillLinked.count).toBe(0);
+    expect(await deleteStockItem(prisma, rowId, admin.id)).toBe(true);
   });
 
   it("the expiry sweep's cancel is attributed to the system", async () => {

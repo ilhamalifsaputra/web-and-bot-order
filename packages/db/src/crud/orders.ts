@@ -1457,6 +1457,23 @@ export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limi
 }
 
 /**
+ * The line's reserved row was marked DEAD by an admin (before this order's
+ * snapshot was read, or in between) and is still tied to this order. It has
+ * nothing to release — it stays DEAD, keeps its `orderId` and its ledger — but
+ * the voided order's line must stop pointing at it, like a released row's
+ * does. Left linked, the integrity check reported it as pre-3b legacy data and
+ * soft-deleting the dead row was refused forever. No event: nothing about the
+ * row changes, and its RESERVED event already records the order and line.
+ */
+async function unlinkIfDeadHere(db: Db, orderId: number, orderItemId: number, stockItemId: number): Promise<void> {
+  const deadHere = await db.stockItem.count({
+    where: { id: stockItemId, status: StockStatus.DEAD, orderId },
+  });
+  if (deadHere !== 1) return;
+  await db.orderItem.updateMany({ where: { id: orderItemId, stockItemId }, data: { stockItemId: null } });
+}
+
+/**
  * Release any reserved stock + refund wallet + roll back voucher usage.
  *
  * Called from three places with genuinely different accounting consequences —
@@ -1482,7 +1499,8 @@ async function releaseOrderHolds(
   occurredAt: Date = new Date(),
 ) {
   for (const item of order.items) {
-    if (item.stockItem && item.stockItem.status === StockStatus.RESERVED) {
+    if (!item.stockItem) continue;
+    if (item.stockItem.status === StockStatus.RESERVED) {
       // Release only a row THIS order still holds. `order` is a snapshot taken
       // before this function ran, and the row can have moved on since: an
       // expiry sweep can read O1, stall, and by the time it writes, a competing
@@ -1495,7 +1513,10 @@ async function releaseOrderHolds(
         where: { id: item.stockItem.id, status: StockStatus.RESERVED, orderId: order.id },
         data: { status: StockStatus.AVAILABLE, orderId: null, reservedAt: null },
       });
-      if (res.count !== 1) continue;
+      if (res.count !== 1) {
+        await unlinkIfDeadHere(db, order.id, item.id, item.stockItem.id);
+        continue;
+      }
       await recordStockEvent(db, {
         stockItemId: item.stockItem.id,
         eventType: StockEventType.RESERVATION_RELEASED,
@@ -1507,6 +1528,8 @@ async function releaseOrderHolds(
         occurredAt,
       });
       await db.orderItem.update({ where: { id: item.id }, data: { stockItemId: null } });
+    } else {
+      await unlinkIfDeadHere(db, order.id, item.id, item.stockItem.id);
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {

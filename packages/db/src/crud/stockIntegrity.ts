@@ -88,7 +88,11 @@ export interface StockIntegrityReport {
   legacyRowsWithoutEvents: number;
   /** OrderItem rows still pointing at a StockItem while their order is
    * CANCELLED/REJECTED. releaseOrderHolds (Fase 3b) nulls this pointer on
-   * cancel/reject going forward; a non-zero count here is pre-3b legacy data. */
+   * cancel/reject going forward; a non-zero count here is pre-3b legacy data.
+   * A pointer at a DEAD row is not counted: a DEAD row can never be reserved
+   * again, so the pointer can't become a duplicate, and orders voided while
+   * their reserved row was already dead kept it until releaseOrderHolds
+   * learned to unlink those too. */
   cancelledOrRejectedOrderItemsStillLinked: IntegrityFinding;
   /** StockItem rows sharing a credentialFingerprint with another active
    * (non-DEAD, non-deleted) row of the SAME denomination. All-NULL tolerant:
@@ -100,6 +104,21 @@ export interface StockIntegrityReport {
    * something an operator has to go inspect. This differs from
    * duplicateStockItemPointers above; see IntegrityFinding's doc comment. */
   duplicateActiveCredentialFingerprints: IntegrityFinding;
+  /** Live (AVAILABLE/RESERVED/SOLD, not soft-deleted) StockItem rows with no
+   * activeCredentialKey where the dedup claim is evidently in use for that
+   * denomination — the row itself, or another row of the same denomination,
+   * carries a credentialFingerprint. Such a row is invisible to the unique
+   * claim, so the same credential could be imported and sold twice. A
+   * denomination with no fingerprinted row at all is simply not backfilled yet
+   * (backfill-stock-traceability) and is not counted. */
+  liveRowsWithoutClaimKey: IntegrityFinding;
+  /** StockItem rows that are DEAD or soft-deleted but still hold an
+   * activeCredentialKey — the claim should have been released (markStockDead,
+   * soft delete), and while held it blocks re-importing that credential. */
+  deadOrDeletedRowsHoldingClaimKey: IntegrityFinding;
+  /** StockItem rows SOLD with no soldToOrderId — a sale that doesn't say which
+   * order it went to, so "who got this credential?" has no answer. */
+  soldWithoutSoldToOrderId: IntegrityFinding;
 }
 
 async function checkReservedOrSoldWithoutOrderId(db: Db): Promise<IntegrityFinding> {
@@ -228,6 +247,7 @@ async function checkStatusEventMismatchAndLegacy(
 async function checkCancelledOrRejectedOrderItemsStillLinked(db: Db): Promise<IntegrityFinding> {
   const where = {
     stockItemId: { not: null },
+    stockItem: { status: { not: StockStatus.DEAD } },
     order: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] as string[] } },
   };
   const count = await db.orderItem.count({ where });
@@ -282,6 +302,65 @@ async function checkDuplicateActiveCredentialFingerprints(db: Db): Promise<Integ
   return { count, sampleIds: rows.map((r) => r.id) };
 }
 
+async function checkLiveRowsWithoutClaimKey(db: Db): Promise<IntegrityFinding> {
+  const [available, reserved, sold] = [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD];
+  const count = firstCount(await db.$queryRaw<{ count: number }[]>`
+    SELECT COUNT(*)::int AS count
+    FROM stock_items si
+    WHERE si.active_credential_key IS NULL
+      AND si.deleted_at IS NULL
+      AND si.status IN (${available}, ${reserved}, ${sold})
+      AND (
+        si.credential_fingerprint IS NOT NULL
+        OR EXISTS (
+          SELECT 1 FROM stock_items other
+          WHERE other.product_id = si.product_id
+            AND other.id != si.id
+            AND other.credential_fingerprint IS NOT NULL
+        )
+      )
+  `);
+  if (count === 0) return { count: 0, sampleIds: [] };
+  const rows = await db.$queryRaw<{ id: number }[]>`
+    SELECT si.id
+    FROM stock_items si
+    WHERE si.active_credential_key IS NULL
+      AND si.deleted_at IS NULL
+      AND si.status IN (${available}, ${reserved}, ${sold})
+      AND (
+        si.credential_fingerprint IS NOT NULL
+        OR EXISTS (
+          SELECT 1 FROM stock_items other
+          WHERE other.product_id = si.product_id
+            AND other.id != si.id
+            AND other.credential_fingerprint IS NOT NULL
+        )
+      )
+    ORDER BY si.id ASC
+    LIMIT ${SAMPLE_LIMIT}
+  `;
+  return { count, sampleIds: rows.map((r) => r.id) };
+}
+
+async function checkDeadOrDeletedRowsHoldingClaimKey(db: Db): Promise<IntegrityFinding> {
+  const where = {
+    activeCredentialKey: { not: null },
+    OR: [{ status: StockStatus.DEAD }, { deletedAt: { not: null } }],
+  };
+  const count = await db.stockItem.count({ where });
+  if (count === 0) return { count, sampleIds: [] };
+  const rows = await db.stockItem.findMany({ where, select: { id: true }, orderBy: { id: "asc" }, take: SAMPLE_LIMIT });
+  return { count, sampleIds: rows.map((r) => r.id) };
+}
+
+async function checkSoldWithoutSoldToOrderId(db: Db): Promise<IntegrityFinding> {
+  const where = { status: StockStatus.SOLD, soldToOrderId: null };
+  const count = await db.stockItem.count({ where });
+  if (count === 0) return { count, sampleIds: [] };
+  const rows = await db.stockItem.findMany({ where, select: { id: true }, orderBy: { id: "asc" }, take: SAMPLE_LIMIT });
+  return { count, sampleIds: rows.map((r) => r.id) };
+}
+
 export async function checkStockIntegrity(db: Db): Promise<StockIntegrityReport> {
   const reservedOrSoldWithoutOrderId = await checkReservedOrSoldWithoutOrderId(db);
   const soldWithoutSoldAt = await checkSoldWithoutSoldAt(db);
@@ -292,6 +371,9 @@ export async function checkStockIntegrity(db: Db): Promise<StockIntegrityReport>
     await checkStatusEventMismatchAndLegacy(db);
   const cancelledOrRejectedOrderItemsStillLinked = await checkCancelledOrRejectedOrderItemsStillLinked(db);
   const duplicateActiveCredentialFingerprints = await checkDuplicateActiveCredentialFingerprints(db);
+  const liveRowsWithoutClaimKey = await checkLiveRowsWithoutClaimKey(db);
+  const deadOrDeletedRowsHoldingClaimKey = await checkDeadOrDeletedRowsHoldingClaimKey(db);
+  const soldWithoutSoldToOrderId = await checkSoldWithoutSoldToOrderId(db);
 
   return {
     reservedOrSoldWithoutOrderId,
@@ -303,5 +385,8 @@ export async function checkStockIntegrity(db: Db): Promise<StockIntegrityReport>
     legacyRowsWithoutEvents,
     cancelledOrRejectedOrderItemsStillLinked,
     duplicateActiveCredentialFingerprints,
+    liveRowsWithoutClaimKey,
+    deadOrDeletedRowsHoldingClaimKey,
+    soldWithoutSoldToOrderId,
   };
 }

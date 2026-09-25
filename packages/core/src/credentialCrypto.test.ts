@@ -17,10 +17,20 @@ import {
   encryptDeliveredContent,
   decryptDeliveredContent,
   tryDecryptDeliveredContent,
+  CredentialEnvelopeError,
+  credentialEnvelopeWriteVersion,
+  credentialEnvelopeVersion,
+  stockCredentialsAad,
+  deliveredContentAad,
+  settingValueAad,
+  encryptStockCredentials,
+  decryptStockCredentials,
 } from "./credentialCrypto";
 import { logger } from "./logger";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
+// Any context: the envelopes these older tests write are v1 (the write flag is off by default), which ignores it.
+const AAD = "test.context:1";
 
 describe("credentialCrypto", () => {
   afterEach(() => {
@@ -30,13 +40,13 @@ describe("credentialCrypto", () => {
 
   it("round-trips a plaintext credential through encrypt/decrypt", () => {
     const plaintext = "buyer@example.com:Sup3rSecret!";
-    const stored = encryptCredentials(plaintext);
+    const stored = encryptCredentials(plaintext, AAD);
     expect(stored).not.toContain(plaintext);
     expect(decryptCredentials(stored)).toBe(plaintext);
   });
 
   it("stores a JSON envelope with keyVersion/iv/ciphertext/authTag", () => {
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     const parsed = JSON.parse(stored) as Record<string, unknown>;
     expect(parsed).toMatchObject({
       keyVersion: 1,
@@ -47,15 +57,15 @@ describe("credentialCrypto", () => {
   });
 
   it("uses a fresh IV per call — the same plaintext encrypts to different ciphertext each time", () => {
-    const a = encryptCredentials("same@value.com:pw");
-    const b = encryptCredentials("same@value.com:pw");
+    const a = encryptCredentials("same@value.com:pw", AAD);
+    const b = encryptCredentials("same@value.com:pw", AAD);
     expect(a).not.toBe(b);
     expect(decryptCredentials(a)).toBe("same@value.com:pw");
     expect(decryptCredentials(b)).toBe("same@value.com:pw");
   });
 
   it("isEncryptedCredentialEnvelope recognizes an encrypted value and rejects plaintext", () => {
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
     expect(isEncryptedCredentialEnvelope("plain@text.com:pw")).toBe(false);
     expect(isEncryptedCredentialEnvelope("{}")).toBe(false);
@@ -73,23 +83,23 @@ describe("credentialCrypto", () => {
 
   it("throws a structural error (never the value) when the key is unconfigured", () => {
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
-    expect(() => encryptCredentials("a@b.com:pw")).toThrow(/CREDENTIAL_ENCRYPTION_KEY is not configured/);
+    expect(() => encryptCredentials("a@b.com:pw", AAD)).toThrow(/CREDENTIAL_ENCRYPTION_KEY is not configured/);
   });
 
   it("throws when the configured key is not 32 bytes of hex", () => {
     process.env.CREDENTIAL_ENCRYPTION_KEY = "tooshort";
-    expect(() => encryptCredentials("a@b.com:pw")).toThrow(/32 bytes/);
+    expect(() => encryptCredentials("a@b.com:pw", AAD)).toThrow(/32 bytes/);
   });
 
   it("throws (does not silently mis-decrypt) when the stored envelope was encrypted under a different key", () => {
     process.env.CREDENTIAL_ENCRYPTION_KEY = "11".repeat(32);
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     process.env.CREDENTIAL_ENCRYPTION_KEY = "22".repeat(32);
     expect(() => decryptCredentials(stored)).toThrow();
   });
 
   it("throws on a tampered auth tag instead of returning corrupted plaintext", () => {
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     const envelope = JSON.parse(stored) as { authTag: string };
     envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
     expect(() => decryptCredentials(JSON.stringify(envelope))).toThrow();
@@ -249,13 +259,13 @@ describe("tryDecryptCredentials (Fase 6a — guarded decrypt for display paths)"
   });
 
   it("returns the plaintext of a readable envelope without logging", () => {
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     expect(tryDecryptCredentials(stored, { stockItemId: 7, purpose: "test" })).toBe("a@b.com:pw");
     expect(warn).not.toHaveBeenCalled();
   });
 
   it("returns null and warns with the row id (never the content) for a tampered envelope", () => {
-    const envelope = JSON.parse(encryptCredentials("secret@b.com:Hunter2")) as { authTag: string };
+    const envelope = JSON.parse(encryptCredentials("secret@b.com:Hunter2", AAD)) as { authTag: string };
     envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
     const stored = JSON.stringify(envelope);
     expect(tryDecryptCredentials(stored, { stockItemId: 42, purpose: "the admin stock search" })).toBeNull();
@@ -268,7 +278,7 @@ describe("tryDecryptCredentials (Fase 6a — guarded decrypt for display paths)"
   });
 
   it("rethrows CredentialKeyConfigError instead of hiding a misconfigured key", () => {
-    const stored = encryptCredentials("a@b.com:pw");
+    const stored = encryptCredentials("a@b.com:pw", AAD);
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     expect(() => tryDecryptCredentials(stored, { stockItemId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
   });
@@ -340,7 +350,7 @@ describe("ALLOW_LEGACY_PLAINTEXT (Fase 6b — legacy plaintext passthrough flag)
 
   it("strict mode still decrypts a real envelope and passes an empty value through", () => {
     process.env.ALLOW_LEGACY_PLAINTEXT = "false";
-    expect(decryptCredentials(encryptCredentials("ok@b.com:pw"))).toBe("ok@b.com:pw");
+    expect(decryptCredentials(encryptCredentials("ok@b.com:pw", AAD))).toBe("ok@b.com:pw");
     expect(decryptCredentials("")).toBe("");
   });
 
@@ -365,31 +375,31 @@ describe("Order.deliveredContent helpers (Fase 6c)", () => {
   });
 
   it("encryptDeliveredContent stores an envelope that decryptDeliveredContent reads back", () => {
-    const stored = encryptDeliveredContent("user: acc1\npass: Hunter2");
+    const stored = encryptDeliveredContent("user: acc1\npass: Hunter2", 1);
     expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
     expect(stored).not.toContain("Hunter2");
-    expect(decryptDeliveredContent(stored)).toBe("user: acc1\npass: Hunter2");
+    expect(decryptDeliveredContent(stored, 1)).toBe("user: acc1\npass: Hunter2");
   });
 
   it("decryptDeliveredContent keeps null as null (no content delivered yet)", () => {
-    expect(decryptDeliveredContent(null)).toBeNull();
+    expect(decryptDeliveredContent(null, 1)).toBeNull();
   });
 
   it("decryptDeliveredContent passes a pre-encryption plaintext row through in permissive mode", () => {
     delete process.env.ALLOW_LEGACY_PLAINTEXT;
-    expect(decryptDeliveredContent("SN-LEGACY-1")).toBe("SN-LEGACY-1");
+    expect(decryptDeliveredContent("SN-LEGACY-1", 1)).toBe("SN-LEGACY-1");
   });
 
   it("decryptDeliveredContent throws on a tampered envelope and on legacy plaintext in strict mode", () => {
-    const envelope = JSON.parse(encryptDeliveredContent("SN-123")) as { authTag: string };
+    const envelope = JSON.parse(encryptDeliveredContent("SN-123", 1)) as { authTag: string };
     envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
-    expect(() => decryptDeliveredContent(JSON.stringify(envelope))).toThrow();
+    expect(() => decryptDeliveredContent(JSON.stringify(envelope), 1)).toThrow();
     process.env.ALLOW_LEGACY_PLAINTEXT = "false";
-    expect(() => decryptDeliveredContent("SN-LEGACY-1")).toThrow(LegacyPlaintextCredentialError);
+    expect(() => decryptDeliveredContent("SN-LEGACY-1", 1)).toThrow(LegacyPlaintextCredentialError);
   });
 
   it("tryDecryptDeliveredContent returns null and warns with the order id (never the content) for a tampered envelope", () => {
-    const envelope = JSON.parse(encryptDeliveredContent("user:x pass:Hunter2")) as { authTag: string; ciphertext: string };
+    const envelope = JSON.parse(encryptDeliveredContent("user:x pass:Hunter2", 1)) as { authTag: string; ciphertext: string };
     envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
     expect(tryDecryptDeliveredContent(JSON.stringify(envelope), { orderId: 314, purpose: "a buyer's order detail page" })).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
@@ -400,11 +410,210 @@ describe("Order.deliveredContent helpers (Fase 6c)", () => {
   });
 
   it("tryDecryptDeliveredContent reads a readable value (and null) without logging, and rethrows a key misconfiguration", () => {
-    const stored = encryptDeliveredContent("SN-9");
+    const stored = encryptDeliveredContent("SN-9", 1);
     expect(tryDecryptDeliveredContent(stored, { orderId: 1, purpose: "test" })).toBe("SN-9");
     expect(tryDecryptDeliveredContent(null, { orderId: 1, purpose: "test" })).toBeNull();
     expect(warn).not.toHaveBeenCalled();
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     expect(() => tryDecryptDeliveredContent(stored, { orderId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
+  });
+});
+
+describe("envelope v2 with AAD (Fase 6d)", () => {
+  const ORIGINAL_WRITE_V2 = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+  let warn: ReturnType<typeof vi.spyOn>;
+  const setWriteV2 = (on: boolean) => {
+    if (on) process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = "true";
+    else delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+  };
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_WRITE_V2 === undefined) delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+    else process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = ORIGINAL_WRITE_V2;
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  describe("the write flag", () => {
+    it("defaults to v1 when CREDENTIAL_ENVELOPE_WRITE_V2 is unset", () => {
+      delete process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+      expect(credentialEnvelopeWriteVersion()).toBe(1);
+    });
+
+    it.each(["true", "1", "yes", "on", " TRUE "])("writes v2 for %j", (value) => {
+      process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = value;
+      expect(credentialEnvelopeWriteVersion()).toBe(2);
+    });
+
+    it.each(["", "false", "0", "no", "off", "v2", "anything-else"])("stays on v1 for %j", (value) => {
+      process.env.CREDENTIAL_ENVELOPE_WRITE_V2 = value;
+      expect(credentialEnvelopeWriteVersion()).toBe(1);
+    });
+
+    it("with the flag off, the stored envelope has exactly the pre-6d fields (no version marker)", () => {
+      setWriteV2(false);
+      const parsed = JSON.parse(encryptCredentials("a@b.com:pw", AAD)) as Record<string, unknown>;
+      expect(Object.keys(parsed).sort()).toEqual(["authTag", "ciphertext", "iv", "keyVersion"]);
+      expect(credentialEnvelopeVersion(JSON.stringify(parsed))).toBe(1);
+    });
+
+    it("with the flag on, the stored envelope is marked v:2 and keeps key version 1", () => {
+      setWriteV2(true);
+      const parsed = JSON.parse(encryptCredentials("a@b.com:pw", AAD)) as Record<string, unknown>;
+      expect(parsed).toMatchObject({ v: 2, keyVersion: 1 });
+      expect(isEncryptedCredentialEnvelope(JSON.stringify(parsed))).toBe(true);
+      expect(credentialEnvelopeVersion(JSON.stringify(parsed))).toBe(2);
+    });
+  });
+
+  describe("context strings (changing one makes every v2 value written under it unreadable)", () => {
+    it("are pinned exactly", () => {
+      expect(stockCredentialsAad(12)).toBe("stock_items.credentials:12");
+      expect(deliveredContentAad(5)).toBe("orders.delivered_content:5");
+      expect(settingValueAad("smtp_pass")).toBe("settings.value:smtp_pass");
+    });
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("refuse a non-row id (%s)", (id) => {
+      expect(() => stockCredentialsAad(id)).toThrow(CredentialEnvelopeError);
+      expect(() => deliveredContentAad(id)).toThrow(CredentialEnvelopeError);
+    });
+
+    it("refuse an empty setting key", () => {
+      expect(() => settingValueAad("")).toThrow(CredentialEnvelopeError);
+    });
+  });
+
+  describe.each([false, true])("with CREDENTIAL_ENVELOPE_WRITE_V2 %s", (on) => {
+    beforeEach(() => setWriteV2(on));
+
+    it("round-trips under the same context", () => {
+      const stored = encryptCredentials("buyer@example.com:Sup3r", "settings.value:smtp_pass");
+      expect(stored).not.toContain("Sup3r");
+      expect(decryptCredentials(stored, "settings.value:smtp_pass")).toBe("buyer@example.com:Sup3r");
+    });
+
+    it("refuses an empty context on write, whatever version it would write", () => {
+      expect(() => encryptCredentials("a@b.com:pw", "")).toThrow(CredentialEnvelopeError);
+    });
+
+    it("round-trips the stock and delivered-content wrappers", () => {
+      expect(decryptStockCredentials(encryptStockCredentials("s@x.com:pw", 7), 7)).toBe("s@x.com:pw");
+      expect(decryptDeliveredContent(encryptDeliveredContent("SN-7", 7), 7)).toBe("SN-7");
+      expect(tryDecryptCredentials(encryptStockCredentials("s@x.com:pw", 7), { stockItemId: 7, purpose: "test" })).toBe(
+        "s@x.com:pw",
+      );
+      expect(tryDecryptDeliveredContent(encryptDeliveredContent("SN-7", 7), { orderId: 7, purpose: "test" })).toBe("SN-7");
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it("boot canary passes", () => {
+      expect(() => assertCredentialKeyConfigured()).not.toThrow();
+    });
+
+    it("fingerprints depend on the plaintext only", () => {
+      setWriteV2(false);
+      const off = [computeCredentialFingerprint("fp@x.com:pw"), computeIdentityFingerprint("fp@x.com:pw")];
+      setWriteV2(true);
+      expect([computeCredentialFingerprint("fp@x.com:pw"), computeIdentityFingerprint("fp@x.com:pw")]).toEqual(off);
+    });
+  });
+
+  describe("reading a v1 envelope", () => {
+    beforeEach(() => setWriteV2(false));
+
+    it("decrypts with no context, the right context or any other context", () => {
+      const stored = encryptStockCredentials("v1@x.com:pw", 3);
+      expect(decryptCredentials(stored)).toBe("v1@x.com:pw");
+      expect(decryptStockCredentials(stored, 3)).toBe("v1@x.com:pw");
+      expect(decryptStockCredentials(stored, 4)).toBe("v1@x.com:pw");
+      expect(decryptDeliveredContent(stored, 3)).toBe("v1@x.com:pw");
+    });
+
+    it("cannot be passed off as v2 by adding the marker", () => {
+      const envelope = JSON.parse(encryptStockCredentials("v1@x.com:pw", 3)) as Record<string, unknown>;
+      envelope.v = 2;
+      expect(() => decryptStockCredentials(JSON.stringify(envelope), 3)).toThrow(CredentialEnvelopeError);
+    });
+  });
+
+  describe("reading a v2 envelope", () => {
+    beforeEach(() => setWriteV2(true));
+
+    it("still decrypts after the flag is turned back off (the rollback path)", () => {
+      const stored = encryptStockCredentials("rollback@x.com:pw", 9);
+      setWriteV2(false);
+      expect(decryptStockCredentials(stored, 9)).toBe("rollback@x.com:pw");
+    });
+
+    it("refuses to decrypt without a context, with a non-secret error", () => {
+      const stored = encryptStockCredentials("nocontext@x.com:Hunter2", 9);
+      expect(() => decryptCredentials(stored)).toThrow(CredentialEnvelopeError);
+      expect(() => decryptCredentials(stored, "")).toThrow(CredentialEnvelopeError);
+      try {
+        decryptCredentials(stored);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).not.toMatch(/Hunter2|nocontext/);
+      }
+    });
+
+    it("refuses another row's context, so a ciphertext copied between rows does not decrypt", () => {
+      const stored = encryptStockCredentials("row9@x.com:Hunter2", 9);
+      expect(() => decryptStockCredentials(stored, 10)).toThrow(CredentialEnvelopeError);
+      try {
+        decryptStockCredentials(stored, 10);
+        expect.unreachable();
+      } catch (err) {
+        expect((err as Error).message).not.toMatch(/Hunter2|row9|stock_items/);
+      }
+    });
+
+    it("refuses another column's context for the same id", () => {
+      const stock = encryptStockCredentials("same-id@x.com:pw", 5);
+      const delivered = encryptDeliveredContent("SN-5", 5);
+      const setting = encryptCredentials("secret", settingValueAad("smtp_pass"));
+      expect(() => decryptDeliveredContent(stock, 5)).toThrow(CredentialEnvelopeError);
+      expect(() => decryptStockCredentials(delivered, 5)).toThrow(CredentialEnvelopeError);
+      expect(() => decryptCredentials(setting, settingValueAad("tokopay_secret"))).toThrow(CredentialEnvelopeError);
+    });
+
+    it("cannot be downgraded to v1 by removing the marker", () => {
+      const envelope = JSON.parse(encryptStockCredentials("downgrade@x.com:pw", 9)) as Record<string, unknown>;
+      delete envelope.v;
+      expect(() => decryptStockCredentials(JSON.stringify(envelope), 9)).toThrow();
+      expect(() => decryptCredentials(JSON.stringify(envelope))).toThrow();
+    });
+
+    it("is refused under a different key", () => {
+      process.env.CREDENTIAL_ENCRYPTION_KEY = "11".repeat(32);
+      const stored = encryptStockCredentials("key@x.com:pw", 9);
+      process.env.CREDENTIAL_ENCRYPTION_KEY = "22".repeat(32);
+      expect(() => decryptStockCredentials(stored, 9)).toThrow(CredentialEnvelopeError);
+    });
+
+    it("display reads turn a wrong-context value into null plus a warning, never the content", () => {
+      const stock = encryptStockCredentials("display@x.com:Hunter2", 9);
+      expect(tryDecryptCredentials(stock, { stockItemId: 10, purpose: "test" })).toBeNull();
+      const delivered = encryptDeliveredContent("SN-Hunter2", 9);
+      expect(tryDecryptDeliveredContent(delivered, { orderId: 10, purpose: "test" })).toBeNull();
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(warn.mock.calls)).not.toMatch(/Hunter2|display@/);
+    });
+  });
+
+  it.each([3, "2", 0, null])("refuses an unknown envelope version %j instead of treating it as plaintext", (v) => {
+    setWriteV2(false);
+    const envelope = JSON.parse(encryptCredentials("a@b.com:pw", AAD)) as Record<string, unknown>;
+    envelope.v = v;
+    expect(() => decryptCredentials(JSON.stringify(envelope), AAD)).toThrow(CredentialEnvelopeError);
+  });
+
+  it("credentialEnvelopeVersion is null for anything that is not an envelope", () => {
+    expect(credentialEnvelopeVersion("plain@x.com:pw")).toBeNull();
+    expect(credentialEnvelopeVersion("")).toBeNull();
+    expect(credentialEnvelopeVersion('{"user":"a"}')).toBeNull();
   });
 });

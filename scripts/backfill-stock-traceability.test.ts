@@ -9,10 +9,10 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi, t
 import type { PrismaClient } from "@prisma/client";
 import { StockActorType, StockEventType, StockStatus, OrderStatus } from "@app/core/enums";
 import {
-  encryptCredentials,
   computeIdentityFingerprint,
   computeCredentialFingerprint,
 } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../tests/helpers/envelopeFlag";
 import { checkStockIntegrity, recordStockEvent } from "@app/db";
 import { makeTestDb, type TestDb } from "../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../tests/helpers/sampleData";
@@ -110,7 +110,7 @@ async function eventsOf(stockItemId: number) {
 async function soldLegacyRowWithOrder(label: string) {
   const order = await rawOrder();
   const row = await legacyRow({
-    credentials: encryptCredentials(plain(label)),
+    credentials: encryptLegacyV1(plain(label)),
     status: StockStatus.SOLD,
     orderId: order.id,
     reservedAt: T_RESERVED,
@@ -123,7 +123,7 @@ async function soldLegacyRowWithOrder(label: string) {
 describe("runBackfill — fingerprints, key version and events for a fresh row", () => {
   it("fingerprints an AVAILABLE row, stamps key version 1 and gives it one IMPORTED event", async () => {
     const p = plain("fresh");
-    const row = await legacyRow({ credentials: encryptCredentials(p) });
+    const row = await legacyRow({ credentials: encryptLegacyV1(p) });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -180,7 +180,7 @@ describe("runBackfill — soldToOrderId and the SOLD event chain", () => {
 
   it("counts a SOLD row with no orderId and leaves soldToOrderId null", async () => {
     const row = await legacyRow({
-      credentials: encryptCredentials(plain("orphan")),
+      credentials: encryptLegacyV1(plain("orphan")),
       status: StockStatus.SOLD,
       reservedAt: T_RESERVED,
       soldAt: T_SOLD,
@@ -197,7 +197,7 @@ describe("runBackfill — soldToOrderId and the SOLD event chain", () => {
   it("falls back to row.orderId when no OrderItem points at a SOLD row, and counts it", async () => {
     const order = await rawOrder();
     const row = await legacyRow({
-      credentials: encryptCredentials(plain("noitem")),
+      credentials: encryptLegacyV1(plain("noitem")),
       status: StockStatus.SOLD,
       orderId: order.id,
       reservedAt: T_RESERVED,
@@ -216,7 +216,7 @@ describe("runBackfill — soldToOrderId and the SOLD event chain", () => {
     const rowOrder = await rawOrder();
     const itemOrder = await rawOrder();
     const row = await legacyRow({
-      credentials: encryptCredentials(plain("mismatch")),
+      credentials: encryptLegacyV1(plain("mismatch")),
       status: StockStatus.SOLD,
       orderId: rowOrder.id,
       reservedAt: T_RESERVED,
@@ -235,7 +235,7 @@ describe("runBackfill — soldToOrderId and the SOLD event chain", () => {
 
 describe("runBackfill — idempotency", () => {
   it("leaves an existing identityFingerprint untouched", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("prefp")) });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("prefp")) });
     await prisma.stockItem.update({
       where: { id: row.id },
       data: { identityFingerprint: "preexisting-identity", credentialFingerprint: "preexisting-credential" },
@@ -251,7 +251,7 @@ describe("runBackfill — idempotency", () => {
   });
 
   it("gives no synthetic events to a row that already has a status-transition event", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("traced")) });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("traced")) });
     await recordStockEvent(prisma, {
       stockItemId: row.id,
       eventType: StockEventType.IMPORTED,
@@ -266,7 +266,7 @@ describe("runBackfill — idempotency", () => {
   });
 
   it("still reconstructs history for a row whose only event is a non-transition one (e.g. REENCRYPTED)", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("reenc")) });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("reenc")) });
     await recordStockEvent(prisma, {
       stockItemId: row.id,
       eventType: StockEventType.REENCRYPTED,
@@ -282,7 +282,7 @@ describe("runBackfill — idempotency", () => {
   });
 
   it("re-reads each row inside its transaction, so a change made after the batch read is not overwritten", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("race")) });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("race")) });
     // Simulate the app fingerprinting the row between the batch read and the
     // per-row transaction. (A Proxy, not vi.spyOn: spying on a Prisma model
     // delegate breaks it for the rest of the file.)
@@ -314,10 +314,10 @@ describe("runBackfill — idempotency", () => {
   });
 
   it("a second full run changes nothing and reports zero new work", async () => {
-    await legacyRow({ credentials: encryptCredentials(plain("idem1")) });
+    await legacyRow({ credentials: encryptLegacyV1(plain("idem1")) });
     await soldLegacyRowWithOrder("idem2");
     await legacyRow({ credentials: plain("idem3") });
-    await legacyRow({ credentials: encryptCredentials(plain("idem4")), status: StockStatus.DEAD });
+    await legacyRow({ credentials: encryptLegacyV1(plain("idem4")), status: StockStatus.DEAD });
 
     await runBackfill(prisma, { dryRun: false });
     const rowsAfterFirst = await prisma.stockItem.findMany({ orderBy: { id: "asc" } });
@@ -349,10 +349,10 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
   });
 
   it("counts and skips a corrupt envelope without aborting the rest of the batch", async () => {
-    const envelope = JSON.parse(encryptCredentials(plain("corrupt"))) as { authTag: string };
+    const envelope = JSON.parse(encryptLegacyV1(plain("corrupt"))) as { authTag: string };
     envelope.authTag = Buffer.alloc(16).toString("base64");
     const bad = await legacyRow({ credentials: JSON.stringify(envelope) });
-    const good = await legacyRow({ credentials: encryptCredentials(plain("goodneighbour")) });
+    const good = await legacyRow({ credentials: encryptLegacyV1(plain("goodneighbour")) });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -368,7 +368,7 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
   });
 
   it("closes a DEAD row's reconstructed history with a MARKED_DEAD event", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("dead")), status: StockStatus.DEAD });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("dead")), status: StockStatus.DEAD });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -403,7 +403,7 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
   });
 
   it("closes an AVAILABLE row that still carries a stale reservedAt with RESERVATION_RELEASED", async () => {
-    const row = await legacyRow({ credentials: encryptCredentials(plain("released")), reservedAt: T_RESERVED });
+    const row = await legacyRow({ credentials: encryptLegacyV1(plain("released")), reservedAt: T_RESERVED });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -425,7 +425,7 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
 
   it("fingerprints a soft-deleted row but invents no RESERVED/SOLD history for it", async () => {
     const row = await legacyRow({
-      credentials: encryptCredentials(plain("softdel")),
+      credentials: encryptLegacyV1(plain("softdel")),
       deletedAt: new Date("2025-02-01T00:00:00Z"),
     });
 
@@ -440,7 +440,7 @@ describe("runBackfill — legacy, corrupt, dead and soft-deleted rows", () => {
   it("does not invent a RESERVED event for a RESERVED row with no reservedAt, and counts it", async () => {
     const order = await rawOrder(OrderStatus.PENDING_PAYMENT);
     const row = await legacyRow({
-      credentials: encryptCredentials(plain("noreservedat")),
+      credentials: encryptLegacyV1(plain("noreservedat")),
       status: StockStatus.RESERVED,
       orderId: order.id,
     });
@@ -458,10 +458,10 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
   it("claims every live legacy row and leaves DEAD / soft-deleted rows unclaimed", async () => {
     const pa = plain("claim-a");
     const pb = plain("claim-b");
-    const a = await legacyRow({ credentials: encryptCredentials(pa) });
+    const a = await legacyRow({ credentials: encryptLegacyV1(pa) });
     const b = await legacyRow({ credentials: pb, status: StockStatus.RESERVED, reservedAt: T_RESERVED });
-    const dead = await legacyRow({ credentials: encryptCredentials(plain("claim-dead")), status: StockStatus.DEAD });
-    const gone = await legacyRow({ credentials: encryptCredentials(plain("claim-gone")), deletedAt: new Date() });
+    const dead = await legacyRow({ credentials: encryptLegacyV1(plain("claim-dead")), status: StockStatus.DEAD });
+    const gone = await legacyRow({ credentials: encryptLegacyV1(plain("claim-gone")), deletedAt: new Date() });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -475,7 +475,7 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
 
   it("counts a duplicate live legacy credential and leaves it unclaimed instead of crashing", async () => {
     const p = plain("claim-dup");
-    const first = await legacyRow({ credentials: encryptCredentials(p) });
+    const first = await legacyRow({ credentials: encryptLegacyV1(p) });
     const second = await legacyRow({ credentials: p.replace("@legacy.example", "@LEGACY.example") });
 
     const summary = await runBackfill(prisma, { dryRun: false });
@@ -493,14 +493,14 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
     await prisma.stockItem.create({
       data: {
         productId: sample.product.id,
-        credentials: encryptCredentials(p),
+        credentials: encryptLegacyV1(p),
         credentialFingerprint: computeCredentialFingerprint(p),
         identityFingerprint: computeIdentityFingerprint(p),
         credentialKeyVersion: 1,
         activeCredentialKey: keyOf(p),
       },
     });
-    const legacy = await legacyRow({ credentials: encryptCredentials(p) });
+    const legacy = await legacyRow({ credentials: encryptLegacyV1(p) });
 
     const summary = await runBackfill(prisma, { dryRun: false });
 
@@ -510,7 +510,7 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
 
   it("releases a stale claim left on a DEAD row", async () => {
     const p = plain("claim-stale");
-    const row = await legacyRow({ credentials: encryptCredentials(p), status: StockStatus.DEAD });
+    const row = await legacyRow({ credentials: encryptLegacyV1(p), status: StockStatus.DEAD });
     await prisma.stockItem.update({ where: { id: row.id }, data: { activeCredentialKey: keyOf(p) } });
 
     const summary = await runBackfill(prisma, { dryRun: false });
@@ -521,8 +521,8 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
 
   it("claims a live row in one run even when a later DEAD row still holds its key", async () => {
     const p = plain("claim-stale-later");
-    const liveRow = await legacyRow({ credentials: encryptCredentials(p) });
-    const deadRow = await legacyRow({ credentials: encryptCredentials(p), status: StockStatus.DEAD });
+    const liveRow = await legacyRow({ credentials: encryptLegacyV1(p) });
+    const deadRow = await legacyRow({ credentials: encryptLegacyV1(p), status: StockStatus.DEAD });
     await prisma.stockItem.update({ where: { id: deadRow.id }, data: { activeCredentialKey: keyOf(p) } });
 
     const summary = await runBackfill(prisma, { dryRun: false });
@@ -534,7 +534,7 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
 
   it("lists the ids of live duplicates it left unclaimed, and nothing secret", async () => {
     const p = plain("claim-dup-ids");
-    await legacyRow({ credentials: encryptCredentials(p) });
+    await legacyRow({ credentials: encryptLegacyV1(p) });
     const dup = await legacyRow({ credentials: p });
 
     await runBackfill(prisma, { dryRun: false });
@@ -546,7 +546,7 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
   });
 
   it("a corrupt live row can't be fingerprinted, so it is counted and left unclaimed", async () => {
-    const good = JSON.parse(encryptCredentials(plain("claim-corrupt"))) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1(plain("claim-corrupt"))) as Record<string, unknown>;
     await legacyRow({ credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) });
 
     const summary = await runBackfill(prisma, { dryRun: false });
@@ -555,7 +555,7 @@ describe("runBackfill — activeCredentialKey claims (Fase 5b)", () => {
 
   it("a second run claims nothing new; a dry run reports claims (and in-run duplicates) without writing", async () => {
     const p = plain("claim-dry");
-    await legacyRow({ credentials: encryptCredentials(p) });
+    await legacyRow({ credentials: encryptLegacyV1(p) });
     await legacyRow({ credentials: p });
 
     const dry = await runBackfill(prisma, { dryRun: true });
@@ -591,16 +591,16 @@ describe("runBackfill — dry run", () => {
 
 describe("runBackfill — integrity checker agreement and secrecy", () => {
   it("leaves no legacy rows without events and no status/event mismatches for consistent legacy rows", async () => {
-    await legacyRow({ credentials: encryptCredentials(plain("int-avail")) });
+    await legacyRow({ credentials: encryptLegacyV1(plain("int-avail")) });
     const reservedOrder = await rawOrder(OrderStatus.PENDING_PAYMENT);
     await legacyRow({
-      credentials: encryptCredentials(plain("int-res")),
+      credentials: encryptLegacyV1(plain("int-res")),
       status: StockStatus.RESERVED,
       orderId: reservedOrder.id,
       reservedAt: T_RESERVED,
     });
     await soldLegacyRowWithOrder("int-sold");
-    await legacyRow({ credentials: encryptCredentials(plain("int-dead")), status: StockStatus.DEAD });
+    await legacyRow({ credentials: encryptLegacyV1(plain("int-dead")), status: StockStatus.DEAD });
     await legacyRow({ credentials: plain("int-softdel"), deletedAt: new Date("2025-02-01T00:00:00Z") });
 
     const before = await checkStockIntegrity(prisma);

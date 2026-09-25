@@ -92,7 +92,14 @@ import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
-import { encryptCredentials, decryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import {
+  credentialEnvelopeVersion,
+  encryptCredentials,
+  settingValueAad,
+  decryptDeliveredContent,
+  isEncryptedCredentialEnvelope,
+} from "@app/core/credentialCrypto";
+import { useEnvelopeWriteV2 } from "../../../../tests/helpers/envelopeFlag";
 // I3 test: spy on getSetting itself (not just the underlying Prisma query,
 // which a 30s TTL cache can mask) to confirm the markup setting is read a
 // CONSTANT number of times per run, not once per denomination.
@@ -437,7 +444,7 @@ describe("getDigiflazzCreds", () => {
   });
 
   it("decrypts the digiflazz api key when stored as an encrypted envelope (Task 13)", async () => {
-    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, encryptCredentials("real-digiflazz-apikey"));
+    await setSetting(prisma, DIGIFLAZZ_API_KEY_KEY, encryptCredentials("real-digiflazz-apikey", settingValueAad(DIGIFLAZZ_API_KEY_KEY)));
     expect(await getDigiflazzCreds(prisma)).toEqual({ username: "shopuser", apiKey: "real-digiflazz-apikey" });
   });
 });
@@ -997,7 +1004,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     // The claim inside fulfillDigiflazzOrder still committed — that part
     // didn't fail; only the later side effect did.
     expect(refreshed.status).toBe(OrderStatus.DELIVERED);
-    expect(decryptDeliveredContent(refreshed.deliveredContent)).toBe("SN-POST-FAIL");
+    expect(decryptDeliveredContent(refreshed.deliveredContent, order.id)).toBe("SN-POST-FAIL");
     // Final whole-branch review I-1 fix: fulfillDigiflazzOrder's own
     // PROCESSING->DELIVERED claim now unconditionally clears digiflazzStatus/
     // digiflazzNextRecheckAt/digiflazzFailureDetail as part of that SAME
@@ -1137,6 +1144,19 @@ function priceListItem(overrides: Partial<DigiflazzPriceListItem> = {}): Digifla
     ...overrides,
   };
 }
+
+describe.each([false, true])("fulfillDigiflazzOrder with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+
+  it("stores the serial number in the flag's envelope version, bound to the order", async () => {
+    const order = await makeProcessingDigiflazzOrder();
+    const { order: delivered } = await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-6D" });
+    expect(delivered.deliveredContent).toBe("SN-6D");
+    const raw = (await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).deliveredContent!;
+    expect(credentialEnvelopeVersion(raw)).toBe(on ? 2 : 1);
+    expect(decryptDeliveredContent(raw, order.id)).toBe("SN-6D");
+  });
+});
 
 describe("collapseToCheapestSeller", () => {
   it("keeps only the lowest-price row when the same buyerSkuCode appears from multiple sellers", () => {

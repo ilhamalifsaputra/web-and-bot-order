@@ -29,10 +29,10 @@ import {
 } from "@app/db";
 import {
   decryptCredentials,
-  encryptCredentials,
   computeCredentialFingerprint,
   computeIdentityFingerprint,
 } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 import { StockActorType, StockEventType } from "@app/core/enums";
 
 let db: TestDb;
@@ -339,7 +339,7 @@ describe("activeCredentialKey unique claim under true Postgres concurrency (Fase
           await tx.stockItem.create({
             data: {
               productId: sample.product.id,
-              credentials: encryptCredentials(cred),
+              credentials: encryptLegacyV1(cred),
               credentialFingerprint: computeCredentialFingerprint(cred),
               identityFingerprint: computeIdentityFingerprint(cred),
               activeCredentialKey: claimKey(),
@@ -403,7 +403,7 @@ describe("activeCredentialKey unique claim under true Postgres concurrency (Fase
   it("two concurrent raw inserts of one claim: exactly one commits, the other fails on the unique constraint", async () => {
     const insert = () =>
       prisma.stockItem.create({
-        data: { productId: sample.product.id, credentials: encryptCredentials(cred), activeCredentialKey: claimKey() },
+        data: { productId: sample.product.id, credentials: encryptLegacyV1(cred), activeCredentialKey: claimKey() },
       });
     const results = await Promise.allSettled([insert(), insert()]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);

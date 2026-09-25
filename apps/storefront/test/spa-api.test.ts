@@ -37,7 +37,7 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
-import { encryptCredentials, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../tests/helpers/envelopeFlag";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -2563,7 +2563,7 @@ describe("/api/v1/account twins", () => {
     });
 
     it("GET /account/orders/:code shows an unreadable credential as null instead of failing the page", async () => {
-      const good = JSON.parse(encryptCredentials("acc-unreadable@mail.com:pw")) as Record<string, unknown>;
+      const good = JSON.parse(encryptLegacyV1("acc-unreadable@mail.com:pw")) as Record<string, unknown>;
       const stock = await prisma.stockItem.create({
         data: {
           productId: denomId,
@@ -2977,7 +2977,7 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
     await prisma.order.update({
       where: { orderCode },
-      data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent("user: netflix1\npass: hunter2") },
+      data: { status: OrderStatus.DELIVERED, deliveredContent: encryptLegacyV1("user: netflix1\npass: hunter2") },
     });
     const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
     expect(res.json().delivered).toBe(true);
@@ -2997,7 +2997,7 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
 
   it("GET shows an unreadable delivered_content as null instead of failing the page", async () => {
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
-    const good = JSON.parse(encryptDeliveredContent("user: x\npass: hunter4")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("user: x\npass: hunter4")) as Record<string, unknown>;
     await prisma.order.update({
       where: { orderCode },
       data: {

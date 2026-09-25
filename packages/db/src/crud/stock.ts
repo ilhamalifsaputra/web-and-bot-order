@@ -13,7 +13,9 @@
 import { StockStatus, StockEventType, StockActorType, DeadReason } from "@app/core/enums";
 import {
   encryptCredentials,
-  decryptCredentials,
+  encryptStockCredentials,
+  credentialEnvelopeWriteVersion,
+  decryptStockCredentials,
   tryDecryptCredentials,
   computeCredentialFingerprint,
   computeIdentityFingerprint,
@@ -22,6 +24,19 @@ import {
 } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
 import { recordStockEvent, recordStockEvents, type StockEventActor } from "./stockEvents";
+
+/** Only reached while writers emit v1, which ignores its context; a v2 write always gets the row's id. */
+const V1_STOCK_CREDENTIALS_AAD = "stock_items.credentials:v1";
+
+/** Rows per INSERT: 11 columns each keeps a statement far below Postgres' 65535 bind-parameter limit. */
+const STOCK_INSERT_CHUNK_ROWS = 2000;
+
+/** Take `count` ids from stock_items' own sequence, so a v2 envelope can bind its row id before the insert. */
+async function reserveStockItemIds(tx: Db, count: number): Promise<number[]> {
+  const rows = await tx.$queryRaw<{ id: bigint }[]>`
+    SELECT nextval(pg_get_serial_sequence('stock_items', 'id')) AS id FROM generate_series(1, ${count}::int)`;
+  return rows.map((r) => Number(r.id));
+}
 
 /** Runs `fn` on the caller's transaction, or opens one when handed a bare client. */
 async function inTransaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
@@ -103,6 +118,10 @@ export interface BulkAddStockResult {
  * Each new row holds `activeCredentialKey` (unique) while live, so even a
  * writer that bypasses the advisory lock below can't insert a second live
  * copy; a row that loses on that constraint is counted as a duplicate.
+ *
+ * With CREDENTIAL_ENVELOPE_WRITE_V2 on, each row's envelope is bound to its
+ * own id (Fase 6d): the ids are reserved from the sequence in one statement
+ * first, so the insert stays one statement per chunk either way.
  */
 export async function bulkAddStock(
   db: Db,
@@ -199,27 +218,37 @@ export async function bulkAddStock(
       select: { id: true },
     });
 
+    // v2 envelopes bind the row id as AAD, so with the flag on the ids are
+    // reserved from the sequence first (same transaction and lock) and the
+    // rows are inserted with them; with it off, v1 needs no id.
     // skipDuplicates: a claim held by a live row the dedup read didn't see is a duplicate, not a crash.
-    const created = fresh.length
-      ? await tx.stockItem.createManyAndReturn({
-          data: fresh.map(([fp, { plain, identity }]) => {
-            const stored = encryptCredentials(plain);
-            return {
-              productId,
-              credentials: stored,
-              status: StockStatus.AVAILABLE,
-              importBatchId: batch.id,
-              addedByAdminId: adminId,
-              credentialFingerprint: fp,
-              identityFingerprint: identity,
-              credentialKeyVersion: (JSON.parse(stored) as CredentialEnvelope).keyVersion,
-              activeCredentialKey: stockClaimKey(productId, fp),
-            };
-          }),
+    const ids =
+      fresh.length && credentialEnvelopeWriteVersion() === 2 ? await reserveStockItemIds(tx, fresh.length) : null;
+    const rows = fresh.map(([fp, { plain, identity }], i) => {
+      const stored = ids ? encryptStockCredentials(plain, ids[i]!) : encryptCredentials(plain, V1_STOCK_CREDENTIALS_AAD);
+      return {
+        ...(ids ? { id: ids[i]! } : {}),
+        productId,
+        credentials: stored,
+        status: StockStatus.AVAILABLE,
+        importBatchId: batch.id,
+        addedByAdminId: adminId,
+        credentialFingerprint: fp,
+        identityFingerprint: identity,
+        credentialKeyVersion: (JSON.parse(stored) as CredentialEnvelope).keyVersion,
+        activeCredentialKey: stockClaimKey(productId, fp),
+      };
+    });
+    const created: { id: number; identityFingerprint: string | null; credentialFingerprint: string | null }[] = [];
+    for (let start = 0; start < rows.length; start += STOCK_INSERT_CHUNK_ROWS) {
+      created.push(
+        ...(await tx.stockItem.createManyAndReturn({
+          data: rows.slice(start, start + STOCK_INSERT_CHUNK_ROWS),
           select: { id: true, identityFingerprint: true, credentialFingerprint: true },
           skipDuplicates: true,
-        })
-      : [];
+        })),
+      );
+    }
 
     const identityCounts = new Map<string, number>();
     for (const r of created) identityCounts.set(r.identityFingerprint!, (identityCounts.get(r.identityFingerprint!) ?? 0) + 1);
@@ -425,7 +454,7 @@ export async function listAvailableCredentials(db: Db, productId: number): Promi
 export async function revealStockCredentials(db: Db, stockId: number, adminId: number): Promise<string | null> {
   const item = await db.stockItem.findFirst({ where: { id: stockId, deletedAt: null }, select: { credentials: true } });
   if (!item) return null;
-  const credentials = decryptCredentials(item.credentials);
+  const credentials = decryptStockCredentials(item.credentials, stockId);
   await recordStockEvent(db, {
     stockItemId: stockId,
     eventType: StockEventType.CREDENTIAL_REVEALED,

@@ -2,7 +2,12 @@ import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from "vitest
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { getSetting, setSetting, deleteSetting, setEncryptedSetting, getDecryptedSetting } from "./settings";
-import { isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import {
+  credentialEnvelopeVersion,
+  CredentialEnvelopeError,
+  isEncryptedCredentialEnvelope,
+} from "@app/core/credentialCrypto";
+import { useEnvelopeWriteV2 } from "../../../../tests/helpers/envelopeFlag";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -81,5 +86,27 @@ describe("setEncryptedSetting / getDecryptedSetting", () => {
     expect(row).not.toBeNull();
     expect(row!.value).not.toBe("another-secret-value");
     expect(isEncryptedCredentialEnvelope(row!.value)).toBe(true);
+  });
+});
+
+describe.each([false, true])("encrypted settings with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+
+  it("round-trips through setEncryptedSetting/getDecryptedSetting and writes the flag's envelope version", async () => {
+    await setEncryptedSetting(prisma, "smtp_pass", "smtp-secret-6d");
+    const row = await prisma.setting.findUniqueOrThrow({ where: { key: "smtp_pass" } });
+    expect(credentialEnvelopeVersion(row.value)).toBe(on ? 2 : 1);
+    expect(await getDecryptedSetting(prisma, "smtp_pass")).toBe("smtp-secret-6d");
+  });
+
+  it("a value copied onto another key only decrypts when it is v1", async () => {
+    await setEncryptedSetting(prisma, "tokopay_secret", "tokopay-secret-6d");
+    const row = await prisma.setting.findUniqueOrThrow({ where: { key: "tokopay_secret" } });
+    await setSetting(prisma, "paydisini_apikey", row.value);
+    if (on) {
+      await expect(getDecryptedSetting(prisma, "paydisini_apikey")).rejects.toThrow(CredentialEnvelopeError);
+    } else {
+      expect(await getDecryptedSetting(prisma, "paydisini_apikey")).toBe("tokopay-secret-6d");
+    }
   });
 });

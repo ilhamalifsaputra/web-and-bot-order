@@ -241,7 +241,7 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("DELIVERED");
-    expect(decryptDeliveredContent(updated!.deliveredContent)).toBe("SN-12345"); // the live re-check's sn, not cb.sn
+    expect(decryptDeliveredContent(updated!.deliveredContent, order.id)).toBe("SN-12345"); // the live re-check's sn, not cb.sn
 
     const dmRows = await prisma.notificationOutbox.findMany({
       where: { orderId: order.id, event: "ORDER_MANUAL_DELIVERED_DM" },
@@ -280,7 +280,7 @@ describe("POST /pay/digiflazz/callback", () => {
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("DELIVERED");
-    expect(decryptDeliveredContent(updated!.deliveredContent)).toBe("SN-1"); // unchanged by the replay
+    expect(decryptDeliveredContent(updated!.deliveredContent, order.id)).toBe("SN-1"); // unchanged by the replay
   });
 
   // Task 12 (I-1) core proof: a captured/replayed Sukses callback whose live
@@ -446,7 +446,7 @@ describe("POST /pay/digiflazz/callback", () => {
     const order = await createProcessingDigiflazzOrder("ORD-DFDELIVERED");
     await prisma.order.update({
       where: { id: order.id },
-      data: { status: "DELIVERED", deliveredContent: encryptDeliveredContent("SN-ALREADY"), deliveredAt: new Date() },
+      data: { status: "DELIVERED", deliveredContent: encryptDeliveredContent("SN-ALREADY", order.id), deliveredAt: new Date() },
     });
     const payload = signedPayload({ refId: order.orderCode, status: "Sukses", sn: "SN-REPLAY" });
 
@@ -457,7 +457,7 @@ describe("POST /pay/digiflazz/callback", () => {
     expect(digiflazzSupplierMock.createTransaction).not.toHaveBeenCalled();
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("DELIVERED");
-    expect(decryptDeliveredContent(updated!.deliveredContent)).toBe("SN-ALREADY"); // unchanged by the replay
+    expect(decryptDeliveredContent(updated!.deliveredContent, order.id)).toBe("SN-ALREADY"); // unchanged by the replay
   });
 
   // Task 12 (I-4): a validly-signed callback naming an order that isn't

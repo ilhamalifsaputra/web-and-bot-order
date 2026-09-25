@@ -40,7 +40,7 @@ import {
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType, StockActorType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -687,7 +687,7 @@ describe("getPaydisiniCreds — minAmount", () => {
 describe("getPaydisiniCreds — encrypted secret (Task 13)", () => {
   it("decrypts a paydisini_apikey row stored as an encrypted envelope", async () => {
     await setSetting(prisma, "paydisini_userkey", "uk");
-    await setSetting(prisma, "paydisini_apikey", encryptCredentials("real-paydisini-apikey"));
+    await setSetting(prisma, "paydisini_apikey", encryptCredentials("real-paydisini-apikey", settingValueAad("paydisini_apikey")));
     expect((await getPaydisiniCreds(prisma))!.apiKey).toBe("real-paydisini-apikey");
   });
 });

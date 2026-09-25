@@ -47,7 +47,7 @@ import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import type { Db } from "./_types";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 /** Mutable in-memory Setting store backing both `findUnique` and `upsert`,
  * needed by recordBybitBscPollHealth (writes) + getBybitBscPollHealth (reads). */
@@ -150,8 +150,8 @@ describe("resolveBybitBscConfig — encrypted secrets (Task 13)", () => {
     const cfg = await resolveBybitBscConfig(
       stubDb({
         bybit_bsc_deposit_address: "db-deposit-address",
-        bybit_api_key: encryptCredentials("real-bybit-apikey"),
-        bybit_api_secret: encryptCredentials("real-bybit-apisecret"),
+        bybit_api_key: encryptCredentials("real-bybit-apikey", settingValueAad("bybit_api_key")),
+        bybit_api_secret: encryptCredentials("real-bybit-apisecret", settingValueAad("bybit_api_secret")),
       }),
     );
     expect(cfg.apiKey).toBe("real-bybit-apikey");
@@ -182,7 +182,7 @@ describe("resolveBybitBscTrackerConfig", () => {
   });
 
   it("decrypts bscscan_api_key when stored as an encrypted envelope (Task 13)", async () => {
-    const cfg = await resolveBybitBscTrackerConfig(stubDb({ bscscan_api_key: encryptCredentials("real-bscscan-key") }));
+    const cfg = await resolveBybitBscTrackerConfig(stubDb({ bscscan_api_key: encryptCredentials("real-bscscan-key", settingValueAad("bscscan_api_key")) }));
     expect(cfg.apiKey).toBe("real-bscscan-key");
   });
 });

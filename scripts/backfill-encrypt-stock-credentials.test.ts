@@ -8,7 +8,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { StockActorType, StockEventType } from "@app/core/enums";
-import { decryptCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { credentialEnvelopeVersion, decryptStockCredentials, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
+import { useEnvelopeWriteV2 } from "../tests/helpers/envelopeFlag";
 import { makeTestDb, type TestDb } from "../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../tests/helpers/sampleData";
 import { backfillEncryptStockCredentials } from "./backfill-encrypt-stock-credentials";
@@ -51,7 +52,7 @@ describe("backfillEncryptStockCredentials", () => {
     for (const [i, id] of ids.entries()) {
       const row = await prisma.stockItem.findUniqueOrThrow({ where: { id } });
       expect(isEncryptedCredentialEnvelope(row.credentials)).toBe(true);
-      expect(decryptCredentials(row.credentials)).toBe(`legacy${i + 1}@x:pw`);
+      expect(decryptStockCredentials(row.credentials, id)).toBe(`legacy${i + 1}@x:pw`);
       const events = await prisma.stockItemEvent.findMany({ where: { stockItemId: id } });
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
@@ -91,5 +92,17 @@ describe("backfillEncryptStockCredentials", () => {
     const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: id! } });
     expect(isEncryptedCredentialEnvelope(row.credentials)).toBe(true);
     expect(await prisma.stockItemEvent.count({ where: { stockItemId: id!, eventType: StockEventType.REENCRYPTED } })).toBe(1);
+  });
+});
+
+describe.each([false, true])("backfillEncryptStockCredentials with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+
+  it("writes the flag's envelope version bound to each row's own id", async () => {
+    const [id] = await addLegacyPlaintextRows(["legacy-6d@x:pw"]);
+    await backfillEncryptStockCredentials(prisma);
+    const row = await prisma.stockItem.findUniqueOrThrow({ where: { id: id! } });
+    expect(credentialEnvelopeVersion(row.credentials)).toBe(on ? 2 : 1);
+    expect(decryptStockCredentials(row.credentials, id!)).toBe("legacy-6d@x:pw");
   });
 });

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vites
 import type { PrismaClient } from "@prisma/client";
 import {
   decryptDeliveredContent,
+  credentialEnvelopeVersion,
   encryptDeliveredContent,
   isEncryptedCredentialEnvelope,
 } from "@app/core/credentialCrypto";
@@ -14,6 +15,7 @@ import { makeTestDb, type TestDb } from "../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../tests/helpers/sampleData";
 import { createOrderDirect } from "../packages/db/src/crud/orders";
 import { backfillEncryptDeliveredContent } from "./backfill-encrypt-delivered-content";
+import { useEnvelopeWriteV2, encryptLegacyV1 } from "../tests/helpers/envelopeFlag";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -38,7 +40,7 @@ async function orderWithStored(stored: string | null): Promise<number> {
 }
 
 function corruptEnvelope(): string {
-  const good = JSON.parse(encryptDeliveredContent("user:c pass:Corrupt9")) as Record<string, unknown>;
+  const good = JSON.parse(encryptLegacyV1("user:c pass:Corrupt9")) as Record<string, unknown>;
   return JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") });
 }
 
@@ -50,7 +52,7 @@ describe("backfillEncryptDeliveredContent", () => {
   it("encrypts plaintext rows, skips encrypted and null rows, and counts a corrupt envelope without touching it", async () => {
     const legacyA = await orderWithStored("SN-LEGACY-A");
     const legacyB = await orderWithStored("user: acc1\npass: Hunter2");
-    const already = encryptDeliveredContent("SN-NEW");
+    const already = encryptLegacyV1("SN-NEW");
     const alreadyId = await orderWithStored(already);
     const corrupt = corruptEnvelope();
     const corruptId = await orderWithStored(corrupt);
@@ -62,7 +64,7 @@ describe("backfillEncryptDeliveredContent", () => {
     for (const [id, plain] of [[legacyA, "SN-LEGACY-A"], [legacyB, "user: acc1\npass: Hunter2"]] as const) {
       const stored = await rawContent(id);
       expect(isEncryptedCredentialEnvelope(stored!)).toBe(true);
-      expect(decryptDeliveredContent(stored)).toBe(plain);
+      expect(decryptDeliveredContent(stored, id)).toBe(plain);
     }
     expect(await rawContent(alreadyId)).toBe(already);
     expect(await rawContent(corruptId)).toBe(corrupt);
@@ -100,5 +102,22 @@ describe("backfillEncryptDeliveredContent", () => {
       log.mockRestore();
       error.mockRestore();
     }
+  });
+});
+
+describe.each([false, true])("backfillEncryptDeliveredContent with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+
+  it("writes the flag's envelope version bound to the order, and counts an envelope bound to its own order as encrypted", async () => {
+    const legacyId = await orderWithStored("SN-6D-LEGACY");
+    const boundId = await orderWithStored(null);
+    await prisma.order.update({ where: { id: boundId }, data: { deliveredContent: encryptDeliveredContent("SN-6D-BOUND", boundId) } });
+
+    const report = await backfillEncryptDeliveredContent(prisma);
+
+    expect(report).toMatchObject({ plaintext: 1, encrypted: 1, alreadyEncrypted: 1, corrupt: 0 });
+    const stored = (await rawContent(legacyId))!;
+    expect(credentialEnvelopeVersion(stored)).toBe(on ? 2 : 1);
+    expect(decryptDeliveredContent(stored, legacyId)).toBe("SN-6D-LEGACY");
   });
 });

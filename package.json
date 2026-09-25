@@ -19,6 +19,7 @@
     "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
     "backfill-encrypt-stock-credentials": "tsx scripts/backfill-encrypt-stock-credentials.ts",
     "backfill-encrypt-delivered-content": "tsx scripts/backfill-encrypt-delivered-content.ts",
+    "reencrypt-credentials-v2": "tsx scripts/reencrypt-credentials-v2.ts",
     "backfill-stock-traceability": "tsx scripts/backfill-stock-traceability.ts",
     "audit-stock-integrity": "tsx scripts/audit-stock-integrity.ts",
     "backfill-encrypt-settings-secrets": "tsx scripts/backfill-encrypt-settings-secrets.ts",

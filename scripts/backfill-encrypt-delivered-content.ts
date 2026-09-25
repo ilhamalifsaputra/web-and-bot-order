@@ -23,7 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma, initDb } from "@app/db";
 import {
   CredentialKeyConfigError,
-  decryptCredentials,
+  decryptDeliveredContent,
   encryptDeliveredContent,
   isEncryptedCredentialEnvelope,
 } from "@app/core/credentialCrypto";
@@ -73,7 +73,7 @@ export async function backfillEncryptDeliveredContent(
       report.scanned++;
       if (isEncryptedCredentialEnvelope(stored)) {
         try {
-          decryptCredentials(stored);
+          decryptDeliveredContent(stored, row.id);
           report.alreadyEncrypted++;
         } catch (err) {
           if (err instanceof CredentialKeyConfigError) throw err;
@@ -86,7 +86,7 @@ export async function backfillEncryptDeliveredContent(
       // Compare-and-set on the value just read, so a concurrent write is never overwritten.
       const { count } = await db.order.updateMany({
         where: { id: row.id, deliveredContent: stored },
-        data: { deliveredContent: encryptDeliveredContent(stored) },
+        data: { deliveredContent: encryptDeliveredContent(stored, row.id) },
       });
       if (count === 1) report.encrypted++;
       else report.changedDuringRun++;

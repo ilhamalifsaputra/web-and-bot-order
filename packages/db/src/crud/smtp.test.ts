@@ -14,7 +14,7 @@ vi.mock("@app/core/config", () => ({ config: mockConfig }));
 
 import { getSmtpCreds } from "./smtp";
 import type { Db } from "./_types";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 /** In-memory Setting store as a Db stub (only `setting.findUnique` is used). */
 function stubDb(values: Record<string, string>): Db {
@@ -102,7 +102,7 @@ describe("getSmtpCreds", () => {
       stubDb({
         smtp_host: "smtp.hostinger.com",
         smtp_from: "Trustance <no-reply@trustance.id>",
-        smtp_pass: encryptCredentials("real-smtp-password"),
+        smtp_pass: encryptCredentials("real-smtp-password", settingValueAad("smtp_pass")),
       }),
     );
     expect(creds?.pass).toBe("real-smtp-password");

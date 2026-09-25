@@ -9,7 +9,8 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { bulkDeleteStock, deleteStockItem, listAvailableCredentials } from "@app/db";
 import { StockActorType, StockEventType, StockStatus } from "@app/core/enums";
-import { encryptCredentials, CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { CredentialKeyConfigError } from "@app/core/credentialCrypto";
+import { encryptLegacyV1 } from "../../../../tests/helpers/envelopeFlag";
 import { logger } from "@app/core/logger";
 
 let db: TestDb;
@@ -222,7 +223,7 @@ describe("listAvailableCredentials", () => {
   it("skips an unreadable row with a row-id warning instead of failing the whole export", async () => {
     const { product } = sample;
     const [first] = await idsFor(product.id, StockStatus.AVAILABLE);
-    const good = JSON.parse(encryptCredentials("gone@example.com:pw")) as Record<string, unknown>;
+    const good = JSON.parse(encryptLegacyV1("gone@example.com:pw")) as Record<string, unknown>;
     await prisma.stockItem.update({
       where: { id: first },
       data: { credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }) },
@@ -242,7 +243,7 @@ describe("listAvailableCredentials", () => {
   it("still fails loudly when the encryption key is missing", async () => {
     const { product } = sample;
     const [first] = await idsFor(product.id, StockStatus.AVAILABLE);
-    await prisma.stockItem.update({ where: { id: first }, data: { credentials: encryptCredentials("x@example.com:pw") } });
+    await prisma.stockItem.update({ where: { id: first }, data: { credentials: encryptLegacyV1("x@example.com:pw") } });
     const saved = process.env.CREDENTIAL_ENCRYPTION_KEY;
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     try {

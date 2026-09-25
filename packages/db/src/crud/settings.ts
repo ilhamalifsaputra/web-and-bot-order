@@ -2,7 +2,7 @@
  * Runtime key/value settings — port of the "Settings" section of crud.py.
  */
 import type { Db } from "./_types";
-import { encryptCredentials, decryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, decryptCredentials, settingValueAad } from "@app/core/credentialCrypto";
 
 // Settings are read constantly on hot paths (bot menu banner, FX rate for
 // pricing) but change only when an admin edits them, so a short TTL cache
@@ -87,7 +87,7 @@ export const ENCRYPTED_SETTING_KEYS = new Set([
  * CredentialKeyConfigError (@app/core/credentialCrypto) if
  * CREDENTIAL_ENCRYPTION_KEY isn't configured. */
 export async function setEncryptedSetting(db: Db, key: string, plaintext: string): Promise<void> {
-  await setSetting(db, key, encryptCredentials(plaintext));
+  await setSetting(db, key, encryptCredentials(plaintext, settingValueAad(key)));
 }
 
 /** Read + decrypt `key`; null when unset, same contract as getSetting.
@@ -95,5 +95,5 @@ export async function setEncryptedSetting(db: Db, key: string, plaintext: string
  * unchanged. */
 export async function getDecryptedSetting(db: Db, key: string): Promise<string | null> {
   const raw = await getSetting(db, key);
-  return raw === null ? null : decryptCredentials(raw);
+  return raw === null ? null : decryptCredentials(raw, settingValueAad(key));
 }

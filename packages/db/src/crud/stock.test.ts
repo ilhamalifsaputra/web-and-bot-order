@@ -866,3 +866,56 @@ describe.each([false, true])("stock credentials with CREDENTIAL_ENVELOPE_WRITE_V
     }
   });
 });
+
+describe.each([false, true])("bulkAddStock at upload scale with CREDENTIAL_ENVELOPE_WRITE_V2 %s (Fase 6d)", (on) => {
+  useEnvelopeWriteV2(on);
+  const lines = (n: number, tag: string) => Array.from({ length: n }, (_, i) => `${tag}-${i}@scale.test:pw${i}`);
+
+  it("imports 5000 lines in one app-default (10 s) transaction, each row readable under its own id", async () => {
+    const { product } = sample;
+    const plains = lines(5000, "big");
+    const started = Date.now();
+    const res = await prisma.$transaction((tx) => bulkAddStock(tx, product.id, plains), { timeout: 10_000 });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(res).toMatchObject({ added: 5000, skipped: 0 });
+
+    const rows = await prisma.stockItem.findMany({ where: { importBatchId: res.batchId } });
+    expect(rows).toHaveLength(5000);
+    const seen = new Set<string>();
+    for (const row of rows) {
+      expect(credentialEnvelopeVersion(row.credentials)).toBe(on ? 2 : 1);
+      seen.add(decryptStockCredentials(row.credentials, row.id));
+    }
+    expect(seen.size).toBe(5000);
+    expect(await prisma.stockItemEvent.count({ where: { stockItemId: { in: rows.map((r) => r.id) } } })).toBe(5000);
+  }, 60_000);
+
+  it("a failure after the first insert chunk rolls the whole upload back", async () => {
+    const { product } = sample;
+    const before = await prisma.stockItem.count();
+    const batchesBefore = await prisma.stockImportBatch.count();
+    await expect(
+      prisma.$transaction(async (tx) => {
+        let calls = 0;
+        // Fail the second INSERT chunk, after the first one (and any reserved ids) went through.
+        const failing = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop !== "stockItem") return Reflect.get(target, prop, receiver);
+            return new Proxy(target.stockItem, {
+              get(delegate, method, r) {
+                if (method !== "createManyAndReturn") return Reflect.get(delegate, method, r);
+                return (args: Parameters<typeof target.stockItem.createManyAndReturn>[0]) => {
+                  if (++calls === 2) throw new Error("simulated mid-upload failure");
+                  return target.stockItem.createManyAndReturn(args);
+                };
+              },
+            });
+          },
+        });
+        await bulkAddStock(failing, product.id, lines(2500, "rollback"));
+      }, { timeout: 10_000 }),
+    ).rejects.toThrow("simulated mid-upload failure");
+    expect(await prisma.stockItem.count()).toBe(before);
+    expect(await prisma.stockImportBatch.count()).toBe(batchesBefore);
+  }, 60_000);
+});

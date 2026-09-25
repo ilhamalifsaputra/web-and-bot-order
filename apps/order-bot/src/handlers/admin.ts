@@ -14,7 +14,7 @@ import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, DeadReason, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { tryDecryptCredentials } from "@app/core/credentialCrypto";
 import {
   prisma,
   countPendingVerifications,
@@ -489,21 +489,12 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   };
   const lines = items.map((it) => {
     const icon = statusIcons[it.status] ?? "⚪";
-    // listStockItemsForProduct returns the raw encrypted envelope (it's also
-    // used for the web-admin masked list) — decrypt just for this preview.
-    // Never let a decrypt failure (e.g. unconfigured key) crash the whole
-    // admin stock browser or leak the raw ciphertext envelope as if it were
-    // the account itself.
-    let creds: string;
-    try {
-      creds = decryptCredentials(it.credentials ?? "");
-    } catch (err) {
-      logger.warn(
-        { err, stockItemId: it.id },
-        "Failed to decrypt a stock item's credentials for the admin preview — check CREDENTIAL_ENCRYPTION_KEY",
-      );
-      creds = "[unavailable]";
-    }
+    // listStockItemsForProduct returns the raw encrypted envelope — decrypt just
+    // for this preview; an unreadable row shows as unavailable, never as its envelope.
+    // A missing key throws here, but the boot-time key check makes that unreachable.
+    const creds =
+      tryDecryptCredentials(it.credentials ?? "", { stockItemId: it.id, purpose: "the admin bot stock preview" }) ??
+      "[unavailable]";
     const preview = creds.slice(0, 30) + (creds.length > 30 ? "…" : "");
     return `${icon} #${it.id} — ${preview}`;
   });

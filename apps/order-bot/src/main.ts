@@ -25,6 +25,7 @@ import { botToken, setBotIdentity, adminIds, setAdminIds } from "@app/core/runti
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, getSetting } from "@app/db";
 import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
 import { logger } from "@app/core/logger";
+import { assertCredentialKeyConfigured } from "@app/core/credentialCrypto";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit, adminOnly, joinGate, commerceGate } from "./middleware";
@@ -258,6 +259,8 @@ export function guardRunnerTask(task: Promise<unknown> | undefined, onError: (er
 }
 
 export async function start(): Promise<void> {
+  // Fail fast on a missing/malformed CREDENTIAL_ENCRYPTION_KEY rather than at the first stock upload or delivery.
+  assertCredentialKeyConfigured();
   await initDb();
   setAdminIds(await resolveAdminIds(prisma));
   setCustomEmojiMap(await getSetting(prisma, CUSTOM_EMOJI_MAP_SETTING));

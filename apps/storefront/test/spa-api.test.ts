@@ -37,6 +37,7 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
+import { encryptCredentials } from "@app/core/credentialCrypto";
 import {
   prisma,
   initDb,
@@ -2558,6 +2559,34 @@ describe("/api/v1/account twins", () => {
         headers: { cookie: peeker.cookie },
       });
       expect(probe.statusCode).toBe(404);
+    });
+
+    it("GET /account/orders/:code shows an unreadable credential as null instead of failing the page", async () => {
+      const good = JSON.parse(encryptCredentials("acc-unreadable@mail.com:pw")) as Record<string, unknown>;
+      const stock = await prisma.stockItem.create({
+        data: {
+          productId: denomId,
+          credentials: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }),
+          status: "SOLD",
+        },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-ACCBAD-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+      const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().delivered).toBe(true);
+      expect(res.json().order.items[0].credentials).toBeNull();
+      expect(res.body).not.toContain(good.ciphertext as string);
     });
 
     // Final whole-branch review I-2 fix: the base GET must include the

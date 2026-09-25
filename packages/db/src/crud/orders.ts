@@ -33,7 +33,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { decryptCredentials, tryDecryptCredentials } from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
@@ -548,6 +548,44 @@ export function getOrderByCode(db: Db, orderCode: string) {
 export async function getOrderByCodeFull(db: Db, orderCode: string) {
   const order = await db.order.findUnique({ where: { orderCode }, include: fullInclude });
   return order ? withDecryptedStockCredentials(order) : order;
+}
+
+type StockCredentialsOrder = { items: Array<{ stockItem: { id: number; credentials: string } | null }> };
+type DisplayItem<I extends StockCredentialsOrder["items"][number]> = Omit<I, "stockItem"> & {
+  stockItem: (Omit<NonNullable<I["stockItem"]>, "credentials"> & { credentials: string | null }) | null;
+};
+
+/** DISPLAY-ONLY twin of withDecryptedStockCredentials: an unreadable row's
+ * credentials become null (logged by row id) instead of failing the page.
+ * Never use it on a delivery path — a delivery must throw and retry. */
+type DisplayOrder<T extends StockCredentialsOrder> = Omit<T, "items"> & { items: Array<DisplayItem<T["items"][number]>> };
+
+function withDisplayStockCredentials<T extends StockCredentialsOrder>(order: T): DisplayOrder<T> {
+  // Cast for the same reason as withDecryptedStockCredentials: TS can't map a spread over a generic T.
+  return {
+    ...order,
+    items: order.items.map((item) =>
+      item.stockItem
+        ? {
+            ...item,
+            stockItem: {
+              ...item.stockItem,
+              credentials: tryDecryptCredentials(item.stockItem.credentials, {
+                stockItemId: item.stockItem.id,
+                purpose: "a buyer's order detail page",
+              }),
+            },
+          }
+        : item,
+    ),
+  } as unknown as DisplayOrder<T>;
+}
+
+/** getOrderByCodeFull for the buyer's order detail PAGE only (unreadable
+ * credentials come back null). Delivery must use getOrderByCodeFull. */
+export async function getOrderByCodeFullForDisplay(db: Db, orderCode: string) {
+  const order = await db.order.findUnique({ where: { orderCode }, include: fullInclude });
+  return order ? withDisplayStockCredentials(order) : order;
 }
 
 /** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */

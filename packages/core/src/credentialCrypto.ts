@@ -23,6 +23,7 @@ import { createCipheriv, createDecipheriv, randomBytes, hkdfSync, createHmac } f
 // isn't in the Env schema either). dotenv (config.ts's own import) already
 // loads the root .env before this runs, so a `.env`-only key still resolves.
 import "./config";
+import { logger } from "./logger";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH_BYTES = 12; // NIST-recommended GCM IV length.
@@ -55,6 +56,45 @@ export class CredentialKeyConfigError extends Error {
     super(message);
     this.name = "CredentialKeyConfigError";
   }
+}
+
+/** Raised by `decryptCredentials` for a legacy plaintext (non-envelope) value
+ * when ALLOW_LEGACY_PLAINTEXT is off. Never carries the stored value. */
+export class LegacyPlaintextCredentialError extends Error {
+  constructor() {
+    super(
+      "A stored credential is legacy plaintext rather than an encrypted envelope, and ALLOW_LEGACY_PLAINTEXT is off. Run the credential encryption backfill scripts, or turn the flag back on.",
+    );
+    this.name = "LegacyPlaintextCredentialError";
+  }
+}
+
+/** Read lazily (like the key) so tests can flip it. Permissive unless explicitly
+ * set to a false value, until the backfills have been measured on production. */
+function legacyPlaintextAllowed(): boolean {
+  const raw = process.env.ALLOW_LEGACY_PLAINTEXT;
+  if (raw === undefined) return true;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+}
+
+let legacyPassthroughs = 0;
+
+/** How many legacy plaintext values this process has passed through unchanged. */
+export function legacyPlaintextPassthroughCount(): number {
+  return legacyPassthroughs;
+}
+
+function legacyPlaintext(stored: string): string {
+  // An empty value carries no secret; refusing it would only break blank settings.
+  if (stored === "") return stored;
+  if (!legacyPlaintextAllowed()) throw new LegacyPlaintextCredentialError();
+  legacyPassthroughs++;
+  if (legacyPassthroughs === 1) {
+    logger.warn(
+      "A stored credential was read as legacy plaintext (not encrypted). Run the credential encryption backfill scripts; further occurrences in this process are only counted, not logged.",
+    );
+  }
+  return stored;
 }
 
 /** Resolve the raw AES-256 key bytes for a given envelope key version.
@@ -139,6 +179,8 @@ function isEnvelopeShape(value: unknown): value is CredentialEnvelope {
  * established pattern for tolerating rows that predate a schema/format
  * change (see OrderItem.deliveryTypeSnapshot's null-fallback in
  * schema.prisma) rather than crashing every read path on stale data.
+ * Setting ALLOW_LEGACY_PLAINTEXT=false turns that fallback into a
+ * LegacyPlaintextCredentialError once the backfills are done.
  *
  * A value that DOES look like an envelope but fails to decrypt (wrong key,
  * corrupted ciphertext, tampered auth tag) still throws — that's a real
@@ -149,9 +191,9 @@ export function decryptCredentials(stored: string): string {
   try {
     parsed = JSON.parse(stored);
   } catch {
-    return stored;
+    return legacyPlaintext(stored);
   }
-  if (!isEnvelopeShape(parsed)) return stored;
+  if (!isEnvelopeShape(parsed)) return legacyPlaintext(stored);
 
   const key = keyForVersion(parsed.keyVersion);
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"));
@@ -161,6 +203,46 @@ export function decryptCredentials(stored: string): string {
     decipher.final(),
   ]);
   return plaintext.toString("utf8");
+}
+
+/**
+ * Boot-time check, called from each process's `start()` only (never from
+ * buildServer/buildApp, so tests that build an app without a key still run):
+ * fails fast with CredentialKeyConfigError when the key is missing or
+ * malformed, instead of the first stock upload or delivery discovering it.
+ * The round-trip canary proves the key actually works for AES-256-GCM.
+ */
+export function assertCredentialKeyConfigured(): void {
+  keyForVersion(CURRENT_KEY_VERSION);
+  const canary = "credential-key-canary";
+  if (decryptCredentials(encryptCredentials(canary)) !== canary) {
+    throw new CredentialKeyConfigError("CREDENTIAL_ENCRYPTION_KEY failed its encrypt/decrypt round-trip check.");
+  }
+}
+
+/**
+ * Guarded decrypt for DISPLAY and SEARCH paths only (admin lists, exports,
+ * previews): an unreadable row becomes null plus a warning naming the row,
+ * so one corrupt row cannot break the whole screen. Delivery paths must keep
+ * calling `decryptCredentials` so a failure throws and the delivery retries
+ * rather than handing a buyer nothing. A misconfigured key is not a per-row
+ * problem, so CredentialKeyConfigError is rethrown.
+ */
+export function tryDecryptCredentials(
+  stored: string,
+  ctx: { stockItemId: number | null; purpose: string },
+): string | null {
+  try {
+    return decryptCredentials(stored);
+  } catch (err) {
+    if (err instanceof CredentialKeyConfigError) throw err;
+    // Only the error's name: a message could echo part of the stored value.
+    logger.warn(
+      { stockItemId: ctx.stockItemId, errorName: err instanceof Error ? err.name : typeof err },
+      `Could not decrypt the credentials of stock item ${ctx.stockItemId ?? "(unknown)"} for ${ctx.purpose}; the row is skipped there. It is corrupted, tampered with, or was encrypted under a different key.`,
+    );
+    return null;
+  }
 }
 
 // ── Stock traceability hardening plan, Fase 2 ──────────────────────────────

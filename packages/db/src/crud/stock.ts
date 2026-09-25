@@ -14,10 +14,10 @@ import { StockStatus, StockEventType, StockActorType, DeadReason } from "@app/co
 import {
   encryptCredentials,
   decryptCredentials,
+  tryDecryptCredentials,
   computeCredentialFingerprint,
   computeIdentityFingerprint,
   computeImportSourceHash,
-  CredentialKeyConfigError,
   type CredentialEnvelope,
 } from "@app/core/credentialCrypto";
 import type { Db } from "./_types";
@@ -159,14 +159,11 @@ export async function bulkAddStock(
     let unreadableExisting = 0;
     const legacy = await tx.stockItem.findMany({
       where: { ...live, credentialFingerprint: null },
-      select: { credentials: true },
+      select: { id: true, credentials: true },
     });
     for (const r of legacy) {
-      let plain: string;
-      try {
-        plain = decryptCredentials(r.credentials);
-      } catch (err) {
-        if (err instanceof CredentialKeyConfigError) throw err;
+      const plain = tryDecryptCredentials(r.credentials, { stockItemId: r.id, purpose: "the stock import duplicate check" });
+      if (plain === null) {
         unreadableExisting++;
         continue;
       }
@@ -401,15 +398,19 @@ export async function deleteStockItem(db: Db, stockId: number, adminId: number):
 /**
  * The remaining ready-to-sell credentials for a product, oldest first — used to
  * build the downloadable export. AVAILABLE only (the "stok tersisa"); never
- * RESERVED/SOLD/DEAD. Caller is responsible for never logging the result.
+ * RESERVED/SOLD/DEAD. An unreadable row is left out (and logged by id). Caller
+ * is responsible for never logging the result.
  */
 export async function listAvailableCredentials(db: Db, productId: number): Promise<string[]> {
   const rows = await db.stockItem.findMany({
     where: { productId, deletedAt: null, status: StockStatus.AVAILABLE },
     orderBy: { id: "asc" },
-    select: { credentials: true },
+    select: { id: true, credentials: true },
   });
-  return rows.map((r) => decryptCredentials(r.credentials));
+  return rows.flatMap((r) => {
+    const plain = tryDecryptCredentials(r.credentials, { stockItemId: r.id, purpose: "the available-stock export" });
+    return plain === null ? [] : [plain];
+  });
 }
 
 /**
@@ -626,15 +627,10 @@ export async function searchStockCredentials(
   });
   const q = query.toLowerCase();
   const matches = rows.filter((r) => {
-    let cred: string;
-    try {
-      cred = decryptCredentials(r.credentials).toLowerCase();
-    } catch (err) {
-      if (err instanceof CredentialKeyConfigError) throw err;
-      // A single corrupted/tampered row must not abort the whole scan for
-      // every other row — treat it as a non-match instead.
-      return false;
-    }
+    const plain = tryDecryptCredentials(r.credentials, { stockItemId: r.id, purpose: "the admin stock search" });
+    // One unreadable row is a non-match, never an aborted scan.
+    if (plain === null) return false;
+    const cred = plain.toLowerCase();
     const note = (r.note ?? "").toLowerCase();
     return cred.includes(q) || note.includes(q);
   });

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { hkdfSync } from "node:crypto";
 import {
   encryptCredentials,
@@ -10,7 +10,12 @@ import {
   computeIdentityFingerprint,
   computeCredentialFingerprint,
   CredentialKeyConfigError,
+  assertCredentialKeyConfigured,
+  tryDecryptCredentials,
+  LegacyPlaintextCredentialError,
+  legacyPlaintextPassthroughCount,
 } from "./credentialCrypto";
+import { logger } from "./logger";
 
 const ORIGINAL_KEY = process.env.CREDENTIAL_ENCRYPTION_KEY;
 
@@ -55,7 +60,12 @@ describe("credentialCrypto", () => {
   });
 
   it("decryptCredentials passes through a legacy plaintext value unchanged (backward compat before backfill)", () => {
-    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("throws a structural error (never the value) when the key is unconfigured", () => {
@@ -183,5 +193,156 @@ describe("credential fingerprints (Fase 2 — stock traceability hardening)", ()
     delete process.env.CREDENTIAL_ENCRYPTION_KEY;
     expect(() => deriveCredentialIndexKey()).toThrow(CredentialKeyConfigError);
     expect(() => deriveCredentialIndexKey()).toThrow(/CREDENTIAL_ENCRYPTION_KEY is not configured/);
+  });
+});
+
+describe("assertCredentialKeyConfigured (Fase 6a — boot-time key check)", () => {
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("passes silently when a valid 32-byte hex key is configured", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(32);
+    expect(() => assertCredentialKeyConfigured()).not.toThrow();
+  });
+
+  it("throws CredentialKeyConfigError when the key is unset", () => {
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("throws CredentialKeyConfigError when the key has the wrong length", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "ab".repeat(16);
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("throws CredentialKeyConfigError when the key is 64 characters but not hex", () => {
+    process.env.CREDENTIAL_ENCRYPTION_KEY = "zz".repeat(32);
+    expect(() => assertCredentialKeyConfigured()).toThrow(CredentialKeyConfigError);
+  });
+
+  it("never puts the key material in the error message", () => {
+    const bad = "ab".repeat(20);
+    process.env.CREDENTIAL_ENCRYPTION_KEY = bad;
+    try {
+      assertCredentialKeyConfigured();
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).message).not.toContain(bad);
+    }
+  });
+});
+
+describe("tryDecryptCredentials (Fase 6a — guarded decrypt for display paths)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("returns the plaintext of a readable envelope without logging", () => {
+    const stored = encryptCredentials("a@b.com:pw");
+    expect(tryDecryptCredentials(stored, { stockItemId: 7, purpose: "test" })).toBe("a@b.com:pw");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("returns null and warns with the row id (never the content) for a tampered envelope", () => {
+    const envelope = JSON.parse(encryptCredentials("secret@b.com:Hunter2")) as { authTag: string };
+    envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
+    const stored = JSON.stringify(envelope);
+    expect(tryDecryptCredentials(stored, { stockItemId: 42, purpose: "the admin stock search" })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls[0]);
+    expect(logged).toContain("42");
+    expect(logged).not.toContain("Hunter2");
+    expect(logged).not.toContain(envelope.authTag);
+    expect(logged).not.toContain((JSON.parse(stored) as { ciphertext: string }).ciphertext);
+  });
+
+  it("rethrows CredentialKeyConfigError instead of hiding a misconfigured key", () => {
+    const stored = encryptCredentials("a@b.com:pw");
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => tryDecryptCredentials(stored, { stockItemId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
+  });
+});
+
+describe("ALLOW_LEGACY_PLAINTEXT (Fase 6b — legacy plaintext passthrough flag)", () => {
+  const ORIGINAL_FLAG = process.env.ALLOW_LEGACY_PLAINTEXT;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_FLAG === undefined) delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    else process.env.ALLOW_LEGACY_PLAINTEXT = ORIGINAL_FLAG;
+  });
+
+  it("defaults to permissive: unset passes a legacy plaintext row through and counts it", () => {
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    const before = legacyPlaintextPassthroughCount();
+    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+    expect(legacyPlaintextPassthroughCount()).toBe(before + 1);
+  });
+
+  it("warns exactly once per process, without the plaintext, however many legacy rows pass through", async () => {
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    // Fresh module instances, so the once-per-process state starts from zero.
+    vi.resetModules();
+    const fresh = await import("./credentialCrypto");
+    const freshLogger = (await import("./logger")).logger;
+    const freshWarn = vi.spyOn(freshLogger, "warn").mockImplementation(() => undefined);
+    try {
+      fresh.decryptCredentials("warn-me@plain.com:Hunter2");
+      fresh.decryptCredentials("warn-me-again@plain.com:Hunter3");
+      fresh.decryptCredentials("warn-me-thrice@plain.com:Hunter4");
+      expect(freshWarn).toHaveBeenCalledTimes(1);
+      expect(fresh.legacyPlaintextPassthroughCount()).toBe(3);
+      expect(JSON.stringify(freshWarn.mock.calls)).not.toMatch(/Hunter|warn-me/);
+    } finally {
+      freshWarn.mockRestore();
+    }
+  });
+
+  it.each(["true", "1", "yes", "on", "", "anything-else"])("stays permissive for %j", (value) => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = value;
+    expect(decryptCredentials("legacy@plain.com:pw")).toBe("legacy@plain.com:pw");
+  });
+
+  it.each(["false", "0", "no", "off", " FALSE "])("refuses a legacy plaintext row in strict mode (%j)", (value) => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = value;
+    expect(() => decryptCredentials("strict@plain.com:Hunter2")).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("the strict-mode error never contains the stored value", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    try {
+      decryptCredentials("strict@plain.com:Hunter2");
+      expect.unreachable();
+    } catch (err) {
+      expect((err as Error).message).not.toContain("Hunter2");
+      expect((err as Error).message).not.toContain("strict@plain.com");
+    }
+  });
+
+  it("strict mode also refuses JSON that is not an envelope", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(() => decryptCredentials('{"user":"a@b.com"}')).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("strict mode still decrypts a real envelope and passes an empty value through", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(decryptCredentials(encryptCredentials("ok@b.com:pw"))).toBe("ok@b.com:pw");
+    expect(decryptCredentials("")).toBe("");
+  });
+
+  it("strict mode makes a display read skip the legacy row instead of failing", () => {
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(tryDecryptCredentials("strict@plain.com:pw", { stockItemId: 5, purpose: "test" })).toBeNull();
   });
 });

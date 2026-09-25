@@ -35,6 +35,8 @@ const KEY_LENGTH_BYTES = 32; // AES-256.
 const CURRENT_KEY_VERSION = 1;
 
 export interface CredentialEnvelope {
+  /** Absent on v1 (no AAD). 2 = the ciphertext is bound to a context string via AES-GCM AAD (Fase 6d). */
+  v?: 2;
   keyVersion: number;
   iv: string; // base64
   ciphertext: string; // base64
@@ -55,6 +57,19 @@ export class CredentialKeyConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "CredentialKeyConfigError";
+  }
+}
+
+/**
+ * Fase 6d: a v2 envelope that cannot be read under the context it was given
+ * (missing or wrong context, another key, tampering), an envelope whose
+ * version this code does not know, or a caller passing an unusable context.
+ * Messages are structural only: never the value, never the context string.
+ */
+export class CredentialEnvelopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CredentialEnvelopeError";
   }
 }
 
@@ -97,6 +112,45 @@ function legacyPlaintext(stored: string): string {
   return stored;
 }
 
+// ── Envelope v2 (Fase 6d) ─────────────────────────────────────────────────
+// A v2 envelope binds its ciphertext to where it is stored (table, column,
+// row) through AES-GCM additional authenticated data, so a ciphertext copied
+// onto another row or column no longer decrypts. Readers accept v1 and v2;
+// writers emit v2 only while CREDENTIAL_ENVELOPE_WRITE_V2 is on (default off),
+// so the code that can read v2 is deployed everywhere before any v2 exists.
+// The context strings below are part of the stored data's key: changing one
+// makes every v2 value written under it permanently unreadable.
+
+/** Which envelope version writers emit now. Read lazily so tests can flip it. */
+export function credentialEnvelopeWriteVersion(): 1 | 2 {
+  const raw = process.env.CREDENTIAL_ENVELOPE_WRITE_V2;
+  if (raw === undefined) return 1;
+  return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase()) ? 2 : 1;
+}
+
+function rowId(id: number): number {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new CredentialEnvelopeError("A credential context needs a positive integer row id.");
+  }
+  return id;
+}
+
+/** AAD for StockItem.credentials of one row. */
+export function stockCredentialsAad(stockItemId: number): string {
+  return `stock_items.credentials:${rowId(stockItemId)}`;
+}
+
+/** AAD for Order.deliveredContent of one order. */
+export function deliveredContentAad(orderId: number): string {
+  return `orders.delivered_content:${rowId(orderId)}`;
+}
+
+/** AAD for an encrypted Setting value (ENCRYPTED_SETTING_KEYS in @app/db). */
+export function settingValueAad(key: string): string {
+  if (key === "") throw new CredentialEnvelopeError("A setting credential context needs a non-empty key.");
+  return `settings.value:${key}`;
+}
+
 /** Resolve the raw AES-256 key bytes for a given envelope key version.
  * Throws (never logs the key material) if unconfigured, malformed, or the
  * requested version has no known key — the last case only matters once a
@@ -127,21 +181,28 @@ function keyForVersion(version: number): Buffer {
   return key;
 }
 
-/** Encrypt a plaintext credential string into the JSON envelope stored in
- * `StockItem.credentials`. Fresh random IV per call (AES-GCM requires a
- * unique IV per key — reuse would leak plaintext). */
-export function encryptCredentials(plaintext: string): string {
+/** Encrypt a plaintext credential into the JSON envelope. `aad` names where
+ * the value will be stored (use the *Aad helpers above, never a literal); it
+ * is bound into a v2 envelope and ignored by v1, which is what writers emit
+ * while CREDENTIAL_ENVELOPE_WRITE_V2 is off. Fresh random IV per call (AES-GCM
+ * requires a unique IV per key — reuse would leak plaintext). */
+export function encryptCredentials(plaintext: string, aad: string): string {
+  if (!aad) throw new CredentialEnvelopeError("encryptCredentials needs a non-empty context (AAD).");
+  const version = credentialEnvelopeWriteVersion();
   const key = keyForVersion(CURRENT_KEY_VERSION);
   const iv = randomBytes(IV_LENGTH_BYTES);
   const cipher = createCipheriv(ALGORITHM, key, iv);
+  if (version === 2) cipher.setAAD(Buffer.from(aad, "utf8"));
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  const envelope: CredentialEnvelope = {
+  const body = {
     keyVersion: CURRENT_KEY_VERSION,
     iv: iv.toString("base64"),
     ciphertext: ciphertext.toString("base64"),
     authTag: authTag.toString("base64"),
   };
+  // v1 keeps the exact pre-6d shape (no marker), so stage-1 writes stay readable by pre-6d code.
+  const envelope: CredentialEnvelope = version === 2 ? { v: 2, ...body } : body;
   return JSON.stringify(envelope);
 }
 
@@ -156,6 +217,26 @@ export function isEncryptedCredentialEnvelope(stored: string): boolean {
     return false;
   }
   return isEnvelopeShape(parsed);
+}
+
+/** 1 or 2 for an envelope (a `v` this code does not know throws), null for
+ * anything else (legacy plaintext, empty, other JSON). Used by the v2
+ * re-encrypt script to skip rows already on v2. */
+export function credentialEnvelopeVersion(stored: string): 1 | 2 | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  return isEnvelopeShape(parsed) ? envelopeVersion(parsed) : null;
+}
+
+function envelopeVersion(envelope: CredentialEnvelope): 1 | 2 {
+  const v = (envelope as { v?: unknown }).v;
+  if (v === undefined) return 1;
+  if (v === 2) return 2;
+  throw new CredentialEnvelopeError("A stored credential envelope has an unsupported version marker.");
 }
 
 function isEnvelopeShape(value: unknown): value is CredentialEnvelope {
@@ -186,7 +267,7 @@ function isEnvelopeShape(value: unknown): value is CredentialEnvelope {
  * corrupted ciphertext, tampered auth tag) still throws — that's a real
  * integrity problem, not a legacy row, and must not be silently swallowed.
  */
-export function decryptCredentials(stored: string): string {
+export function decryptCredentials(stored: string, aad?: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stored);
@@ -195,14 +276,36 @@ export function decryptCredentials(stored: string): string {
   }
   if (!isEnvelopeShape(parsed)) return legacyPlaintext(stored);
 
+  const version = envelopeVersion(parsed);
+  if (version === 2 && !aad) {
+    throw new CredentialEnvelopeError("A v2 credential envelope cannot be decrypted without its context (AAD).");
+  }
   const key = keyForVersion(parsed.keyVersion);
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(parsed.iv, "base64"));
   decipher.setAuthTag(Buffer.from(parsed.authTag, "base64"));
-  const plaintext = Buffer.concat([
-    decipher.update(Buffer.from(parsed.ciphertext, "base64")),
-    decipher.final(),
-  ]);
-  return plaintext.toString("utf8");
+  const ciphertext = Buffer.from(parsed.ciphertext, "base64");
+  if (version === 1) {
+    // v1 carries no AAD: whatever context the caller passes is ignored, never guessed at.
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  }
+  decipher.setAAD(Buffer.from(aad!, "utf8"));
+  try {
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  } catch {
+    throw new CredentialEnvelopeError(
+      "A v2 credential envelope failed authentication: it was read under the wrong context or key, or it was tampered with.",
+    );
+  }
+}
+
+/** StockItem.credentials of row `stockItemId` (see stockCredentialsAad). */
+export function encryptStockCredentials(plaintext: string, stockItemId: number): string {
+  return encryptCredentials(plaintext, stockCredentialsAad(stockItemId));
+}
+
+/** Delivery-path read of StockItem.credentials: throws on an unreadable value. */
+export function decryptStockCredentials(stored: string, stockItemId: number): string {
+  return decryptCredentials(stored, stockCredentialsAad(stockItemId));
 }
 
 /**
@@ -215,7 +318,8 @@ export function decryptCredentials(stored: string): string {
 export function assertCredentialKeyConfigured(): void {
   keyForVersion(CURRENT_KEY_VERSION);
   const canary = "credential-key-canary";
-  if (decryptCredentials(encryptCredentials(canary)) !== canary) {
+  const canaryAad = "boot.credential_key_canary";
+  if (decryptCredentials(encryptCredentials(canary, canaryAad), canaryAad) !== canary) {
     throw new CredentialKeyConfigError("CREDENTIAL_ENCRYPTION_KEY failed its encrypt/decrypt round-trip check.");
   }
 }
@@ -230,16 +334,16 @@ export function assertCredentialKeyConfigured(): void {
  */
 export function tryDecryptCredentials(
   stored: string,
-  ctx: { stockItemId: number | null; purpose: string },
+  ctx: { stockItemId: number; purpose: string },
 ): string | null {
   try {
-    return decryptCredentials(stored);
+    return decryptStockCredentials(stored, ctx.stockItemId);
   } catch (err) {
     if (err instanceof CredentialKeyConfigError) throw err;
     // Only the error's name: a message could echo part of the stored value.
     logger.warn(
       { stockItemId: ctx.stockItemId, errorName: err instanceof Error ? err.name : typeof err },
-      `Could not decrypt the credentials of stock item ${ctx.stockItemId ?? "(unknown)"} for ${ctx.purpose}; the row is skipped there. It is corrupted, tampered with, or was encrypted under a different key.`,
+      `Could not decrypt the credentials of stock item ${ctx.stockItemId} for ${ctx.purpose}; the row is skipped there. It is corrupted, tampered with, or was encrypted under a different key.`,
     );
     return null;
   }
@@ -252,14 +356,14 @@ export function tryDecryptCredentials(
 // scripts/backfill-encrypt-delivered-content.ts rewrites it.
 
 /** Every writer of Order.deliveredContent must store this, never the plaintext. */
-export function encryptDeliveredContent(plaintext: string): string {
-  return encryptCredentials(plaintext);
+export function encryptDeliveredContent(plaintext: string, orderId: number): string {
+  return encryptCredentials(plaintext, deliveredContentAad(orderId));
 }
 
 /** Delivery-path read: throws on an unreadable value so the send retries
  * instead of handing the buyer nothing. Null means nothing was delivered. */
-export function decryptDeliveredContent(stored: string | null): string | null {
-  return stored === null ? null : decryptCredentials(stored);
+export function decryptDeliveredContent(stored: string | null, orderId: number): string | null {
+  return stored === null ? null : decryptCredentials(stored, deliveredContentAad(orderId));
 }
 
 /** DISPLAY-ONLY twin of decryptDeliveredContent (see tryDecryptCredentials):
@@ -270,7 +374,7 @@ export function tryDecryptDeliveredContent(
 ): string | null {
   if (stored === null) return null;
   try {
-    return decryptCredentials(stored);
+    return decryptDeliveredContent(stored, ctx.orderId);
   } catch (err) {
     if (err instanceof CredentialKeyConfigError) throw err;
     // Only the error's name: a message could echo part of the stored value.

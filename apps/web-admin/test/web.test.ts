@@ -6824,6 +6824,32 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     expectNoLeak(res);
   });
 
+  it("GET /api/users/:userId sends real totals (T3) alongside the capped Orders/Tickets/Wallet Ledger lists", async () => {
+    const web = await makeWebBuyer("h4users3");
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    await createTicket(prisma, web.id, "first ticket");
+    await createTicket(prisma, web.id, "second ticket");
+    await post(`/api/users/${web.id}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "one" });
+    await post(`/api/users/${web.id}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "2.00", note: "two" });
+
+    const res = await get(`/api/users/${web.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as {
+      orders: unknown[];
+      ordersTotal: number;
+      tickets: unknown[];
+      ticketsTotal: number;
+      ledger: unknown[];
+      ledgerTotal: number;
+    };
+    expect(body.ordersTotal).toBe(1);
+    expect(body.orders.length).toBe(1);
+    expect(body.ticketsTotal).toBe(2);
+    expect(body.tickets.length).toBe(2);
+    expect(body.ledgerTotal).toBe(2);
+    expect(body.ledger.length).toBe(2);
+  });
+
   it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders1");
     await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });

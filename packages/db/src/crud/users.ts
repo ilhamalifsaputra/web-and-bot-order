@@ -518,6 +518,13 @@ export async function listWalletLedger(
   }));
 }
 
+/** Real total behind `listWalletLedger`'s capped page — UserDetailPage's
+ *  Wallet Ledger card title must show this, not `.length` of the capped
+ *  list it renders. */
+export function countWalletLedgerEntries(db: Db, userId: number): Promise<number> {
+  return db.walletTransaction.count({ where: { userId } });
+}
+
 /** The only User columns the global wallet-transactions page needs, as an
  *  explicit `select` on the relation. Never `include: { user: true }` here:
  *  that would pull `passwordHash` and `email` into a web-admin JSON response.

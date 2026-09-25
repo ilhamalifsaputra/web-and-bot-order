@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { adjustWallet, listWalletLedger } from "./users";
+import { adjustWallet, listWalletLedger, countWalletLedgerEntries } from "./users";
 import { ValidationError } from "@app/core/errors";
 
 let db: TestDb;
@@ -49,6 +49,16 @@ describe("adjustWallet ledger", () => {
     expect(ledger[0]!.orderId).toBe(4);
     expect(ledger[1]!.reason).toBe("referral");
     expect(ledger[1]!.balanceAfter).toBe("10");
+  });
+
+  it("countWalletLedgerEntries returns the real total behind listWalletLedger's capped page", async () => {
+    await adjustWallet(prisma, userId, "10", { reason: "referral", orderId: 3 });
+    await adjustWallet(prisma, userId, "-4", { reason: "order_payment", orderId: 4 });
+    await adjustWallet(prisma, userId, "1", { reason: "admin_adjust" });
+
+    const capped = await listWalletLedger(prisma, userId, 2);
+    expect(capped.length).toBe(2); // capped below the real total
+    expect(await countWalletLedgerEntries(prisma, userId)).toBe(3);
   });
 
   it("a rejected overdraw writes NO ledger row and no balance change", async () => {

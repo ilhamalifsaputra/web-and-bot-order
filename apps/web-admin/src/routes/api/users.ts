@@ -9,8 +9,11 @@ import {
   userTotalSpent,
   totalSpentByUserIds,
   listUserOrders,
+  countUserOrders,
   listUserTickets,
+  countUserTickets,
   listWalletLedger,
+  countWalletLedgerEntries,
   setUserRole,
   setUserBanned,
   adjustWallet,
@@ -220,11 +223,14 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     const userId = Number((req.params as { userId: string }).userId);
     const user = await getUser(prisma, userId);
     if (!user) return reply.code(404).send({ error: "User not found." });
-    const [totalSpent, orders, tickets, ledger] = await Promise.all([
+    const [totalSpent, orders, ordersTotal, tickets, ticketsTotal, ledger, ledgerTotal] = await Promise.all([
       userTotalSpent(prisma, userId),
       listUserOrders(prisma, userId, 20),
+      countUserOrders(prisma, userId),
       listUserTickets(prisma, userId, 20),
+      countUserTickets(prisma, userId),
       listWalletLedger(prisma, userId, 50),
+      countWalletLedgerEntries(prisma, userId),
     ]);
     return reply.send({
       user: {
@@ -234,11 +240,14 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
       },
       totalSpent,
       orders: orders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
+      ordersTotal,
       // No `subject` field — SupportTicket has no such column, and nothing on
       // the frontend (UserDetailPage.tsx) reads it; `message` (already on
       // each ticket via the spread below) is the ticket's own short text.
       tickets: tickets.map((t) => ({ ...t, createdAtDisplay: displayDateTime(t.createdAt) })),
+      ticketsTotal,
       ledger: ledger.map((l) => ({ ...l, createdAtDisplay: displayDate(l.createdAt) })),
+      ledgerTotal,
       roles: ROLES,
     });
   });

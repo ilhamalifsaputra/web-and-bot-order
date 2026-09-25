@@ -822,6 +822,13 @@ export function listUserTickets(db: Db, userId: number, limit = 10) {
   });
 }
 
+/** Real total behind `listUserTickets`'s capped page — UserDetailPage's
+ *  Support Tickets card title must show this, not `.length` of the capped
+ *  list it renders. */
+export function countUserTickets(db: Db, userId: number): Promise<number> {
+  return db.supportTicket.count({ where: { userId } });
+}
+
 /**
  * Task 10: the storefront /help page's own status-filter vocabulary — a
  * customer-facing grouping distinct from the admin queue's raw

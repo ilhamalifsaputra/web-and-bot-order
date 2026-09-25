@@ -3,7 +3,11 @@
  * shop cannot prove — customer counts, round-the-clock support, fixed
  * response/delivery times, blanket warranty or "instant" promises.
  *
- * Scans every string in packages/core/locales/*.json (bot + storefront copy).
+ * Scans every string in packages/core/locales/*.json (bot + storefront copy),
+ * plus every string literal hardcoded directly in storefront TSX (buyer-facing
+ * copy is expected to route through t("web.*") locale keys, but this catches
+ * any marketing claim written straight into a component instead).
+ *
  * If this fails you probably added marketing copy that reads as a fact. Reword
  * it as an always-true statement ("delivered automatically after payment is
  * confirmed, where available", "warranty as listed on each plan") rather than
@@ -17,6 +21,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const LOCALES_DIR = join(__dirname, "..", "packages", "core", "locales");
+const STOREFRONT_SRC_DIR = join(__dirname, "..", "apps", "storefront", "client", "src");
 
 interface Forbidden {
   why: string;
@@ -84,6 +89,37 @@ const FORBIDDEN: Forbidden[] = [
   },
 ];
 
+/** Matches single-, double-, and template-quoted string literals in raw TSX source. */
+const STRING_LITERAL_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
+/** Matches `/* ... *\/` block comments, including the `{/* ... *\/}` JSX comment form. */
+const BLOCK_COMMENT_RE = /\/\*[\s\S]*?\*\//g;
+/**
+ * Matches `//` line comments, but not a `//` immediately after `:` (so
+ * `https://...` inside a string literal survives). Comment prose in this
+ * codebase is full of possessive apostrophes ("ProductPage's own fetch"),
+ * which the string-literal regex below would otherwise misread as an
+ * opening `'` and run off matching to the next apostrophe several lines
+ * later — stripping comments first avoids that.
+ */
+const LINE_COMMENT_RE = /(^|[^:])\/\/.*$/gm;
+
+function loadStorefrontTsxFiles(): Array<{ file: string; literals: string[] }> {
+  return (readdirSync(STOREFRONT_SRC_DIR, { recursive: true }) as string[])
+    .filter((f) => f.endsWith(".tsx") && !f.endsWith(".test.tsx"))
+    .filter((f) => !f.split(/[\\/]/).includes("dev"))
+    .map((f) => {
+      const relFile = `apps/storefront/client/src/${f.split("\\").join("/")}`;
+      const raw = readFileSync(join(STOREFRONT_SRC_DIR, f), "utf8");
+      // Strip comments first — a quoted/apostrophe'd phrase inside a comment
+      // explaining rendered copy isn't itself rendered copy, and would
+      // otherwise false-positive (or corrupt subsequent matches) against
+      // FORBIDDEN.
+      const withoutComments = raw.replace(BLOCK_COMMENT_RE, "").replace(LINE_COMMENT_RE, "$1");
+      const literals = withoutComments.match(STRING_LITERAL_RE) ?? [];
+      return { file: relFile, literals: literals.map((l) => l.slice(1, -1)) };
+    });
+}
+
 function loadLocales(): Array<{ file: string; entries: Array<[string, string]> }> {
   return readdirSync(LOCALES_DIR)
     .filter((f) => f.endsWith(".json"))
@@ -124,5 +160,36 @@ describe("no unsupported claims in buyer-facing locale copy", () => {
     for (const { allowKeys } of FORBIDDEN) {
       for (const k of Object.keys(allowKeys ?? {})) expect(keys.has(k), `allowKeys names unknown key ${k}`).toBe(true);
     }
+  });
+});
+
+describe("no unsupported claims hardcoded directly in storefront TSX", () => {
+  // Buyer-facing storefront copy is expected to route through t("web.*") locale
+  // keys (covered above), not literal strings in components. This scan catches
+  // marketing claims written straight into a .tsx file instead of a locale key.
+  // web-admin is excluded: it's operator-facing, not buyer-facing, and has no
+  // i18n layer at all, so scanning it would flood false positives against
+  // ordinary admin UI copy. pages/dev/** is excluded: it's a DEV-only gallery
+  // gated by import.meta.env.DEV and never ships in the production bundle.
+  const files = loadStorefrontTsxFiles();
+
+  it("scans a non-trivial number of storefront TSX files", () => {
+    expect(files.length).toBeGreaterThan(50);
+  });
+
+  it("contains no forbidden claim in any hardcoded TSX string literal", () => {
+    const hits: string[] = [];
+    for (const { file, literals } of files) {
+      for (const literal of literals) {
+        for (const { why, pattern } of FORBIDDEN) {
+          const m = pattern.exec(literal);
+          if (m) hits.push(`${file} › "${literal}" — ${why}`);
+        }
+      }
+    }
+    expect(
+      hits,
+      `Unsupported claims found hardcoded in storefront TSX (route through a t("web.*") locale key and reword as an always-true statement):\n${hits.join("\n")}`,
+    ).toEqual([]);
   });
 });

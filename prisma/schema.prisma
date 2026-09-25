@@ -575,6 +575,10 @@ model StockItem {
   replacementsAsOriginal StockReplacement[] @relation("ReplacementOriginal")
   replacementsAsNew      StockReplacement[] @relation("ReplacementNew")
 
+  // Warranty-replacement chain (Fase 7): the spare row points at the row it replaced.
+  replacesStockItem StockItem?  @relation("StockItemReplacement", fields: [replacesStockItemId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  replacedBy        StockItem[] @relation("StockItemReplacement")
+
   events      StockItemEvent[]
   importBatch StockImportBatch? @relation(fields: [importBatchId], references: [id], onUpdate: NoAction)
   addedByAdmin   User? @relation("StockItemAddedByAdmin", fields: [addedByAdminId], references: [id], onDelete: NoAction, onUpdate: NoAction)

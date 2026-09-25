@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@app/core/config", () => ({ config: { ADMIN_IDS: [] as number[] } }));
+vi.mock("@app/core/config", () => ({ config: { ADMIN_IDS: [] as number[], LOG_LEVEL: "silent" } }));
 
 import { setAdminIds, resetBotIdentity } from "@app/core/runtime";
 import {

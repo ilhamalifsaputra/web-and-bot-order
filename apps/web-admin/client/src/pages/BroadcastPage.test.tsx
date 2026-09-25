@@ -23,7 +23,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 // Shape matches what GET /api/broadcast actually sends (see broadcast.ts's
 // historyShaped) — total/sent, not the raw Prisma totalCount/sentCount, and
 // no scheduledAt/createdAt since the page only ever renders scheduledAtDisplay.
-const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, isDue: true, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
+const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, failed: 0, isDue: true, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -233,6 +233,53 @@ describe("BroadcastPage", () => {
     expect(textarea.value).toBe(
       "We'll be performing scheduled maintenance on [date/time]. The bot/site may be briefly unavailable. Thanks for your patience!",
     );
+  });
+
+  it("shows the failed count in the Sent column when a broadcast had failures", async () => {
+    const partlyFailed = { ...BROADCAST, id: 11, sent: 45, failed: 5 };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [partlyFailed] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<BroadcastPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("45/200")).toBeInTheDocument());
+    expect(screen.getByText("(5 failed)")).toBeInTheDocument();
+  });
+
+  it("shows no failed-count annotation when nothing failed", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [BROADCAST] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<BroadcastPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("12/200")).toBeInTheDocument());
+    expect(screen.queryByText(/failed\)/)).not.toBeInTheDocument();
+  });
+
+  it("disables Send Broadcast until the recipient counts have loaded, and labels recipients as Telegram users", async () => {
+    let resolveFetch!: (r: Response) => void;
+    vi.spyOn(globalThis, "fetch").mockReturnValueOnce(
+      new Promise<Response>((resolve) => { resolveFetch = resolve; }),
+    );
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<BroadcastPage />, { wrapper: Wrapper });
+
+    await user.type(screen.getByPlaceholderText("Write your broadcast message..."), "hello");
+    // The Select can't be opened for real before counts load; assert directly
+    // on the button's disabled state instead of going through the picker.
+    const sendButton = screen.getByRole("button", { name: "Send Broadcast" });
+    expect(sendButton).toBeDisabled();
+
+    resolveFetch(
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await waitFor(() => expect(screen.getByText(/no broadcasts/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox"));
+    await user.click(await screen.findByRole("option", { name: /ALL/ }));
+    expect(sendButton).not.toBeDisabled();
+
+    await user.click(sendButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/200 Telegram users in the ALL segment/)).toBeInTheDocument();
   });
 
   it("shows the failure reason as subtext under a Failed status badge", async () => {

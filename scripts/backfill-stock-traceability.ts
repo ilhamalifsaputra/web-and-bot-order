@@ -6,13 +6,15 @@
  *     @app/core/credentialCrypto),
  *   - credentialKeyVersion (the envelope's own keyVersion, 0 for legacy
  *     plaintext),
- *   - soldToOrderId / soldToOrderItemId for SOLD rows,
+ *   - soldToOrderId / soldToOrderItemId for sold rows (SOLD, or soldAt set),
  *   - a synthetic SYSTEM event history (meta.backfilled = true) rebuilt from
  *     the row's own addedAt/reservedAt/soldAt timestamps, only for rows with
  *     no status-transition event yet.
  *
  * Idempotent per field, so an interrupted run is simply re-run from the start.
- * Scans in batches of 500 by id, one small transaction per row.
+ * Scans in batches of 500 by id, one small transaction per row; each row is
+ * locked (SELECT ... FOR UPDATE) and re-read inside that transaction before
+ * anything is written, so it is safe to run while the app is live.
  *
  *   pnpm backfill-stock-traceability            # writes
  *   pnpm backfill-stock-traceability --dry-run  # reports only
@@ -196,10 +198,11 @@ async function processRow(db: Db, row: Row, dryRun: boolean): Promise<Counters> 
     }
   }
 
-  // 2b. soldToOrderId / soldToOrderItemId.
+  // 2b. soldToOrderId / soldToOrderItemId — also for a sold row later retired
+  // to DEAD by a StockReplacement (soldAt kept), or it would lose its buyer.
   let soldToOrderId = row.soldToOrderId;
   let soldToOrderItemId = row.soldToOrderItemId;
-  if (row.status === StockStatus.SOLD && row.soldToOrderId === null) {
+  if ((row.status === StockStatus.SOLD || row.soldAt !== null) && row.soldToOrderId === null) {
     if (row.orderId === null) counters.soldTo.soldWithNoOrderId++;
     const items = await db.orderItem.findMany({
       where: { stockItemId: row.id },
@@ -275,7 +278,13 @@ export async function runBackfill(db: PrismaClient, opts: { dryRun: boolean }): 
     for (const row of batch) {
       const counters = opts.dryRun
         ? await processRow(db, row, true)
-        : await db.$transaction((tx) => processRow(tx, row, false));
+        : await db.$transaction(async (tx) => {
+            // Same row lock as stock.ts's lockStockRows, then re-read: the app may
+            // have moved this row since the batch read, and must wait for this commit.
+            await tx.$queryRaw`SELECT id FROM stock_items WHERE id = ${row.id} FOR UPDATE`;
+            const fresh = await tx.stockItem.findUnique({ where: { id: row.id }, select: ROW_SELECT });
+            return fresh ? processRow(tx, fresh, false) : emptyCounters();
+          });
       addCounters(summary, counters);
       summary.scanned++;
     }
@@ -289,8 +298,8 @@ export function formatSummary(s: BackfillSummary): string {
   return [
     `${LOG_PREFIX} ${s.dryRun ? "dry-run: " : ""}${s.scanned} row(s) scanned across ${s.batches} batch(es).`,
     `  Fingerprints: ${s.fingerprints.computed} computed, ${s.fingerprints.alreadyPresent} already had one, ${s.fingerprints.decryptFailed} failed to decrypt.`,
-    `  soldToOrderId: ${s.soldTo.backfilled} backfilled, ${s.soldTo.soldWithNoOrderId} SOLD rows with no orderId, ` +
-      `${s.soldTo.soldWithNoOrderItem} SOLD rows with no matching OrderItem, ${s.soldTo.soldOrderMismatch} mismatches (see lines above).`,
+    `  soldToOrderId: ${s.soldTo.backfilled} backfilled, ${s.soldTo.soldWithNoOrderId} sold rows with no orderId, ` +
+      `${s.soldTo.soldWithNoOrderItem} sold rows with no matching OrderItem, ${s.soldTo.soldOrderMismatch} mismatches (see lines above).`,
     `  Synthetic events: ${s.events.rowsBackfilled} row(s) got new events (${s.events.eventsCreated} events created total), ` +
       `${s.events.rowsAlreadyTraced} row(s) already had events (skipped); ${s.events.statusReconciled} closed with a status-reconciling event, ` +
       `${s.events.statusUnreconciled} left for review (see lines above).`,

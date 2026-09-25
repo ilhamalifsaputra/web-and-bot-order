@@ -236,6 +236,24 @@ describe("StockProductPage", () => {
     );
   });
 
+  it("opens the history timeline from the row's History action", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(jsonResponse(STOCK_PRODUCT_DATA));
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ events: [] }));
+    await user.click(screen.getByRole("button", { name: "Actions for stock item 101" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("History"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("History of stock item #101")).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByText("No recorded history yet.")).toBeInTheDocument());
+    expect(fetchSpy).toHaveBeenCalledWith("/api/stock/item/101/history", expect.anything());
+  });
+
   it("sends the reason picked in the single mark-dead dialog", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const fetchSpy = vi.spyOn(globalThis, "fetch");

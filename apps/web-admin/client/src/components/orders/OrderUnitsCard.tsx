@@ -4,6 +4,7 @@ import { DataTable } from "../shared/DataTable";
 import { EmptyState } from "../shared/EmptyState";
 import { StatusBadge } from "../shared/StatusBadge";
 import { ConfirmDialog } from "../shared/ConfirmDialog";
+import { StockHistoryDialog } from "../shared/StockHistoryDialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,7 +18,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
-import { TriangleAlert, RefreshCw, Undo2 } from "lucide-react";
+import { TriangleAlert, RefreshCw, Undo2, History } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost } from "../../api/client";
 import { describeError } from "../../lib/errorMessages";
@@ -168,6 +169,7 @@ export function OrderUnitsCard({
   const [reportTarget, setReportTarget] = useState<number[] | null>(null);
   const [reason, setReason] = useState("");
   const [refundTarget, setRefundTarget] = useState<StockReplacementRow | null>(null);
+  const [historyStockId, setHistoryStockId] = useState<number | null>(null);
 
   const rows: UnitRow[] = units.map((unit, i) => {
     const history = replacements.filter((r) => r.orderItemId === unit.id);
@@ -440,6 +442,17 @@ export function OrderUnitsCard({
               header: "",
               render: (row: UnitRow) => (
                 <div className="flex flex-col items-end gap-2">
+                  {row.stockItem && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`History of the account for unit ${row.unitLabel}`}
+                      onClick={() => setHistoryStockId(row.stockItem!.id)}
+                    >
+                      <History className="h-4 w-4" />
+                      History
+                    </Button>
+                  )}
                   {canReport(row) && (
                     <Button
                       size="sm"
@@ -528,6 +541,10 @@ export function OrderUnitsCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {historyStockId !== null && (
+        <StockHistoryDialog stockItemId={historyStockId} onClose={() => setHistoryStockId(null)} />
+      )}
 
       {refundTarget && (
         <ConfirmDialog

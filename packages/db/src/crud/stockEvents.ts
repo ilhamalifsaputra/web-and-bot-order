@@ -72,3 +72,69 @@ export async function recordStockEvents(db: Db, events: StockEventInput[]): Prom
   const res = await db.stockItemEvent.createMany({ data: events.map(toRow) });
   return res.count;
 }
+
+/** One row of a stock item's timeline. Deliberately has no credentials and no
+ *  raw `meta`: the history is safe to show to any admin without a reveal audit. */
+export interface StockItemEventView {
+  id: number;
+  eventType: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  reasonCode: string | null;
+  actorType: string;
+  /** Admin/customer display name; null for SYSTEM events or an unset name. */
+  actorName: string | null;
+  orderId: number | null;
+  orderCode: string | null;
+  occurredAt: Date;
+}
+
+const displayName = (u: { fullName: string | null; username: string | null; loginUsername: string | null; id: number }) =>
+  u.fullName || u.username || u.loginUsername || `User #${u.id}`;
+
+/**
+ * Full event timeline of one stock item, oldest first (occurredAt, then id).
+ * Returns null when the stock item does not exist at all; a soft-deleted item
+ * still has its history (the audit trail outlives the delete).
+ */
+export async function listStockItemEvents(db: Db, stockItemId: number): Promise<StockItemEventView[] | null> {
+  const item = await db.stockItem.findUnique({ where: { id: stockItemId }, select: { id: true } });
+  if (!item) return null;
+  const userSelect = { id: true, fullName: true, username: true, loginUsername: true } as const;
+  const rows = await db.stockItemEvent.findMany({
+    where: { stockItemId },
+    orderBy: [{ occurredAt: "asc" }, { id: "asc" }],
+    select: {
+      id: true,
+      eventType: true,
+      fromStatus: true,
+      toStatus: true,
+      reasonCode: true,
+      actorType: true,
+      orderId: true,
+      occurredAt: true,
+      actorAdmin: { select: userSelect },
+      actorCustomer: { select: userSelect },
+    },
+  });
+  const orderIds = [...new Set(rows.map((r) => r.orderId).filter((x): x is number => x !== null))];
+  const orders = orderIds.length
+    ? await db.order.findMany({ where: { id: { in: orderIds } }, select: { id: true, orderCode: true } })
+    : [];
+  const codeById = new Map(orders.map((o) => [o.id, o.orderCode]));
+  return rows.map((r) => {
+    const who = r.actorAdmin ?? r.actorCustomer;
+    return {
+      id: r.id,
+      eventType: r.eventType,
+      fromStatus: r.fromStatus,
+      toStatus: r.toStatus,
+      reasonCode: r.reasonCode,
+      actorType: r.actorType,
+      actorName: who ? displayName(who) : null,
+      orderId: r.orderId,
+      orderCode: r.orderId === null ? null : (codeById.get(r.orderId) ?? null),
+      occurredAt: r.occurredAt,
+    };
+  });
+}

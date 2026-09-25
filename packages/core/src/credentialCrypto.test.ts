@@ -14,6 +14,9 @@ import {
   tryDecryptCredentials,
   LegacyPlaintextCredentialError,
   legacyPlaintextPassthroughCount,
+  encryptDeliveredContent,
+  decryptDeliveredContent,
+  tryDecryptDeliveredContent,
 } from "./credentialCrypto";
 import { logger } from "./logger";
 
@@ -344,5 +347,64 @@ describe("ALLOW_LEGACY_PLAINTEXT (Fase 6b — legacy plaintext passthrough flag)
   it("strict mode makes a display read skip the legacy row instead of failing", () => {
     process.env.ALLOW_LEGACY_PLAINTEXT = "false";
     expect(tryDecryptCredentials("strict@plain.com:pw", { stockItemId: 5, purpose: "test" })).toBeNull();
+  });
+});
+
+describe("Order.deliveredContent helpers (Fase 6c)", () => {
+  const ORIGINAL_FLAG = process.env.ALLOW_LEGACY_PLAINTEXT;
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    if (ORIGINAL_FLAG === undefined) delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    else process.env.ALLOW_LEGACY_PLAINTEXT = ORIGINAL_FLAG;
+    if (ORIGINAL_KEY === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  it("encryptDeliveredContent stores an envelope that decryptDeliveredContent reads back", () => {
+    const stored = encryptDeliveredContent("user: acc1\npass: Hunter2");
+    expect(isEncryptedCredentialEnvelope(stored)).toBe(true);
+    expect(stored).not.toContain("Hunter2");
+    expect(decryptDeliveredContent(stored)).toBe("user: acc1\npass: Hunter2");
+  });
+
+  it("decryptDeliveredContent keeps null as null (no content delivered yet)", () => {
+    expect(decryptDeliveredContent(null)).toBeNull();
+  });
+
+  it("decryptDeliveredContent passes a pre-encryption plaintext row through in permissive mode", () => {
+    delete process.env.ALLOW_LEGACY_PLAINTEXT;
+    expect(decryptDeliveredContent("SN-LEGACY-1")).toBe("SN-LEGACY-1");
+  });
+
+  it("decryptDeliveredContent throws on a tampered envelope and on legacy plaintext in strict mode", () => {
+    const envelope = JSON.parse(encryptDeliveredContent("SN-123")) as { authTag: string };
+    envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
+    expect(() => decryptDeliveredContent(JSON.stringify(envelope))).toThrow();
+    process.env.ALLOW_LEGACY_PLAINTEXT = "false";
+    expect(() => decryptDeliveredContent("SN-LEGACY-1")).toThrow(LegacyPlaintextCredentialError);
+  });
+
+  it("tryDecryptDeliveredContent returns null and warns with the order id (never the content) for a tampered envelope", () => {
+    const envelope = JSON.parse(encryptDeliveredContent("user:x pass:Hunter2")) as { authTag: string; ciphertext: string };
+    envelope.authTag = Buffer.from("0000000000000000", "hex").toString("base64");
+    expect(tryDecryptDeliveredContent(JSON.stringify(envelope), { orderId: 314, purpose: "a buyer's order detail page" })).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = JSON.stringify(warn.mock.calls[0]);
+    expect(logged).toContain("314");
+    expect(logged).not.toContain("Hunter2");
+    expect(logged).not.toContain(envelope.ciphertext);
+  });
+
+  it("tryDecryptDeliveredContent reads a readable value (and null) without logging, and rethrows a key misconfiguration", () => {
+    const stored = encryptDeliveredContent("SN-9");
+    expect(tryDecryptDeliveredContent(stored, { orderId: 1, purpose: "test" })).toBe("SN-9");
+    expect(tryDecryptDeliveredContent(null, { orderId: 1, purpose: "test" })).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+    delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    expect(() => tryDecryptDeliveredContent(stored, { orderId: 1, purpose: "test" })).toThrow(CredentialKeyConfigError);
   });
 });

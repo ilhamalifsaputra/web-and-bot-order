@@ -33,7 +33,13 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
-import { decryptCredentials, tryDecryptCredentials } from "@app/core/credentialCrypto";
+import {
+  decryptCredentials,
+  tryDecryptCredentials,
+  encryptDeliveredContent,
+  decryptDeliveredContent,
+  tryDecryptDeliveredContent,
+} from "@app/core/credentialCrypto";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { assertServiceActive } from "./serviceAvailability";
@@ -500,11 +506,12 @@ export async function uniqueOrderCode(db: Db): Promise<string> {
  * plaintext, and all of them ultimately source the row from one of these
  * three functions. Returns `order` unchanged if it's null (not-found) or has
  * no items with stock attached — cheap no-op for every non-manual-account
- * order kind.
+ * order kind. `Order.deliveredContent` (encrypted since Fase 6c) is decrypted
+ * here too, throwing on an unreadable value like the stock credentials do.
  */
-function withDecryptedStockCredentials<T extends { items: Array<{ stockItem: { credentials: string } | null }> }>(
-  order: T,
-): T {
+function withDecryptedStockCredentials<
+  T extends { deliveredContent: string | null; items: Array<{ stockItem: { credentials: string } | null }> },
+>(order: T): T {
   // Cast at the end, not the object literal itself: TypeScript can't verify
   // a spread literal satisfies an unconstrained generic T even when it's
   // structurally identical apart from one string field's value — the shape
@@ -512,6 +519,7 @@ function withDecryptedStockCredentials<T extends { items: Array<{ stockItem: { c
   // stockItem.credentials's runtime value is.
   return {
     ...order,
+    deliveredContent: decryptDeliveredContent(order.deliveredContent),
     items: order.items.map((item) =>
       item.stockItem
         ? { ...item, stockItem: { ...item.stockItem, credentials: decryptCredentials(item.stockItem.credentials) } }
@@ -550,7 +558,11 @@ export async function getOrderByCodeFull(db: Db, orderCode: string) {
   return order ? withDecryptedStockCredentials(order) : order;
 }
 
-type StockCredentialsOrder = { items: Array<{ stockItem: { id: number; credentials: string } | null }> };
+type StockCredentialsOrder = {
+  id: number;
+  deliveredContent: string | null;
+  items: Array<{ stockItem: { id: number; credentials: string } | null }>;
+};
 type DisplayItem<I extends StockCredentialsOrder["items"][number]> = Omit<I, "stockItem"> & {
   stockItem: (Omit<NonNullable<I["stockItem"]>, "credentials"> & { credentials: string | null }) | null;
 };
@@ -564,6 +576,10 @@ function withDisplayStockCredentials<T extends StockCredentialsOrder>(order: T):
   // Cast for the same reason as withDecryptedStockCredentials: TS can't map a spread over a generic T.
   return {
     ...order,
+    deliveredContent: tryDecryptDeliveredContent(order.deliveredContent, {
+      orderId: order.id,
+      purpose: "a buyer's order detail page",
+    }),
     items: order.items.map((item) =>
       item.stockItem
         ? {
@@ -1187,14 +1203,26 @@ export async function applyUsdtWalletToOrder(
   });
 }
 
-export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
-  return db.order.findMany({
+/**
+ * List/summary rows are spread straight into admin JSON, so they never carry
+ * the delivered secret; only getOrder's detail/reveal/resend paths read it.
+ */
+export function withoutDeliveredContent<T extends { deliveredContent: string | null }>(
+  order: T,
+): Omit<T, "deliveredContent"> {
+  const { deliveredContent: _deliveredContent, ...rest } = order;
+  return rest;
+}
+
+export async function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
+  const orders = await db.order.findMany({
     where: { userId, kind: OrderKind.PRODUCT },
     orderBy: { createdAt: "desc" },
     skip: offset,
     take: limit,
     include: { items: { include: { product: true } } },
   });
+  return orders.map(withoutDeliveredContent);
 }
 
 export function countUserOrders(db: Db, userId: number) {
@@ -2573,7 +2601,7 @@ export async function fulfillManualOrder(
   // same UPDATE so a double-tap can't fulfil twice (count!==1 on a lost race).
   const claim = await db.order.updateMany({
     where: { id: orderId, status: OrderStatus.PROCESSING },
-    data: { status: OrderStatus.DELIVERED, deliveredContent: content, deliveredAt: now },
+    data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent(content), deliveredAt: now },
   });
   if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
   await db.orderStatusHistory.create({
@@ -2776,17 +2804,18 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
   return where;
 }
 
-export function listOrders(
+export async function listOrders(
   db: Db,
   opts: OrderFilter & { limit?: number; offset?: number } = {},
 ) {
-  return db.order.findMany({
+  const orders = await db.order.findMany({
     where: orderWhere(opts),
     include: { user: { select: ORDER_USER_SELECT }, items: { include: { product: true } } },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,
   });
+  return orders.map(withoutDeliveredContent);
 }
 
 export function countOrders(db: Db, opts: OrderFilter = {}) {

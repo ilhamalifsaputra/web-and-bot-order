@@ -245,6 +245,43 @@ export function tryDecryptCredentials(
   }
 }
 
+// ── Order.deliveredContent (Fase 6c) ───────────────────────────────────────
+// The admin-typed manual account or the supplier's serial number delivered to
+// a buyer. Same envelope, key and legacy-plaintext rules as
+// StockItem.credentials; a row written before 6c stays plaintext until
+// scripts/backfill-encrypt-delivered-content.ts rewrites it.
+
+/** Every writer of Order.deliveredContent must store this, never the plaintext. */
+export function encryptDeliveredContent(plaintext: string): string {
+  return encryptCredentials(plaintext);
+}
+
+/** Delivery-path read: throws on an unreadable value so the send retries
+ * instead of handing the buyer nothing. Null means nothing was delivered. */
+export function decryptDeliveredContent(stored: string | null): string | null {
+  return stored === null ? null : decryptCredentials(stored);
+}
+
+/** DISPLAY-ONLY twin of decryptDeliveredContent (see tryDecryptCredentials):
+ * an unreadable value becomes null plus a warning naming the order. */
+export function tryDecryptDeliveredContent(
+  stored: string | null,
+  ctx: { orderId: number; purpose: string },
+): string | null {
+  if (stored === null) return null;
+  try {
+    return decryptCredentials(stored);
+  } catch (err) {
+    if (err instanceof CredentialKeyConfigError) throw err;
+    // Only the error's name: a message could echo part of the stored value.
+    logger.warn(
+      { orderId: ctx.orderId, errorName: err instanceof Error ? err.name : typeof err },
+      `Could not decrypt the delivered content of order ${ctx.orderId} for ${ctx.purpose}; it is shown as empty there. It is corrupted, tampered with, or was encrypted under a different key.`,
+    );
+    return null;
+  }
+}
+
 // ── Stock traceability hardening plan, Fase 2 ──────────────────────────────
 // identityFingerprint/credentialFingerprint (StockItem, Fase 1 schema) are
 // keyed HMACs so DB read access alone can never confirm a guessed credential

@@ -21,7 +21,7 @@ import {
 } from "./orders";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { markStockDead } from "./stock";
-import { decryptCredentials } from "@app/core/credentialCrypto";
+import { decryptCredentials, decryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 import { LEGAL_TRANSITIONS, transitionOrderStatus } from "./orderStatus";
 import {
@@ -1003,6 +1003,10 @@ describe("fulfillManualOrder", () => {
     expect(delivered.status).toBe(OrderStatus.DELIVERED);
     expect(delivered.deliveredContent).toBe("user:x pass:y");
     expect(delivered.deliveredAt).not.toBeNull();
+    // Stored encrypted at rest; getOrder is the choke point that decrypts it.
+    const raw = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(isEncryptedCredentialEnvelope(raw.deliveredContent!)).toBe(true);
+    expect(raw.deliveredContent).not.toContain("pass:y");
 
     const history = await prisma.orderStatusHistory.findFirst({
       where: { orderId: order.id, status: OrderStatus.DELIVERED },
@@ -1032,7 +1036,7 @@ describe("fulfillManualOrder", () => {
 
     // The first delivery's content must survive untouched.
     const fresh = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(fresh!.deliveredContent).toBe("first delivery");
+    expect(decryptDeliveredContent(fresh!.deliveredContent)).toBe("first delivery");
   });
 
   it("empty/whitespace-only content throws error.manual_content_required and leaves the order PROCESSING", async () => {

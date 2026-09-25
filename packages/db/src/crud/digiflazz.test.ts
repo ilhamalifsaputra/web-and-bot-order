@@ -92,7 +92,7 @@ import { buildCustomerDataUnit } from "@app/core/nickname/fieldMapping";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import { digiflazzGroupKey } from "@app/core/suppliers/digiflazz";
 import type { DigiflazzPriceListItem } from "@app/core/suppliers/digiflazz";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, decryptDeliveredContent, isEncryptedCredentialEnvelope } from "@app/core/credentialCrypto";
 // I3 test: spy on getSetting itself (not just the underlying Prisma query,
 // which a 30s TTL cache can mask) to confirm the markup setting is read a
 // CONSTANT number of times per run, not once per denomination.
@@ -997,7 +997,7 @@ describe("dispatchPendingDigiflazzOrders", () => {
     // The claim inside fulfillDigiflazzOrder still committed — that part
     // didn't fail; only the later side effect did.
     expect(refreshed.status).toBe(OrderStatus.DELIVERED);
-    expect(refreshed.deliveredContent).toBe("SN-POST-FAIL");
+    expect(decryptDeliveredContent(refreshed.deliveredContent)).toBe("SN-POST-FAIL");
     // Final whole-branch review I-1 fix: fulfillDigiflazzOrder's own
     // PROCESSING->DELIVERED claim now unconditionally clears digiflazzStatus/
     // digiflazzNextRecheckAt/digiflazzFailureDetail as part of that SAME
@@ -1047,6 +1047,10 @@ describe("fulfillDigiflazzOrder", () => {
     const { order: delivered } = await fulfillDigiflazzOrder(prisma, order.id, { sn: "SN-999" });
     expect(delivered.status).toBe(OrderStatus.DELIVERED);
     expect(delivered.deliveredContent).toBe("SN-999");
+    // The serial number is stored encrypted at rest, never as plaintext.
+    const raw = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(isEncryptedCredentialEnvelope(raw.deliveredContent!)).toBe(true);
+    expect(raw.deliveredContent).not.toContain("SN-999");
 
     const history = await prisma.orderStatusHistory.findFirst({
       where: { orderId: order.id, status: OrderStatus.DELIVERED },

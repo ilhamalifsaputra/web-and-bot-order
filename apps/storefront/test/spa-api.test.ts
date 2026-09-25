@@ -37,7 +37,8 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
-import { encryptCredentials } from "@app/core/credentialCrypto";
+import { encryptCredentials, encryptDeliveredContent } from "@app/core/credentialCrypto";
+import { logger } from "@app/core/logger";
 import {
   prisma,
   initDb,
@@ -2976,12 +2977,43 @@ describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit 
     const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
     await prisma.order.update({
       where: { orderCode },
-      data: { status: OrderStatus.DELIVERED, deliveredContent: "user: netflix1\npass: hunter2" },
+      data: { status: OrderStatus.DELIVERED, deliveredContent: encryptDeliveredContent("user: netflix1\npass: hunter2") },
     });
     const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
     expect(res.json().delivered).toBe(true);
     expect(res.json().processing).toBe(false);
     expect(res.json().order.delivered_content).toBe("user: netflix1\npass: hunter2");
+  });
+
+  it("GET still shows a delivered_content stored before encryption (legacy plaintext row)", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({
+      where: { orderCode },
+      data: { status: OrderStatus.DELIVERED, deliveredContent: "user: legacy1\npass: hunter3" },
+    });
+    const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(res.json().order.delivered_content).toBe("user: legacy1\npass: hunter3");
+  });
+
+  it("GET shows an unreadable delivered_content as null instead of failing the page", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const good = JSON.parse(encryptDeliveredContent("user: x\npass: hunter4")) as Record<string, unknown>;
+    await prisma.order.update({
+      where: { orderCode },
+      data: {
+        status: OrderStatus.DELIVERED,
+        deliveredContent: JSON.stringify({ ...good, authTag: Buffer.alloc(16).toString("base64") }),
+      },
+    });
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    try {
+      const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().order.delivered_content).toBeNull();
+      expect(res.body).not.toContain("hunter4");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("PATCH info: anonymous 401s, wrong CSRF 403s", async () => {

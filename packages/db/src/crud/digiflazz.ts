@@ -43,6 +43,7 @@ import { OrderStatus, ProductType, DeliveryType } from "@app/core/enums";
 import { Decimal, moneyEq } from "@app/core/money";
 import { quantizeMoney } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
+import { encryptDeliveredContent } from "@app/core/credentialCrypto";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import {
@@ -801,7 +802,7 @@ export async function fulfillDigiflazzOrder(
     where: { id: orderId, status: OrderStatus.PROCESSING },
     data: {
       status: OrderStatus.DELIVERED,
-      deliveredContent: args.sn,
+      deliveredContent: encryptDeliveredContent(args.sn),
       deliveredAt: now,
       // Final whole-branch review I-1 (+ deferred #1/#2): this order is no
       // longer "in flight at the supplier" once it's DELIVERED — clear the

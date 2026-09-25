@@ -10,6 +10,7 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { enqueueOwnerNewTicketEmail, enqueueOwnerTicketReplyEmail } from "./notifications";
 import { logAdminAction } from "./audit";
+import { withoutDeliveredContent } from "./orders";
 
 /**
  * Mint a `ticketNumber` candidate: `TCK-YYYYMMDD-NNNNN` (current UTC date +
@@ -151,8 +152,8 @@ export function getTicket(db: Db, ticketId: number) {
  * the storefront ticket detail page's Order/Product Summary sidebar; the
  * admin route and the reply/close/reopen ownership checks keep using the
  * lighter `getTicket` since they don't need the join. */
-export function getTicketWithOrder(db: Db, ticketId: number) {
-  return db.supportTicket.findUnique({
+export async function getTicketWithOrder(db: Db, ticketId: number) {
+  const ticket = await db.supportTicket.findUnique({
     where: { id: ticketId },
     include: {
       order: {
@@ -160,6 +161,8 @@ export function getTicketWithOrder(db: Db, ticketId: number) {
       },
     },
   });
+  // The admin ticket page spreads this order into JSON; it never needs the delivered secret.
+  return ticket ? { ...ticket, order: ticket.order ? withoutDeliveredContent(ticket.order) : null } : ticket;
 }
 
 /** Returns the most recent open (still-active) ticket for an order — status
